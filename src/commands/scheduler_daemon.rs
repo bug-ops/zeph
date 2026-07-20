@@ -16,28 +16,88 @@ use crate::bootstrap::{load_config_or_default, resolve_config_path};
 ///
 /// Starts the scheduler daemon. Without `--foreground`, re-execs with
 /// `--foreground` to detach without forking a live tokio runtime.
+///
+/// `vault_override`/`vault_key_override`/`vault_path_override` are the `--vault`/`--vault-key`/
+/// `--vault-path` CLI flags. Resolved once via [`crate::bootstrap::resolve_vault_paths`] (the
+/// same resolution `doctor.rs`/`vault.rs` use post-#6499) for the `--foreground` path, and
+/// forwarded verbatim as CLI args to the re-exec'd child on the detach path — the child otherwise
+/// falls back to `ZEPH_VAULT_*` env vars (inherited) or `default_vault_dir()`, silently ignoring
+/// an operator-supplied override for the long-running daemon process (#6547/#6548).
 pub(crate) async fn handle_serve(
     config_path: Option<&std::path::Path>,
     foreground: bool,
     catch_up: bool,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&std::path::Path>,
+    vault_path_override: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
     let config_file = resolve_config_path(config_path);
     let config = load_config_or_default(&config_file);
     let daemon_cfg = build_daemon_config(&config);
 
     if foreground {
-        run_foreground(daemon_cfg, &config).await
+        let (vault_key_path, vault_secrets_path) = crate::bootstrap::resolve_vault_paths(
+            &config,
+            vault_override,
+            vault_key_override,
+            vault_path_override,
+        );
+        run_foreground(daemon_cfg, &config, &vault_key_path, &vault_secrets_path).await
     } else {
         // Build args for the re-exec child. Pass --config so the child resolves
         // the same config file, then `serve --foreground` with catch-up flag.
         let config_str = config_file.to_string_lossy();
-        let mut extra: Vec<&str> = vec!["--config", &config_str, "serve", "--foreground"];
-        if !catch_up {
-            extra.push("--no-catch-up");
-        }
-        zeph_scheduler::detach_and_run(&daemon_cfg, &extra)
+        let extra = build_detach_args(
+            &config_str,
+            catch_up,
+            vault_override,
+            vault_key_override,
+            vault_path_override,
+        );
+        let extra_refs: Vec<&str> = extra.iter().map(String::as_str).collect();
+        zeph_scheduler::detach_and_run(&daemon_cfg, &extra_refs)
             .context("failed to detach scheduler daemon")
     }
+}
+
+/// Build the CLI argument vector for the detached `--foreground` child process (the
+/// non-foreground path of [`handle_serve`]).
+///
+/// Split out from `handle_serve` so the argument-construction logic — in particular, forwarding
+/// `--vault`/`--vault-key`/`--vault-path` to the re-exec'd child — is independently testable
+/// without actually spawning/detaching a process. The child otherwise only inherits `ZEPH_VAULT_*`
+/// env vars automatically; the CLI-flag form of an override is lost across `std::process::Command`
+/// unless explicitly forwarded here, silently dropping an operator-supplied override for the
+/// long-running daemon process (#6547/#6548).
+fn build_detach_args(
+    config_str: &str,
+    catch_up: bool,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&std::path::Path>,
+    vault_path_override: Option<&std::path::Path>,
+) -> Vec<String> {
+    let mut extra: Vec<String> = vec![
+        "--config".to_owned(),
+        config_str.to_owned(),
+        "serve".to_owned(),
+        "--foreground".to_owned(),
+    ];
+    if !catch_up {
+        extra.push("--no-catch-up".to_owned());
+    }
+    if let Some(backend) = vault_override {
+        extra.push("--vault".to_owned());
+        extra.push(backend.to_owned());
+    }
+    if let Some(key_path) = vault_key_override {
+        extra.push("--vault-key".to_owned());
+        extra.push(key_path.to_string_lossy().into_owned());
+    }
+    if let Some(vault_path) = vault_path_override {
+        extra.push("--vault-path".to_owned());
+        extra.push(vault_path.to_string_lossy().into_owned());
+    }
+    extra
 }
 
 /// Handle `zeph stop [--timeout-secs N]`.
@@ -94,6 +154,8 @@ fn build_daemon_config(config: &zeph_core::config::Config) -> zeph_scheduler::Da
 async fn run_foreground(
     daemon_cfg: zeph_scheduler::DaemonConfig,
     config: &zeph_core::config::Config,
+    vault_key_path: &std::path::Path,
+    vault_secrets_path: &std::path::Path,
 ) -> anyhow::Result<()> {
     let db_url = crate::db_url::resolve_db_url(config);
     let store = zeph_scheduler::JobStore::open(db_url)
@@ -145,7 +207,14 @@ async fn run_foreground(
         config.scheduler.security.attenuate_after_external_read,
     );
 
-    if let Some(adapter) = build_durable_adapter(config, &sched_supervisor).await? {
+    if let Some(adapter) = build_durable_adapter(
+        config,
+        &sched_supervisor,
+        vault_key_path,
+        vault_secrets_path,
+    )
+    .await?
+    {
         scheduler = scheduler.with_durable(adapter);
     }
 
@@ -191,6 +260,8 @@ async fn run_foreground(
 async fn build_durable_adapter(
     config: &zeph_core::config::Config,
     sched_supervisor: &zeph_common::TaskSupervisor,
+    vault_key_path: &std::path::Path,
+    vault_secrets_path: &std::path::Path,
 ) -> anyhow::Result<Option<zeph_scheduler::durable::SchedulerDurableAdapter>> {
     if !(config.durable.enabled && config.durable.scheduler) {
         return Ok(None);
@@ -199,9 +270,12 @@ async fn build_durable_adapter(
     // control-entry HMAC key (#6043/#6044), and the high-water-mark key (addendum to #6451)
     // before opening the backend, so a forbidden config fails closed without creating a stray
     // empty journal file on disk first.
-    let cipher = crate::commands::durable::load_write_cipher(config)?;
-    let hmac_keys = crate::commands::durable::load_write_hmac_key(config)?;
-    let hwm_keys = crate::commands::durable::load_write_hwm_key(config)?;
+    let cipher =
+        crate::commands::durable::load_write_cipher(config, vault_key_path, vault_secrets_path)?;
+    let hmac_keys =
+        crate::commands::durable::load_write_hmac_key(config, vault_key_path, vault_secrets_path)?;
+    let hwm_keys =
+        crate::commands::durable::load_write_hwm_key(config, vault_key_path, vault_secrets_path)?;
     let durable_url = crate::commands::durable::resolve_durable_db_url(config);
     let local = zeph_durable::LocalBackend::open(&durable_url, config.durable.max_payload_bytes)
         .await
@@ -317,6 +391,87 @@ mod tests {
     use super::*;
     use zeph_durable::Journal as _;
 
+    // --- build_detach_args (#6547/#6548, tester follow-up) ---
+    //
+    // `handle_serve`'s non-foreground path re-execs itself as a detached `--foreground` child;
+    // these tests isolate the argv-construction logic without actually spawning/detaching a
+    // process, covering the exact gap the tester flagged: zero coverage existed for whether
+    // `--vault`/`--vault-key`/`--vault-path` actually reach the re-exec'd child's argv.
+
+    #[test]
+    fn build_detach_args_forwards_all_three_vault_overrides_when_present() {
+        let args = build_detach_args(
+            "/some/config.toml",
+            true,
+            Some("age"),
+            Some(std::path::Path::new("/override/vault-key.txt")),
+            Some(std::path::Path::new("/override/secrets.age")),
+        );
+        assert!(args.iter().any(|a| a == "--vault"));
+        assert!(args.iter().any(|a| a == "age"));
+        assert!(args.iter().any(|a| a == "--vault-key"));
+        assert!(args.iter().any(|a| a == "/override/vault-key.txt"));
+        assert!(args.iter().any(|a| a == "--vault-path"));
+        assert!(args.iter().any(|a| a == "/override/secrets.age"));
+        // --vault-key must be immediately followed by its value (argv parsing depends on
+        // adjacency), not just present anywhere in the vector.
+        let key_idx = args.iter().position(|a| a == "--vault-key").unwrap();
+        assert_eq!(args[key_idx + 1], "/override/vault-key.txt");
+        let path_idx = args.iter().position(|a| a == "--vault-path").unwrap();
+        assert_eq!(args[path_idx + 1], "/override/secrets.age");
+    }
+
+    #[test]
+    fn build_detach_args_omits_vault_flags_when_no_override_given() {
+        let args = build_detach_args("/some/config.toml", true, None, None, None);
+        assert!(
+            !args.iter().any(|a| a == "--vault"),
+            "no --vault override must not appear in the child argv: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a == "--vault-key"),
+            "no --vault-key override must not appear in the child argv: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a == "--vault-path"),
+            "no --vault-path override must not appear in the child argv: {args:?}"
+        );
+    }
+
+    #[test]
+    fn build_detach_args_forwards_single_override_independently() {
+        // --vault-key alone must not pull in --vault-path (and vice versa) — each override is
+        // forwarded independently, mirroring resolve_vault_paths' per-field resolution.
+        let args = build_detach_args(
+            "/some/config.toml",
+            true,
+            None,
+            Some(std::path::Path::new("/override/vault-key.txt")),
+            None,
+        );
+        assert!(args.iter().any(|a| a == "--vault-key"));
+        assert!(!args.iter().any(|a| a == "--vault-path"));
+        assert!(!args.iter().any(|a| a == "--vault"));
+    }
+
+    #[test]
+    fn build_detach_args_always_includes_config_and_foreground() {
+        let args = build_detach_args("/x/config.toml", true, None, None, None);
+        assert_eq!(args[0], "--config");
+        assert_eq!(args[1], "/x/config.toml");
+        assert!(args.iter().any(|a| a == "serve"));
+        assert!(args.iter().any(|a| a == "--foreground"));
+    }
+
+    #[test]
+    fn build_detach_args_no_catch_up_flag_added_when_catch_up_false() {
+        let with_catch_up = build_detach_args("/x/config.toml", true, None, None, None);
+        assert!(!with_catch_up.iter().any(|a| a == "--no-catch-up"));
+
+        let without_catch_up = build_detach_args("/x/config.toml", false, None, None, None);
+        assert!(without_catch_up.iter().any(|a| a == "--no-catch-up"));
+    }
+
     /// #6264: `build_durable_adapter` must spawn the retention sweep (not just the journal
     /// writer) onto `sched_supervisor`, mirroring the P1/P2 coverage in
     /// `crates/zeph-core/src/agent/durable_bootstrap.rs`. `encrypt_payload = false` avoids a
@@ -335,9 +490,15 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
         let sched_supervisor = zeph_common::TaskSupervisor::new(cancel);
 
-        let adapter = build_durable_adapter(&config, &sched_supervisor)
-            .await
-            .expect("build_durable_adapter must succeed with a local, unencrypted backend");
+        let vault_dir = zeph_core::vault::default_vault_dir();
+        let adapter = build_durable_adapter(
+            &config,
+            &sched_supervisor,
+            &vault_dir.join("vault-key.txt"),
+            &vault_dir.join("secrets.age"),
+        )
+        .await
+        .expect("build_durable_adapter must succeed with a local, unencrypted backend");
         assert!(
             adapter.is_some(),
             "durable.enabled && durable.scheduler must produce an adapter"
@@ -371,9 +532,15 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
         let sched_supervisor = zeph_common::TaskSupervisor::new(cancel);
 
-        let adapter = build_durable_adapter(&config, &sched_supervisor)
-            .await
-            .expect("build_durable_adapter must succeed (returns None, not an error)");
+        let vault_dir = zeph_core::vault::default_vault_dir();
+        let adapter = build_durable_adapter(
+            &config,
+            &sched_supervisor,
+            &vault_dir.join("vault-key.txt"),
+            &vault_dir.join("secrets.age"),
+        )
+        .await
+        .expect("build_durable_adapter must succeed (returns None, not an error)");
         assert!(adapter.is_none());
         assert!(sched_supervisor.snapshot().is_empty());
     }
@@ -467,7 +634,13 @@ mod tests {
 
         let cancel = tokio_util::sync::CancellationToken::new();
         let sched_supervisor = zeph_common::TaskSupervisor::new(cancel);
-        let adapter = build_durable_adapter(&config, &sched_supervisor).await;
+        let adapter = build_durable_adapter(
+            &config,
+            &sched_supervisor,
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        )
+        .await;
         assert!(
             adapter.is_ok() && adapter.unwrap().is_some(),
             "build_durable_adapter must succeed with a consistent rotation window declared"
@@ -476,7 +649,12 @@ mod tests {
         // Re-derive the same keys `build_durable_adapter` resolved, and confirm the pre-rotation
         // entry is still readable through the window (the actual regression assertion) — still
         // under the guard's vault dir, before it is restored below.
-        let hmac_keys = crate::commands::durable::load_write_hmac_key(&config).unwrap();
+        let hmac_keys = crate::commands::durable::load_write_hmac_key(
+            &config,
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        )
+        .unwrap();
         let reader =
             zeph_durable::LocalBackend::open(&durable_url, config.durable.max_payload_bytes)
                 .await
@@ -588,7 +766,13 @@ mod tests {
 
         let cancel = tokio_util::sync::CancellationToken::new();
         let sched_supervisor = zeph_common::TaskSupervisor::new(cancel);
-        let adapter = build_durable_adapter(&config, &sched_supervisor).await;
+        let adapter = build_durable_adapter(
+            &config,
+            &sched_supervisor,
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        )
+        .await;
         assert!(
             adapter.is_ok() && adapter.unwrap().is_some(),
             "build_durable_adapter must succeed with a consistent rotation window declared"
@@ -597,7 +781,12 @@ mod tests {
         // Re-derive the same HWM keys `build_durable_adapter` resolved, and confirm the
         // pre-rotation execution still resumes cleanly through the window (the actual regression
         // assertion) -- still under the guard's vault dir, before it is restored below.
-        let hwm_keys = crate::commands::durable::load_write_hwm_key(&config).unwrap();
+        let hwm_keys = crate::commands::durable::load_write_hwm_key(
+            &config,
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        )
+        .unwrap();
         let current = hwm_keys.current.expect("current HWM slot must resolve");
         let previous = hwm_keys
             .previous

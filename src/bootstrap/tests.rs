@@ -148,6 +148,69 @@ fn resolve_config_path_default() {
 }
 
 #[test]
+fn resolve_vault_paths_cli_override_takes_precedence() {
+    // #6547/#6548: --vault-key/--vault-path must win over default_vault_dir(), the same
+    // resolution doctor.rs/vault.rs already use post-#6499.
+    let config = Config::load(Path::new("/nonexistent")).unwrap();
+    let (key_path, vault_path) = resolve_vault_paths(
+        &config,
+        None,
+        Some(Path::new("/cli/vault-key.txt")),
+        Some(Path::new("/cli/secrets.age")),
+    );
+    assert_eq!(key_path, PathBuf::from("/cli/vault-key.txt"));
+    assert_eq!(vault_path, PathBuf::from("/cli/secrets.age"));
+    let default_dir = zeph_core::vault::default_vault_dir();
+    assert_ne!(
+        key_path,
+        default_dir.join("vault-key.txt"),
+        "an explicit --vault-key override must not silently collapse to default_vault_dir()"
+    );
+}
+
+#[test]
+fn resolve_vault_paths_falls_back_to_default_vault_dir_when_no_override() {
+    // Behavior must be unchanged from pre-#6547/#6548 when no CLI override is given.
+    let config = Config::load(Path::new("/nonexistent")).unwrap();
+    let (key_path, vault_path) = resolve_vault_paths(&config, None, None, None);
+    let default_dir = zeph_core::vault::default_vault_dir();
+    assert_eq!(key_path, default_dir.join("vault-key.txt"));
+    assert_eq!(vault_path, default_dir.join("secrets.age"));
+}
+
+#[test]
+fn resolve_vault_paths_mixed_single_flag_overrides_are_independent() {
+    // Each of --vault-key/--vault-path is resolved independently (per parse_vault_args), so
+    // passing only one must not force the other to fall back too, and vice versa.
+    let config = Config::load(Path::new("/nonexistent")).unwrap();
+    let default_dir = zeph_core::vault::default_vault_dir();
+
+    let (key_path, vault_path) =
+        resolve_vault_paths(&config, None, Some(Path::new("/cli/vault-key.txt")), None);
+    assert_eq!(key_path, PathBuf::from("/cli/vault-key.txt"));
+    assert_eq!(vault_path, default_dir.join("secrets.age"));
+
+    let (key_path, vault_path) =
+        resolve_vault_paths(&config, None, None, Some(Path::new("/cli/secrets.age")));
+    assert_eq!(key_path, default_dir.join("vault-key.txt"));
+    assert_eq!(vault_path, PathBuf::from("/cli/secrets.age"));
+}
+
+#[test]
+#[serial_test::serial]
+fn resolve_vault_paths_unknown_backend_gracefully_falls_back_to_default_vault_dir() {
+    // parse_vault_args fails on an unrecognized --vault value; resolve_vault_paths must never
+    // propagate that failure (every caller of this helper degrades gracefully rather than
+    // aborting startup on a vault misconfiguration).
+    let config = Config::load(Path::new("/nonexistent")).unwrap();
+    let (key_path, vault_path) =
+        resolve_vault_paths(&config, Some("not-a-real-backend"), None, None);
+    let default_dir = zeph_core::vault::default_vault_dir();
+    assert_eq!(key_path, default_dir.join("vault-key.txt"));
+    assert_eq!(vault_path, default_dir.join("secrets.age"));
+}
+
+#[test]
 fn vault_args_struct_env_backend() {
     let args = VaultArgs {
         backend: zeph_config::VaultBackend::Env,

@@ -748,9 +748,11 @@ async fn resume_session_sink_fallback(
     }
 }
 
-/// Resolve `ZEPH_HISTORY_KEY` from the default vault location and configure hash-chain
-/// verification (issue #6360) for the `zeph-subagent` transcript and `zeph-session` event-log
-/// JSONL adapters, one key ring per subsystem (domain-separated per
+/// Resolve `ZEPH_HISTORY_KEY` from the CLI-resolved vault location (`--vault-key`/
+/// `--vault-path` overrides, falling back to `default_vault_dir()` — see
+/// [`crate::bootstrap::resolve_vault_paths`]) and configure hash-chain verification (issue
+/// #6360) for the `zeph-subagent` transcript and `zeph-session` event-log JSONL adapters, one
+/// key ring per subsystem (domain-separated per
 /// `zeph_core::history_integrity::derive_history_chain_key_b64`).
 ///
 /// Never fails the caller: an absent vault or an absent key both log at `debug`/`warn` and
@@ -759,12 +761,8 @@ async fn resume_session_sink_fallback(
 /// misconfiguration, and even that only disables chaining for the affected subsystem rather
 /// than aborting startup, since the primary command dispatch (which may not even touch
 /// transcripts/sessions, e.g. `zeph vault`) must not be blocked by it.
-fn configure_history_integrity_from_default_vault() {
-    let vault_dir = zeph_core::vault::default_vault_dir();
-    let Ok(provider) = zeph_core::vault::AgeVaultProvider::load(
-        &vault_dir.join("vault-key.txt"),
-        &vault_dir.join("secrets.age"),
-    ) else {
+fn configure_history_integrity(key_path: &std::path::Path, vault_path: &std::path::Path) {
+    let Ok(provider) = zeph_core::vault::AgeVaultProvider::load(key_path, vault_path) else {
         tracing::debug!(
             "history-chain integrity: vault not yet initialized; transcript/session log \
              chaining disabled for this run"
@@ -867,15 +865,29 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         );
     }
 
+    // CLI-resolved vault key/secrets-file paths (--vault-key/--vault-path overrides, falling
+    // back to default_vault_dir() — see `crate::bootstrap::resolve_vault_paths`), shared by every
+    // vault-key consumer below that resolves a key outside of the full `AppBuilder` vault
+    // construction: the history-chain integrity bootstrap immediately below (#6547) and the
+    // `zeph durable` key-material loaders further down this function (#6548). `config.vault.*` is
+    // a plain config value (not a secret), so resolving from `base_config` here — before
+    // `AppBuilder::new` resolves secrets — is equivalent to resolving from `app.config()` later.
+    let (vault_key_path, vault_secrets_path) = crate::bootstrap::resolve_vault_paths(
+        &base_config,
+        cli.vault.as_deref(),
+        cli.vault_key.as_deref(),
+        cli.vault_path.as_deref(),
+    );
+
     // History-chain integrity bootstrap (issue #6360): resolve ZEPH_HISTORY_KEY once and
     // configure hash-chain verification for both JSONL adapters before any entry point below
     // opens a transcript or session log — same ordering requirement as the migration step
     // above. Gracefully degrades to chaining-disabled (never a hard failure) when the vault or
     // the key itself is not yet provisioned (M2 bootstrap posture): a transient or first-run
-    // vault miss must never block ordinary CLI usage. Uses the default vault directory only
-    // (mirrors `crate::commands::durable::load_write_hwm_key`'s existing simplification) —
-    // `--vault-key`/`--vault-path` CLI overrides are not threaded through here yet.
-    configure_history_integrity_from_default_vault();
+    // vault miss must never block ordinary CLI usage. Resolves the vault location the same way
+    // `doctor.rs`/`vault.rs` do post-#6499 — `--vault-key`/`--vault-path` CLI overrides are
+    // honored, falling back to `default_vault_dir()` only when absent (#6547).
+    configure_history_integrity(&vault_key_path, &vault_secrets_path);
 
     // Flag aliases for the init / migrate-config subcommands (spec-076, #6277). Route to the exact
     // same handlers as the subcommand arms below — no forked logic. If both a flag and its
@@ -1027,6 +1039,9 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             return crate::commands::durable::handle_durable_command(
                 durable_cmd,
                 cli.config.as_deref(),
+                cli.vault.as_deref(),
+                cli.vault_key.as_deref(),
+                cli.vault_path.as_deref(),
             )
             .await;
         }
@@ -1050,6 +1065,9 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 cli.config.as_deref(),
                 foreground,
                 !no_catch_up,
+                cli.vault.as_deref(),
+                cli.vault_key.as_deref(),
+                cli.vault_path.as_deref(),
             )
             .await;
         }
@@ -3293,10 +3311,26 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         let agent = agent.with_orchestration(config.orchestration.clone(), agents_config, mgr);
         let agent = if config.durable.enabled && config.durable.orchestration {
             let durable_url = crate::commands::durable::resolve_durable_db_url(config);
-            let cipher = crate::commands::durable::load_write_cipher(config)?;
-            let hmac_keys = crate::commands::durable::load_write_hmac_key(config)?;
-            let hwm_keys = crate::commands::durable::load_write_hwm_key(config)?;
-            let integrity_seal = crate::commands::durable::load_integrity_seal(config);
+            let cipher = crate::commands::durable::load_write_cipher(
+                config,
+                &vault_key_path,
+                &vault_secrets_path,
+            )?;
+            let hmac_keys = crate::commands::durable::load_write_hmac_key(
+                config,
+                &vault_key_path,
+                &vault_secrets_path,
+            )?;
+            let hwm_keys = crate::commands::durable::load_write_hwm_key(
+                config,
+                &vault_key_path,
+                &vault_secrets_path,
+            )?;
+            let integrity_seal = crate::commands::durable::load_integrity_seal(
+                config,
+                &vault_key_path,
+                &vault_secrets_path,
+            );
             agent.with_durable_orchestration(
                 config.durable.clone(),
                 durable_url,
@@ -3317,10 +3351,26 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         // lazily by `ensure_session_durable_ctx` on the first turn.
         let agent = if config.durable.enabled && config.durable.agent_turns {
             let durable_url = crate::commands::durable::resolve_durable_db_url(config);
-            let cipher = crate::commands::durable::load_write_cipher(config)?;
-            let hmac_keys = crate::commands::durable::load_write_hmac_key(config)?;
-            let hwm_keys = crate::commands::durable::load_write_hwm_key(config)?;
-            let integrity_seal = crate::commands::durable::load_integrity_seal(config);
+            let cipher = crate::commands::durable::load_write_cipher(
+                config,
+                &vault_key_path,
+                &vault_secrets_path,
+            )?;
+            let hmac_keys = crate::commands::durable::load_write_hmac_key(
+                config,
+                &vault_key_path,
+                &vault_secrets_path,
+            )?;
+            let hwm_keys = crate::commands::durable::load_write_hwm_key(
+                config,
+                &vault_key_path,
+                &vault_secrets_path,
+            )?;
+            let integrity_seal = crate::commands::durable::load_integrity_seal(
+                config,
+                &vault_key_path,
+                &vault_secrets_path,
+            );
             agent.with_durable_agent_turns(
                 config.durable.clone(),
                 durable_url,
@@ -3345,8 +3395,8 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // spawn the reconcile-and-cap sweep whenever `anchor = "vault"` (the default) and the age
     // vault is actually reachable. Degrades gracefully (never a hard failure) when the vault
     // isn't available yet — sessions/transcripts stay chain-verified (#6453) but not
-    // downgrade-resistant, exactly mirroring `configure_history_integrity_from_default_vault`'s
-    // own degrade posture.
+    // downgrade-resistant, exactly mirroring `configure_history_integrity`'s own degrade
+    // posture.
     if config.integrity.anchor == zeph_config::AnchorMode::Vault {
         if let Some(vault_arc) = app.age_vault_arc() {
             let store: std::sync::Arc<dyn zeph_common::anchor::AnchorStore> =
@@ -4595,6 +4645,62 @@ mod deep_link_tests {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    // --- configure_history_integrity (#6547) ---
+    //
+    // `configure_history_integrity` mutates process-global state (via
+    // `zeph_subagent::transcript::configure_history_integrity`/
+    // `zeph_session::log::configure_history_integrity`), so this relies on cargo nextest's
+    // one-process-per-test model for isolation, the same precondition
+    // `crates/zeph-subagent/src/transcript.rs`'s own hash-chain tests document and depend on.
+    #[tokio::test]
+    async fn configure_history_integrity_resolves_key_from_explicit_path_not_default_vault_dir() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        zeph_core::vault::AgeVaultProvider::init_vault(vault_dir.path()).unwrap();
+        let key_path = vault_dir.path().join("vault-key.txt");
+        let vault_path = vault_dir.path().join("secrets.age");
+        let mut provider = zeph_core::vault::AgeVaultProvider::load(&key_path, &vault_path)
+            .expect("age vault must load right after init");
+        provider
+            .set_secret_mut(
+                zeph_core::history_integrity::HISTORY_KEY_SECRET.to_owned(),
+                zeph_core::history_integrity::generate_history_key_b64(),
+                false,
+            )
+            .unwrap();
+        provider.save().unwrap();
+
+        // A path distinct from `vault_dir` that is never touched: proves the function reads
+        // from the explicit paths, not `zeph_core::vault::default_vault_dir()`.
+        configure_history_integrity(&key_path, &vault_path);
+
+        let transcript_dir = tempfile::tempdir().unwrap();
+        let transcript_path = transcript_dir.path().join("abc.jsonl");
+        let writer = zeph_subagent::transcript::TranscriptWriter::new(&transcript_path).unwrap();
+        writer
+            .append(
+                0,
+                &zeph_llm::provider::Message {
+                    role: zeph_llm::provider::Role::User,
+                    content: "hello".to_owned(),
+                    parts: vec![],
+                    metadata: zeph_llm::provider::MessageMetadata::default(),
+                },
+            )
+            .await
+            .unwrap();
+        drop(writer);
+
+        let raw = std::fs::read_to_string(&transcript_path).unwrap();
+        zeph_subagent::transcript::configure_history_integrity(None);
+        zeph_session::log::configure_history_integrity(None);
+
+        assert!(
+            raw.contains("\"chain\":"),
+            "chaining must be active once configure_history_integrity resolves \
+             ZEPH_HISTORY_KEY from the explicit vault path (#6547): {raw}"
+        );
+    }
 
     // --- warn_if_tui_requested_but_unavailable ---
 

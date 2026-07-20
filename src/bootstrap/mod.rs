@@ -10,7 +10,9 @@ pub mod oauth;
 pub mod provider;
 pub mod skills;
 
-pub use config::{load_config_or_default, parse_vault_args, resolve_config_path};
+pub use config::{
+    load_config_or_default, parse_vault_args, resolve_config_path, resolve_vault_paths,
+};
 pub use health::{health_check, warmup_provider};
 pub use mcp::{create_mcp_manager_with_vault, create_mcp_registry, wire_trust_calibration};
 pub use oauth::VaultCredentialStore;

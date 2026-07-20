@@ -141,9 +141,12 @@ pub(crate) fn enforce_encryption_gate(
 ///
 /// Returns an error if the vault cannot be loaded, `ZEPH_DURABLE_KEY` is absent or malformed, or
 /// `previous_key_id` is set but `ZEPH_DURABLE_KEY_PREVIOUS` is missing or malformed.
-fn load_durable_cipher(config: &DurableConfig) -> anyhow::Result<XChaCha20Poly1305Cipher> {
-    let dir = zeph_core::vault::default_vault_dir();
-    let provider = AgeVaultProvider::load(&dir.join("vault-key.txt"), &dir.join("secrets.age"))
+fn load_durable_cipher(
+    config: &DurableConfig,
+    key_path: &Path,
+    vault_path: &Path,
+) -> anyhow::Result<XChaCha20Poly1305Cipher> {
+    let provider = AgeVaultProvider::load(key_path, vault_path)
         .map_err(|e| anyhow::anyhow!("failed to load vault: {e}"))?;
     let key = provider.get(CURRENT_KEY_VAULT_NAME).ok_or_else(|| {
         anyhow::anyhow!("{CURRENT_KEY_VAULT_NAME} not found in vault; cannot --reveal payloads")
@@ -196,12 +199,13 @@ pub(crate) struct ControlHmacKeys {
 fn load_control_hmac_key(
     config: &zeph_core::config::DurableConfig,
     url: &str,
+    key_path: &Path,
+    vault_path: &Path,
 ) -> anyhow::Result<ControlHmacKeys> {
     if !is_shared_db(config, url) {
         return Ok(ControlHmacKeys::default());
     }
-    let dir = zeph_core::vault::default_vault_dir();
-    let provider = AgeVaultProvider::load(&dir.join("vault-key.txt"), &dir.join("secrets.age"))
+    let provider = AgeVaultProvider::load(key_path, vault_path)
         .map_err(|e| anyhow::anyhow!("failed to load vault: {e}"))?;
     let key = provider.get(CURRENT_KEY_VAULT_NAME).ok_or_else(|| {
         anyhow::anyhow!(
@@ -249,9 +253,13 @@ fn load_control_hmac_key(
 /// Returns an error when this deployment is a shared database and `ZEPH_DURABLE_KEY` cannot be
 /// resolved from the vault, or a rotation window is declared but `ZEPH_DURABLE_KEY_PREVIOUS`
 /// cannot be resolved.
-pub(crate) fn load_write_hmac_key(config: &Config) -> anyhow::Result<ControlHmacKeys> {
+pub(crate) fn load_write_hmac_key(
+    config: &Config,
+    key_path: &Path,
+    vault_path: &Path,
+) -> anyhow::Result<ControlHmacKeys> {
     let url = resolve_durable_db_url(config);
-    load_control_hmac_key(&config.durable, &url)
+    load_control_hmac_key(&config.durable, &url, key_path, vault_path)
 }
 
 /// One high-water-mark key, addressed by its non-secret rotation epoch (FR-008) — the loader-side
@@ -300,10 +308,12 @@ pub(crate) struct HwmKeys {
 ///
 /// Returns an error when `ZEPH_DURABLE_KEY` resolves but fails to decode, or a rotation window is
 /// declared but `ZEPH_DURABLE_KEY_PREVIOUS` cannot be resolved or decoded.
-pub(crate) fn load_write_hwm_key(config: &Config) -> anyhow::Result<HwmKeys> {
-    let dir = zeph_core::vault::default_vault_dir();
-    let Ok(provider) = AgeVaultProvider::load(&dir.join("vault-key.txt"), &dir.join("secrets.age"))
-    else {
+pub(crate) fn load_write_hwm_key(
+    config: &Config,
+    key_path: &Path,
+    vault_path: &Path,
+) -> anyhow::Result<HwmKeys> {
+    let Ok(provider) = AgeVaultProvider::load(key_path, vault_path) else {
         return Ok(HwmKeys::default());
     };
     let Some(key) = provider.get(CURRENT_KEY_VAULT_NAME) else {
@@ -350,10 +360,10 @@ pub(crate) fn load_write_hwm_key(config: &Config) -> anyhow::Result<HwmKeys> {
 /// (migration posture unchanged), never a hard-fail of bootstrap.
 pub(crate) fn load_integrity_seal(
     _config: &Config,
+    key_path: &Path,
+    vault_path: &Path,
 ) -> (bool, std::collections::HashSet<zeph_durable::ExecutionId>) {
-    let dir = zeph_core::vault::default_vault_dir();
-    let Ok(provider) = AgeVaultProvider::load(&dir.join("vault-key.txt"), &dir.join("secrets.age"))
-    else {
+    let Ok(provider) = AgeVaultProvider::load(key_path, vault_path) else {
         return (false, std::collections::HashSet::new());
     };
     zeph_core::anchor_store::load_durable_integrity_seal(&provider)
@@ -373,6 +383,8 @@ pub(crate) fn load_integrity_seal(
 /// path must never silently persist plaintext while the config declares payloads encrypted.
 pub(crate) fn load_write_cipher(
     config: &Config,
+    key_path: &Path,
+    vault_path: &Path,
 ) -> anyhow::Result<Option<Arc<dyn zeph_durable::PayloadCipher>>> {
     let url = resolve_durable_db_url(config);
     enforce_encryption_gate(&config.durable, &url)?;
@@ -380,7 +392,7 @@ pub(crate) fn load_write_cipher(
     if !config.durable.encrypt_payload {
         return Ok(None);
     }
-    let cipher = load_durable_cipher(&config.durable)?;
+    let cipher = load_durable_cipher(&config.durable, key_path, vault_path)?;
     Ok(Some(Arc::new(cipher)))
 }
 
@@ -410,11 +422,16 @@ pub(crate) fn load_write_cipher(
 ///
 /// Returns `Ok(None)` when no journal file exists yet (a friendly signal that durable execution has
 /// not run on this deployment), so the caller can print guidance instead of creating an empty file.
-async fn open_backend(config: &Config, reveal: bool) -> anyhow::Result<Option<LocalBackend>> {
+async fn open_backend(
+    config: &Config,
+    reveal: bool,
+    key_path: &Path,
+    vault_path: &Path,
+) -> anyhow::Result<Option<LocalBackend>> {
     let url = resolve_durable_db_url(config);
     enforce_encryption_gate(&config.durable, &url)?;
-    let hmac_keys = load_control_hmac_key(&config.durable, &url)?;
-    let hwm_keys = load_write_hwm_key(config)?;
+    let hmac_keys = load_control_hmac_key(&config.durable, &url, key_path, vault_path)?;
+    let hwm_keys = load_write_hwm_key(config, key_path, vault_path)?;
     if url != ":memory:" && !Path::new(&url).exists() {
         println!(
             "No durable journal at {url}.\n\
@@ -450,7 +467,7 @@ async fn open_backend(config: &Config, reveal: bool) -> anyhow::Result<Option<Lo
         backend
     };
     if reveal && config.durable.encrypt_payload {
-        let cipher = load_durable_cipher(&config.durable)?;
+        let cipher = load_durable_cipher(&config.durable, key_path, vault_path)?;
         Ok(Some(backend.with_cipher(Arc::new(cipher))))
     } else {
         Ok(Some(backend))
@@ -470,21 +487,43 @@ async fn open_backend(config: &Config, reveal: bool) -> anyhow::Result<Option<Lo
 pub(crate) async fn handle_durable_command(
     cmd: DurableCommand,
     config_path: Option<&Path>,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&Path>,
+    vault_path_override: Option<&Path>,
 ) -> anyhow::Result<()> {
     // Boxed so every caller's own future only holds a thin `Pin<Box<dyn Future>>` rather than
     // this function's full match-arm state machine inline — with `ControlHmacKeys` threaded
     // through several branches (#6451), the inlined future crossed clippy's `large_futures`
     // budget at essentially every call site.
-    Box::pin(handle_durable_command_inner(cmd, config_path)).await
+    Box::pin(handle_durable_command_inner(
+        cmd,
+        config_path,
+        vault_override,
+        vault_key_override,
+        vault_path_override,
+    ))
+    .await
 }
 
 #[allow(clippy::too_many_lines)]
 async fn handle_durable_command_inner(
     cmd: DurableCommand,
     config_path: Option<&Path>,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&Path>,
+    vault_path_override: Option<&Path>,
 ) -> anyhow::Result<()> {
     let config_file = crate::bootstrap::resolve_config_path(config_path);
     let config = load_config_or_default(&config_file);
+    // CLI-resolved vault key/secrets-file paths (--vault-key/--vault-path overrides, falling
+    // back to default_vault_dir()) — see `crate::bootstrap::resolve_vault_paths` (#6548). Shared
+    // by every key-material loader this command dispatches to below.
+    let (vault_key_path, vault_secrets_path) = crate::bootstrap::resolve_vault_paths(
+        &config,
+        vault_override,
+        vault_key_override,
+        vault_path_override,
+    );
 
     match cmd {
         DurableCommand::List {
@@ -493,7 +532,9 @@ async fn handle_durable_command_inner(
             limit,
             json,
         } => {
-            let Some(backend) = open_backend(&config, false).await? else {
+            let Some(backend) =
+                open_backend(&config, false, &vault_key_path, &vault_secrets_path).await?
+            else {
                 return Ok(());
             };
             let rows = backend
@@ -532,7 +573,9 @@ async fn handle_durable_command_inner(
         DurableCommand::Show { id, reveal, json } => {
             let exec = ExecutionId::parse_str(&id)
                 .map_err(|e| anyhow::anyhow!("invalid execution id '{id}': {e}"))?;
-            let Some(backend) = open_backend(&config, reveal).await? else {
+            let Some(backend) =
+                open_backend(&config, reveal, &vault_key_path, &vault_secrets_path).await?
+            else {
                 return Ok(());
             };
             show_entries(&backend, exec, reveal, None, json).await?;
@@ -546,14 +589,18 @@ async fn handle_durable_command_inner(
         } => {
             let exec = ExecutionId::parse_str(&id)
                 .map_err(|e| anyhow::anyhow!("invalid execution id '{id}': {e}"))?;
-            let Some(backend) = open_backend(&config, reveal).await? else {
+            let Some(backend) =
+                open_backend(&config, reveal, &vault_key_path, &vault_secrets_path).await?
+            else {
                 return Ok(());
             };
             show_entries(&backend, exec, reveal, Some(step), json).await?;
         }
 
         DurableCommand::Prune { dry_run } => {
-            let Some(backend) = open_backend(&config, false).await? else {
+            let Some(backend) =
+                open_backend(&config, false, &vault_key_path, &vault_secrets_path).await?
+            else {
                 return Ok(());
             };
             let policy = &config.durable.retention;
@@ -585,7 +632,9 @@ async fn handle_durable_command_inner(
         DurableCommand::Resume { id } => {
             let exec = ExecutionId::parse_str(&id)
                 .map_err(|e| anyhow::anyhow!("invalid execution id '{id}': {e}"))?;
-            let Some(backend) = open_backend(&config, false).await? else {
+            let Some(backend) =
+                open_backend(&config, false, &vault_key_path, &vault_secrets_path).await?
+            else {
                 return Ok(());
             };
             // FR-011: a canceled execution is refused distinctly, before the generic
@@ -621,7 +670,9 @@ async fn handle_durable_command_inner(
         DurableCommand::Cancel { id } => {
             let exec = ExecutionId::parse_str(&id)
                 .map_err(|e| anyhow::anyhow!("invalid execution id '{id}': {e}"))?;
-            let Some(backend) = open_backend(&config, false).await? else {
+            let Some(backend) =
+                open_backend(&config, false, &vault_key_path, &vault_secrets_path).await?
+            else {
                 return Ok(());
             };
             let outcome = backend
@@ -672,6 +723,8 @@ async fn handle_durable_command_inner(
                     drop_previous,
                     force,
                 },
+                &vault_key_path,
+                &vault_secrets_path,
             )
             .await?;
         }
@@ -680,7 +733,14 @@ async fn handle_durable_command_inner(
             grandfather,
             dry_run,
         } => {
-            handle_seal_integrity(&config, &grandfather, dry_run).await?;
+            handle_seal_integrity(
+                &config,
+                &grandfather,
+                dry_run,
+                &vault_key_path,
+                &vault_secrets_path,
+            )
+            .await?;
         }
     }
 
@@ -700,8 +760,10 @@ async fn handle_seal_integrity(
     config: &Config,
     grandfather: &[String],
     dry_run: bool,
+    key_path: &Path,
+    vault_path: &Path,
 ) -> anyhow::Result<()> {
-    let Some(backend) = open_backend(config, false).await? else {
+    let Some(backend) = open_backend(config, false, key_path, vault_path).await? else {
         anyhow::bail!("no durable journal found; nothing to seal");
     };
 
@@ -747,16 +809,14 @@ async fn handle_seal_integrity(
         return Ok(());
     }
 
-    let dir = zeph_core::vault::default_vault_dir();
-    let key_path = dir.join("vault-key.txt");
-    let vault_path = dir.join("secrets.age");
     if !key_path.exists() || !vault_path.exists() {
         anyhow::bail!(
-            "no age vault found at {}; run `zeph --init` first",
-            dir.display()
+            "no age vault found (key: {}, vault: {}); run `zeph --init` first",
+            key_path.display(),
+            vault_path.display()
         );
     }
-    let mut provider = AgeVaultProvider::load(&key_path, &vault_path)
+    let mut provider = AgeVaultProvider::load(key_path, vault_path)
         .map_err(|e| anyhow::anyhow!("failed to load vault: {e}"))?;
 
     if !grandfather_ids.is_empty() {
@@ -837,18 +897,18 @@ async fn handle_rotate_key(
     config_file: &Path,
     config: &Config,
     opts: RotateKeyOptions,
+    key_path: &Path,
+    vault_path: &Path,
 ) -> anyhow::Result<()> {
-    let dir = zeph_core::vault::default_vault_dir();
-    let key_path = dir.join("vault-key.txt");
-    let vault_path = dir.join("secrets.age");
     if !key_path.exists() || !vault_path.exists() {
         anyhow::bail!(
-            "no age vault found at {}; run `zeph --init` first to generate \
+            "no age vault found (key: {}, vault: {}); run `zeph --init` first to generate \
              {CURRENT_KEY_VAULT_NAME}",
-            dir.display()
+            key_path.display(),
+            vault_path.display()
         );
     }
-    let mut provider = AgeVaultProvider::load(&key_path, &vault_path)
+    let mut provider = AgeVaultProvider::load(key_path, vault_path)
         .map_err(|e| anyhow::anyhow!("failed to load vault: {e}"))?;
 
     // Partial-state (XOR) detector — MANDATORY, before any write. See the doc comment above.
@@ -882,9 +942,17 @@ async fn handle_rotate_key(
     }
 
     if opts.drop_previous {
-        handle_drop_previous(config_file, config, &mut provider, opts.dry_run, opts.force).await
+        handle_drop_previous(
+            config_file,
+            config,
+            &mut provider,
+            opts.dry_run,
+            opts.force,
+            vault_path,
+        )
+        .await
     } else {
-        handle_open_window(config_file, config, &mut provider, opts.dry_run)
+        handle_open_window(config_file, config, &mut provider, opts.dry_run, vault_path)
     }
 }
 
@@ -905,6 +973,7 @@ fn handle_open_window(
     config: &Config,
     provider: &mut AgeVaultProvider,
     dry_run: bool,
+    vault_path: &Path,
 ) -> anyhow::Result<()> {
     // R2 — refuse to open a second window; the cipher's single previous-key slot cannot hold two.
     if let Some(prev_id) = config.durable.previous_key_id {
@@ -922,7 +991,6 @@ fn handle_open_window(
     let old_key_id = config.durable.key_id;
     let new_key_id = old_key_id.wrapping_add(1);
 
-    let vault_path = zeph_core::vault::default_vault_dir().join("secrets.age");
     if dry_run {
         println!(
             "DRY RUN -- no changes written.\n\
@@ -1040,6 +1108,7 @@ async fn handle_drop_previous(
     provider: &mut AgeVaultProvider,
     dry_run: bool,
     force: bool,
+    vault_path: &Path,
 ) -> anyhow::Result<()> {
     let Some(previous_key_id) = config.durable.previous_key_id else {
         println!("No rotation window is open; nothing to drop.");
@@ -1125,7 +1194,6 @@ async fn handle_drop_previous(
         }
     }
 
-    let vault_path = zeph_core::vault::default_vault_dir().join("secrets.age");
     if dry_run {
         println!(
             "DRY RUN -- no changes written.\n\
@@ -1495,9 +1563,15 @@ mod tests {
         let url = resolve_durable_db_url(&config);
         std::fs::write(&url, []).unwrap();
 
-        let backend = open_backend(&config, true)
-            .await
-            .expect("--reveal must succeed without ZEPH_DURABLE_KEY when encrypt_payload=false");
+        let vault_dir = zeph_core::vault::default_vault_dir();
+        let backend = open_backend(
+            &config,
+            true,
+            &vault_dir.join("vault-key.txt"),
+            &vault_dir.join("secrets.age"),
+        )
+        .await
+        .expect("--reveal must succeed without ZEPH_DURABLE_KEY when encrypt_payload=false");
         assert!(backend.is_some());
     }
 
@@ -1518,14 +1592,27 @@ mod tests {
         let url = resolve_durable_db_url(&config);
         std::fs::write(&url, []).unwrap();
 
-        let result = open_backend(&config, false).await;
+        let vault_dir = zeph_core::vault::default_vault_dir();
+        let result = open_backend(
+            &config,
+            false,
+            &vault_dir.join("vault-key.txt"),
+            &vault_dir.join("secrets.age"),
+        )
+        .await;
         assert!(
             result.is_err(),
             "open_backend must fail closed for encrypt_payload=false on a declared shared_db (INV-8)"
         );
 
         // Also rejected on the --reveal path, before any decryption is even attempted.
-        let reveal_result = open_backend(&config, true).await;
+        let reveal_result = open_backend(
+            &config,
+            true,
+            &vault_dir.join("vault-key.txt"),
+            &vault_dir.join("secrets.age"),
+        )
+        .await;
         assert!(
             reveal_result.is_err(),
             "open_backend --reveal must fail closed for the same forbidden combination"
@@ -1554,7 +1641,13 @@ mod tests {
             std::env::set_var("XDG_CONFIG_HOME", vault_dir.path());
         }
 
-        let result = open_backend(&config, true).await;
+        let result = open_backend(
+            &config,
+            true,
+            &vault_dir.path().join("vault-key.txt"),
+            &vault_dir.path().join("secrets.age"),
+        )
+        .await;
 
         unsafe {
             match &prev_xdg {
@@ -1614,9 +1707,13 @@ mod tests {
         provider.save().unwrap();
 
         // Exercise the exact glue the write paths (runner.rs, scheduler_daemon.rs) call.
-        let cipher = load_write_cipher(&config)
-            .expect("cipher load must succeed with a real vault key")
-            .expect("encrypt_payload=true must produce a cipher");
+        let cipher = load_write_cipher(
+            &config,
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        )
+        .expect("cipher load must succeed with a real vault key")
+        .expect("encrypt_payload=true must produce a cipher");
 
         let url = resolve_durable_db_url(&config);
         let backend = LocalBackend::open(&url, config.durable.max_payload_bytes)
@@ -1691,8 +1788,14 @@ mod tests {
         let mut config = Config::default();
         config.durable.encrypt_payload = false;
         config.durable.shared_db = true;
+        let vault_dir = zeph_core::vault::default_vault_dir();
         assert!(
-            load_write_cipher(&config).is_err(),
+            load_write_cipher(
+                &config,
+                &vault_dir.join("vault-key.txt"),
+                &vault_dir.join("secrets.age"),
+            )
+            .is_err(),
             "encrypt_payload=false on a declared shared_db must fail closed (INV-8)"
         );
     }
@@ -1704,7 +1807,16 @@ mod tests {
         let mut config = Config::default();
         config.durable.encrypt_payload = false;
         // shared_db left at its default (false) - the permitted dev-only override.
-        assert!(load_write_cipher(&config).unwrap().is_none());
+        let vault_dir = zeph_core::vault::default_vault_dir();
+        assert!(
+            load_write_cipher(
+                &config,
+                &vault_dir.join("vault-key.txt"),
+                &vault_dir.join("secrets.age"),
+            )
+            .unwrap()
+            .is_none()
+        );
     }
 
     /// Regression for #5996: `is_shared_db` recognizes a `postgres://`/`postgresql://` URL scheme
@@ -1729,8 +1841,14 @@ mod tests {
         // memory.sqlite_path drives resolve_durable_db_url; a `postgres://`-looking value
         // exercises the URL-scheme branch of `is_shared_db` without needing a real Postgres build.
         config.memory.sqlite_path = "postgres://user@host/db".to_owned();
+        let vault_dir = zeph_core::vault::default_vault_dir();
         assert!(
-            load_write_cipher(&config).is_err(),
+            load_write_cipher(
+                &config,
+                &vault_dir.join("vault-key.txt"),
+                &vault_dir.join("secrets.age"),
+            )
+            .is_err(),
             "a postgres:// resolved URL must be treated as shared even without shared_db=true"
         );
     }
@@ -1742,7 +1860,13 @@ mod tests {
     async fn load_write_hmac_key_returns_none_for_single_user_local() {
         let config = Config::default();
         assert!(!config.durable.shared_db);
-        let keys = load_write_hmac_key(&config).unwrap();
+        let vault_dir = zeph_core::vault::default_vault_dir();
+        let keys = load_write_hmac_key(
+            &config,
+            &vault_dir.join("vault-key.txt"),
+            &vault_dir.join("secrets.age"),
+        )
+        .unwrap();
         assert!(
             keys.current.is_none() && keys.previous.is_none(),
             "single-user local, non-shared database must not resolve either HMAC key"
@@ -1765,7 +1889,11 @@ mod tests {
             std::env::set_var("XDG_CONFIG_HOME", vault_dir.path());
         }
 
-        let result = load_write_hmac_key(&config);
+        let result = load_write_hmac_key(
+            &config,
+            &vault_dir.path().join("vault-key.txt"),
+            &vault_dir.path().join("secrets.age"),
+        );
 
         unsafe {
             match &prev_xdg {
@@ -1809,7 +1937,16 @@ mod tests {
 
         let exec = ExecutionId::new();
         {
-            let backend = open_backend(&config, false).await.unwrap().unwrap();
+            let vault_dir = zeph_core::vault::default_vault_dir();
+            let backend = open_backend(
+                &config,
+                false,
+                &vault_dir.join("vault-key.txt"),
+                &vault_dir.join("secrets.age"),
+            )
+            .await
+            .unwrap()
+            .unwrap();
             backend
                 .open_execution(exec, zeph_durable::ExecutionKind::AgentTurn)
                 .await
@@ -1821,6 +1958,9 @@ mod tests {
                 id: exec.as_uuid().to_string(),
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await;
         assert!(
@@ -1828,7 +1968,16 @@ mod tests {
             "canceling a running execution must succeed: {result:?}"
         );
 
-        let backend = open_backend(&config, false).await.unwrap().unwrap();
+        let vault_dir = zeph_core::vault::default_vault_dir();
+        let backend = open_backend(
+            &config,
+            false,
+            &vault_dir.join("vault-key.txt"),
+            &vault_dir.join("secrets.age"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let status = backend.execution_status(exec).await.unwrap();
         assert_eq!(status, Some(zeph_durable::ExecutionStatus::Canceled));
     }
@@ -1844,6 +1993,9 @@ mod tests {
                 id: ExecutionId::new().as_uuid().to_string(),
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await;
         assert!(
@@ -1863,7 +2015,16 @@ mod tests {
 
         let exec = ExecutionId::new();
         {
-            let backend = open_backend(&config, false).await.unwrap().unwrap();
+            let vault_dir = zeph_core::vault::default_vault_dir();
+            let backend = open_backend(
+                &config,
+                false,
+                &vault_dir.join("vault-key.txt"),
+                &vault_dir.join("secrets.age"),
+            )
+            .await
+            .unwrap()
+            .unwrap();
             backend
                 .open_execution(exec, zeph_durable::ExecutionKind::AgentTurn)
                 .await
@@ -1877,6 +2038,9 @@ mod tests {
                 id: exec.as_uuid().to_string(),
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await;
         assert!(
@@ -1918,7 +2082,11 @@ mod tests {
             .unwrap();
         provider.save().unwrap();
 
-        let result = load_write_hmac_key(&config);
+        let result = load_write_hmac_key(
+            &config,
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        );
 
         unsafe {
             match &prev_xdg {
@@ -1930,6 +2098,285 @@ mod tests {
         assert!(
             result.unwrap().current.is_some(),
             "a declared shared database with a real vault key must resolve an HMAC key"
+        );
+    }
+
+    // ── CLI vault-override resolution (issue #6548) ────────────────────────────────────────
+    //
+    // Each of the four key-material loaders must honor an explicit `--vault-key`/`--vault-path`
+    // override rather than silently reading `default_vault_dir()`. Every test below redirects
+    // `default_vault_dir()` (via `XDG_CONFIG_HOME`) at an *empty* temp dir — so if a loader
+    // regressed back to reading `default_vault_dir()` internally instead of the paths passed
+    // in, it would find no key and the assertion would fail — while seeding the real
+    // `ZEPH_DURABLE_KEY` at a *separate* explicit override location.
+
+    #[allow(unsafe_code)]
+    #[tokio::test]
+    #[serial]
+    async fn load_write_cipher_respects_explicit_override_path_not_default_vault_dir() {
+        let empty_default_dir = tempfile::tempdir().unwrap();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", empty_default_dir.path());
+        }
+
+        let override_dir = tempfile::tempdir().unwrap();
+        zeph_core::vault::AgeVaultProvider::init_vault(override_dir.path()).unwrap();
+        let mut provider = zeph_core::vault::AgeVaultProvider::load(
+            &override_dir.path().join("vault-key.txt"),
+            &override_dir.path().join("secrets.age"),
+        )
+        .unwrap();
+        provider
+            .set_secret_mut(
+                "ZEPH_DURABLE_KEY".to_owned(),
+                zeph_core::durable::generate_durable_key_b64(),
+                false,
+            )
+            .unwrap();
+        provider.save().unwrap();
+
+        let mut config = Config::default();
+        config.durable.encrypt_payload = true;
+
+        let result = load_write_cipher(
+            &config,
+            &override_dir.path().join("vault-key.txt"),
+            &override_dir.path().join("secrets.age"),
+        );
+
+        unsafe {
+            match &prev_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+
+        assert!(
+            result.is_ok() && result.unwrap().is_some(),
+            "load_write_cipher must resolve ZEPH_DURABLE_KEY from the explicit override path, \
+             not default_vault_dir() (#6548)"
+        );
+    }
+
+    #[allow(unsafe_code)]
+    #[tokio::test]
+    #[serial]
+    async fn load_write_hmac_key_respects_explicit_override_path_not_default_vault_dir() {
+        let empty_default_dir = tempfile::tempdir().unwrap();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", empty_default_dir.path());
+        }
+
+        let override_dir = tempfile::tempdir().unwrap();
+        zeph_core::vault::AgeVaultProvider::init_vault(override_dir.path()).unwrap();
+        let mut provider = zeph_core::vault::AgeVaultProvider::load(
+            &override_dir.path().join("vault-key.txt"),
+            &override_dir.path().join("secrets.age"),
+        )
+        .unwrap();
+        provider
+            .set_secret_mut(
+                "ZEPH_DURABLE_KEY".to_owned(),
+                zeph_core::durable::generate_durable_key_b64(),
+                false,
+            )
+            .unwrap();
+        provider.save().unwrap();
+
+        let mut config = Config::default();
+        config.durable.shared_db = true;
+
+        let result = load_write_hmac_key(
+            &config,
+            &override_dir.path().join("vault-key.txt"),
+            &override_dir.path().join("secrets.age"),
+        );
+
+        unsafe {
+            match &prev_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+
+        assert!(
+            result.is_ok_and(|k| k.current.is_some()),
+            "load_write_hmac_key must resolve ZEPH_DURABLE_KEY from the explicit override path, \
+             not default_vault_dir() (#6548)"
+        );
+    }
+
+    #[allow(unsafe_code)]
+    #[tokio::test]
+    #[serial]
+    async fn load_write_hwm_key_respects_explicit_override_path_not_default_vault_dir() {
+        let empty_default_dir = tempfile::tempdir().unwrap();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", empty_default_dir.path());
+        }
+
+        let override_dir = tempfile::tempdir().unwrap();
+        zeph_core::vault::AgeVaultProvider::init_vault(override_dir.path()).unwrap();
+        let mut provider = zeph_core::vault::AgeVaultProvider::load(
+            &override_dir.path().join("vault-key.txt"),
+            &override_dir.path().join("secrets.age"),
+        )
+        .unwrap();
+        provider
+            .set_secret_mut(
+                "ZEPH_DURABLE_KEY".to_owned(),
+                zeph_core::durable::generate_durable_key_b64(),
+                false,
+            )
+            .unwrap();
+        provider.save().unwrap();
+
+        let config = Config::default();
+
+        let result = load_write_hwm_key(
+            &config,
+            &override_dir.path().join("vault-key.txt"),
+            &override_dir.path().join("secrets.age"),
+        );
+
+        unsafe {
+            match &prev_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+
+        assert!(
+            result.is_ok_and(|k| k.current.is_some()),
+            "load_write_hwm_key must resolve ZEPH_DURABLE_KEY from the explicit override path, \
+             not default_vault_dir() (#6548)"
+        );
+    }
+
+    #[allow(unsafe_code)]
+    #[tokio::test]
+    #[serial]
+    async fn load_integrity_seal_respects_explicit_override_path_not_default_vault_dir() {
+        let empty_default_dir = tempfile::tempdir().unwrap();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", empty_default_dir.path());
+        }
+
+        let override_dir = tempfile::tempdir().unwrap();
+        zeph_core::vault::AgeVaultProvider::init_vault(override_dir.path()).unwrap();
+        let mut provider = zeph_core::vault::AgeVaultProvider::load(
+            &override_dir.path().join("vault-key.txt"),
+            &override_dir.path().join("secrets.age"),
+        )
+        .unwrap();
+        provider
+            .set_secret_mut(
+                zeph_core::anchor_store::DURABLE_INTEGRITY_SEALED_KEY.to_owned(),
+                "1".to_owned(),
+                true,
+            )
+            .unwrap();
+        provider.save().unwrap();
+
+        let config = Config::default();
+
+        let (sealed, _grandfather) = load_integrity_seal(
+            &config,
+            &override_dir.path().join("vault-key.txt"),
+            &override_dir.path().join("secrets.age"),
+        );
+
+        unsafe {
+            match &prev_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+
+        assert!(
+            sealed,
+            "load_integrity_seal must resolve the seal marker from the explicit override path, \
+             not default_vault_dir() (#6548)"
+        );
+    }
+
+    /// #6547/#6548 (impl-critic follow-up): `zeph durable rotate-key` — a full vault
+    /// read-then-write, not just a loader — must also honor an explicit `--vault-key`/
+    /// `--vault-path` override rather than reading `default_vault_dir()`, mirroring
+    /// `seal-integrity`'s sibling coverage above. `default_vault_dir()` is redirected at an
+    /// *empty* temp dir (via `XDG_CONFIG_HOME`), so if `handle_rotate_key` regressed back to
+    /// reading it internally instead of the CLI-resolved override, it would fail with "no age
+    /// vault found" instead of succeeding.
+    #[allow(unsafe_code)]
+    #[tokio::test]
+    #[serial]
+    async fn rotate_key_respects_explicit_override_path_not_default_vault_dir() {
+        let empty_default_dir = tempfile::tempdir().unwrap();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", empty_default_dir.path());
+        }
+
+        let override_dir = tempfile::tempdir().unwrap();
+        zeph_core::vault::AgeVaultProvider::init_vault(override_dir.path()).unwrap();
+        let mut provider = zeph_core::vault::AgeVaultProvider::load(
+            &override_dir.path().join("vault-key.txt"),
+            &override_dir.path().join("secrets.age"),
+        )
+        .unwrap();
+        provider
+            .set_secret_mut(
+                CURRENT_KEY_VAULT_NAME.to_owned(),
+                zeph_core::durable::generate_durable_key_b64(),
+                false,
+            )
+            .unwrap();
+        provider.save().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = write_config_toml(dir.path());
+
+        let result = handle_durable_command(
+            DurableCommand::RotateKey {
+                dry_run: false,
+                drop_previous: false,
+                force: false,
+            },
+            Some(&config_path),
+            None,
+            Some(&override_dir.path().join("vault-key.txt")),
+            Some(&override_dir.path().join("secrets.age")),
+        )
+        .await;
+
+        unsafe {
+            match &prev_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+
+        assert!(
+            result.is_ok(),
+            "rotate-key must resolve the vault from the explicit --vault-key/--vault-path \
+             override, not default_vault_dir() (which is empty in this test): {result:?}"
+        );
+        assert_eq!(load_config_or_default(&config_path).durable.key_id, 1);
+
+        // The rotated ZEPH_DURABLE_KEY_PREVIOUS must land in the OVERRIDE vault, not the
+        // (empty) default_vault_dir().
+        let override_provider = zeph_core::vault::AgeVaultProvider::load(
+            &override_dir.path().join("vault-key.txt"),
+            &override_dir.path().join("secrets.age"),
+        )
+        .unwrap();
+        assert!(
+            override_provider.get(PREVIOUS_KEY_VAULT_NAME).is_some(),
+            "rotation must write ZEPH_DURABLE_KEY_PREVIOUS into the override vault"
         );
     }
 
@@ -2009,6 +2456,9 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await;
         assert!(result.is_ok(), "rotate-key must succeed: {result:?}");
@@ -2046,6 +2496,9 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -2059,6 +2512,9 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await;
         assert!(
@@ -2090,6 +2546,9 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await;
         assert!(result.is_ok());
@@ -2123,6 +2582,9 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await;
         assert!(
@@ -2159,6 +2621,9 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -2202,6 +2667,9 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await;
         assert!(
@@ -2221,6 +2689,9 @@ mod tests {
                 force: true,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await;
         assert!(forced.is_ok(), "--force must skip the scan: {forced:?}");
@@ -2253,6 +2724,9 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await;
         assert!(
@@ -2287,6 +2761,9 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await;
         assert!(
@@ -2319,7 +2796,12 @@ mod tests {
         config.durable.previous_key_id = Some(0);
         // key_id stays default 0; ZEPH_DURABLE_KEY_PREVIOUS was never written to the vault.
 
-        let result = load_write_cipher(&config);
+        let vault_root = zeph_core::vault::default_vault_dir();
+        let result = load_write_cipher(
+            &config,
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        );
         assert!(
             result.is_err(),
             "previous_key_id set but ZEPH_DURABLE_KEY_PREVIOUS missing must hard-error, not \
@@ -2355,7 +2837,11 @@ mod tests {
         config.durable.key_id = 1;
         config.durable.previous_key_id = Some(0);
 
-        let result = load_write_cipher(&config);
+        let result = load_write_cipher(
+            &config,
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        );
         assert!(
             result.is_ok(),
             "a consistent (config ∧ vault) previous-key pair must build a cipher: {}",
@@ -2374,7 +2860,12 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.durable.previous_key_id, None);
 
-        let result = load_write_cipher(&config);
+        let vault_root = zeph_core::vault::default_vault_dir();
+        let result = load_write_cipher(
+            &config,
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        );
         assert!(
             result.is_ok(),
             "no declared rotation window must build a cipher with no previous slot: {}",
@@ -2405,7 +2896,14 @@ mod tests {
         std::fs::write(&config_path, toml).unwrap();
 
         // Seal a real payload under key-id 0 with the actual write-path cipher.
-        let cipher = load_write_cipher(&config).unwrap().unwrap();
+        let vault_root = zeph_core::vault::default_vault_dir();
+        let cipher = load_write_cipher(
+            &config,
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        )
+        .unwrap()
+        .unwrap();
         let url = resolve_durable_db_url(&config);
         let exec = ExecutionId::new();
         {
@@ -2445,6 +2943,9 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -2455,13 +2956,24 @@ mod tests {
                 force: true,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
 
         let final_config = load_config_or_default(&config_path);
         assert_eq!(final_config.durable.previous_key_id, None);
-        let backend = open_backend(&final_config, true).await.unwrap().unwrap();
+        let backend = open_backend(
+            &final_config,
+            true,
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let result = show_entries(&backend, exec, true, None, false).await;
 
         let err = result.unwrap_err().to_string();
@@ -2494,6 +3006,9 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -2544,6 +3059,9 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await;
         assert!(
@@ -2593,7 +3111,14 @@ mod tests {
         let config_path = dir.path().join("config.toml");
         std::fs::write(&config_path, toml).unwrap();
 
-        let old_cipher = load_write_cipher(&config).unwrap().unwrap();
+        let vault_root = zeph_core::vault::default_vault_dir();
+        let old_cipher = load_write_cipher(
+            &config,
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        )
+        .unwrap()
+        .unwrap();
         let url = resolve_durable_db_url(&config);
         let exec = ExecutionId::new();
         {
@@ -2632,6 +3157,9 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -2640,7 +3168,13 @@ mod tests {
         assert_eq!(rotated_config.durable.key_id, 1);
         assert_eq!(rotated_config.durable.previous_key_id, Some(0));
 
-        let new_cipher = load_write_cipher(&rotated_config).unwrap().unwrap();
+        let new_cipher = load_write_cipher(
+            &rotated_config,
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        )
+        .unwrap()
+        .unwrap();
         let backend = LocalBackend::open(&url, rotated_config.durable.max_payload_bytes)
             .await
             .unwrap()
@@ -2722,16 +3256,25 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
 
         let rotated = load_config_or_default(&config_path);
         let url = resolve_durable_db_url(&rotated);
-        let previous_hmac = load_control_hmac_key(&rotated.durable, &url)
-            .unwrap()
-            .previous
-            .expect("rotation window must be open after rotate-key");
+        let vault_root = zeph_core::vault::default_vault_dir();
+        let previous_hmac = load_control_hmac_key(
+            &rotated.durable,
+            &url,
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        )
+        .unwrap()
+        .previous
+        .expect("rotation window must be open after rotate-key");
 
         let exec = ExecutionId::new();
         {
@@ -2769,6 +3312,9 @@ mod tests {
                 json: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await;
         assert!(
@@ -2807,16 +3353,25 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
 
         let rotated = load_config_or_default(&config_path);
         let url = resolve_durable_db_url(&rotated);
-        let previous_hmac = load_control_hmac_key(&rotated.durable, &url)
-            .unwrap()
-            .previous
-            .expect("rotation window must be open after rotate-key");
+        let vault_root = zeph_core::vault::default_vault_dir();
+        let previous_hmac = load_control_hmac_key(
+            &rotated.durable,
+            &url,
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        )
+        .unwrap()
+        .previous
+        .expect("rotation window must be open after rotate-key");
 
         let exec = ExecutionId::new();
         {
@@ -2855,6 +3410,9 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await;
         assert!(
@@ -2875,6 +3433,9 @@ mod tests {
                 force: true,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await;
         assert!(
@@ -2908,6 +3469,9 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -2949,6 +3513,9 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await;
         assert!(
@@ -2969,6 +3536,9 @@ mod tests {
                 force: true,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await;
         assert!(forced.is_ok(), "--force must skip the HWM scan: {forced:?}");
@@ -2995,7 +3565,13 @@ mod tests {
         let exec = ExecutionId::new();
         {
             let config = load_config_or_default(&config_path);
-            let hwm_keys = load_write_hwm_key(&config).unwrap();
+            let vault_root = zeph_core::vault::default_vault_dir();
+            let hwm_keys = load_write_hwm_key(
+                &config,
+                &vault_root.join("vault-key.txt"),
+                &vault_root.join("secrets.age"),
+            )
+            .unwrap();
             let slot = hwm_keys.current.expect("ZEPH_DURABLE_KEY is seeded");
             assert_eq!(
                 slot.epoch, 0,
@@ -3040,6 +3616,9 @@ mod tests {
                 force: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -3047,7 +3626,13 @@ mod tests {
         let rotated = load_config_or_default(&config_path);
         assert_eq!(rotated.durable.key_id, 1);
         assert_eq!(rotated.durable.previous_key_id, Some(0));
-        let hwm_keys = load_write_hwm_key(&rotated).unwrap();
+        let vault_root = zeph_core::vault::default_vault_dir();
+        let hwm_keys = load_write_hwm_key(
+            &rotated,
+            &vault_root.join("vault-key.txt"),
+            &vault_root.join("secrets.age"),
+        )
+        .unwrap();
         let current = hwm_keys.current.expect("current HWM slot must resolve");
         assert_eq!(current.epoch, 1, "epoch must follow key_id after rotation");
         let previous = hwm_keys

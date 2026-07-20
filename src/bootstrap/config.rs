@@ -150,6 +150,37 @@ pub fn parse_vault_args(
     })
 }
 
+/// Resolve the CLI-overridable vault key/vault-file paths as concrete [`PathBuf`]s, falling back
+/// to `default_vault_dir()` when no `--vault-key`/`--vault-path` override is given (or
+/// `parse_vault_args` fails, e.g. an unrecognized `--vault` backend, or the resolved backend is
+/// not `age`).
+///
+/// Never fails the caller — mirrors the graceful-degrade posture every vault-key consumer in this
+/// codebase already commits to (an absent or misconfigured vault disables the dependent feature
+/// for this run rather than aborting startup).
+///
+/// Shared by every vault-key consumer that resolves paths outside of full `AppBuilder`
+/// construction — the history-chain integrity bootstrap (`runner.rs`) and the `zeph durable`
+/// key-material loaders (`commands/durable.rs`) — so `--vault-key`/`--vault-path` overrides are
+/// honored consistently everywhere a key is loaded, matching the resolution `doctor.rs`/`vault.rs`
+/// already use post-#6499 (#6547, #6548).
+pub fn resolve_vault_paths(
+    config: &Config,
+    cli_backend: Option<&str>,
+    cli_key_path: Option<&Path>,
+    cli_vault_path: Option<&Path>,
+) -> (PathBuf, PathBuf) {
+    let default_dir = zeph_core::vault::default_vault_dir();
+    let (resolved_key, resolved_vault) =
+        parse_vault_args(config, cli_backend, cli_key_path, cli_vault_path)
+            .map(|va| (va.key_path, va.vault_path))
+            .unwrap_or_default();
+    (
+        resolved_key.map_or_else(|| default_dir.join("vault-key.txt"), PathBuf::from),
+        resolved_vault.map_or_else(|| default_dir.join("secrets.age"), PathBuf::from),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -245,6 +245,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   identically from all four entry points, so a future dropped call site is a one-line diff
   against a shared, tested helper rather than a silently-incomplete duplicated wiring block.
 
+- CLI-level `--vault-key`/`--vault-path` overrides were silently ignored by several vault-key
+  consumers that resolved secrets straight from `zeph_core::vault::default_vault_dir()` instead
+  of the same CLI-resolved location `doctor.rs`/`vault.rs` already use post-#6499 (#6547, #6548).
+  The history-chain integrity bootstrap (`configure_history_integrity`, formerly
+  `configure_history_integrity_from_default_vault`, in `src/runner.rs`) resolved
+  `ZEPH_HISTORY_KEY` from the default vault unconditionally, so `zeph doctor`'s
+  `integrity.anchor` check could report OK against an override vault while the real runtime
+  writer never looked at it — hash-chain tamper-evidence was silently inactive whenever a
+  non-default vault location was used (#6547). The four `zeph durable` key-material loaders
+  (`load_write_hwm_key`, `load_write_hmac_key`, `load_integrity_seal`, `load_write_cipher` in
+  `src/commands/durable.rs`) had the identical hardcoded pattern with no override parameter in
+  any of their signatures (#6548); fixing them required threading the resolved paths through
+  their shared callees (`load_durable_cipher`, `load_control_hmac_key`, `open_backend`) and
+  through the `zeph durable` CLI dispatch (`handle_durable_command`, previously the only
+  subcommand handler that didn't already forward `--vault`/`--vault-key`/`--vault-path`,
+  unlike `zeph bench`). `zeph durable rotate-key` (`handle_rotate_key`/`handle_open_window`/
+  `handle_drop_previous`) had the identical hardcoded-`default_vault_dir()` pattern for its
+  own vault read+write — not just a loader call, so it needed the resolved paths threaded
+  through its own signature — closing a within-subcommand inconsistency where `zeph durable
+  seal-integrity --vault-key X` would already honor the override while `zeph durable
+  rotate-key --vault-key X` silently targeted the default vault instead. The same gap existed
+  in the scheduler daemon
+  (`src/commands/scheduler_daemon.rs`): `zeph serve --foreground` never threaded the override
+  into `build_durable_adapter`, and the non-foreground path re-exec'd its detached child with
+  only `--config`, dropping `--vault-key`/`--vault-path` entirely for the long-running daemon
+  process. The detach re-exec's argument-construction logic is now split into a standalone
+  `build_detach_args` helper so the `--vault`/`--vault-key`/`--vault-path` forwarding is
+  independently unit-testable without spawning a process. Added
+  `crate::bootstrap::resolve_vault_paths` (`src/bootstrap/config.rs`) as the shared
+  CLI-override-aware path resolver (wrapping `parse_vault_args`, falling back to
+  `default_vault_dir()` only when no override is given or resolution fails) so every consumer
+  resolves the vault location identically. Behavior is unchanged when no `--vault-key`/
+  `--vault-path` override is passed.
+
 - `zeph-core`: the vault-anchor reconcile sweep (`run_anchor_sweep`) hard-deleted a transcript/
   session anchor the instant its backing file was absent, with no grace period or persisted
   "was-anchored" record (#6462). Since file absence is attacker-controlled under this feature's
