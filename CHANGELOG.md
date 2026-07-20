@@ -7,6 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Fixed
 
+- `zeph-core`: `build_compression_prompt` (`agent/tool_execution/focus.rs`) now repairs
+  spotlight-wrapper integrity when its existing 500-char truncation cuts off the closing tag
+  of an already-applied untrusted-content wrapper (`<tool-output>`/`<external-data>`, added
+  at write time by `sanitize_tool_output`). Previously, long untrusted tool-result content
+  could have its wrapper's closing tag (`</tool-output>`/`</external-data>`) severed by the
+  blind truncation, leaving an opened-but-never-closed spotlight block — the boundary marker
+  telling the compression LLM "untrusted data ends here" — in the compression prompt. A
+  single message can bundle multiple concatenated wrappers of different kinds from one
+  multi-tool-call turn, so the repair checks both wrapper types independently by open/close
+  tag count (not just presence, and not gated on the message's aggregate trust tier), and
+  re-appends whichever closing tag truncation severed. This does not add new sanitization,
+  since the content was already spotlight-wrapped before reaching this function (issue
+  #6584).
 - `src/acp.rs`: the test `build_combined_deps_wires_equivalent_security_pipeline_from_config`
   was gated `#[cfg(feature = "acp-http")]` while the function it exercises, `build_combined_deps`,
   requires `#[cfg(all(feature = "acp-http", feature = "session"))]` — since the `ide` feature

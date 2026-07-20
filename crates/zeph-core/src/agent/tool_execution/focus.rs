@@ -485,6 +485,17 @@ impl<C: Channel> Agent<C> {
 ///
 /// The returned vec contains a system instruction and a user message with a numbered
 /// bullet list of the messages to summarize (each truncated to 500 chars).
+///
+/// Untrusted tool-result content is already spotlight-wrapped (`<tool-output>`/
+/// `<external-data>`, see `ContentSanitizer::apply_spotlight`) at write time by
+/// `sanitize_tool_output` — the sole sanitization point for tool output — before it ever
+/// reaches `Message.content`, so it is not raw/unfiltered as originally assumed. A single
+/// message can even bundle multiple concatenated wrappers of different kinds, from a
+/// multi-tool-call turn. The blind 500-char truncation here can sever a trailing wrapper's
+/// closing tag for long untrusted content, leaving an opened-but-never-closed spotlight
+/// block in the compression prompt (#6584). This repairs wrapper integrity by re-closing
+/// the tag when truncation cut it off; it does not add new sanitization or filtering —
+/// that already happened upstream.
 fn build_compression_prompt(
     to_compress: &[zeph_llm::provider::Message],
 ) -> Vec<zeph_llm::provider::Message> {
@@ -497,12 +508,9 @@ fn build_compression_prompt(
         .iter()
         .enumerate()
         .map(|(i, m)| {
-            format!(
-                "{}. [{}] {}",
-                i + 1,
-                role_label(&m.role),
-                m.content.chars().take(500).collect::<String>()
-            )
+            let truncated: String = m.content.chars().take(500).collect();
+            let content = repair_truncated_spotlight_wrapper(truncated, m.metadata.trust_level);
+            format!("{}. [{}] {}", i + 1, role_label(&m.role), content)
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -527,4 +535,114 @@ fn build_compression_prompt(
             metadata: zeph_llm::provider::MessageMetadata::default(),
         },
     ]
+}
+
+/// Re-close spotlight wrappers (`<tool-output>`/`<external-data>`) whose closing tag was
+/// severed by the 500-char truncation in [`build_compression_prompt`] (#6584).
+///
+/// A single compressed message can bundle multiple concatenated tool-result wrappers of
+/// *different* kinds: `tier_loop.rs` flattens every `ToolResult` part of a multi-tool-call
+/// turn into one `Message`, and `build_tool_output_source` maps different tools to different
+/// wrapper kinds (e.g. `shell` → `<tool-output>`, `web_search` → `<external-data>`), tagged
+/// with the batch's overall worst-case `trust_level`. So both wrapper types are checked
+/// independently by open/close tag count, regardless of which trust tier the message carries
+/// as a whole — presence-only checks or gating on `trust_level` to pick a single tag family
+/// would miss an earlier-in-batch wrapper of the other kind. Truncation can only ever leave
+/// the trailing wrapper unclosed (anything fully preceding it in the string was complete
+/// before truncation reached it), so "open count > close count" reliably identifies exactly
+/// one trailing instance needing repair, per wrapper type.
+///
+/// `trust_level` is used only as a cheap short-circuit: `Trusted` content (`None`/`Some(0)`)
+/// is never wrapped at write time, so skip the scan entirely. Detecting an open tag without
+/// its matching close is safe against spoofing: `ContentSanitizer::escape_delimiter_tags`
+/// HTML-entity-escapes any `<tool-output`/`</tool-output`/`<external-data`/`</external-data`
+/// look-alike substrings found *within* the real tool content before the genuine wrapper is
+/// applied around it, so a literal, unescaped tag can only be one `apply_spotlight` added —
+/// never attacker-controlled content impersonating one.
+fn repair_truncated_spotlight_wrapper(mut content: String, trust_level: Option<u8>) -> String {
+    if matches!(trust_level, None | Some(0)) {
+        return content;
+    }
+    if content.matches("<tool-output").count() > content.matches("</tool-output>").count() {
+        content.push_str("\n\n[END OF TOOL OUTPUT]\n</tool-output>");
+    }
+    if content.matches("<external-data").count() > content.matches("</external-data>").count() {
+        content.push_str("\n\n[END OF EXTERNAL DATA]\n</external-data>");
+    }
+    content
+}
+
+#[cfg(test)]
+mod tests {
+    use super::repair_truncated_spotlight_wrapper;
+
+    #[test]
+    fn repairs_severed_tool_output_close() {
+        let content = "<tool-output source=\"tool_result\" name=\"shell\" trust=\"local\">\
+                        \n[NOTE: ...]\n\nsome truncated shell output"
+            .to_owned();
+        let result = repair_truncated_spotlight_wrapper(content, Some(1));
+        assert!(result.ends_with("</tool-output>"));
+        assert_eq!(result.matches("<tool-output").count(), 1);
+        assert_eq!(result.matches("</tool-output>").count(), 1);
+    }
+
+    #[test]
+    fn repairs_severed_external_data_close() {
+        let content = "<external-data source=\"web_scrape\" ref=\"http://example.com\" \
+                        trust=\"untrusted\">\n[IMPORTANT: ...]\n\nsome truncated page content"
+            .to_owned();
+        let result = repair_truncated_spotlight_wrapper(content, Some(2));
+        assert!(result.ends_with("</external-data>"));
+        assert_eq!(result.matches("<external-data").count(), 1);
+        assert_eq!(result.matches("</external-data>").count(), 1);
+    }
+
+    #[test]
+    fn repairs_only_the_severed_kind_in_a_mixed_batch() {
+        // A balanced <tool-output> wrapper followed by a severed <external-data> wrapper,
+        // as produced by a multi-tool-call turn (e.g. shell + web_search) flattened into one
+        // message and tagged with the batch's worst-case trust_level (ExternalUntrusted).
+        let content = "<tool-output source=\"tool_result\" name=\"shell\" trust=\"local\">\
+                        \n\nls output\n\n[END OF TOOL OUTPUT]\n</tool-output>\
+                        <external-data source=\"web_scrape\" ref=\"http://example.com\" \
+                        trust=\"untrusted\">\n[IMPORTANT: ...]\n\ntruncated page"
+            .to_owned();
+        let result = repair_truncated_spotlight_wrapper(content, Some(2));
+        // The already-balanced tool-output wrapper must not be touched again.
+        assert_eq!(result.matches("<tool-output").count(), 1);
+        assert_eq!(result.matches("</tool-output>").count(), 1);
+        // The severed external-data wrapper must be repaired exactly once.
+        assert_eq!(result.matches("<external-data").count(), 1);
+        assert_eq!(result.matches("</external-data>").count(), 1);
+        assert!(result.ends_with("</external-data>"));
+    }
+
+    #[test]
+    fn trusted_content_is_a_short_circuit_noop_even_with_tag_like_text() {
+        // Trusted (None/Some(0)) content is never wrapped at write time, so the function
+        // must not scan or mutate it even if it happens to contain tag-like substrings
+        // (e.g. the user pasted literal wrapper syntax into a chat message).
+        let content = "<tool-output> looks like a wrapper but isn't, and is unbalanced".to_owned();
+        assert_eq!(
+            repair_truncated_spotlight_wrapper(content.clone(), None),
+            content
+        );
+        assert_eq!(
+            repair_truncated_spotlight_wrapper(content.clone(), Some(0)),
+            content
+        );
+    }
+
+    #[test]
+    fn intact_wrapper_under_500_chars_is_not_double_appended() {
+        let content = "<tool-output source=\"tool_result\" name=\"shell\" trust=\"local\">\
+                        \n\nshort output\n\n[END OF TOOL OUTPUT]\n</tool-output>"
+            .to_owned();
+        let result = repair_truncated_spotlight_wrapper(content.clone(), Some(1));
+        assert_eq!(
+            result, content,
+            "already-balanced wrapper must be left untouched"
+        );
+    }
 }
