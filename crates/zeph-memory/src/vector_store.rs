@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::AtomicBool;
 
 /// Error type for [`VectorStore`] operations.
 #[derive(Debug, thiserror::Error)]
@@ -103,6 +104,23 @@ pub type ScrollResult = HashMap<String, HashMap<String, String>>;
 ///
 /// Only points whose payload contains `key_field` as a `StringValue` are included.
 pub type ScrollWithIdsResult = Vec<(String, HashMap<String, String>)>;
+
+/// Clamp a caller-supplied `search` `limit` to `[1, MAX_SEARCH_LIMIT]` at the
+/// [`VectorStore::search`] trait method itself (issue #6616).
+///
+/// The wrapper methods in `embedding_store`, `embedding_registry`, and `reasoning` already
+/// clamp before forwarding to a [`VectorStore`] implementor (issue #6553), but any caller
+/// that reaches an implementor directly — e.g. `zeph-index`'s `CodeStore::search` or a
+/// generic `V: VectorStore` pipeline step — bypasses those wrappers entirely. Every
+/// [`VectorStore::search`] implementation in this crate calls this helper first, so the
+/// bound holds regardless of the call path. Clamping an already-clamped value is a no-op,
+/// so enforcing it at both the wrapper and the trait-impl layer is safe.
+pub(crate) fn clamp_search_limit(site: &'static str, limit: u64, warned: &AtomicBool) -> u64 {
+    if let Ok(requested) = usize::try_from(limit) {
+        crate::warn_if_search_limit_clamped(site, requested, warned);
+    }
+    limit.clamp(1, crate::MAX_SEARCH_LIMIT as u64)
+}
 
 /// Abstraction over a vector database backend.
 ///

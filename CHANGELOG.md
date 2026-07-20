@@ -159,6 +159,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[1, 20]`, unaffected). Defense-in-depth: no exploitable path today, but closes a gap where
   a future caller forwarding an externally-supplied limit without its own clamp could trigger
   an oversized Qdrant result-set allocation (issue #6553).
+- `zeph-memory`: moved the `MAX_SEARCH_LIMIT` clamp down to the `VectorStore::search` trait
+  method itself — the `QdrantOps`, `DbVectorStore`, and `InMemoryVectorStore` implementations
+  now all clamp `limit` via a shared `clamp_search_limit` helper before touching the backend.
+  The #6553 wrapper-level clamps (`EmbeddingStore`/`EmbeddingRegistry`/`ReasoningMemory`) only
+  covered callers that went through those wrappers; a caller reaching a `VectorStore`
+  implementor directly — e.g. `zeph-index`'s `CodeStore::search` (no clamp at all) or a
+  generic `V: VectorStore` pipeline step (`RetrievalStep`) — still forwarded an unclamped
+  `limit` straight to the backend. Clamping twice (wrapper, then trait impl) is a no-op on an
+  already-clamped value, so the existing wrapper clamps are unchanged (issue #6616).
 - `zeph-config`: `Config::validate` now logs a `tracing::warn!` when `memory.qdrant_url`
   resolves to a non-loopback host without TLS (`https://`) and/or `memory.qdrant_api_key`
   configured — memory content would otherwise travel in plaintext with no server

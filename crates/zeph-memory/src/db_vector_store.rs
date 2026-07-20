@@ -168,7 +168,14 @@ impl VectorStore for DbVectorStore {
         limit: u64,
         filter: Option<VectorFilter>,
     ) -> BoxFuture<'_, Result<Vec<ScoredVectorPoint>, VectorStoreError>> {
+        static CLAMP_WARNED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
         let collection = collection.to_owned();
+        let limit = crate::vector_store::clamp_search_limit(
+            "VectorStore::search[DbVectorStore]",
+            limit,
+            &CLAMP_WARNED,
+        );
         #[cfg(feature = "profiling")]
         let span = tracing::info_span!(
             "memory.vector_store",
@@ -407,6 +414,34 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].id, "a");
         assert!((results[0].score - 1.0).abs() < 1e-5);
+    }
+
+    /// Issue #6616: `VectorStore::search` must clamp an oversized `limit` at the trait-impl
+    /// choke point itself, not only in the wrapper methods added for issue #6553 — a caller
+    /// reaching `DbVectorStore` directly must still get the same bound.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn search_clamps_oversized_limit() {
+        let (vs, _) = setup().await;
+        vs.ensure_collection("c", 4).await.unwrap();
+        let points: Vec<VectorPoint> = (0..(crate::MAX_SEARCH_LIMIT + 10))
+            .map(|i| VectorPoint {
+                id: format!("p{i}"),
+                vector: vec![1.0, 0.0, 0.0, 0.0],
+                payload: HashMap::new(),
+            })
+            .collect();
+        vs.upsert("c", points).await.unwrap();
+
+        let results = vs
+            .search("c", vec![1.0, 0.0, 0.0, 0.0], u64::MAX, None)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), crate::MAX_SEARCH_LIMIT);
+        assert!(
+            logs_contain("requested search limit exceeds MAX_SEARCH_LIMIT"),
+            "expected a one-shot warn when the trait-impl clamp actually reduces the requested limit"
+        );
     }
 
     #[tokio::test]

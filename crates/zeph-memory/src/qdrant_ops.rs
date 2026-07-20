@@ -560,7 +560,14 @@ impl crate::vector_store::VectorStore for QdrantOps {
         limit: u64,
         filter: Option<crate::VectorFilter>,
     ) -> BoxFuture<'_, Result<Vec<crate::ScoredVectorPoint>, crate::VectorStoreError>> {
+        static CLAMP_WARNED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
         let collection = collection.to_owned();
+        let limit = crate::vector_store::clamp_search_limit(
+            "VectorStore::search[QdrantOps]",
+            limit,
+            &CLAMP_WARNED,
+        );
         Box::pin(async move {
             let qdrant_filter = filter.map(vector_filter_to_qdrant);
             let results = self
@@ -1001,5 +1008,25 @@ mod tests {
         );
 
         ops.delete_collection(collection).await.unwrap();
+    }
+
+    /// Issue #6616: the `VectorStore::search` trait impl on `QdrantOps` must clamp an
+    /// oversized `limit` itself, not rely on `EmbeddingStore`/`EmbeddingRegistry` wrapper
+    /// methods (issue #6553) to clamp before forwarding. `QdrantOps` has no test seam
+    /// (concrete gRPC client), so — matching the pattern in `embedding_registry.rs`'s
+    /// `search_raw_oversized_limit_does_not_panic` — this connects to an unreachable
+    /// endpoint and asserts the one-shot `tracing::warn!` fired before the network call was
+    /// attempted, rather than the clamped result count.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn vector_store_search_clamps_oversized_limit() {
+        use crate::vector_store::VectorStore;
+
+        let ops = QdrantOps::new("http://127.0.0.1:1", None).unwrap(); // unreachable — forces network error
+        let _ = VectorStore::search(&ops, "col", vec![1.0, 0.0], u64::MAX, None).await;
+        assert!(
+            logs_contain("requested search limit exceeds MAX_SEARCH_LIMIT"),
+            "expected the one-shot clamp warning to fire for an oversized limit"
+        );
     }
 }

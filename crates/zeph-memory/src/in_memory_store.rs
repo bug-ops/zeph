@@ -156,7 +156,14 @@ impl VectorStore for InMemoryVectorStore {
         limit: u64,
         filter: Option<VectorFilter>,
     ) -> BoxFuture<'_, Result<Vec<ScoredVectorPoint>, VectorStoreError>> {
+        static CLAMP_WARNED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
         let collection = collection.to_owned();
+        let limit = crate::vector_store::clamp_search_limit(
+            "VectorStore::search[InMemoryVectorStore]",
+            limit,
+            &CLAMP_WARNED,
+        );
         Box::pin(async move {
             let cols = self.collections.read();
             let col = cols.get(&collection).ok_or_else(|| {
@@ -493,5 +500,35 @@ mod tests {
         let store = InMemoryVectorStore::new();
         let dbg = format!("{store:?}");
         assert!(dbg.contains("InMemoryVectorStore"));
+    }
+
+    /// Issue #6616: `VectorStore::search` must clamp an oversized `limit` at the trait-impl
+    /// choke point itself, not only in the `EmbeddingStore`/`EmbeddingRegistry`/`ReasoningMemory`
+    /// wrapper methods (issue #6553) — a caller reaching this implementor directly (e.g. a
+    /// generic `V: VectorStore` pipeline step) must still get the same bound.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn search_clamps_oversized_limit() {
+        let store = InMemoryVectorStore::new();
+        store.ensure_collection("test", 3).await.unwrap();
+
+        let points: Vec<VectorPoint> = (0..(crate::MAX_SEARCH_LIMIT + 10))
+            .map(|i| VectorPoint {
+                id: format!("p{i}"),
+                vector: vec![1.0, 0.0, 0.0],
+                payload: HashMap::new(),
+            })
+            .collect();
+        store.upsert("test", points).await.unwrap();
+
+        let results = store
+            .search("test", vec![1.0, 0.0, 0.0], u64::MAX, None)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), crate::MAX_SEARCH_LIMIT);
+        assert!(
+            logs_contain("requested search limit exceeds MAX_SEARCH_LIMIT"),
+            "expected a one-shot warn when the trait-impl clamp actually reduces the requested limit"
+        );
     }
 }
