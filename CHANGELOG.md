@@ -215,6 +215,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sub-agents not being viewed are unaffected, since their completion is already surfaced via
   the existing plain-text notice in Main chat.
 
+- `zeph-index`/`zeph-core`: two independent uncontrolled-recursion stack-overflow DoS bugs
+  (CWE-674) — `chunk_children` (`crates/zeph-index/src/chunker.rs`) recursed into AST child
+  nodes with no depth limit, and `collect_strings` (`crates/zeph-core/src/agent/tool_execution/
+  tool_call_dag.rs`) recursed over tool-call JSON `input` with no depth limit — either could
+  exhaust the native call stack and abort the whole process (uncatchably — a stack overflow
+  cannot be caught by `catch_unwind`, `Result`, or any async task boundary) on adversarially
+  deep input: a crafted source file placed in a watched/indexed project directory (#6551), or
+  a deeply nested tool-call `input` payload originating from LLM output influenced by untrusted
+  content, e.g. a prompt-injected web page or MCP result (#6554). Both functions now take an
+  explicit `depth: usize` parameter bounded by a module-level const (`MAX_CHUNK_DEPTH = 512`,
+  `MAX_JSON_DEPTH = 256`); at the bound, `chunk_children` emits the oversized subtree as a
+  single leaf chunk instead of recursing further, and `collect_strings` stops descending into
+  that branch — both degrade gracefully rather than crashing, and log a `tracing::warn!` when
+  the bound is hit so operators get a signal that adversarial nesting was encountered. Added 11
+  regression tests (4 chunker, 7 DAG walker) covering the depth boundary, graceful degradation
+  under attacker-scale nesting, and that nesting *depth* (not element count/width) is what's
+  bounded.
+
 - `zeph-core`: `handle_compress_context` (the `compress_context`/`request_compaction` tool path,
   `crates/zeph-core/src/agent/tool_execution/focus.rs`) appended the compression LLM's summary
   directly to the pinned Knowledge block with no sanitizer pass, unlike its sibling

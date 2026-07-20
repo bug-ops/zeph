@@ -161,7 +161,7 @@ pub fn chunk_file(
         imports: &imports,
         config,
     };
-    chunk_children(&ctx, &root, "", &mut chunks);
+    chunk_children(&ctx, &root, "", &mut chunks, 0);
     merge_small_chunks(&mut chunks, config);
 
     // Fallback: if AST chunking produced nothing but source has content,
@@ -173,11 +173,19 @@ pub fn chunk_file(
     Ok(chunks)
 }
 
+/// Maximum AST descent depth for [`chunk_children`].
+///
+/// Guards against stack overflow on adversarially deep source files (e.g. thousands of
+/// nested brackets). Chosen well below typical thread stack sizes while comfortably
+/// exceeding any legitimate nesting depth seen in real-world code.
+const MAX_CHUNK_DEPTH: usize = 512;
+
 fn chunk_children(
     ctx: &ChunkCtx<'_>,
     parent: &Node,
     parent_scope: &str,
     output: &mut Vec<CodeChunk>,
+    depth: usize,
 ) {
     let mut batch: Vec<Node> = Vec::new();
     let mut batch_size: usize = 0;
@@ -196,7 +204,19 @@ fn chunk_children(
             batch_size = 0;
 
             let scope = extend_scope(parent_scope, &child, ctx.source);
-            chunk_children(ctx, &child, &scope, output);
+            if depth >= MAX_CHUNK_DEPTH {
+                // Depth limit reached: emit the oversized node as a single leaf chunk
+                // instead of recursing further.
+                tracing::warn!(
+                    file_path = ctx.file_path,
+                    scope = %scope,
+                    depth,
+                    "chunk_children: max AST depth reached, emitting oversized node as a leaf chunk"
+                );
+                flush_batch(ctx, &[child], &scope, output);
+            } else {
+                chunk_children(ctx, &child, &scope, output, depth + 1);
+            }
             continue;
         }
 
@@ -589,6 +609,141 @@ class Greeter:
             cursor,
             originals.len(),
             "every original chunk must appear exactly once, in order"
+        );
+    }
+
+    /// Builds `fn f() { {{{...}}} let x = 1; ...}` with `nesting` levels of nested
+    /// block expressions wrapping a single statement — a real tree-sitter-parseable
+    /// fixture (not a naive repeated-char string) that produces `nesting` genuine
+    /// `block` AST nodes chained via single-child recursion.
+    fn nested_blocks_source(nesting: usize) -> String {
+        let mut source = String::from("fn f() {\n");
+        for _ in 0..nesting {
+            source.push_str("{\n");
+        }
+        source.push_str("let x = 1;\n");
+        for _ in 0..nesting {
+            source.push_str("}\n");
+        }
+        source.push_str("}\n");
+        source
+    }
+
+    #[test]
+    fn flush_batch_singular_node_type_has_no_count_suffix() {
+        let config = ChunkerConfig {
+            target_size: 600,
+            max_size: 1200,
+            min_size: 5,
+        };
+        let chunks = chunk_file("fn solo() { 1 }", "src/solo.rs", Lang::Rust, &config).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].node_type, "function_item");
+    }
+
+    // Each nested-block level in `nested_blocks_source` parses as
+    // `expression_statement(block(...))` (confirmed via `to_sexp()`), i.e. each level
+    // costs 2 AST-descent levels, not 1. With `function_item` + the body `block` as
+    // fixed overhead (2 more descent levels), the depth guard — checked against the
+    // *parent* frame's own depth before it would recurse into a MAX_CHUNK_DEPTH-deep
+    // child — always fires while processing the frame at nesting level
+    // `MAX_CHUNK_DEPTH / 2 - 1`, flushing that frame's child (nesting level
+    // `MAX_CHUNK_DEPTH / 2`, an `expression_statement` node) as a single leaf chunk.
+    const FALLBACK_LEVEL: usize = MAX_CHUNK_DEPTH / 2;
+
+    #[test]
+    fn chunk_deeply_nested_blocks_triggers_depth_guard_without_crashing() {
+        let nesting = MAX_CHUNK_DEPTH + 100; // comfortably past the guard
+        let source = nested_blocks_source(nesting);
+        let config = ChunkerConfig {
+            target_size: 600,
+            max_size: 10,
+            min_size: 0,
+        };
+
+        let chunks = chunk_file(&source, "src/deep.rs", Lang::Rust, &config)
+            .expect("deeply nested source must parse and chunk without panicking");
+        assert!(!chunks.is_empty());
+
+        // Once the depth guard fires, the remaining oversized subtree is emitted as
+        // a single leaf chunk whose node_type is the child's own kind (not the
+        // "<kind>xN" batch form) instead of recursing further.
+        let fallback = chunks
+            .iter()
+            .find(|c| c.node_type == "expression_statement" && c.code.contains("let x = 1;"))
+            .expect("expected a leaf-fallback chunk covering the depth-limited subtree");
+
+        // The fallback chunk must still hold a large slice of the leftover nesting,
+        // proving consolidation happened rather than continued per-level recursion.
+        let remaining_levels = nesting - FALLBACK_LEVEL + 1;
+        assert_eq!(fallback.code.matches('{').count(), remaining_levels);
+        assert!(remaining_levels > 50);
+    }
+
+    #[test]
+    fn chunk_shallow_nested_blocks_unaffected_by_depth_guard() {
+        let nesting = 20; // far below MAX_CHUNK_DEPTH — guard must never engage
+        let source = nested_blocks_source(nesting);
+        let config = ChunkerConfig {
+            target_size: 600,
+            max_size: 10,
+            min_size: 0,
+        };
+
+        let chunks = chunk_file(&source, "src/shallow.rs", Lang::Rust, &config).unwrap();
+        assert!(!chunks.is_empty());
+        assert!(
+            chunks.iter().any(|c| c.code.contains("let x = 1;")),
+            "innermost statement must still be reachable via normal (non-fallback) recursion"
+        );
+    }
+
+    #[test]
+    fn depth_guard_fallback_respects_min_size_and_can_silently_drop_content() {
+        // Nesting depth exactly at FALLBACK_LEVEL: the leaf-fallback fires on the
+        // innermost expression_statement/block pair itself, so the leftover subtree
+        // is tiny (just that one block wrapping the statement). flush_batch's
+        // existing min_size check applies here too — this is pre-existing
+        // flush_batch behavior, now reachable via the new depth-limited path, and it
+        // can silently drop the whole leftover subtree with no chunk emitted for it
+        // and no panic.
+        //
+        // 20 leading sibling statements are included so the function body produces
+        // other, normal-sized surviving chunks — otherwise chunk_children would
+        // yield an empty chunk list and chunk_file's own whole-file fallback (for
+        // files with no AST chunks at all) would re-introduce the dropped content
+        // via a different, coarser path, masking the behavior under test.
+        use std::fmt::Write as _;
+
+        let nesting = FALLBACK_LEVEL;
+        let mut source = String::from("fn f() {\n");
+        for i in 0..20 {
+            let _ = writeln!(source, "let v{i} = {i};");
+        }
+        for _ in 0..nesting {
+            source.push_str("{\n");
+        }
+        source.push_str("let x = 1;\n");
+        for _ in 0..nesting {
+            source.push_str("}\n");
+        }
+        source.push_str("}\n");
+
+        let config = ChunkerConfig {
+            target_size: 600,
+            max_size: 10,
+            min_size: 100, // comfortably larger than the tiny leftover subtree
+        };
+
+        let chunks = chunk_file(&source, "src/tiny-leftover.rs", Lang::Rust, &config).unwrap();
+        assert!(
+            chunks.iter().any(|c| c.code.contains("let v0 = 0;")),
+            "the 20 leading statements must survive as their own batch"
+        );
+        assert!(
+            chunks.iter().all(|c| !c.code.contains("let x = 1;")),
+            "tiny leftover subtree below min_size must be silently dropped by flush_batch, \
+             same as any other undersized batch"
         );
     }
 }

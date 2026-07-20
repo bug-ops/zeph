@@ -166,6 +166,13 @@ impl ToolCallDag {
     }
 }
 
+/// Maximum JSON nesting depth walked by [`collect_strings`].
+///
+/// Guards against stack overflow on adversarially deep tool-call input (e.g. from
+/// prompt-injected LLM output). Beyond this depth, further descent is simply skipped —
+/// dependency detection just misses strings past the bound rather than crashing.
+const MAX_JSON_DEPTH: usize = 256;
+
 /// Recursively collect all leaf string values from a JSON value.
 ///
 /// Only leaf nodes (strings) are collected; object keys are ignored. Arrays and
@@ -174,21 +181,28 @@ impl ToolCallDag {
 /// (IMP-02 prerequisite failure propagation in `native.rs`).
 pub(super) fn extract_string_values(value: &Value) -> Vec<String> {
     let mut out = Vec::new();
-    collect_strings(value, &mut out);
+    collect_strings(value, &mut out, 0);
     out
 }
 
-fn collect_strings(value: &Value, out: &mut Vec<String>) {
+fn collect_strings(value: &Value, out: &mut Vec<String>, depth: usize) {
+    if depth >= MAX_JSON_DEPTH {
+        tracing::warn!(
+            depth,
+            "collect_strings: max JSON nesting depth reached, skipping further descent"
+        );
+        return;
+    }
     match value {
         Value::String(s) => out.push(s.clone()),
         Value::Array(arr) => {
             for item in arr {
-                collect_strings(item, out);
+                collect_strings(item, out, depth + 1);
             }
         }
         Value::Object(map) => {
             for v in map.values() {
-                collect_strings(v, out);
+                collect_strings(v, out, depth + 1);
             }
         }
         // Numbers, booleans, null — not strings, skip.
@@ -389,5 +403,94 @@ mod tests {
         let calls = [make_call("id_self", json!({"ref": "id_self"}))];
         let dag = ToolCallDag::build(&calls);
         assert!(dag.is_trivial());
+    }
+
+    /// Wraps `leaf` in `depth` nested single-element arrays, e.g. `[[["leaf"]]]`.
+    fn nested_array(depth: usize, leaf: &str) -> Value {
+        let mut v = json!(leaf);
+        for _ in 0..depth {
+            v = Value::Array(vec![v]);
+        }
+        v
+    }
+
+    /// Wraps `leaf` in `depth` nested single-key objects, e.g. `{"k":{"k":"leaf"}}`.
+    fn nested_object(depth: usize, leaf: &str) -> Value {
+        let mut v = json!(leaf);
+        for _ in 0..depth {
+            let mut map = serde_json::Map::new();
+            map.insert("k".to_string(), v);
+            v = Value::Object(map);
+        }
+        v
+    }
+
+    #[test]
+    fn collect_strings_shallow_nesting_unaffected() {
+        let value = nested_array(5, "target");
+        assert_eq!(extract_string_values(&value), vec!["target".to_string()]);
+    }
+
+    #[test]
+    fn collect_strings_array_beyond_depth_bound_drops_leaf_without_panicking() {
+        let value = nested_array(MAX_JSON_DEPTH + 44, "unreachable");
+        assert!(
+            extract_string_values(&value).is_empty(),
+            "leaf string beyond the depth bound must not be collected"
+        );
+    }
+
+    #[test]
+    fn collect_strings_object_beyond_depth_bound_drops_leaf_without_panicking() {
+        let value = nested_object(MAX_JSON_DEPTH + 44, "unreachable");
+        assert!(
+            extract_string_values(&value).is_empty(),
+            "leaf string beyond the depth bound must not be collected"
+        );
+    }
+
+    #[test]
+    fn collect_strings_exact_depth_boundary() {
+        // Leaf's own call depth == MAX_JSON_DEPTH - 1: still inside the bound
+        // (`depth >= MAX_JSON_DEPTH` is false), so it must be collected.
+        let just_inside = nested_array(MAX_JSON_DEPTH - 1, "just_inside");
+        assert_eq!(
+            extract_string_values(&just_inside),
+            vec!["just_inside".to_string()]
+        );
+
+        // Leaf's own call depth == MAX_JSON_DEPTH: guard fires, must be dropped.
+        let just_outside = nested_array(MAX_JSON_DEPTH, "just_outside");
+        assert!(extract_string_values(&just_outside).is_empty());
+    }
+
+    #[test]
+    fn collect_strings_adversarial_scale_does_not_crash() {
+        // Attacker-scale nesting, far beyond the bound — must not overflow the
+        // stack; the depth guard caps real recursion depth at MAX_JSON_DEPTH
+        // regardless of how deeply the input is actually nested.
+        let value = nested_array(2_000, "deep");
+        assert!(extract_string_values(&value).is_empty());
+    }
+
+    #[test]
+    fn collect_strings_wide_flat_array_is_not_bounded_by_width() {
+        // MAX_JSON_DEPTH bounds nesting depth, not array width — a wide flat
+        // array must collect every element regardless of count.
+        let n = 10_000;
+        let arr: Vec<Value> = (0..n).map(|i| json!(format!("item{i}"))).collect();
+        let value = Value::Array(arr);
+        assert_eq!(extract_string_values(&value).len(), n);
+    }
+
+    #[test]
+    fn collect_strings_wide_flat_object_is_not_bounded_by_width() {
+        let n = 10_000;
+        let mut map = serde_json::Map::new();
+        for i in 0..n {
+            map.insert(format!("k{i}"), json!(format!("item{i}")));
+        }
+        let value = Value::Object(map);
+        assert_eq!(extract_string_values(&value).len(), n);
     }
 }
