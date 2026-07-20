@@ -568,6 +568,7 @@ async fn registry_search_with(
 /// tests for `MockRegistryClient`-driven coverage.
 #[cfg(feature = "registry")]
 #[tracing::instrument(name = "skill.registry_get", skip(config, mgr), fields(registry_id))]
+#[allow(clippy::too_many_arguments)]
 async fn registry_get(
     config: &zeph_core::config::Config,
     mgr: &zeph_skills::manager::SkillManager,
