@@ -87,7 +87,9 @@ fn begin_turn_maps_known_risk_codes_to_mage_signals() {
 /// surface to MAGE.
 #[test]
 fn begin_turn_no_mage_signal_for_trajectory_only_codes() {
-    for code in [3u8, 4, 5, 99] {
+    // 10/11 (ExfilReadThenSend/CredThenEgress, #6561/F2) are trajectory-only too — MAGE's
+    // mapping stays at the fixed spec 004-16 four-class set; widening it is out of scope.
+    for code in [3u8, 4, 5, 10, 11, 99] {
         let mut agent = make_agent_with_mage();
         drain_one_code(&mut agent, code);
 
@@ -129,9 +131,46 @@ fn risk_signal_from_code_matches_assumed_variants() {
     assert_eq!(RiskSignal::from_code(3), RiskSignal::OutOfScope);
     assert_eq!(RiskSignal::from_code(4), RiskSignal::PiiRedaction);
     assert_eq!(RiskSignal::from_code(5), RiskSignal::ToolFailure);
+    assert_eq!(RiskSignal::from_code(10), RiskSignal::ExfilReadThenSend);
+    assert_eq!(RiskSignal::from_code(11), RiskSignal::CredThenEgress);
     assert_eq!(
         RiskSignal::from_code(99),
         RiskSignal::VigilFlagged(VigilRiskLevel::Low)
+    );
+}
+
+/// Regression for F2 (found during #6561 rework review): codes `10`/`11` — pushed by
+/// `zeph-tools`'s `RiskChainAccumulator` when it confirms a multi-step attack chain — used to
+/// fall through `from_code`'s wildcard arm into `VigilFlagged(Low)`, the lowest weight tier
+/// (0.3, same as noisy `ToolFailure`), silently near-inert once ingested by
+/// `TrajectorySentinel`. A confirmed chain fire is a high-confidence signal and must weight at
+/// least as high as other confirmed-pattern signals (`ExfiltrationRedaction`/
+/// `ToolPairTransition`, both 2.0), not the low-confidence fallback tier.
+#[test]
+fn risk_chain_signal_codes_weight_above_fallback_tier() {
+    use crate::agent::trajectory::VigilRiskLevel;
+
+    let fallback_weight = RiskSignal::VigilFlagged(VigilRiskLevel::Low).default_weight();
+    let exfil_weight = RiskSignal::from_code(10).default_weight();
+    let cred_weight = RiskSignal::from_code(11).default_weight();
+
+    assert!(
+        exfil_weight > fallback_weight,
+        "exfil_read_then_send (code 10) must weight above the VigilFlagged(Low) fallback tier \
+         ({fallback_weight}), got {exfil_weight}"
+    );
+    assert!(
+        cred_weight > fallback_weight,
+        "cred_then_egress (code 11) must weight above the VigilFlagged(Low) fallback tier \
+         ({fallback_weight}), got {cred_weight}"
+    );
+    assert!(
+        exfil_weight >= RiskSignal::ExfiltrationRedaction.default_weight(),
+        "a confirmed exfil chain must weight at least as high as ExfiltrationRedaction"
+    );
+    assert!(
+        cred_weight >= RiskSignal::ExfiltrationRedaction.default_weight(),
+        "a confirmed cred-then-egress chain must weight at least as high as ExfiltrationRedaction"
     );
 }
 

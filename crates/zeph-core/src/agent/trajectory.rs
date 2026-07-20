@@ -66,6 +66,12 @@ pub enum RiskSignal {
     UnusualReadVolume,
     /// A configured high-risk tool-pair transition occurred within K turns.
     ToolPairTransition,
+    /// `RiskChainAccumulator` (`zeph-tools`) confirmed a `SensitiveRead -> NetworkEgress`
+    /// multi-step attack chain (`exfil_read_then_send`, code `10`).
+    ExfilReadThenSend,
+    /// `RiskChainAccumulator` (`zeph-tools`) confirmed a `CredentialAccess -> NetworkEgress`
+    /// multi-step attack chain (`cred_then_egress`, code `11`).
+    CredThenEgress,
 }
 
 impl RiskSignal {
@@ -75,9 +81,14 @@ impl RiskSignal {
     #[must_use]
     pub fn default_weight(self) -> f32 {
         match self {
-            Self::VigilFlagged(VigilRiskLevel::High) => 2.5,
+            // `RiskChainAccumulator` chain fires are confirmed, high-confidence multi-step
+            // attack patterns (not heuristics), so they weight at least as high as VIGIL's
+            // highest-confidence tier and `ExfiltrationRedaction`/`ToolPairTransition` —
+            // exfil_read_then_send weights highest, matching its higher `chain_bonus`
+            // (0.5 vs 0.4) in `zeph-tools`'s `risk_chain.rs`.
+            Self::ExfilReadThenSend | Self::VigilFlagged(VigilRiskLevel::High) => 2.5,
+            Self::CredThenEgress | Self::ExfiltrationRedaction | Self::ToolPairTransition => 2.0,
             Self::VigilFlagged(VigilRiskLevel::Medium) => 1.0,
-            Self::ExfiltrationRedaction | Self::ToolPairTransition => 2.0,
             Self::PolicyDeny | Self::OutOfScope | Self::HighCallRate | Self::UnusualReadVolume => {
                 1.5
             }
@@ -99,6 +110,8 @@ impl RiskSignal {
     /// - `5` = `ToolFailure`
     /// - `6` = `VigilFlagged(Medium)`
     /// - `7` = `VigilFlagged(High)`
+    /// - `10` = `ExfilReadThenSend` (`RiskChainAccumulator`'s `exfil_read_then_send` chain)
+    /// - `11` = `CredThenEgress` (`RiskChainAccumulator`'s `cred_then_egress` chain)
     /// - anything else = `VigilFlagged(Low)` (fallback)
     #[must_use]
     pub fn from_code(code: u8) -> Self {
@@ -110,6 +123,8 @@ impl RiskSignal {
             5 => Self::ToolFailure,
             6 => Self::VigilFlagged(VigilRiskLevel::Medium),
             7 => Self::VigilFlagged(VigilRiskLevel::High),
+            10 => Self::ExfilReadThenSend,
+            11 => Self::CredThenEgress,
             _ => Self::VigilFlagged(VigilRiskLevel::Low),
         }
     }

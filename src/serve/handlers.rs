@@ -582,6 +582,7 @@ mod tests {
             rl_warmup_updates: 0,
             rl_head: None,
             tool_executor: Arc::new(zeph_tools::SetCwdExecutor::new(vec![])),
+            shell_ingredients: crate::serve::deps::ShellSessionIngredients::default(),
             capability_scopes_config: zeph_config::CapabilityScopesConfig::default(),
             permission_policy: zeph_tools::PermissionPolicy::default(),
             audit_logger: None,
@@ -621,7 +622,6 @@ mod tests {
             secret_registry: None,
             vigil_config: zeph_config::VigilConfig::default(),
             feedback_classifier: None,
-            risk_chain_accumulator: Arc::new(zeph_tools::RiskChainAccumulator::new(None)),
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
         };

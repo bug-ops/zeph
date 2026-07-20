@@ -404,6 +404,22 @@ impl ShellPolicyHandle {
     pub fn snapshot_blocked(&self) -> Vec<String> {
         self.inner.load().blocked_commands.clone()
     }
+
+    /// Build a handle from scratch, without an accompanying [`ShellExecutor`] (#6588).
+    ///
+    /// Entry points that construct a fresh `ShellExecutor` per session (ACP, serve — so each
+    /// session gets its own [`RiskChainAccumulator`] instead of sharing one across concurrent
+    /// sessions) need ONE handle shared across every session's executor, so a hot-reload
+    /// (`rebuild`) reaches all of them. Build this once per connection/server and pass it to
+    /// [`ShellExecutor::with_shared_policy`] for each session's executor.
+    #[must_use]
+    pub fn new_shared(config: &crate::config::ShellConfig) -> Self {
+        Self {
+            inner: Arc::new(ArcSwap::from_pointee(ShellPolicy {
+                blocked_commands: compute_blocked_commands(config),
+            })),
+        }
+    }
 }
 
 /// Compute the effective blocklist from an already-overlay-merged `ShellConfig`.
@@ -638,6 +654,20 @@ impl ShellExecutor {
     #[must_use]
     pub fn with_risk_chain(mut self, accumulator: Arc<RiskChainAccumulator>) -> Self {
         self.risk_chain = Some(accumulator);
+        self
+    }
+
+    /// Replace this executor's policy `ArcSwap` with an externally shared one (#6588).
+    ///
+    /// Used when multiple `ShellExecutor` instances (one per session, e.g. ACP/serve so each
+    /// session gets its own [`RiskChainAccumulator`]) must all observe the same live
+    /// `blocked_commands` rebuilds from a single [`ShellPolicyHandle`] — without this, each
+    /// fresh per-session executor would carry its own independent snapshot frozen at
+    /// construction time, and [`ShellPolicyHandle::rebuild`] would only ever reach whichever
+    /// instance it happened to be obtained from via [`Self::policy_handle`].
+    #[must_use]
+    pub fn with_shared_policy(mut self, handle: &ShellPolicyHandle) -> Self {
+        self.policy = Arc::clone(&handle.inner);
         self
     }
 

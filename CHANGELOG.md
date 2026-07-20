@@ -355,81 +355,86 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`notify_completed_subagents`, `crates/zeph-core/src/agent/subagent_commands.rs`), which had
   no sanitization applied to the raw result text at all before this fix.
 
-- `zeph-tui`/`zeph-core`: a background sub-agent's (`/agent bg`) transcript view, opened
-  manually via the SubAgents sidebar (`a` → `j` → `Enter`), stalled indefinitely once the
-  sub-agent completed — no terminal state was ever rendered and the view never returned to
-  Main chat, even though the sidebar's own agent list emptied at the same moment (#6570).
-  `SubAgentManager::collect()` removes the finished agent from `mgr.statuses()` synchronously,
-  so `maybe_reload_transcript`'s reload trigger (which reads `metrics.sub_agents`) could never
-  observe the transition and fire once more. `Channel` gains a new
-  `notify_background_subagent_completed` method (default no-op), mirroring the existing
-  `notify_foreground_subagent_completed` used by the `/agent`-foreground and `/agent resume`
-  paths; `notify_completed_subagents` (`crates/zeph-core/src/agent/subagent_commands.rs`) now
-  calls it for every background sub-agent it collects, alongside the existing plain-text
-  completion notice. `TuiChannel` forwards this to a new `AgentEvent::BackgroundSubagentCompleted`
-  event; the TUI only acts on it when the completed id matches the subagent currently being
-  viewed, resetting `view_target` to Main and pushing a terminal completion/failure marker —
-  sub-agents not being viewed are unaffected, since their completion is already surfaced via
-  the existing plain-text notice in Main chat.
+- `zeph-tools`: `RiskChainAccumulator` fully cleared all recorded calls and its cumulative score
+  at every turn boundary (`reset()`, called from `Agent::begin_turn()`), so a multi-step attack
+  chain deliberately split across turns (e.g. `SensitiveRead` in turn N, `NetworkEgress` in turn
+  N+1 — the exact "read now, send later" bypass in #6561's repro) went completely undetected:
+  by the time the second call arrived, the first leg had already been forgotten. An earlier
+  version of this fix only wired `RiskChainAccumulator::new`'s `RiskSignalQueue` parameter to
+  `Some(queue)` instead of `None` — necessary but insufficient, since the queue is only ever
+  populated from *inside* the same `detect_chain()` match that already blocks locally; it never
+  received anything for a genuinely split chain either. The real fix: `reset()` is now
+  `advance_turn()` (`Agent::begin_turn()` updated to match) and no longer fully clears state —
+  it prunes calls older than a 3-turn cross-turn window and recomputes `cumulative_score` from
+  the calls that remain, so a chain whose legs land in different turns (within the window) is
+  still visible to the next `record()` call. This bounds the fix two ways: the turn-based window
+  limits how long a stale sensitive read stays "live" (so unrelated old activity can't combine
+  with new activity indefinitely), and the existing absolute call-count cap independently bounds
+  memory regardless of turn count. Added a regression test that explicitly calls `advance_turn()`
+  between the two legs (simulating a real turn boundary) and asserts the chain still fires and
+  the signal queue still receives it, plus a companion test proving the chain does NOT fire once
+  the first leg ages out of the window. Corrected `risk_chain.rs`'s module doc and this
+  CHANGELOG entry (an earlier draft of this fix — queue-wiring only — incorrectly claimed the
+  cross-turn case was already handled; it was not, and a tester caught the gap before merge).
+  Also fixed a self-DoS amplification the wider window introduced: once a chain fires, it can
+  keep matching on every subsequent `record()` call for as long as both legs remain in the
+  cross-turn window, and each match used to re-push the same signal code — security quantified
+  this as up to ~20×2.5 = 50 pushed into `TrajectorySentinel` from a single logical chain, enough
+  to force a session-wide Allow→Deny escalation from one detection. The accumulator now tracks
+  which pattern it has already signaled for the current live match and pushes once per
+  detection, clearing the marker as soon as the chain stops matching so a genuinely new future
+  occurrence still pushes. Added regression tests for both the dedup and the re-arm behavior.
 
-- `zeph-index`/`zeph-core`: two independent uncontrolled-recursion stack-overflow DoS bugs
-  (CWE-674) — `chunk_children` (`crates/zeph-index/src/chunker.rs`) recursed into AST child
-  nodes with no depth limit, and `collect_strings` (`crates/zeph-core/src/agent/tool_execution/
-  tool_call_dag.rs`) recursed over tool-call JSON `input` with no depth limit — either could
-  exhaust the native call stack and abort the whole process (uncatchably — a stack overflow
-  cannot be caught by `catch_unwind`, `Result`, or any async task boundary) on adversarially
-  deep input: a crafted source file placed in a watched/indexed project directory (#6551), or
-  a deeply nested tool-call `input` payload originating from LLM output influenced by untrusted
-  content, e.g. a prompt-injected web page or MCP result (#6554). Both functions now take an
-  explicit `depth: usize` parameter bounded by a module-level const (`MAX_CHUNK_DEPTH = 512`,
-  `MAX_JSON_DEPTH = 256`); at the bound, `chunk_children` emits the oversized subtree as a
-  single leaf chunk instead of recursing further, and `collect_strings` stops descending into
-  that branch — both degrade gracefully rather than crashing, and log a `tracing::warn!` when
-  the bound is hit so operators get a signal that adversarial nesting was encountered. Added 11
-  regression tests (4 chunker, 7 DAG walker) covering the depth boundary, graceful degradation
-  under attacker-scale nesting, and that nesting *depth* (not element count/width) is what's
-  bounded.
+- `zeph-core`: `RiskSignal::from_code` (the decoder for signal codes pushed through
+  `RiskSignalQueue`) had no explicit arms for codes `10`/`11` — `RiskChainAccumulator`'s
+  `exfil_read_then_send`/`cred_then_egress` confirmed multi-step attack chain signals — so both
+  fell through to the `VigilFlagged(Low)` fallback, `TrajectorySentinel`'s lowest weight tier
+  (0.3, the same as noisy `ToolFailure`). A confirmed chain fire is a high-confidence signal, not
+  a heuristic, and was near-inert once it reached `TrajectorySentinel`/MAGE regardless of the
+  #6561 fix above. Added explicit `ExfilReadThenSend`/`CredThenEgress` `RiskSignal` variants,
+  mapped from codes `10`/`11`, weighted at `2.5`/`2.0` respectively (top and second-highest
+  tiers, at or above `ExfiltrationRedaction`/`ToolPairTransition`, matching the relative severity
+  already encoded in `risk_chain.rs`'s own `chain_bonus` values). MAGE mapping intentionally
+  unchanged — spec 004-16's four signal classes are a fixed, spec-governed set; widening it is
+  out of scope here. Added a regression test asserting both new codes weight above the fallback
+  tier and at least as high as `ExfiltrationRedaction`.
 
-- `zeph-memory`: `GraphConfig::retrieval_strategy` (`bfs`/`astar`/`watercircles`/`beam_search`/
-  `hybrid`/`synapse`) was parsed, validated, and documented, but never consulted by the live
-  graph-recall path — every real entry point (CLI/ACP/daemon/serve) ran through
-  `ContextService::prepare_context` → `zeph-context`'s `fetch_graph_facts` →
-  `SemanticMemoryBackend::recall_graph_facts` → `SemanticMemory::recall_graph_view`, whose
-  strategy selection was a hardcoded boolean switch on `spreading_activation.enabled` (SYNAPSE
-  vs. BFS) with no knowledge of the other four variants (#6566). The only code that correctly
-  dispatched on all six variants (`zeph-agent-context::helpers::fetch_graph_facts_raw` and its
-  supporting chain) had zero production callers — a "wired in isolation, never connected"
-  defect. `zeph_common::memory::GraphRecallParams` gains a `retrieval_strategy`
-  (mirroring `zeph_config::memory::GraphRetrievalStrategy`), `beam_width`, and `ring_limit`
-  field; `zeph-context`'s `fetch_graph_facts` now maps the configured strategy through
-  (`spreading_activation.enabled` still force-overrides to `Synapse`), and
-  `SemanticMemoryBackend::recall_graph_facts` (`zeph-agent-context`, the only layer allowed to
-  see both `zeph-memory` and `zeph-context` interface types) dispatches to the matching
-  `SemanticMemory::recall_graph`/`recall_graph_astar`/`recall_graph_watercircles`/
-  `recall_graph_beam`/`recall_graph_activated` method, with `Hybrid` classifying the query first
-  via `classify_graph_strategy`. `ZoomIn`/`ZoomOut` `recall_view` enrichment (source-message
-  provenance, 1-hop neighbor expansion), previously only implemented inside
-  `SemanticMemory::recall_graph_view`, is preserved across all 6 strategies via a new shared
-  `SemanticMemory::enrich_recall_view` post-dispatch pass (extracted from `recall_graph_view`,
-  which now delegates to it) — `recall_graph_facts` runs it after whichever concrete method
-  produced the base fact set, so `memcot_config.recall_view = "zoom_in" | "zoom_out"` keeps
-  working regardless of `retrieval_strategy`. Removed the now-fully-dead `fetch_graph_facts`/
-  `fetch_graph_facts_raw` dispatch chain from `zeph-agent-context::helpers` (kept
-  `GRAPH_FACTS_PREFIX`, still used for stale-message stripping) and its 4 associated unit tests
-  in `zeph-core`, superseded by equivalent coverage in `zeph-context::assembler`'s own test
-  module plus new end-to-end regression tests proving `retrieval_strategy` actually changes
-  which `SemanticMemory` method is invoked and that view enrichment survives across strategies.
+- `zeph-tools`/`zeph`: `RiskChainAccumulator` was shared across every concurrent session in ACP
+  and `serve-sessions` — `wire_risk_chain` was called once per connection/server (on the shared
+  `ShellExecutor` baked into `SharedAgentDeps`/`ServeAgentDeps`'s base tool chain) and the
+  resulting `Arc` handed to every session built on top, even though the type's own contract
+  assumes one instance per agent turn/session (#6588). Under concurrent load, one session's
+  `begin_turn()` reset could wipe another session's mid-chain state (false negative), or two
+  sessions' independent shell activity could cross-combine into a spurious chain fire
+  (cross-tenant state bleed), worst for `serve-sessions` since it is genuinely multi-tenant.
+  `ShellExecutor` is now excluded from the shared base chain and rebuilt fresh per session in
+  `spawn_acp_agent` (`src/acp.rs`) and `agent_factory::build_agent_factory`
+  (`src/serve/agent_factory.rs`), each calling `wire_risk_chain` itself to get its own
+  `RiskChainAccumulator` wired to that session's own trajectory signal queue, composed as an
+  outer layer around the shared, session-independent rest of the tool chain (file/scrape/
+  diagnostics/time/MCP — safe to share, unlike shell). Expensive connection/server-scoped
+  ingredients (OS sandbox initialization, permission policy, audit logger, task supervisor) are
+  still built once and cheaply cloned into each session's fresh executor, so nothing is
+  re-initialized per session. Added `ShellExecutor::with_shared_policy` and
+  `ShellPolicyHandle::new_shared` (`zeph-tools`) so ACP's live `blocked_commands` hot-reload
+  still reaches every session's independent executor. Added
+  `agent_setup::build_shared_base_chain_without_shell` (mirrors `build_base_executor_chain`
+  minus the `shell` slot, used by ACP) and `zeph_config::tools::ShellConfig` now derives `Clone`
+  to support the per-session rebuild. Also fixed a regression this uncovered:
+  `assemble_serve_deps`'s eager capability-scope startup validation built its tool-id registry
+  from the now-shell-less base chain, which would have reintroduced the #6045/F1 `DeadPattern`
+  bug for any `builtin:bash` scope pattern; a throwaway validation-only `ShellExecutor` is now
+  composed into that registry build. `runner.rs`/`daemon.rs` are single-session-per-process, so
+  a shared `ShellExecutor` built once was already correct there — no change needed beyond the
+  #6561 queue wiring above.
 
-  **BREAKING**: deployments running default graph-memory config (`spreading_activation.enabled
-  = false`, `[memory.graph] retrieval_strategy` left unset/`"synapse"`) will now use SYNAPSE
-  spreading-activation recall (`recall_graph_activated`) instead of the previous — unintentional
-  — plain-BFS fallback (`recall_graph`): before this fix, `retrieval_strategy` was never read at
-  all, and the live path fell back to BFS purely because `spreading_activation`'s own params
-  were only built when `enabled = true`. `retrieval_strategy`'s documented default (`synapse`,
-  "preserves existing SYNAPSE spreading-activation behavior") now actually takes effect. To keep
-  the prior BFS-only behavior, explicitly set `retrieval_strategy = "bfs"` under `[memory.graph]`.
-  Spreading activation is more expensive per-recall than plain BFS; deployments sensitive to
-  graph-recall latency/cost should benchmark before upgrading or pin `retrieval_strategy = "bfs"`.
+- `zeph`: added end-to-end behavioral tests per entry point (`runner.rs`/`daemon.rs`/`acp.rs`/
+  `src/serve/agent_factory.rs`) that construct each entry point's real production
+  `ShellExecutor`/tool-executor chain and dispatch a chained `SensitiveRead -> NetworkEgress`
+  sequence through it, asserting the chain is actually blocked and the #6561 signal queue is
+  populated — proving both fixes above are live in each mode, not just that the shared helper
+  functions compile in isolation. Added companion tests for ACP and serve confirming two
+  concurrent sessions' `RiskChainAccumulator` state does not leak across sessions (#6589).
 
 - `zeph-core`: `handle_compress_context` (the `compress_context`/`request_compaction` tool path,
   `crates/zeph-core/src/agent/tool_execution/focus.rs`) appended the compression LLM's summary

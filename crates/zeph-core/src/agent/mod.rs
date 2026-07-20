@@ -1036,8 +1036,12 @@ impl<C: Channel> Agent<C> {
                 // keeps this in sync with `RiskSignal::from_code`, the single source of truth
                 // for the code-to-meaning table. Only the four spec-004-16 signal classes have a
                 // MAGE equivalent; the remaining RiskSignal variants (OutOfScope, PiiRedaction,
-                // ToolFailure, HighCallRate, UnusualReadVolume, ToolPairTransition, and
-                // VigilFlagged(Low)) are trajectory-only and intentionally not surfaced to MAGE.
+                // ToolFailure, HighCallRate, UnusualReadVolume, ToolPairTransition,
+                // ExfilReadThenSend, CredThenEgress, and VigilFlagged(Low)) are trajectory-only
+                // and intentionally not surfaced to MAGE (spec 004-16's four classes are a fixed
+                // set; widening MAGE's mapping is a separate, spec-governed change, not part of
+                // #6561/F2's scope, which only fixes these two signals' TrajectorySentinel
+                // weight).
                 let mage_signal: Option<(MageSignal, MageSev)> = match signal {
                     RiskSignal::PolicyDeny => Some((MageSignal::PolicyViolation, MageSev::Medium)),
                     RiskSignal::ExfiltrationRedaction => {
@@ -1100,9 +1104,11 @@ impl<C: Channel> Agent<C> {
         if let Some(ref sentinel) = self.services.security.shadow_sentinel {
             sentinel.advance_turn();
         }
-        // Reset per-turn risk chain state so scores don't bleed across turns.
+        // #6561: advance (not reset) the risk chain accumulator — it prunes calls older than
+        // its cross-turn window and recomputes the score, rather than fully clearing state, so
+        // a chain split across turns is still detected. See `RiskChainAccumulator::advance_turn`.
         if let Some(ref acc) = self.services.security.risk_chain_accumulator {
-            acc.reset();
+            acc.advance_turn();
         }
         // Publish updated risk level to the shared slot so PolicyGateExecutor can read it.
         let risk_level = self.services.security.trajectory.current_risk();

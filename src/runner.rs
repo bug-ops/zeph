@@ -1642,6 +1642,11 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         #[cfg(not(feature = "tui"))]
         let _backfill_handle = crate::bootstrap::spawn_embed_backfill(memory_arc, 300, None);
     }
+    // Spec 050 §2 / #6561: created here (rather than alongside `trajectory_risk_slot` below)
+    // so it can be passed into `build_tool_setup` and wired into `RiskChainAccumulator` at
+    // construction time — the accumulator has no post-construction setter for the queue.
+    let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
+        std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
     #[cfg(feature = "tui")]
     let mut tool_setup = tui_status_scope!("Connecting tools...", {
         agent_setup::build_tool_setup(
@@ -1657,6 +1662,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             Some(memory.sqlite().pool()),
             &provider,
             Some(&*supervisor),
+            std::sync::Arc::clone(&trajectory_signal_queue),
         )
         .await
     });
@@ -1674,6 +1680,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         Some(memory.sqlite().pool()),
         &provider,
         Some(&*supervisor),
+        std::sync::Arc::clone(&trajectory_signal_queue),
     )
     .await;
 
@@ -2369,9 +2376,9 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // Spec 050: shared trajectory risk slot — written by begin_turn(), read by PolicyGateExecutor.
     let trajectory_risk_slot: zeph_tools::TrajectoryRiskSlot =
         std::sync::Arc::new(parking_lot::RwLock::new(0u8));
-    // Spec 050: pending risk signal queue — executor layers push signal codes; begin_turn() drains.
-    let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
-        std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    // Spec 050: pending risk signal queue — executor layers push signal codes; begin_turn()
+    // drains. Created earlier (before `build_tool_setup`) so the same queue could be wired
+    // into `RiskChainAccumulator` (#6561); reused here.
     // #5610/#5886: shared TrustGateExecutor wrap, also used by ACP (`src/acp.rs`) and the
     // daemon (`src/daemon.rs`) so all three entry points gate the full executor tree through
     // one code path.

@@ -1024,7 +1024,7 @@ fn default_max_checkpoints() -> usize {
 }
 
 /// Shell-specific configuration: timeout, command blocklist, and allowlist overrides.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct ShellConfig {
     /// Shell command timeout in seconds. Default: `30`.

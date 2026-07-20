@@ -95,12 +95,19 @@ pub(crate) struct ServeAgentDeps {
     pub(crate) rl_persist_interval: u32,
     pub(crate) rl_warmup_updates: u32,
     pub(crate) rl_head: Option<zeph_skills::rl_head::RoutingHead>,
-    /// Base tool composite (file/shell/scrape/cwd), *not* wrapped in any gate. Per SEC-H1
-    /// (concurrent `/sessions` share this one `Arc`, but `TrustGateExecutor`/`PolicyGateExecutor`
-    /// carry per-turn *mutable* trust state), `agent_factory::build_agent_factory` wraps a
-    /// fresh trust/policy/adversarial gate stack around this shared base **per session** — see
-    /// its doc comment. This field must never be dispatched to directly without that wrap.
+    /// Base tool composite (file/scrape/cwd), *not* wrapped in any gate. Deliberately excludes
+    /// `shell` (#6588) — `agent_factory::build_agent_factory` composes a fresh per-session
+    /// `ShellExecutor` (from `shell_ingredients` below) as an outer layer around this shared
+    /// chain, so each session gets its own `RiskChainAccumulator`. Per SEC-H1 (concurrent
+    /// `/sessions` share this one `Arc`, but `TrustGateExecutor`/`PolicyGateExecutor` carry
+    /// per-turn *mutable* trust state), `agent_factory::build_agent_factory` also wraps a fresh
+    /// trust/policy/adversarial gate stack around the combined per-session tree — see its doc
+    /// comment. This field must never be dispatched to directly without that wrap.
     pub(crate) tool_executor: Arc<dyn ErasedToolExecutor>,
+    /// Ingredients for rebuilding a fresh `ShellExecutor` per session (#6588) — see
+    /// [`ShellSessionIngredients`]'s doc comment for why `ShellExecutor` is excluded from
+    /// `tool_executor` above and cannot be shared the way the rest of the base chain is.
+    pub(crate) shell_ingredients: ShellSessionIngredients,
     /// `[security.capability_scopes]` snapshot (#6045). `assemble_serve_deps` only *validates*
     /// this compiles against the tool registry at startup (fatal on error, matching
     /// `runner.rs`/`daemon.rs`'s precedent for this process-global config) — the actual
@@ -205,13 +212,6 @@ pub(crate) struct ServeAgentDeps {
     /// `Agent::with_tools_enabled` so `[tools] enabled = false` actually suppresses tool
     /// definitions for `/sessions`-built agents, matching `runner.rs`/`daemon.rs`/`acp.rs`.
     pub(crate) tools_enabled: bool,
-    /// Shared multi-step shell attack-chain detector, attached to the shared `ShellExecutor`
-    /// inside `tool_executor` via `agent_setup::wire_risk_chain`. `agent_factory` passes the
-    /// same `Arc` into every session's `Agent::with_risk_chain_accumulator` via
-    /// `agent_setup::apply_entrypoint_security_controls` (#6578) — mirrors `src/runner.rs`,
-    /// `src/daemon.rs`, and `src/acp.rs`. See `agent_setup::wire_risk_chain`'s doc comment for
-    /// the cross-session sharing caveat under concurrent `/sessions*` load.
-    pub(crate) risk_chain_accumulator: Arc<zeph_tools::RiskChainAccumulator>,
     /// Typed-page CAM fidelity state (#6574), built once at startup via
     /// `agent_setup::build_typed_pages_state` since `[memory.compression.typed_pages]` is static
     /// config. `agent_factory` clones the `Arc` into every session via
@@ -290,7 +290,7 @@ pub(crate) async fn assemble_serve_deps(
              this serve-sessions process (serve wires no hooks or MCP tools yet)"
         );
     }
-    let (tool_executor, permission_policy, audit_logger, risk_chain_accumulator) =
+    let (tool_executor, permission_policy, audit_logger, shell_ingredients) =
         build_tool_executor(config, supervisor).await?;
     // #6574: typed-page CAM fidelity enforcement, matching src/runner.rs/src/daemon.rs/
     // src/acp.rs — previously only the CLI/TUI path built `TypedPagesState`, so `/sessions`-
@@ -356,12 +356,26 @@ pub(crate) async fn assemble_serve_deps(
     // this validation and `build_agent_factory`'s real per-session tree call, so the two
     // registries can never drift apart. `conversation_id`/`memory_validation_config` only
     // affect runtime dispatch, not `tool_definitions()` — safe to use placeholder values here.
+    //
+    // #6588: `tool_executor` no longer includes `shell` (rebuilt fresh per session — see
+    // `ShellSessionIngredients`'s doc comment), so a throwaway `ShellExecutor` (no risk chain;
+    // discarded immediately, only its `tool_definitions()` are read) is composed in here too —
+    // otherwise a scope pattern referencing `builtin:bash` would hit the exact #6045/F1
+    // `DeadPattern` regression this validation exists to prevent, since the real per-session
+    // registry (built by `build_agent_factory` with the fresh per-session shell layer) DOES
+    // contain it.
     let capability_scopes_config = config.security.capability_scopes.clone();
     if !capability_scopes_config.scopes.is_empty() {
         use zeph_tools::scope::build_scoped_executor;
+        let validation_shell = zeph_tools::ShellExecutor::new(&shell_ingredients.config);
+        let tool_executor_for_validation: Arc<dyn ErasedToolExecutor> =
+            Arc::new(zeph_tools::CompositeExecutor::new(
+                validation_shell,
+                zeph_tools::DynExecutor(Arc::clone(&tool_executor)),
+            ));
         let (composed_for_validation, _trust_snapshot) =
             crate::serve::agent_factory::compose_session_tool_tree(
-                Arc::clone(&tool_executor),
+                tool_executor_for_validation,
                 &core.registry,
                 &core.memory,
                 zeph_memory::ConversationId(0),
@@ -581,6 +595,7 @@ pub(crate) async fn assemble_serve_deps(
         rl_warmup_updates: config.skills.rl_warmup_updates,
         rl_head: core.rl_head.clone(),
         tool_executor,
+        shell_ingredients,
         capability_scopes_config,
         permission_policy,
         audit_logger,
@@ -621,7 +636,6 @@ pub(crate) async fn assemble_serve_deps(
             .map(PathBuf::from)
             .collect(),
         tools_enabled: config.tools.enabled,
-        risk_chain_accumulator,
         typed_pages_state,
         shadow_memory_config: config.memory.shadow_memory.clone(),
     })
@@ -645,6 +659,37 @@ pub(crate) async fn resolve_auth_token(app: &crate::bootstrap::AppBuilder) -> Op
         );
         None
     })
+}
+
+/// Ingredients needed to rebuild a fresh `ShellExecutor` per session (#6588).
+///
+/// Unlike file/scrape/cwd (safe to share connection/server-wide), `ShellExecutor` must not be
+/// shared across concurrent `/sessions*` agents — each needs its own `RiskChainAccumulator` so
+/// one session's turn-reset cannot wipe another's mid-chain state. Sandbox initialization is
+/// real work and safe to share (the resulting `Arc`/`SandboxPolicy` are cheap to clone into
+/// each session's executor), so it is built once and stored here rather than redone per
+/// session.
+#[derive(Clone)]
+pub(crate) struct ShellSessionIngredients {
+    pub(crate) config: zeph_config::tools::ShellConfig,
+    pub(crate) filters_config: zeph_config::tools::FilterConfig,
+    pub(crate) sandbox: Option<(Arc<dyn zeph_tools::Sandbox>, zeph_tools::SandboxPolicy)>,
+    pub(crate) task_supervisor: zeph_common::task_supervisor::TaskSupervisor,
+}
+
+impl Default for ShellSessionIngredients {
+    /// Test/fixture default: no sandbox, a fresh standalone supervisor. Production always
+    /// builds this via [`build_tool_executor`], never via `Default`.
+    fn default() -> Self {
+        Self {
+            config: zeph_config::tools::ShellConfig::default(),
+            filters_config: zeph_config::tools::FilterConfig::default(),
+            sandbox: None,
+            task_supervisor: zeph_common::task_supervisor::TaskSupervisor::new(
+                tokio_util::sync::CancellationToken::new(),
+            ),
+        }
+    }
 }
 
 /// Builds the core shell/file/web/cwd tool set (sandbox + audit wired the same way
@@ -671,19 +716,13 @@ async fn build_tool_executor(
     Arc<dyn ErasedToolExecutor>,
     zeph_tools::PermissionPolicy,
     Option<Arc<zeph_tools::AuditLogger>>,
-    Arc<zeph_tools::RiskChainAccumulator>,
+    ShellSessionIngredients,
 )> {
     let permission_policy =
         zeph_tools::build_permission_policy(&config.tools, config.security.autonomy_level);
-    let filter_registry = if config.tools.filters.enabled {
-        zeph_tools::OutputFilterRegistry::default_filters(&config.tools.filters)
-    } else {
-        zeph_tools::OutputFilterRegistry::new(false)
-    };
-    let mut shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
-        .with_permissions(permission_policy.clone())
-        .with_output_filters(filter_registry)
-        .with_task_supervisor(supervisor.clone());
+    // #6588: `ShellExecutor` itself is NOT built here — see `ShellSessionIngredients`'s doc
+    // comment. Only the expensive, connection-scoped sandbox backend is built once here.
+    let mut shell_sandbox: Option<(Arc<dyn zeph_tools::Sandbox>, zeph_tools::SandboxPolicy)> = None;
     if config.tools.sandbox.enabled {
         let denied_present = !config.tools.sandbox.denied_domains.is_empty();
         match zeph_tools::sandbox::build_sandbox_with_policy(
@@ -694,7 +733,7 @@ async fn build_tool_executor(
             Ok(backend) => {
                 let name = backend.name();
                 let policy = crate::agent_setup::sandbox_policy_from_config(&config.tools.sandbox);
-                shell_executor = shell_executor.with_sandbox(Arc::from(backend), policy);
+                shell_sandbox = Some((Arc::from(backend), policy));
                 tracing::info!(backend = name, "OS sandbox enabled (serve-sessions)");
             }
             Err(e) if config.tools.sandbox.strict || config.tools.sandbox.fail_if_unavailable => {
@@ -723,19 +762,12 @@ async fn build_tool_executor(
         && let Ok(logger) = zeph_tools::AuditLogger::from_config(&config.tools.audit, false).await
     {
         let logger = Arc::new(logger);
-        shell_executor = shell_executor.with_audit(Arc::clone(&logger));
         scrape_executor = scrape_executor.with_audit(Arc::clone(&logger));
         if let Some(w) = web_search_executor.take() {
             web_search_executor = Some(w.with_audit(Arc::clone(&logger)));
         }
         audit_logger = Some(logger);
     }
-    // #6578: wire the multi-step shell attack-chain detector, matching src/runner.rs's
-    // `agent_setup::build_tool_setup` — previously only the CLI/TUI path constructed a
-    // `RiskChainAccumulator`, so `/sessions`-built agents' `ShellExecutor` silently skipped the
-    // `SensitiveRead` -> `NetworkEgress` chain check entirely.
-    let (shell_executor, risk_chain_accumulator) =
-        crate::agent_setup::wire_risk_chain(shell_executor);
     let file_executor = zeph_tools::FileExecutor::new(
         config
             .tools
@@ -754,22 +786,23 @@ async fn build_tool_executor(
             .map(PathBuf::from)
             .collect(),
     );
+    // #6588: `shell` is deliberately excluded from this shared chain — the per-session factory
+    // (`agent_factory::build_agent_factory`) composes a fresh `ShellExecutor` as an outer layer
+    // instead, using `ShellSessionIngredients` below.
     let base: Arc<dyn ErasedToolExecutor> = Arc::new(zeph_tools::CompositeExecutor::new(
         file_executor,
         zeph_tools::CompositeExecutor::new(
-            shell_executor,
-            zeph_tools::CompositeExecutor::new(
-                scrape_executor,
-                crate::agent_setup::with_search_executor(cwd_executor, web_search_executor),
-            ),
+            scrape_executor,
+            crate::agent_setup::with_search_executor(cwd_executor, web_search_executor),
         ),
     ));
-    Ok((
-        base,
-        permission_policy,
-        audit_logger,
-        risk_chain_accumulator,
-    ))
+    let shell_ingredients = ShellSessionIngredients {
+        config: config.tools.shell.clone(),
+        filters_config: config.tools.filters.clone(),
+        sandbox: shell_sandbox,
+        task_supervisor: supervisor.clone(),
+    };
+    Ok((base, permission_policy, audit_logger, shell_ingredients))
 }
 
 #[cfg(test)]
