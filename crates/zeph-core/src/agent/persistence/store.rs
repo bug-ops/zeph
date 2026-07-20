@@ -84,8 +84,8 @@ impl<C: Channel> Agent<C> {
     /// interactive/disclosure gate must not also lose the audit trail):
     /// - **Audit** (`audit_all` alone, independent of `enabled`): every write — trusted or not —
     ///   is recorded via [`zeph_tools::AuditEntry::memory_write`] when `audit_all = true`.
-    ///   Mirrors [`crate::memory_tools::MemoryToolExecutor::do_memory_save`]'s audit emission,
-    ///   which likewise fires whenever a logger is attached, not gated on `enabled`.
+    ///   Mirrors [`crate::memory_tools::MemoryToolExecutor::do_memory_save`]'s audit emission
+    ///   (issue #6559 fix), which likewise gates on `audit_all` alone, independent of `enabled`.
     /// - **Disclosure** (`enabled` AND `provenance` at or above `disclose_threshold`): an
     ///   unambiguous in-turn channel note — background tool-output writes never block on
     ///   `Channel::confirm` (CLAUDE.md non-blocking contract, spec-039); the interactive
@@ -217,8 +217,8 @@ impl<C: Channel> Agent<C> {
         // Audit (part D) is gated on `audit_all` ONLY, independent of `consent_gate.enabled` —
         // an operator disabling the interactive/disclosure gate (UX friction) must not also
         // silently lose the audit trail. This matches `MemoryToolExecutor::do_memory_save`'s
-        // audit emission, which likewise fires whenever a logger is attached, not gated on
-        // `enabled`.
+        // audit emission (issue #6559 fix), which likewise gates on `audit_all` alone,
+        // independent of `enabled`.
         let consent_cfg = self.services.security.consent_gate_config.clone();
         if consent_cfg.audit_all
             && let Some(logger) = self.tool_orchestrator.audit_logger.clone()

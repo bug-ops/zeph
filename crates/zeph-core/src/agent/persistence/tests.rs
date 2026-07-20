@@ -3299,4 +3299,152 @@ mod image_persistence_strip {
              got: {content}"
         );
     }
+
+    // ── Disclosure-note branch coverage (issue #6557) ──────────────────────────────
+    //
+    // `persist_message_inner`'s disclosure block (store.rs, ~L250-266) sends an in-turn
+    // channel note when `consent_gate.enabled` AND the batch's `trust_level` is at or above
+    // `disclose_threshold`. No prior test asserted on any of the three branches directly.
+
+    async fn agent_for_disclosure_tests(
+        consent_gate: zeph_config::ConsentGateConfig,
+    ) -> Agent<MockChannel> {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::new(memory),
+            cid,
+            50,
+            5,
+            100,
+        );
+        agent.services.security.consent_gate_config = consent_gate;
+        agent
+    }
+
+    /// (a) `enabled = true` and `trust_level >= disclose_threshold` — the note must be sent.
+    #[tokio::test]
+    async fn disclosure_note_sent_when_enabled_and_trust_at_or_above_threshold() {
+        let mut agent = agent_for_disclosure_tests(zeph_config::ConsentGateConfig {
+            enabled: true,
+            disclose_threshold: "local_untrusted".to_owned(),
+            ..zeph_config::ConsentGateConfig::default()
+        })
+        .await;
+
+        agent
+            .persist_message_with_provenance(
+                Role::User,
+                "tool output content",
+                &[],
+                false,
+                zeph_sanitizer::ContentSourceKind::McpResponse,
+                zeph_sanitizer::ContentTrustLevel::ExternalUntrusted,
+            )
+            .await;
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter()
+                .any(|m| m.contains("Saved to memory") && m.contains("mcp_response")),
+            "trust at/above disclose_threshold with enabled=true must send a disclosure note, \
+             got sent messages: {sent:?}"
+        );
+    }
+
+    /// (b) `enabled = true` but `trust_level < disclose_threshold` — the note must be suppressed.
+    #[tokio::test]
+    async fn disclosure_note_suppressed_when_trust_below_threshold() {
+        let mut agent = agent_for_disclosure_tests(zeph_config::ConsentGateConfig {
+            enabled: true,
+            disclose_threshold: "external_untrusted".to_owned(),
+            ..zeph_config::ConsentGateConfig::default()
+        })
+        .await;
+
+        agent
+            .persist_message_with_provenance(
+                Role::User,
+                "tool output content",
+                &[],
+                false,
+                zeph_sanitizer::ContentSourceKind::ToolResult,
+                zeph_sanitizer::ContentTrustLevel::LocalUntrusted,
+            )
+            .await;
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            !sent.iter().any(|m| m.contains("Saved to memory")),
+            "trust below disclose_threshold must suppress the disclosure note, got: {sent:?}"
+        );
+    }
+
+    /// (c) `enabled = false` — the note must be suppressed regardless of trust tier, independent
+    /// of `audit_all`.
+    #[tokio::test]
+    async fn disclosure_note_suppressed_when_consent_gate_disabled() {
+        let mut agent = agent_for_disclosure_tests(zeph_config::ConsentGateConfig {
+            enabled: false,
+            disclose_threshold: "local_untrusted".to_owned(),
+            audit_all: true,
+            ..zeph_config::ConsentGateConfig::default()
+        })
+        .await;
+
+        agent
+            .persist_message_with_provenance(
+                Role::User,
+                "tool output content",
+                &[],
+                false,
+                zeph_sanitizer::ContentSourceKind::McpResponse,
+                zeph_sanitizer::ContentTrustLevel::ExternalUntrusted,
+            )
+            .await;
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            !sent.iter().any(|m| m.contains("Saved to memory")),
+            "consent_gate.enabled=false must suppress the disclosure note even at the highest \
+             trust tier, got: {sent:?}"
+        );
+    }
+
+    /// (d) `audit_all = false` must NOT suppress the disclosure note — `audit_all` and the
+    /// disclosure gate are independent switches (issue #6559 threads `audit_all` into the
+    /// audit-log block only; the disclosure block below it is gated on `enabled` alone).
+    #[tokio::test]
+    async fn disclosure_note_sent_even_when_audit_all_false() {
+        let mut agent = agent_for_disclosure_tests(zeph_config::ConsentGateConfig {
+            enabled: true,
+            disclose_threshold: "local_untrusted".to_owned(),
+            audit_all: false,
+            ..zeph_config::ConsentGateConfig::default()
+        })
+        .await;
+
+        agent
+            .persist_message_with_provenance(
+                Role::User,
+                "tool output content",
+                &[],
+                false,
+                zeph_sanitizer::ContentSourceKind::McpResponse,
+                zeph_sanitizer::ContentTrustLevel::ExternalUntrusted,
+            )
+            .await;
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter()
+                .any(|m| m.contains("Saved to memory") && m.contains("mcp_response")),
+            "audit_all=false must not suppress the disclosure note — disclosure and audit are \
+             independent switches, got: {sent:?}"
+        );
+    }
 }

@@ -2336,6 +2336,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         if let Some(ref logger) = tool_setup.audit_logger {
             e = e.with_audit(std::sync::Arc::clone(logger));
         }
+        e = e.with_audit_all(config.memory.consent_gate.audit_all);
         if exec_mode.bare { e.ephemeral() } else { e }
     };
     let overflow_executor = zeph_core::overflow_tools::OverflowToolExecutor::new(

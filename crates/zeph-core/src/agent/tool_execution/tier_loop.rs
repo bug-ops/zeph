@@ -1926,8 +1926,12 @@ impl<C: Channel> Agent<C> {
         // Batch-level worst-case content-trust tier (issue #6490, MemGhost): the whole batch
         // is persisted as one message, so its write-time provenance tag reflects the
         // least-trusted tool call in the batch — same OR-aggregation shape as
-        // has_any_injection_flags/flagged_urls below.
+        // has_any_injection_flags/flagged_urls below. `batch_source_kind` is paired with it
+        // (issue #6556): it tracks the actual `ContentSourceKind` of the last tool call
+        // observed at or above the running trust maximum (`>=` tie-break, tool_result.rs),
+        // instead of being re-derived from the trust tier alone.
         let mut batch_trust_level = zeph_sanitizer::ContentTrustLevel::Trusted;
+        let mut batch_source_kind = zeph_sanitizer::ContentSourceKind::ToolResult;
         for idx in 0..tool_calls.len() {
             let tc = &tool_calls[idx];
             let tool_call_id = &tool_call_ids[idx];
@@ -1945,6 +1949,7 @@ impl<C: Channel> Agent<C> {
                 &mut pending_outcomes,
                 &mut images_attached_this_turn,
                 &mut batch_trust_level,
+                &mut batch_source_kind,
             )
             .await?;
         }
@@ -1991,9 +1996,12 @@ impl<C: Channel> Agent<C> {
         tracing::debug!("tool_batch: calling persist_message for tool results");
         // Issue #6490 (MemGhost): tag the batch with its write-time provenance. `source_kind`
         // is a coarse per-batch label (multiple tool calls with different origins can share one
-        // persisted message) — `ExternalUntrusted` maps to WebScrape, `LocalUntrusted` to
-        // ToolResult, matching the two ContentSourceKind buckets those tiers are drawn from in
-        // `build_tool_output_source`. Trusted batches use the default trusted `persist_message`.
+        // persisted message) — `batch_source_kind` (issue #6556) tracks the actual
+        // `ContentSourceKind` of the last tool call observed at or above the batch's running
+        // trust maximum, rather than being re-derived from `batch_trust_level` alone (which
+        // previously collapsed every `ExternalUntrusted` batch — MCP responses, memory-recall
+        // replays, and web-scrapes alike — into `WebScrape`). Trusted batches use the default
+        // trusted `persist_message`.
         if batch_trust_level == zeph_sanitizer::ContentTrustLevel::Trusted {
             self.persist_message(
                 Role::User,
@@ -2003,18 +2011,12 @@ impl<C: Channel> Agent<C> {
             )
             .await;
         } else {
-            let source_kind =
-                if batch_trust_level == zeph_sanitizer::ContentTrustLevel::ExternalUntrusted {
-                    zeph_sanitizer::ContentSourceKind::WebScrape
-                } else {
-                    zeph_sanitizer::ContentSourceKind::ToolResult
-                };
             self.persist_message_with_provenance(
                 Role::User,
                 &user_msg.content,
                 &user_msg.parts,
                 tool_results_have_flags,
-                source_kind,
+                batch_source_kind,
                 batch_trust_level,
             )
             .await;

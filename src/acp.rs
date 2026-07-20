@@ -1747,6 +1747,7 @@ async fn spawn_acp_agent(
         if let Some(ref logger) = d.audit_logger {
             e = e.with_audit(Arc::clone(logger));
         }
+        e = e.with_audit_all(consent_gate_config.audit_all);
         e
     };
     let overflow_executor = {

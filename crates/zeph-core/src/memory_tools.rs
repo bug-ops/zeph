@@ -118,6 +118,13 @@ pub struct MemoryToolExecutor {
     /// Audit sink for memory-write attribution (issue #6490). `None` when audit logging is
     /// disabled — `memory_save` writes are not logged, matching other executors' behavior.
     audit_logger: Option<Arc<zeph_tools::AuditLogger>>,
+    /// Mirrors `memory.consent_gate.audit_all` (issue #6559). Deliberately independent of
+    /// `consent_gate` (which is `None` whenever `enabled = false`) — `audit_all` gates the audit
+    /// log regardless of the master `enabled` switch, matching
+    /// `Agent::persist_message_inner`'s background-write-path gating. Defaults to `true` so
+    /// callers that have not been updated to call `with_audit_all` keep the pre-#6559 behavior
+    /// (audit fires whenever a logger is attached).
+    audit_all: bool,
 }
 
 impl MemoryToolExecutor {
@@ -133,6 +140,7 @@ impl MemoryToolExecutor {
             ephemeral: false,
             consent_gate: None,
             audit_logger: None,
+            audit_all: true,
         }
     }
 
@@ -150,6 +158,7 @@ impl MemoryToolExecutor {
             ephemeral: false,
             consent_gate: None,
             audit_logger: None,
+            audit_all: true,
         }
     }
 
@@ -188,6 +197,16 @@ impl MemoryToolExecutor {
     #[must_use]
     pub fn with_audit(mut self, logger: Arc<zeph_tools::AuditLogger>) -> Self {
         self.audit_logger = Some(logger);
+        self
+    }
+
+    /// Set whether `memory_save` writes are audited, mirroring `memory.consent_gate.audit_all`
+    /// (issue #6559). Pass the config value here regardless of `consent_gate.enabled` — audit
+    /// attribution and the interactive/disclosure gate are independent switches, matching
+    /// `Agent::persist_message_inner`'s background-write-path gating (`store.rs`).
+    #[must_use]
+    pub fn with_audit_all(mut self, audit_all: bool) -> Self {
+        self.audit_all = audit_all;
         self
     }
 
@@ -263,7 +282,9 @@ impl MemoryToolExecutor {
             .await
             .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
 
-        if let Some(logger) = &self.audit_logger {
+        if self.audit_all
+            && let Some(logger) = &self.audit_logger
+        {
             let preview: String = params.content.chars().take(120).collect();
             let entry = zeph_tools::AuditEntry::memory_write(
                 "memory_save",
@@ -762,6 +783,71 @@ mod tests {
         assert!(result.is_ok(), "confirmed save should succeed: {result:?}");
         let output = result.unwrap().unwrap();
         assert!(output.summary.contains("Saved to memory"));
+    }
+
+    // ── audit_all gating on the interactive memory_save path (issue #6559) ─────────
+
+    async fn make_file_logger(log_path: &std::path::Path) -> Arc<zeph_tools::AuditLogger> {
+        let audit_config = zeph_tools::AuditConfig {
+            enabled: true,
+            destination: zeph_tools::AuditDestination::File(log_path.to_path_buf()),
+            tool_risk_summary: false,
+        };
+        Arc::new(
+            zeph_tools::AuditLogger::from_config(&audit_config, false)
+                .await
+                .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn memory_save_audited_when_audit_all_true() {
+        let memory = make_memory().await;
+        let sqlite = memory.sqlite().clone();
+        let cid = sqlite.create_conversation().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("audit.jsonl");
+        let logger = make_file_logger(&log_path).await;
+
+        let executor = MemoryToolExecutor::new(Arc::new(memory), cid)
+            .with_audit(logger)
+            .with_audit_all(true);
+
+        let call = memory_save_call("audited fact");
+        executor.execute_tool_call(&call).await.unwrap();
+
+        let content = tokio::fs::read_to_string(&log_path).await.unwrap();
+        assert!(
+            content.contains("memory_save"),
+            "audit_all=true must record the interactive memory_save write, got: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_save_not_audited_when_audit_all_false() {
+        let memory = make_memory().await;
+        let sqlite = memory.sqlite().clone();
+        let cid = sqlite.create_conversation().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("audit.jsonl");
+        let logger = make_file_logger(&log_path).await;
+
+        let executor = MemoryToolExecutor::new(Arc::new(memory), cid)
+            .with_audit(logger)
+            .with_audit_all(false);
+
+        let call = memory_save_call("unaudited fact");
+        executor.execute_tool_call(&call).await.unwrap();
+
+        // The logger was never asked to write, so the destination file must stay empty —
+        // matches persist_message_inner's audit_all=false behavior on the background path.
+        let content = tokio::fs::read_to_string(&log_path)
+            .await
+            .unwrap_or_default();
+        assert!(
+            content.is_empty(),
+            "audit_all=false must suppress the interactive memory_save audit entry, got: {content}"
+        );
     }
 
     /// `memory_search` description must mention user-provided facts so the model

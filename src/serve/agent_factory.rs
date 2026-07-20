@@ -189,6 +189,7 @@ pub(crate) async fn build_agent_factory(
         memory_validation_config,
         consent_gate,
         deps.audit_logger.clone(),
+        consent_gate_config.audit_all,
     );
 
     // SEC-H1 / R1: each session gets its own gate stack, wrapping the composed per-session tree
@@ -563,8 +564,11 @@ fn wrap_capability_scope(
 /// `consent_gate`/`audit_logger` wire `MemoryToolExecutor`'s write-time memory-consent gate
 /// (issue #6490, `MemGhost`) — like `conversation_id`/`memory_validation_config`, these only
 /// affect runtime dispatch behavior, not `tool_definitions()`, so the validation-only caller in
-/// `serve::deps::assemble_serve_deps` may safely pass `None` for both.
-#[allow(clippy::type_complexity)]
+/// `serve::deps::assemble_serve_deps` may safely pass `None` for both. `audit_all` mirrors
+/// `memory.consent_gate.audit_all` (issue #6559) and is independent of `consent_gate` (which is
+/// `None` whenever `enabled = false`) — the validation-only caller may pass `true` (the config
+/// default) since the composed executor is discarded there.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(super) fn compose_session_tool_tree(
     base: Arc<dyn ErasedToolExecutor>,
     registry: &Arc<parking_lot::RwLock<zeph_skills::registry::SkillRegistry>>,
@@ -576,6 +580,7 @@ pub(super) fn compose_session_tool_tree(
         zeph_sanitizer::ContentTrustLevel,
     )>,
     audit_logger: Option<Arc<zeph_tools::AuditLogger>>,
+    audit_all: bool,
 ) -> (
     Arc<dyn ErasedToolExecutor>,
     Arc<parking_lot::RwLock<std::collections::HashMap<String, zeph_core::SkillTrustSnapshot>>>,
@@ -592,6 +597,7 @@ pub(super) fn compose_session_tool_tree(
         if let Some(logger) = audit_logger {
             e = e.with_audit(logger);
         }
+        e = e.with_audit_all(audit_all);
         e
     };
     let overflow_executor =

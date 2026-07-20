@@ -837,6 +837,7 @@ pub(crate) async fn run_daemon(
         if let Some(ref logger) = daemon_audit_logger {
             e = e.with_audit(std::sync::Arc::clone(logger));
         }
+        e = e.with_audit_all(config.memory.consent_gate.audit_all);
         e
     };
     let overflow_executor = zeph_core::overflow_tools::OverflowToolExecutor::new(

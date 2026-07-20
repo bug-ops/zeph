@@ -406,6 +406,7 @@ impl<C: Channel> Agent<C> {
         pending_outcomes: &mut Vec<crate::agent::learning::PendingSkillOutcome>,
         images_attached_this_turn: &mut usize,
         batch_trust_level: &mut zeph_sanitizer::ContentTrustLevel,
+        batch_source_kind: &mut zeph_sanitizer::ContentSourceKind,
     ) -> Result<(), crate::agent::error::AgentError> {
         let ToolResultClassification {
             output,
@@ -473,13 +474,19 @@ impl<C: Channel> Agent<C> {
                 is_error = true;
                 (sentinel.clone(), false)
             } else {
-                let (body, flags, trust) = self
+                let (body, flags, kind, trust) = self
                     .sanitize_tool_output(&processed, tc.name.as_str())
                     .await;
                 // Batch-level worst-case trust (issue #6490, MemGhost): the whole batch is
                 // persisted as one message, so its provenance tag reflects the least-trusted
                 // tool call in the batch — mirrors the existing has_any_injection_flags/
-                // flagged_urls OR-aggregation pattern below.
+                // flagged_urls OR-aggregation pattern below. `batch_source_kind` is paired with
+                // `batch_trust_level` and updated together (issue #6556): on a tie, the later
+                // call in the batch wins, since `>=` (not `>`) always re-assigns the kind
+                // whenever the current call's trust is at least the running maximum.
+                if trust >= *batch_trust_level {
+                    *batch_source_kind = kind;
+                }
                 *batch_trust_level = (*batch_trust_level).max(trust);
                 (body, flags)
             };
@@ -838,7 +845,7 @@ impl<C: Channel> Agent<C> {
             })
             .await?;
 
-        let (llm_body, has_injection_flags, _trust_level) = self
+        let (llm_body, has_injection_flags, _kind, _trust_level) = self
             .sanitize_tool_output(&processed, output.tool_name.as_str())
             .await;
         let user_msg = Message::from_parts(
@@ -927,7 +934,7 @@ impl<C: Channel> Agent<C> {
                         started_at: Some(confirmed_started_at),
                     })
                     .await?;
-                let (llm_body, has_injection_flags, _trust_level) = self
+                let (llm_body, has_injection_flags, _kind, _trust_level) = self
                     .sanitize_tool_output(&processed, out.tool_name.as_str())
                     .await;
                 let confirmed_msg = Message::from_parts(

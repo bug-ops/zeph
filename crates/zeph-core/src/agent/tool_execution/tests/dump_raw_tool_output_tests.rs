@@ -106,6 +106,7 @@ async fn process_one_tool_result_writes_raw_dump_file_on_success() {
             &mut Vec::new(),
             &mut 0,
             &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+            &mut zeph_sanitizer::ContentSourceKind::ToolResult,
         )
         .await
         .unwrap();
@@ -161,6 +162,7 @@ async fn process_one_tool_result_dump_captures_raw_output_before_truncation() {
             &mut Vec::new(),
             &mut 0,
             &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+            &mut zeph_sanitizer::ContentSourceKind::ToolResult,
         )
         .await
         .unwrap();
@@ -215,6 +217,7 @@ async fn process_one_tool_result_dump_scrubs_pii_when_filter_enabled() {
             &mut Vec::new(),
             &mut 0,
             &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+            &mut zeph_sanitizer::ContentSourceKind::ToolResult,
         )
         .await
         .unwrap();
@@ -262,6 +265,7 @@ async fn process_one_tool_result_dump_keeps_content_when_pii_filter_disabled() {
             &mut Vec::new(),
             &mut 0,
             &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+            &mut zeph_sanitizer::ContentSourceKind::ToolResult,
         )
         .await
         .unwrap();
@@ -299,6 +303,7 @@ async fn process_one_tool_result_skips_raw_dump_on_error() {
             &mut Vec::new(),
             &mut 0,
             &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+            &mut zeph_sanitizer::ContentSourceKind::ToolResult,
         )
         .await
         .unwrap();
@@ -353,6 +358,7 @@ async fn process_one_tool_result_dump_is_noop_when_debug_dumps_disabled() {
             &mut Vec::new(),
             &mut 0,
             &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+            &mut zeph_sanitizer::ContentSourceKind::ToolResult,
         )
         .await
         .unwrap();

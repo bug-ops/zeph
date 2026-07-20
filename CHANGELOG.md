@@ -232,6 +232,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fixed a `zeph-agent-context` test that had pinned the old buggy empty-result behavior as
   expected, and added regression coverage for multi-ring (`ring_limit > 1`) bucketing.
 
+- `zeph-core`: a tool-call batch's write-time `source_kind` provenance tag (issue #6490,
+  MemGhost) was mislabeled `web_scrape` for every `ExternalUntrusted` batch regardless of
+  actual origin — MCP-server responses, memory-recall replays, and channel messages all
+  collapsed into the same hardcoded guess, since `tier_loop.rs` re-derived `source_kind` from
+  `batch_trust_level` alone via a lossy two-way `if`/`else` instead of tracking the real
+  `ContentSourceKind` (#6556). `Agent::sanitize_tool_output` now returns the per-call
+  `ContentSourceKind` alongside `ContentTrustLevel`; `process_one_tool_result` tracks a paired
+  `batch_source_kind` (tie-break: the later call in the batch wins on an equal trust tier) and
+  `tier_loop.rs` persists it directly instead of re-guessing. Fixes the audit log's
+  `memory_write` entries and the SQLite `messages.source_kind` column so an operator
+  investigating a memory-poisoning incident sees the real source (`mcp_response`,
+  `memory_retrieval`, `web_scrape`) instead of a misleading constant.
+
+- `zeph-core`: `memory.consent_gate.audit_all = false` was not honored on the interactive
+  `memory_save` tool-call path — `MemoryToolExecutor::do_memory_save` logged every write
+  whenever an `AuditLogger` was attached, regardless of `audit_all`, unlike the background
+  tool-output write path (`persist_message_inner`), which already gated correctly (#6559).
+  `MemoryToolExecutor` gained an `audit_all` field (default `true`, matching
+  `ConsentGateConfig`'s default) and a `with_audit_all` builder, now wired from every
+  production call site (`runner.rs`, `acp.rs`, `daemon.rs`, `serve/agent_factory.rs`)
+  independent of `consent_gate.enabled`, mirroring the background path's gating.
+
+- `zeph-core`: `persist_message_inner`'s disclosure-note branch (in-turn channel note sent
+  when `consent_gate.enabled` and a batch's `trust_level` is at or above `disclose_threshold`)
+  had no direct test coverage (#6557). Added regression tests covering all three branches:
+  note sent when enabled and at/above threshold, suppressed when below threshold, and
+  suppressed when `consent_gate.enabled = false` regardless of trust tier.
+
 - `zeph-sanitizer`/`zeph-subagent`/`zeph-core`: a generic secret-shaped string (e.g. an
   `sk-test-...`-prefixed API key) fabricated or echoed by a sub-agent in its own response text
   passed through unmasked on two operator-visible surfaces (#6571). The two sanitize layers

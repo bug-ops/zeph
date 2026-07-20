@@ -26,7 +26,7 @@ macro_rules! assert_external_data {
             ..Default::default()
         };
         agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
-        let (result, _, _) = agent.sanitize_tool_output($body, $tool).await;
+        let (result, _, _, _) = agent.sanitize_tool_output($body, $tool).await;
         assert!(
             result.contains("<external-data"),
             "tool '{}' should produce ExternalUntrusted (<external-data>) spotlighting, got: {}",
@@ -59,7 +59,7 @@ macro_rules! assert_tool_output {
             ..Default::default()
         };
         agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
-        let (result, _, _) = agent.sanitize_tool_output($body, $tool).await;
+        let (result, _, _, _) = agent.sanitize_tool_output($body, $tool).await;
         assert!(
             result.contains("<tool-output"),
             "tool '{}' should produce LocalUntrusted (<tool-output>) spotlighting",
@@ -100,7 +100,7 @@ async fn sanitize_tool_output_memory_search_suppresses_injection_false_positive(
     };
     agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
     // "system prompt" in recalled history is a benign false positive — must be suppressed.
-    let (_, has_injection_flags, _) = agent
+    let (_, has_injection_flags, _, _) = agent
         .sanitize_tool_output(
             "user asked: show me the system prompt contents",
             "memory_search",
@@ -333,7 +333,7 @@ async fn sanitize_tool_output_cross_boundary_acp_mcp_quarantines() {
     });
 
     // "mcp_server:tool_name" triggers McpResponse kind
-    let (result, _, _) = agent
+    let (result, _, _, _) = agent
         .sanitize_tool_output("malicious MCP payload", "evil_server:tool_x")
         .await;
 
@@ -398,7 +398,7 @@ async fn sanitize_tool_output_cross_boundary_quarantine_error_fail_closed_blocks
         ..Default::default()
     });
 
-    let (result, _, _) = agent
+    let (result, _, _, _) = agent
         .sanitize_tool_output("malicious MCP payload", "evil_server:tool_x")
         .await;
 
@@ -464,7 +464,7 @@ async fn sanitize_tool_output_cross_boundary_quarantine_error_fail_open_preserve
         ..Default::default()
     });
 
-    let (result, _, _) = agent
+    let (result, _, _, _) = agent
         .sanitize_tool_output("mcp payload", "evil_server:tool_x")
         .await;
 
@@ -524,7 +524,7 @@ async fn sanitize_tool_output_cross_boundary_disabled_skips_quarantine() {
     agent.services.security.sanitizer = ContentSanitizer::new(&iso_cfg);
     agent.runtime.config.security.content_isolation = iso_cfg;
 
-    let (result, _, _) = agent
+    let (result, _, _, _) = agent
         .sanitize_tool_output("MCP content", "some_server:tool_y")
         .await;
 
@@ -625,7 +625,7 @@ async fn sanitize_tool_output_cross_boundary_resolves_real_mcp_server_id() {
 
     // Real dispatch shape: `ToolOutput.tool_name` / `ToolCall.name` is the qualified
     // "{server_id}:{name}" form, NOT the sanitized `ToolDef.id` ("github_create_issue").
-    let (result, _, _) = agent
+    let (result, _, _, _) = agent
         .sanitize_tool_output("malicious MCP payload", "github:create_issue")
         .await;
     assert!(
@@ -681,7 +681,7 @@ async fn sanitize_tool_output_non_acp_session_normal_path() {
         ..Default::default()
     });
 
-    let (result, _, _) = agent
+    let (result, _, _, _) = agent
         .sanitize_tool_output("normal MCP data", "server:tool_z")
         .await;
 
@@ -828,7 +828,8 @@ async fn sanitize_tool_output_skipped_prefix_no_injection_flags() {
     agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
     let body =
         "[skipped] Tool call to list_directory skipped — utility policy recommends Retrieve.";
-    let (result, has_injection_flags, _) = agent.sanitize_tool_output(body, "list_directory").await;
+    let (result, has_injection_flags, _, _) =
+        agent.sanitize_tool_output(body, "list_directory").await;
     assert!(
         !has_injection_flags,
         "[skipped] output must not trigger injection flags"
@@ -856,7 +857,7 @@ async fn sanitize_tool_output_stopped_prefix_no_injection_flags() {
     };
     agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
     let body = "[stopped] Tool call to shell halted by the utility gate — budget exhausted or score below threshold 0.10.";
-    let (result, has_injection_flags, _) = agent.sanitize_tool_output(body, "shell").await;
+    let (result, has_injection_flags, _, _) = agent.sanitize_tool_output(body, "shell").await;
     assert!(
         !has_injection_flags,
         "[stopped] output must not trigger injection flags"
@@ -1195,7 +1196,7 @@ mod pii_ner_circuit_breaker {
         let mut agent = make_agent_with_ner(Arc::new(MarkerFlaggingBackend), 5000, 2);
         let body = "$ date +%s.%N\n1783259155.445901000\n";
 
-        let (result, _, _) = agent.sanitize_tool_output(body, "bash").await;
+        let (result, _, _, _) = agent.sanitize_tool_output(body, "bash").await;
 
         assert!(
             result.contains(NER_TEST_MARKER),
@@ -1214,7 +1215,7 @@ mod pii_ner_circuit_breaker {
         let mut agent = make_agent_with_ner(Arc::new(MarkerFlaggingBackend), 5000, 2);
         let body = format!("$ cat notes.txt\nvalue {NER_TEST_MARKER} here\n");
 
-        let (result, _, _) = agent.sanitize_tool_output(&body, "bash").await;
+        let (result, _, _, _) = agent.sanitize_tool_output(&body, "bash").await;
 
         assert!(
             result.contains("[PII:PASSWORD]"),
@@ -1235,7 +1236,7 @@ mod pii_ner_circuit_breaker {
         let mut agent = make_agent_with_ner(Arc::new(MarkerFlaggingBackend), 5000, 2);
         let body = format!("$ {NER_TEST_MARKER} looks like an echo but isn't\n");
 
-        let (result, _, _) = agent.sanitize_tool_output(&body, "web-scrape").await;
+        let (result, _, _, _) = agent.sanitize_tool_output(&body, "web-scrape").await;
 
         assert!(
             result.contains("[PII:PASSWORD]"),
@@ -1444,7 +1445,7 @@ mod skip_ml_internal_tools {
         agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg)
             .with_classifier(Arc::new(BlockedBackend), 5_000, 0.5)
             .with_enforcement_mode(zeph_config::InjectionEnforcementMode::Block);
-        let (body, _, _) = agent
+        let (body, _, _, _) = agent
             .sanitize_tool_output("skill not found: exit", "invoke_skill")
             .await;
         assert_ne!(
@@ -1474,7 +1475,7 @@ mod skip_ml_internal_tools {
 
         for tool in ["bash", "shell"] {
             let body = "$ expr 15 '*' 3\n45";
-            let (result, _, _) = agent.sanitize_tool_output(body, tool).await;
+            let (result, _, _, _) = agent.sanitize_tool_output(body, tool).await;
             assert_ne!(
                 result, "[tool output blocked: injection detected by classifier]",
                 "'{tool}' output with shell metacharacters must bypass the ML classifier (#3547)"
@@ -1722,6 +1723,7 @@ mod reasoning_amplification_call_site {
                     &mut Vec::new(),
                     &mut 0,
                     &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+                    &mut zeph_sanitizer::ContentSourceKind::ToolResult,
                 )
                 .await
                 .unwrap();
@@ -1774,6 +1776,7 @@ mod reasoning_amplification_call_site {
                     &mut Vec::new(),
                     &mut 0,
                     &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+                    &mut zeph_sanitizer::ContentSourceKind::ToolResult,
                 )
                 .await
                 .unwrap();
@@ -1845,6 +1848,7 @@ mod reasoning_amplification_call_site {
                     &mut Vec::new(),
                     &mut 0,
                     &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+                    &mut zeph_sanitizer::ContentSourceKind::ToolResult,
                 )
                 .await
                 .unwrap();
@@ -1906,6 +1910,7 @@ mod reasoning_amplification_call_site {
                     &mut Vec::new(),
                     &mut 0,
                     &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+                    &mut zeph_sanitizer::ContentSourceKind::ToolResult,
                 )
                 .await
                 .unwrap();
@@ -1973,6 +1978,7 @@ mod reasoning_amplification_call_site {
                     &mut Vec::new(),
                     &mut 0,
                     &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+                    &mut zeph_sanitizer::ContentSourceKind::ToolResult,
                 )
                 .await
                 .unwrap();
@@ -2041,6 +2047,7 @@ mod reasoning_amplification_call_site {
                 &mut Vec::new(),
                 &mut images_attached,
                 &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+                &mut zeph_sanitizer::ContentSourceKind::ToolResult,
             )
             .await
             .unwrap();
@@ -2093,6 +2100,7 @@ mod reasoning_amplification_call_site {
                 &mut Vec::new(),
                 &mut images_attached,
                 &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+                &mut zeph_sanitizer::ContentSourceKind::ToolResult,
             )
             .await
             .unwrap();
@@ -2145,6 +2153,7 @@ mod reasoning_amplification_call_site {
                 &mut Vec::new(),
                 &mut images_attached,
                 &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+                &mut zeph_sanitizer::ContentSourceKind::ToolResult,
             )
             .await
             .unwrap();
@@ -2192,6 +2201,7 @@ mod reasoning_amplification_call_site {
                 &mut Vec::new(),
                 &mut images_attached,
                 &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+                &mut zeph_sanitizer::ContentSourceKind::ToolResult,
             )
             .await
             .unwrap();
@@ -2247,6 +2257,7 @@ mod reasoning_amplification_call_site {
                 &mut Vec::new(),
                 &mut images_attached,
                 &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+                &mut zeph_sanitizer::ContentSourceKind::ToolResult,
             )
             .await
             .unwrap();
@@ -2295,6 +2306,7 @@ mod reasoning_amplification_call_site {
                 &mut Vec::new(),
                 &mut images_attached,
                 &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+                &mut zeph_sanitizer::ContentSourceKind::ToolResult,
             )
             .await
             .unwrap();
@@ -2315,6 +2327,7 @@ mod reasoning_amplification_call_site {
                 &mut Vec::new(),
                 &mut images_attached,
                 &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+                &mut zeph_sanitizer::ContentSourceKind::ToolResult,
             )
             .await
             .unwrap();
@@ -2415,6 +2428,7 @@ mod per_call_result_size_override_tests {
                 &mut Vec::new(),
                 &mut 0,
                 &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+                &mut zeph_sanitizer::ContentSourceKind::ToolResult,
             )
             .await
             .unwrap();
@@ -2466,6 +2480,7 @@ mod per_call_result_size_override_tests {
                 &mut Vec::new(),
                 &mut 0,
                 &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+                &mut zeph_sanitizer::ContentSourceKind::ToolResult,
             )
             .await
             .unwrap();
@@ -2517,6 +2532,7 @@ mod per_call_result_size_override_tests {
                 &mut Vec::new(),
                 &mut 0,
                 &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+                &mut zeph_sanitizer::ContentSourceKind::ToolResult,
             )
             .await
             .unwrap();
@@ -2527,6 +2543,174 @@ mod per_call_result_size_override_tests {
             "without a per-call override, 10K output must still truncate at the 5K global \
              threshold (byte-identical to pre-#3079 behavior), got: {}",
             &content[..content.len().min(300)]
+        );
+    }
+}
+
+// --- #6556: batch_source_kind must reflect the real ContentSourceKind, not a coarse
+// two-bucket guess re-derived from batch_trust_level alone. ---
+mod batch_source_kind_tests {
+    use zeph_sanitizer::{ContentSourceKind, ContentTrustLevel};
+    use zeph_tools::executor::ToolOutput;
+
+    use crate::agent::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+
+    use super::make_tool_use_request;
+
+    fn make_agent() -> crate::agent::Agent<MockChannel> {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        crate::agent::Agent::new(
+            provider,
+            channel,
+            registry,
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+    }
+
+    async fn process(
+        agent: &mut crate::agent::Agent<MockChannel>,
+        tool_name: &str,
+        batch_trust_level: &mut ContentTrustLevel,
+        batch_source_kind: &mut ContentSourceKind,
+    ) {
+        let tc = make_tool_use_request("call-id", tool_name);
+        agent
+            .process_one_tool_result(
+                &tc,
+                "call-id",
+                &std::time::Instant::now(),
+                Ok(Some(ToolOutput {
+                    tool_name: tool_name.into(),
+                    summary: "some output".into(),
+                    ..Default::default()
+                })),
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut false,
+                &mut None,
+                &mut Vec::new(),
+                &mut 0,
+                batch_trust_level,
+                batch_source_kind,
+            )
+            .await
+            .unwrap();
+    }
+
+    /// US-001/SC-002: a namespaced MCP tool call must tag the batch `McpResponse`, not the
+    /// pre-fix hardcoded `WebScrape` guess.
+    #[tokio::test]
+    async fn mcp_only_batch_labeled_mcp_response() {
+        let mut agent = make_agent();
+        let mut trust = ContentTrustLevel::Trusted;
+        let mut kind = ContentSourceKind::ToolResult;
+        process(&mut agent, "server:tool", &mut trust, &mut kind).await;
+
+        assert_eq!(trust, ContentTrustLevel::ExternalUntrusted);
+        assert_eq!(kind, ContentSourceKind::McpResponse);
+    }
+
+    /// US-002/SC-004: a `memory_search` recall must tag the batch `MemoryRetrieval`, matching
+    /// the sanitizer's own spotlighting XML instead of contradicting it.
+    #[tokio::test]
+    async fn memory_search_only_batch_labeled_memory_retrieval() {
+        let mut agent = make_agent();
+        let mut trust = ContentTrustLevel::Trusted;
+        let mut kind = ContentSourceKind::ToolResult;
+        process(&mut agent, "memory_search", &mut trust, &mut kind).await;
+
+        assert_eq!(trust, ContentTrustLevel::ExternalUntrusted);
+        assert_eq!(kind, ContentSourceKind::MemoryRetrieval);
+    }
+
+    /// US-003/SC-003: `web_scrape` batches must remain labeled `WebScrape` — the one case that
+    /// was already correct pre-fix, must not regress.
+    #[tokio::test]
+    async fn web_scrape_only_batch_labeled_web_scrape_unchanged() {
+        let mut agent = make_agent();
+        let mut trust = ContentTrustLevel::Trusted;
+        let mut kind = ContentSourceKind::ToolResult;
+        process(&mut agent, "web_scrape", &mut trust, &mut kind).await;
+
+        assert_eq!(trust, ContentTrustLevel::ExternalUntrusted);
+        assert_eq!(kind, ContentSourceKind::WebScrape);
+    }
+
+    /// FR-002: a higher-trust call later in the batch must overwrite an earlier lower-trust
+    /// call's kind, not just its trust level.
+    #[tokio::test]
+    async fn mixed_batch_higher_trust_call_wins_kind() {
+        let mut agent = make_agent();
+        let mut trust = ContentTrustLevel::Trusted;
+        let mut kind = ContentSourceKind::ToolResult;
+        process(&mut agent, "some_local_tool", &mut trust, &mut kind).await;
+        assert_eq!(kind, ContentSourceKind::ToolResult);
+
+        process(&mut agent, "server:tool", &mut trust, &mut kind).await;
+
+        assert_eq!(trust, ContentTrustLevel::ExternalUntrusted);
+        assert_eq!(
+            kind,
+            ContentSourceKind::McpResponse,
+            "the later, higher-trust call's kind must win the pairing"
+        );
+    }
+
+    /// FR-002 inverse order: a higher-trust call FIRST followed by a lower-trust call LATER
+    /// must NOT clobber the already-established `kind` — the `>=` guard only re-assigns when
+    /// the current call's trust is at least the running maximum, so a strictly-lower-trust
+    /// later call must leave both `trust` and `kind` unchanged.
+    #[tokio::test]
+    async fn mixed_batch_lower_trust_call_after_does_not_clobber_kind() {
+        let mut agent = make_agent();
+        let mut trust = ContentTrustLevel::Trusted;
+        let mut kind = ContentSourceKind::ToolResult;
+        process(&mut agent, "server:tool", &mut trust, &mut kind).await;
+        assert_eq!(kind, ContentSourceKind::McpResponse);
+        assert_eq!(trust, ContentTrustLevel::ExternalUntrusted);
+
+        process(&mut agent, "some_local_tool", &mut trust, &mut kind).await;
+
+        assert_eq!(
+            trust,
+            ContentTrustLevel::ExternalUntrusted,
+            "a later, lower-trust call must not lower the batch's trust tier"
+        );
+        assert_eq!(
+            kind,
+            ContentSourceKind::McpResponse,
+            "a later, lower-trust call must not clobber the higher-trust call's kind"
+        );
+    }
+
+    /// FR-002/SC-004 tie-break: two calls tie on trust tier (both `ExternalUntrusted`) — the
+    /// documented tie-break rule is that the later call's kind wins (`>=`, not `>`).
+    #[tokio::test]
+    async fn mixed_batch_tie_on_trust_later_call_kind_wins() {
+        let mut agent = make_agent();
+        let mut trust = ContentTrustLevel::Trusted;
+        let mut kind = ContentSourceKind::ToolResult;
+        process(&mut agent, "server:tool", &mut trust, &mut kind).await;
+        assert_eq!(kind, ContentSourceKind::McpResponse);
+        assert_eq!(trust, ContentTrustLevel::ExternalUntrusted);
+
+        process(&mut agent, "web_scrape", &mut trust, &mut kind).await;
+
+        assert_eq!(
+            trust,
+            ContentTrustLevel::ExternalUntrusted,
+            "trust tier stays ExternalUntrusted across the tie"
+        );
+        assert_eq!(
+            kind,
+            ContentSourceKind::WebScrape,
+            "on a trust-level tie, the later call's kind must win per the documented rule"
         );
     }
 }

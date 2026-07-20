@@ -137,7 +137,12 @@ impl<C: Channel> Agent<C> {
         &mut self,
         body: &str,
         tool_name: &str,
-    ) -> (String, bool, zeph_sanitizer::ContentTrustLevel) {
+    ) -> (
+        String,
+        bool,
+        ContentSourceKind,
+        zeph_sanitizer::ContentTrustLevel,
+    ) {
         let source = build_tool_output_source(tool_name);
         let kind = source.kind;
         let trust_level = source.trust_level;
@@ -191,7 +196,7 @@ impl<C: Channel> Agent<C> {
             .apply_classifier_verdict(&body, tool_name, memory_hint)
             .await
         {
-            return (b, f, trust_level);
+            return (b, f, kind, trust_level);
         }
 
         let is_cross_boundary = self.services.security.is_acp_session
@@ -208,7 +213,7 @@ impl<C: Channel> Agent<C> {
                 .handle_cross_boundary_quarantine(&sanitized, tool_name, has_injection_flags)
                 .await
         {
-            return (b, f, trust_level);
+            return (b, f, kind, trust_level);
         }
 
         if !is_cross_boundary
@@ -216,14 +221,14 @@ impl<C: Channel> Agent<C> {
                 .handle_quarantine_summary(&sanitized, tool_name, kind, has_injection_flags)
                 .await
         {
-            return (b, f, trust_level);
+            return (b, f, kind, trust_level);
         }
 
         let body = sanitized.body;
         self.record_nli_verdict(&body, tool_name).await;
         let body = self.apply_guardrail_to_tool_output(body, tool_name).await;
 
-        (body, has_injection_flags, trust_level)
+        (body, has_injection_flags, kind, trust_level)
     }
 
     /// Maximum content-trust tier tagged on any message still present in the live
