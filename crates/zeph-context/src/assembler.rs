@@ -603,9 +603,10 @@ pub(crate) async fn fetch_graph_facts(
 
 /// Greedily append pre-formatted `lines` to a `prefix` while staying within `budget_tokens`.
 ///
-/// Shared by the fetchers whose body is "prefix + one line per recalled item, truncated at
-/// budget" (persona facts, trajectory hints, tree memory). Returns `None` when no line fit
-/// (i.e. the body is still just `prefix`), signalling the caller to skip injection entirely.
+/// Shared by fetchers whose body is "prefix + one line per recalled item, truncated at
+/// budget" (persona facts, trajectory hints, tree memory, semantic recall, document RAG,
+/// summaries, cross-session recall). Returns `None` when no line fit (i.e. the body is
+/// still just `prefix`), signalling the caller to skip injection entirely.
 fn append_budgeted_lines(
     prefix: &str,
     lines: impl Iterator<Item = String>,
@@ -890,33 +891,22 @@ pub(crate) async fn fetch_semantic_recall(
 
     let top_score = recalled.first().map(|r| r.score);
 
-    let mut recall_text = String::with_capacity(token_budget * 3);
-    recall_text.push_str(RECALL_PREFIX);
-    let mut tokens_used = tc.count_tokens(&recall_text);
+    let lines = recalled
+        .iter()
+        .filter(|item| {
+            !item.content.starts_with("[skipped]") && !item.content.starts_with("[stopped]")
+        })
+        .map(|item| format!("- [{}] {}\n", item.role, item.content));
 
-    for item in &recalled {
-        if item.content.starts_with("[skipped]") || item.content.starts_with("[stopped]") {
-            continue;
-        }
-        let entry = format!("- [{}] {}\n", item.role, item.content);
-        let entry_tokens = tc.count_tokens(&entry);
-        if tokens_used + entry_tokens > token_budget {
-            break;
-        }
-        recall_text.push_str(&entry);
-        tokens_used += entry_tokens;
-    }
-
-    if tokens_used > tc.count_tokens(RECALL_PREFIX) {
-        Ok((
+    match append_budgeted_lines(RECALL_PREFIX, lines, token_budget, tc) {
+        Some(text) => Ok((
             Some(Message::from_parts(
                 Role::System,
-                vec![MessagePart::Recall { text: recall_text }],
+                vec![MessagePart::Recall { text }],
             )),
             top_score,
-        ))
-    } else {
-        Ok((None, None))
+        )),
+        None => Ok((None, None)),
     }
 }
 
@@ -951,32 +941,19 @@ pub(crate) async fn fetch_document_rag(
         return Ok(None);
     }
 
-    let mut text = String::from(DOCUMENT_RAG_PREFIX);
-    let mut tokens_used = tc.count_tokens(&text);
+    let lines = chunks
+        .iter()
+        .filter(|chunk| !chunk.text.is_empty())
+        .map(|chunk| format!("{}\n", chunk.text));
 
-    for chunk in &chunks {
-        if chunk.text.is_empty() {
-            continue;
-        }
-        let entry = format!("{}\n", chunk.text);
-        let cost = tc.count_tokens(&entry);
-        if tokens_used + cost > token_budget {
-            break;
-        }
-        text.push_str(&entry);
-        tokens_used += cost;
-    }
-
-    if tokens_used > tc.count_tokens(DOCUMENT_RAG_PREFIX) {
-        Ok(Some(Message {
+    Ok(
+        append_budgeted_lines(DOCUMENT_RAG_PREFIX, lines, token_budget, tc).map(|text| Message {
             role: Role::System,
             content: text,
             parts: vec![],
             metadata: MessageMetadata::default(),
-        }))
-    } else {
-        Ok(None)
-    }
+        }),
+    )
 }
 
 #[tracing::instrument(name = "context.summaries", skip_all)]
@@ -1007,29 +984,16 @@ pub(crate) async fn fetch_summaries(
         return Ok(None);
     }
 
-    let mut summary_text = String::from(SUMMARY_PREFIX);
-    let mut tokens_used = tc.count_tokens(&summary_text);
-
-    for summary in summaries.iter().rev() {
+    let lines = summaries.iter().rev().map(|summary| {
         let first = summary.first_message_id.unwrap_or(0);
         let last = summary.last_message_id.unwrap_or(0);
-        let entry = format!("- Messages {first}-{last}: {}\n", summary.content);
-        let cost = tc.count_tokens(&entry);
-        if tokens_used + cost > token_budget {
-            break;
-        }
-        summary_text.push_str(&entry);
-        tokens_used += cost;
-    }
+        format!("- Messages {first}-{last}: {}\n", summary.content)
+    });
 
-    if tokens_used > tc.count_tokens(SUMMARY_PREFIX) {
-        Ok(Some(Message::from_parts(
-            Role::System,
-            vec![MessagePart::Summary { text: summary_text }],
-        )))
-    } else {
-        Ok(None)
-    }
+    Ok(
+        append_budgeted_lines(SUMMARY_PREFIX, lines, token_budget, tc)
+            .map(|text| Message::from_parts(Role::System, vec![MessagePart::Summary { text }])),
+    )
 }
 
 #[tracing::instrument(name = "context.cross_session", skip_all)]
@@ -1066,27 +1030,15 @@ pub(crate) async fn fetch_cross_session(
         return Ok(None);
     }
 
-    let mut text = String::from(CROSS_SESSION_PREFIX);
-    let mut tokens_used = tc.count_tokens(&text);
+    let lines = results
+        .iter()
+        .map(|item| format!("- {}\n", item.summary_text));
 
-    for item in &results {
-        let entry = format!("- {}\n", item.summary_text);
-        let cost = tc.count_tokens(&entry);
-        if tokens_used + cost > token_budget {
-            break;
-        }
-        text.push_str(&entry);
-        tokens_used += cost;
-    }
-
-    if tokens_used > tc.count_tokens(CROSS_SESSION_PREFIX) {
-        Ok(Some(Message::from_parts(
-            Role::System,
-            vec![MessagePart::CrossSession { text }],
-        )))
-    } else {
-        Ok(None)
-    }
+    Ok(
+        append_budgeted_lines(CROSS_SESSION_PREFIX, lines, token_budget, tc).map(|text| {
+            Message::from_parts(Role::System, vec![MessagePart::CrossSession { text }])
+        }),
+    )
 }
 
 /// Maximum number of messages scanned backward by [`memory_first_keep_tail`] before

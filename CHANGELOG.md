@@ -63,6 +63,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-context`: `fetch_semantic_recall`, `fetch_document_rag`, `fetch_summaries`, and
+  `fetch_cross_session` now build their body via the shared `append_budgeted_lines` helper
+  instead of hand-rolling the same "prefix + greedily append lines until budget_tokens is
+  exceeded" loop, matching the pattern already used by `fetch_persona_facts`,
+  `fetch_trajectory_hints`, and `fetch_tree_memory` (#6471). Pure internal dedup — filter
+  predicates, entry formats, iteration order (including `fetch_summaries`'s reverse order),
+  and all four functions' signatures/return types/error handling/timeout logic are unchanged.
+
 - `zeph-skills`: `embed_skills_with_timeout` now tries `LlmProvider::embed_batch` first
   (wrapped in a single `timeout` for the whole batch) instead of embedding each skill
   sequentially, so providers with a native batch embeddings endpoint (e.g. OpenAI) cost one
