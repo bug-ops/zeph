@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use tokio::sync::{mpsc, watch};
@@ -20,7 +20,7 @@ use zeph_tools::executor::{ErasedToolExecutor, ToolCall};
 
 use super::filter::FilteredToolExecutor;
 use super::forward::ForwardSender;
-use super::grants::{GrantedSecret, SecretRequest};
+use super::grants::{GrantedSecret, PermissionGrants, SecretRequest, ToolGrantCheck};
 use super::hooks::{HookDef, SubagentHooks, fire_hooks, make_base_hook_env, matching_hooks};
 use super::manager::SubAgentStatus;
 use super::state::SubAgentState;
@@ -102,6 +102,15 @@ pub(super) struct AgentLoopArgs {
     /// context, and the debug dump. `None` when no registry is wired (mirrors
     /// `SubAgentManager::secret_registry`'s `None` default).
     pub(super) secret_registry: Option<Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
+    /// Shared, task-scoped `GrantKind::Tool` permission grants for this sub-agent, checked
+    /// live in [`handle_tool_step`] immediately before every tool dispatch (issue #6567).
+    /// Shared with the manager-side `SubAgentHandle::grants` via `Arc<Mutex<..>>` rather than
+    /// delivered as a point-in-time snapshot: unlike `GrantKind::Secret`, which is explicitly
+    /// requested and delivered per-key, a `Tool` grant applies implicitly to every matching
+    /// tool-name dispatch, so `PermissionGrants::revoke_all()` (task collection, cancellation,
+    /// or drop) must be immediately visible to this running loop task without a delivery
+    /// round-trip.
+    pub(super) tool_grants: Arc<Mutex<PermissionGrants>>,
 }
 
 /// Record a progress heartbeat, if this loop has a live handle. No-op for `None` (untracked
@@ -638,6 +647,8 @@ async fn run_turn(
     debug_dump_sink: Option<&dyn zeph_llm::debug_dump::DebugDumpSink>,
     forward: Option<&ForwardSender>,
     secret_registry: Option<&zeph_sanitizer::secret_mask::SecretMaskRegistry>,
+    tool_grants: &Arc<Mutex<PermissionGrants>>,
+    active_tool_grants_seen: &mut std::collections::HashSet<String>,
 ) -> Result<TurnOutcome, super::error::SubAgentError> {
     let (response, streamed) = call_provider_with_status(
         provider,
@@ -715,6 +726,8 @@ async fn run_turn(
         sanitizer,
         granted_secrets,
         secret_registry,
+        tool_grants,
+        active_tool_grants_seen,
     )
     .await;
 
@@ -758,6 +771,8 @@ async fn handle_tool_step(
     sanitizer: &ContentSanitizer,
     granted_secrets: &mut HashMap<String, GrantedSecret>,
     secret_registry: Option<&zeph_sanitizer::secret_mask::SecretMaskRegistry>,
+    tool_grants: &Arc<Mutex<PermissionGrants>>,
+    active_tool_grants_seen: &mut std::collections::HashSet<String>,
 ) -> bool {
     match response {
         ChatResponse::Text(text) => {
@@ -786,6 +801,84 @@ async fn handle_tool_step(
 
             let mut result_parts: Vec<MessagePart> = Vec::new();
             for tc in &tool_calls {
+                // #6567 (FR-001/FR-002/FR-003/NFR-001): a `GrantKind::Tool` grant for this tool
+                // name, if one exists, must still be active or the call is rejected outright —
+                // before any hook fires or the executor runs. This differs from the `Secret`
+                // path's re-check below, which only *omits* an expired credential from the call
+                // (the tool still runs); an expired/revoked `Tool` grant means the sub-agent is
+                // no longer authorized to use this tool at all. A tool name with no grant record
+                // at all is today's universal case (no production caller creates `Tool` grants
+                // yet) and is left unrestricted — see FR-004/NFR-004.
+                //
+                // Semantics (confirmed, not allow-list — see `PermissionGrants::check_tool_grant`
+                // for the full explanation): a `Tool` grant only time-boxes a tool the sub-agent
+                // is already permitted to call under its static `ToolPolicy`/`AutonomyLevel`. A
+                // grant for one tool name never restricts any other tool name — there is no
+                // "presence of any grant implies allow-list" mode. Matching is exact tool-name
+                // equality only, no prefix/glob for tool families (e.g. MCP server-scoped names).
+                //
+                // `revoke_all()` (and `check_tool_grant`'s own eviction of a stale entry) clears
+                // the shared `PermissionGrants` Vec entirely, so a fresh `check_tool_grant`
+                // alone cannot distinguish "revoked"/"expired-and-evicted" from "never granted"
+                // — both read back as `NoGrant`. `active_tool_grants_seen` closes that gap: once
+                // this loop has observed a tool name as `Active` OR `Expired` — i.e. under grant
+                // management at all — it stays enforced (denied on any later `NoGrant` reading)
+                // for the rest of the run, never silently reverting to unrestricted. A fresh
+                // `Active` reading still unconditionally overrides and re-permits (a legitimate
+                // re-grant), since only the `NoGrant` arm consults this set. This mirrors the
+                // `Secret` path's own documented scope for `revoke_all()`: reliable for
+                // concurrent revocation observed within an in-flight tool-call batch (the case
+                // the FR-003 edge cases table describes), not a global "was ever granted before
+                // this task even started checking" guarantee, since the shared store retains no
+                // tombstone.
+                let tool_grant_check = tool_grants
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .check_tool_grant(tc.name.as_str());
+                let tool_grant_rejected = match tool_grant_check {
+                    ToolGrantCheck::Active => {
+                        active_tool_grants_seen.insert(tc.name.to_string());
+                        false
+                    }
+                    ToolGrantCheck::Expired => {
+                        // Also mark as seen here, not just on `Active`: a grant that is already
+                        // expired on its very first check (e.g. created with a zero/negative
+                        // effective TTL) would otherwise never enter this set, so a later
+                        // `NoGrant` reading (once `check_tool_grant`'s sweep evicts the stale
+                        // Vec entry) would be indistinguishable from "never granted" and
+                        // silently re-permit the tool on the next dispatch.
+                        active_tool_grants_seen.insert(tc.name.to_string());
+                        true
+                    }
+                    ToolGrantCheck::NoGrant => active_tool_grants_seen.contains(tc.name.as_str()),
+                };
+                if tool_grant_rejected {
+                    // Deliberately NOT removed from `active_tool_grants_seen` here: this tool
+                    // name was observed `Active` at least once, so it must stay enforced for
+                    // the rest of the run (see the comment above) — removing it on rejection
+                    // would make the very next dispatch of the same tool read back `NoGrant`
+                    // (the Vec entry is already gone, evicted by `check_tool_grant`'s
+                    // `is_active`/`sweep_expired`) and be treated as "never granted", silently
+                    // re-permitting a tool whose grant just expired or was revoked. A later
+                    // legitimate re-grant still overrides this: `ToolGrantCheck::Active` is
+                    // unconditional and does not consult this set.
+                    tracing::warn!(
+                        tool = %tc.name,
+                        task_id,
+                        "tool call rejected: GrantKind::Tool grant expired or revoked"
+                    );
+                    result_parts.push(MessagePart::ToolResult {
+                        tool_use_id: tc.id.clone(),
+                        content: format!(
+                            "[tool error]: capability grant for tool '{}' has expired or been \
+                             revoked",
+                            tc.name
+                        ),
+                        is_error: true,
+                    });
+                    continue;
+                }
+
                 let pre_hooks: Vec<&HookDef> =
                     matching_hooks(&hooks.pre_tool_use, tc.name.as_str());
                 if !pre_hooks.is_empty() {
@@ -1004,6 +1097,7 @@ pub(super) async fn run_agent_loop(
         debug_dump_sink,
         forward,
         secret_registry,
+        tool_grants,
     } = args;
     let debug_dump_sink = debug_dump_sink.as_deref();
     let secret_registry = secret_registry.as_deref();
@@ -1030,6 +1124,11 @@ pub(super) async fn run_agent_loop(
     // Accumulates resolved secrets so a later approval doesn't evict an earlier one; TTL'd
     // entries are evicted live in `handle_tool_step` (see `handle_secret_request`).
     let mut granted_secrets: HashMap<String, GrantedSecret> = HashMap::new();
+    // Tool names this loop has observed as actively `GrantKind::Tool`-granted at least once;
+    // see the comment in `handle_tool_step` on why this local memory is required to detect
+    // `revoke_all()`-triggered revocation (issue #6567).
+    let mut active_tool_grants_seen: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     // Forwarded terminal state, independent of status_tx's always-Completed publish below
     // (impl-critic M1) — set to Canceled on either cancellation exit path.
     let mut forward_terminal_state = SubAgentState::Completed;
@@ -1077,6 +1176,8 @@ pub(super) async fn run_agent_loop(
             debug_dump_sink,
             forward.as_ref(),
             secret_registry,
+            &tool_grants,
+            &mut active_tool_grants_seen,
         )
         .await;
 
@@ -1535,6 +1636,8 @@ mod handle_tool_step_granted_secrets_tests {
             },
         );
         let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+        let tool_grants = Arc::new(Mutex::new(PermissionGrants::default()));
+        let mut active_tool_grants_seen = std::collections::HashSet::new();
 
         let no_tool = handle_tool_step(
             &executor,
@@ -1546,6 +1649,8 @@ mod handle_tool_step_granted_secrets_tests {
             &sanitizer,
             &mut granted_secrets,
             None,
+            &tool_grants,
+            &mut active_tool_grants_seen,
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -1578,6 +1683,8 @@ mod handle_tool_step_granted_secrets_tests {
         let mut messages = Vec::new();
         let mut granted_secrets: HashMap<String, GrantedSecret> = HashMap::new();
         let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+        let tool_grants = Arc::new(Mutex::new(PermissionGrants::default()));
+        let mut active_tool_grants_seen = std::collections::HashSet::new();
 
         let no_tool = handle_tool_step(
             &executor,
@@ -1589,6 +1696,8 @@ mod handle_tool_step_granted_secrets_tests {
             &sanitizer,
             &mut granted_secrets,
             None,
+            &tool_grants,
+            &mut active_tool_grants_seen,
         )
         .await;
         assert!(!no_tool);
@@ -1623,6 +1732,8 @@ mod handle_tool_step_granted_secrets_tests {
         );
 
         let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+        let tool_grants = Arc::new(Mutex::new(PermissionGrants::default()));
+        let mut active_tool_grants_seen = std::collections::HashSet::new();
 
         let no_tool = handle_tool_step(
             &executor,
@@ -1634,6 +1745,8 @@ mod handle_tool_step_granted_secrets_tests {
             &sanitizer,
             &mut granted_secrets,
             None,
+            &tool_grants,
+            &mut active_tool_grants_seen,
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -1679,6 +1792,8 @@ mod handle_tool_step_granted_secrets_tests {
         );
 
         let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+        let tool_grants = Arc::new(Mutex::new(PermissionGrants::default()));
+        let mut active_tool_grants_seen = std::collections::HashSet::new();
 
         let no_tool = handle_tool_step(
             &executor,
@@ -1690,6 +1805,8 @@ mod handle_tool_step_granted_secrets_tests {
             &sanitizer,
             &mut granted_secrets,
             None,
+            &tool_grants,
+            &mut active_tool_grants_seen,
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -1745,6 +1862,8 @@ mod handle_tool_step_granted_secrets_tests {
             secret_value,
             zeph_sanitizer::secret_mask::SecretCategory::ApiKey,
         );
+        let tool_grants = Arc::new(Mutex::new(PermissionGrants::default()));
+        let mut active_tool_grants_seen = std::collections::HashSet::new();
 
         let no_tool = handle_tool_step(
             &executor,
@@ -1756,6 +1875,8 @@ mod handle_tool_step_granted_secrets_tests {
             &sanitizer,
             &mut granted_secrets,
             Some(&registry),
+            &tool_grants,
+            &mut active_tool_grants_seen,
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -1796,6 +1917,8 @@ mod handle_tool_step_granted_secrets_tests {
         let mut messages = Vec::new();
         let mut granted_secrets = HashMap::new();
         let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+        let tool_grants = Arc::new(Mutex::new(PermissionGrants::default()));
+        let mut active_tool_grants_seen = std::collections::HashSet::new();
 
         let no_tool = handle_tool_step(
             &executor,
@@ -1807,6 +1930,8 @@ mod handle_tool_step_granted_secrets_tests {
             &sanitizer,
             &mut granted_secrets,
             None,
+            &tool_grants,
+            &mut active_tool_grants_seen,
         )
         .await;
         assert!(!no_tool);
@@ -1823,6 +1948,291 @@ mod handle_tool_step_granted_secrets_tests {
         assert!(
             content.contains(secret_value),
             "with no registry wired, content must be unchanged (pre-fix baseline): {content}"
+        );
+    }
+
+    // --- #6567: GrantKind::Tool enforcement ---
+    // `tool_use_response()` always requests the "shell" tool, matching `GrantKind::Tool("shell")`.
+
+    #[tokio::test]
+    async fn tool_grant_absent_leaves_dispatch_unrestricted() {
+        // US-003/FR-004: a sub-agent with zero GrantKind::Tool entries (today's universal
+        // production state) must see no behavior change — dispatch proceeds normally.
+        let recorder = Arc::new(RecordingExecutor::default());
+        let executor = FilteredToolExecutor::new(
+            Arc::clone(&recorder) as Arc<dyn ErasedToolExecutor>,
+            ToolPolicy::InheritAll,
+        );
+        let hooks = SubagentHooks::default();
+        let mut messages = Vec::new();
+        let mut granted_secrets = HashMap::new();
+        let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+        let tool_grants = Arc::new(Mutex::new(PermissionGrants::default()));
+        let mut active_tool_grants_seen = std::collections::HashSet::new();
+
+        let no_tool = handle_tool_step(
+            &executor,
+            tool_use_response(),
+            &mut messages,
+            &hooks,
+            "task-1",
+            "bot",
+            &sanitizer,
+            &mut granted_secrets,
+            None,
+            &tool_grants,
+            &mut active_tool_grants_seen,
+        )
+        .await;
+        assert!(!no_tool, "a tool call was made");
+        assert_eq!(
+            recorder.calls.lock().unwrap().len(),
+            1,
+            "tool must dispatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_grant_active_allows_tool_dispatch() {
+        // US-001 baseline: an active (not yet expired) GrantKind::Tool grant for the tool
+        // being dispatched must not block the call.
+        let recorder = Arc::new(RecordingExecutor::default());
+        let executor = FilteredToolExecutor::new(
+            Arc::clone(&recorder) as Arc<dyn ErasedToolExecutor>,
+            ToolPolicy::InheritAll,
+        );
+        let hooks = SubagentHooks::default();
+        let mut messages = Vec::new();
+        let mut granted_secrets = HashMap::new();
+        let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+        let mut grants = PermissionGrants::default();
+        grants.add(
+            crate::grants::GrantKind::Tool("shell".to_owned()),
+            Duration::from_mins(5),
+        );
+        let tool_grants = Arc::new(Mutex::new(grants));
+        let mut active_tool_grants_seen = std::collections::HashSet::new();
+
+        let no_tool = handle_tool_step(
+            &executor,
+            tool_use_response(),
+            &mut messages,
+            &hooks,
+            "task-1",
+            "bot",
+            &sanitizer,
+            &mut granted_secrets,
+            None,
+            &tool_grants,
+            &mut active_tool_grants_seen,
+        )
+        .await;
+        assert!(!no_tool, "a tool call was made");
+        assert_eq!(
+            recorder.calls.lock().unwrap().len(),
+            1,
+            "an active Tool grant must not block dispatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_grant_expired_rejects_tool_dispatch_and_is_evicted() {
+        // US-001/FR-002: a GrantKind::Tool grant whose TTL has elapsed must reject the tool
+        // call before the executor runs, and the expired grant must be evicted.
+        let recorder = Arc::new(RecordingExecutor::default());
+        let executor = FilteredToolExecutor::new(
+            Arc::clone(&recorder) as Arc<dyn ErasedToolExecutor>,
+            ToolPolicy::InheritAll,
+        );
+        let hooks = SubagentHooks::default();
+        let mut messages = Vec::new();
+        let mut granted_secrets = HashMap::new();
+        let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+        let mut grants = PermissionGrants::default();
+        grants.add_test_grant(
+            crate::grants::GrantKind::Tool("shell".to_owned()),
+            Instant::now().checked_sub(Duration::from_secs(10)).unwrap(),
+            Duration::from_secs(1),
+        );
+        let tool_grants = Arc::new(Mutex::new(grants));
+        let mut active_tool_grants_seen = std::collections::HashSet::new();
+
+        let no_tool = handle_tool_step(
+            &executor,
+            tool_use_response(),
+            &mut messages,
+            &hooks,
+            "task-1",
+            "bot",
+            &sanitizer,
+            &mut granted_secrets,
+            None,
+            &tool_grants,
+            &mut active_tool_grants_seen,
+        )
+        .await;
+        assert!(
+            !no_tool,
+            "a ToolResult was still produced (rejection, not silence)"
+        );
+        assert_eq!(
+            recorder.calls.lock().unwrap().len(),
+            0,
+            "the executor must never run for an expired Tool grant"
+        );
+
+        let content = messages
+            .iter()
+            .find_map(|m| {
+                m.parts.iter().find_map(|p| match p {
+                    MessagePart::ToolResult {
+                        content, is_error, ..
+                    } if *is_error => Some(content.clone()),
+                    _ => None,
+                })
+            })
+            .expect("an error ToolResult part must be present");
+        assert!(
+            content.contains("expired") || content.contains("revoked"),
+            "rejection reason must be actionable: {content}"
+        );
+        assert_eq!(
+            tool_grants.lock().unwrap().check_tool_grant("shell"),
+            ToolGrantCheck::NoGrant,
+            "the expired grant must be evicted, not merely bypassed"
+        );
+
+        // Regression guard (critic C1): rejection must not un-remember that this tool name was
+        // once actively granted — a naive implementation that clears `active_tool_grants_seen`
+        // on rejection would read `NoGrant` again here (the Vec entry is already evicted) and
+        // silently treat the THIRD dispatch as "never granted", re-permitting the tool.
+        let no_tool = handle_tool_step(
+            &executor,
+            tool_use_response(),
+            &mut messages,
+            &hooks,
+            "task-1",
+            "bot",
+            &sanitizer,
+            &mut granted_secrets,
+            None,
+            &tool_grants,
+            &mut active_tool_grants_seen,
+        )
+        .await;
+        assert!(
+            !no_tool,
+            "a ToolResult was still produced (rejection, not silence)"
+        );
+        assert_eq!(
+            recorder.calls.lock().unwrap().len(),
+            0,
+            "the executor must still never run on the third dispatch after expiry — a once-\
+             enforced tool name must stay denied for the rest of the run"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_grant_revoked_via_revoke_all_rejects_subsequent_dispatch() {
+        // US-002/FR-003: revoke_all() on the shared PermissionGrants — the same call the
+        // manager makes on task collection/cancellation/drop — must be visible to this
+        // running loop task's next dispatch attempt without any further plumbing. The first
+        // call establishes the grant as actively observed (populating
+        // `active_tool_grants_seen`); revoke_all() then runs between the two calls, exactly
+        // like a manager-side cancel() racing an in-flight sub-agent loop.
+        let recorder = Arc::new(RecordingExecutor::default());
+        let executor = FilteredToolExecutor::new(
+            Arc::clone(&recorder) as Arc<dyn ErasedToolExecutor>,
+            ToolPolicy::InheritAll,
+        );
+        let hooks = SubagentHooks::default();
+        let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+        let mut grants = PermissionGrants::default();
+        grants.add(
+            crate::grants::GrantKind::Tool("shell".to_owned()),
+            Duration::from_mins(5),
+        );
+        let tool_grants = Arc::new(Mutex::new(grants));
+        let mut active_tool_grants_seen = std::collections::HashSet::new();
+
+        let mut messages = Vec::new();
+        let mut granted_secrets = HashMap::new();
+        let no_tool = handle_tool_step(
+            &executor,
+            tool_use_response(),
+            &mut messages,
+            &hooks,
+            "task-1",
+            "bot",
+            &sanitizer,
+            &mut granted_secrets,
+            None,
+            &tool_grants,
+            &mut active_tool_grants_seen,
+        )
+        .await;
+        assert!(!no_tool, "a tool call was made");
+        assert_eq!(
+            recorder.calls.lock().unwrap().len(),
+            1,
+            "the first dispatch must succeed while the grant is still active"
+        );
+
+        // Simulates the manager-side handle revoking grants concurrently (e.g. cancel()).
+        tool_grants.lock().unwrap().revoke_all();
+
+        let no_tool = handle_tool_step(
+            &executor,
+            tool_use_response(),
+            &mut messages,
+            &hooks,
+            "task-1",
+            "bot",
+            &sanitizer,
+            &mut granted_secrets,
+            None,
+            &tool_grants,
+            &mut active_tool_grants_seen,
+        )
+        .await;
+        assert!(
+            !no_tool,
+            "a ToolResult was still produced (rejection, not silence)"
+        );
+        assert_eq!(
+            recorder.calls.lock().unwrap().len(),
+            1,
+            "the executor must not run again once the Tool grant has been revoked"
+        );
+
+        // Regression guard (critic C1): same as the expiry test's third-dispatch guard — a
+        // naive implementation that clears `active_tool_grants_seen` on rejection would
+        // silently re-permit this THIRD dispatch (the shared Vec has no tombstone for a
+        // revoked grant, so a bare check would read `NoGrant` and look identical to "never
+        // granted").
+        let no_tool = handle_tool_step(
+            &executor,
+            tool_use_response(),
+            &mut messages,
+            &hooks,
+            "task-1",
+            "bot",
+            &sanitizer,
+            &mut granted_secrets,
+            None,
+            &tool_grants,
+            &mut active_tool_grants_seen,
+        )
+        .await;
+        assert!(
+            !no_tool,
+            "a ToolResult was still produced (rejection, not silence)"
+        );
+        assert_eq!(
+            recorder.calls.lock().unwrap().len(),
+            1,
+            "the executor must still not run on the third dispatch after revocation — a once-\
+             enforced tool name must stay denied for the rest of the run"
         );
     }
 }

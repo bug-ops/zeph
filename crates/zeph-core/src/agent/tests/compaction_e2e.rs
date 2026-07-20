@@ -730,7 +730,7 @@ async fn test_secret_drain_after_instant_completion() {
             join_handle: None,
             cancel: CancellationToken::new(),
             status_rx,
-            grants: PermissionGrants::default(),
+            grants: std::sync::Arc::new(std::sync::Mutex::new(PermissionGrants::default())),
             pending_secret_rx,
             secret_tx,
             started_at_str: "2026-01-01T00:00:00Z".to_owned(),

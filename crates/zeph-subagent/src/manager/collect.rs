@@ -41,7 +41,7 @@ impl SubAgentManager {
             });
         }
 
-        handle.grants.revoke_all();
+        handle.grants_lock().revoke_all();
 
         // Flatten the outer `BlockingError` (panic/abort of the supervised task itself)
         // into `result` rather than propagating it with `?`: an early return here would

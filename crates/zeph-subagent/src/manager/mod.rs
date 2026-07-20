@@ -10,7 +10,7 @@ mod worktree;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use tokio::sync::{mpsc, watch};
@@ -315,7 +315,15 @@ pub struct SubAgentHandle {
     /// Watch receiver for live status updates from the agent loop.
     pub status_rx: watch::Receiver<SubAgentStatus>,
     /// Zero-trust TTL-bounded grants for this agent session.
-    pub grants: PermissionGrants,
+    ///
+    /// Shared with the spawned agent-loop task via `Arc<Mutex<..>>` (issue #6567) so that
+    /// `GrantKind::Tool` enforcement inside `handle_tool_step` observes the same live state
+    /// this handle mutates — in particular so `revoke_all()` called here (task collection,
+    /// cancellation, or drop) is immediately visible to the running loop task without a
+    /// delivery channel. `GrantKind::Secret` values are still delivered separately over
+    /// `secret_tx`/`secret_rx` as a point-in-time snapshot, since secrets are explicitly
+    /// requested per-key rather than checked implicitly on every dispatch.
+    pub grants: Arc<Mutex<PermissionGrants>>,
     /// Receives secret requests from the sub-agent loop.
     pub pending_secret_rx: mpsc::Receiver<SecretRequest>,
     /// Delivers the approval outcome to the sub-agent loop: `None` = denied,
@@ -358,13 +366,32 @@ impl SubAgentHandle {
             join_handle: None,
             cancel: CancellationToken::new(),
             status_rx,
-            grants: PermissionGrants::default(),
+            grants: Arc::new(Mutex::new(PermissionGrants::default())),
             pending_secret_rx,
             secret_tx,
             started_at_str: String::new(),
             transcript_dir: None,
             mcp_tool_names: Vec::new(),
         }
+    }
+
+    /// Lock the shared, TTL-bounded permission grants for this agent.
+    ///
+    /// Recovers from a poisoned lock (a panic elsewhere while holding it) rather than
+    /// propagating the panic. This is plainly **fail-open**, not fail-closed: a poisoned
+    /// mutex is ignored and the guard is handed back regardless, so this method makes no
+    /// guarantee about the freshness or consistency of the `PermissionGrants` it returns.
+    /// That is safe today because every operation performed under this lock
+    /// (`PermissionGrants::add`/`sweep_expired`/`is_active`/`check_tool_grant`/`revoke_all`)
+    /// is a plain, infallible in-memory `Vec` operation — none of them can panic in normal
+    /// operation, so poisoning can only originate from an unrelated bug elsewhere, and simply
+    /// proceeding with the (still internally consistent) data is the pragmatic choice over
+    /// permanently wedging every subsequent tool dispatch for this sub-agent. The actual
+    /// fail-closed behavior for `GrantKind::Tool` enforcement lives one layer up, in
+    /// `PermissionGrants::check_tool_grant` (issue #6567), which rejects the tool call on an
+    /// expired/revoked grant independent of whether this lock happened to be poisoned.
+    pub(crate) fn grants_lock(&self) -> MutexGuard<'_, PermissionGrants> {
+        self.grants.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -384,13 +411,14 @@ impl Drop for SubAgentHandle {
         // Defense-in-depth: cancel the task and revoke grants on drop even if
         // cancel() or collect() was not called (e.g., on panic or early return).
         self.cancel.cancel();
-        if !self.grants.is_empty_grants() {
+        let mut grants = self.grants_lock();
+        if !grants.is_empty_grants() {
             tracing::warn!(
                 id = %self.id,
                 "SubAgentHandle dropped without explicit cleanup — revoking grants"
             );
         }
-        self.grants.revoke_all();
+        grants.revoke_all();
     }
 }
 

@@ -262,6 +262,110 @@ impl PermissionGrants {
             tracing::debug!(count, "all permission grants revoked");
         }
     }
+
+    /// Check whether a `GrantKind::Tool` grant permits dispatching `tool_name`.
+    ///
+    /// This is the enforcement entry point mirrored after the already-shipped
+    /// `GrantKind::Secret` TTL re-check in the sub-agent loop's `handle_tool_step`
+    /// (`granted_secrets.retain(|_, granted| !granted.is_expired())`): the check is
+    /// evaluated fresh against
+    /// [`Grant::is_expired`] rather than relying on a prior [`sweep_expired`](Self::sweep_expired)
+    /// call having already run, so a grant that lapsed since the last sweep is still caught
+    /// here (no time-of-check-to-time-of-use window).
+    ///
+    /// Distinguishing [`ToolGrantCheck::NoGrant`] from [`ToolGrantCheck::Expired`] lets the
+    /// caller apply fail-closed rejection only where a grant was actually issued and has
+    /// since lapsed, while leaving the — currently universal, since no production caller
+    /// creates `GrantKind::Tool` grants yet — no-grant case unrestricted.
+    ///
+    /// # Semantics: default-permit, time-box only — NOT an allow-list (confirmed, issue #6567)
+    ///
+    /// A `GrantKind::Tool` grant only *time-boxes* a tool the sub-agent is already permitted
+    /// to call under its static `ToolPolicy`/`AutonomyLevel` — it is an additional, narrower
+    /// restriction layered on top of an existing permission, never an independent grant of
+    /// access. Concretely:
+    /// - Absence of any grant for `tool_name` always permits the call (matches the current,
+    ///   universal zero-grant production state — no observable behavior change).
+    /// - A grant existing for *one* tool name never restricts any *other* tool name, even for
+    ///   the same sub-agent. There is no implicit "some grants exist, so everything else is
+    ///   denied" allow-list mode, and this method must never be extended to add one without a
+    ///   deliberate, separately-specified design change.
+    /// - Matching is exact tool-name string equality only — no prefix/glob support for tool
+    ///   families (e.g. MCP server-scoped names). A grant for `"mcp:server-a"` does not cover
+    ///   `"mcp:server-a:tool-x"` or any other name.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::time::Duration;
+    /// use zeph_subagent::grants::{GrantKind, PermissionGrants, ToolGrantCheck};
+    ///
+    /// let mut grants = PermissionGrants::default();
+    /// assert_eq!(grants.check_tool_grant("shell"), ToolGrantCheck::NoGrant);
+    ///
+    /// grants.add(GrantKind::Tool("shell".to_owned()), Duration::from_mins(1));
+    /// assert_eq!(grants.check_tool_grant("shell"), ToolGrantCheck::Active);
+    /// ```
+    #[must_use]
+    pub fn check_tool_grant(&mut self, tool_name: &str) -> ToolGrantCheck {
+        let kind = GrantKind::Tool(tool_name.to_owned());
+        let had_record = self.grants.iter().any(|g| g.kind == kind);
+        if !had_record {
+            return ToolGrantCheck::NoGrant;
+        }
+        if self.is_active(&kind) {
+            ToolGrantCheck::Active
+        } else {
+            ToolGrantCheck::Expired
+        }
+    }
+}
+
+/// Result of checking whether a `GrantKind::Tool` grant permits a tool dispatch.
+///
+/// Returned by [`PermissionGrants::check_tool_grant`]. See that method's doc for the full
+/// default-permit / time-box-only semantics (confirmed, issue #6567) — in short: this is a
+/// narrowing restriction on top of an already-permitted tool, never an allow-list, and
+/// [`NoGrant`](Self::NoGrant) always means "unrestricted by this mechanism," not "denied."
+///
+/// # Examples
+///
+/// ```rust
+/// use std::time::Duration;
+/// use zeph_subagent::grants::{GrantKind, PermissionGrants, ToolGrantCheck};
+///
+/// let mut grants = PermissionGrants::default();
+/// grants.add(GrantKind::Tool("web".to_owned()), Duration::from_mins(5));
+/// assert_eq!(grants.check_tool_grant("web"), ToolGrantCheck::Active);
+/// assert_eq!(grants.check_tool_grant("shell"), ToolGrantCheck::NoGrant);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolGrantCheck {
+    /// No `GrantKind::Tool` grant record exists for this tool name — dispatch is
+    /// unrestricted by this mechanism (today's universal production state, since no
+    /// caller creates `GrantKind::Tool` grants yet).
+    NoGrant,
+    /// A `GrantKind::Tool` grant exists for this tool name and has not expired.
+    Active,
+    /// A `GrantKind::Tool` grant existed for this tool name but its TTL has elapsed; the
+    /// stale entry is evicted as a side effect of this check.
+    Expired,
+}
+
+#[cfg(test)]
+impl PermissionGrants {
+    /// Insert a grant with an explicit `granted_at`, bypassing `Instant::now()`, so
+    /// crate-internal tests outside this module (e.g. `agent_loop`'s enforcement tests) can
+    /// deterministically construct an already-expired grant without a real sleep — the
+    /// `grants` field itself is module-private, so this is the supported way in from outside
+    /// `grants.rs`.
+    pub(crate) fn add_test_grant(&mut self, kind: GrantKind, granted_at: Instant, ttl: Duration) {
+        self.grants.push(Grant {
+            kind,
+            granted_at,
+            ttl,
+        });
+    }
 }
 
 /// A resolved secret value delivered to a sub-agent loop, paired with the absolute
@@ -392,6 +496,38 @@ mod tests {
 
         assert_eq!(pg.grants.len(), 1, "only live grant should remain");
         assert_eq!(pg.grants[0].kind, GrantKind::Secret("live-key".into()));
+    }
+
+    #[test]
+    fn check_tool_grant_no_record_returns_no_grant() {
+        let mut pg = PermissionGrants::default();
+        assert_eq!(pg.check_tool_grant("shell"), ToolGrantCheck::NoGrant);
+    }
+
+    #[test]
+    fn check_tool_grant_active_returns_active() {
+        let mut pg = PermissionGrants::default();
+        pg.add(GrantKind::Tool("shell".into()), Duration::from_mins(5));
+        assert_eq!(pg.check_tool_grant("shell"), ToolGrantCheck::Active);
+    }
+
+    #[test]
+    fn check_tool_grant_unrelated_name_returns_no_grant() {
+        let mut pg = PermissionGrants::default();
+        pg.add(GrantKind::Tool("shell".into()), Duration::from_mins(5));
+        assert_eq!(pg.check_tool_grant("web"), ToolGrantCheck::NoGrant);
+    }
+
+    #[test]
+    fn check_tool_grant_expired_returns_expired_and_evicts() {
+        let mut pg = PermissionGrants::default();
+        pg.grants.push(Grant {
+            kind: GrantKind::Tool("shell".into()),
+            granted_at: Instant::now().checked_sub(Duration::from_secs(10)).unwrap(),
+            ttl: Duration::from_secs(1),
+        });
+        assert_eq!(pg.check_tool_grant("shell"), ToolGrantCheck::Expired);
+        assert!(pg.grants.is_empty(), "expired grant must be evicted");
     }
 
     #[test]

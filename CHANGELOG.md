@@ -23,6 +23,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-subagent`: `GrantKind::Tool` capability grants were defined and TTL-tracked identically
+  to `GrantKind::Secret` in `PermissionGrants`, but no production call site ever checked one
+  before dispatching a tool — a latent trap where the type's documented TTL/revocation contract
+  was silently non-enforced. `PermissionGrants` is now shared between `SubAgentManager` and the
+  spawned agent-loop task via `Arc<Mutex<..>>` (previously manager-exclusive), and
+  `handle_tool_step` checks `PermissionGrants::check_tool_grant` immediately before every tool
+  dispatch, rejecting the call with an actionable error when a matching grant has expired or
+  been revoked (mirroring the existing `Secret`-path TTL re-check). A sub-agent with no
+  `GrantKind::Tool` grants — the universal case today, since no caller creates one yet — sees no
+  behavior change (issue #6567).
 - `zeph-core`/`zeph-skills`: the failure-driven self-learning path (`store_improved_version`)
   wrote LLM-regenerated skill bodies straight to the live `SKILL.md` with no injection scan,
   and the new `"auto"`-sourced skill version silently inherited the parent skill's trust tier

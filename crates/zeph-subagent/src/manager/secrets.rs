@@ -47,7 +47,7 @@ impl SubAgentManager {
             .get_mut(task_id)
             .ok_or_else(|| SubAgentError::NotFound(task_id.to_owned()))?;
 
-        handle.grants.sweep_expired();
+        handle.grants_lock().sweep_expired();
 
         if !handle
             .def
@@ -63,7 +63,7 @@ impl SubAgentManager {
             )));
         }
 
-        handle.grants.grant_secret(secret_key, ttl);
+        handle.grants_lock().grant_secret(secret_key, ttl);
         Ok(())
     }
 
@@ -96,7 +96,10 @@ impl SubAgentManager {
             .get_mut(task_id)
             .ok_or_else(|| SubAgentError::NotFound(task_id.to_owned()))?;
 
-        let Some(expires_at) = handle.grants.expires_at(&GrantKind::Secret(key.to_owned())) else {
+        let Some(expires_at) = handle
+            .grants_lock()
+            .expires_at(&GrantKind::Secret(key.to_owned()))
+        else {
             tracing::warn!(
                 task_id,
                 "secret delivery denied: no active grant (missing approval or TTL expired)"
@@ -217,7 +220,7 @@ mod tests {
             join_handle: None,
             cancel: CancellationToken::new(),
             status_rx,
-            grants: PermissionGrants::default(),
+            grants: std::sync::Arc::new(std::sync::Mutex::new(PermissionGrants::default())),
             pending_secret_rx,
             secret_tx,
             started_at_str: String::new(),
@@ -253,10 +256,10 @@ mod tests {
         let registry = Arc::new(SecretMaskRegistry::new());
         mgr.set_secret_registry(Arc::clone(&registry));
 
-        let (mut handle, _secret_rx) =
+        let (handle, _secret_rx) =
             handle_with_live_secret_channel("task-1", SubAgentDef::for_test("helper"));
         handle
-            .grants
+            .grants_lock()
             .grant_secret("SOME_VAULT_KEY", Duration::from_mins(5));
         mgr.insert_handle_for_test("task-1".to_owned(), handle);
 
@@ -281,10 +284,10 @@ mod tests {
         // session with no registry wired (the `None` default) must not lose secret delivery.
         let mut mgr = SubAgentManager::new(4);
 
-        let (mut handle, _secret_rx) =
+        let (handle, _secret_rx) =
             handle_with_live_secret_channel("task-1", SubAgentDef::for_test("helper"));
         handle
-            .grants
+            .grants_lock()
             .grant_secret("SOME_VAULT_KEY", Duration::from_mins(5));
         mgr.insert_handle_for_test("task-1".to_owned(), handle);
 

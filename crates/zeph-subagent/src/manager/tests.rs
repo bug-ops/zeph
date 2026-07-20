@@ -278,7 +278,7 @@ async fn approve_secret_grants_access() {
     let handle = mgr.agents.get_mut(&task_id).unwrap();
     assert!(
         handle
-            .grants
+            .grants_lock()
             .is_active(&crate::grants::GrantKind::Secret("api-key".into()))
     );
 }
@@ -440,7 +440,7 @@ fn insert_handle_with_pending_secret_channel(
             join_handle: None,
             cancel: CancellationToken::new(),
             status_rx,
-            grants: PermissionGrants::default(),
+            grants: std::sync::Arc::new(std::sync::Mutex::new(PermissionGrants::default())),
             pending_secret_rx,
             secret_tx,
             started_at_str: String::new(),
@@ -1412,7 +1412,7 @@ fn resume_still_running_via_active_agents_returns_error() {
             join_handle: None,
             cancel,
             status_rx,
-            grants: PermissionGrants::default(),
+            grants: std::sync::Arc::new(std::sync::Mutex::new(PermissionGrants::default())),
             pending_secret_rx,
             secret_tx,
             started_at_str: "2026-01-01T00:00:00Z".to_owned(),
@@ -2294,6 +2294,7 @@ fn make_agent_loop_args(
         debug_dump_sink: None,
         forward: None,
         secret_registry: None,
+        tool_grants: std::sync::Arc::new(std::sync::Mutex::new(PermissionGrants::default())),
     }
 }
 
@@ -2455,6 +2456,7 @@ async fn run_agent_loop_publishes_failed_status_on_llm_call_timeout() {
         debug_dump_sink: None,
         forward: None,
         secret_registry: None,
+        tool_grants: std::sync::Arc::new(std::sync::Mutex::new(PermissionGrants::default())),
     };
 
     let result = run_agent_loop(args).await;
@@ -2616,6 +2618,7 @@ async fn run_agent_loop_finalizes_transcript_anchor_on_llm_error_exit_path() {
         debug_dump_sink: None,
         forward: None,
         secret_registry: None,
+        tool_grants: std::sync::Arc::new(std::sync::Mutex::new(PermissionGrants::default())),
     };
 
     let result = run_agent_loop(args).await;

@@ -747,6 +747,12 @@ impl SubAgentManager {
         let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);
         let (secret_tx, secret_rx) = mpsc::channel::<Option<GrantedSecret>>(4);
 
+        // Shared with the spawned loop task below (issue #6567) so `GrantKind::Tool`
+        // enforcement in `handle_tool_step` observes the same live grant state this handle's
+        // `revoke_all()` mutates — see the doc comment on `SubAgentHandle::grants`.
+        let grants = Arc::new(std::sync::Mutex::new(PermissionGrants::default()));
+        let tool_grants_for_loop = Arc::clone(&grants);
+
         let transcript_writer = self.create_transcript_writer(config, &task_id, &def.name, None);
 
         // Captured before `ctx.content_isolation` is moved into `agent_loop_args` below
@@ -789,6 +795,7 @@ impl SubAgentManager {
             debug_dump_sink: ctx.debug_dump_sink,
             forward: forward_sender,
             secret_registry: self.secret_registry.clone(),
+            tool_grants: tool_grants_for_loop,
         };
 
         let join_handle = self.spawn_agent_task(Arc::from(task_id.as_str()), move || async move {
@@ -880,7 +887,7 @@ impl SubAgentManager {
             join_handle: Some(join_handle),
             cancel,
             status_rx,
-            grants: PermissionGrants::default(),
+            grants,
             pending_secret_rx,
             secret_tx,
             started_at_str: crate::transcript::utc_now(),
@@ -962,7 +969,7 @@ impl SubAgentManager {
             .ok_or_else(|| SubAgentError::NotFound(task_id.to_owned()))?;
         handle.cancel.cancel();
         handle.state = SubAgentState::Canceled;
-        handle.grants.revoke_all();
+        handle.grants_lock().revoke_all();
         let def_name = handle.def.name.clone();
         tracing::info!(task_id, "sub-agent cancelled");
 
@@ -1007,7 +1014,7 @@ impl SubAgentManager {
             ) {
                 handle.cancel.cancel();
                 handle.state = SubAgentState::Canceled;
-                handle.grants.revoke_all();
+                handle.grants_lock().revoke_all();
                 tracing::info!(task_id, "sub-agent cancelled (cancel_all)");
 
                 if let Some(ref registry) = self.fleet_registry {
@@ -1195,6 +1202,11 @@ impl SubAgentManager {
         let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);
         let (secret_tx, secret_rx) = mpsc::channel::<Option<GrantedSecret>>(4);
 
+        // Shared with the spawned loop task below (issue #6567) — see the doc comment on
+        // `SubAgentHandle::grants`.
+        let grants = Arc::new(std::sync::Mutex::new(PermissionGrants::default()));
+        let tool_grants_for_loop = Arc::clone(&grants);
+
         let transcript_writer =
             self.create_transcript_writer(config, &new_task_id, &def.name, Some(&original_id));
 
@@ -1262,6 +1274,7 @@ impl SubAgentManager {
                 debug_dump_sink: debug_dump_sink_for_loop,
                 forward: forward_sender,
                 secret_registry: secret_registry_for_loop,
+                tool_grants: tool_grants_for_loop,
             })
         });
 
@@ -1279,7 +1292,7 @@ impl SubAgentManager {
             join_handle: Some(join_handle),
             cancel,
             status_rx,
-            grants: PermissionGrants::default(),
+            grants,
             pending_secret_rx,
             secret_tx,
             started_at_str: crate::transcript::utc_now(),
