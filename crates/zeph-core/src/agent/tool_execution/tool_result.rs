@@ -284,7 +284,7 @@ impl<C: Channel> Agent<C> {
         }
     }
 
-    fn classify_tool_result(
+    pub(super) fn classify_tool_result(
         &mut self,
         tc: &zeph_llm::provider::ToolUseRequest,
         tool_result: Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,

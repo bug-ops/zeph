@@ -667,10 +667,9 @@ async fn process_one_tool_result_error_prefix_records_tool_failure_outcome() {
     );
 }
 
-// classify_tool_result's "[stderr]" branch (tool_result.rs:295) currently has no test that can
-// distinguish Error from Success classification for it — a pre-existing gap, not introduced by
-// this PR (the removed legacy-harness test was equally non-discriminating). Follow-up test-
-// coverage issue to be filed separately.
+// classify_tool_result's "[stderr]" branch (tool_result.rs:295) is now covered directly by
+// classify_tool_result_stderr_marker_yields_error_outcome and its Success-side contrast test
+// in tafc_and_record_outcomes_tests.rs (R-AN-3b/3c, #6618).
 
 #[tokio::test]
 async fn buffered_preserves_order() {

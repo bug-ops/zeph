@@ -116,6 +116,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tokio-rs/tokio#7172). Latent since Guest Mode's original implementation; unreachable in
   tests or production until the `guest_mode` wiring fix above made this code path actually
   run — without this fix, enabling `guest_mode = true` would have crashed the process.
+- `zeph-core`: `classify_tool_result`'s `"[stderr]"` branch (`agent/tool_execution/tool_result.rs`)
+  had no test that could actually distinguish `AnomalyOutcome::Error` from `::Success`
+  classification — the only existing test drove it through `AnomalyDetector`'s windowed
+  aggregation (window=20, thresholds 0.5/0.7), where a single `[stderr]` call never crosses
+  either threshold regardless of its classification, so the assertion passed either way. Added
+  two focused unit tests that call `classify_tool_result` directly and assert on the returned
+  `anomaly_outcome` (issue #6618, follow-up from #6617/#6560).
 
 ### Changed
 

@@ -1809,6 +1809,74 @@ async fn native_anomaly_stderr_output_records_error() {
     );
 }
 
+// R-AN-3b: classify_tool_result itself must classify a "[stderr]"-marked summary as
+// AnomalyOutcome::Error. R-AN-3 above drives this through AnomalyDetector, but a single
+// [stderr] call in a 20-window never crosses either threshold regardless of how it was
+// classified, so it cannot catch a regression in classify_tool_result. This test calls
+// classify_tool_result directly and asserts on the returned anomaly_outcome (#6618).
+#[test]
+fn classify_tool_result_stderr_marker_yields_error_outcome() {
+    use crate::agent::agent_tests::{MockChannel, create_test_registry, mock_provider};
+
+    let executor = FixedOutputExecutor {
+        summary: String::new(),
+        is_err: false,
+    };
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+    let tc = make_tool_use_request("id-stderr", "bash");
+    let result = agent.classify_tool_result(
+        &tc,
+        Ok(Some(zeph_tools::ToolOutput {
+            tool_name: "bash".into(),
+            summary: "[stderr] something went wrong".into(),
+            ..Default::default()
+        })),
+    );
+
+    assert!(
+        matches!(result.anomaly_outcome, super::super::AnomalyOutcome::Error),
+        "a [stderr]-marked summary must classify as AnomalyOutcome::Error"
+    );
+}
+
+// R-AN-3c: contrast case — a plain-success summary (no [error]/[stderr] markers) must
+// classify as AnomalyOutcome::Success, proving the test above actually discriminates.
+#[test]
+fn classify_tool_result_plain_success_yields_success_outcome() {
+    use crate::agent::agent_tests::{MockChannel, create_test_registry, mock_provider};
+
+    let executor = FixedOutputExecutor {
+        summary: String::new(),
+        is_err: false,
+    };
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+    let tc = make_tool_use_request("id-success", "bash");
+    let result = agent.classify_tool_result(
+        &tc,
+        Ok(Some(zeph_tools::ToolOutput {
+            tool_name: "bash".into(),
+            summary: "hello world".into(),
+            ..Default::default()
+        })),
+    );
+
+    assert!(
+        matches!(
+            result.anomaly_outcome,
+            super::super::AnomalyOutcome::Success
+        ),
+        "a plain-success summary must classify as AnomalyOutcome::Success"
+    );
+}
+
 // R-AN-4: executor Err records an error outcome.
 #[tokio::test]
 async fn native_anomaly_executor_error_records_error() {
