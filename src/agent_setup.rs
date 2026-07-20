@@ -2267,6 +2267,9 @@ pub(crate) fn apply_policy_gate_chain(
             Arc::clone(enforcer),
             policy_context,
         );
+        if let Some(audit) = audit_logger {
+            gate = gate.with_audit(Arc::clone(audit));
+        }
         if let Some((slot, queue)) = trajectory {
             gate = gate
                 .with_trajectory_risk(Arc::clone(slot))
@@ -4172,6 +4175,10 @@ mod tests {
     /// a real `PolicyGateExecutor` when `pieces.policy_enforcer` is `Some`, and a deny rule must
     /// still block the call — this is the exact guardrail that pins the serve wiring fix (the
     /// pre-fix `serve/deps.rs::build_tool_executor` never called this function at all).
+    ///
+    /// #6565 regression: `apply_policy_gate_chain` must also forward `audit_logger` into the
+    /// declarative `PolicyGateExecutor` branch (it was previously only wired into the
+    /// adversarial branch), so both the deny and the allow decision land in the audit log.
     #[tokio::test]
     async fn apply_policy_gate_chain_blocks_denied_tool_when_policy_enforcer_present() {
         let policy_config = zeph_tools::PolicyConfig {
@@ -4198,18 +4205,51 @@ mod tests {
             policy_configured: true,
         };
 
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("audit.log");
+        let audit_config = zeph_tools::AuditConfig {
+            enabled: true,
+            destination: zeph_tools::AuditDestination::File(log_path.clone()),
+            ..Default::default()
+        };
+        let audit_logger = Arc::new(
+            zeph_tools::AuditLogger::from_config(&audit_config, false)
+                .await
+                .unwrap(),
+        );
+
         let inner: Arc<dyn zeph_tools::ErasedToolExecutor> = Arc::new(NoopExec);
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
         let (trust_gated, _handle) =
             apply_common_tool_gating(zeph_tools::DynExecutor(inner), &policy);
-        let executor = apply_policy_gate_chain(trust_gated, &pieces, None, None);
+        let executor = apply_policy_gate_chain(trust_gated, &pieces, Some(&audit_logger), None);
 
         let result = executor.execute_tool_call(&make_tool_call("shell")).await;
         assert!(
             matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
             "expected apply_policy_gate_chain to block a denied tool call through the full \
              trust+policy wrap, got {result:?}"
+        );
+
+        let allow_result = executor.execute_tool_call(&make_tool_call("read")).await;
+        assert!(
+            allow_result.is_ok(),
+            "expected an unmatched tool to fall through to the default Allow effect, got \
+             {allow_result:?}"
+        );
+
+        let content = tokio::fs::read_to_string(&log_path).await.unwrap();
+        assert!(
+            content.contains("\"type\":\"blocked\"")
+                && content.contains("\"error_category\":\"policy_blocked\""),
+            "declarative PolicyGateExecutor deny decision must be recorded in the audit log \
+             (#6565), got: {content}"
+        );
+        assert!(
+            content.contains("\"type\":\"success\""),
+            "declarative PolicyGateExecutor allow decision must also be recorded in the audit \
+             log, got: {content}"
         );
     }
 

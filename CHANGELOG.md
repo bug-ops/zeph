@@ -298,6 +298,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   note sent when enabled and at/above threshold, suppressed when below threshold, and
   suppressed when `consent_gate.enabled = false` regardless of trust tier.
 
+- `zeph-tools`: declarative `PolicyGateExecutor` allow/deny decisions were silently unaudited
+  across all three agent entry points (CLI, ACP, daemon), while the LLM-judged
+  `AdversarialPolicyGateExecutor` gate's decisions were audited — an asymmetry that left
+  `[tools.policy]` policy blocks invisible to the tool audit log (#6565). The shared
+  `apply_policy_gate_chain` helper (`src/agent_setup.rs`) attached the audit logger to the
+  adversarial gate via `.with_audit(...)` but never did so for the declarative
+  `PolicyGateExecutor` branch immediately after it, even though `audit_logger` was already in
+  scope; `PolicyGateExecutor::check_policy`/`log_audit` silently no-op when `self.audit` is
+  `None` (the `PolicyGateExecutor::new()` default). Now `apply_policy_gate_chain` also calls
+  `.with_audit(Arc::clone(audit))` on the declarative gate when an audit logger is present,
+  matching the adversarial branch.
+
 - `zeph-sanitizer`/`zeph-subagent`/`zeph-core`: a generic secret-shaped string (e.g. an
   `sk-test-...`-prefixed API key) fabricated or echoed by a sub-agent in its own response text
   passed through unmasked on two operator-visible surfaces (#6571). The two sanitize layers
