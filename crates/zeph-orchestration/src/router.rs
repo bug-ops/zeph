@@ -164,7 +164,6 @@ mod tests {
             network_scope: None,
             tool_allowlist: None,
             asset_sensitivity: None,
-            tool_allowlist: None,
             timeout: None,
             recovery: None,
             routed_from: None,
