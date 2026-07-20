@@ -18,7 +18,7 @@
 //! This crate provides [`service::ContextService`] — a stateless façade for all
 //! context-assembly operations that were previously implemented directly on `Agent<C>`
 //! in `zeph-core`. Extracting this logic means that editing context-assembly code does
-//! not trigger recompilation of the tool dispatcher (`zeph-agent-tools`) or the
+//! not trigger recompilation of the doom-loop detector (`zeph-agent-tools`) or the
 //! persistence layer (`zeph-agent-persistence`).
 //!
 //! # Architecture

@@ -11347,17 +11347,6 @@ dependencies = [
 [[package]]
 name = "zeph-agent-tools"
 version = "0.22.2"
-dependencies = [
- "futures",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "zeph-common",
- "zeph-llm",
- "zeph-tools",
-]
 
 [[package]]
 name = "zeph-bench"

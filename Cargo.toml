@@ -160,7 +160,7 @@ zeph-acp = { path = "crates/zeph-acp", default-features = false, version = "0.22
 zeph-agent-context = { path = "crates/zeph-agent-context", default-features = false, version = "0.22.2" }
 zeph-agent-feedback = { path = "crates/zeph-agent-feedback", version = "0.22.2" }
 zeph-agent-persistence = { path = "crates/zeph-agent-persistence", default-features = false, version = "0.22.2" }
-zeph-agent-tools = { path = "crates/zeph-agent-tools", default-features = false, version = "0.22.2" }
+zeph-agent-tools = { path = "crates/zeph-agent-tools", version = "0.22.2" }
 zeph-bench = { path = "crates/zeph-bench", default-features = false, version = "0.22.2" }
 zeph-channels = { path = "crates/zeph-channels", default-features = false, version = "0.22.2" }
 zeph-commands = { path = "crates/zeph-commands", version = "0.22.2" }

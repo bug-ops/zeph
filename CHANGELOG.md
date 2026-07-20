@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Removed
+
+- `zeph-agent-tools`: removed the unused `AgentChannel` sealed trait and its supporting
+  `ChannelSinkError`/`ToolEventStart`/`ToolEventOutput`/`Sealed` types (`channel.rs`,
+  `error.rs`, `sealed.rs`), along with `ToolDispatchError` (`error.rs`) — dead scaffolding
+  from an abandoned dispatcher-extraction plan (issue #3516, closed) with zero implementors
+  or consumers anywhere in the workspace (#6480). The crate now exposes only `doom_loop_hash`,
+  its sole real production consumer (`zeph-core`'s tool tier loop). Dropped the now-unused
+  `futures`, `serde`, `serde_json`, `thiserror`, `tokio`, `tracing`, `zeph-common`, `zeph-llm`,
+  and `zeph-tools` dependencies along with the `sqlite`/`postgres` feature forwarding they
+  existed to support — `zeph-agent-tools` now has zero workspace or external dependencies.
+  Behavior of `doom_loop_hash` and its call site are unchanged.
+
 ### Changed
 
 - `zeph-skills`: `embed_skills_with_timeout` now tries `LlmProvider::embed_batch` first

@@ -15,7 +15,7 @@
 //! # Architectural placement
 //!
 //! Consumers of this crate span several layers (`zeph-scheduler`, `zeph-subagent`,
-//! `zeph-orchestration`, `zeph-agent-tools`), so the crate must sit at Layer 0. It is a pure
+//! `zeph-orchestration`), so the crate must sit at Layer 0. It is a pure
 //! infrastructure primitive: it sees opaque serialized payloads, never domain types, and it
 //! MUST NOT depend on `zeph-llm`, `zeph-memory`, `zeph-core`, `zeph-sanitizer`, or any
 //! business-layer crate (INV-1). Domain meaning lives in thin adapter modules inside each
