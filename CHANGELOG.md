@@ -35,6 +35,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `zeph_cost_budget_exhausted_total` Prometheus counter mirrors the existing
   `zeph_security_rate_limit_trips` metric.
 
+- `zeph-core`: split `agent/tool_execution/tier_loop.rs` (5,305 lines, the crate's largest
+  non-test file) into eight concern-scoped sibling modules — `confirmation.rs` (MAGE
+  escalation/confirmation gates), `retry_reformat.rs` (transient-error retry and
+  parameter-reformat), `quota.rs` (session tool-call quota), `exfiltration.rs` (exfiltration
+  URL flagging and permission-denied hooks), `causal_probe.rs` (causal IPI pre/post probing),
+  `focus_compression.rs` (focus/compress preprocessing and Acon tool-result compression),
+  `shadow_events.rs` (shadow-sentinel goal-drift recording), and `doom_loop.rs`
+  (repeated-output detection) — following the same per-concern `impl<C: Channel> Agent<C>`
+  split already used by `agent/state/` (#6489). `tier_loop.rs` (3,633 lines) now holds only the
+  orchestration entry point (`run_tier_execution_loop` and its direct call graph) and is no
+  longer the crate's largest non-test file. Pure structural move: no behavior, signature, or
+  externally-visible API changes; unit tests moved alongside their methods into the new
+  modules. `cancel_tool_batch` and `skipped_output` widen from module-private to `pub(super)`
+  since sibling modules now call them across files — the smallest necessary widening.
+
 ### Fixed
 
 - `zeph-core`: the vault-anchor reconcile sweep (`run_anchor_sweep`) hard-deleted a transcript/

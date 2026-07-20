@@ -1,12 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+mod causal_probe;
+mod confirmation;
+mod doom_loop;
+mod exfiltration;
 mod focus;
+mod focus_compression;
 mod layer_hooks;
 mod llm_dispatch;
 mod metrics_compact;
 mod native;
+mod quota;
+mod retry_reformat;
 mod sanitize;
+mod shadow_events;
 mod tier_loop;
 mod tool_call_dag;
 mod tool_result;
