@@ -4887,7 +4887,7 @@ mod tests {
     /// struct defaults. This is the parity test that closes the gap meta-issue #6581 tracks (a
     /// 24th instance of the wire-X-into-serve defect class): a future PR that drops one of these
     /// fields from `assemble_serve_deps` fails this test instead of shipping unnoticed.
-    #[cfg(feature = "acp-http")]
+    #[cfg(all(feature = "acp-http", feature = "session"))]
     #[tokio::test]
     #[allow(clippy::too_many_lines)] // exhaustive field-by-field assertions across 2 deps structs
     async fn build_combined_deps_wires_equivalent_security_pipeline_from_config() {

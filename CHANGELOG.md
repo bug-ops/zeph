@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Fixed
 
+- `src/acp.rs`: the test `build_combined_deps_wires_equivalent_security_pipeline_from_config`
+  was gated `#[cfg(feature = "acp-http")]` while the function it exercises, `build_combined_deps`,
+  requires `#[cfg(all(feature = "acp-http", feature = "session"))]` — since the `ide` feature
+  bundle enables `acp-http` without `session`, `cargo check --workspace --all-targets --features
+  ide` failed to compile (`error[E0425]: cannot find function build_combined_deps in this scope`).
+  Aligned the test's cfg gate with the function's (issue #6607).
 - `zeph-channels`: Telegram guest-mode responses (`TelegramChannel::flush_chunks`) are now
   formatted through the same `markdown_to_telegram` renderer used by regular messages, and
   sent with `parse_mode = "MarkdownV2"` instead of an unconverted `"HTML"` call — raw LLM
