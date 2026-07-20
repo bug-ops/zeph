@@ -1999,6 +1999,7 @@ where
 /// CLI (`runner.rs`) and the daemon (`daemon.rs`) are single-session-per-process, so a shared
 /// `ShellExecutor` built once is already correct there — they use
 /// [`build_base_executor_chain`] directly instead of this function.
+#[cfg(feature = "acp")]
 #[expect(
     clippy::type_complexity,
     reason = "concrete nested CompositeExecutor chain type mirrors build_base_executor_chain's \
