@@ -11,7 +11,7 @@ use crate::{CommandError, CommandHandler, CommandOutput, SlashCategory};
 
 /// Experimental features handler for `/experiment`.
 ///
-/// Delegates to `AgentAccess::handle_experiment` which is now Send-compatible:
+/// Delegates to `OrchestrationAccess::handle_experiment` which is now Send-compatible:
 /// `handle_experiment_command_as_string` clones all `Arc` references before `.await`
 /// so no `&mut self` borrow is held across await boundaries.
 pub struct ExperimentCommand;

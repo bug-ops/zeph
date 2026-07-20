@@ -11,7 +11,12 @@
 //! fresh manager from a disk scan on every invocation.
 
 use std::fmt::Write as _;
+use std::future::Future;
+use std::pin::Pin;
 
+use zeph_commands::{CommandError, WorktreeAccess};
+
+use super::command_macros::delegate_cmd;
 use super::{Agent, error::AgentError};
 use crate::channel::Channel;
 
@@ -129,6 +134,64 @@ impl<C: Channel> Agent<C> {
         }
         out.push_str(&zeph_worktree::format_clean_summary(&outcome));
         Ok(Some(out))
+    }
+}
+
+impl<C: Channel + Send + 'static> WorktreeAccess for Agent<C> {
+    // ----- /worktree -----
+
+    delegate_cmd!(list_worktrees, handle_worktree_list_as_string => Option<String>);
+
+    delegate_cmd!(clean_worktrees, handle_worktree_clean_as_string, force: bool => Option<String>);
+
+    // ----- /cd -----
+
+    fn change_working_directory<'a>(
+        &'a mut self,
+        path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        use tracing::Instrument as _;
+
+        Box::pin(
+            async move {
+                let path = path.trim();
+                if path.is_empty() {
+                    let cwd = std::env::current_dir().map_err(|e| {
+                        CommandError::new(format!("failed to read current working directory: {e}"))
+                    })?;
+                    return Ok(format!("Current working directory: {}", cwd.display()));
+                }
+                // Reuses the same path-resolution + `set_current_dir` logic as the
+                // LLM-invoked `set_working_directory` tool (#6032 FR-001/FR-011) — no
+                // parallel implementation. `allowed_paths` empty means no build site has set
+                // it yet; default to `[cwd]` rather than "allow every path", matching
+                // `FileExecutor::new`/`SetCwdExecutor::new`'s convention (SEC-2).
+                let allowed_paths: Vec<std::path::PathBuf> =
+                    if self.services.tool_state.allowed_paths.is_empty() {
+                        // Canonicalize for byte-for-byte parity with `FileExecutor::new`/
+                        // `SetCwdExecutor::new`'s fallback, which both canonicalize their
+                        // default `[cwd]` entry (`.map(|p| p.canonicalize().unwrap_or(p))`).
+                        std::env::current_dir()
+                            .map(|p| p.canonicalize().unwrap_or(p))
+                            .into_iter()
+                            .collect()
+                    } else {
+                        self.services.tool_state.allowed_paths.clone()
+                    };
+                let new_cwd = zeph_tools::resolve_and_set_cwd(path, &allowed_paths)
+                    .map_err(|e| CommandError::new(format!("cannot change to '{path}': {e}")))?;
+                // Drives the same post-change pipeline the tool-invoked path gets for free
+                // after a tool batch (`tier_loop.rs`) — a bare slash command must call it
+                // explicitly (FR-002/FR-003/FR-004): mirror-update, `cwd_changed` hooks,
+                // repo-map invalidation, and (unless safe-mode) instruction re-discovery.
+                self.check_cwd_changed().await;
+                Ok(format!(
+                    "Working directory changed to: {}",
+                    new_cwd.display()
+                ))
+            }
+            .instrument(tracing::info_span!("core.commands.cd")),
+        )
     }
 }
 

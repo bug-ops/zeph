@@ -11,7 +11,7 @@ use crate::{CommandError, CommandHandler, CommandOutput, SlashCategory};
 
 /// Compact context handler for `/compact`.
 ///
-/// Delegates to `AgentAccess::compact_context`. The implementation extracts all
+/// Delegates to `SessionControlAccess::compact_context`. The implementation extracts all
 /// non-`Send` borrows before `.await` points so the future satisfies `Send + 'a`.
 pub struct CompactCommand;
 
@@ -55,7 +55,7 @@ impl CommandHandler<CommandContext<'_>> for CompactCommand {
 
 /// New conversation handler for `/new`.
 ///
-/// Delegates to `AgentAccess::reset_conversation` which is now Send-compatible:
+/// Delegates to `SessionControlAccess::reset_conversation` which is now Send-compatible:
 /// `reset_conversation` clones the `Arc<SemanticMemory>` before `.await` so no
 /// `&mut self` borrow is held across the await boundary.
 pub struct NewConversationCommand;
@@ -101,7 +101,7 @@ impl CommandHandler<CommandContext<'_>> for NewConversationCommand {
 
 /// Session recap handler for `/recap`.
 ///
-/// Delegates to `AgentAccess::session_recap`. Uses the agent registry (not the
+/// Delegates to `SessionControlAccess::session_recap`. Uses the agent registry (not the
 /// session/debug registry) because recap requires memory state, an LLM provider, and
 /// the cached digest.
 pub struct RecapCommand;

@@ -215,7 +215,7 @@ pub(crate) struct McpState {
     pub(crate) elicitation_warn_sensitive_fields: bool,
     /// When `true`, semantic index and registry need to be rebuilt at the next opportunity.
     ///
-    /// Set after `/mcp add` or `/mcp remove` when called via `AgentAccess::handle_mcp`,
+    /// Set after `/mcp add` or `/mcp remove` when called via `McpAccess::handle_mcp`,
     /// which cannot call `rebuild_semantic_index` and `sync_mcp_registry` directly because
     /// those are `async fn(&mut self)` and their futures are `!Send` (they hold `&mut Agent<C>`
     /// across `.await`). The rebuild is deferred to `check_tool_refresh`, which runs at the
@@ -890,7 +890,7 @@ pub(crate) struct ToolState {
     /// Last tool executed per skill in the current turn, keyed by skill name.
     /// Used as `prev_tool` for PASTE pattern transition recording.
     pub(crate) last_tool_per_skill: HashMap<String, String>,
-    /// `config.tools.shell.allowed_paths`, mirrored here so `AgentAccess::change_working_directory`
+    /// `config.tools.shell.allowed_paths`, mirrored here so `WorktreeAccess::change_working_directory`
     /// (#6032 SEC-2) can validate a `/cd` target against the same sandbox boundary
     /// `FileExecutor`/`DiagnosticsExecutor`/`SetCwdExecutor` already enforce, via
     /// `zeph_common::security::validate_path_within`. Empty means "no session has set it yet";

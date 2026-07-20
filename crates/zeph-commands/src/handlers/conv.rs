@@ -6,7 +6,7 @@
 //! Channel-agnostic by construction (the `CommandHandler`/`ChannelSink` pattern): works
 //! identically whether typed in the CLI, TUI, or Telegram, mirroring `zeph serve-sessions`'s
 //! `GET /sessions`/`GET /sessions/:id` REST endpoints but reading through
-//! [`crate::AgentAccess::handle_conv`] instead of HTTP.
+//! [`crate::SessionControlAccess::handle_conv`] instead of HTTP.
 
 use std::future::Future;
 use std::pin::Pin;

@@ -421,7 +421,7 @@ impl<C: crate::channel::Channel> Agent<C> {
 
     /// Return the `/feedback` command output as a `String` without sending via channel.
     ///
-    /// Used by the `AgentAccess::handle_feedback_command` implementation to satisfy the
+    /// Used by the `SkillAccess::handle_feedback_command` implementation to satisfy the
     /// `Send` bound on the returned future.
     pub(super) async fn handle_feedback_as_string(
         &mut self,

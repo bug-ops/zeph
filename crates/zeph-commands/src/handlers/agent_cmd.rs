@@ -11,7 +11,7 @@ use crate::{CommandError, CommandHandler, CommandOutput, SlashCategory};
 
 /// Manage sub-agents or dispatch `@mention` commands.
 ///
-/// Delegates to `AgentAccess::handle_agent_dispatch`, which handles both `/agent`
+/// Delegates to `SubagentAccess::handle_agent_dispatch`, which handles both `/agent`
 /// subcommands and `@name` mentions. Returns `Continue` when the dispatch returns
 /// `None` (no agent matched an `@mention` — fall through to LLM processing).
 pub struct AgentCommand;

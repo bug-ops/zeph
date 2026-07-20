@@ -11,7 +11,7 @@ use crate::{CommandError, CommandHandler, CommandOutput, SlashCategory};
 
 /// Planning handler for `/plan`.
 ///
-/// Delegates to `AgentAccess::handle_plan` which dispatches to `dispatch_plan_command`.
+/// Delegates to `OrchestrationAccess::handle_plan` which dispatches to `dispatch_plan_command`.
 /// The future is Send because `Agent<C>: Send` and no non-Send guards are held across
 /// await boundaries.
 pub struct PlanCommand;

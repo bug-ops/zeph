@@ -889,7 +889,7 @@ impl<C: Channel> Agent<C> {
     /// `FileExecutor::new`/`DiagnosticsExecutor::new`/`SetCwdExecutor::new` at the same
     /// build site, so all cwd/file-path sandboxes agree on one boundary. An empty `Vec`
     /// (the default if this is never called) is treated as "default to `[cwd]`" by
-    /// `AgentAccess::change_working_directory`, matching `FileExecutor::new`'s convention —
+    /// `WorktreeAccess::change_working_directory`, matching `FileExecutor::new`'s convention —
     /// not "allow every path".
     #[must_use]
     pub fn with_allowed_paths(mut self, allowed_paths: Vec<std::path::PathBuf>) -> Self {

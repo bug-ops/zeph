@@ -203,7 +203,7 @@ async fn reload_skills_is_noop_when_safe_mode_active() {
 /// FR-009: `/cd` with no argument reports the current cwd without mutating any state.
 #[tokio::test]
 async fn change_working_directory_empty_arg_reports_current_cwd() {
-    use zeph_commands::traits::agent::AgentAccess;
+    use zeph_commands::WorktreeAccess;
 
     let harness = QuickTestAgent::minimal("ok");
     let mut agent = harness.agent;
@@ -220,7 +220,7 @@ async fn change_working_directory_empty_arg_reports_current_cwd() {
 /// bypass for the per-path file sandbox.
 #[tokio::test]
 async fn change_working_directory_rejects_path_outside_allowed_paths() {
-    use zeph_commands::traits::agent::AgentAccess;
+    use zeph_commands::WorktreeAccess;
 
     let harness = QuickTestAgent::minimal("ok");
     let mut agent = harness.agent;
@@ -247,7 +247,7 @@ async fn change_working_directory_rejects_path_outside_allowed_paths() {
 /// both reflect the new directory.
 #[tokio::test]
 async fn change_working_directory_allows_path_inside_allowed_paths() {
-    use zeph_commands::traits::agent::AgentAccess;
+    use zeph_commands::WorktreeAccess;
 
     let harness = QuickTestAgent::minimal("ok");
     let mut agent = harness.agent;

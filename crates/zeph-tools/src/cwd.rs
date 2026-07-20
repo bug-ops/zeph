@@ -32,7 +32,7 @@ struct SetCwdParams {
 /// Returns the new absolute (canonicalized) cwd on success.
 ///
 /// Shared by [`SetCwdExecutor`] (the LLM-invoked `set_working_directory` tool) and the
-/// user-invoked `/cd` slash command (`zeph-core`'s `AgentAccess::change_working_directory`) —
+/// user-invoked `/cd` slash command (`zeph-core`'s `WorktreeAccess::change_working_directory`) —
 /// both entry points into the same underlying mechanism, per #6032 FR-001/FR-011: `/cd` must
 /// not duplicate this resolution logic.
 ///

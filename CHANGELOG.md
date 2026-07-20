@@ -80,6 +80,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Both callers (`SkillMiner`, trace-based skill extraction) are unaffected — the function
   signature is unchanged.
 
+- `zeph-commands`/`zeph-core`: the flat 53-method `AgentAccess` god-trait is split into 15
+  focused, per-command-domain sub-traits (`MemoryAccess`, `GraphAccess`, `ModelAccess`,
+  `SkillAccess`, `PolicyAccess`, `SchedulerAccess`, `LspAccess`, `SessionControlAccess`,
+  `McpAccess`, `OrchestrationAccess`, `SubagentAccess`, `IntegrationAccess`, `TrackingAccess`,
+  `WorktreeAccess`, `MiscAccess`), each declared in its own `crates/zeph-commands/src/traits/`
+  file (#6488). `AgentAccess` becomes an empty marker supertrait over all 15
+  (`pub trait AgentAccess: MemoryAccess + … + Send {}`) with a blanket impl, so `dyn AgentAccess`
+  and every existing `ctx.agent.<method>()` call site are unaffected — this is a pure
+  interface-segregation refactor with no behavior change. `Agent<C>`'s corresponding
+  `impl SubTrait` blocks are redistributed out of the single ~1800-line
+  `crates/zeph-core/src/agent/agent_access_impl.rs` into per-domain `crates/zeph-core/src/agent/
+  *_commands.rs` files (5 new: `memory_commands.rs`, `graph_commands.rs`, `skill_commands.rs`,
+  `orchestration_commands.rs`, `misc_commands.rs`), mirroring the existing `*_commands.rs` file
+  layout the issue asked for. The shared `delegate_cmd!` macro moves to a new
+  `crates/zeph-core/src/agent/command_macros.rs`, re-exported `pub(crate)` for the 5 domain
+  files that use it. `NullAgent` now implements the 15 sub-traits (kept together in
+  `traits/agent.rs`) instead of one `AgentAccess` impl. Callers that invoke `AgentAccess`
+  methods directly on a concrete `Agent<C>` (not through `dyn AgentAccess`) must now import the
+  specific sub-trait rather than the old supertrait — Rust's method-resolution rule for
+  supertrait methods only auto-resolves through `dyn Trait` objects, not concrete-type dot
+  calls; a handful of call sites in `src/` and test modules were updated accordingly.
+
 - `zeph-config`/`zeph-core`: the tool rate limiter (`[security.rate_limit]`) and the daily
   LLM cost cap (`[cost].max_daily_cents`) are now enabled by default, guarding a fresh install
   against a runaway agent loop hammering a tool category or burning unbounded API spend

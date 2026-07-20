@@ -4,8 +4,11 @@
 //! `/policy` command handler (requires `policy-enforcer` feature).
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::str::FromStr;
 
+use zeph_commands::{CommandError, PolicyAccess};
 use zeph_common::SkillTrustLevel;
 use zeph_config::tools::DefaultEffect;
 use zeph_tools::{PolicyContext, PolicyDecision, PolicyEnforcer};
@@ -104,5 +107,16 @@ impl<C: Channel> Agent<C> {
             }
             Err(e) => format!("policy compile error: {e}"),
         }
+    }
+}
+
+impl<C: Channel + Send + 'static> PolicyAccess for Agent<C> {
+    // ----- /policy -----
+
+    fn handle_policy<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async move { Ok(self.handle_policy_command_as_string(args)) })
     }
 }

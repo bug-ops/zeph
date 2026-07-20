@@ -2,12 +2,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::fmt::Write as _;
+use std::future::Future;
+use std::pin::Pin;
 
+use zeph_commands::{CommandError, LspAccess};
+
+use super::command_macros::delegate_cmd;
 use super::{Agent, error::AgentError};
 use crate::channel::Channel;
 
 impl<C: Channel> Agent<C> {
-    /// Channel-free version for use via [`zeph_commands::traits::agent::AgentAccess`].
+    /// Channel-free version for use via [`zeph_commands::LspAccess`].
     pub(super) async fn handle_lsp_status_as_string(&mut self) -> Result<String, AgentError> {
         let mut out = String::new();
 
@@ -77,4 +82,10 @@ impl<C: Channel> Agent<C> {
 
         Ok(out.trim_end().to_owned())
     }
+}
+
+impl<C: Channel + Send + 'static> LspAccess for Agent<C> {
+    // ----- /lsp -----
+
+    delegate_cmd!(lsp_status, handle_lsp_status_as_string => String);
 }

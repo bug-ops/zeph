@@ -5039,7 +5039,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::too_many_lines)] // exhaustive BuildAcpAgentParams literal — one field per line
     async fn build_acp_agent_wires_skill_matching_config() {
-        use zeph_commands::traits::agent::AgentAccess as _;
+        use zeph_commands::SkillAccess as _;
 
         let mut config = zeph_core::config::Config::default();
         config.skills.disambiguation_threshold = 0.77;

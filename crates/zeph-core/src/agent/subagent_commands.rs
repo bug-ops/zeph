@@ -1297,6 +1297,94 @@ fn sanitize_parent_messages(
     msgs
 }
 
+impl<C: Channel + Send + 'static> zeph_commands::SubagentAccess for Agent<C> {
+    // ----- /agent, @mention -----
+
+    fn handle_agent_dispatch<'a>(
+        &'a mut self,
+        input: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<String>, zeph_commands::CommandError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            match self.dispatch_agent_command(input).await {
+                Some(Err(e)) => Err(zeph_commands::CommandError::new(e.to_string())),
+                Some(Ok(())) | None => Ok(None),
+            }
+        })
+    }
+
+    // ----- /agents -----
+
+    fn handle_agents<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<String, zeph_commands::CommandError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        use zeph_commands::handlers::agents_fleet::{FleetEntry, format_fleet_section};
+        use zeph_subagent::AgentsCommand;
+
+        let args_owned = args.trim().to_owned();
+        Box::pin(async move {
+            // Fleet view: bare `/agents` or `/agents fleet` shows autonomous sessions + definitions.
+            let show_fleet = args_owned.is_empty() || args_owned == "fleet";
+
+            let fleet_section = if show_fleet {
+                let snapshots = self.services.autonomous_registry.list();
+                let entries: Vec<FleetEntry> = snapshots
+                    .into_iter()
+                    .map(|s| FleetEntry {
+                        goal_id: s.goal_id,
+                        goal_text_short: s.goal_text_short,
+                        state: s.state,
+                        turns_executed: s.turns_executed,
+                        max_turns: s.max_turns,
+                        elapsed: s.elapsed,
+                    })
+                    .collect();
+                format_fleet_section(&entries)
+            } else {
+                String::new()
+            };
+
+            // Sub-agent definitions section.
+            let definitions_section = if show_fleet || args_owned == "list" {
+                self.handle_agents_definitions_list()
+            } else {
+                // CRUD subcommands: show, create, edit, delete.
+                match AgentsCommand::parse(&format!("/agents {args_owned}")) {
+                    Ok(cmd) => self.handle_agents_crud(cmd),
+                    Err(e) => e.to_string(),
+                }
+            };
+
+            let mut out = fleet_section;
+            if !definitions_section.is_empty() {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&definitions_section);
+            }
+
+            if out.is_empty() {
+                "No active autonomous sessions or sub-agent definitions found."
+                    .clone_into(&mut out);
+            }
+
+            Ok(out)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use zeph_tools::{ErasedToolExecutor, ToolCall};

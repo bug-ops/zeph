@@ -10,7 +10,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// All output is collected into the returned string; no channel sends are
     /// performed.  This makes the future `Send`-compatible for use in
-    /// `AgentAccess::handle_mcp`.
+    /// `McpAccess::handle_mcp`.
     #[tracing::instrument(skip_all, name = "core.agent.handle_mcp_command")]
     pub(super) async fn handle_mcp_command(
         &mut self,
@@ -73,7 +73,7 @@ impl<C: Channel> Agent<C> {
                 self.services.mcp.sync_executor_tools();
                 self.services.mcp.pruning_cache.reset();
                 // Defer rebuild to check_tool_refresh (next turn) so this method
-                // stays Send-compatible for use in AgentAccess::handle_mcp.
+                // stays Send-compatible for use in McpAccess::handle_mcp.
                 self.services.mcp.pending_semantic_rebuild = true;
                 self.update_mcp_metrics();
                 Ok(format!(
@@ -173,7 +173,7 @@ impl<C: Channel> Agent<C> {
                 self.services.mcp.sync_executor_tools();
                 self.services.mcp.pruning_cache.reset();
                 // Defer rebuild to check_tool_refresh (next turn) so this method
-                // stays Send-compatible for use in AgentAccess::handle_mcp.
+                // stays Send-compatible for use in McpAccess::handle_mcp.
                 self.services.mcp.pending_semantic_rebuild = true;
                 self.update_mcp_metrics();
                 let sid = server_id.to_owned();
@@ -303,7 +303,7 @@ impl<C: Channel> Agent<C> {
     /// Called once per agent turn, before processing user input.  Two triggers cause a rebuild:
     /// - A `tools/list_changed` notification from an MCP server (via `tool_rx`).
     /// - `pending_semantic_rebuild == true`, set by `/mcp add` or `/mcp remove` when dispatched
-    ///   via `AgentAccess::handle_mcp` (which cannot call `rebuild_semantic_index` directly
+    ///   via `McpAccess::handle_mcp` (which cannot call `rebuild_semantic_index` directly
     ///   because the future would be `!Send`).
     ///
     /// Both branches also call [`refresh_mcp_tool_ids`](Self::refresh_mcp_tool_ids) so
@@ -832,6 +832,105 @@ fn sanitize_elicitation_message(message: &str) -> String {
         .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
         .take(MAX_CHARS)
         .collect()
+}
+
+impl<C: Channel + Send + 'static> zeph_commands::McpAccess for Agent<C> {
+    // ----- /mcp -----
+
+    fn handle_mcp<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<String, zeph_commands::CommandError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        // Extract all owned data before the async block so no &mut self reference is
+        // held across an .await point, satisfying the `for<'a>` Send bound.
+        let args_owned = args.to_owned();
+        let parts: Vec<String> = args_owned.split_whitespace().map(str::to_owned).collect();
+        let sub = parts.first().cloned().unwrap_or_default();
+
+        match sub.as_str() {
+            "list" => {
+                // Read-only: clone all data before async.
+                let manager = self.services.mcp.manager.clone();
+                let tools_snapshot: Vec<(String, String)> = self
+                    .services
+                    .mcp
+                    .tools
+                    .iter()
+                    .map(|t| (t.server_id.clone(), t.name.clone()))
+                    .collect();
+                Box::pin(async move {
+                    use std::fmt::Write;
+                    let Some(manager) = manager else {
+                        return Ok("MCP is not enabled.".to_owned());
+                    };
+                    let server_ids = manager.list_servers().await;
+                    if server_ids.is_empty() {
+                        return Ok("No MCP servers connected.".to_owned());
+                    }
+                    let mut output = String::from("Connected MCP servers:\n");
+                    let mut total = 0usize;
+                    for id in &server_ids {
+                        let count = tools_snapshot.iter().filter(|(sid, _)| sid == id).count();
+                        total += count;
+                        let _ = writeln!(output, "- {id} ({count} tools)");
+                    }
+                    let _ = write!(output, "Total: {total} tool(s)");
+                    Ok(output)
+                })
+            }
+            "tools" => {
+                // Read-only: collect tool info before async.
+                let server_id = parts.get(1).cloned();
+                let owned_tools: Vec<(String, String)> = if let Some(ref sid) = server_id {
+                    self.services
+                        .mcp
+                        .tools
+                        .iter()
+                        .filter(|t| &t.server_id == sid)
+                        .map(|t| (t.name.clone(), t.description.clone()))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                Box::pin(async move {
+                    use std::fmt::Write;
+                    let Some(server_id) = server_id else {
+                        return Ok("Usage: /mcp tools <server_id>".to_owned());
+                    };
+                    if owned_tools.is_empty() {
+                        return Ok(format!("No tools found for server '{server_id}'."));
+                    }
+                    let mut output =
+                        format!("Tools for '{server_id}' ({} total):\n", owned_tools.len());
+                    for (name, desc) in &owned_tools {
+                        if desc.is_empty() {
+                            let _ = writeln!(output, "- {name}");
+                        } else {
+                            let _ = writeln!(output, "- {name} — {desc}");
+                        }
+                    }
+                    Ok(output)
+                })
+            }
+            // add/remove require mutating self after async I/O.
+            // handle_mcp_command is structured so the only .await crossing a &mut self
+            // boundary goes through a cloned Arc<McpManager> — no &self fields are held
+            // across that .await.  The subsequent state-change methods (rebuild_semantic_index,
+            // sync_mcp_registry) are also async fn(&mut self), but they only hold owned locals
+            // across their own .await points (cloned tools Vec, cloned Arcs).
+            _ => Box::pin(async move {
+                self.handle_mcp_command(&args_owned)
+                    .await
+                    .map_err(|e| zeph_commands::CommandError::new(e.to_string()))
+            }),
+        }
+    }
 }
 
 #[cfg(test)]

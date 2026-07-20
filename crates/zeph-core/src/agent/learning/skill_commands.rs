@@ -12,7 +12,7 @@ use super::background::write_skill_file;
 impl<C: Channel> Agent<C> {
     /// Return the `/skill [subcommand]` output as a `String` without sending via channel.
     ///
-    /// Used by the `AgentAccess::handle_skill` implementation to satisfy the `Send` bound
+    /// Used by the `SkillAccess::handle_skill` implementation to satisfy the `Send` bound
     /// on the returned future.
     pub(crate) async fn handle_skill_command_as_string(
         &mut self,

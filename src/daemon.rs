@@ -1453,7 +1453,7 @@ mod tests {
     /// `with_skill_matching_config` would also be caught.
     #[tokio::test]
     async fn build_daemon_agent_wires_skill_matching_config() {
-        use zeph_commands::traits::agent::AgentAccess as _;
+        use zeph_commands::SkillAccess as _;
 
         let memory = make_daemon_test_memory().await;
         let conversation_id = memory.sqlite().create_conversation().await.unwrap();
@@ -1545,7 +1545,7 @@ mod tests {
     /// "non-default", so a swapped argument in `with_skill_group_config` would also be caught.
     #[tokio::test]
     async fn build_daemon_agent_wires_skill_group_config() {
-        use zeph_commands::traits::agent::AgentAccess as _;
+        use zeph_commands::SkillAccess as _;
 
         let memory = make_daemon_test_memory().await;
         let conversation_id = memory.sqlite().create_conversation().await.unwrap();
@@ -1638,7 +1638,7 @@ mod tests {
     /// `.with_trust_config(...)`/`.with_rl_routing(...)` call would also be caught.
     #[tokio::test]
     async fn build_daemon_agent_wires_trust_and_rl_config() {
-        use zeph_commands::traits::agent::AgentAccess as _;
+        use zeph_commands::SkillAccess as _;
 
         let memory = make_daemon_test_memory().await;
         let conversation_id = memory.sqlite().create_conversation().await.unwrap();

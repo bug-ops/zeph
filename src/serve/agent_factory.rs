@@ -1023,11 +1023,11 @@ mod tests {
     /// pool but `build_agent_factory`'s builder chain never consumed it, so the pool was always
     /// empty at runtime. `Agent` exposes no `pub` accessor for `provider_pool` directly, so this
     /// drives the same observable surface the real `/provider` command uses
-    /// ([`zeph_commands::AgentAccess::handle_provider`] with an empty argument lists configured
+    /// ([`zeph_commands::ModelAccess::handle_provider`] with an empty argument lists configured
     /// providers) rather than reaching into private fields from outside `zeph-core`.
     #[tokio::test]
     async fn build_agent_factory_wires_provider_pool_for_background_resolution() {
-        use zeph_commands::traits::agent::AgentAccess as _;
+        use zeph_commands::ModelAccess as _;
 
         let memory = make_memory().await;
         let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -1122,7 +1122,7 @@ mod tests {
     /// cannot distinguish wired-vs-unwired. This test uses distinct non-default values for all 5
     /// fields and, since `Agent` exposes no `pub` accessor for them directly, drives the same
     /// observable surface the real `/skills confusability` command uses
-    /// ([`zeph_commands::AgentAccess::handle_skills`]) — but asserts the *exact* threshold value
+    /// ([`zeph_commands::SkillAccess::handle_skills`]) — but asserts the *exact* threshold value
     /// echoed in [`zeph_skills::matcher::ConfusabilityReport`]'s `Display` output (`"above
     /// {threshold:.2}"`), not just "non-default", so a swap between `disambiguation_threshold`
     /// and `confusability_threshold` in the `with_skill_matching_config` call — both `f32`,
@@ -1131,7 +1131,7 @@ mod tests {
     /// threshold-printing branch instead of its "matcher not available" short-circuit.
     #[tokio::test]
     async fn build_agent_factory_wires_skill_matching_config() {
-        use zeph_commands::traits::agent::AgentAccess as _;
+        use zeph_commands::SkillAccess as _;
 
         let memory = make_memory().await;
         let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -1234,7 +1234,7 @@ mod tests {
     /// "non-default", so a swapped argument in `with_skill_group_config` would also be caught.
     #[tokio::test]
     async fn build_agent_factory_wires_skill_group_config() {
-        use zeph_commands::traits::agent::AgentAccess as _;
+        use zeph_commands::SkillAccess as _;
 
         let memory = make_memory().await;
         let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -1342,7 +1342,7 @@ mod tests {
     /// in `crate::acp::build_shared_core` rather than per session here).
     #[tokio::test]
     async fn build_agent_factory_wires_trust_and_rl_config() {
-        use zeph_commands::traits::agent::AgentAccess as _;
+        use zeph_commands::SkillAccess as _;
 
         let memory = make_memory().await;
         let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -1439,14 +1439,14 @@ mod tests {
     ///
     /// `Agent` exposes no `pub` accessor for `semantic_scan`/`semantic_scan_provider` directly,
     /// so this drives the same observable surface the real `/plugins add` command uses
-    /// ([`zeph_commands::AgentAccess::handle_plugins`]): with an empty `provider_pool`,
+    /// ([`zeph_commands::IntegrationAccess::handle_plugins`]): with an empty `provider_pool`,
     /// `handle_plugins("add <path>")` fails closed on the *unknown provider* branch
     /// (`crates/zeph-core/src/agent/agent_access_impl.rs`) whenever `semantic_scan` is enabled,
     /// and the error message echoes the exact configured provider name — so a dropped or
     /// swapped `with_semantic_scan` argument would also be caught.
     #[tokio::test]
     async fn build_agent_factory_wires_semantic_scan_config() {
-        use zeph_commands::traits::agent::AgentAccess as _;
+        use zeph_commands::IntegrationAccess as _;
 
         let memory = make_memory().await;
         let cid = memory.sqlite().create_conversation().await.unwrap();

@@ -11,6 +11,7 @@ pub use builder::SkillConfigParams;
 #[cfg(feature = "cocoon")]
 mod cocoon_cmd;
 mod command_context_impls;
+mod command_macros;
 pub(super) mod compression_feedback;
 mod config_reload;
 mod context;
@@ -22,6 +23,7 @@ pub use durable_bootstrap::DurableKeyMaterial;
 pub mod error;
 mod experiment_cmd;
 pub(crate) mod focus;
+mod graph_commands;
 mod heuristic_promotion;
 mod hooks_dispatch;
 mod index;
@@ -33,9 +35,12 @@ mod lsp_commands;
 mod magic_docs;
 mod mcp;
 pub(crate) mod memcot;
+mod memory_commands;
 mod message_queue;
 mod microcompact;
+mod misc_commands;
 mod model_commands;
+mod orchestration_commands;
 mod persistence;
 #[cfg(feature = "scheduler")]
 mod plan;
@@ -43,7 +48,6 @@ mod policy_commands;
 mod provider_cmd;
 mod quality_hook;
 pub(crate) mod rate_limiter;
-#[cfg(feature = "scheduler")]
 mod scheduler_commands;
 #[cfg(feature = "scheduler")]
 mod scheduler_loop;
@@ -53,6 +57,7 @@ mod session_digest;
 pub mod shadow_sentinel;
 mod shutdown;
 pub(crate) mod sidequest;
+mod skill_commands;
 mod skill_management;
 mod skill_reload;
 pub mod slash_commands;

@@ -3,7 +3,7 @@
 
 //! MCP management handler: `/mcp`.
 //!
-//! Delegates to `AgentAccess::handle_mcp`, which in turn calls the
+//! Delegates to `McpAccess::handle_mcp`, which in turn calls the
 //! `Agent<C>` inherent methods in `zeph-core::agent::mcp`. Status messages
 //! (`send_status`) are emitted as channel side effects inside the `Agent<C>`
 //! implementation; only the final user-facing message is surfaced as the
@@ -19,7 +19,7 @@ use crate::{CommandError, CommandHandler, CommandOutput, SlashCategory};
 ///
 /// Subcommands: `add`, `list`, `tools`, `remove`.
 ///
-/// Delegates to `AgentAccess::handle_mcp`, which collects all output into
+/// Delegates to `McpAccess::handle_mcp`, which collects all output into
 /// a `String` and returns it.  The registry sends the string to the channel
 /// as a `Message` output.
 pub struct McpCommand;

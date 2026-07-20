@@ -3,14 +3,22 @@
 
 //! Slash command helpers for `Agent<C>`.
 //!
-//! The `COMMANDS` constant has moved to `zeph-commands::commands`. This module now
-//! contains only the `Agent<C>` helper methods used by the `AgentAccess` trait
-//! implementations and the remaining un-migrated commands (`/skill`, `/skills`, `/feedback`).
+//! The `COMMANDS` constant has moved to `zeph-commands::commands`. This module hosts the
+//! [`zeph_commands::SessionControlAccess`] implementation for `Agent<C>` (`/recap`, `/compact`,
+//! `/new`, `/status`, `/guardrail`, `/focus`, `/sidequest`, `/image`, `/undo`, `/redo`, `/conv`)
+//! plus its private helpers (`/conv resume`/`fork`/`list`/`show`, status-string formatting) and
+//! the session/agent command registry builders used by `Agent::run`.
 
+use std::future::Future;
+use std::pin::Pin;
+
+use tracing::Instrument as _;
+use zeph_commands::{CommandError, SessionControlAccess};
 use zeph_llm::provider::LlmProvider;
 
 use super::Agent;
 use super::error;
+use crate::channel::Channel;
 
 /// Returns a formatted overlay summary string for slash/TUI display.
 ///
@@ -186,7 +194,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         }
     }
 
-    /// Return formatted session status string for use via [`AgentAccess::session_status`].
+    /// Return formatted session status string for use via [`SessionControlAccess::session_status`].
     pub(super) fn handle_status_as_string(&mut self) -> String {
         use std::fmt::Write;
         use zeph_llm::provider::Role;
@@ -270,7 +278,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         out.trim_end().to_owned()
     }
 
-    /// Return formatted guardrail status string for use via [`AgentAccess::guardrail_status`].
+    /// Return formatted guardrail status string for use via [`SessionControlAccess::guardrail_status`].
     pub(super) fn format_guardrail_status(&self) -> String {
         use std::fmt::Write;
 
@@ -304,7 +312,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         out.trim_end().to_owned()
     }
 
-    /// Return formatted Focus Agent status string for use via [`AgentAccess::focus_status`].
+    /// Return formatted Focus Agent status string for use via [`SessionControlAccess::focus_status`].
     pub(super) fn format_focus_status(&self) -> String {
         use std::fmt::Write;
         let mut out = String::from("Focus Agent status\n\n");
@@ -331,7 +339,7 @@ impl<C: crate::channel::Channel> Agent<C> {
     }
 
     /// Return formatted `SideQuest` eviction status string for use via
-    /// [`AgentAccess::sidequest_status`].
+    /// [`SessionControlAccess::sidequest_status`].
     pub(super) fn format_sidequest_status(&self) -> String {
         use std::fmt::Write;
         let mut out = String::from("SideQuest status\n\n");
@@ -363,7 +371,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         out.trim_end().to_owned()
     }
 
-    /// Load an image and return a status string for use via [`AgentAccess::load_image`].
+    /// Load an image and return a status string for use via [`SessionControlAccess::load_image`].
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn handle_image_as_string(&mut self, path: &str) -> String {
         use zeph_common::path_guard::{PathRejection, classify_relative_path};
@@ -1014,9 +1022,453 @@ fn append_graph_recall_section(out: &mut String, gc: &zeph_config::memory::Graph
     }
 }
 
+impl<C: Channel> Agent<C> {
+    /// `/conv resume <id>` (spec-068, #5343, D-9): mid-session live swap onto an existing
+    /// durable session. Resolves `conversation_id` via the `SessionId`<->`ConversationId`
+    /// bijection (spec §5.2) — reuses the session's existing linked conversation if one exists,
+    /// otherwise mints one and links it (a session created via the HTTP API's `POST /sessions`,
+    /// or a legacy session, may not have one yet).
+    async fn handle_conv_resume(&mut self, id: &str) -> Result<String, CommandError> {
+        if id.is_empty() {
+            return Ok("Usage: /conv resume <id>".to_owned());
+        }
+        // #5487 fix 3: `load_and_resume_conversation` now opens the target session's event log
+        // exclusively (INV-D2). Resuming into the session already live in this agent would try
+        // to acquire a second exclusive lock on the same directory this agent's own
+        // `SessionSink` already holds open, deadlocking on `AlreadyLocked` — short-circuit with a
+        // clear message instead of attempting a self-conflicting reopen.
+        if let Some(sink) = &self.services.session.session_sink
+            && sink.session_id().as_str() == id
+        {
+            return Ok(format!("Already in session '{id}'."));
+        }
+        let Some(memory) = self.services.memory.persistence.memory.clone() else {
+            return Ok(
+                "Conversation-session persistence requires memory to be enabled ([memory] enabled = true)."
+                    .to_owned(),
+            );
+        };
+        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        let Some(metadata) = store
+            .get(id)
+            .await
+            .map_err(|e| CommandError::new(e.to_string()))?
+        else {
+            return Ok(format!("Session '{id}' not found."));
+        };
+
+        let conversation_id = if let Some(cid) = metadata.conversation_id {
+            zeph_memory::ConversationId(cid)
+        } else {
+            let cid = memory
+                .sqlite()
+                .create_conversation()
+                .await
+                .map_err(|e| CommandError::new(e.to_string()))?;
+            store
+                .link_conversation(id, cid.0)
+                .await
+                .map_err(|e| CommandError::new(e.to_string()))?;
+            cid
+        };
+
+        let session_id = zeph_common::SessionId::new(id);
+        self.load_and_resume_conversation(&session_id, conversation_id)
+            .await
+            .map_err(|e| CommandError::new(e.to_string()))?;
+
+        Ok(format!(
+            "Resumed session {id} ({} event(s) replayed).",
+            metadata.event_count
+        ))
+    }
+
+    /// `/conv fork <id>` (spec-068, #5343, D-9): eager-copies `id`'s durable log into a fresh
+    /// child session via `ForkEngine::fork` (P2), then immediately live-swaps onto the child —
+    /// same effect as `POST /sessions/:id/fork` (spec §9.4) but for the current CLI/TUI session
+    /// instead of spawning a new `SessionActor`.
+    async fn handle_conv_fork(&mut self, id: &str) -> Result<String, CommandError> {
+        if id.is_empty() {
+            return Ok("Usage: /conv fork <id>".to_owned());
+        }
+        let Some(memory) = self.services.memory.persistence.memory.clone() else {
+            return Ok(
+                "Conversation-session persistence requires memory to be enabled ([memory] enabled = true)."
+                    .to_owned(),
+            );
+        };
+        let Some(session_persistence_config) =
+            self.services.session.session_persistence_config.clone()
+        else {
+            return Ok(
+                "Conversation-session persistence is not enabled ([session] enabled = true)."
+                    .to_owned(),
+            );
+        };
+        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        let data_dir = std::path::PathBuf::from(&session_persistence_config.data_dir);
+        let new_id = zeph_common::SessionId::generate();
+
+        let fork_result =
+            zeph_session::ForkEngine::fork(&data_dir, id, new_id.as_str(), None, &store, None)
+                .await
+                .map_err(|e| CommandError::new(e.to_string()))?;
+
+        let conversation_id = memory
+            .sqlite()
+            .create_conversation()
+            .await
+            .map_err(|e| CommandError::new(e.to_string()))?;
+
+        self.load_and_resume_conversation(&new_id, conversation_id)
+            .await
+            .map_err(|e| CommandError::new(e.to_string()))?;
+
+        Ok(format!(
+            "Forked session {id} -> {} ({} event(s) copied); now the active conversation.",
+            fork_result.new_session_id, fork_result.events_copied
+        ))
+    }
+}
+
+/// Formats `/conv list` — mirrors `sessions list`'s CLI table layout
+/// (`src/commands/sessions.rs`) and `zeph serve-sessions`'s `GET /sessions`.
+async fn handle_conv_list(store: &zeph_session::SessionStore) -> Result<String, CommandError> {
+    use std::fmt::Write as _;
+
+    let sessions = store
+        .list(&zeph_session::SessionFilter::default())
+        .await
+        .map_err(|e| CommandError::new(format!("failed to list sessions: {e}")))?;
+
+    if sessions.is_empty() {
+        return Ok("No conversation-sessions found.".to_owned());
+    }
+
+    let mut out = format!(
+        "{:<38} {:<30} {:<9} {:>6} {:<24}\n",
+        "ID", "TITLE", "STATUS", "EVENTS", "UPDATED"
+    );
+    out.push_str(&"-".repeat(110));
+    out.push('\n');
+    for s in &sessions {
+        let title = s.title.as_deref().unwrap_or("(untitled)");
+        let _ = writeln!(
+            out,
+            "{:<38} {:<30} {:<9} {:>6} {:<24}",
+            s.session_id,
+            crate::text::truncate_to_chars(title, 30),
+            s.status.as_str(),
+            s.event_count,
+            s.updated_at
+        );
+    }
+    Ok(out.trim_end().to_owned())
+}
+
+/// Formats `/conv show <id>` — one session's metadata, mirroring `zeph serve-sessions`'s
+/// `GET /sessions/:id` (metadata only; use `zeph sessions show --events <id>` on the CLI for a
+/// full event-log dump).
+async fn handle_conv_show(
+    store: &zeph_session::SessionStore,
+    id: &str,
+) -> Result<String, CommandError> {
+    if id.is_empty() {
+        return Ok("Usage: /conv show <id>".to_owned());
+    }
+    let metadata = store
+        .get(id)
+        .await
+        .map_err(|e| CommandError::new(format!("failed to read session metadata: {e}")))?;
+    let Some(m) = metadata else {
+        return Ok(format!("Session '{id}' not found."));
+    };
+    Ok(format!(
+        "Session {}\n  title: {}\n  status: {}\n  events: {} (last_seq={})\n  forked_from: {}\n  created: {}\n  updated: {}",
+        m.session_id,
+        m.title.as_deref().unwrap_or("(untitled)"),
+        m.status.as_str(),
+        m.event_count,
+        m.last_seq,
+        m.forked_from.as_deref().unwrap_or("-"),
+        m.created_at,
+        m.updated_at
+    ))
+}
+
+impl<C: Channel + Send + 'static> SessionControlAccess for Agent<C> {
+    // ----- /recap -----
+
+    fn session_recap<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(
+            async move {
+                match self.build_recap().await {
+                    Ok(text) => Ok(text),
+                    Err(e) => {
+                        // /recap is an explicit user command — surface a fixed message so that
+                        // LlmError internals (URLs with embedded credentials, response excerpts)
+                        // are never forwarded to the user channel. Full detail goes to the log.
+                        tracing::warn!("session recap command: {}", e.0);
+                        Ok("Recap unavailable — see logs for details".to_string())
+                    }
+                }
+            }
+            .instrument(tracing::info_span!("core.agent_access.session_recap")),
+        )
+    }
+
+    // ----- /compact -----
+
+    fn compact_context<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(
+            self.compact_context_command()
+                .instrument(tracing::info_span!("core.agent_access.compact_context")),
+        )
+    }
+
+    // ----- /new -----
+
+    fn reset_conversation<'a>(
+        &'a mut self,
+        keep_plan: bool,
+        no_digest: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async move {
+            match self.reset_conversation(keep_plan, no_digest).await {
+                Ok((old_id, new_id)) => {
+                    let old = old_id.map_or_else(|| "none".to_string(), |id| id.0.to_string());
+                    let new = new_id.map_or_else(|| "none".to_string(), |id| id.0.to_string());
+                    let keep_note = if keep_plan { " (plan preserved)" } else { "" };
+                    Ok(format!(
+                        "New conversation started. Previous: {old} → Current: {new}{keep_note}"
+                    ))
+                }
+                Err(e) => Ok(format!("Failed to start new conversation: {e}")),
+            }
+        })
+    }
+
+    // ----- /cache-stats -----
+
+    fn cache_stats(&self) -> String {
+        self.tool_orchestrator.cache_stats()
+    }
+
+    // ----- /status -----
+
+    fn session_status<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        Box::pin(async move { Ok(self.handle_status_as_string()) })
+    }
+
+    // ----- /guardrail -----
+
+    fn guardrail_status(&self) -> String {
+        self.format_guardrail_status()
+    }
+
+    // ----- /focus -----
+
+    fn focus_status(&self) -> String {
+        self.format_focus_status()
+    }
+
+    // ----- /sidequest -----
+
+    fn sidequest_status(&self) -> String {
+        self.format_sidequest_status()
+    }
+
+    // ----- /image -----
+
+    fn load_image<'a>(
+        &'a mut self,
+        path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        use zeph_common::path_guard::{PathRejection, classify_relative_path};
+        use zeph_llm::provider::{ImageData, MessagePart};
+
+        match classify_relative_path(path) {
+            PathRejection::Allowed => {}
+            PathRejection::Absolute => {
+                return Box::pin(async move {
+                    Ok(
+                        "Invalid image path: absolute paths are not supported, use a path \
+                        relative to the working directory"
+                            .to_owned(),
+                    )
+                });
+            }
+            PathRejection::Traversal => {
+                return Box::pin(async move {
+                    Ok("Invalid image path: path traversal ('..') is not allowed".to_owned())
+                });
+            }
+        }
+
+        let path_owned = path.to_owned();
+        Box::pin(async move {
+            let path_for_task = path_owned.clone();
+            let read_result = tokio::task::spawn_blocking(move || std::fs::read(&path_for_task))
+                .await
+                .map_err(|e| CommandError::new(format!("spawn_blocking join error: {e}")))?;
+            let data = match read_result {
+                Ok(d) => d,
+                Err(e) => return Ok(format!("Cannot read image {path_owned}: {e}")),
+            };
+            if data.len() > crate::agent::message_queue::MAX_IMAGE_BYTES {
+                return Ok(format!(
+                    "Image {path_owned} exceeds size limit ({} MB), skipping",
+                    crate::agent::message_queue::MAX_IMAGE_BYTES / 1024 / 1024
+                ));
+            }
+            let mime_type =
+                crate::agent::message_queue::detect_image_mime(Some(&path_owned)).to_string();
+            self.msg
+                .pending_image_parts
+                .push(MessagePart::Image(Box::new(ImageData { data, mime_type })));
+            Ok(format!("Image loaded: {path_owned}. Send your message."))
+        })
+    }
+
+    // ----- /undo, /redo -----
+
+    fn handle_undo<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let executor = std::sync::Arc::clone(&self.tool_executor);
+        let args_owned = args.trim().to_owned();
+        Box::pin(async move {
+            if args_owned == "list" {
+                let result = executor.checkpoint_list_erased();
+                if !result.supported {
+                    return Ok(
+                        "Checkpoints are not enabled. Set `[tools.shell] checkpoints_enabled = true` in config.".to_owned()
+                    );
+                }
+                if result.entries.is_empty() {
+                    return Ok("Undo stack is empty.".to_owned());
+                }
+                let mut lines = vec![format!("Undo stack ({} entries):", result.entries.len())];
+                for e in &result.entries {
+                    lines.push(format!(
+                        "  [{}] {} ({} file(s))",
+                        e.index, e.command, e.file_count
+                    ));
+                }
+                if result.redo_depth > 0 {
+                    lines.push(format!("Redo depth: {}", result.redo_depth));
+                }
+                return Ok(lines.join("\n"));
+            }
+
+            let n: usize = if args_owned.is_empty() {
+                1
+            } else {
+                match args_owned.parse::<usize>() {
+                    Ok(v) if v > 0 => v,
+                    _ => {
+                        return Err(CommandError::new(format!(
+                            "Invalid argument: expected a positive integer or 'list', got '{args_owned}'"
+                        )));
+                    }
+                }
+            };
+
+            let result = tokio::task::spawn_blocking(move || executor.checkpoint_undo_erased(n))
+                .await
+                .map_err(|e| CommandError::new(format!("undo task panicked: {e}")))?;
+            if !result.supported {
+                return Ok(
+                    "Checkpoints are not enabled. Set `[tools.shell] checkpoints_enabled = true` in config.".to_owned()
+                );
+            }
+            Ok(result.message)
+        })
+    }
+
+    fn handle_redo<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let _ = args;
+        let executor = std::sync::Arc::clone(&self.tool_executor);
+        Box::pin(async move {
+            let result = tokio::task::spawn_blocking(move || executor.checkpoint_redo_erased())
+                .await
+                .map_err(|e| CommandError::new(format!("redo task panicked: {e}")))?;
+            if !result.supported {
+                return Ok(
+                    "Checkpoints are not enabled. Set `[tools.shell] checkpoints_enabled = true` in config.".to_owned()
+                );
+            }
+            Ok(result.message)
+        })
+    }
+
+    // ----- /conv -----
+
+    fn handle_conv<'a>(
+        &'a mut self,
+        args: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
+        let args_owned = args.trim().to_owned();
+        Box::pin(async move {
+            // `resume`/`fork` need `&mut self` (mid-session live conversation swap, D-9) —
+            // handled first so `self` isn't already borrowed by the `list`/`show` path below.
+            if let Some(id) = args_owned.strip_prefix("resume ") {
+                return self.handle_conv_resume(id.trim()).await;
+            }
+            if let Some(id) = args_owned.strip_prefix("fork ") {
+                return self.handle_conv_fork(id.trim()).await;
+            }
+
+            let Some(memory) = self.services.memory.persistence.memory.clone() else {
+                return Ok(
+                    "Conversation-session persistence requires memory to be enabled ([memory] enabled = true)."
+                        .to_owned(),
+                );
+            };
+            let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+
+            if let Some(id) = args_owned.strip_prefix("show ") {
+                return handle_conv_show(&store, id.trim()).await;
+            }
+            if args_owned.is_empty() || args_owned == "list" {
+                return handle_conv_list(&store).await;
+            }
+            Ok(format!(
+                "Unknown /conv subcommand '{args_owned}'. Usage: /conv [list | show <id> | resume <id> | fork <id>]"
+            ))
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
     use super::*;
+    use zeph_memory::semantic::SemanticMemory;
+
+    async fn memory_without_qdrant() -> SemanticMemory {
+        SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            None,
+            zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            "test-model",
+        )
+        .await
+        .unwrap()
+    }
 
     /// #5904 SIGNIFICANT-1: `dispatch_slash_command` is the only slash-command dispatch path
     /// with no `trusted`/`requires_auth` check at all — it runs `/subagent spawn <cmd>`
@@ -1089,5 +1541,278 @@ blocked_commands = ["curl"]
         let out = format_overlay_section(tmp.path());
         // Either skipped with reason or empty overlay — either way must not panic.
         assert!(out.contains("No plugin overlay active.") || out.contains("badplugin"));
+    }
+
+    // #5487 fix 3: `handle_conv_resume` had zero prior test coverage. Resuming into the
+    // session already live in this agent must short-circuit before attempting to re-acquire
+    // the exclusive lock this agent's own SessionSink already holds (a guaranteed
+    // `AlreadyLocked` self-deadlock, since flock conflicts are per open-file-description, not
+    // per-process).
+    #[tokio::test]
+    async fn handle_conv_resume_same_session_short_circuits() {
+        let memory = memory_without_qdrant().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().to_path_buf();
+        let session_id = zeph_common::SessionId::new("s1");
+        let session_path = zeph_session::session_dir(&data_dir, session_id.as_str());
+        let log = zeph_session::SessionEventLog::open_exclusive(&session_path)
+            .await
+            .unwrap();
+        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        let sink = zeph_agent_persistence::SessionSink::new(
+            std::sync::Arc::new(log),
+            store,
+            session_id.clone(),
+        );
+        let session_config = zeph_config::SessionConfig {
+            enabled: true,
+            data_dir: data_dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_session_sink(Some(std::sync::Arc::new(sink)))
+        .with_session_persistence_config(Some(session_config));
+
+        let result = agent.handle_conv("resume s1").await.unwrap();
+        assert_eq!(
+            result, "Already in session 's1'.",
+            "resuming into the currently-active session must short-circuit, not attempt \
+             hydration/lock acquisition"
+        );
+    }
+
+    // Regression check for the guard above: resuming into a genuinely different session (not
+    // the one already live in this agent) must still hydrate normally.
+    #[tokio::test]
+    async fn handle_conv_resume_different_session_still_hydrates() {
+        let memory = memory_without_qdrant().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().to_path_buf();
+
+        // Agent is currently "in" session s1, whose own lock is held by its SessionSink.
+        let active_session_id = zeph_common::SessionId::new("s1");
+        let active_session_path = zeph_session::session_dir(&data_dir, active_session_id.as_str());
+        let active_log = zeph_session::SessionEventLog::open_exclusive(&active_session_path)
+            .await
+            .unwrap();
+        let active_store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        let active_sink = zeph_agent_persistence::SessionSink::new(
+            std::sync::Arc::new(active_log),
+            active_store,
+            active_session_id,
+        );
+
+        // Target session s2 exists in the store (unlocked directory) — this is what should be
+        // resumed into.
+        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        store.create("s2").await.unwrap();
+
+        let session_config = zeph_config::SessionConfig {
+            enabled: true,
+            data_dir: data_dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_session_sink(Some(std::sync::Arc::new(active_sink)))
+        .with_session_persistence_config(Some(session_config));
+
+        let result = agent.handle_conv("resume s2").await.unwrap();
+        assert!(
+            result.starts_with("Resumed session s2"),
+            "resuming into a different, unlocked session must still hydrate normally, got: {result}"
+        );
+    }
+
+    // #5764: `/conv fork` had zero test coverage — only `/conv resume` was tested above.
+    // Forks session "s1" into a fresh child and confirms the agent live-swaps onto it.
+    #[tokio::test]
+    async fn handle_conv_fork_creates_child_session_and_switches_to_it() {
+        let memory = memory_without_qdrant().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().to_path_buf();
+
+        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        store.create("s1").await.unwrap();
+        let src_dir = zeph_session::session_dir(&data_dir, "s1");
+        let log = zeph_session::SessionEventLog::open(&src_dir).await.unwrap();
+        log.append(
+            None,
+            None,
+            zeph_session::SessionEvent::SessionStarted {
+                session_id: "s1".to_owned(),
+                cwd: "/repo".to_owned(),
+                provider_name: "claude".to_owned(),
+                model: "opus".to_owned(),
+                forked_from: None,
+            },
+        )
+        .await
+        .unwrap();
+        store
+            .update_seq("s1", log.last_seq().unwrap(), 1)
+            .await
+            .unwrap();
+        drop(log);
+
+        let session_config = zeph_config::SessionConfig {
+            enabled: true,
+            data_dir: data_dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_session_persistence_config(Some(session_config));
+
+        let result = agent.handle_conv("fork s1").await.unwrap();
+        assert!(
+            result.starts_with("Forked session s1 ->"),
+            "expected fork confirmation message, got: {result}"
+        );
+        assert!(
+            result.contains("event(s) copied"),
+            "expected copied-event count in confirmation, got: {result}"
+        );
+    }
+
+    // Regression test for AC-23 (spec-068 §13.5/§13.9): `/conv fork` is a live in-session swap
+    // reached via `load_and_resume_conversation`, entirely bypassing the process-startup banner
+    // computed in `src/runner.rs`. Forks a session with real (non-`SessionStarted`-only) prior
+    // history and asserts the resume banner is sent through the channel for this path too.
+    #[tokio::test]
+    async fn handle_conv_fork_sends_resume_banner_for_non_empty_history() {
+        let memory = memory_without_qdrant().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().to_path_buf();
+
+        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        store.create("s1").await.unwrap();
+        let src_dir = zeph_session::session_dir(&data_dir, "s1");
+        let log = zeph_session::SessionEventLog::open(&src_dir).await.unwrap();
+        log.append(
+            None,
+            None,
+            zeph_session::SessionEvent::SessionStarted {
+                session_id: "s1".to_owned(),
+                cwd: "/repo".to_owned(),
+                provider_name: "claude".to_owned(),
+                model: "opus".to_owned(),
+                forked_from: None,
+            },
+        )
+        .await
+        .unwrap();
+        log.append(
+            None,
+            None,
+            zeph_session::SessionEvent::UserMessage {
+                text: "hello".to_owned(),
+                image_refs: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        store
+            .update_seq("s1", log.last_seq().unwrap(), 2)
+            .await
+            .unwrap();
+        drop(log);
+
+        let session_config = zeph_config::SessionConfig {
+            enabled: true,
+            data_dir: data_dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+        .with_session_persistence_config(Some(session_config));
+
+        let result = agent.handle_conv("fork s1").await.unwrap();
+        assert!(
+            result.starts_with("Forked session s1 ->"),
+            "expected fork confirmation message, got: {result}"
+        );
+
+        let sent = agent.channel.sent_messages();
+        assert!(
+            sent.iter().any(|m| m.contains("Resuming session")),
+            "forking a session with non-empty prior history must send the resume banner \
+             through the channel, got sent messages: {sent:?}"
+        );
+    }
+
+    // `SessionControlAccess::load_image` had zero direct coverage — only
+    // `Agent::handle_image_as_string` (slash_commands.rs) and `cli.rs`'s inline check
+    // were tested. These exercise the real `Agent<C>` impl via the trait.
+
+    #[tokio::test]
+    async fn load_image_rejects_absolute_path() {
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+
+        let result = SessionControlAccess::load_image(&mut agent, "/etc/passwd")
+            .await
+            .unwrap();
+        assert!(result.contains("absolute paths are not supported"));
+    }
+
+    #[tokio::test]
+    async fn load_image_rejects_parent_dir_traversal() {
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+
+        let result = SessionControlAccess::load_image(&mut agent, "../../etc/passwd")
+            .await
+            .unwrap();
+        assert!(result.contains("path traversal") && result.contains("not allowed"));
     }
 }

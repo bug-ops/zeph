@@ -37,6 +37,21 @@ pub use handlers::help::render_help_text;
 pub use context::CommandContext;
 pub use sink::{ChannelSink, NullSink};
 pub use traits::agent::{AgentAccess, NullAgent};
+pub use traits::graph::GraphAccess;
+pub use traits::integration::IntegrationAccess;
+pub use traits::lsp::LspAccess;
+pub use traits::mcp::McpAccess;
+pub use traits::memory::MemoryAccess;
+pub use traits::misc::MiscAccess;
+pub use traits::model::ModelAccess;
+pub use traits::orchestration::OrchestrationAccess;
+pub use traits::policy::PolicyAccess;
+pub use traits::scheduler::SchedulerAccess;
+pub use traits::session_control::SessionControlAccess;
+pub use traits::skill::SkillAccess;
+pub use traits::subagent::SubagentAccess;
+pub use traits::tracking::TrackingAccess;
+pub use traits::worktree::WorktreeAccess;
 pub use transcript::{TranscriptEntry, TranscriptFormatter, TranscriptRole};
 
 /// Status of a long-horizon goal.
@@ -72,7 +87,7 @@ impl GoalStatusView {
 
 /// Lightweight cross-crate snapshot of an active goal.
 ///
-/// Produced by [`AgentAccess::active_goal_snapshot`] and consumed by the TUI status bar
+/// Produced by [`TrackingAccess::active_goal_snapshot`] and consumed by the TUI status bar
 /// and metrics bridge. Contains only display-relevant fields.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GoalSnapshot {
