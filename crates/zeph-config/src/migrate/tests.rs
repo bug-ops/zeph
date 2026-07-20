@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        102,
-        "MIGRATIONS registry must contain all 102 sequential steps"
+        103,
+        "MIGRATIONS registry must contain all 103 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1191,7 +1191,7 @@ fn migrate_memory_store_config_noop_when_active_section_present() {
     assert_eq!(result.output, base);
 }
 
-// ── Step 102 — migrate_memory_consent_gate_config (issue #6490, MemGhost) ──────────
+// ── Step 103 — migrate_memory_consent_gate_config (issue #6490, MemGhost) ──────────
 
 #[test]
 fn migrate_memory_consent_gate_config_idempotent_on_commented_output() {
@@ -2124,7 +2124,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 102);
+    assert_eq!(MIGRATIONS.len(), 103);
 }
 
 #[test]
