@@ -24,6 +24,7 @@ use zeph_common::memory::{
 };
 use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 
+use crate::budget::BudgetAllocation;
 use crate::error::AssemblerError;
 use crate::input::ContextAssemblyInput;
 use crate::slot::ContextSlot;
@@ -162,8 +163,10 @@ fn correction_params(cfg: Option<&crate::input::CorrectionConfig>) -> (usize, f3
 ///
 /// `router_ref` borrows from `router`, which is a local owned by `gather`. Using a separate
 /// lifetime `'r` for `router_ref` avoids tying it to `'a` (the input lifetime), which would
-/// require `router` to outlive `input`. All `usize` budget values are passed by copy so the
-/// returned futures do not borrow from `alloc`.
+/// require `router` to outlive `input`. Per-slot budgets are read from `alloc`, borrowed for
+/// `'r` from the caller's local `BudgetAllocation`, rather than passed as five individually
+/// ordered `usize` parameters — this removes the risk of an undetected argument-order swap
+/// between same-typed budget fields (#6573).
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn schedule_context_fetchers<'r>(
     memory: &'r crate::input::ContextMemoryView,
@@ -172,11 +175,7 @@ fn schedule_context_fetchers<'r>(
     scrub: fn(&str) -> std::borrow::Cow<'_, str>,
     index: Option<&'r dyn crate::input::IndexAccess>,
     router_ref: &'r dyn AsyncMemoryRouter,
-    summaries_budget: usize,
-    cross_session_budget: usize,
-    semantic_recall_budget: usize,
-    code_context_budget: usize,
-    graph_facts_budget: usize,
+    alloc: &'r BudgetAllocation,
     recall_limit: usize,
     min_sim: f32,
     active_levels: &[CompressionLevel],
@@ -196,31 +195,31 @@ fn schedule_context_fetchers<'r>(
     let fetchers: FuturesUnordered<CtxFuture<'r>> = FuturesUnordered::new();
 
     if episodic_active
-        && summaries_budget > 0
+        && alloc.summaries > 0
         && type_active(active_types, FunctionalType::CrossSessionSummary)
     {
         fetchers.push(Box::pin(async move {
-            fetch_summaries(memory, summaries_budget, tc)
+            fetch_summaries(memory, alloc.summaries, tc)
                 .await
                 .map(ContextSlot::Summaries)
         }));
     }
     if episodic_active
-        && cross_session_budget > 0
+        && alloc.cross_session > 0
         && type_active(active_types, FunctionalType::CrossSessionSummary)
     {
         fetchers.push(Box::pin(async move {
-            fetch_cross_session(memory, query, cross_session_budget, tc)
+            fetch_cross_session(memory, query, alloc.cross_session, tc)
                 .await
                 .map(ContextSlot::CrossSession)
         }));
     }
     if episodic_active
-        && semantic_recall_budget > 0
+        && alloc.semantic_recall > 0
         && type_active(active_types, FunctionalType::Episodic)
     {
         fetchers.push(Box::pin(async move {
-            fetch_semantic_recall(memory, query, semantic_recall_budget, tc, Some(router_ref))
+            fetch_semantic_recall(memory, query, alloc.semantic_recall, tc, Some(router_ref))
                 .await
                 .map(|(msg, score)| ContextSlot::SemanticRecall(msg, score))
         }));
@@ -229,9 +228,9 @@ fn schedule_context_fetchers<'r>(
     // always-composed within its existing `episodic_active` activity gate, independent of
     // whether FunctionalType::Episodic is in the active set (N2: must not be silently disabled
     // by the Episodic gate above).
-    if episodic_active && semantic_recall_budget > 0 {
+    if episodic_active && alloc.semantic_recall > 0 {
         fetchers.push(Box::pin(async move {
-            fetch_document_rag(memory, query, semantic_recall_budget, tc)
+            fetch_document_rag(memory, query, alloc.semantic_recall, tc)
                 .await
                 .map(ContextSlot::DocumentRag)
         }));
@@ -243,14 +242,14 @@ fn schedule_context_fetchers<'r>(
             .map(ContextSlot::Corrections)
     }));
     // Code RAG is request-driven, not memory-tier; exempt from tier and type filtering.
-    if code_context_budget > 0
+    if alloc.code_context > 0
         && let Some(idx) = index
     {
         fetchers.push(Box::pin(async move {
             let result: Result<Option<String>, AssemblerError> = if let Ok(r) =
                 tokio::time::timeout(
                     std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
-                    idx.fetch_code_rag(query, code_context_budget),
+                    idx.fetch_code_rag(query, alloc.code_context),
                 )
                 .await
             {
@@ -263,11 +262,11 @@ fn schedule_context_fetchers<'r>(
         }));
     }
     if declarative_active
-        && graph_facts_budget > 0
+        && alloc.graph_facts > 0
         && type_active(active_types, FunctionalType::GraphFact)
     {
         fetchers.push(Box::pin(async move {
-            fetch_graph_facts(memory, query, graph_facts_budget, tc)
+            fetch_graph_facts(memory, query, alloc.graph_facts, tc)
                 .await
                 .map(ContextSlot::GraphFacts)
         }));
@@ -416,11 +415,7 @@ impl ContextAssembler {
             input.scrub,
             input.index,
             router_ref,
-            alloc.summaries,
-            alloc.cross_session,
-            alloc.semantic_recall,
-            alloc.code_context,
-            alloc.graph_facts,
+            &alloc,
             recall_limit,
             min_sim,
             input.active_levels,
@@ -657,6 +652,31 @@ fn append_budgeted_lines(
     if body == prefix { None } else { Some(body) }
 }
 
+/// Runs `fut` under [`MEMORY_FETCH_TIMEOUT_MS`], degrading to an empty `Vec` and logging a
+/// warning tagged with `label` on timeout, while still propagating a genuine backend error.
+///
+/// Shared by fetchers whose failure mode is "stalled backend degrades to no results" (persona
+/// facts, trajectory hints, tree memory, reasoning strategies, corrections, semantic recall,
+/// document RAG, summaries, cross-session recall). `fetch_graph_facts` needs a three-way
+/// timeout/error/success split — it treats a backend error the same as a timeout — and is not
+/// a fit for this helper.
+async fn fetch_with_timeout<T>(
+    label: &str,
+    fut: impl Future<Output = Result<Vec<T>, Box<dyn std::error::Error + Send + Sync>>>,
+) -> Result<Vec<T>, AssemblerError> {
+    if let Ok(result) = tokio::time::timeout(
+        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
+        fut,
+    )
+    .await
+    {
+        result.map_err(AssemblerError::Memory)
+    } else {
+        tracing::warn!("{label} timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
+        Ok(Vec::new())
+    }
+}
+
 #[tracing::instrument(name = "context.persona_facts", skip_all)]
 pub(crate) async fn fetch_persona_facts(
     memory: &ContextMemoryView,
@@ -671,17 +691,8 @@ pub(crate) async fn fetch_persona_facts(
     };
 
     let min_confidence = memory.persona_config.min_confidence;
-    let facts = if let Ok(result) = tokio::time::timeout(
-        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
-        mem.load_persona_facts(min_confidence),
-    )
-    .await
-    {
-        result.map_err(AssemblerError::Memory)?
-    } else {
-        tracing::warn!("persona facts load timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
-        Vec::new()
-    };
+    let facts =
+        fetch_with_timeout("persona facts load", mem.load_persona_facts(min_confidence)).await?;
 
     if facts.is_empty() {
         return Ok(None);
@@ -714,17 +725,11 @@ pub(crate) async fn fetch_trajectory_hints(
     // Load procedural trajectory entries via the backend abstraction.
     // The "procedural" filter maps to the same tier used by the original
     // sqlite().load_trajectory_entries(Some("procedural"), top_k) call.
-    let entries = if let Ok(result) = tokio::time::timeout(
-        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
+    let entries = fetch_with_timeout(
+        "trajectory entries load",
         mem.load_trajectory_entries(Some("procedural"), top_k),
     )
-    .await
-    {
-        result.map_err(AssemblerError::Memory)?
-    } else {
-        tracing::warn!("trajectory entries load timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
-        Vec::new()
-    };
+    .await?;
 
     if entries.is_empty() {
         return Ok(None);
@@ -755,17 +760,7 @@ pub(crate) async fn fetch_tree_memory(
     };
 
     let top_k = memory.tree_config.recall_top_k;
-    let nodes = if let Ok(result) = tokio::time::timeout(
-        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
-        mem.load_tree_nodes(1, top_k),
-    )
-    .await
-    {
-        result.map_err(AssemblerError::Memory)?
-    } else {
-        tracing::warn!("tree nodes load timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
-        Vec::new()
-    };
+    let nodes = fetch_with_timeout("tree nodes load", mem.load_tree_nodes(1, top_k)).await?;
 
     if nodes.is_empty() {
         return Ok(None);
@@ -798,17 +793,11 @@ pub(crate) async fn fetch_reasoning_strategies(
         return Ok((None, None));
     };
 
-    let strategies = if let Ok(result) = tokio::time::timeout(
-        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
+    let strategies = fetch_with_timeout(
+        "reasoning strategies retrieval",
         mem.retrieve_reasoning_strategies(query, top_k),
     )
-    .await
-    {
-        result.map_err(AssemblerError::Memory)?
-    } else {
-        tracing::warn!("reasoning strategies retrieval timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
-        Vec::new()
-    };
+    .await?;
 
     if strategies.is_empty() {
         return Ok((None, None));
@@ -865,17 +854,11 @@ pub(crate) async fn fetch_corrections(
     let Some(ref mem) = memory.memory else {
         return Ok(None);
     };
-    let corrections = if let Ok(result) = tokio::time::timeout(
-        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
+    let corrections = fetch_with_timeout(
+        "corrections retrieval",
         mem.retrieve_corrections(query, limit, min_score),
     )
-    .await
-    {
-        result.map_err(AssemblerError::Memory)?
-    } else {
-        tracing::warn!("corrections retrieval timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
-        Vec::new()
-    };
+    .await?;
     if corrections.is_empty() {
         return Ok(None);
     }
@@ -903,17 +886,11 @@ pub(crate) async fn fetch_semantic_recall(
         return Ok((None, None));
     }
 
-    let recalled = if let Ok(result) = tokio::time::timeout(
-        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
+    let recalled = fetch_with_timeout(
+        "semantic recall",
         mem.recall(query, memory.recall_limit, router),
     )
-    .await
-    {
-        result.map_err(AssemblerError::Memory)?
-    } else {
-        tracing::warn!("semantic recall timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
-        Vec::new()
-    };
+    .await?;
     if recalled.is_empty() {
         return Ok((None, None));
     }
@@ -955,17 +932,11 @@ pub(crate) async fn fetch_document_rag(
 
     let collection = &memory.document_config.collection;
     let top_k = memory.document_config.top_k;
-    let chunks = if let Ok(result) = tokio::time::timeout(
-        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
+    let chunks = fetch_with_timeout(
+        "document RAG search",
         mem.search_document_collection(collection, query, top_k),
     )
-    .await
-    {
-        result.map_err(AssemblerError::Memory)?
-    } else {
-        tracing::warn!("document RAG search timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
-        Vec::new()
-    };
+    .await?;
     if chunks.is_empty() {
         return Ok(None);
     }
@@ -998,17 +969,7 @@ pub(crate) async fn fetch_summaries(
         return Ok(None);
     }
 
-    let summaries = if let Ok(result) = tokio::time::timeout(
-        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
-        mem.load_summaries(cid),
-    )
-    .await
-    {
-        result.map_err(AssemblerError::Memory)?
-    } else {
-        tracing::warn!("summaries load timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
-        Vec::new()
-    };
+    let summaries = fetch_with_timeout("summaries load", mem.load_summaries(cid)).await?;
     if summaries.is_empty() {
         return Ok(None);
     }
@@ -1040,17 +1001,11 @@ pub(crate) async fn fetch_cross_session(
     }
 
     let threshold = memory.cross_session_score_threshold;
-    let summaries = if let Ok(result) = tokio::time::timeout(
-        std::time::Duration::from_millis(MEMORY_FETCH_TIMEOUT_MS),
+    let summaries = fetch_with_timeout(
+        "cross-session search",
         mem.search_session_summaries(query, 5, Some(cid)),
     )
-    .await
-    {
-        result.map_err(AssemblerError::Memory)?
-    } else {
-        tracing::warn!("cross-session search timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
-        Vec::new()
-    };
+    .await?;
     let results: Vec<_> = summaries
         .into_iter()
         .filter(|r| r.score >= threshold)
@@ -1424,11 +1379,28 @@ mod tests {
         view
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Budget allocation shared by [`schedule_all_budgeted`] callers: 100 tokens for every
+    /// budget-gated slot, so scheduling depends only on the tier/type gate under test.
+    fn test_budget_alloc() -> crate::budget::BudgetAllocation {
+        crate::budget::BudgetAllocation {
+            system_prompt: 0,
+            skills: 0,
+            summaries: 100,
+            semantic_recall: 100,
+            cross_session: 100,
+            code_context: 100,
+            graph_facts: 100,
+            recent_history: 0,
+            response_reserve: 0,
+            session_digest: 0,
+        }
+    }
+
     fn schedule_all_budgeted<'r>(
         view: &'r ContextMemoryView,
         tc: &'r NaiveTokenCounter,
         router: &'r NoopRouter,
+        alloc: &'r crate::budget::BudgetAllocation,
         active_types: &'r [FunctionalType],
     ) -> FuturesUnordered<CtxFuture<'r>> {
         schedule_context_fetchers(
@@ -1438,11 +1410,7 @@ mod tests {
             |s| s.into(),
             None,
             router,
-            100,
-            100,
-            100,
-            100,
-            100,
+            alloc,
             10,
             0.5,
             &[],
@@ -1455,7 +1423,8 @@ mod tests {
         let view = full_active_view();
         let tc = NaiveTokenCounter;
         let router = NoopRouter;
-        let fetchers = schedule_all_budgeted(&view, &tc, &router, &[]);
+        let alloc = test_budget_alloc();
+        let fetchers = schedule_all_budgeted(&view, &tc, &router, &alloc, &[]);
         // summaries, cross_session, semantic_recall, document_rag, corrections, graph_facts,
         // persona_facts, trajectory_hints, tree_memory, reasoning_strategies (code RAG excluded:
         // no IndexAccess passed).
@@ -1472,7 +1441,8 @@ mod tests {
         let tc = NaiveTokenCounter;
         let router = NoopRouter;
         let active = [FunctionalType::UserFact];
-        let fetchers = schedule_all_budgeted(&view, &tc, &router, &active);
+        let alloc = test_budget_alloc();
+        let fetchers = schedule_all_budgeted(&view, &tc, &router, &alloc, &active);
         // persona_facts + corrections + trajectory_hints + tree_memory + document_rag.
         assert_eq!(fetchers.len(), 5);
     }
@@ -1486,7 +1456,8 @@ mod tests {
         let tc = NaiveTokenCounter;
         let router = NoopRouter;
         let active = [FunctionalType::GraphFact];
-        let fetchers = schedule_all_budgeted(&view, &tc, &router, &active);
+        let alloc = test_budget_alloc();
+        let fetchers = schedule_all_budgeted(&view, &tc, &router, &alloc, &active);
         // graph_facts + corrections + trajectory_hints + tree_memory + document_rag.
         // Crucially: semantic_recall is absent (Episodic excluded) while document_rag is present.
         assert_eq!(fetchers.len(), 5);
@@ -1499,7 +1470,8 @@ mod tests {
         let tc = NaiveTokenCounter;
         let router = NoopRouter;
         let active = [FunctionalType::CrossSessionSummary];
-        let fetchers = schedule_all_budgeted(&view, &tc, &router, &active);
+        let alloc = test_budget_alloc();
+        let fetchers = schedule_all_budgeted(&view, &tc, &router, &alloc, &active);
         // summaries + cross_session + corrections + trajectory_hints + tree_memory + document_rag.
         assert_eq!(fetchers.len(), 6);
     }

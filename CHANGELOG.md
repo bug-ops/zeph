@@ -59,6 +59,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tests or production until the `guest_mode` wiring fix above made this code path actually
   run — without this fix, enabling `guest_mode = true` would have crashed the process.
 
+### Changed
+
+- `zeph-context`: internal refactor of `assembler.rs`, no behavior change (issues #6573, #6577).
+  `schedule_context_fetchers` took 15 positional parameters, including 5 consecutive `usize`
+  budget values that duplicated fields already on `BudgetAllocation` — an undetected
+  argument-order swap between same-typed params was possible. It now takes `alloc: &BudgetAllocation`
+  instead of the 5 separate budget args. Also extracted a shared `fetch_with_timeout` helper for
+  the timeout+warn+fallback-to-empty-`Vec` boilerplate that was duplicated across 9 fetcher
+  functions (`fetch_persona_facts`, `fetch_trajectory_hints`, `fetch_tree_memory`,
+  `fetch_reasoning_strategies`, `fetch_corrections`, `fetch_semantic_recall`,
+  `fetch_document_rag`, `fetch_summaries`, `fetch_cross_session`); `fetch_graph_facts` was left
+  untouched since its three-way timeout/error/success split is not a fit for the shared helper.
+
 ### Added
 
 - `zeph-channels`/`zeph-config`: adopt Telegram Bot API 10.1 expandable blockquotes
