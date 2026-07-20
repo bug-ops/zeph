@@ -126,6 +126,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-acp`: `ZephAcpAgentState`'s three monolithic `impl` blocks (~2955 lines spanning
+  builder/config wiring, idle-session reaping, LSP diagnostics, session lifecycle,
+  slash-command/model dispatch, and MCP extension methods) are split into eight focused
+  sibling modules under `crates/zeph-acp/src/agent/` — `builder.rs`, `reaper.rs`,
+  `lsp_events.rs`, `mcp_ext.rs`, `model.rs`, `slash.rs`, `turn.rs`, `session.rs` — following
+  the existing `providers.rs`/`usage.rs` impl-split pattern. `mod.rs` shrinks from 4424 to
+  ~1400 lines, keeping the struct definition, session types, and the thin ACP-protocol
+  dispatch methods. Purely mechanical code motion plus `pub(crate)` visibility bumps for
+  methods now called across the new file boundaries — no behavior change, no field ownership
+  change (all 25 fields stay on the coordinator struct), all existing tests pass unchanged
+  (issue #6546).
 - `zeph-mcp`: **breaking** — `McpClient::connect` no longer takes two adjacent positional
   `bool` parameters (`suppress_stderr`, `env_isolation`); it now takes `StderrPolicy`
   (`Forward`/`Suppress`) and `EnvPolicy` (`InheritAll`/`Isolated`) instead. `McpClient::connect_url`,
