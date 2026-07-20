@@ -13,6 +13,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bundle enables `acp-http` without `session`, `cargo check --workspace --all-targets --features
   ide` failed to compile (`error[E0425]: cannot find function build_combined_deps in this scope`).
   Aligned the test's cfg gate with the function's (issue #6607).
+- `zeph-context`: `check_json_structural_key` (the FR-003 fidelity gate inside
+  `ToolOutputInvariant::verify`, `typed_page.rs`) no longer accepts a bare substring match
+  against JSON top-level keys — short, common keys like `"id"` or `"ok"` previously matched
+  inside unrelated prose (e.g. "the **id**ea was **ok**ay"), letting a compacted page pass
+  the hard gate without actually preserving the field's content. The check now requires the
+  key to appear JSON-quoted (`"key"`) or as a standalone word via a new `key_appears_as_word`
+  helper. An empty JSON key (`{"": ...}`) still always passes, preserving prior behavior for
+  that degenerate case. Documented residual: a short common-English-word key that genuinely
+  appears as a standalone word in unrelated prose (e.g. "the id was ok") still satisfies the
+  check — this is a disclosed partial mitigation, not a full close of all accidental matches
+  (issue #6575).
 - `zeph-channels`: Telegram guest-mode responses (`TelegramChannel::flush_chunks`) are now
   formatted through the same `markdown_to_telegram` renderer used by regular messages, and
   sent with `parse_mode = "MarkdownV2"` instead of an unconverted `"HTML"` call — raw LLM

@@ -373,8 +373,18 @@ impl PageInvariant for ToolOutputInvariant {
 /// Check that at least one top-level JSON key from `original` appears in `compacted`.
 ///
 /// Parses `original` as a JSON object and returns `true` when any top-level key
-/// string is a substring of `compacted`. Returns `true` (no violation) when
-/// `original` is not a valid JSON object — the caller already checked schema hint.
+/// string appears in `compacted` as a JSON-quoted key or a whole word (see
+/// [`key_appears_as_word`]) — a raw substring test would let short, common keys
+/// like `"id"` or `"ok"` match inside unrelated prose (e.g. "the **id**ea was
+/// **ok**ay"), defeating the FR-003 fidelity gate. Returns `true` (no violation)
+/// when `original` is not a valid JSON object — the caller already checked schema
+/// hint.
+///
+/// Residual limitation: whole-word matching closes the subword-substring false
+/// positive class above, but not the dictionary-word class — a short common-English
+/// key (`"id"`, `"ok"`, `"data"`, `"status"`) that genuinely appears as a standalone
+/// word in unrelated prose (e.g. "the id was ok") still satisfies the check. This is
+/// a disclosed partial mitigation, not a full close of all accidental matches.
 fn check_json_structural_key(original: &str, compacted: &str) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(original) else {
         return true;
@@ -385,7 +395,31 @@ fn check_json_structural_key(original: &str, compacted: &str) -> bool {
     if obj.is_empty() {
         return true;
     }
-    obj.keys().any(|k| compacted.contains(k.as_str()))
+    obj.keys()
+        .any(|k| key_appears_as_word(compacted, k.as_str()))
+}
+
+/// Returns `true` when `key` occurs in `haystack` either JSON-quoted (`"key"`) or as
+/// a standalone word, i.e. not embedded inside a larger identifier or English word
+/// (`"id"` must not match inside `"idea"`).
+///
+/// An empty `key` carries no structural information to verify, so it always passes
+/// — preserving the prior permissive behavior for `{"": ...}` rather than turning a
+/// vacuous case into a spurious fidelity violation.
+fn key_appears_as_word(haystack: &str, key: &str) -> bool {
+    if key.is_empty() {
+        return true;
+    }
+    let quoted = format!("\"{key}\"");
+    if haystack.contains(&quoted) {
+        return true;
+    }
+    let is_boundary = |c: Option<char>| !c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    haystack.match_indices(key).any(|(idx, matched)| {
+        let before = haystack[..idx].chars().next_back();
+        let after = haystack[idx + matched.len()..].chars().next();
+        is_boundary(before) && is_boundary(after)
+    })
 }
 
 /// Invariant for [`PageType::ConversationTurn`] pages.
@@ -1596,6 +1630,102 @@ mod tests {
                 .iter()
                 .any(|v| v.missing_field == "structural_key")
         );
+    }
+
+    #[test]
+    fn tool_output_json_structural_check_fails_on_short_key_substring_match() {
+        let inv = ToolOutputInvariant;
+        let original_body = r#"{"id": 123, "ok": true}"#;
+        let page = TypedPage::new(
+            PageType::ToolOutput,
+            PageOrigin::ToolPair {
+                tool_name: "my_tool".into(),
+            },
+            50,
+            Arc::from(original_body),
+            Some(SchemaHint::Json),
+        );
+        // "idea" and "okay" contain "id"/"ok" as raw substrings but not as whole
+        // words or quoted keys — the check must not be fooled by this.
+        let compacted = CompactedPage {
+            body: Arc::from("my_tool exit_status: 0, the idea was okay"),
+            tokens: 9,
+        };
+        let result = inv.verify(&page, &compacted);
+        assert!(result.is_err());
+        let violations = result.unwrap_err();
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.missing_field == "structural_key")
+        );
+    }
+
+    #[test]
+    fn tool_output_json_structural_check_passes_on_short_key_whole_word_match() {
+        let inv = ToolOutputInvariant;
+        let original_body = r#"{"id": 123, "ok": true}"#;
+        let page = TypedPage::new(
+            PageType::ToolOutput,
+            PageOrigin::ToolPair {
+                tool_name: "my_tool".into(),
+            },
+            50,
+            Arc::from(original_body),
+            Some(SchemaHint::Json),
+        );
+        // "id" appears here as a standalone word, so the check must accept it.
+        let compacted = CompactedPage {
+            body: Arc::from("my_tool exit_status: 0, id 123 confirmed"),
+            tokens: 8,
+        };
+        assert!(inv.verify(&page, &compacted).is_ok());
+    }
+
+    #[test]
+    fn tool_output_json_structural_check_utf8_boundary_does_not_panic() {
+        let inv = ToolOutputInvariant;
+        let original_body = r#"{"id": 123}"#;
+        let page = TypedPage::new(
+            PageType::ToolOutput,
+            PageOrigin::ToolPair {
+                tool_name: "my_tool".into(),
+            },
+            50,
+            Arc::from(original_body),
+            Some(SchemaHint::Json),
+        );
+        // "id" is immediately adjacent to multi-byte Cyrillic characters on both
+        // sides — the char-boundary slicing in key_appears_as_word must not panic
+        // and must correctly treat non-alphanumeric Cyrillic as a word boundary.
+        let compacted = CompactedPage {
+            body: Arc::from("my_tool exit_status: 0, ключid тест"),
+            tokens: 6,
+        };
+        // Must not panic; result correctness is secondary to boundary safety here.
+        let _ = inv.verify(&page, &compacted);
+    }
+
+    #[test]
+    fn tool_output_json_structural_check_passes_for_empty_key() {
+        let inv = ToolOutputInvariant;
+        let original_body = r#"{"": 1}"#;
+        let page = TypedPage::new(
+            PageType::ToolOutput,
+            PageOrigin::ToolPair {
+                tool_name: "my_tool".into(),
+            },
+            50,
+            Arc::from(original_body),
+            Some(SchemaHint::Json),
+        );
+        // An empty JSON key carries no structural information — the fidelity gate
+        // must not fail over it, preserving the prior permissive behavior.
+        let compacted = CompactedPage {
+            body: Arc::from("my_tool exit_status: 0, arbitrary unrelated text"),
+            tokens: 6,
+        };
+        assert!(inv.verify(&page, &compacted).is_ok());
     }
 
     // ── Regression: F1 — capacity=0 must not panic ────────────────────────────
