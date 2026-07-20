@@ -29,11 +29,11 @@ crates/zeph-agent-persistence/src/hydrate.rs VERIFIED # INV-SP-1 log-first hydra
 crates/zeph-agent-persistence/src/legacy_bootstrap.rs FOLLOW_UP # verify it cannot resurrect unverified history as trusted (critic S-new-3)
 crates/zeph-agent-persistence/src/reconcile.rs VERIFIED # projection reconcile reads through SessionEventLog
 crates/zeph-agent-persistence/src/session_sink.rs VERIFIED # log-first append path; reads for reconciliation are chain-verified
-crates/zeph-core/src/agent/agent_access_impl.rs VERIFIED # fork/resume test-and-production paths open() chain-verified logs
 crates/zeph-core/src/agent/durable_bootstrap.rs CALLER_CONTEXT # durable backend construction, not a JSONL reader
 crates/zeph-core/src/agent/plan.rs VERIFIED # orchestration plan replay reads TranscriptReader::load
 crates/zeph-core/src/agent/scheduler_loop.rs VERIFIED # scheduler-triggered subagent transcript reload via TranscriptReader
 crates/zeph-core/src/agent/shutdown.rs DISPLAY_ONLY # shutdown-path bookkeeping, not a trust-bearing content read
+crates/zeph-core/src/agent/slash_commands.rs VERIFIED # /conv fork/resume test coverage open() chain-verified logs; relocated verbatim from agent_access_impl.rs (#6488 AgentAccess trait split), same code, same verdict
 crates/zeph-core/src/agent/state/mod.rs CALLER_CONTEXT # orchestration state carries durable key material, not a JSONL reader
 crates/zeph-core/src/agent/subagent_commands.rs VERIFIED # /agent command surface reads via TranscriptReader
 crates/zeph-core/src/agent/persistence/history.rs FOLLOW_UP # /history command's history load — verify it routes through a chain-verified read (critic S-new-3)
