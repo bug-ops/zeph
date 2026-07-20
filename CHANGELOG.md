@@ -18,6 +18,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   existed to support — `zeph-agent-tools` now has zero workspace or external dependencies.
   Behavior of `doom_loop_hash` and its call site are unchanged.
 
+### Added
+
+- `zeph-subagent`: a running subagent's live transcript forwarding (`forward_transcript`,
+  issue #6359) now streams text and thinking output as token-level deltas *within* a turn
+  instead of only once the turn completes (#6456, FR-002b), on providers whose native
+  streaming-with-tools path is available (currently Claude, via the existing
+  `AnyProvider::chat_with_tools_stream`/`ToolSseStream`). `agent_loop.rs` drives the stream
+  and forwards each `ContentChunk`/`ThinkingChunk` immediately through the same tail-drop
+  forwarding channel `send_text`/`send_thinking` already used for FR-002a, while assembling
+  the identical `ChatResponse` shape `chat_with_tools` would have returned. No config change
+  is required — this is strictly finer-grained delivery under the existing
+  `forward_transcript` flag. Deltas remain ephemeral and display-only (tail-droppable under
+  backpressure, same as before): the accumulated response text and the guaranteed terminal
+  chunk remain the sole source of truth for the next turn's LLM context. Providers without a
+  native tool-streaming implementation continue to forward the full per-turn text once, at
+  turn end, exactly as before (zero-regression fallback, no new code path per backend). The
+  forwarding drain (`forward.rs`) now buffers each streamed delta with a bounded 256-byte
+  holdback window before sanitizing and emitting it, instead of sanitizing every delta in
+  complete isolation — closes a masking gap where a secret or PII pattern split across two
+  delta boundaries matched neither fragment individually and reached `--bare` stdout / the
+  TUI ring buffer unmasked. Buffered content is only ever delayed, never dropped: any
+  remaining held-back tail is flushed in full immediately before the terminal chunk.
+
+- `zeph-config`/`zeph-subagent`/`zeph-core`: `SubAgentConfig` gains a tri-state
+  `delegation_mode` (`disabled` / `explicit_request_only` / `proactive`, spec
+  `042-subagent-delegation-mode-parity`, issue #5857), so an operator can keep sub-agents
+  enabled and useful while forbidding the main agent from autonomously deciding to spawn one —
+  e.g. in a Telegram/Discord/webhook-facing channel where prompt-injected input may reach the
+  agent. `explicit_request_only` permits only spawns attributable to a direct user action
+  (`/agent spawn`, `/agent resume`, `/subagent spawn`) and rejects the orchestration
+  scheduler's autonomous DAG dispatch; `disabled` rejects every spawn path (read-only
+  operations like `/agent list` still work); `proactive` (the default) preserves the
+  subsystem's prior unconstrained behavior. Enforcement is fail-closed: a new
+  `SpawnContext.origin: SpawnOrigin` field defaults to `Autonomous` (the restrictive value),
+  so an untagged spawn site is denied under the restrictive modes rather than silently
+  allowed — every real `.spawn()`/`.spawn_for_task()` call site was audited and explicitly
+  tagged. `SubAgentConfig.enabled` becomes the outer kill switch: `enabled = false` always
+  resolves to the `disabled` behavior regardless of `delegation_mode`'s configured value.
+  Rejected spawns return the new `SubAgentError::DelegationDenied` and log a distinguishable
+  `tracing::warn!`. Overridable via `ZEPH_AGENTS_DELEGATION_MODE` or `--delegation-mode`; the
+  `--init` wizard and `--migrate-config` (existing `[agents] enabled = true` configs gain an
+  explicit `delegation_mode = "proactive"`) are updated accordingly.
+
 ### Changed
 
 - `zeph-skills`: `embed_skills_with_timeout` now tries `LlmProvider::embed_batch` first

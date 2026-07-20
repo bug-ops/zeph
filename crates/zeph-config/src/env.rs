@@ -361,6 +361,20 @@ impl Config {
         {
             self.agents.forward_transcript = enabled;
         }
+        if let Ok(v) = std::env::var("ZEPH_AGENTS_DELEGATION_MODE") {
+            match v.as_str() {
+                "disabled" => self.agents.delegation_mode = crate::DelegationMode::Disabled,
+                "explicit_request_only" => {
+                    self.agents.delegation_mode = crate::DelegationMode::ExplicitRequestOnly;
+                }
+                "proactive" => self.agents.delegation_mode = crate::DelegationMode::Proactive,
+                other => tracing::warn!(
+                    value = other,
+                    "ZEPH_AGENTS_DELEGATION_MODE: invalid value, ignoring \
+                     (expected disabled|explicit_request_only|proactive)"
+                ),
+            }
+        }
     }
 
     fn apply_env_overrides_security(&mut self) {

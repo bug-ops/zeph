@@ -426,6 +426,78 @@ interleaves two different JSON schemas on stdout — unsupported for now; use `-
 
 ---
 
+## 15. Delegation Mode Gate (spec `042-subagent-delegation-mode-parity`, issue #5857)
+
+### Problem
+
+Prior to this addition, `SubAgentConfig.enabled: bool` was the only lever governing sub-agent
+spawning, and it was **inert** — no code path actually read it. An operator had no way to keep
+the sub-agent subsystem enabled and useful while forbidding the main agent from autonomously
+deciding to spawn one (e.g. in a semi-trusted channel where prompt-injected input could reach
+the agent) — see `[[042-subagent-delegation-mode-parity/spec]]` for the full motivation.
+
+### Mechanism
+
+`SubAgentConfig` gains `delegation_mode: DelegationMode` (`disabled` / `explicit_request_only` /
+`proactive`, `#[serde(default)]` → `Proactive`, preserving prior unconstrained behavior). Every
+spawn attempt carries a `SpawnOrigin` (`Explicit` / `Autonomous`) on `SpawnContext`, enforced at
+the top of `SubAgentManager::spawn` (the single chokepoint — `spawn_for_task` delegates to it,
+so both share the gate automatically):
+
+- `disabled` rejects every spawn regardless of origin (read-only ops — `/agent list`, status
+  queries — are unaffected, since they never call `spawn`).
+- `explicit_request_only` rejects `Autonomous`-origin spawns, permits `Explicit`.
+- `proactive` permits both, unchanged from pre-existing behavior.
+
+**Fail-closed default**: `SpawnOrigin::default() = Autonomous` — the *restrictive* value, not
+the permissive one. An untagged or forgotten `SpawnContext` is therefore denied under the
+restrictive modes rather than silently allowed. Every real spawn call site was audited and
+explicitly tagged:
+
+- `build_spawn_context` (`crates/zeph-core/src/agent/subagent_commands.rs`, shared by
+  `/agent spawn` foreground/background and `/agent resume`) sets `Explicit` — all three of its
+  callers are dispatched from the explicit `/agent` slash command.
+- `handle_scheduler_spawn_action` (`crates/zeph-core/src/agent/scheduler_loop.rs`) overrides
+  `spawn_ctx.origin = Autonomous` immediately after calling `build_spawn_context`, mirroring the
+  existing post-construction override pattern already used for `network_denied`/`progress_at`.
+  This is the orchestration scheduler's autonomous DAG dispatch — the concrete threat this gate
+  protects against, since it spawns without any turn-level user confirmation.
+
+`SubAgentConfig.enabled` becomes the outer kill switch via
+`SubAgentConfig::effective_delegation_mode()`: `enabled = false` always resolves to `Disabled`
+regardless of `delegation_mode`'s configured value. `src/runner.rs` bootstrap calls
+`mgr.set_delegation_mode(agents_config.effective_delegation_mode())` once, before any spawn can
+occur; the manager itself never re-reads `enabled`.
+
+A rejected spawn returns `SubAgentError::DelegationDenied { mode, origin, def_name }` before any
+resource is allocated (no worktree, no transcript file, no consumed concurrency slot), and logs
+a `tracing::warn!` distinguishable from `ConcurrencyLimit`/`MaxDepthExceeded` rejections.
+
+### ACP `/subagent spawn` — a separate gate, not a `SpawnContext` tag
+
+`/subagent spawn <cmd>` (`crates/zeph-core/src/agent/slash_commands.rs::handle_subagent_slash`)
+launches an **external ACP process** via `zeph_acp::run_session` and never constructs a
+`SpawnContext` or touches `SubAgentManager` at all — the gate above does not see it. Spec 042
+FR-003 requires `disabled` mode to reject every spawn path, so `handle_subagent_slash` carries
+its own explicit check against `SubAgentConfig::effective_delegation_mode()` before invoking the
+spawn callback, rejecting only under `Disabled` (the command is itself an explicit user action,
+so it remains permitted under `explicit_request_only` and `proactive`).
+
+### Key Invariants
+
+- The gate check runs before any resource allocation (NFR-002) — no partial worktree, transcript,
+  or concurrency-slot side effect on a rejected spawn.
+- `SpawnOrigin`'s fail-closed default means a forgotten call site is a visible, safe denial under
+  restrictive modes, never a silent bypass.
+- `delegation_mode` is orthogonal to `default_permission_mode`/`PermissionMode` — the former
+  governs *whether* a spawn may happen and *who* may trigger it; the latter governs what a
+  spawned sub-agent is allowed to *do* once running. Never merge the two.
+- Out of scope for this addition (deferred, see spec 042 Open Questions): per-turn/per-session
+  override of `delegation_mode` (FR-011); a dedicated TUI status-bar/sidebar indicator beyond
+  the `/agent list` header line (NFR-004 partial).
+
+---
+
 ## 10. See Also
 
 - [[constitution]] — project principles

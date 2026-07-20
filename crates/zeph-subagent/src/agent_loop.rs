@@ -7,12 +7,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use tokio::sync::{mpsc, watch};
+use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{
     ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart, Role, ThinkingBlock,
-    ToolDefinition,
+    ToolDefinition, ToolUseRequest,
 };
+use zeph_llm::sse::{ToolSseEvent, ToolSseStream};
 use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
 use zeph_tools::executor::{ErasedToolExecutor, ToolCall};
 
@@ -85,11 +87,13 @@ pub(super) struct AgentLoopArgs {
     /// Cross-crate debug-dump sink, threaded down from `SpawnContext::debug_dump_sink`
     /// (issue #6391). `None` when debug dumps are disabled.
     pub(super) debug_dump_sink: Option<Arc<dyn zeph_llm::debug_dump::DebugDumpSink>>,
-    /// Live transcript forwarding sender (issue #6359). `None` when forwarding is disabled,
-    /// no consumer surface is active, or no `TaskSupervisor` is wired — the `if let Some(f)`
-    /// gate at every call site is then a genuine no-op (FR-007): no allocation, no clone,
-    /// nothing sent. Owned exclusively by this run's own turn loop for its lifetime; never
-    /// clone the inner sender into a longer-lived struct (see `forward::ForwardSender` docs).
+    /// Live transcript forwarding sender (issue #6359 FR-002a per-turn; issue #6456 FR-002b
+    /// token-level intra-turn deltas on providers with native tool-streaming support). `None`
+    /// when forwarding is disabled, no consumer surface is active, or no `TaskSupervisor` is
+    /// wired — the `if let Some(f)` gate at every call site is then a genuine no-op (FR-007):
+    /// no allocation, no clone, nothing sent. Owned exclusively by this run's own turn loop
+    /// for its lifetime; never clone the inner sender into a longer-lived struct (see
+    /// `forward::ForwardSender` docs).
     pub(super) forward: Option<ForwardSender>,
     /// Shared secret-mask registry (issue #6492), the same `Arc` used for the parent's
     /// outbound-LLM masking and the forwarding drain's `SanitizeLayers`. Applied to every
@@ -174,6 +178,122 @@ fn build_effective_system_prompt(
     effective
 }
 
+/// Drive a `ToolSseStream` from a provider's native streaming-with-tools path (issue #6456,
+/// FR-002b), forwarding each text/thinking delta through `forward` as it arrives and
+/// assembling the same [`ChatResponse`] shape [`LlmProvider::chat_with_tools`] would return.
+///
+/// Forwarded deltas are display-only (see `forward.rs` module docs' "Design contract"
+/// section): `text_buf`/`thinking_blocks`/`tool_calls` are accumulated locally regardless of
+/// whether any individual delta actually made it onto the (tail-drop) forward channel, so a
+/// dropped delta only ever produces a display gap — the `ChatResponse` this function returns
+/// is unaffected and remains the sole input to the next turn's LLM context.
+///
+/// Mirrors `zeph-core`'s `SpeculativeStreamDrainer::drive` accumulation logic (same
+/// `ToolSseStream`/`ToolSseEvent` contract), minus speculative dispatch, which is out of
+/// scope for the subagent loop.
+///
+/// # Errors
+///
+/// Returns the first `LlmError` reported by the stream.
+#[tracing::instrument(name = "subagent.agent_loop.stream_turn", skip_all)]
+async fn drive_tool_stream(
+    mut stream: ToolSseStream,
+    forward: &ForwardSender,
+) -> Result<ChatResponse, zeph_llm::LlmError> {
+    let mut tool_calls: Vec<ToolUseRequest> = Vec::new();
+    let mut thinking_blocks: Vec<ThinkingBlock> = Vec::new();
+    let mut text_buf = String::new();
+
+    while let Some(event) = stream.next().await {
+        match event {
+            ToolSseEvent::ContentChunk(text) => {
+                forward.send_text(&text);
+                text_buf.push_str(&text);
+            }
+            ToolSseEvent::ThinkingChunk(text) => {
+                forward.send_thinking(&text);
+            }
+            ToolSseEvent::ThinkingBlockDone(block) => {
+                thinking_blocks.push(block);
+            }
+            ToolSseEvent::ToolCallComplete {
+                id,
+                name,
+                full_json,
+                ..
+            } => {
+                let input = serde_json::from_str(&full_json)
+                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+                tool_calls.push(ToolUseRequest {
+                    id,
+                    name: name.into(),
+                    input,
+                });
+            }
+            ToolSseEvent::Error(e) => return Err(e),
+            // `ToolBlockStart`/`InputJsonDelta` only matter for the speculative-dispatch
+            // drainer (tool metadata ahead of the final JSON, used for early dispatch);
+            // `Compaction` summaries are a known TODO (matches `SpeculativeStreamDrainer::
+            // drive`'s same limitation — not yet surfaced to the caller). Any future
+            // `#[non_exhaustive]` variant is likewise a no-op here rather than a compile
+            // error on an upstream addition.
+            _ => {}
+        }
+    }
+
+    let text = if text_buf.is_empty() {
+        None
+    } else {
+        Some(text_buf)
+    };
+    if tool_calls.is_empty() {
+        Ok(ChatResponse::Text(text.unwrap_or_default()))
+    } else {
+        Ok(ChatResponse::ToolUse {
+            text,
+            tool_calls,
+            thinking_blocks,
+        })
+    }
+}
+
+/// Attempt the streaming-with-tools path when forwarding is active, falling back to the
+/// plain [`LlmProvider::chat_with_tools`] call otherwise or on any streaming-setup error
+/// (issue #6456, FR-002b).
+///
+/// Returns `(response, streamed)`; `streamed == true` means `forward` already received this
+/// turn's text/thinking as deltas via [`drive_tool_stream`], so the caller (`run_turn`) must
+/// not forward the same content again as a whole-turn chunk.
+///
+/// Providers without a native tool-streaming implementation (every backend except Claude,
+/// see `AnyProvider::chat_with_tools_stream`) return `Err(LlmError::Unavailable)` immediately
+/// — no network round-trip is attempted before falling back, so this costs nothing beyond a
+/// synchronous match for non-Claude providers, and per-turn forwarding behaves exactly as it
+/// did before this issue (FR-002a, unchanged).
+async fn call_provider_streaming_or_plain(
+    provider: &AnyProvider,
+    messages: &[Message],
+    tool_defs: &[ToolDefinition],
+    forward: Option<&ForwardSender>,
+) -> Result<(ChatResponse, bool), zeph_llm::LlmError> {
+    if let Some(f) = forward {
+        match provider.chat_with_tools_stream(messages, tool_defs).await {
+            Ok(stream) => return drive_tool_stream(stream, f).await.map(|r| (r, true)),
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    "provider has no native tool-streaming support (or the streaming request \
+                     failed); falling back to non-streaming chat_with_tools"
+                );
+            }
+        }
+    }
+    provider
+        .chat_with_tools(messages, tool_defs)
+        .await
+        .map(|r| (r, false))
+}
+
 #[tracing::instrument(name = "subagent.agent_loop.call_provider", skip_all, err)]
 #[allow(clippy::too_many_arguments)]
 async fn call_provider_with_status(
@@ -186,7 +306,7 @@ async fn call_provider_with_status(
     llm_timeout: std::time::Duration,
     debug_dump_sink: Option<&dyn zeph_llm::debug_dump::DebugDumpSink>,
     forward: Option<&ForwardSender>,
-) -> Result<ChatResponse, super::error::SubAgentError> {
+) -> Result<(ChatResponse, bool), super::error::SubAgentError> {
     // Mirrors `zeph-core`'s `prepare_chat_debug_dump`/`write_chat_debug_dump` pair so
     // sub-agent LLM calls are captured through the same `--debug-dump` pipeline as the
     // top-level agent loop (#6391). `None` when debug dumps are disabled.
@@ -199,36 +319,38 @@ async fn call_provider_with_status(
         sink.dump_request(provider.name(), messages, tool_defs, provider_request)
     });
 
-    let llm_result =
-        tokio::time::timeout(llm_timeout, provider.chat_with_tools(messages, tool_defs))
-            .await
-            .map_err(|_| {
-                tracing::warn!(
-                    timeout_secs = llm_timeout.as_secs(),
-                    "sub-agent LLM call timed out"
-                );
-                let timeout_err = super::error::SubAgentError::Llm("LLM call timed out".to_owned());
-                // Without this, status_tx stays frozen at its last `Working` value forever —
-                // the TUI sidebar and `collect_finished_subagents()` never see a terminal
-                // state, so the handle is never reaped (#6381, same defect class as #6257's
-                // setup-phase fix).
-                let _ = status_tx.send(SubAgentStatus {
-                    state: SubAgentState::Failed,
-                    last_message: Some(timeout_err.to_string()),
-                    turns_used: turns,
-                    started_at,
-                });
-                if let Some(f) = forward {
-                    f.send_terminal(SubAgentState::Failed);
-                }
-                timeout_err
-            })?;
+    let llm_result = tokio::time::timeout(
+        llm_timeout,
+        call_provider_streaming_or_plain(provider, messages, tool_defs, forward),
+    )
+    .await
+    .map_err(|_| {
+        tracing::warn!(
+            timeout_secs = llm_timeout.as_secs(),
+            "sub-agent LLM call timed out"
+        );
+        let timeout_err = super::error::SubAgentError::Llm("LLM call timed out".to_owned());
+        // Without this, status_tx stays frozen at its last `Working` value forever —
+        // the TUI sidebar and `collect_finished_subagents()` never see a terminal
+        // state, so the handle is never reaped (#6381, same defect class as #6257's
+        // setup-phase fix).
+        let _ = status_tx.send(SubAgentStatus {
+            state: SubAgentState::Failed,
+            last_message: Some(timeout_err.to_string()),
+            turns_used: turns,
+            started_at,
+        });
+        if let Some(f) = forward {
+            f.send_terminal(SubAgentState::Failed);
+        }
+        timeout_err
+    })?;
     match llm_result {
-        Ok(r) => {
+        Ok((r, streamed)) => {
             if let (Some(sink), Some(id)) = (debug_dump_sink, dump_id) {
                 sink.dump_response(id, &r);
             }
-            Ok(r)
+            Ok((r, streamed))
         }
         Err(e) => {
             tracing::error!(error = %e, "sub-agent LLM call failed");
@@ -517,7 +639,7 @@ async fn run_turn(
     forward: Option<&ForwardSender>,
     secret_registry: Option<&zeph_sanitizer::secret_mask::SecretMaskRegistry>,
 ) -> Result<TurnOutcome, super::error::SubAgentError> {
-    let response = call_provider_with_status(
+    let (response, streamed) = call_provider_with_status(
         provider,
         messages,
         tool_defs,
@@ -540,11 +662,15 @@ async fn run_turn(
     last_result.clone_from(&response_text);
     emit_working_status(status_tx, &response_text, *turns, started_at);
 
-    // FR-002a/FR-007: forward the turn's full text + any visible thinking blocks the
-    // instant this turn's response arrives. The `if let Some(f)` gate wraps the thinking
-    // extraction itself, not just the send — zero allocation when forwarding is inactive
-    // (critic M2). Must run before `response` is moved into `handle_tool_step` below.
-    if let Some(f) = forward {
+    // FR-002a/FR-002b/FR-007: forward this turn's text + any visible thinking blocks the
+    // instant they are available. When `streamed` is true, `call_provider_with_status` already
+    // forwarded every delta incrementally via `drive_tool_stream` while the turn was still in
+    // flight — forwarding the same content again here as one whole-turn chunk would just
+    // double it on the display surfaces, so this block is skipped in that case. The `if let
+    // Some(f)` gate wraps the thinking extraction itself, not just the send — zero allocation
+    // when forwarding is inactive (critic M2). Must run before `response` is moved into
+    // `handle_tool_step` below.
+    if !streamed && let Some(f) = forward {
         f.send_text(&response_text);
         if let ChatResponse::ToolUse {
             thinking_blocks, ..
@@ -1743,5 +1869,208 @@ mod build_effective_system_prompt_tests {
             skills_idx < mcp_idx,
             "skills block must precede the mcp annotation"
         );
+    }
+}
+
+// ── #6456: token-level intra-turn transcript streaming (FR-002b) ──────────
+#[cfg(test)]
+mod token_streaming_tests {
+    use zeph_llm::LlmError;
+    use zeph_llm::mock::MockProvider;
+
+    use super::*;
+    use crate::forward::new_channel;
+
+    fn tool_stream_from(events: Vec<ToolSseEvent>) -> ToolSseStream {
+        Box::pin(tokio_stream::iter(events))
+    }
+
+    #[tokio::test]
+    async fn drive_tool_stream_assembles_text_and_forwards_every_delta() {
+        let (sender, mut rx) = new_channel(Arc::from("task-1"), Arc::from("agent-1"));
+        let stream = tool_stream_from(vec![
+            ToolSseEvent::ContentChunk("Hello".into()),
+            ToolSseEvent::ContentChunk(", world".into()),
+            ToolSseEvent::ContentChunk("!".into()),
+        ]);
+
+        let response = drive_tool_stream(stream, &sender)
+            .await
+            .expect("stream must assemble successfully");
+
+        match response {
+            ChatResponse::Text(t) => assert_eq!(t, "Hello, world!"),
+            other => panic!("expected ChatResponse::Text, got {other:?}"),
+        }
+
+        // Every content delta must have been forwarded individually (not just the final
+        // accumulated text) — this is the actual FR-002b behavior under test.
+        let mut received = Vec::new();
+        while let Ok(chunk) = rx.try_recv() {
+            received.push(format!("{chunk:?}"));
+        }
+        assert_eq!(received.len(), 3, "each delta must be forwarded separately");
+        assert!(received[0].contains("Hello"));
+        assert!(received[1].contains(", world"));
+        assert!(received[2].contains('!'));
+    }
+
+    #[tokio::test]
+    async fn drive_tool_stream_forwards_thinking_deltas_and_keeps_final_block() {
+        let (sender, mut rx) = new_channel(Arc::from("task-2"), Arc::from("agent-2"));
+        let stream = tool_stream_from(vec![
+            ToolSseEvent::ThinkingChunk("step one".into()),
+            ToolSseEvent::ThinkingChunk(" step two".into()),
+            ToolSseEvent::ThinkingBlockDone(ThinkingBlock::Thinking {
+                thinking: "step one step two".into(),
+                signature: "sig".into(),
+            }),
+        ]);
+
+        let response = drive_tool_stream(stream, &sender)
+            .await
+            .expect("stream must assemble successfully");
+
+        match response {
+            ChatResponse::Text(t) => assert!(t.is_empty(), "no content chunks were sent"),
+            other => panic!("expected empty ChatResponse::Text, got {other:?}"),
+        }
+
+        let mut forwarded_thinking = 0;
+        while let Ok(chunk) = rx.try_recv() {
+            if format!("{chunk:?}").contains("Thinking") {
+                forwarded_thinking += 1;
+            }
+        }
+        assert_eq!(
+            forwarded_thinking, 2,
+            "both thinking deltas must be forwarded incrementally"
+        );
+    }
+
+    #[tokio::test]
+    async fn drive_tool_stream_assembles_tool_use_from_complete_events() {
+        let (sender, _rx) = new_channel(Arc::from("task-3"), Arc::from("agent-3"));
+        let stream = tool_stream_from(vec![
+            ToolSseEvent::ToolBlockStart {
+                index: 0,
+                id: "call-1".into(),
+                name: "shell".into(),
+            },
+            ToolSseEvent::InputJsonDelta {
+                index: 0,
+                delta: r#"{"cmd":"ls"}"#.into(),
+            },
+            ToolSseEvent::ToolCallComplete {
+                index: 0,
+                id: "call-1".into(),
+                name: "shell".into(),
+                full_json: r#"{"cmd":"ls"}"#.into(),
+            },
+        ]);
+
+        let response = drive_tool_stream(stream, &sender)
+            .await
+            .expect("stream must assemble successfully");
+
+        match response {
+            ChatResponse::ToolUse { tool_calls, .. } => {
+                assert_eq!(tool_calls.len(), 1);
+                assert_eq!(tool_calls[0].name.as_str(), "shell");
+                assert_eq!(tool_calls[0].input["cmd"], "ls");
+            }
+            other => panic!("expected ChatResponse::ToolUse, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn drive_tool_stream_propagates_stream_error() {
+        let (sender, _rx) = new_channel(Arc::from("task-4"), Arc::from("agent-4"));
+        let stream = tool_stream_from(vec![
+            ToolSseEvent::ContentChunk("partial".into()),
+            ToolSseEvent::Error(LlmError::Unavailable),
+        ]);
+
+        let result = drive_tool_stream(stream, &sender).await;
+        assert!(result.is_err(), "a stream Error event must propagate");
+    }
+
+    /// Critic concern (c): the guaranteed source of truth is the accumulated `ChatResponse`,
+    /// never the forwarded deltas. Send far more chunks than the forward channel's capacity
+    /// without ever draining the receiver, so every `try_send` past capacity silently
+    /// tail-drops — and confirm the returned `ChatResponse` is still complete regardless.
+    #[tokio::test]
+    async fn drive_tool_stream_accumulation_survives_forward_channel_backpressure() {
+        let (sender, _rx) = new_channel(Arc::from("task-5"), Arc::from("agent-5"));
+        let mut events = Vec::new();
+        let mut expected = String::new();
+        for i in 0..300 {
+            let piece = format!("chunk{i} ");
+            expected.push_str(&piece);
+            events.push(ToolSseEvent::ContentChunk(piece));
+        }
+        let stream = tool_stream_from(events);
+
+        let response = drive_tool_stream(stream, &sender)
+            .await
+            .expect("stream must assemble successfully even under channel backpressure");
+
+        match response {
+            ChatResponse::Text(t) => assert_eq!(
+                t, expected,
+                "accumulated response text must be complete even though most forwarded \
+                 deltas were tail-dropped (never drained)"
+            ),
+            other => panic!("expected ChatResponse::Text, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn call_provider_streaming_or_plain_falls_back_for_non_streaming_provider() {
+        // MockProvider has no `AnyProvider::chat_with_tools_stream` branch — it hits the
+        // `_ => Err(Unavailable)` arm — so this must fall back to `chat_with_tools`
+        // unchanged, exactly like the pre-#6456 behavior (FR-002a).
+        let (mock, _counter) =
+            MockProvider::default().with_tool_use(vec![ChatResponse::Text("plain reply".into())]);
+        let provider = AnyProvider::Mock(mock);
+        let (sender, mut rx) = new_channel(Arc::from("task-6"), Arc::from("agent-6"));
+        let messages = vec![make_message(Role::User, "hi".into())];
+
+        let (response, streamed) =
+            call_provider_streaming_or_plain(&provider, &messages, &[], Some(&sender))
+                .await
+                .expect("fallback call must succeed");
+
+        assert!(
+            !streamed,
+            "a non-streaming provider must report streamed = false"
+        );
+        match response {
+            ChatResponse::Text(t) => assert_eq!(t, "plain reply"),
+            other => panic!("expected ChatResponse::Text, got {other:?}"),
+        }
+        // No deltas were ever streamed for this provider — the forward channel must stay
+        // empty here; `run_turn` is responsible for the single whole-turn forward in this
+        // case (unchanged FR-002a call site, tested separately at the loop level).
+        assert!(rx.try_recv().is_err(), "no deltas forwarded on fallback");
+    }
+
+    #[tokio::test]
+    async fn call_provider_streaming_or_plain_skips_streaming_attempt_when_forward_is_none() {
+        let (mock, _counter) =
+            MockProvider::default().with_tool_use(vec![ChatResponse::Text("no forward".into())]);
+        let provider = AnyProvider::Mock(mock);
+        let messages = vec![make_message(Role::User, "hi".into())];
+
+        let (response, streamed) =
+            call_provider_streaming_or_plain(&provider, &messages, &[], None)
+                .await
+                .expect("call must succeed with forwarding disabled");
+
+        assert!(!streamed);
+        match response {
+            ChatResponse::Text(t) => assert_eq!(t, "no forward"),
+            other => panic!("expected ChatResponse::Text, got {other:?}"),
+        }
     }
 }

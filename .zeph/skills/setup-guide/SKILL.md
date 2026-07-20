@@ -264,6 +264,18 @@ export ZEPH_AGENTS_FORWARD_TRANSCRIPT=true
 ```
 Opt-in, default `false` (`agents.forward_transcript` in config). Also settable via `--forward-subagent-text`. No effect unless a consumer surface (`--tui` or `--bare`) is active for the session.
 
+Delegation mode — control whether the main agent may spawn sub-agents, and who may trigger it:
+```bash
+export ZEPH_AGENTS_DELEGATION_MODE=explicit_request_only
+```
+One of `disabled` (no spawn from any code path), `explicit_request_only` (only direct user
+actions — `/agent spawn`, `/agent resume`, `/subagent spawn` — the main agent's own planner/
+scheduler may never spawn autonomously), or `proactive` (default; both explicit and autonomous
+spawns allowed). Orthogonal to `agents.enabled`, which remains the outer kill switch:
+`enabled = false` always behaves as `disabled` regardless of this setting. Also settable via
+`--delegation-mode`. Useful to restrict in semi-trusted channels (Telegram/Discord/webhook
+ingestion) where prompt-injected input could otherwise trigger unsupervised delegation.
+
 ## Security
 
 Secret redaction:

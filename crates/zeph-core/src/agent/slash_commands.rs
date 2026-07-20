@@ -97,6 +97,18 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// Routes `/subagent spawn <cmd>` through the ACP spawn callback when available.
     /// Returns a usage hint when no sub-command or command string is given, and a
     /// "not available" message when the ACP spawn callback has not been injected.
+    ///
+    /// This path launches an external ACP subagent process (`zeph_acp::run_session` via
+    /// `spawn_fn`, wired in `src/runner.rs`) and never touches `SubAgentManager` or
+    /// `SpawnContext` — the `delegation_mode` gate inside `SubAgentManager::spawn` does not
+    /// see it at all. Spec 042 FR-003 requires `disabled` mode to reject *every* spawn path,
+    /// so the effective-mode check below is an explicit, separate gate at this choke point
+    /// (issue #5857). Uses `DelegationMode::permits_explicit()` — the same allow-list predicate
+    /// `SubAgentManager::resume` uses — rather than a hand-written `== Disabled` deny-list, so
+    /// the two enforcement points cannot drift apart and neither fails open on a future
+    /// `#[non_exhaustive]` variant. `/subagent spawn` is itself an explicit user action, so it
+    /// stays permitted under `explicit_request_only` and `proactive`, blocked only when
+    /// `permits_explicit()` is `false` (currently just `disabled`).
     async fn handle_subagent_slash(&mut self, args: &str) -> Result<(), error::AgentError> {
         let msg: String = if args.is_empty() {
             "Usage: /subagent <subcommand>\n\nSubcommands:\n  spawn <command>  Spawn an ACP sub-agent process".to_owned()
@@ -105,8 +117,17 @@ impl<C: crate::channel::Channel> Agent<C> {
             match subcmd {
                 "spawn" => {
                     let cmd = rest.trim();
+                    let effective_mode = self.effective_delegation_mode();
                     if cmd.is_empty() {
                         "Usage: /subagent spawn <command>\n\nExample: /subagent spawn zeph --acp"
+                            .to_owned()
+                    } else if !effective_mode.permits_explicit() {
+                        tracing::warn!(
+                            mode = ?effective_mode,
+                            "/subagent spawn rejected: delegation disabled by configuration"
+                        );
+                        "Sub-agent delegation is disabled by configuration \
+                         ([agents].delegation_mode = \"disabled\" or [agents].enabled = false)."
                             .to_owned()
                     } else if let Some(spawn_fn) = self.runtime.config.acp_subagent_spawn_fn.clone()
                     {

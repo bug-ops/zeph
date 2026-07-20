@@ -80,6 +80,11 @@ async fn subagent_spawn_no_command_returns_usage() {
 #[tokio::test]
 async fn subagent_spawn_without_callback_returns_not_available() {
     let mut h = QuickTestAgent::minimal("");
+    // Delegation gate (spec 042, issue #5857): a fresh default config has `agents.enabled =
+    // false`, which now resolves to `Disabled` and would short-circuit before ever reaching
+    // the "callback missing" branch this test exercises. Opt in so the pre-existing behavior
+    // under test is reachable.
+    h.agent.services.orchestration.subagent_config.enabled = true;
     let result = h
         .agent
         .dispatch_slash_command("/subagent spawn cargo run -- --acp")
@@ -95,6 +100,7 @@ async fn subagent_spawn_without_callback_returns_not_available() {
 #[tokio::test]
 async fn subagent_spawn_with_callback_returns_output() {
     let mut h = QuickTestAgent::minimal("");
+    h.agent.services.orchestration.subagent_config.enabled = true;
     h.agent.runtime.config.acp_subagent_spawn_fn = Some(std::sync::Arc::new(|cmd: String| {
         Box::pin(async move { Ok(format!("spawned: {cmd}")) })
     }));
@@ -107,6 +113,60 @@ async fn subagent_spawn_with_callback_returns_output() {
     assert!(
         output.contains("spawned: my-command"),
         "expected callback output, got: {output}"
+    );
+}
+
+/// Spec 042 FR-003 (issue #5857): `delegation_mode = "disabled"` (or, as here, the `enabled`
+/// outer kill switch left at its default `false`) must reject the ACP `/subagent spawn` path
+/// too — even though it never touches `SubAgentManager`/`SpawnContext` at all (critic's
+/// corrected finding; see `handle_subagent_slash`'s doc comment). A configured callback must
+/// never be invoked while disabled.
+#[tokio::test]
+async fn subagent_spawn_disabled_by_delegation_mode_returns_disabled_message() {
+    let mut h = QuickTestAgent::minimal("");
+    // Default config: `agents.enabled = false` → effective mode `Disabled`.
+    h.agent.runtime.config.acp_subagent_spawn_fn = Some(std::sync::Arc::new(|cmd: String| {
+        Box::pin(async move { Ok(format!("spawned: {cmd}")) })
+    }));
+    let result = h
+        .agent
+        .dispatch_slash_command("/subagent spawn my-command")
+        .await;
+    assert!(result.is_some(), "must be intercepted");
+    let output = h.sent_messages().join("\n");
+    assert!(
+        output.to_lowercase().contains("disabled"),
+        "expected a disabled-by-configuration message, got: {output}"
+    );
+    assert!(
+        !output.contains("spawned: my-command"),
+        "callback must never run while delegation is disabled, got: {output}"
+    );
+}
+
+/// `delegation_mode = "explicit_request_only"` with `enabled = true` must still permit
+/// `/subagent spawn` — it is itself an explicit user action (spec 042, issue #5857).
+#[tokio::test]
+async fn subagent_spawn_explicit_request_only_still_allows_acp_spawn() {
+    let mut h = QuickTestAgent::minimal("");
+    h.agent.services.orchestration.subagent_config.enabled = true;
+    h.agent
+        .services
+        .orchestration
+        .subagent_config
+        .delegation_mode = zeph_config::DelegationMode::ExplicitRequestOnly;
+    h.agent.runtime.config.acp_subagent_spawn_fn = Some(std::sync::Arc::new(|cmd: String| {
+        Box::pin(async move { Ok(format!("spawned: {cmd}")) })
+    }));
+    let result = h
+        .agent
+        .dispatch_slash_command("/subagent spawn my-command")
+        .await;
+    assert!(result.is_some(), "must be intercepted");
+    let output = h.sent_messages().join("\n");
+    assert!(
+        output.contains("spawned: my-command"),
+        "expected callback output under explicit_request_only, got: {output}"
     );
 }
 

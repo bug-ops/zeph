@@ -91,6 +91,61 @@ pub enum ContextInjectionMode {
     Summary,
 }
 
+/// Tri-state control over whether the main agent may spawn sub-agents, and who may trigger it
+/// (spec `042-subagent-delegation-mode-parity`, issue #5857).
+///
+/// Orthogonal to [`SubAgentConfig::enabled`], which remains the outer kill switch: when
+/// `enabled = false`, the effective mode is always [`DelegationMode::Disabled`] regardless of
+/// this field's value (FR-002). Also orthogonal to [`PermissionMode`] — that governs what a
+/// spawned sub-agent may *do*; this governs whether a spawn may happen *at all* and who may
+/// trigger it.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum DelegationMode {
+    /// No spawn may proceed from any code path (slash command, orchestration planner/scheduler,
+    /// scheduled task). Read-only operations (`/agent list`, definition inspection, status
+    /// queries) remain available.
+    Disabled,
+    /// Only spawns attributable to a direct, explicit user action (e.g. `/agent spawn`) are
+    /// permitted; spawns originating from autonomous planner/scheduler decision-making are
+    /// rejected.
+    ExplicitRequestOnly,
+    /// Both explicit and autonomous spawn paths are permitted, subject to the pre-existing
+    /// constraints (`max_concurrent`, `max_spawn_depth`, permission grants, worktree isolation).
+    /// Matches the subsystem's behavior prior to this field's introduction.
+    #[default]
+    Proactive,
+}
+
+impl DelegationMode {
+    /// Whether a spawn/resume attempt attributable to a direct, explicit user action (e.g.
+    /// `/agent spawn`, `/agent resume`, `/subagent spawn`) is permitted under this mode.
+    ///
+    /// Expressed as an allow-list (`Proactive` and `ExplicitRequestOnly` match; every other
+    /// value, including any future `#[non_exhaustive]` variant, does not) rather than a
+    /// deny-list (`self != Disabled`), so it fails closed automatically on a variant this
+    /// crate doesn't yet recognize instead of silently permitting it. Shared by every
+    /// origin-agnostic "is this explicit action even allowed at all" check — the ACP
+    /// `/subagent spawn` gate and `SubAgentManager::resume` — so the two enforcement points
+    /// cannot drift out of sync with each other. Does **not** cover `Autonomous`-origin spawns;
+    /// `SubAgentManager::spawn`'s own origin-aware gate handles that distinction directly.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_config::DelegationMode;
+    ///
+    /// assert!(DelegationMode::Proactive.permits_explicit());
+    /// assert!(DelegationMode::ExplicitRequestOnly.permits_explicit());
+    /// assert!(!DelegationMode::Disabled.permits_explicit());
+    /// ```
+    #[must_use]
+    pub fn permits_explicit(self) -> bool {
+        matches!(self, Self::Proactive | Self::ExplicitRequestOnly)
+    }
+}
+
 fn default_max_parent_messages() -> usize {
     20
 }
@@ -542,6 +597,7 @@ impl Default for TaskSupervisorConfig {
 /// ```toml
 /// [agents]
 /// enabled = true
+/// delegation_mode = "explicit_request_only"
 /// max_concurrent = 3
 /// max_spawn_depth = 2
 /// ```
@@ -550,7 +606,17 @@ impl Default for TaskSupervisorConfig {
 #[allow(clippy::struct_excessive_bools)] // independent config toggles; bitflags or enum would obscure semantics without reducing complexity
 pub struct SubAgentConfig {
     /// Enable the sub-agent subsystem. Default: `false`.
+    ///
+    /// Outer kill switch: when `false`, the effective [`delegation_mode`][Self::delegation_mode]
+    /// is always [`DelegationMode::Disabled`] regardless of that field's configured value
+    /// (spec `042-subagent-delegation-mode-parity` FR-002).
     pub enabled: bool,
+    /// Whether the main agent may spawn sub-agents, and who may trigger it: `disabled` /
+    /// `explicit_request_only` / `proactive`. Default: [`DelegationMode::Proactive`] (preserves
+    /// the subsystem's unconstrained behavior prior to this field's introduction, per FR-008).
+    /// Overridable via `ZEPH_AGENTS_DELEGATION_MODE` or the `--delegation-mode` CLI flag.
+    #[serde(default)]
+    pub delegation_mode: DelegationMode,
     /// Maximum number of sub-agents that can run concurrently.
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
@@ -650,6 +716,7 @@ impl Default for SubAgentConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            delegation_mode: DelegationMode::default(),
             max_concurrent: default_max_concurrent(),
             extra_dirs: Vec::new(),
             user_agents_dir: None,
@@ -670,6 +737,39 @@ impl Default for SubAgentConfig {
             summary_max_chars: default_summary_max_chars(),
             llm_timeout_secs: default_llm_timeout_secs(),
             worktree: crate::worktree::WorktreeConfig::default(),
+        }
+    }
+}
+
+impl SubAgentConfig {
+    /// Resolve [`enabled`][Self::enabled] and [`delegation_mode`][Self::delegation_mode] into
+    /// the single effective mode that must be enforced at every spawn call site (spec
+    /// `042-subagent-delegation-mode-parity` FR-002, issue #5857).
+    ///
+    /// `enabled` is the outer kill switch: `enabled = false` always resolves to
+    /// [`DelegationMode::Disabled`], regardless of the configured `delegation_mode` value.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_config::{DelegationMode, SubAgentConfig};
+    ///
+    /// let mut cfg = SubAgentConfig {
+    ///     enabled: false,
+    ///     delegation_mode: DelegationMode::Proactive,
+    ///     ..SubAgentConfig::default()
+    /// };
+    /// assert_eq!(cfg.effective_delegation_mode(), DelegationMode::Disabled);
+    ///
+    /// cfg.enabled = true;
+    /// assert_eq!(cfg.effective_delegation_mode(), DelegationMode::Proactive);
+    /// ```
+    #[must_use]
+    pub fn effective_delegation_mode(&self) -> DelegationMode {
+        if self.enabled {
+            self.delegation_mode
+        } else {
+            DelegationMode::Disabled
         }
     }
 }
@@ -706,6 +806,66 @@ mod tests {
             !cfg.forward_transcript,
             "forward_transcript must default to false (NFR-003)"
         );
+    }
+
+    #[test]
+    fn subagent_config_delegation_mode_defaults_proactive() {
+        let cfg = SubAgentConfig::default();
+        assert_eq!(cfg.delegation_mode, DelegationMode::Proactive);
+    }
+
+    #[test]
+    fn subagent_config_deserialize_delegation_mode() {
+        let toml_str = "enabled = true\ndelegation_mode = \"explicit_request_only\"";
+        let cfg: SubAgentConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.delegation_mode, DelegationMode::ExplicitRequestOnly);
+    }
+
+    #[test]
+    fn subagent_config_delegation_mode_omitted_defaults_proactive() {
+        let toml_str = "enabled = true";
+        let cfg: SubAgentConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.delegation_mode, DelegationMode::Proactive);
+    }
+
+    #[test]
+    fn subagent_config_delegation_mode_rejects_unknown_value() {
+        let toml_str = "delegation_mode = \"sometimes\"";
+        let result: Result<SubAgentConfig, _> = toml::from_str(toml_str);
+        assert!(result.is_err(), "unrecognized value must fail to parse");
+    }
+
+    #[test]
+    fn permits_explicit_allow_list() {
+        assert!(DelegationMode::Proactive.permits_explicit());
+        assert!(DelegationMode::ExplicitRequestOnly.permits_explicit());
+        assert!(!DelegationMode::Disabled.permits_explicit());
+    }
+
+    #[test]
+    fn effective_delegation_mode_disabled_when_not_enabled() {
+        let cfg = SubAgentConfig {
+            enabled: false,
+            delegation_mode: DelegationMode::Proactive,
+            ..SubAgentConfig::default()
+        };
+        assert_eq!(cfg.effective_delegation_mode(), DelegationMode::Disabled);
+    }
+
+    #[test]
+    fn effective_delegation_mode_passes_through_when_enabled() {
+        for mode in [
+            DelegationMode::Disabled,
+            DelegationMode::ExplicitRequestOnly,
+            DelegationMode::Proactive,
+        ] {
+            let cfg = SubAgentConfig {
+                enabled: true,
+                delegation_mode: mode,
+                ..SubAgentConfig::default()
+            };
+            assert_eq!(cfg.effective_delegation_mode(), mode);
+        }
     }
 
     #[test]

@@ -75,7 +75,7 @@ pub use hooks::{
     PostToolUseHookInput, SubagentHooks, TOOL_ARGS_JSON_LIMIT, fire_hooks, hook_if_matches,
     make_base_hook_env, matching_hooks,
 };
-pub use manager::{SpawnContext, SubAgentHandle, SubAgentManager, SubAgentStatus};
+pub use manager::{SpawnContext, SpawnOrigin, SubAgentHandle, SubAgentManager, SubAgentStatus};
 pub use memory::{ensure_memory_dir, load_memory_content};
 pub use resolve::resolve_agent_paths;
 pub use state::SubAgentState;

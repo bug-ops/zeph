@@ -3012,6 +3012,280 @@ fn spawn_context_default_is_empty() {
 }
 
 #[test]
+fn spawn_context_default_origin_is_autonomous() {
+    // Fail-closed (spec 042, issue #5857): an untagged SpawnContext must read as the
+    // restrictive value, not the permissive one.
+    assert_eq!(SpawnContext::default().origin, SpawnOrigin::Autonomous);
+}
+
+/// Delegation-mode × spawn-origin matrix (spec `042-subagent-delegation-mode-parity`,
+/// issue #5857): every combination of the three `DelegationMode` values and the two
+/// `SpawnOrigin` values, verifying `SubAgentManager::spawn`'s gate at the exact chokepoint
+/// both `spawn` and `spawn_for_task` share.
+mod delegation_mode_gate {
+    use super::*;
+
+    async fn try_spawn(
+        mgr: &mut SubAgentManager,
+        mode: zeph_config::DelegationMode,
+        origin: SpawnOrigin,
+    ) -> Result<String, SubAgentError> {
+        mgr.set_delegation_mode(mode);
+        let ctx = SpawnContext {
+            origin,
+            ..SpawnContext::default()
+        };
+        mgr.spawn(
+            "bot",
+            "task",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &SubAgentConfig::default(),
+            ctx,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn disabled_denies_explicit() {
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        let err = try_spawn(
+            &mut mgr,
+            zeph_config::DelegationMode::Disabled,
+            SpawnOrigin::Explicit,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, SubAgentError::DelegationDenied { .. }));
+    }
+
+    #[tokio::test]
+    async fn disabled_denies_autonomous() {
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        let err = try_spawn(
+            &mut mgr,
+            zeph_config::DelegationMode::Disabled,
+            SpawnOrigin::Autonomous,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, SubAgentError::DelegationDenied { .. }));
+    }
+
+    #[tokio::test]
+    async fn explicit_request_only_allows_explicit() {
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        let result = try_spawn(
+            &mut mgr,
+            zeph_config::DelegationMode::ExplicitRequestOnly,
+            SpawnOrigin::Explicit,
+        )
+        .await;
+        assert!(result.is_ok(), "expected allow, got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn explicit_request_only_denies_autonomous() {
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        let err = try_spawn(
+            &mut mgr,
+            zeph_config::DelegationMode::ExplicitRequestOnly,
+            SpawnOrigin::Autonomous,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, SubAgentError::DelegationDenied { .. }));
+    }
+
+    #[tokio::test]
+    async fn proactive_allows_explicit() {
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        let result = try_spawn(
+            &mut mgr,
+            zeph_config::DelegationMode::Proactive,
+            SpawnOrigin::Explicit,
+        )
+        .await;
+        assert!(result.is_ok(), "expected allow, got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn proactive_allows_autonomous() {
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        let result = try_spawn(
+            &mut mgr,
+            zeph_config::DelegationMode::Proactive,
+            SpawnOrigin::Autonomous,
+        )
+        .await;
+        assert!(result.is_ok(), "expected allow, got {result:?}");
+    }
+
+    /// `spawn_for_task` delegates straight to `spawn` (see `manager/spawn.rs`), so the same
+    /// gate must reject it too — regression guard against the two entry points drifting apart.
+    #[tokio::test]
+    async fn spawn_for_task_is_gated_identically() {
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        mgr.set_delegation_mode(zeph_config::DelegationMode::ExplicitRequestOnly);
+        let ctx = SpawnContext {
+            origin: SpawnOrigin::Autonomous,
+            ..SpawnContext::default()
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let err = mgr
+            .spawn_for_task(
+                "bot",
+                "task",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &SubAgentConfig::default(),
+                ctx,
+                move |id, result| {
+                    let _ = tx.send((id, result));
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SubAgentError::DelegationDenied { .. }));
+        assert!(
+            rx.try_recv().is_err(),
+            "on_done must never fire for a rejected spawn"
+        );
+    }
+
+    /// `enabled = false` must resolve to `Disabled` regardless of `delegation_mode`'s
+    /// configured value (FR-002) — exercised end-to-end via
+    /// `SubAgentConfig::effective_delegation_mode` (the exact fold `src/runner.rs` bootstrap
+    /// applies before calling `set_delegation_mode`).
+    #[tokio::test]
+    async fn enabled_false_kill_switch_overrides_proactive() {
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        let cfg = zeph_config::SubAgentConfig {
+            enabled: false,
+            delegation_mode: zeph_config::DelegationMode::Proactive,
+            ..zeph_config::SubAgentConfig::default()
+        };
+        let err = try_spawn(
+            &mut mgr,
+            cfg.effective_delegation_mode(),
+            SpawnOrigin::Explicit,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, SubAgentError::DelegationDenied { .. }));
+    }
+
+    /// Regression test for the review finding that `resume()` had no delegation gate at all
+    /// (issue #5857 review round): `/agent resume` must be rejected under `disabled`, exactly
+    /// like `spawn()`. `resume` has no `Autonomous` origin path in this codebase, so it is
+    /// gated by the mode-only `DelegationMode::permits_explicit()` allow-list, not the
+    /// origin-aware matrix `spawn()` uses.
+    #[tokio::test]
+    async fn resume_denied_when_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_id = "aaaa1111-0000-0000-0000-000000000000";
+        write_completed_meta(tmp.path(), agent_id, "bot");
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        mgr.set_delegation_mode(zeph_config::DelegationMode::Disabled);
+        let cfg = make_cfg_with_dir(tmp.path());
+
+        let err = mgr
+            .resume(
+                "aaaa1111",
+                "continue the work",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, SubAgentError::DelegationDenied { .. }),
+            "expected DelegationDenied, got {err:?}"
+        );
+        assert!(
+            !mgr.agents.contains_key(agent_id),
+            "a denied resume must not register any agent"
+        );
+    }
+
+    /// `enabled = false` (the kill switch) must also reject `resume`, not only `spawn`.
+    #[tokio::test]
+    async fn resume_denied_when_enabled_false_kill_switch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_id = "bbbb2222-0000-0000-0000-000000000000";
+        write_completed_meta(tmp.path(), agent_id, "bot");
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        let cfg = {
+            let mut c = make_cfg_with_dir(tmp.path());
+            c.enabled = false;
+            c.delegation_mode = zeph_config::DelegationMode::Proactive;
+            c
+        };
+        mgr.set_delegation_mode(cfg.effective_delegation_mode());
+
+        let err = mgr
+            .resume(
+                "bbbb2222",
+                "continue the work",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SubAgentError::DelegationDenied { .. }));
+    }
+
+    /// `explicit_request_only` must still permit `resume` — it is inherently an explicit
+    /// user action.
+    #[tokio::test]
+    async fn resume_allowed_under_explicit_request_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_id = "cccc3333-0000-0000-0000-000000000000";
+        write_completed_meta(tmp.path(), agent_id, "bot");
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        mgr.set_delegation_mode(zeph_config::DelegationMode::ExplicitRequestOnly);
+        let cfg = make_cfg_with_dir(tmp.path());
+
+        let result = mgr
+            .resume(
+                "cccc3333",
+                "continue the work",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+                None,
+            )
+            .await;
+        assert!(result.is_ok(), "expected allow, got {result:?}");
+        let (new_id, _) = result.unwrap();
+        mgr.cancel(&new_id).unwrap();
+    }
+}
+
+#[test]
 fn context_injection_none_passes_raw_prompt() {
     use zeph_config::ContextInjectionMode;
     let result = apply_context_injection("do work", &[], ContextInjectionMode::None, 600);

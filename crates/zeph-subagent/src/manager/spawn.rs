@@ -586,6 +586,34 @@ impl SubAgentManager {
         config: &SubAgentConfig,
         ctx: SpawnContext,
     ) -> Result<String, SubAgentError> {
+        // Delegation-mode gate (spec 042, issue #5857): checked first, before any resource
+        // allocation (NFR-002) — a rejected spawn must have zero side effects (no worktree,
+        // no transcript file, no consumed concurrency slot). Expressed as an explicit allow-list
+        // (rather than a `match` computing `denied`) so that `DelegationMode` being
+        // `#[non_exhaustive]` fails closed automatically: any future variant this crate
+        // doesn't yet recognize matches neither arm below and is denied, not silently allowed.
+        let allowed = matches!(
+            (self.delegation_mode, ctx.origin),
+            (zeph_config::DelegationMode::Proactive, _)
+                | (
+                    zeph_config::DelegationMode::ExplicitRequestOnly,
+                    super::SpawnOrigin::Explicit
+                )
+        );
+        if !allowed {
+            tracing::warn!(
+                mode = ?self.delegation_mode,
+                origin = ?ctx.origin,
+                def_name,
+                "sub-agent spawn rejected by delegation_mode"
+            );
+            return Err(SubAgentError::DelegationDenied {
+                mode: self.delegation_mode,
+                origin: ctx.origin,
+                def_name: def_name.to_owned(),
+            });
+        }
+
         if ctx.spawn_depth >= config.max_spawn_depth {
             return Err(SubAgentError::MaxDepthExceeded {
                 depth: ctx.spawn_depth,
@@ -1040,6 +1068,24 @@ impl SubAgentManager {
         config: &SubAgentConfig,
         spawn_context: Option<&SpawnContext>,
     ) -> Result<(String, String), SubAgentError> {
+        // Delegation-mode gate (spec 042, issue #5857): `resume` is its own chokepoint,
+        // distinct from `spawn` — checked first, before any resource allocation (NFR-002).
+        // Resuming a sub-agent is inherently an explicit, attributable user action (there is
+        // no autonomous-resume path in this codebase), so it only needs the mode-only
+        // allow-list, not the origin-aware check `spawn` uses.
+        if !self.delegation_mode.permits_explicit() {
+            tracing::warn!(
+                mode = ?self.delegation_mode,
+                id_prefix,
+                "sub-agent resume rejected by delegation_mode"
+            );
+            return Err(SubAgentError::DelegationDenied {
+                mode: self.delegation_mode,
+                origin: super::SpawnOrigin::Explicit,
+                def_name: id_prefix.to_owned(),
+            });
+        }
+
         let dir = self.effective_transcript_dir(config);
         let id_prefix_owned = id_prefix.to_owned();
         let dir_clone = dir.clone();

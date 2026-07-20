@@ -29,6 +29,41 @@ use crate::forward::ForwardSurfaces;
 use crate::grants::{GrantedSecret, PermissionGrants, SecretRequest};
 use crate::state::SubAgentState;
 
+/// Classifies what triggered a given spawn attempt, for [`DelegationMode`] enforcement
+/// (spec `042-subagent-delegation-mode-parity`, issue #5857).
+///
+/// # Fail-closed default
+///
+/// [`SpawnOrigin::default`] is [`SpawnOrigin::Autonomous`] — the *restrictive* value, not the
+/// permissive one. An untagged or forgotten [`SpawnContext`] therefore reads as `Autonomous`
+/// and is denied under [`DelegationMode::ExplicitRequestOnly`]/[`DelegationMode::Disabled`],
+/// never silently allowed. Only a caller that explicitly sets `origin = SpawnOrigin::Explicit`
+/// (after auditing that the trigger really is a direct, attributable user action) can bypass
+/// the `explicit_request_only` restriction. A mistagged legitimate spawn fails visibly (a
+/// `tracing::warn!` plus a denied spawn); a mistagged illegitimate one can never be silently
+/// let through.
+///
+/// [`DelegationMode`]: zeph_config::DelegationMode
+/// [`DelegationMode::ExplicitRequestOnly`]: zeph_config::DelegationMode::ExplicitRequestOnly
+/// [`DelegationMode::Disabled`]: zeph_config::DelegationMode::Disabled
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnOrigin {
+    /// A direct, attributable user action in the current turn (e.g. `/agent spawn`,
+    /// `/agent resume`) — always permitted except under `delegation_mode = "disabled"`.
+    Explicit,
+    /// Autonomous planner/scheduler decision-making with no corresponding explicit user
+    /// request in the current turn (e.g. the orchestration scheduler's DAG dispatch). Denied
+    /// under `delegation_mode = "explicit_request_only"` and `"disabled"`.
+    Autonomous,
+}
+
+impl Default for SpawnOrigin {
+    /// Fail-closed: see the type-level doc comment.
+    fn default() -> Self {
+        Self::Autonomous
+    }
+}
+
 /// Parent-derived state propagated to a spawned sub-agent at spawn time.
 ///
 /// All fields default to empty/`None`, preserving existing behavior when callers
@@ -48,7 +83,7 @@ use crate::state::SubAgentState;
 /// # Examples
 ///
 /// ```rust
-/// use zeph_subagent::manager::SpawnContext;
+/// use zeph_subagent::manager::{SpawnContext, SpawnOrigin};
 ///
 /// // Minimal context — all fields use their defaults.
 /// let ctx = SpawnContext::default();
@@ -56,6 +91,8 @@ use crate::state::SubAgentState;
 /// assert_eq!(ctx.spawn_depth, 0);
 /// assert!(ctx.max_trust_level.is_none());
 /// assert!(ctx.inherited_tool_allowlist.is_none());
+/// // Fail-closed: an untagged context reads as Autonomous, not Explicit.
+/// assert_eq!(ctx.origin, SpawnOrigin::Autonomous);
 /// ```
 #[derive(Default)]
 pub struct SpawnContext {
@@ -186,6 +223,17 @@ pub struct SpawnContext {
     /// automatically — a sub-agent that spawns its own children must copy this field from
     /// its received `SpawnContext` into the child's, or grandchild LLM calls go undumped.
     pub debug_dump_sink: Option<Arc<dyn zeph_llm::debug_dump::DebugDumpSink>>,
+
+    /// What triggered this spawn attempt — enforced against `delegation_mode` at the top of
+    /// [`SubAgentManager::spawn`] (spec `042-subagent-delegation-mode-parity`, issue #5857).
+    ///
+    /// Defaults to [`SpawnOrigin::Autonomous`] (fail-closed — see [`SpawnOrigin`]'s doc
+    /// comment). `zeph-core`'s `build_spawn_context` (the base used by the explicit
+    /// `/agent spawn`/`/agent resume` commands) sets this to [`SpawnOrigin::Explicit`]; the
+    /// orchestration scheduler overrides it back to `Autonomous` on its own call, mirroring
+    /// the existing post-construction override pattern used for
+    /// [`network_denied`][Self::network_denied] and [`progress_at`][Self::progress_at].
+    pub origin: SpawnOrigin,
 }
 
 /// Live status snapshot of a running sub-agent.
@@ -403,6 +451,13 @@ pub struct SubAgentManager {
     /// `PiiScrubbingDumpSink` (#6407). `None` (the default) means no PII scrubbing beyond the
     /// baseline `ContentSanitizer` pass — set via [`set_pii_filter`][Self::set_pii_filter].
     pii_filter: Option<zeph_sanitizer::pii::PiiFilter>,
+    /// Effective delegation mode gating every spawn (spec `042-subagent-delegation-mode-parity`,
+    /// issue #5857). Already folds in the `enabled` outer kill switch — the bootstrap caller
+    /// computes `if !config.agents.enabled { Disabled } else { config.agents.delegation_mode }`
+    /// before calling [`set_delegation_mode`][Self::set_delegation_mode], so this field alone
+    /// is authoritative at spawn time; `SubAgentManager` does not re-read `enabled` itself.
+    /// Defaults to [`zeph_config::DelegationMode::default()`] (`Proactive`) until set.
+    delegation_mode: zeph_config::DelegationMode,
 }
 
 impl std::fmt::Debug for SubAgentManager {
@@ -425,6 +480,7 @@ impl std::fmt::Debug for SubAgentManager {
             .field("forward_buffer", &"<Mutex>")
             .field("secret_registry", &self.secret_registry.is_some())
             .field("pii_filter", &self.pii_filter.is_some())
+            .field("delegation_mode", &self.delegation_mode)
             .finish()
     }
 }
@@ -451,6 +507,7 @@ impl SubAgentManager {
             forward_buffer: crate::forward::new_buffer(),
             secret_registry: None,
             pii_filter: None,
+            delegation_mode: zeph_config::DelegationMode::default(),
         }
     }
 
@@ -473,6 +530,27 @@ impl SubAgentManager {
     /// tasks, the forward drain never falls back to an untracked spawn (NFR-002).
     pub fn set_forward_surfaces(&mut self, surfaces: ForwardSurfaces) {
         self.forward_surfaces = surfaces;
+    }
+
+    /// Set the effective delegation mode gating every future [`spawn`][Self::spawn] call
+    /// (spec `042-subagent-delegation-mode-parity`, issue #5857).
+    ///
+    /// Call during bootstrap, before the first [`spawn`][Self::spawn]. The caller MUST fold
+    /// in the `enabled` outer kill switch before calling this: pass
+    /// `zeph_config::DelegationMode::Disabled` when `config.agents.enabled == false`,
+    /// regardless of `config.agents.delegation_mode`'s configured value (FR-002). The manager
+    /// itself performs no `enabled` check — it only sees the already-resolved effective mode.
+    pub fn set_delegation_mode(&mut self, mode: zeph_config::DelegationMode) {
+        self.delegation_mode = mode;
+    }
+
+    /// The effective delegation mode currently in force, as set by
+    /// [`set_delegation_mode`][Self::set_delegation_mode]. Exposed for status/observability
+    /// surfaces (e.g. `/agent list`) so operators can confirm the active mode without
+    /// inspecting `config.toml` directly (spec 042 NFR-004).
+    #[must_use]
+    pub fn delegation_mode(&self) -> zeph_config::DelegationMode {
+        self.delegation_mode
     }
 
     /// Wire the bootstrap-level secret-mask registry into the forwarding pipeline (issue

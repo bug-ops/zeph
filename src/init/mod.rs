@@ -99,6 +99,16 @@ pub(crate) struct WizardState {
     /// `gemini_thinking_level` above — this field is `OpenAI`-specific to avoid two
     /// conflicting wizard prompts for the same knob on those providers.
     pub(crate) reasoning_effort: Option<String>,
+    /// Enable the sub-agent subsystem — outer kill switch (spec 042, issue #5857). Default
+    /// `true` in the wizard: prior to this field's introduction, `enabled` was never wired to
+    /// any gate, so wizard-produced configs behaved as fully unconstrained regardless of its
+    /// value. Defaulting to `true` here preserves that observed behavior for fresh installs;
+    /// operators who want the new kill switch to actually restrict spawning can say "no" or
+    /// dial `agents_delegation_mode` down instead.
+    pub(crate) agents_enabled: bool,
+    /// Tri-state delegation-mode control (spec 042, issue #5857). Default `Proactive` —
+    /// preserves the subsystem's pre-existing unconstrained behavior.
+    pub(crate) agents_delegation_mode: zeph_config::DelegationMode,
     pub(crate) agents_default_permission_mode: Option<PermissionMode>,
     pub(crate) agents_default_disallowed_tools: Vec<String>,
     pub(crate) agents_allow_bypass_permissions: bool,
@@ -429,6 +439,8 @@ impl Default for WizardState {
             thinking: None,
             enable_extended_context: false,
             reasoning_effort: None,
+            agents_enabled: true,
+            agents_delegation_mode: zeph_config::DelegationMode::default(),
             agents_default_permission_mode: None,
             agents_default_disallowed_tools: Vec::new(),
             agents_allow_bypass_permissions: false,
@@ -1206,6 +1218,8 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         ..zeph_tools::SearchConfig::default()
     };
 
+    config.agents.enabled = state.agents_enabled;
+    config.agents.delegation_mode = state.agents_delegation_mode;
     config.agents.default_permission_mode = state.agents_default_permission_mode;
     config
         .agents

@@ -536,6 +536,10 @@ impl<C: crate::channel::Channel> Agent<C> {
         let mut spawn_ctx = self.build_spawn_context(&cfg);
         spawn_ctx.network_denied = network_denied;
         spawn_ctx.inherited_tool_allowlist = task_allowlist;
+        // Autonomous DAG dispatch (spec 042, #5857): `build_spawn_context` sets `Explicit` as
+        // its base value (correct for its other, user-command-driven callers) — this is the
+        // one caller that isn't user-driven, so override it back to `Autonomous` here.
+        spawn_ctx.origin = zeph_subagent::SpawnOrigin::Autonomous;
 
         // Idle-timeout progress heartbeat (issue #6245, Alt-A): the driver owns creation of
         // the Arc. One clone flows into the sub-agent loop via `spawn_ctx.progress_at`

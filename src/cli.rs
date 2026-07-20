@@ -338,6 +338,15 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "REF")]
     pub(crate) worktree_base_ref: Option<String>,
 
+    /// Override the `agents.delegation_mode` config for this session.
+    ///
+    /// Accepted values: `disabled`, `explicit_request_only`, `proactive`. Still subject to
+    /// `agents.enabled` as the outer kill switch — `enabled = false` always resolves to
+    /// `disabled` regardless of this flag (spec `042-subagent-delegation-mode-parity`,
+    /// issue #5857).
+    #[arg(long, value_name = "MODE")]
+    pub(crate) delegation_mode: Option<String>,
+
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 

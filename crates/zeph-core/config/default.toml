@@ -704,6 +704,10 @@ request_timeout_secs = 10
 [agents]
 # Enable sub-agent spawning (required for /agent commands and multi-agent workflows)
 enabled = false
+# Whether the main agent may spawn sub-agents, and who may trigger it: "disabled" /
+# "explicit_request_only" / "proactive". Orthogonal to `enabled` above, which remains the
+# outer kill switch. Env override: ZEPH_AGENTS_DELEGATION_MODE.
+delegation_mode = "proactive"
 # Maximum number of sub-agents that can run concurrently
 max_concurrent = 1
 # Allow sub-agents to use bypass_permissions mode (enable only in trusted environments)

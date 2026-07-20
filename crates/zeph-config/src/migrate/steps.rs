@@ -89,8 +89,8 @@ use super::{
     MigrateError, Migration, MigrationResult, migrate_a2a_card_trust_config,
     migrate_a2a_server_remove_inert_fields, migrate_acp_auth_clients_config,
     migrate_acp_subagents_config, migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry,
-    migrate_agent_time_reminder, migrate_autodream_config, migrate_caveman_config,
-    migrate_cocoon_provider_notice, migrate_cocoon_show_balance,
+    migrate_agent_time_reminder, migrate_agents_delegation_mode, migrate_autodream_config,
+    migrate_caveman_config, migrate_cocoon_provider_notice, migrate_cocoon_show_balance,
     migrate_compression_predictor_config, migrate_database_url, migrate_deep_link_config,
     migrate_durable_config, migrate_durable_hwm_advisory, migrate_durable_key_rotation,
     migrate_durable_shared_db, migrate_durable_stale_running_after_secs, migrate_egress_config,
@@ -1297,5 +1297,19 @@ impl Migration for MigrateRateLimitAdvisory {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_rate_limit_advisory(toml_src)
+    }
+}
+
+/// Step 102 — insert an active `delegation_mode = "proactive"` value into an existing
+/// `[agents]` table with `enabled = true` and no `delegation_mode` key (spec
+/// `042-subagent-delegation-mode-parity` FR-010, issue #5857).
+pub(super) struct MigrateAgentsDelegationMode;
+impl Migration for MigrateAgentsDelegationMode {
+    fn name(&self) -> &'static str {
+        "migrate_agents_delegation_mode"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_agents_delegation_mode(toml_src)
     }
 }

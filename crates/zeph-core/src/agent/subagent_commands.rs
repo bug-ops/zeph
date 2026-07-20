@@ -245,11 +245,19 @@ impl<C: Channel> Agent<C> {
     fn handle_agent_list(&self) -> Option<String> {
         use std::fmt::Write as _;
         let mgr = self.services.orchestration.subagent_manager.as_ref()?;
+        let mode_label = match mgr.delegation_mode() {
+            zeph_config::DelegationMode::Disabled => "disabled",
+            zeph_config::DelegationMode::ExplicitRequestOnly => "explicit_request_only",
+            zeph_config::DelegationMode::Proactive => "proactive",
+            _ => "unknown",
+        };
         let defs = mgr.definitions();
         if defs.is_empty() {
-            return Some("No sub-agent definitions found.".into());
+            return Some(format!(
+                "Delegation mode: {mode_label}\nNo sub-agent definitions found."
+            ));
         }
-        let mut out = String::from("Available sub-agents:\n");
+        let mut out = format!("Delegation mode: {mode_label}\nAvailable sub-agents:\n");
         for d in defs {
             let memory_label = match d.memory {
                 Some(zeph_subagent::MemoryScope::User) => " [memory:user]",
@@ -787,6 +795,20 @@ impl<C: Channel> Agent<C> {
 
         Some(bodies)
     }
+    /// The effective delegation mode currently in force (spec 042, issue #5857).
+    ///
+    /// Reads directly from `subagent_config` (always present, independent of whether a
+    /// `SubAgentManager` happens to be constructed) via
+    /// [`zeph_config::SubAgentConfig::effective_delegation_mode`], which folds in the
+    /// `enabled` outer kill switch. This is the same fold `src/runner.rs` bootstrap applies
+    /// before calling `SubAgentManager::set_delegation_mode` — reading it here independently
+    /// keeps this choke point correct even where no manager is wired up (e.g. a test harness).
+    pub(super) fn effective_delegation_mode(&self) -> zeph_config::DelegationMode {
+        self.services
+            .orchestration
+            .subagent_config
+            .effective_delegation_mode()
+    }
     /// Build a `SpawnContext` from current agent state for sub-agent spawning.
     pub(super) fn build_spawn_context(
         &self,
@@ -838,6 +860,14 @@ impl<C: Channel> Agent<C> {
             // narrow against (see issue tracking the follow-up per-task `TaskNode` allowlist
             // plumbing for the orchestration layer).
             max_trust_level: Some(self.parent_effective_trust_level()),
+            // This helper's own three callers (`handle_agent_background`,
+            // `handle_agent_spawn_foreground`, `handle_agent_resume`) are all dispatched from
+            // the explicit `/agent spawn`/`/agent resume` slash command, so `Explicit` is the
+            // correct base value here (spec 042, issue #5857). `handle_scheduler_spawn_action`
+            // is the sole caller that needs `Autonomous` — it overrides `spawn_ctx.origin`
+            // immediately after calling this helper, mirroring how it already overrides
+            // `network_denied`/`progress_at` post-construction.
+            origin: zeph_subagent::SpawnOrigin::Explicit,
             ..Default::default()
         }
     }

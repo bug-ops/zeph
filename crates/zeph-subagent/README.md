@@ -144,6 +144,22 @@ forward_transcript = false   # default: false; also settable via --forward-subag
 
 Forwarding is structurally non-blocking on the sub-agent's own turn loop: `agent_loop.rs` does a non-blocking `try_send` of a `RawChunk` into a bounded per-task `mpsc` (capacity 128, tail-drop on full), and a manager-owned drain performs the one sanitize step before dispatching to whichever consumer surfaces (`ForwardSurfaces`) are active for the session.
 
+## Delegation mode
+
+Tri-state control over whether the main agent may spawn sub-agents, and who may trigger it (spec `042-subagent-delegation-mode-parity`, issue #5857):
+
+```toml
+[agents]
+enabled = true               # outer kill switch: false always resolves to "disabled" below
+delegation_mode = "proactive"  # "disabled" | "explicit_request_only" | "proactive" (default)
+```
+
+- `disabled` — no spawn from any code path (slash command, orchestration scheduler, `/subagent spawn`); read-only operations (`/agent list`) still work.
+- `explicit_request_only` — only spawns attributable to a direct user action (`/agent spawn`, `/agent resume`, `/subagent spawn`) are permitted; the orchestration scheduler's autonomous DAG dispatch is rejected.
+- `proactive` — both explicit and autonomous spawns are permitted, subject to the pre-existing `max_concurrent`/`max_spawn_depth`/permission-grant constraints. Matches the subsystem's behavior prior to this field's introduction.
+
+Enforcement is fail-closed: every spawn is tagged with a `SpawnOrigin` (`Explicit` or `Autonomous`) on `SpawnContext`, and an untagged context defaults to `Autonomous` — the restrictive value — so a forgotten call site is denied under the restrictive modes rather than silently allowed. `SubAgentManager::spawn` (and `spawn_for_task`, which delegates to it) is the single chokepoint; a rejected spawn returns `SubAgentError::DelegationDenied` before any resource is allocated. Overridable via `ZEPH_AGENTS_DELEGATION_MODE` or `--delegation-mode`.
+
 ## Features
 
 | Feature | Description |

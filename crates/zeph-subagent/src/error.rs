@@ -106,4 +106,20 @@ pub enum SubAgentError {
     /// only called when `durable.enabled && durable.subagent`).
     #[error("durable error: {0}")]
     Durable(String),
+
+    /// The spawn attempt was rejected by `delegation_mode` (spec
+    /// `042-subagent-delegation-mode-parity`, issue #5857): either `delegation_mode =
+    /// "disabled"` (all spawns rejected) or `delegation_mode = "explicit_request_only"` and
+    /// `origin` was [`SpawnOrigin::Autonomous`](crate::manager::SpawnOrigin). Distinct from
+    /// [`SubAgentError::ConcurrencyLimit`] and [`SubAgentError::MaxDepthExceeded`] so the
+    /// rejection reason is unambiguous in logs (FR-007).
+    #[error(
+        "delegation denied: mode={mode:?} origin={origin:?} agent='{def_name}' \
+         (see [agents].delegation_mode / [agents].enabled in config.toml)"
+    )]
+    DelegationDenied {
+        mode: zeph_config::DelegationMode,
+        origin: crate::manager::SpawnOrigin,
+        def_name: String,
+    },
 }

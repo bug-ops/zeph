@@ -20,6 +20,7 @@ mod memory;
 mod plugins;
 mod serve;
 mod session;
+mod subagent;
 mod tools;
 
 pub use features::{
@@ -42,6 +43,7 @@ pub use memory::*;
 pub use plugins::migrate_plugins_reputation_config;
 pub use serve::migrate_serve_config;
 pub use session::*;
+pub use subagent::migrate_agents_delegation_mode;
 pub use tools::*;
 
 /// Returns `true` when `name` is an active (non-commented) TOML section header in `src`.
@@ -605,24 +607,24 @@ mod steps;
 use steps::{
     MigrateA2aCardTrustConfig, MigrateA2aServerRemoveInertFields, MigrateAcpAuthClientsConfig,
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
-    MigrateAgentTimeReminder, MigrateAutodreamConfig, MigrateCavemanConfig,
-    MigrateCocoonProviderNotice, MigrateCocoonShowBalance, MigrateCompressionPredictorConfig,
-    MigrateDatabaseUrl, MigrateDeepLinkConfig, MigrateDurableConfig, MigrateDurableHwmAdvisory,
-    MigrateDurableKeyRotation, MigrateDurableSharedDb, MigrateDurableStaleRunningAfterSecs,
-    MigrateEgressConfig, MigrateEmbedProviderRename, MigrateEvalModelToProvider,
-    MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow,
-    MigrateForgettingConfig, MigrateGoalsConfig, MigrateGonkagateToGonka,
-    MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateIntegrityConfig,
-    MigrateKnowledgeConfig, MigrateLlmStreamLimits, MigrateMagicDocsConfig,
-    MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpMediaConfig,
-    MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels, MigrateMemoryGraph,
-    MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
-    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
-    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
-    MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig, MigrateMemoryTypeAwareCompose,
-    MigrateMicrocompactConfig, MigrateNliConfig, MigrateOrchestrationAssetSensitivity,
-    MigrateOrchestrationCommandConfig, MigrateOrchestrationEnsemble,
-    MigrateOrchestrationIdleTimeout, MigrateOrchestrationPersistence,
+    MigrateAgentTimeReminder, MigrateAgentsDelegationMode, MigrateAutodreamConfig,
+    MigrateCavemanConfig, MigrateCocoonProviderNotice, MigrateCocoonShowBalance,
+    MigrateCompressionPredictorConfig, MigrateDatabaseUrl, MigrateDeepLinkConfig,
+    MigrateDurableConfig, MigrateDurableHwmAdvisory, MigrateDurableKeyRotation,
+    MigrateDurableSharedDb, MigrateDurableStaleRunningAfterSecs, MigrateEgressConfig,
+    MigrateEmbedProviderRename, MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults,
+    MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
+    MigrateGoalsConfig, MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig,
+    MigrateHooksTurnComplete, MigrateIntegrityConfig, MigrateKnowledgeConfig,
+    MigrateLlmStreamLimits, MigrateMagicDocsConfig, MigrateMcpElicitationConfig,
+    MigrateMcpMaxConnectAttempts, MigrateMcpMediaConfig, MigrateMcpRetryAndToolTimeout,
+    MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported,
+    MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread,
+    MigrateMemoryPersonaConfig, MigrateMemoryReasoning, MigrateMemoryReasoningJudge,
+    MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig,
+    MigrateMemoryTypeAwareCompose, MigrateMicrocompactConfig, MigrateNliConfig,
+    MigrateOrchestrationAssetSensitivity, MigrateOrchestrationCommandConfig,
+    MigrateOrchestrationEnsemble, MigrateOrchestrationIdleTimeout, MigrateOrchestrationPersistence,
     MigrateOrchestrationWholePlanVerifierTimeout, MigrateOrchestratorProvider, MigrateOtelFilter,
     MigrateOverflowMaxPerCallOverride, MigratePiiFilterNames, MigratePlannerModelToProvider,
     MigratePluginsReputationConfig, MigratePolicyProviderAndUtilityWindow,
@@ -847,6 +849,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateIntegrityConfig),
             // Step 101 — advisory notice for [security.rate_limit] default-on posture (#6469)
             Box::new(MigrateRateLimitAdvisory),
+            // Step 102 — insert active delegation_mode = "proactive" into an existing
+            // [agents] table with enabled = true and no delegation_mode key (#5857)
+            Box::new(MigrateAgentsDelegationMode),
         ]
     });
 

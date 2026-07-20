@@ -26,6 +26,7 @@ serde_norway.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "macros", "process", "rt-multi-thread", "sync", "time"] }
+tokio-stream.workspace = true
 tokio-util.workspace = true
 toml.workspace = true
 tracing.workspace = true

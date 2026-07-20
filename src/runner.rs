@@ -3270,6 +3270,29 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 zeph_config::WorktreeBaseRef::Head
             };
         }
+        if let Some(ref mode_str) = cli.delegation_mode {
+            match mode_str.as_str() {
+                "disabled" => agents_config.delegation_mode = zeph_config::DelegationMode::Disabled,
+                "explicit_request_only" => {
+                    agents_config.delegation_mode =
+                        zeph_config::DelegationMode::ExplicitRequestOnly;
+                }
+                "proactive" => {
+                    agents_config.delegation_mode = zeph_config::DelegationMode::Proactive;
+                }
+                other => {
+                    tracing::warn!(
+                        value = other,
+                        "--delegation-mode: invalid value, ignoring \
+                         (expected disabled|explicit_request_only|proactive)"
+                    );
+                }
+            }
+        }
+        // Sub-agent delegation gate (spec 042, issue #5857): `enabled` remains the outer kill
+        // switch — `effective_delegation_mode` folds it in so `SubAgentManager` itself only
+        // ever sees the already-resolved value and does not need to re-read `enabled` (FR-002).
+        mgr.set_delegation_mode(agents_config.effective_delegation_mode());
 
         // Bootstrap the worktree subsystem when enabled (hard-fail per spec NEVER #92).
         if agents_config.worktree.enabled && !exec_mode.bare {

@@ -1,10 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Live subagent transcript forwarding (issue #6359, spec `068-subagent-transcript-forward`).
+//! Live subagent transcript forwarding (issue #6359, spec `068-subagent-transcript-forward`;
+//! token-level intra-turn streaming, issue #6456, FR-002b).
 //!
-//! Opt-in, per-turn forwarding of a running subagent's full text/thinking output to the
-//! TUI runtime detail view and/or a `--bare` stdout sink. Pipeline shape:
+//! Opt-in forwarding of a running subagent's text/thinking output to the TUI runtime detail
+//! view and/or a `--bare` stdout sink, under the single `forward_transcript` config flag.
+//! Granularity depends on provider support: when the provider's native streaming-with-tools
+//! path is available (`agent_loop.rs` drives it), text/thinking chunks are forwarded as
+//! partial deltas *within* a turn; otherwise (or when streaming fails) the full, untruncated
+//! text/thinking output of one completed LLM turn is forwarded once the turn completes
+//! (FR-002a, unchanged). Pipeline shape:
 //!
 //! ```text
 //! agent_loop.rs (sync, non-blocking) --try_send(RawChunk)--> per-task mpsc (cap 128)
@@ -14,6 +20,20 @@
 //! `RawChunk` only ever travels on the ingress channel; `SanitizedChunk` is constructed
 //! exclusively by the drain's sanitize step and is the only type any sink can receive
 //! (NFR-005 enforced structurally, not by convention).
+//!
+//! # Design contract: deltas are ephemeral, display-only (FR-002b)
+//!
+//! Every chunk sent through `ForwardSender::send_text` / `ForwardSender::send_thinking` —
+//! whether it carries a whole turn's text or one streamed delta — travels on the same
+//! tail-drop `mpsc` and MUST be treated as **display-only**. A dropped chunk is a display
+//! gap, never a correctness error: the loop's own accumulated response text (returned from
+//! `run_agent_loop`'s LLM call and pushed into `messages`) is assembled independently of
+//! whether any given delta was actually forwarded, and the guaranteed terminal chunk (see
+//! `ForwardSender::send_terminal`) marks the one point a consumer may treat as authoritative
+//! for "this run reached a terminal state". No consumer (TUI ring buffer, `--bare` sink, a
+//! future sink) may reconstruct the subagent's conversational state — let alone feed it back
+//! into the parent's LLM context — by concatenating forwarded chunks; deltas never enter any
+//! LLM context, they exist purely for live human-facing display.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -65,9 +85,6 @@ impl ForwardSurfaces {
 /// Only ever travels on the per-task ingress `mpsc` — never exposed outside this module.
 #[derive(Debug, Clone)]
 pub(crate) struct RawChunk {
-    task_id: Arc<str>,
-    def_name: Arc<str>,
-    seq: u64,
     kind: ForwardChunkKind,
 }
 
@@ -145,21 +162,126 @@ fn sanitize_text(raw_text: &str, def_name: &str, layers: &SanitizeLayers) -> Str
     body
 }
 
-fn sanitize_chunk(raw: RawChunk, layers: &SanitizeLayers) -> SanitizedChunk {
-    let kind = match raw.kind {
-        ForwardChunkKind::Text(text) => {
-            SanitizedChunkKind::Text(sanitize_text(&text, raw.def_name.as_ref(), layers))
-        }
-        ForwardChunkKind::Thinking(text) => {
-            SanitizedChunkKind::Thinking(sanitize_text(&text, raw.def_name.as_ref(), layers))
-        }
-        ForwardChunkKind::Terminal(state) => SanitizedChunkKind::Terminal(state),
-    };
+/// Bounded lookback window (bytes) held back from the tail of a pending `Text`/`Thinking`
+/// buffer before sanitizing and emitting its safe prefix (review Critical Issue #2, #6456
+/// follow-up).
+///
+/// Without this, each streamed delta (FR-002b) was sanitized in complete isolation — a
+/// secret or PII pattern split across two `ToolSseEvent` chunk boundaries matched neither
+/// fragment individually and reached `--bare` stdout / the TUI ring buffer unmasked. Holding
+/// back this many trailing bytes on every partial flush guarantees any pattern whose two
+/// halves arrive within this window of each other is always sanitized as one contiguous
+/// string before being released.
+///
+/// Chosen generously above [`crate::grants::GrantedSecret`]-delivered or vault-registered
+/// secret lengths seen in practice and every PII pattern in `zeph_sanitizer::pii` (email/
+/// phone/SSN/credit-card are all well under 80 bytes). A secret whose split fragments are
+/// separated by *more* than this many bytes of other already-flushed content is a residual
+/// limitation inherent to any bounded-window approach — not eliminated, only made
+/// practically unreachable for realistic secret/PII lengths.
+const SANITIZE_HOLDBACK_BYTES: usize = 256;
+
+/// Per-task raw text accumulated but not yet sanitized/emitted (review Critical Issue #2).
+///
+/// Kept separate for the `Text` and `Thinking` streams since they are independent logical
+/// channels that must never be concatenated with each other.
+#[derive(Default)]
+struct PendingSanitizeBuffers {
+    text: String,
+    thinking: String,
+}
+
+/// Split off `buf`'s sanitizable prefix, leaving the last `holdback` bytes (rounded down to
+/// the nearest UTF-8 char boundary, same class of problem as UTF-8 chunk-boundary handling)
+/// in place for a future call to potentially combine with. Pass `holdback = 0` to flush the
+/// entire remaining buffer — used once no more data for this task is coming (an explicit
+/// `Terminal` chunk or the hard-abort backstop), so buffered content is only ever delayed,
+/// never silently dropped. Returns `None` when there is nothing new to emit yet.
+fn split_off_safe_prefix(buf: &mut String, holdback: usize) -> Option<String> {
+    if buf.is_empty() {
+        return None;
+    }
+    let target = buf.len().saturating_sub(holdback);
+    let boundary = buf.floor_char_boundary(target);
+    if boundary == 0 {
+        return None;
+    }
+    let prefix = buf[..boundary].to_owned();
+    buf.drain(..boundary);
+    Some(prefix)
+}
+
+/// Attempt to flush a pending buffer's safe prefix, sanitize it, and wrap the result via
+/// `wrap_kind` (`SanitizedChunkKind::Text` or `::Thinking`, both valid as a
+/// `fn(String) -> SanitizedChunkKind` since each is a single-field tuple variant). Returns
+/// `None` when [`split_off_safe_prefix`] found nothing new to emit yet.
+fn try_flush_kind(
+    buf: &mut String,
+    holdback: usize,
+    def_name: &str,
+    layers: &SanitizeLayers,
+    wrap_kind: fn(String) -> SanitizedChunkKind,
+) -> Option<SanitizedChunkKind> {
+    let safe = split_off_safe_prefix(buf, holdback)?;
+    Some(wrap_kind(sanitize_text(&safe, def_name, layers)))
+}
+
+fn make_sanitized_chunk(
+    task_id: &Arc<str>,
+    def_name: &Arc<str>,
+    seq: u64,
+    kind: SanitizedChunkKind,
+) -> SanitizedChunk {
     SanitizedChunk {
-        task_id: raw.task_id,
-        def_name: raw.def_name,
-        seq: raw.seq,
+        task_id: Arc::clone(task_id),
+        def_name: Arc::clone(def_name),
+        seq,
         kind,
+    }
+}
+
+/// Flush both pending buffers in full (no holdback — nothing more is coming for this task)
+/// and dispatch any resulting chunk(s). Called immediately before an explicit `Terminal`
+/// chunk or the hard-abort backstop, so buffered content is only ever delayed until the
+/// run's very end, never silently dropped.
+#[allow(clippy::too_many_arguments)]
+fn flush_all_pending(
+    pending: &mut PendingSanitizeBuffers,
+    task_id: &Arc<str>,
+    def_name: &Arc<str>,
+    layers: &SanitizeLayers,
+    surfaces: ForwardSurfaces,
+    buffer: &ForwardBuffer,
+    dispatch: &mut impl FnMut(&SanitizedChunk, ForwardSurfaces, &ForwardBuffer),
+    emit_seq: &mut u64,
+) {
+    if let Some(kind) = try_flush_kind(
+        &mut pending.text,
+        0,
+        def_name.as_ref(),
+        layers,
+        SanitizedChunkKind::Text,
+    ) {
+        dispatch(
+            &make_sanitized_chunk(task_id, def_name, *emit_seq, kind),
+            surfaces,
+            buffer,
+        );
+        *emit_seq += 1;
+    }
+    if let Some(kind) = try_flush_kind(
+        &mut pending.thinking,
+        0,
+        def_name.as_ref(),
+        layers,
+        SanitizedChunkKind::Thinking,
+    ) {
+        dispatch(
+            &make_sanitized_chunk(task_id, def_name, *emit_seq, kind),
+            surfaces,
+            buffer,
+        );
+        *emit_seq += 1;
     }
 }
 
@@ -192,15 +314,11 @@ impl ForwardSender {
 
     fn try_send(&self, kind: ForwardChunkKind) {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-        let chunk = RawChunk {
-            task_id: Arc::clone(&self.task_id),
-            def_name: Arc::clone(&self.def_name),
-            seq,
-            kind,
-        };
+        let chunk = RawChunk { kind };
         if self.tx.try_send(chunk).is_ok() {
             tracing::debug!(
                 task_id = %self.task_id,
+                def_name = %self.def_name,
                 seq,
                 "subagent.forward.emit"
             );
@@ -208,6 +326,7 @@ impl ForwardSender {
             let dropped = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
             tracing::warn!(
                 task_id = %self.task_id,
+                def_name = %self.def_name,
                 seq,
                 dropped,
                 "subagent.forward.drop: ingress channel full, chunk dropped"
@@ -215,9 +334,17 @@ impl ForwardSender {
         }
     }
 
-    /// Forward one turn's full, untruncated text output. Call only from behind an
+    /// Forward a piece of assistant text output. Call only from behind an
     /// `if let Some(f) = forward` guard — the caller (`agent_loop.rs`) must never construct
     /// or clone the text ahead of that guard (FR-007).
+    ///
+    /// `text` may be a whole turn's full, untruncated text (FR-002a, the non-streaming or
+    /// stream-fallback path) or one incremental delta from a native streaming response
+    /// (FR-002b) — both are display-only chunks tail-dropped under backpressure identically;
+    /// see the module-level "Design contract" section. Callers must not send both the
+    /// streamed deltas and the final whole-turn text for the same turn — that would double-
+    /// forward the same content (see `agent_loop.rs::call_provider_with_status`'s `streamed`
+    /// flag).
     pub(crate) fn send_text(&self, text: &str) {
         if text.is_empty() {
             return;
@@ -225,8 +352,9 @@ impl ForwardSender {
         self.try_send(ForwardChunkKind::Text(text.to_owned()));
     }
 
-    /// Forward one visible thinking block's text. Same no-op-behind-`Some` contract as
-    /// [`send_text`][Self::send_text].
+    /// Forward a piece of visible thinking output — a whole completed thinking block
+    /// (FR-002a) or one incremental thinking delta (FR-002b). Same no-op-behind-`Some`
+    /// contract and no-double-forward caller responsibility as [`send_text`][Self::send_text].
     pub(crate) fn send_thinking(&self, text: &str) {
         if text.is_empty() {
             return;
@@ -382,16 +510,66 @@ async fn run_forward_drain_with(
     buffer: Arc<ForwardBuffer>,
     mut dispatch: impl FnMut(&SanitizedChunk, ForwardSurfaces, &ForwardBuffer),
 ) {
-    let mut next_seq: u64 = 0;
+    let mut pending = PendingSanitizeBuffers::default();
+    let mut emit_seq: u64 = 0;
 
     loop {
         if let Some(raw) = rx.recv().await {
-            next_seq = raw.seq + 1;
-            let is_terminal = matches!(raw.kind, ForwardChunkKind::Terminal(_));
-            let chunk = sanitize_chunk(raw, &layers);
-            dispatch(&chunk, surfaces, &buffer);
-            if is_terminal {
-                break;
+            match raw.kind {
+                ForwardChunkKind::Text(delta) => {
+                    pending.text.push_str(&delta);
+                    if let Some(kind) = try_flush_kind(
+                        &mut pending.text,
+                        SANITIZE_HOLDBACK_BYTES,
+                        def_name.as_ref(),
+                        &layers,
+                        SanitizedChunkKind::Text,
+                    ) {
+                        dispatch(
+                            &make_sanitized_chunk(&task_id, &def_name, emit_seq, kind),
+                            surfaces,
+                            &buffer,
+                        );
+                        emit_seq += 1;
+                    }
+                }
+                ForwardChunkKind::Thinking(delta) => {
+                    pending.thinking.push_str(&delta);
+                    if let Some(kind) = try_flush_kind(
+                        &mut pending.thinking,
+                        SANITIZE_HOLDBACK_BYTES,
+                        def_name.as_ref(),
+                        &layers,
+                        SanitizedChunkKind::Thinking,
+                    ) {
+                        dispatch(
+                            &make_sanitized_chunk(&task_id, &def_name, emit_seq, kind),
+                            surfaces,
+                            &buffer,
+                        );
+                        emit_seq += 1;
+                    }
+                }
+                ForwardChunkKind::Terminal(state) => {
+                    flush_all_pending(
+                        &mut pending,
+                        &task_id,
+                        &def_name,
+                        &layers,
+                        surfaces,
+                        &buffer,
+                        &mut dispatch,
+                        &mut emit_seq,
+                    );
+                    let chunk = make_sanitized_chunk(
+                        &task_id,
+                        &def_name,
+                        emit_seq,
+                        SanitizedChunkKind::Terminal(state),
+                    );
+                    dispatch(&chunk, surfaces, &buffer);
+                    break;
+                }
             }
         } else {
             tracing::warn!(
@@ -399,12 +577,22 @@ async fn run_forward_drain_with(
                 "subagent.forward.terminal: ingress channel closed without an explicit \
                  terminal chunk — synthesizing hard-abort backstop"
             );
-            let synthesized = SanitizedChunk {
-                task_id: Arc::clone(&task_id),
-                def_name: Arc::clone(&def_name),
-                seq: next_seq,
-                kind: SanitizedChunkKind::Terminal(SubAgentState::Canceled),
-            };
+            flush_all_pending(
+                &mut pending,
+                &task_id,
+                &def_name,
+                &layers,
+                surfaces,
+                &buffer,
+                &mut dispatch,
+                &mut emit_seq,
+            );
+            let synthesized = make_sanitized_chunk(
+                &task_id,
+                &def_name,
+                emit_seq,
+                SanitizedChunkKind::Terminal(SubAgentState::Canceled),
+            );
             dispatch(&synthesized, surfaces, &buffer);
             break;
         }
@@ -683,6 +871,196 @@ mod tests {
         assert!(
             !t.contains("victim@example.com"),
             "forwarded content must not contain the raw email address: {t}"
+        );
+    }
+
+    // --- Review Critical Issue #2: cross-delta secret/PII masking gap ---
+
+    fn collect_forwarded_text(chunks: &[SanitizedChunk]) -> String {
+        chunks
+            .iter()
+            .filter_map(|c| match &c.kind {
+                SanitizedChunkKind::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn secret_split_across_two_deltas_is_still_masked() {
+        // A secret whose bytes are split across two separate `send_text` calls — simulating
+        // two ToolSseEvent::ContentChunk deltas arriving back-to-back during FR-002b
+        // streaming — must still be masked once both fragments have been buffered. Neither
+        // fragment alone contains the full registered secret value, so per-delta-isolated
+        // sanitization (the pre-fix behavior) would have let it straight through.
+        use zeph_sanitizer::secret_mask::{SecretCategory, SecretMaskRegistry};
+
+        let secret_value = "sk-live-topsecretvalue123456789";
+        let registry = Arc::new(SecretMaskRegistry::new());
+        registry.register("MY_KEY", secret_value, SecretCategory::ApiKey);
+        let (first_half, second_half) = secret_value.split_at(secret_value.len() / 2);
+
+        let task_id: Arc<str> = Arc::from("task-split");
+        let def_name: Arc<str> = Arc::from("agent-split");
+        let (sender, rx) = new_channel(Arc::clone(&task_id), Arc::clone(&def_name));
+        let buffer = new_buffer();
+
+        sender.send_text(&format!("the key is {first_half}"));
+        sender.send_text(&format!("{second_half}, use it wisely"));
+        sender.send_terminal(SubAgentState::Completed);
+        drop(sender);
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<SanitizedChunk>::new()));
+        let collected = Arc::clone(&seen);
+        let layers = SanitizeLayers {
+            sanitizer: ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default()),
+            secret_registry: Some(registry),
+            pii_filter: None,
+        };
+        run_forward_drain_with(
+            task_id,
+            def_name,
+            rx,
+            layers,
+            ForwardSurfaces {
+                tui: true,
+                bare: false,
+            },
+            buffer,
+            move |chunk, surfaces, buffer| {
+                collected.lock().unwrap().push(chunk.clone());
+                dispatch_chunk(chunk, surfaces, buffer);
+            },
+        )
+        .await;
+
+        let combined = collect_forwarded_text(&seen.lock().unwrap());
+        assert!(
+            !combined.contains(secret_value),
+            "secret split across two forwarded deltas must still be masked: {combined}"
+        );
+        assert!(
+            combined.contains("<SECRET:api_key:"),
+            "masked placeholder must be present in the combined forwarded text: {combined}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn email_split_across_two_deltas_is_still_scrubbed() {
+        // Same cross-delta gap, PII side: an email address split across two `send_text`
+        // calls must still be scrubbed once both fragments are buffered together.
+        let email = "victim@example.com";
+        let (first_half, second_half) = email.split_at(email.len() / 2);
+
+        let task_id: Arc<str> = Arc::from("task-split-pii");
+        let def_name: Arc<str> = Arc::from("agent-split-pii");
+        let (sender, rx) = new_channel(Arc::clone(&task_id), Arc::clone(&def_name));
+        let buffer = new_buffer();
+
+        sender.send_text(&format!("contact me at {first_half}"));
+        sender.send_text(&format!("{second_half} for details"));
+        sender.send_terminal(SubAgentState::Completed);
+        drop(sender);
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<SanitizedChunk>::new()));
+        let collected = Arc::clone(&seen);
+        let layers = SanitizeLayers {
+            sanitizer: ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default()),
+            secret_registry: None,
+            pii_filter: Some(PiiFilter::new(PiiFilterConfig::default())),
+        };
+        run_forward_drain_with(
+            task_id,
+            def_name,
+            rx,
+            layers,
+            ForwardSurfaces {
+                tui: true,
+                bare: false,
+            },
+            buffer,
+            move |chunk, surfaces, buffer| {
+                collected.lock().unwrap().push(chunk.clone());
+                dispatch_chunk(chunk, surfaces, buffer);
+            },
+        )
+        .await;
+
+        let combined = collect_forwarded_text(&seen.lock().unwrap());
+        assert!(
+            !combined.contains(email),
+            "email split across two forwarded deltas must still be scrubbed: {combined}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn secret_split_across_progressive_flush_boundary_is_still_masked() {
+        // Stronger test of the holdback *window* itself (not just "buffer until terminal"):
+        // enough filler precedes the secret's two fragments to force at least one
+        // progressive flush mid-stream (SANITIZE_HOLDBACK_BYTES is well under the total
+        // filler size), proving flushing genuinely happens before the terminal event, yet
+        // the secret's fragments — arriving back-to-back right after the filler — must still
+        // land inside the held-back tail and be masked as one contiguous string once
+        // fully buffered.
+        use zeph_sanitizer::secret_mask::{SecretCategory, SecretMaskRegistry};
+
+        let secret_value = "sk-live-anothersecretvalue987654321";
+        let registry = Arc::new(SecretMaskRegistry::new());
+        registry.register("MY_KEY", secret_value, SecretCategory::ApiKey);
+        let (first_half, second_half) = secret_value.split_at(secret_value.len() / 2);
+
+        let task_id: Arc<str> = Arc::from("task-window");
+        let def_name: Arc<str> = Arc::from("agent-window");
+        let (sender, rx) = new_channel(Arc::clone(&task_id), Arc::clone(&def_name));
+        let buffer = new_buffer();
+
+        for i in 0..40 {
+            sender.send_text(&format!("filler-chunk-{i:03} "));
+        }
+        sender.send_text(first_half);
+        sender.send_text(second_half);
+        sender.send_terminal(SubAgentState::Completed);
+        drop(sender);
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<SanitizedChunk>::new()));
+        let collected = Arc::clone(&seen);
+        let layers = SanitizeLayers {
+            sanitizer: ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default()),
+            secret_registry: Some(registry),
+            pii_filter: None,
+        };
+        run_forward_drain_with(
+            task_id,
+            def_name,
+            rx,
+            layers,
+            ForwardSurfaces {
+                tui: true,
+                bare: false,
+            },
+            buffer,
+            move |chunk, surfaces, buffer| {
+                collected.lock().unwrap().push(chunk.clone());
+                dispatch_chunk(chunk, surfaces, buffer);
+            },
+        )
+        .await;
+
+        let seen = seen.lock().unwrap();
+        let text_chunk_count = seen
+            .iter()
+            .filter(|c| matches!(c.kind, SanitizedChunkKind::Text(_)))
+            .count();
+        assert!(
+            text_chunk_count > 1,
+            "filler well over the holdback window must have produced at least one \
+             progressive flush before the terminal-triggered final flush, got \
+             {text_chunk_count} text chunk(s)"
+        );
+        let combined = collect_forwarded_text(&seen);
+        assert!(
+            !combined.contains(secret_value),
+            "secret split across the streaming boundary must still be masked: {combined}"
         );
     }
 
