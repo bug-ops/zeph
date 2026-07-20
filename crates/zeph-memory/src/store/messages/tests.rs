@@ -256,6 +256,134 @@ async fn message_by_id_restores_fidelity_tag() {
     );
 }
 
+// ── trust_level restoration on reload (issue #6558 follow-up: the DB column already
+// persisted by save_message_with_provenance was previously never restored into
+// MessageMetadata::trust_level, silently losing the write-time memory-consent gate's
+// context tag across a session reload) ────────────────────────────────────────────
+
+#[tokio::test]
+async fn message_by_id_restores_trust_level() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let msg_id = store
+        .save_message_with_provenance(
+            cid,
+            "user",
+            "scraped content",
+            "[]",
+            MessageVisibility::Both,
+            Some("web_scrape"),
+            Some("external_untrusted"),
+        )
+        .await
+        .unwrap();
+
+    let msg = store.message_by_id(msg_id).await.unwrap().unwrap();
+    assert_eq!(
+        msg.metadata.trust_level,
+        Some(2),
+        "persisted external_untrusted must round-trip through message_by_id as ordinal 2"
+    );
+}
+
+#[tokio::test]
+async fn message_by_id_trust_level_none_when_not_recorded() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    let msg_id = store.save_message(cid, "user", "hello").await.unwrap();
+
+    let msg = store.message_by_id(msg_id).await.unwrap().unwrap();
+    assert_eq!(
+        msg.metadata.trust_level, None,
+        "a row with no persisted provenance must not be silently promoted to a trusted tag"
+    );
+}
+
+#[tokio::test]
+async fn load_history_restores_trust_level() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    store
+        .save_message_with_provenance(
+            cid,
+            "user",
+            "local tool output",
+            "[]",
+            MessageVisibility::Both,
+            Some("tool_result"),
+            Some("local_untrusted"),
+        )
+        .await
+        .unwrap();
+    store
+        .save_message(cid, "user", "plain message")
+        .await
+        .unwrap();
+
+    let history = store.load_history(cid, 50).await.unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(
+        history[0].metadata.trust_level,
+        Some(1),
+        "persisted local_untrusted must round-trip through load_history as ordinal 1"
+    );
+    assert_eq!(
+        history[1].metadata.trust_level, None,
+        "a plain save_message row has no provenance and must not gain a tag"
+    );
+}
+
+#[tokio::test]
+async fn load_history_filtered_restores_trust_level() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+    store
+        .save_message_with_provenance(
+            cid,
+            "user",
+            "scraped content",
+            "[]",
+            MessageVisibility::Both,
+            Some("web_scrape"),
+            Some("external_untrusted"),
+        )
+        .await
+        .unwrap();
+
+    let history = store
+        .load_history_filtered(cid, 50, None, None)
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(
+        history[0].metadata.trust_level,
+        Some(2),
+        "persisted external_untrusted must round-trip through load_history_filtered"
+    );
+}
+
+#[test]
+fn parse_persisted_trust_level_round_trips_known_values() {
+    assert_eq!(parse_persisted_trust_level(None), None);
+    assert_eq!(parse_persisted_trust_level(Some("trusted")), Some(0));
+    assert_eq!(
+        parse_persisted_trust_level(Some("local_untrusted")),
+        Some(1)
+    );
+    assert_eq!(
+        parse_persisted_trust_level(Some("external_untrusted")),
+        Some(2)
+    );
+}
+
+/// Unrecognized non-NULL values (schema drift, manual tampering) must fail safe to the most
+/// conservative tier rather than being silently discarded as "no tag" (which would read as
+/// Trusted downstream in `context_max_trust_level`).
+#[test]
+fn parse_persisted_trust_level_unrecognized_value_fails_safe_to_external_untrusted() {
+    assert_eq!(parse_persisted_trust_level(Some("garbled")), Some(2));
+}
+
 #[tokio::test]
 async fn unembedded_message_ids_returns_all_when_none_embedded() {
     let store = test_store().await;
@@ -581,7 +709,7 @@ async fn replace_conversation_marks_originals_and_inserts_summary() {
     let id3 = store.save_message(cid, "user", "third").await.unwrap();
 
     let summary_id = store
-        .replace_conversation(cid, id1..=id2, "system", "summary text")
+        .replace_conversation(cid, id1..=id2, "system", "summary text", None)
         .await
         .unwrap();
 
@@ -1510,6 +1638,7 @@ async fn apply_tool_pair_summaries_hides_pairs_and_inserts_summary() {
             cid,
             &[tool_use_id.0, tool_result_id.0],
             &["saved fact".to_string()],
+            &[None],
         )
         .await
         .unwrap();
@@ -1550,7 +1679,7 @@ async fn apply_tool_pair_summaries_chunks_beyond_max_batch() {
         .collect();
 
     store
-        .apply_tool_pair_summaries(cid, &ids, &["batched summary".to_string()])
+        .apply_tool_pair_summaries(cid, &ids, &["batched summary".to_string()], &[None])
         .await
         .unwrap();
 
@@ -1582,7 +1711,7 @@ async fn apply_tool_pair_summaries_parts_deserialize_as_summary_variant() {
     let cid = store.create_conversation().await.unwrap();
 
     store
-        .apply_tool_pair_summaries(cid, &[], &["compressed tool output".to_string()])
+        .apply_tool_pair_summaries(cid, &[], &["compressed tool output".to_string()], &[None])
         .await
         .unwrap();
 

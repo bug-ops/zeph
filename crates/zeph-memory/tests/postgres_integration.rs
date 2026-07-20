@@ -587,7 +587,7 @@ mod pg {
         .unwrap();
 
         store
-            .replace_conversation(cid, m1..=m2, "assistant", "compacted summary")
+            .replace_conversation(cid, m1..=m2, "assistant", "compacted summary", None)
             .await
             .unwrap();
 
@@ -635,6 +635,7 @@ mod pg {
                 cid,
                 &[tool_use.0, tool_result.0],
                 &["[tool summary] did the thing".to_string()],
+                &[None],
             )
             .await
             .unwrap();

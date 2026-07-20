@@ -341,6 +341,7 @@ impl CompactionPersistence for AgentPersistence {
         compacted_count: usize,
         summary_content: &'a str,
         summary: &'a str,
+        compacted_trust_level: Option<u8>,
     ) -> Pin<Box<dyn std::future::Future<Output = (bool, Option<QdrantPersistFuture>)> + Send + 'a>>
     {
         Box::pin(async move {
@@ -358,7 +359,13 @@ impl CompactionPersistence for AgentPersistence {
                     let start = ids[1];
                     let end = ids[compacted_count.min(ids.len() - 1)];
                     if let Err(e) = sqlite
-                        .replace_conversation(cid, start..=end, "system", summary_content)
+                        .replace_conversation(
+                            cid,
+                            start..=end,
+                            "system",
+                            summary_content,
+                            compacted_trust_level,
+                        )
                         .await
                     {
                         tracing::warn!("failed to persist compaction in sqlite: {e:#}");

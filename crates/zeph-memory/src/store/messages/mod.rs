@@ -40,6 +40,59 @@ fn parse_role(s: &str) -> Role {
     }
 }
 
+/// Row shape shared by `load_history` and `load_history_filtered`: `(role, content, parts_json,
+/// visibility, id, fidelity_tag, trust_level)`. Factored out to satisfy
+/// `clippy::type_complexity` — the two call sites are otherwise identical `SELECT`s over the
+/// same columns.
+type HistoryRow = (String, String, String, String, i64, i32, Option<String>);
+
+/// Parse the persisted `trust_level` column (issue #6490's provenance string, written by
+/// [`SqliteStore::save_message_with_provenance`]) into the raw `u8` ordinal
+/// [`MessageMetadata::trust_level`] expects, restoring the write-time memory-consent gate's
+/// context tag across a session reload (issue #6558 — closes the residual "process
+/// restart/reattach" TOCTOU window the in-memory-only tag alone cannot cover).
+///
+/// Mirrors `zeph_sanitizer::ContentTrustLevel::from_str_opt`'s string mapping without
+/// depending on `zeph-sanitizer` (see [`SqliteStore::save_message_with_provenance`]'s doc
+/// comment — the dependency would cycle). `NULL` (legacy rows written before #6544, or writers that
+/// never set provenance) means "not recorded" and must stay `None` — never silently promoted
+/// to `Trusted`, since `Agent::context_max_trust_level`'s `filter_map` already skips `None`
+/// entirely rather than treating it as a trusted `Some(0)`. Any other, unrecognized non-`NULL`
+/// value (schema drift, manual tampering) is treated as the most conservative tier rather than
+/// discarded, matching `zeph_core::memory_tools::parse_consent_trust_level`'s fail-safe
+/// convention.
+fn parse_persisted_trust_level(s: Option<&str>) -> Option<u8> {
+    match s {
+        None => None,
+        Some("trusted") => Some(0),
+        Some("local_untrusted") => Some(1),
+        Some("external_untrusted") => Some(2),
+        Some(other) => {
+            tracing::warn!(
+                value = other,
+                "unrecognized persisted trust_level, treating as external_untrusted"
+            );
+            Some(2)
+        }
+    }
+}
+
+/// Inverse of [`parse_persisted_trust_level`]: encode a raw `u8` ordinal (as carried by
+/// `MessageMetadata::trust_level`) into the `trust_level` column's string form for INSERT
+/// binds. `None` persists as `NULL` ("provenance not recorded" — see
+/// [`SqliteStore::save_message_with_provenance`]'s doc comment). Any ordinal `>= 2` maps to
+/// `"external_untrusted"` (the most conservative tier) rather than panicking or silently
+/// dropping — defensive against a future `ContentTrustLevel` variant this crate does not know
+/// about, matching `zeph_sanitizer::ContentTrustLevel::from_ordinal`'s own clamping behavior.
+fn trust_level_ordinal_to_str(ordinal: Option<u8>) -> Option<&'static str> {
+    match ordinal {
+        None => None,
+        Some(0) => Some("trusted"),
+        Some(1) => Some("local_untrusted"),
+        Some(_) => Some("external_untrusted"),
+    }
+}
+
 #[must_use]
 pub fn role_str(role: Role) -> &'static str {
     match role {
@@ -333,25 +386,33 @@ impl SqliteStore {
         let parts_select = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("parts");
         let raw = format!(
             "SELECT role, content, {parts_select} AS parts, visibility, id, \
-                    CAST(fidelity_tag AS INTEGER) AS fidelity_tag FROM (\
-                SELECT role, content, parts, visibility, id, fidelity_tag FROM messages \
+                    CAST(fidelity_tag AS INTEGER) AS fidelity_tag, trust_level FROM (\
+                SELECT role, content, parts, visibility, id, fidelity_tag, trust_level \
+                FROM messages \
                 WHERE conversation_id = ? AND deleted_at IS NULL \
                 ORDER BY id DESC \
                 LIMIT ?\
              ) ORDER BY id ASC"
         );
         let sql = zeph_db::rewrite_placeholders(&raw);
-        let rows: Vec<(String, String, String, String, i64, i32)> =
-            zeph_db::query_as(sqlx::AssertSqlSafe(sql))
-                .bind(conversation_id)
-                .bind(i64::from(limit))
-                .fetch_all(&self.pool)
-                .await?;
+        let rows: Vec<HistoryRow> = zeph_db::query_as(sqlx::AssertSqlSafe(sql))
+            .bind(conversation_id)
+            .bind(i64::from(limit))
+            .fetch_all(&self.pool)
+            .await?;
 
         let messages = rows
             .into_iter()
             .map(
-                |(role_str, content, parts_json, visibility_str, row_id, fidelity_raw)| {
+                |(
+                    role_str,
+                    content,
+                    parts_json,
+                    visibility_str,
+                    row_id,
+                    fidelity_raw,
+                    trust_level_str,
+                )| {
                     let parts = parse_parts_json(&role_str, &parts_json);
                     Message {
                         role: parse_role(&role_str),
@@ -372,6 +433,7 @@ impl SqliteStore {
                                     .map(ContextFidelity::from_u8)
                             },
                             embedding: None,
+                            trust_level: parse_persisted_trust_level(trust_level_str.as_deref()),
                         },
                     }
                 },
@@ -409,7 +471,8 @@ impl SqliteStore {
         let parts_select = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("parts");
         let raw = format!(
             "WITH recent AS (\
-                SELECT role, content, parts, visibility, id, fidelity_tag FROM messages \
+                SELECT role, content, parts, visibility, id, fidelity_tag, trust_level \
+                FROM messages \
                 WHERE conversation_id = ? \
                   AND deleted_at IS NULL \
                   AND (NOT ? OR visibility != 'user_only') \
@@ -417,22 +480,30 @@ impl SqliteStore {
                 ORDER BY id DESC \
                 LIMIT ?\
              ) SELECT role, content, {parts_select} AS parts, visibility, id, \
-                      CAST(fidelity_tag AS INTEGER) AS fidelity_tag FROM recent ORDER BY id ASC"
+                      CAST(fidelity_tag AS INTEGER) AS fidelity_tag, trust_level \
+                      FROM recent ORDER BY id ASC"
         );
         let sql = zeph_db::rewrite_placeholders(&raw);
-        let rows: Vec<(String, String, String, String, i64, i32)> =
-            zeph_db::query_as(sqlx::AssertSqlSafe(sql))
-                .bind(conversation_id)
-                .bind(exclude_user_only)
-                .bind(exclude_agent_only)
-                .bind(i64::from(limit))
-                .fetch_all(&self.pool)
-                .await?;
+        let rows: Vec<HistoryRow> = zeph_db::query_as(sqlx::AssertSqlSafe(sql))
+            .bind(conversation_id)
+            .bind(exclude_user_only)
+            .bind(exclude_agent_only)
+            .bind(i64::from(limit))
+            .fetch_all(&self.pool)
+            .await?;
 
         let messages = rows
             .into_iter()
             .map(
-                |(role_str, content, parts_json, visibility_str, row_id, fidelity_raw)| {
+                |(
+                    role_str,
+                    content,
+                    parts_json,
+                    visibility_str,
+                    row_id,
+                    fidelity_raw,
+                    trust_level_str,
+                )| {
                     let parts = parse_parts_json(&role_str, &parts_json);
                     Message {
                         role: parse_role(&role_str),
@@ -453,6 +524,7 @@ impl SqliteStore {
                                     .map(ContextFidelity::from_u8)
                             },
                             embedding: None,
+                            trust_level: parse_persisted_trust_level(trust_level_str.as_deref()),
                         },
                     }
                 },
@@ -518,12 +590,17 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the transaction fails.
+    /// `trust_level` is the worst-case `MessageMetadata::trust_level` across the compacted-away
+    /// messages (issue #6558 follow-up, S3) — persisted on the summary row so the memory-consent
+    /// gate's context tag survives a session reload, matching provenance rows written by
+    /// [`Self::save_message_with_provenance`]. `None` when no compacted message was tagged.
     pub async fn replace_conversation(
         &self,
         conversation_id: ConversationId,
         compacted_range: std::ops::RangeInclusive<MessageId>,
         summary_role: &str,
         summary_content: &str,
+        trust_level: Option<u8>,
     ) -> Result<MessageId, MemoryError> {
         let now = {
             let secs = std::time::SystemTime::now()
@@ -553,12 +630,13 @@ impl SqliteStore {
         // importance_score uses schema DEFAULT 0.5 (neutral); compaction summaries are not scored at write time.
         let row: (MessageId,) = zeph_db::query_as(sql!(
             "INSERT INTO messages \
-             (conversation_id, role, content, parts, visibility) \
-             VALUES (?, ?, ?, '[]', 'agent_only') RETURNING id"
+             (conversation_id, role, content, parts, visibility, trust_level) \
+             VALUES (?, ?, ?, '[]', 'agent_only', ?) RETURNING id"
         ))
         .bind(conversation_id)
         .bind(summary_role)
         .bind(summary_content)
+        .bind(trust_level_ordinal_to_str(trust_level))
         .fetch_one(&mut *tx)
         .await?;
 
@@ -576,11 +654,17 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the transaction fails.
+    /// `trust_levels[i]` is the worst-case `MessageMetadata::trust_level` of the tool pair
+    /// `summaries[i]` replaces (issue #6558 follow-up, S3) — persisted on each summary row so
+    /// the memory-consent gate's context tag survives a session reload. A missing or `None`
+    /// entry (index out of range, or explicit `None`) persists as `NULL`, matching an
+    /// untagged/trusted pair.
     pub async fn apply_tool_pair_summaries(
         &self,
         conversation_id: ConversationId,
         hide_ids: &[i64],
         summaries: &[String],
+        trust_levels: &[Option<u8>],
     ) -> Result<(), MemoryError> {
         if hide_ids.is_empty() && summaries.is_empty() {
             return Ok(());
@@ -608,22 +692,24 @@ impl SqliteStore {
             q.execute(&mut *tx).await?;
         }
 
-        for summary in summaries {
+        for (i, summary) in summaries.iter().enumerate() {
             let content = format!("[tool summary] {summary}");
             let parts = serde_json::to_string(&[MessagePart::Summary {
                 text: summary.clone(),
             }])
             .unwrap_or_else(|_| "[]".to_string());
+            let trust_level = trust_levels.get(i).copied().flatten();
             let json_cast = <ActiveDialect as zeph_db::dialect::Dialect>::JSON_CAST;
             let insert_sql = zeph_db::rewrite_placeholders(&format!(
                 "INSERT INTO messages \
-                 (conversation_id, role, content, parts, visibility) \
-                 VALUES (?, 'assistant', ?, ?{json_cast}, 'agent_only')"
+                 (conversation_id, role, content, parts, visibility, trust_level) \
+                 VALUES (?, 'assistant', ?, ?{json_cast}, 'agent_only', ?)"
             ));
             zeph_db::query(sqlx::AssertSqlSafe(insert_sql))
                 .bind(conversation_id)
                 .bind(&content)
                 .bind(&parts)
+                .bind(trust_level_ordinal_to_str(trust_level))
                 .execute(&mut *tx)
                 .await?;
         }
@@ -682,17 +768,17 @@ impl SqliteStore {
         let parts_select = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("parts");
         let sql = zeph_db::rewrite_placeholders(&format!(
             "SELECT role, content, {parts_select} AS parts, visibility, \
-                    CAST(fidelity_tag AS INTEGER) AS fidelity_tag FROM messages \
+                    CAST(fidelity_tag AS INTEGER) AS fidelity_tag, trust_level FROM messages \
              WHERE id = ? AND deleted_at IS NULL"
         ));
-        let row: Option<(String, String, String, String, i32)> =
+        let row: Option<(String, String, String, String, i32, Option<String>)> =
             zeph_db::query_as(sqlx::AssertSqlSafe(sql))
                 .bind(message_id)
                 .fetch_optional(&self.pool)
                 .await?;
 
         Ok(row.map(
-            |(role_str, content, parts_json, visibility_str, fidelity_raw)| {
+            |(role_str, content, parts_json, visibility_str, fidelity_raw, trust_level_str)| {
                 let parts = parse_parts_json(&role_str, &parts_json);
                 Message {
                     role: parse_role(&role_str),
@@ -713,6 +799,7 @@ impl SqliteStore {
                                 .map(ContextFidelity::from_u8)
                         },
                         embedding: None,
+                        trust_level: parse_persisted_trust_level(trust_level_str.as_deref()),
                     },
                 }
             },

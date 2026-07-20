@@ -156,6 +156,7 @@ impl<C: Channel> Agent<C> {
             messages: &mut self.msg.messages,
             deferred_db_hide_ids: &mut self.msg.deferred_db_hide_ids,
             deferred_db_summaries: &mut self.msg.deferred_db_summaries,
+            deferred_db_trust_levels: &mut self.msg.deferred_db_trust_levels,
             cached_prompt_tokens: &mut self.runtime.providers.cached_prompt_tokens,
             context_manager: &mut self.context_manager,
             server_compaction_active: self.runtime.providers.server_compaction_active,
@@ -579,8 +580,11 @@ impl<C: Channel> Agent<C> {
 
         self.services.security.user_provided_urls.write().clear();
         self.services.security.flagged_urls.clear();
-        // Issue #6490 (MemGhost): reset the turn-scoped memory-consent trust tracker, matching
-        // begin_turn's per-turn reset — see agent/mod.rs.
+        // Issue #6490 (MemGhost): reset the memory-consent trust tracker, matching begin_turn's
+        // reset (agent/mod.rs). Unlike begin_turn, this one IS the authoritative correctness
+        // point for the messages just cleared above — `self.msg.messages` is now empty, so
+        // `context_max_trust_level` (see #6558's fix, `sanitize.rs`) has nothing to find and
+        // will not resurrect this value on the next tool dispatch.
         *self.services.security.memory_consent_trust.write() = 0;
 
         self.context_manager.reset_compaction();
@@ -591,6 +595,7 @@ impl<C: Channel> Agent<C> {
         self.msg.last_persisted_message_id = None;
         self.msg.deferred_db_hide_ids.clear();
         self.msg.deferred_db_summaries.clear();
+        self.msg.deferred_db_trust_levels.clear();
         self.services.tool_state.cached_filtered_tool_ids = None;
         self.runtime.providers.cached_prompt_tokens = 0;
 

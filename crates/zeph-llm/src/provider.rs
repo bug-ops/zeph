@@ -526,6 +526,18 @@ pub struct MessageMetadata {
     /// In-memory only — not serialized or persisted to the database.
     #[serde(skip)]
     pub embedding: Option<Vec<f32>>,
+    /// Write-time memory-consent gate content-trust tier (issue #6490 `MemGhost`, #6558 fix).
+    ///
+    /// Raw `u8` discriminant of `zeph_sanitizer::ContentTrustLevel` (kept as a plain integer
+    /// here, not the enum itself, since `zeph-llm` does not depend on `zeph-sanitizer` — mirrors
+    /// `zeph_core::memory_tools::MemoryConsentTrustSlot`'s same representation choice). Set on
+    /// tool-result batch messages by `Agent::process_tool_result_batch` to the batch's
+    /// worst-case trust tier. Scanned by `Agent::context_max_trust_level` so untrusted content
+    /// is still recognized by the memory-consent gate for as long as it remains in the live
+    /// conversation context — including across a user-turn boundary — rather than only for the
+    /// single turn in which it was fetched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_level: Option<u8>,
 }
 
 impl Default for MessageMetadata {
@@ -539,6 +551,7 @@ impl Default for MessageMetadata {
             db_id: None,
             fidelity_tag: None,
             embedding: None,
+            trust_level: None,
         }
     }
 }
@@ -556,6 +569,7 @@ impl MessageMetadata {
             db_id: None,
             fidelity_tag: None,
             embedding: None,
+            trust_level: None,
         }
     }
 
@@ -571,6 +585,7 @@ impl MessageMetadata {
             db_id: None,
             fidelity_tag: None,
             embedding: None,
+            trust_level: None,
         }
     }
 
@@ -586,6 +601,7 @@ impl MessageMetadata {
             db_id: None,
             fidelity_tag: None,
             embedding: None,
+            trust_level: None,
         }
     }
 }

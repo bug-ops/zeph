@@ -15,13 +15,31 @@ use zeph_tools::{CheckpointActionResult, CheckpointListResult};
 use zeph_sanitizer::ContentTrustLevel;
 use zeph_sanitizer::memory_validation::MemoryWriteValidator;
 
-/// Shared turn-scoped maximum content-trust-tier slot (issue #6490, `MemGhost`).
+/// Shared maximum content-trust-tier slot (issue #6490, `MemGhost`; TOCTOU-hardened by
+/// #6558/#6569).
 ///
-/// Stores the `u8` discriminant of [`ContentTrustLevel`]. `Agent::sanitize_tool_output`
-/// ratchets this up (never down) as tool output is sanitized during a turn, and resets it to
-/// `0` (`Trusted`) at turn boundaries (`process_response`, `/clear`). `MemoryToolExecutor`
-/// reads it to decide whether the interactive `memory_save` tool call needs user confirmation
-/// before content derived from this turn's untrusted tool output is persisted.
+/// Stores the `u8` discriminant of [`ContentTrustLevel`]. `MemoryToolExecutor` reads it to
+/// decide whether the interactive `memory_save` tool call needs user confirmation before
+/// content derived from untrusted tool output is persisted.
+///
+/// Three writers keep this correct despite `MemoryToolExecutor` having no access to `Agent`'s
+/// message history (the `ToolExecutor` trait is deliberately object-safe, with no `&Agent`
+/// parameter — see `execute_tool_call_erased`):
+/// - `Agent::ratchet_memory_consent_trust_for_dispatch` (`agent/tool_execution/sanitize.rs`) —
+///   the authoritative writer. Runs at the top of `handle_native_tool_calls`, BEFORE any tool
+///   call in the batch (including `memory_save` itself) starts executing, combining (a) the
+///   worst-case trust tier the batch's tool names could introduce and (b) whatever untrusted
+///   content is still tagged on a message in the live conversation context. Closes the
+///   same-tier/cross-tier parallel-dispatch race (#6569: previously the slot was only updated
+///   *after* `join_all` on the whole batch had already resolved) and the cross-turn deferral
+///   bypass (#6558: previously a hard reset every turn discarded trust for content that was
+///   still sitting in context, not yet compacted away).
+/// - `Agent::sanitize_tool_output` — still ratchets up as each tool's output is classified,
+///   as a defense-in-depth duplicate of (a) above (a no-op in practice since both derive the
+///   same trust tier from the same tool name).
+/// - `begin_turn`/`/clear` reset it to `0` as a floor; this is safe (not a re-introduction of
+///   #6558) only because `ratchet_memory_consent_trust_for_dispatch` unconditionally recomputes
+///   the correct value from live context before any subsequent tool dispatch.
 pub type MemoryConsentTrustSlot = Arc<RwLock<u8>>;
 
 /// Write-time consent-gate parameters attached via [`MemoryToolExecutor::with_consent_gate`].
@@ -173,8 +191,25 @@ impl MemoryToolExecutor {
         self
     }
 
-    /// Current turn-scoped maximum trust tier, or [`ContentTrustLevel::Trusted`] when no
-    /// consent gate is attached (gate disabled).
+    /// Current maximum trust tier for the gate check, or [`ContentTrustLevel::Trusted`] when
+    /// no consent gate is attached (gate disabled).
+    ///
+    /// Since #6558/#6569's fix, this reads a slot that reflects both the current dispatch
+    /// batch AND any untrusted content still tagged in the live conversation context (see
+    /// `Agent::ratchet_memory_consent_trust_for_dispatch`, `agent/tool_execution/sanitize.rs`)
+    /// — not just "this turn's own tool output" as before.
+    ///
+    /// Intentional scope broadening (not an oversight): `memory_search` classifies as
+    /// `ExternalUntrusted` (`MemoryRetrieval` source) and its retrieval result is tagged and
+    /// persists in context like any other untrusted tool output. In a memory-enabled agent
+    /// that calls `memory_search` frequently, this means most `memory_save` calls will require
+    /// confirmation for as long as a `memory_search` result remains in the context window —
+    /// a broader gate footprint than the original per-turn design. This is the fail-safe
+    /// direction (more confirmations, never fewer) and is a deliberate tradeoff of closing
+    /// #6558/#6569's TOCTOU windows, not a bug. If this UX shift proves too aggressive in
+    /// practice, the fix is to exclude `memory_search` from `build_tool_output_source`'s
+    /// context-tagging path specifically (`agent/tool_execution/sanitize.rs`) — not to weaken
+    /// the gate check here.
     fn current_trust_level(&self) -> ContentTrustLevel {
         self.consent_gate
             .as_ref()

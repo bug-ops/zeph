@@ -372,6 +372,7 @@ impl<C: Channel> Agent<C> {
                 last_persisted_message_id: None,
                 deferred_db_hide_ids: Vec::new(),
                 deferred_db_summaries: Vec::new(),
+                deferred_db_trust_levels: Vec::new(),
                 history_preloaded: false,
                 history_cursor: 0,
                 non_system_count: 0,
@@ -1003,9 +1004,14 @@ impl<C: Channel> Agent<C> {
         // keep agent-wide token in sync with per-turn token — TODO(#3498): consolidate in Phase 2
         self.runtime.lifecycle.cancel_token = cancel_token.clone();
         self.services.security.user_provided_urls.write().clear();
-        // Issue #6490 (MemGhost): reset the turn-scoped memory-consent trust tracker so trust
-        // from a prior turn's untrusted tool output does not leak into this turn's memory_save
-        // gate decision — see sanitize_tool_output's ratchet-up and MemoryToolExecutor's read.
+        // Issue #6490 (MemGhost): reset the memory-consent trust tracker to a floor of 0 here.
+        // This reset ALONE is not sufficient for correctness (see #6558) — if untrusted tool
+        // output from a prior turn is still present in `self.msg.messages`, it must still gate
+        // `memory_save`. The authoritative recompute happens in
+        // `Agent::ratchet_memory_consent_trust_for_dispatch`, called at the top of
+        // `handle_native_tool_calls` before any tool dispatch, which rebuilds the slot from
+        // live context (`context_max_trust_level`) plus this batch's tool-name trust tiers —
+        // see `MemoryConsentTrustSlot`'s doc comment for the full picture.
         *self.services.security.memory_consent_trust.write() = 0;
         // Reset per-turn LLM request counter for the notification gate.
         self.runtime.lifecycle.turn_llm_requests = 0;

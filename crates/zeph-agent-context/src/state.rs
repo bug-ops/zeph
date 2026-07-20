@@ -306,6 +306,11 @@ pub struct ContextSummarizationView<'a> {
     pub deferred_db_hide_ids: &'a mut Vec<i64>,
     /// Summary strings paired with the hide IDs above — flushed to `SQLite` as a batch.
     pub deferred_db_summaries: &'a mut Vec<String>,
+    /// Worst-case `MessageMetadata::trust_level` of the summarized tool-pair, one entry per
+    /// `deferred_db_summaries` element at the same index (issue #6558 follow-up, S3) — carries
+    /// the memory-consent gate's context tag through to the persisted summary row so it
+    /// survives a session reload, not just the in-memory summary message.
+    pub deferred_db_trust_levels: &'a mut Vec<Option<u8>>,
     /// Running token count for the current prompt window. Updated after every mutation
     /// that changes message content.
     pub cached_prompt_tokens: &'a mut u64,
@@ -650,11 +655,17 @@ pub trait ToolOutputArchive: Send + Sync {
 ///   back to the caller via [`CompactionOutcome::Compacted::qdrant_future`].
 pub trait CompactionPersistence: Send + Sync {
     /// Persist the compaction result and return the Qdrant write future.
+    ///
+    /// `compacted_trust_level` is the worst-case `MessageMetadata::trust_level` across the
+    /// compacted-away messages (issue #6558 follow-up, S3) — implementors must persist it
+    /// alongside the summary row so the memory-consent gate's context tag survives a session
+    /// reload, not just the in-memory summary message.
     fn after_compaction<'a>(
         &'a self,
         compacted_count: usize,
         summary_content: &'a str,
         summary: &'a str,
+        compacted_trust_level: Option<u8>,
     ) -> Pin<Box<dyn Future<Output = (bool, Option<QdrantPersistFuture>)> + Send + 'a>>;
 }
 

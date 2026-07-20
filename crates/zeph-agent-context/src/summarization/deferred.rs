@@ -222,6 +222,15 @@ pub(crate) fn apply_deferred_summaries(summ: &mut ContextSummarizationView<'_>) 
     for (resp_idx, req_idx, summary) in targets {
         let req_db_id = summ.messages[req_idx].metadata.db_id;
         let resp_db_id = summ.messages[resp_idx].metadata.db_id;
+        // Issue #6558 follow-up (S3): capture the summarized pair's worst-case trust tag
+        // before it's replaced by the summary message below, so both the in-memory summary
+        // AND (via deferred_db_trust_levels) the persisted summary row carry it forward. The
+        // ToolUse request (req_idx) is always assistant-generated and never tagged in
+        // practice, but max()-ing both is defensive against future ToolUse tagging.
+        let trust_level = summ.messages[req_idx]
+            .metadata
+            .trust_level
+            .max(summ.messages[resp_idx].metadata.trust_level);
 
         summ.messages[req_idx].metadata.visibility =
             zeph_llm::provider::MessageVisibility::UserOnly;
@@ -233,6 +242,7 @@ pub(crate) fn apply_deferred_summaries(summ: &mut ContextSummarizationView<'_>) 
             summ.deferred_db_hide_ids.push(req_id);
             summ.deferred_db_hide_ids.push(resp_id);
             summ.deferred_db_summaries.push(summary.clone());
+            summ.deferred_db_trust_levels.push(trust_level);
         }
 
         let content = format!("[tool summary] {summary}");
@@ -240,7 +250,10 @@ pub(crate) fn apply_deferred_summaries(summ: &mut ContextSummarizationView<'_>) 
             role: Role::Assistant,
             content,
             parts: vec![MessagePart::Summary { text: summary }],
-            metadata: MessageMetadata::agent_only(),
+            metadata: MessageMetadata {
+                trust_level,
+                ..MessageMetadata::agent_only()
+            },
         };
         summ.messages.insert(resp_idx + 1, summary_msg);
     }
@@ -278,13 +291,15 @@ pub(crate) async fn flush_deferred_summaries(
     let (Some(memory), Some(cid)) = (summ.memory.as_deref(), summ.conversation_id) else {
         summ.deferred_db_hide_ids.clear();
         summ.deferred_db_summaries.clear();
+        summ.deferred_db_trust_levels.clear();
         return Ok(());
     };
     let hide_ids = std::mem::take(summ.deferred_db_hide_ids);
     let summaries = std::mem::take(summ.deferred_db_summaries);
+    let trust_levels = std::mem::take(summ.deferred_db_trust_levels);
     if let Err(e) = memory
         .sqlite()
-        .apply_tool_pair_summaries(cid, &hide_ids, &summaries)
+        .apply_tool_pair_summaries(cid, &hide_ids, &summaries, &trust_levels)
         .await
     {
         tracing::warn!(error = %e, "failed to flush deferred summary batch to DB");

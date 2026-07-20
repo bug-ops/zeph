@@ -377,6 +377,15 @@ impl<C: Channel> Agent<C> {
     ) -> Result<bool, crate::agent::error::AgentError> {
         let t_tool_exec = std::time::Instant::now();
         tracing::debug!("turn timing: tool_exec start");
+
+        // Issues #6558/#6569 (write-time memory-consent gate TOCTOU): ratchet the shared
+        // trust slot to this batch's worst case BEFORE any tool call below — including
+        // `memory_save` itself — starts executing. Must run ahead of tier dispatch, not
+        // merely ahead of `memory_save`'s own future, since tier calls execute concurrently
+        // via `join_all` and `MemoryToolExecutor` cannot observe `self.msg` to check for
+        // itself. See `ratchet_memory_consent_trust_for_dispatch`'s doc comment.
+        self.ratchet_memory_consent_trust_for_dispatch(tool_calls);
+
         // Scan for image-exfiltration in accompanying text, send to channel, persist
         // the assistant ToolUse message.
         self.push_assistant_tool_use_message(text, tool_calls)
@@ -1964,7 +1973,13 @@ impl<C: Channel> Agent<C> {
         // Acon: compress tool results before they enter message history (#4021).
         self.apply_acon_compression(tool_calls, &mut result_parts);
 
-        let user_msg = Message::from_parts(Role::User, result_parts);
+        let mut user_msg = Message::from_parts(Role::User, result_parts);
+        // Issue #6558: tag the in-memory message with its write-time provenance so
+        // `Agent::context_max_trust_level` can still recognize this batch's untrusted content
+        // as long as the message remains in `self.msg.messages` — including across a user-turn
+        // boundary, unlike the turn-scoped slot reset alone. Mirrors the SQLite-side provenance
+        // tagging below, at the same per-batch granularity.
+        user_msg.metadata.trust_level = Some(batch_trust_level as u8);
         // flagged_urls accumulates across ALL tools in this batch (cross-tool trust boundary).
         // A URL from tool N's output can flag tool M's arguments even if tool M returned clean
         // output. has_any_injection_flags covers pure text injections (no URL); flagged_urls

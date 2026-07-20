@@ -81,6 +81,31 @@ fn split_bash_echo_prefix<'a>(body: &'a str, tool_name: &str) -> (&'a str, &'a s
     }
 }
 
+/// Worst-case content-trust tier a batch of about-to-be-dispatched tool calls could
+/// introduce, computed purely from `tool_name` — no execution needed.
+///
+/// `build_tool_output_source(name).trust_level` never varies with a tool's actual output,
+/// only with its name (see `sanitize_tool_output`, which computes `trust_level` from the
+/// source before any sanitization happens), so this precomputation is exact, not merely a
+/// conservative upper bound. Used to ratchet the write-time memory-consent gate slot BEFORE
+/// tier dispatch starts (issue #6569: same-tier/cross-tier parallel-dispatch TOCTOU race).
+///
+/// `memory_save` itself is excluded: a `memory_save` call's own (not-yet-produced) result is
+/// always trusted `ToolResult`-tier content and must never gate itself — only *other* tool
+/// calls dispatched in the same batch (e.g. `web_scrape`, `memory_search`) contribute here.
+/// Without this exclusion, a lone `memory_save` call would spuriously require confirmation
+/// whenever `confirm_threshold` is configured at or below `local_untrusted`.
+fn batch_dispatch_trust_level(
+    tool_calls: &[zeph_llm::provider::ToolUseRequest],
+) -> zeph_sanitizer::ContentTrustLevel {
+    tool_calls
+        .iter()
+        .filter(|tc| tc.name.as_str() != "memory_save")
+        .map(|tc| build_tool_output_source(tc.name.as_str()).trust_level)
+        .max()
+        .unwrap_or(zeph_sanitizer::ContentTrustLevel::Trusted)
+}
+
 /// Build the `ContentSource` that describes a tool's trust level for the sanitizer.
 fn build_tool_output_source(tool_name: &str) -> ContentSource {
     if tool_name.contains(':') || tool_name == "mcp" {
@@ -199,6 +224,60 @@ impl<C: Channel> Agent<C> {
         let body = self.apply_guardrail_to_tool_output(body, tool_name).await;
 
         (body, has_injection_flags, trust_level)
+    }
+
+    /// Maximum content-trust tier tagged on any message still present in the live
+    /// conversation context (issue #6558: cross-turn memory-consent-gate deferral bypass).
+    ///
+    /// Scans `self.msg.messages` for the trust tag `process_tool_result_batch` writes onto
+    /// each tool-result batch message (`MessageMetadata::trust_level`, set to the batch's
+    /// worst-case trust tier). Unlike the turn-scoped ratchet-and-reset slot alone, this
+    /// reflects untrusted content for as long as it remains in the model's context — including
+    /// across a user-turn boundary — and only stops once `/clear` wipes `self.msg.messages`, or
+    /// the tagged message is fully evicted by hard compaction/token-budget trimming (pruning
+    /// alone does NOT clear it — pruning blanks a message's body in place but leaves the
+    /// `Message`/its tag intact, which is intentionally conservative, never a false negative).
+    /// LLM-summarization compaction also does NOT clear it: `compact_context`
+    /// (`zeph-agent-context/src/summarization/compaction.rs`) propagates `max(trust_level)`
+    /// of the compacted-away messages onto the new synthetic summary message, so a condensed
+    /// untrusted tool result keeps gating `memory_save` through the summary. A plain `Vec`
+    /// scan: no locks, no I/O, same cost class as `recompute_prompt_tokens`.
+    ///
+    /// Note: `memory_search` results are tagged `ExternalUntrusted` like any other untrusted
+    /// tool output, which broadens `memory_save`'s gate footprint beyond the original per-turn
+    /// design — this is intentional; see `MemoryToolExecutor::current_trust_level`'s doc
+    /// comment for the full rationale.
+    pub(super) fn context_max_trust_level(&self) -> zeph_sanitizer::ContentTrustLevel {
+        self.msg
+            .messages
+            .iter()
+            .filter_map(|m| m.metadata.trust_level)
+            .map(zeph_sanitizer::ContentTrustLevel::from_ordinal)
+            .max()
+            .unwrap_or(zeph_sanitizer::ContentTrustLevel::Trusted)
+    }
+
+    /// Ratchet the write-time memory-consent trust slot to the worst case this dispatch batch
+    /// could introduce, combined with whatever untrusted content is still present in the live
+    /// context — BEFORE any tool call in `tool_calls` (including `memory_save` itself) starts
+    /// executing.
+    ///
+    /// `MemoryToolExecutor`'s confirm-gate check only ever reads this slot — it has no handle
+    /// to `Agent`/`self.msg` (the `ToolExecutor` trait is deliberately object-safe with no
+    /// `&Agent` parameter) — so the slot must already hold the correct value by the time any
+    /// tool in the batch is dispatched, not merely by the time `sanitize_tool_output` gets
+    /// around to processing that tool's *own* result sequentially afterward. Closes both the
+    /// cross-turn deferral bypass (#6558, via `context_max_trust_level`) and the same-tier /
+    /// cross-tier parallel-dispatch race (#6569, via `batch_dispatch_trust_level` — computed
+    /// before any tier's concurrent `join_all` starts, so it cannot lose a race regardless of
+    /// tokio scheduling).
+    pub(super) fn ratchet_memory_consent_trust_for_dispatch(
+        &mut self,
+        tool_calls: &[zeph_llm::provider::ToolUseRequest],
+    ) {
+        let effective = batch_dispatch_trust_level(tool_calls).max(self.context_max_trust_level());
+        let mut slot = self.services.security.memory_consent_trust.write();
+        *slot = (*slot).max(effective as u8);
     }
 
     /// Run the SONAR NLI entailment check on tool output and record a flagged verdict.
@@ -618,6 +697,170 @@ mod build_tool_output_source_tests {
     fn unrelated_tool_classified_as_tool_result() {
         let source = build_tool_output_source("some_other_tool");
         assert_eq!(source.kind, ContentSourceKind::ToolResult);
+    }
+}
+
+/// Unit tests for the #6558/#6569 TOCTOU fix's building blocks: `context_max_trust_level`,
+/// `batch_dispatch_trust_level`, and `ratchet_memory_consent_trust_for_dispatch`. These test
+/// the pure/local logic directly; `tests/consent_gate_toctou_tests.rs` covers the end-to-end
+/// behavior through `handle_native_tool_calls` and a real `MemoryToolExecutor`.
+#[cfg(test)]
+mod consent_gate_dispatch_tests {
+    use super::batch_dispatch_trust_level;
+    use crate::agent::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use zeph_llm::provider::{Message, MessageMetadata, Role, ToolUseRequest};
+
+    fn make_agent() -> crate::agent::Agent<MockChannel> {
+        crate::agent::Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+    }
+
+    fn tagged_message(trust: Option<u8>) -> Message {
+        Message {
+            role: Role::User,
+            content: String::new(),
+            parts: vec![],
+            metadata: MessageMetadata {
+                trust_level: trust,
+                ..MessageMetadata::default()
+            },
+        }
+    }
+
+    fn call(name: &str) -> ToolUseRequest {
+        ToolUseRequest {
+            id: format!("id-{name}"),
+            name: name.to_owned().into(),
+            input: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn context_max_trust_level_defaults_to_trusted_on_empty_context() {
+        let agent = make_agent();
+        assert_eq!(
+            agent.context_max_trust_level(),
+            zeph_sanitizer::ContentTrustLevel::Trusted
+        );
+    }
+
+    #[test]
+    fn context_max_trust_level_ignores_untagged_messages() {
+        let mut agent = make_agent();
+        agent.msg.messages.push(tagged_message(None));
+        assert_eq!(
+            agent.context_max_trust_level(),
+            zeph_sanitizer::ContentTrustLevel::Trusted
+        );
+    }
+
+    /// Core #6558 building block: a tagged message from an EARLIER turn (simulated by just
+    /// pushing it directly, with no dispatch involved) must still be found by the scan — this
+    /// is what lets the gate survive a `begin_turn` reset.
+    #[test]
+    fn context_max_trust_level_finds_tagged_message_from_prior_turn() {
+        let mut agent = make_agent();
+        agent.msg.messages.push(tagged_message(Some(
+            zeph_sanitizer::ContentTrustLevel::ExternalUntrusted as u8,
+        )));
+        assert_eq!(
+            agent.context_max_trust_level(),
+            zeph_sanitizer::ContentTrustLevel::ExternalUntrusted
+        );
+    }
+
+    #[test]
+    fn context_max_trust_level_takes_max_across_messages() {
+        let mut agent = make_agent();
+        agent.msg.messages.push(tagged_message(Some(
+            zeph_sanitizer::ContentTrustLevel::LocalUntrusted as u8,
+        )));
+        agent.msg.messages.push(tagged_message(Some(
+            zeph_sanitizer::ContentTrustLevel::ExternalUntrusted as u8,
+        )));
+        agent.msg.messages.push(tagged_message(None));
+        assert_eq!(
+            agent.context_max_trust_level(),
+            zeph_sanitizer::ContentTrustLevel::ExternalUntrusted
+        );
+    }
+
+    #[test]
+    fn batch_dispatch_trust_level_reflects_web_scrape() {
+        let tool_calls = vec![call("web_scrape")];
+        assert_eq!(
+            batch_dispatch_trust_level(&tool_calls),
+            zeph_sanitizer::ContentTrustLevel::ExternalUntrusted
+        );
+    }
+
+    /// Core #6569 building block: `memory_search` (`ContentSourceKind::MemoryRetrieval`) is
+    /// itself an untrusted source — a `memory_save` racing a `memory_search` in the same batch
+    /// must be covered too, not just the `web_scrape` case explicitly named in the issue.
+    #[test]
+    fn batch_dispatch_trust_level_reflects_memory_search() {
+        let tool_calls = vec![call("memory_search")];
+        assert_eq!(
+            batch_dispatch_trust_level(&tool_calls),
+            zeph_sanitizer::ContentTrustLevel::ExternalUntrusted
+        );
+    }
+
+    /// Regression guard: `memory_save`'s own (not-yet-produced) result must never contribute to
+    /// the batch trust it is itself gated against — otherwise a lone `memory_save` call would
+    /// spuriously self-gate whenever `confirm_threshold` is `local_untrusted` or lower.
+    #[test]
+    fn batch_dispatch_trust_level_excludes_memory_save_itself() {
+        let tool_calls = vec![call("memory_save")];
+        assert_eq!(
+            batch_dispatch_trust_level(&tool_calls),
+            zeph_sanitizer::ContentTrustLevel::Trusted
+        );
+    }
+
+    #[test]
+    fn batch_dispatch_trust_level_other_tool_alongside_memory_save_still_counts() {
+        let tool_calls = vec![call("web_scrape"), call("memory_save")];
+        assert_eq!(
+            batch_dispatch_trust_level(&tool_calls),
+            zeph_sanitizer::ContentTrustLevel::ExternalUntrusted
+        );
+    }
+
+    /// End-to-end for the pure helper: combines a stale-but-still-tagged context message with
+    /// this batch's own tool-name trust, and asserts the slot is ratcheted to the max of both
+    /// BEFORE any tool in the batch would execute (this method is called at the very top of
+    /// `handle_native_tool_calls`, ahead of tier dispatch).
+    #[test]
+    fn ratchet_combines_context_and_batch_trust() {
+        let mut agent = make_agent();
+        agent.msg.messages.push(tagged_message(Some(
+            zeph_sanitizer::ContentTrustLevel::LocalUntrusted as u8,
+        )));
+        let tool_calls = vec![call("web_scrape")];
+        agent.ratchet_memory_consent_trust_for_dispatch(&tool_calls);
+        assert_eq!(
+            *agent.services.security.memory_consent_trust.read(),
+            zeph_sanitizer::ContentTrustLevel::ExternalUntrusted as u8
+        );
+    }
+
+    /// A bare `memory_save` call in an otherwise-clean context must not ratchet the slot at
+    /// all — preserves pre-#6558 behavior for the common case (no over-triggering).
+    #[test]
+    fn ratchet_leaves_slot_trusted_for_bare_memory_save_in_clean_context() {
+        let mut agent = make_agent();
+        let tool_calls = vec![call("memory_save")];
+        agent.ratchet_memory_consent_trust_for_dispatch(&tool_calls);
+        assert_eq!(*agent.services.security.memory_consent_trust.read(), 0);
     }
 }
 

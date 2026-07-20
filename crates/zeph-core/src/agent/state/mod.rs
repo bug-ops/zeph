@@ -1115,6 +1115,12 @@ pub(crate) struct MessageState {
     pub(crate) deferred_db_hide_ids: Vec<i64>,
     /// Summary texts pending insertion after deferred tool pair summarization.
     pub(crate) deferred_db_summaries: Vec<String>,
+    /// Worst-case `MessageMetadata::trust_level` of the summarized tool-pair, one entry per
+    /// `deferred_db_summaries` element (same index — issue #6558 follow-up, S3: without this,
+    /// the persisted summary row's `trust_level` column is always `NULL`, silently dropping
+    /// the memory-consent gate's context tag on a session reload after a deferred summary
+    /// flush). Populated in `apply_deferred_summaries`, drained in `flush_deferred_summaries`.
+    pub(crate) deferred_db_trust_levels: Vec<Option<u8>>,
     /// Set by `AgentBuilder::with_preloaded_messages` (spec-068, #5343) when `messages` was
     /// seeded from a durable event-log replay rather than the default single system-prompt
     /// message `Agent::new` always seeds. Makes [`super::super::Agent::load_history`]'s

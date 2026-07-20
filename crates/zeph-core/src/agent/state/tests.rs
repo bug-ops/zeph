@@ -55,6 +55,7 @@ fn make_message_state() -> MessageState {
         last_persisted_message_id: None,
         deferred_db_hide_ids: Vec::new(),
         deferred_db_summaries: Vec::new(),
+        deferred_db_trust_levels: Vec::new(),
         history_preloaded: false,
         history_cursor: 0,
         non_system_count: 0,

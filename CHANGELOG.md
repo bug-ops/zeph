@@ -83,6 +83,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   entry points: CLI/TUI, ACP, A2A daemon, `/sessions*` server), the `--init` wizard (step 3/10),
   and `--migrate-config` (step 103).
 
+### Security
+
+- `zeph-core`/`zeph-memory`/`zeph-llm`/`zeph-agent-context`: closed two TOCTOU bypasses of the
+  write-time memory-consent gate shipped for #6490/MemGhost above, plus two related residual
+  bypasses found during review — all in the same threat class (the gate reading a trust signal
+  that does not yet reflect untrusted content already present or concurrently being fetched).
+  - **#6558** — cross-turn deferral: `begin_turn` hard-reset the turn-scoped
+    `MemoryConsentTrustSlot` to `Trusted` at the start of every turn, so a prompt-injection
+    payload could tell the model "don't save this now, wait for your next reply" — untrusted
+    tool output fetched in turn N was invisible to a `memory_save` dispatched in turn N+1, even
+    though the untrusted content was still sitting in the live conversation context. Fixed by
+    tagging each tool-result batch message with its worst-case trust tier
+    (`MessageMetadata::trust_level`, new field) and scanning the live context
+    (`Agent::context_max_trust_level`) for any still-present tag before every tool dispatch —
+    untrusted content is now recognized for as long as it remains in context, not just for the
+    turn it was fetched in.
+  - **#6569** — same-tier/cross-tier parallel dispatch race: the trust slot was only ratcheted
+    up inside `sanitize_tool_output`, which runs *after* a tier's tool calls have already
+    executed concurrently via `join_all`. A `memory_save` dispatched in the same batch as
+    `web_scrape` (or `memory_search`, also untrusted-sourced) could read a stale `Trusted` value
+    during its own concurrent dispatch. Fixed by precomputing the batch's worst-case trust tier
+    from tool names alone (`Agent::ratchet_memory_consent_trust_for_dispatch`, exact — not an
+    approximation, since trust tier never varies with a tool's actual output) and writing it to
+    the slot before any tool in the batch starts executing, closing the race deterministically
+    regardless of scheduling.
+  - **Cross-process reload residual**: the `trust_level` DB column already existed but was never
+    restored on reload — `load_history`/`load_history_filtered`/`message_by_id` hardcoded
+    `trust_level: None`, so a daemon/serve/ACP process restart or reattach silently dropped the
+    gate's context tag for previously-persisted untrusted content. Fixed by restoring
+    `MessageMetadata::trust_level` from the persisted column on every reload path
+    (fail-safe: an unrecognized persisted value maps to the most conservative tier, never to
+    `Trusted`).
+  - **Compaction/summarization residual**: condensing an untrusted tool-result batch into an
+    LLM summary (`compact_context`) or a deferred tool-pair summary previously produced an
+    untagged summary message/row, silently dropping the trust tag mid-session even without a
+    restart. Fixed by propagating the worst-case trust tier of the condensed messages onto both
+    the in-memory summary message and the persisted summary row (`replace_conversation`,
+    `apply_tool_pair_summaries`), so a summarized-but-still-untrusted origin keeps gating
+    `memory_save` through compaction and through a subsequent reload.
+
 ### Changed
 
 - `zeph-context`: `fetch_semantic_recall`, `fetch_document_rag`, `fetch_summaries`, and

@@ -164,6 +164,16 @@ pub(crate) async fn compact_context(
     }
 
     let compacted_count = to_compact.len();
+    // Issue #6558 follow-up: the compacted-away messages may include untrusted tool-result
+    // batches tagged by `Agent::process_tool_result_batch` (`MessageMetadata::trust_level`).
+    // Carry their worst-case tier onto the synthetic summary message so `Agent::
+    // context_max_trust_level` does not lose the write-time memory-consent gate's context
+    // tag just because the untrusted content was condensed rather than removed outright —
+    // an LLM summary can still carry forward injected instructions from the source content.
+    let compacted_trust_level: Option<u8> = to_compact
+        .iter()
+        .filter_map(|m| m.metadata.trust_level)
+        .max();
 
     // Build archive postfix (injected after LLM summary to protect [archived:UUID] markers).
     let archive_postfix = if archived_refs.is_empty() {
@@ -189,13 +199,19 @@ pub(crate) async fn compact_context(
         summary_content.clone(),
         compacted_count,
         &summary,
+        compacted_trust_level,
     );
 
     // Step 7: persistence (optional).
     // Extract pointer before .await so no &summ crosses the await boundary.
     let (persist_failed, qdrant_future) = if let Some(persistence) = summ.persistence.as_ref() {
         persistence
-            .after_compaction(compacted_count, &summary_content, &summary)
+            .after_compaction(
+                compacted_count,
+                &summary_content,
+                &summary,
+                compacted_trust_level,
+            )
             .await
     } else {
         (false, None)
@@ -303,6 +319,7 @@ fn partition_messages_for_compaction(
 /// Drain the compaction range and reinsert the summary plus protected messages.
 ///
 /// Updates `*summ.cached_prompt_tokens` before returning (CONTRACT S3).
+#[allow(clippy::too_many_arguments)]
 fn finalize_compacted_messages(
     summ: &mut ContextSummarizationView<'_>,
     compact_end: usize,
@@ -311,6 +328,7 @@ fn finalize_compacted_messages(
     summary_content: String,
     compacted_count: usize,
     summary: &str,
+    compacted_trust_level: Option<u8>,
 ) {
     summ.messages.drain(1..compact_end);
 
@@ -320,7 +338,13 @@ fn finalize_compacted_messages(
             role: Role::System,
             content: summary_content,
             parts: vec![],
-            metadata: MessageMetadata::agent_only(),
+            metadata: MessageMetadata {
+                // Issue #6558 follow-up: propagate the compacted-away messages' worst-case
+                // trust tier onto the summary so the memory-consent gate's context scan does
+                // not lose it (see the call site's comment in `compact_context`).
+                trust_level: compacted_trust_level,
+                ..MessageMetadata::agent_only()
+            },
         },
     );
 
@@ -742,5 +766,180 @@ mod tests {
             2,
             "only 2 non-placeholder messages should remain"
         );
+    }
+
+    /// Issue #6558 follow-up: compaction must not silently drop the write-time
+    /// memory-consent gate's context tag (`MessageMetadata::trust_level`) when it condenses
+    /// an untrusted tool-result batch into a synthetic summary message.
+    mod trust_level_propagation_tests {
+        use std::time::Duration;
+
+        use tokio_util::sync::CancellationToken;
+        use zeph_common::task_supervisor::{BlockingHandle, TaskSupervisor};
+        use zeph_context::manager::ContextManager;
+        use zeph_context::summarization::{MessageTokenCounter, SummarizationDeps};
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_memory::TokenCounter;
+
+        use super::*;
+        use crate::compaction::{SubgoalExtractionResult, SubgoalRegistry};
+        use crate::memory_backend::TokenCounterAdapter;
+
+        fn make_counter() -> Arc<TokenCounter> {
+            Arc::new(TokenCounter::default())
+        }
+
+        /// Owns every field `ContextSummarizationView` borrows — mirrors
+        /// `service.rs`'s `prune_token_bookkeeping_tests::Fixture`.
+        struct Fixture {
+            messages: Vec<Message>,
+            deferred_db_hide_ids: Vec<i64>,
+            deferred_db_summaries: Vec<String>,
+            deferred_db_trust_levels: Vec<Option<u8>>,
+            cached_prompt_tokens: u64,
+            context_manager: ContextManager,
+            subgoal_registry: SubgoalRegistry,
+            pending_task_goal: Option<BlockingHandle<Option<String>>>,
+            pending_subgoal: Option<BlockingHandle<Option<SubgoalExtractionResult>>>,
+            current_task_goal: Option<String>,
+            task_goal_user_msg_hash: Option<u64>,
+            subgoal_user_msg_hash: Option<u64>,
+            token_counter: Arc<TokenCounter>,
+            task_supervisor: Arc<TaskSupervisor>,
+            provider_responses: Vec<String>,
+        }
+
+        impl Fixture {
+            fn new(messages: Vec<Message>) -> Self {
+                Self {
+                    messages,
+                    deferred_db_hide_ids: Vec::new(),
+                    deferred_db_summaries: Vec::new(),
+                    deferred_db_trust_levels: Vec::new(),
+                    cached_prompt_tokens: 0,
+                    context_manager: ContextManager::new(),
+                    subgoal_registry: SubgoalRegistry::default(),
+                    pending_task_goal: None,
+                    pending_subgoal: None,
+                    current_task_goal: None,
+                    task_goal_user_msg_hash: None,
+                    subgoal_user_msg_hash: None,
+                    token_counter: make_counter(),
+                    task_supervisor: Arc::new(TaskSupervisor::new(CancellationToken::new())),
+                    provider_responses: vec!["summary of compacted content".to_owned()],
+                }
+            }
+
+            fn view(&mut self) -> ContextSummarizationView<'_> {
+                let token_counter_adapter: Arc<dyn MessageTokenCounter> =
+                    Arc::new(TokenCounterAdapter::new(Arc::clone(&self.token_counter)));
+                ContextSummarizationView {
+                    messages: &mut self.messages,
+                    deferred_db_hide_ids: &mut self.deferred_db_hide_ids,
+                    deferred_db_summaries: &mut self.deferred_db_summaries,
+                    deferred_db_trust_levels: &mut self.deferred_db_trust_levels,
+                    cached_prompt_tokens: &mut self.cached_prompt_tokens,
+                    context_manager: &mut self.context_manager,
+                    server_compaction_active: false,
+                    token_counter: Arc::clone(&self.token_counter),
+                    summarization_deps: SummarizationDeps {
+                        provider: AnyProvider::Mock(MockProvider::with_responses(
+                            self.provider_responses.clone(),
+                        )),
+                        llm_timeout: Duration::from_secs(30),
+                        token_counter: token_counter_adapter,
+                        structured_summaries: false,
+                        on_anchored_summary: None,
+                    },
+                    task_supervisor: Arc::clone(&self.task_supervisor),
+                    memory: None,
+                    conversation_id: None,
+                    tool_call_cutoff: 100,
+                    subgoal_registry: &mut self.subgoal_registry,
+                    pending_task_goal: &mut self.pending_task_goal,
+                    pending_subgoal: &mut self.pending_subgoal,
+                    current_task_goal: &mut self.current_task_goal,
+                    task_goal_user_msg_hash: &mut self.task_goal_user_msg_hash,
+                    subgoal_user_msg_hash: &mut self.subgoal_user_msg_hash,
+                    status_tx: None,
+                    scrub: |s| std::borrow::Cow::Borrowed(s),
+                    compression_guidelines: None,
+                    probe: None,
+                    archive: None,
+                    persistence: None,
+                    metrics: None,
+                    typed_pages: None,
+                    fidelity_config: None,
+                    fidelity_semantic_provider: None,
+                    fidelity_compress_provider: None,
+                    current_query: String::new(),
+                }
+            }
+        }
+
+        fn plain_msg(role: Role, content: &str) -> Message {
+            Message {
+                role,
+                content: content.to_owned(),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            }
+        }
+
+        fn tagged_msg(content: &str, trust: u8) -> Message {
+            let mut m = plain_msg(Role::User, content);
+            m.metadata.trust_level = Some(trust);
+            m
+        }
+
+        #[tokio::test]
+        async fn compact_context_propagates_worst_case_trust_level_onto_summary() {
+            let preserve_tail = ContextManager::new().compaction_preserve_tail;
+            let mut messages = vec![plain_msg(Role::System, "system")];
+            // ExternalUntrusted (2) — simulates a web_scrape-derived tool-result batch
+            // message tagged by `Agent::process_tool_result_batch` (zeph-core).
+            messages.push(tagged_msg("scraped content", 2));
+            for i in 0..(preserve_tail + 5) {
+                messages.push(plain_msg(Role::User, &format!("filler {i}")));
+            }
+
+            let mut fixture = Fixture::new(messages);
+            let mut view = fixture.view();
+
+            let outcome = compact_context(&mut view, None).await.unwrap();
+            assert!(
+                matches!(outcome, CompactionOutcome::Compacted { .. }),
+                "expected compaction to run: {outcome:?}"
+            );
+
+            assert_eq!(
+                view.messages[1].metadata.trust_level,
+                Some(2),
+                "summary message must carry forward the worst-case trust tier of the \
+                 messages it replaced, not silently drop it"
+            );
+        }
+
+        #[tokio::test]
+        async fn compact_context_summary_untagged_when_no_compacted_message_was_tagged() {
+            let preserve_tail = ContextManager::new().compaction_preserve_tail;
+            let mut messages = vec![plain_msg(Role::System, "system")];
+            messages.push(plain_msg(Role::User, "trusted content"));
+            for i in 0..(preserve_tail + 5) {
+                messages.push(plain_msg(Role::User, &format!("filler {i}")));
+            }
+
+            let mut fixture = Fixture::new(messages);
+            let mut view = fixture.view();
+
+            let outcome = compact_context(&mut view, None).await.unwrap();
+            assert!(matches!(outcome, CompactionOutcome::Compacted { .. }));
+
+            assert_eq!(
+                view.messages[1].metadata.trust_level, None,
+                "compacting only trusted messages must not spuriously tag the summary"
+            );
+        }
     }
 }
