@@ -59,6 +59,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `PermissionRule` deny lists, so production sub-agent spawns are unaffected until a follow-up
   populates the field (tracked in #6526 and #6527).
 
+- `zeph-llm`: the Ollama backend's `chat`/`chat_stream`/`chat_with_tools` sent every request
+  through `ollama-rs` with no retry, so a single HTTP 429/503 or transient connection failure
+  failed the whole turn immediately — unlike Claude/OpenAI/Gemini, which back off and retry via
+  `retry::send_with_retry` (#6491). `ollama-rs`'s own `send_chat_messages`/
+  `send_chat_messages_stream` discard the HTTP status code on non-2xx responses, which made
+  reusing `send_with_retry` against them impossible; `ollama.rs` now posts chat requests
+  directly via a dedicated `reqwest` (workspace version) client instead, reusing
+  `ChatMessageRequest`/`ChatMessageResponse` only for (de)serialization, so `send_with_retry` —
+  the same helper Claude/OpenAI/Gemini use — can retry on real HTTP 429/503 with `Retry-After`
+  support, giving Ollama the same retry/backoff behavior as the other three backends. A second
+  layer, `send_with_transport_retry`, sits underneath and retries transient transport-level
+  failures (timeout, or a connection reset mid-request) that never reach `send_with_retry`'s
+  status inspection because no response was ever received — this is the "connection hiccup"
+  case the issue names explicitly. Connect-phase failures (e.g. no Ollama server running at
+  all) are deliberately not retried at either layer, and are still wrapped with Ollama-specific
+  context so `RouterProvider` fallback diagnostics (#5821) keep working. Context-length errors
+  continue to fail immediately without retry. Also fixes a UTF-8 chunk-boundary data-loss bug
+  in the streaming NDJSON parser introduced by this change: it decoded each network chunk to
+  UTF-8 independently, so a multi-byte character split across a chunk boundary silently
+  dropped the whole chunk it fell in; it now buffers raw bytes across chunks and only decodes
+  once a complete line has been assembled.
+
 - `zeph`: `zeph vault set/get/list/rm/init` ignored `ZEPH_VAULT_KEY`/`ZEPH_VAULT_PATH` env vars
   and always fell back to the default vault directory unless overridden by `--vault-key`/
   `--vault-path` (#6500), diverging from the resolution `zeph doctor` and agent startup already

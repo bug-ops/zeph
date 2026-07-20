@@ -27,6 +27,7 @@ async-stream.workspace = true
 audioadapter-buffers = { workspace = true, optional = true }
 base64.workspace = true
 bech32 = { workspace = true, optional = true }
+bytes.workspace = true
 candle-core = { workspace = true, optional = true }
 candle-nn = { workspace = true, optional = true }
 candle-transformers = { workspace = true, optional = true }

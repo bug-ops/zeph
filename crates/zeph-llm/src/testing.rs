@@ -256,14 +256,14 @@ pub fn claude_tool_use_sse_response(
 }
 
 // ---------------------------------------------------------------------------
-// Ollama-compatible response shapes (HTTP API, not ollama-rs client)
+// Ollama-compatible response shapes (HTTP API)
 // ---------------------------------------------------------------------------
 
 /// Ollama `/api/chat` non-streaming response.
 ///
-/// Note: `OllamaProvider` uses the `ollama-rs` crate which speaks the same
-/// JSON shape but communicates over its own HTTP client, not reqwest directly.
-/// These fixtures are intended for the compatible-endpoint path or manual HTTP tests.
+/// `OllamaProvider`'s `chat`/`chat_stream`/`chat_with_tools` post directly via `reqwest`
+/// (see `ollama::send_chat_request`, #6491) so this fixture exercises the same wire path a
+/// real Ollama server would receive a request on, not just the compatible-endpoint path.
 #[must_use]
 pub fn ollama_chat_response(content: &str) -> ResponseTemplate {
     let body = serde_json::json!({
@@ -286,6 +286,29 @@ pub fn ollama_chat_response(content: &str) -> ResponseTemplate {
 #[must_use]
 pub fn ollama_server_error_response() -> ResponseTemplate {
     ResponseTemplate::new(500).set_body_string("model not found")
+}
+
+/// Ollama 429 rate-limit response, with `Retry-After: 0` so retry tests run fast.
+#[must_use]
+pub fn ollama_rate_limit_response() -> ResponseTemplate {
+    ResponseTemplate::new(429)
+        .insert_header("retry-after", "0")
+        .set_body_json(serde_json::json!({ "error": "rate limit exceeded" }))
+}
+
+/// Ollama 503 service-unavailable response, with `Retry-After: 0` so retry tests run fast.
+#[must_use]
+pub fn ollama_unavailable_response() -> ResponseTemplate {
+    ResponseTemplate::new(503)
+        .insert_header("retry-after", "0")
+        .set_body_json(serde_json::json!({ "error": "server overloaded" }))
+}
+
+/// Ollama 400 context-length-exceeded response (not retried by `send_with_retry`).
+#[must_use]
+pub fn ollama_context_length_response() -> ResponseTemplate {
+    ResponseTemplate::new(400)
+        .set_body_json(serde_json::json!({ "error": "context length exceeded for this model" }))
 }
 
 #[cfg(test)]

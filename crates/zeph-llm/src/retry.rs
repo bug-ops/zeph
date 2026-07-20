@@ -9,6 +9,16 @@ use crate::provider::StatusTx;
 
 const BASE_BACKOFF_SECS: u64 = 1;
 
+/// Exponential backoff delay for a given attempt, doubling each retry from `BASE_BACKOFF_SECS`.
+///
+/// Shared by [`retry_delay`] (used when a `Retry-After` header is unavailable) and by
+/// `ollama.rs`'s `send_with_transport_retry`, which retries transient transport-level
+/// failures (timeout, connection reset) that occur before any HTTP response is received to
+/// read a `Retry-After` header from.
+pub(crate) fn exponential_backoff_delay(attempt: u32) -> Duration {
+    Duration::from_secs(BASE_BACKOFF_SECS << attempt)
+}
+
 /// Parse the `Retry-After` header value as seconds, falling back to exponential backoff.
 pub(crate) fn retry_delay(response: &reqwest::Response, attempt: u32) -> Duration {
     if let Some(val) = response.headers().get("retry-after")
@@ -17,7 +27,7 @@ pub(crate) fn retry_delay(response: &reqwest::Response, attempt: u32) -> Duratio
     {
         return Duration::from_secs(secs);
     }
-    Duration::from_secs(BASE_BACKOFF_SECS << attempt)
+    exponential_backoff_delay(attempt)
 }
 
 /// Send an HTTP request, retrying up to `max_retries` times on 429 or 503 responses.

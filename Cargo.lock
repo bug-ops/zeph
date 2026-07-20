@@ -11698,6 +11698,7 @@ dependencies = [
  "audioadapter-buffers",
  "base64 0.22.1",
  "bech32 0.12.0",
+ "bytes",
  "candle-core",
  "candle-nn",
  "candle-transformers",

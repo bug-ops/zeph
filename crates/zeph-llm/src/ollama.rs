@@ -47,13 +47,178 @@ use ollama_rs::generation::embeddings::request::{EmbeddingsInput, GenerateEmbedd
 use ollama_rs::generation::images::Image as OllamaImage;
 use ollama_rs::generation::tools::{ToolFunctionInfo, ToolInfo, ToolType};
 use ollama_rs::models::ModelOptions;
+use std::future::Future;
 use tokio_stream::StreamExt;
 
 use crate::provider::{
     ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart,
     Role, ToolDefinition, ToolUseRequest,
 };
+use crate::retry::{exponential_backoff_delay, send_with_retry};
 use crate::usage::UsageTracker;
+
+/// Maximum number of retry attempts on HTTP 429/503, matching the `MAX_RETRIES` used by the
+/// Claude/OpenAI/Gemini backends' `send_with_retry` (#6491).
+const MAX_RETRIES: u32 = 3;
+
+/// Serialize a chat request to a JSON body with the `stream` flag forced to `stream`.
+///
+/// `ChatMessageRequest::stream` is `pub(crate)` inside `ollama-rs` — only its own
+/// `send_chat_messages`/`send_chat_messages_stream` methods can set it, since those are the
+/// only sanctioned way to send a request. This module posts requests directly via `reqwest`
+/// instead (see [`OllamaProvider::send_chat_request`]), so `ChatMessageRequest`/
+/// `ChatMessageResponse` are reused only for (de)serialization shape, and the one field this
+/// crate cannot set directly is patched into the serialized value here.
+fn chat_request_body(
+    request: &ChatMessageRequest,
+    stream: bool,
+) -> Result<serde_json::Value, LlmError> {
+    let mut body = serde_json::to_value(request).map_err(LlmError::Json)?;
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("stream".to_owned(), serde_json::Value::Bool(stream));
+    }
+    Ok(body)
+}
+
+/// Build a `reqwest` (workspace version, currently 0.13) HTTP client for the
+/// `chat`/`chat_stream`/`chat_with_tools` request path, matching [`ollama_reqwest_client`]'s
+/// timeout configuration. This is a separate client from `ollama-rs`'s internal one because
+/// it is a different major `reqwest` version — `ollama-rs` depends on `reqwest` 0.12
+/// (aliased `reqwest012` in this crate), while the workspace (and `retry::send_with_retry`)
+/// uses 0.13 — so the two response/error types are not interchangeable. A dedicated client
+/// is needed to reuse `send_with_retry` verbatim rather than going through `ollama-rs`'s
+/// `send_chat_messages`/`send_chat_messages_stream`, which discard the HTTP status code on
+/// non-2xx responses and so cannot support real 429/503 + `Retry-After` retry parity with
+/// the Claude/OpenAI/Gemini backends (#6491).
+fn ollama_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_mins(10))
+        .user_agent(concat!("zeph/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .expect("Ollama HTTP client construction must not fail")
+}
+
+/// Add `error_context` to a bare [`LlmError::Http`] (connection refused, or a transport-level
+/// failure that outlasted [`send_with_transport_retry`]'s own retries — [`send_with_retry`]
+/// propagates it immediately with no retry of its own, since it never produced an HTTP
+/// response to inspect). Without this, a connection-level failure loses all Ollama-specific
+/// context and callers that depend on the message shape to diagnose *which* provider failed
+/// and why — e.g. `RouterProvider`'s fallback-exhaustion diagnostic (#5821) — regress.
+/// [`LlmError::RateLimited`]/[`LlmError::Unavailable`] (produced after `send_with_retry`
+/// exhausts its own retries on a real HTTP 429/503) are already self-descriptive and are
+/// passed through unchanged, matching how the Claude/OpenAI/Gemini backends propagate them.
+fn wrap_transport_error(err: LlmError, error_context: &str) -> LlmError {
+    match err {
+        LlmError::Http(e) => LlmError::Other(format!("{error_context} failed: {e}")),
+        other => other,
+    }
+}
+
+/// Whether a `reqwest::Error` from sending a request (as opposed to inspecting a response
+/// that was actually received) represents a transient transport-level failure worth
+/// retrying:
+///
+/// - Request timeouts (`is_timeout`) are retried.
+/// - Errors while sending/receiving after a connection was established (`is_request`
+///   without `is_connect`) are retried — this is the "connection reset mid-request"
+///   condition #6491 names explicitly.
+/// - Connect-phase failures (`is_connect`, e.g. connection refused because no Ollama server
+///   is running at all) are deliberately NOT retried: they are far more likely to be a
+///   permanent misconfiguration than a transient blip, and retrying them would add several
+///   seconds of backoff to the common "Ollama isn't running" failure case (existing
+///   `chat_with_unreachable_endpoint_errors`-style tests rely on this staying fast).
+fn is_transient_transport_error(e: &reqwest::Error) -> bool {
+    e.is_timeout() || (e.is_request() && !e.is_connect())
+}
+
+/// Retry a `.send()` call up to [`MAX_RETRIES`] times on a transient transport-level failure,
+/// before handing the eventual response (or a non-retryable/exhausted error) to
+/// [`send_with_retry`]'s own HTTP-status retry layer.
+///
+/// [`send_with_retry`] only inspects a `reqwest::Response` it has already received — a
+/// `.send()` call that fails before producing one (connection reset, timeout) propagates
+/// immediately with no retry of its own. This wraps the request-sending closure so both
+/// failure classes are covered: transport-level transience here, HTTP 429/503 status one
+/// layer up. Uses the same [`exponential_backoff_delay`] schedule as `send_with_retry` does
+/// for consistency across both layers.
+async fn send_with_transport_retry<F, Fut>(mut f: F) -> Result<reqwest::Response, reqwest::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<reqwest::Response, reqwest::Error>>,
+{
+    let mut attempt = 0;
+    loop {
+        match f().await {
+            Ok(response) => return Ok(response),
+            Err(e) if attempt < MAX_RETRIES && is_transient_transport_error(&e) => {
+                let delay = exponential_backoff_delay(attempt);
+                tracing::warn!(
+                    "Ollama transport-level failure, retrying in {}s ({}/{}): {e}",
+                    delay.as_secs(),
+                    attempt + 1,
+                    MAX_RETRIES
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Parse an Ollama `/api/chat` streaming response body (NDJSON — one `ChatMessageResponse`
+/// object per line) into a [`ChatStream`].
+///
+/// Buffers raw *bytes* across chunk boundaries rather than decoding each chunk to UTF-8 in
+/// isolation: a chunk boundary can land in the middle of a multi-byte UTF-8 character or
+/// mid-line, since TCP reads don't respect either boundary. Decoding per-chunk (as the
+/// initial version of this function did) would silently drop the entire straddling chunk
+/// when `str::from_utf8` failed on it — a real data-loss bug, not just a theoretical one,
+/// inherited in spirit from `ollama-rs`'s own internal streaming implementation but now
+/// freshly-written code with a straightforward fix: only decode once a complete line (up to
+/// a `\n` byte) has been assembled.
+fn ollama_ndjson_stream<S>(byte_stream: S) -> ChatStream
+where
+    S: tokio_stream::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
+{
+    let mapped = async_stream::stream! {
+        let mut buffer: Vec<u8> = Vec::new();
+        tokio::pin!(byte_stream);
+        while let Some(chunk_result) = byte_stream.next().await {
+            match chunk_result {
+                Ok(chunk) => {
+                    buffer.extend_from_slice(&chunk);
+                    while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+                        let line_bytes: Vec<u8> = buffer.drain(..=pos).collect();
+                        let line = String::from_utf8_lossy(&line_bytes);
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        match serde_json::from_str::<ollama_rs::generation::chat::ChatMessageResponse>(trimmed) {
+                            Ok(resp) => yield Ok(crate::provider::StreamChunk::Content(resp.message.content)),
+                            Err(e) => tracing::warn!("failed to deserialize Ollama stream line: {e}"),
+                        }
+                    }
+                }
+                Err(e) => {
+                    yield Err(LlmError::Http(e));
+                    break;
+                }
+            }
+        }
+        let tail = String::from_utf8_lossy(&buffer);
+        let trimmed_tail = tail.trim();
+        if !trimmed_tail.is_empty()
+            && let Ok(resp) = serde_json::from_str::<ollama_rs::generation::chat::ChatMessageResponse>(trimmed_tail)
+        {
+            yield Ok(crate::provider::StreamChunk::Content(resp.message.content));
+        }
+    };
+
+    Box::pin(mapped)
+}
 
 /// Build a reqwest 0.12 HTTP client (the version used by ollama-rs) with a 600-second hard
 /// backstop timeout and a 30-second connect timeout.
@@ -97,6 +262,10 @@ impl ModelInfo {
 #[derive(Debug, Clone)]
 pub struct OllamaProvider {
     client: Ollama,
+    /// Dedicated `reqwest` (workspace version) client for the `chat`/`chat_stream`/
+    /// `chat_with_tools` request path — see [`ollama_http_client`] for why this is a
+    /// separate client from `client`'s internal one (#6491).
+    http_client: reqwest::Client,
     model: String,
     embedding_model: String,
     context_window_size: Option<usize>,
@@ -153,6 +322,7 @@ impl OllamaProvider {
                 .port(port)
                 .reqwest_client(ollama_reqwest_client())
                 .build(),
+            http_client: ollama_http_client(),
             model,
             embedding_model,
             context_window_size: None,
@@ -302,6 +472,42 @@ impl OllamaProvider {
             .map_err(|e| LlmError::Other(format!("Ollama warmup failed: {e}")))?;
         Ok(())
     }
+
+    /// POST a non-streaming chat request directly to `{base_url}/api/chat`, retrying on
+    /// HTTP 429/503 via [`send_with_retry`] — the same helper Claude/OpenAI/Gemini use — for
+    /// direct retry parity with those backends (#6491), with [`send_with_transport_retry`]
+    /// layered underneath to also cover transient transport-level failures (timeout,
+    /// connection reset) that never reach `send_with_retry`'s status inspection. See
+    /// [`ollama_http_client`] for why this bypasses `ollama-rs`'s own `send_chat_messages`.
+    ///
+    /// `error_context` is prefixed to the error message on a non-2xx, non-context-length
+    /// response, to distinguish the calling method (`chat` vs `chat_with_tools`) in logs.
+    async fn send_chat_request(
+        &self,
+        request: &ChatMessageRequest,
+        error_context: &str,
+    ) -> Result<ollama_rs::generation::chat::ChatMessageResponse, LlmError> {
+        let url = format!("{}api/chat", self.client.url_str());
+        let body = chat_request_body(request, false)?;
+
+        let response = send_with_retry(self.name(), MAX_RETRIES, None, || {
+            send_with_transport_retry(|| self.http_client.post(&url).json(&body).send())
+        })
+        .await
+        .map_err(|e| wrap_transport_error(e, error_context))?;
+
+        let status = response.status();
+        let text = response.text().await.map_err(LlmError::Http)?;
+        if !status.is_success() {
+            return Err(if crate::error::body_is_context_length_error(&text) {
+                LlmError::ContextLengthExceeded
+            } else {
+                LlmError::Other(format!("{error_context} failed ({status}): {text}"))
+            });
+        }
+
+        serde_json::from_str(&text).map_err(LlmError::Json)
+    }
 }
 
 impl LlmProvider for OllamaProvider {
@@ -346,14 +552,9 @@ impl LlmProvider for OllamaProvider {
             request = apply_generation_overrides(request, ov);
         }
 
-        let response = self.client.send_chat_messages(request).await.map_err(|e| {
-            let msg = e.to_string();
-            if crate::error::body_is_context_length_error(&msg) {
-                LlmError::ContextLengthExceeded
-            } else {
-                LlmError::Other(format!("Ollama chat request failed: {msg}"))
-            }
-        })?;
+        let response = self
+            .send_chat_request(&request, "Ollama chat request")
+            .await?;
 
         if let Some(ref fd) = response.final_data {
             self.usage.record_usage(fd.prompt_eval_count, fd.eval_count);
@@ -389,27 +590,33 @@ impl LlmProvider for OllamaProvider {
             request = apply_generation_overrides(request, ov);
         }
 
-        let stream = self
-            .client
-            .send_chat_messages_stream(request)
-            .await
-            .map_err(|e| {
-                let msg = e.to_string();
-                if crate::error::body_is_context_length_error(&msg) {
-                    LlmError::ContextLengthExceeded
-                } else {
-                    LlmError::Other(format!("Ollama streaming request failed: {msg}"))
-                }
-            })?;
+        // Posted directly via `reqwest` rather than `ollama-rs`'s `send_chat_messages_stream`
+        // so the initial request can retry on HTTP 429/503 via `send_with_retry` (#6491) —
+        // see `send_chat_request`'s doc comment for why. The streamed body itself (NDJSON,
+        // one `ChatMessageResponse` per line) is parsed manually below, mirroring what
+        // `ollama-rs` does internally for `ChatMessageResponseStream`.
+        let url = format!("{}api/chat", self.client.url_str());
+        let body = chat_request_body(&request, true)?;
 
-        let mapped = stream.map(|item| match item {
-            Ok(response) => Ok(crate::provider::StreamChunk::Content(
-                response.message.content,
-            )),
-            Err(()) => Err(LlmError::Other("Ollama stream chunk failed".into())),
-        });
+        let response = send_with_retry(self.name(), MAX_RETRIES, None, || {
+            send_with_transport_retry(|| self.http_client.post(&url).json(&body).send())
+        })
+        .await
+        .map_err(|e| wrap_transport_error(e, "Ollama streaming request"))?;
 
-        Ok(Box::pin(mapped))
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.map_err(LlmError::Http)?;
+            return Err(if crate::error::body_is_context_length_error(&text) {
+                LlmError::ContextLengthExceeded
+            } else {
+                LlmError::Other(format!(
+                    "Ollama streaming request failed ({status}): {text}"
+                ))
+            });
+        }
+
+        Ok(ollama_ndjson_stream(response.bytes_stream()))
     }
 
     fn supports_streaming(&self) -> bool {
@@ -494,14 +701,9 @@ impl LlmProvider for OllamaProvider {
             request = apply_generation_overrides(request, ov);
         }
 
-        let response = self.client.send_chat_messages(request).await.map_err(|e| {
-            let msg = e.to_string();
-            if crate::error::body_is_context_length_error(&msg) {
-                LlmError::ContextLengthExceeded
-            } else {
-                LlmError::Other(format!("Ollama chat_with_tools request failed: {msg}"))
-            }
-        })?;
+        let response = self
+            .send_chat_request(&request, "Ollama chat_with_tools request")
+            .await?;
 
         if let Some(ref fd) = response.final_data {
             self.usage.record_usage(fd.prompt_eval_count, fd.eval_count);
@@ -1113,6 +1315,266 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // --- #6491: Ollama retry/backoff with real HTTP-status parity ---
+    //
+    // These exercise `chat()`/`chat_stream()` end-to-end against a `wiremock` `/api/chat`
+    // server (same mechanism `openai`/`claude` use for their `send_with_retry` coverage,
+    // e.g. `openai::tests::chat_429_rate_limit_propagates`) so the real
+    // `retry::send_with_retry` codepath (status/`Retry-After` inspection) is what's under
+    // test, not a reimplementation of it.
+
+    fn chat_test_messages() -> Vec<Message> {
+        vec![Message {
+            role: Role::User,
+            content: "hi".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }]
+    }
+
+    #[tokio::test]
+    async fn chat_retries_after_429_then_succeeds() {
+        use crate::testing::{ollama_chat_response, ollama_rate_limit_response};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ollama_rate_limit_response())
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ollama_chat_response("pong"))
+            .mount(&server)
+            .await;
+
+        let provider = OllamaProvider::new(&server.uri(), "test-model".into(), "embed".into());
+
+        match provider.chat(&chat_test_messages()).await {
+            Ok(text) => assert_eq!(text, "pong"),
+            Err(e) => panic!("expected success after one 429 retry, got error: {e}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_exhausts_retries_on_persistent_503() {
+        use crate::testing::ollama_unavailable_response;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ollama_unavailable_response())
+            .expect(u64::from(MAX_RETRIES) + 1)
+            .mount(&server)
+            .await;
+
+        let provider = OllamaProvider::new(&server.uri(), "test-model".into(), "embed".into());
+
+        let result = provider.chat(&chat_test_messages()).await;
+        assert!(
+            matches!(result, Err(LlmError::Unavailable)),
+            "expected Unavailable after exhausting retries, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_context_length_error_is_not_retried() {
+        use crate::testing::ollama_context_length_response;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        // `.expect(1)`: if the context-length error were mistakenly retried, the mock's call
+        // count would exceed this expectation, turning this into a clearly failing test
+        // rather than a silently-passing one.
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ollama_context_length_response())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = OllamaProvider::new(&server.uri(), "test-model".into(), "embed".into());
+
+        let result = provider.chat(&chat_test_messages()).await;
+        assert!(
+            matches!(result, Err(LlmError::ContextLengthExceeded)),
+            "expected ContextLengthExceeded without retry, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_stream_retries_after_503_then_succeeds() {
+        use crate::testing::{ollama_chat_response, ollama_unavailable_response};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ollama_unavailable_response())
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ollama_chat_response("pong"))
+            .mount(&server)
+            .await;
+
+        let provider = OllamaProvider::new(&server.uri(), "test-model".into(), "embed".into());
+
+        let mut stream = provider
+            .chat_stream(&chat_test_messages())
+            .await
+            .expect("stream request should succeed after one 503 retry");
+        let mut full_response = String::new();
+        while let Some(item) = stream.next().await {
+            if let crate::provider::StreamChunk::Content(text) = item.expect("stream chunk") {
+                full_response.push_str(&text);
+            }
+        }
+        assert_eq!(full_response, "pong");
+    }
+
+    #[tokio::test]
+    async fn chat_stream_context_length_error_is_not_retried() {
+        use crate::testing::ollama_context_length_response;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ollama_context_length_response())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let provider = OllamaProvider::new(&server.uri(), "test-model".into(), "embed".into());
+
+        match provider.chat_stream(&chat_test_messages()).await {
+            Err(LlmError::ContextLengthExceeded) => {}
+            Err(e) => panic!("expected ContextLengthExceeded without retry, got error: {e}"),
+            Ok(_) => panic!("expected ContextLengthExceeded without retry, got a stream"),
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_with_tools_retries_after_429_then_succeeds() {
+        use crate::testing::{ollama_chat_response, ollama_rate_limit_response};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ollama_rate_limit_response())
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ollama_chat_response("pong"))
+            .mount(&server)
+            .await;
+
+        let provider = OllamaProvider::new(&server.uri(), "test-model".into(), "embed".into());
+        let tools = vec![ToolDefinition {
+            name: "noop".into(),
+            description: "no-op tool".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            output_schema: None,
+        }];
+
+        match provider
+            .chat_with_tools(&chat_test_messages(), &tools)
+            .await
+        {
+            Ok(ChatResponse::Text(text)) => assert_eq!(text, "pong"),
+            Ok(other) => panic!("expected ChatResponse::Text(\"pong\"), got: {other:?}"),
+            Err(e) => panic!("expected success after one 429 retry, got error: {e}"),
+        }
+    }
+
+    #[test]
+    fn chat_request_body_sets_stream_flag() {
+        let request =
+            ChatMessageRequest::new("test-model".into(), vec![ChatMessage::user("hi".into())]);
+
+        let non_streaming = chat_request_body(&request, false).unwrap();
+        assert_eq!(non_streaming["stream"], false);
+
+        let streaming = chat_request_body(&request, true).unwrap();
+        assert_eq!(streaming["stream"], true);
+    }
+
+    #[tokio::test]
+    async fn ollama_ndjson_stream_reassembles_utf8_split_across_chunk_boundary() {
+        let body = serde_json::json!({
+            "model": "test-model",
+            "created_at": "2024-01-01T00:00:00Z",
+            "message": { "role": "assistant", "content": "café" },
+            "done": true
+        });
+        let mut line = serde_json::to_vec(&body).unwrap();
+        line.push(b'\n');
+        // 'é' (U+00E9) encodes as the two bytes 0xC3 0xA9 in UTF-8 — split the chunk
+        // boundary between them to reproduce a network read landing mid-character. Decoding
+        // each chunk to UTF-8 independently (the pre-fix behavior) would fail to decode the
+        // first chunk (it ends on an incomplete sequence) and silently drop it.
+        let split_at = line
+            .iter()
+            .position(|&b| b == 0xC3)
+            .expect("body contains an encoded 'é'")
+            + 1;
+        let chunk1 = bytes::Bytes::copy_from_slice(&line[..split_at]);
+        let chunk2 = bytes::Bytes::copy_from_slice(&line[split_at..]);
+
+        let source: Vec<Result<bytes::Bytes, reqwest::Error>> = vec![Ok(chunk1), Ok(chunk2)];
+        let mut stream = ollama_ndjson_stream(tokio_stream::iter(source));
+
+        let mut full_response = String::new();
+        while let Some(item) = stream.next().await {
+            if let crate::provider::StreamChunk::Content(text) = item.expect("stream chunk") {
+                full_response.push_str(&text);
+            }
+        }
+        assert_eq!(full_response, "café");
+    }
+
+    #[tokio::test]
+    async fn ollama_ndjson_stream_yields_multiple_lines_from_one_chunk() {
+        let mut combined = Vec::new();
+        for content in ["hello ", "world"] {
+            let body = serde_json::json!({
+                "model": "test-model",
+                "created_at": "2024-01-01T00:00:00Z",
+                "message": { "role": "assistant", "content": content },
+                "done": true
+            });
+            combined.extend(serde_json::to_vec(&body).unwrap());
+            combined.push(b'\n');
+        }
+
+        let source: Vec<Result<bytes::Bytes, reqwest::Error>> =
+            vec![Ok(bytes::Bytes::from(combined))];
+        let mut stream = ollama_ndjson_stream(tokio_stream::iter(source));
+
+        let mut full_response = String::new();
+        while let Some(item) = stream.next().await {
+            if let crate::provider::StreamChunk::Content(text) = item.expect("stream chunk") {
+                full_response.push_str(&text);
+            }
+        }
+        assert_eq!(full_response, "hello world");
+    }
+
     #[tokio::test]
     async fn warmup_with_unreachable_endpoint_errors() {
         let provider =
@@ -1215,6 +1677,50 @@ mod tests {
         assert!(!embedding.is_empty());
         assert!(embedding.len() > 100);
         assert!(embedding.iter().all(|v| v.is_finite()));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires running Ollama instance"]
+    async fn integration_ollama_chat_with_tools() {
+        // Covers the raw-HTTP `send_chat_request` path (#6491) with a real Ollama round-trip,
+        // per the LLM serialization gate for changes touching request/response (de)serialization.
+        let provider = OllamaProvider::new(
+            "http://localhost:11434",
+            ollama_chat_model(),
+            ollama_embed_model(),
+        );
+
+        let messages = vec![Message {
+            role: Role::User,
+            content: "What's the weather in Paris? Use the get_weather tool.".into(),
+            parts: vec![],
+            metadata: MessageMetadata::default(),
+        }];
+        let tools = vec![ToolDefinition {
+            name: "get_weather".into(),
+            description: "Get the current weather for a city".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "city": { "type": "string" } },
+                "required": ["city"]
+            }),
+            output_schema: None,
+        }];
+
+        let response = provider
+            .chat_with_tools(&messages, &tools)
+            .await
+            .expect("chat_with_tools should succeed against a live Ollama server");
+
+        match response {
+            ChatResponse::ToolUse { tool_calls, .. } => {
+                assert!(!tool_calls.is_empty());
+                assert_eq!(tool_calls[0].name.as_str(), "get_weather");
+            }
+            ChatResponse::Text(text) => {
+                panic!("expected a tool call, model replied with text instead: {text}");
+            }
+        }
     }
 
     #[test]
