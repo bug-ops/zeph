@@ -102,11 +102,19 @@ pub async fn graph_recall_watercircles(
             let traversed_ids: Vec<i64> = edges.iter().map(|e| e.id).collect();
 
             for edge in &edges {
-                // Only include edges that belong exactly to this hop ring.
-                let hop_dist = depth_map
-                    .get(&edge.source_entity_id)
-                    .or_else(|| depth_map.get(&edge.target_entity_id))
-                    .copied();
+                // An edge's ring is determined by its farther endpoint from the seed: `bfs_fetch_results`
+                // returns every edge between two visited entities regardless of traversal direction, so
+                // taking only one side's depth (e.g. always source) misclassifies edges discovered in the
+                // opposite orientation. `max` correctly identifies the newly-reached ring on either side.
+                let hop_dist = match (
+                    depth_map.get(&edge.source_entity_id).copied(),
+                    depth_map.get(&edge.target_entity_id).copied(),
+                ) {
+                    (Some(source_depth), Some(target_depth)) => {
+                        Some(source_depth.max(target_depth))
+                    }
+                    (source_depth, target_depth) => source_depth.or(target_depth),
+                };
                 let Some(dist) = hop_dist else { continue };
                 if dist != hop {
                     continue;
@@ -302,6 +310,68 @@ mod tests {
         )
         .await
         .unwrap();
+        assert!(
+            !result.is_empty(),
+            "ring-1 edges must be returned, not silently dropped by the hop-ring filter"
+        );
         assert!(result.len() <= 5, "limit must be respected");
+    }
+
+    #[tokio::test]
+    async fn watercircles_two_ring_hop_distance_matches_target_depth() {
+        let store = setup_store().await;
+        let root = store
+            .upsert_entity("Root", "root", EntityType::Concept, None, None)
+            .await
+            .unwrap()
+            .0;
+        let a = store
+            .upsert_entity("A", "A", EntityType::Concept, None, None)
+            .await
+            .unwrap()
+            .0;
+        let b = store
+            .upsert_entity("B", "B", EntityType::Concept, None, None)
+            .await
+            .unwrap()
+            .0;
+        store
+            .insert_edge(root, a, "has", "Root has A", 0.9, None, None)
+            .await
+            .unwrap();
+        store
+            .insert_edge(a, b, "has", "A has B", 0.9, None, None)
+            .await
+            .unwrap();
+
+        let provider = mock_provider();
+        let result = graph_recall_watercircles(
+            &store,
+            None,
+            &provider,
+            "Root",
+            10,
+            2,
+            10,
+            &[],
+            0.0,
+            false,
+            0.0,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+
+        let ring1 = result
+            .iter()
+            .find(|f| f.target_name == "A")
+            .expect("ring-1 edge Root->A must be present");
+        assert_eq!(ring1.hop_distance, 1, "Root->A must be assigned to ring 1");
+
+        let ring2 = result
+            .iter()
+            .find(|f| f.target_name == "B")
+            .expect("ring-2 edge A->B must be present");
+        assert_eq!(ring2.hop_distance, 2, "A->B must be assigned to ring 2");
     }
 }

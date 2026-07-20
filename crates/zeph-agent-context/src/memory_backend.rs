@@ -1293,27 +1293,11 @@ mod tests {
     /// (a genuinely different code path than `Bfs`), rather than proving a specific pruning
     /// outcome.
     ///
-    /// **Pre-existing bug found while writing this test (unrelated to #6566's dispatch
-    /// wiring, tracked separately — see tester handoff)**: `graph_recall_watercircles`'s
-    /// per-ring hop filter (`retrieval_watercircles.rs`, "Only include edges that belong
-    /// exactly to this hop ring") computes `hop_dist` by looking up
-    /// `depth_map.get(&edge.source_entity_id)` first, falling back to the target only if the
-    /// source is absent. Since the BFS depth map always contains the seed itself at depth 0,
-    /// and a normal forward-directed edge's `source_entity_id` is the node *closer* to the
-    /// seed, `hop_dist` resolves to one less than the ring actually being tested — so
-    /// `dist != hop` is true for every ordinary edge and the ring is emptied every time. This
-    /// was confirmed independently by instrumenting the existing (pre-#6566)
-    /// `watercircles_ring_limit_auto_respects_limit` test in
-    /// `crates/zeph-memory/src/graph/retrieval_watercircles.rs`, which returns `len() == 0`
-    /// for a 10-edge, one-hop fixture — its assertion (`result.len() <= 5`) never checks
-    /// non-emptiness, so the bug went undetected. As a result, `graph_recall_watercircles`
-    /// currently returns an empty result set for any typical seed-outward-directed graph,
-    /// regardless of `ring_limit`. This test asserts the current (buggy) empty-result
-    /// behavior — which still validly proves the dispatch reaches `recall_graph_watercircles`
-    /// specifically, since a fallthrough to plain BFS would have produced non-empty results
-    /// identical to `bfs_facts` — but the empty result itself is a defect, not a feature, and
-    /// should be re-tightened to assert `watercircles_facts` is non-empty once the hop-filter
-    /// bug is fixed in a follow-up PR.
+    /// The fixture seeds two depth-1 edges from `watercircleseed`: `strong` (confidence 0.95)
+    /// and `weak` (confidence 0.2). With `ring_limit = 1`, `WaterCircles` caps ring 1 to its
+    /// single highest-scoring edge (`strong`), while plain `Bfs` returns both edges
+    /// unfiltered — the length divergence (1 vs 2) proves the dispatch reaches
+    /// `recall_graph_watercircles` rather than falling through to BFS.
     #[tokio::test]
     async fn recall_graph_facts_dispatches_bfs_and_watercircles_to_different_results() {
         let backend = seeded_watercircles_ring_backend().await;
@@ -1361,10 +1345,10 @@ mod tests {
             2,
             "expected plain BFS to return both edges; facts={bfs_facts:?}"
         );
-        assert!(
-            watercircles_facts.is_empty(),
-            "documents the pre-existing hop-filter bug in graph_recall_watercircles (see doc \
-             comment above) — expected empty due to the bug, not due to correct ring pruning; \
+        assert_eq!(
+            watercircles_facts.len(),
+            1,
+            "WaterCircles ring_limit=1 should keep only the higher-scoring edge (strong); \
              facts={watercircles_facts:?}"
         );
         assert_ne!(

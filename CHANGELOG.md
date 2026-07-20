@@ -222,6 +222,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-memory`: `graph_recall_watercircles`'s ring-hop filter dropped every edge regardless of
+  `ring_limit`, returning empty results for any typical seed-outward graph (#6596). `hop_dist`
+  was computed by preferring the edge's source-node depth (falling back to target only when
+  source was absent); since BFS discovers edges in either direction, source was almost always
+  present but one ring shallower than the edge's true ring, so `dist != hop` never matched.
+  Fixed by computing `hop_dist = max(source_depth, target_depth)` — the edge's farther endpoint
+  from the seed — which correctly identifies its ring regardless of discovery orientation. Also
+  fixed a `zeph-agent-context` test that had pinned the old buggy empty-result behavior as
+  expected, and added regression coverage for multi-ring (`ring_limit > 1`) bucketing.
+
 - `zeph-sanitizer`/`zeph-subagent`/`zeph-core`: a generic secret-shaped string (e.g. an
   `sk-test-...`-prefixed API key) fabricated or echoed by a sub-agent in its own response text
   passed through unmasked on two operator-visible surfaces (#6571). The two sanitize layers
