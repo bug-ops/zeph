@@ -7,6 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Fixed
 
+- `zeph-core`/`zeph-skills`: the failure-driven self-learning path (`store_improved_version`)
+  wrote LLM-regenerated skill bodies straight to the live `SKILL.md` with no injection scan,
+  and the new `"auto"`-sourced skill version silently inherited the parent skill's trust tier
+  (including `Trusted`/`Verified`) instead of being demoted for machine-evolved content. The
+  same gap existed at the two other paths that can activate a skill version: the shared
+  `activate_version_and_write` choke point behind `/skill activate`/`/skill approve`/`/skill
+  reset`, and the success-trace-driven `arise_store_version` path. All three now run
+  `scan_skill_body` and hard-block activation on a match (the version row is still saved for
+  forensics, the previously-active body stays live), and cap the newly-activated version's
+  trust at `Quarantined` via `min_trust` before the live write, failing closed (skipping
+  activation) if the trust write itself errors. Retroactive re-scan of pre-existing `"auto"`
+  versions and per-version (rather than per-skill-name) trust restoration on rollback are
+  deferred as follow-ups (issue #6568).
 - `zeph-core`: `build_compression_prompt` (`agent/tool_execution/focus.rs`) now repairs
   spotlight-wrapper integrity when its existing 500-char truncation cuts off the closing tag
   of an already-applied untrusted-content wrapper (`<tool-output>`/`<external-data>`, added
