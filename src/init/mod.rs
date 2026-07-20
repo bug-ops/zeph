@@ -1163,6 +1163,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                 bot_to_bot: false,
                 allowed_bots: vec![],
                 max_bot_chain_depth: 3,
+                expandable_blockquote_min_lines: 10,
             });
         }
         ChannelChoice::Discord => {

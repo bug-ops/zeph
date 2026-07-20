@@ -352,7 +352,7 @@ impl TelegramApiClient {
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let client = TelegramApiClient::new("TOKEN");
-    /// let sent = client.answer_guest_query("qid_123", "Hello!", Some("HTML")).await?;
+    /// let sent = client.answer_guest_query("qid_123", "Hello\\!", Some("MarkdownV2")).await?;
     /// println!("message_id={}", sent.message_id);
     /// # Ok(())
     /// # }

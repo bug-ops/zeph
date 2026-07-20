@@ -10,7 +10,10 @@
 //!
 //! # Public API
 //!
-//! * [`markdown_to_telegram`] — convert `CommonMark` to Telegram `MarkdownV2`.
+//! * [`markdown_to_telegram`] — convert `CommonMark` to Telegram `MarkdownV2` using the
+//!   default expandable-blockquote threshold.
+//! * [`markdown_to_telegram_with_config`] — same conversion with an explicit
+//!   expandable-blockquote line-count threshold (Bot API 10.1 `expandable_blockquote`).
 //! * [`utf8_chunks`] — split long strings at UTF-8 / newline boundaries.
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
@@ -18,6 +21,10 @@ use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 const SPECIAL_CHARS: &[char] = &[
     '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!', '\\',
 ];
+
+/// Default blockquote line-count threshold for the expandable form, matching
+/// `TelegramConfig::expandable_blockquote_min_lines`'s default (Bot API 10.1).
+pub(crate) const DEFAULT_EXPANDABLE_BLOCKQUOTE_MIN_LINES: u32 = 10;
 
 /// Convert standard Markdown to Telegram `MarkdownV2` format.
 ///
@@ -53,9 +60,42 @@ const SPECIAL_CHARS: &[char] = &[
 /// ```
 #[must_use]
 pub fn markdown_to_telegram(input: &str) -> String {
+    markdown_to_telegram_with_config(input, DEFAULT_EXPANDABLE_BLOCKQUOTE_MIN_LINES)
+}
+
+/// Convert standard Markdown to Telegram `MarkdownV2`, with an explicit expandable-blockquote
+/// line-count threshold (Bot API 10.1 `expandable_blockquote`).
+///
+/// Identical to [`markdown_to_telegram`] except a blockquote spanning
+/// `expandable_blockquote_min_lines` lines or more renders as the expandable
+/// (collapsed-by-default) form — `**>` on the first line, `\|\|` appended to the
+/// last line, `>` on every line in between. `expandable_blockquote_min_lines = 0`
+/// disables the expandable form unconditionally, regardless of quote length.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_channels::markdown::markdown_to_telegram_with_config;
+///
+/// let quote = "> line 1\n> line 2\n> line 3";
+///
+/// // Threshold of 3 makes a 3-line quote expandable.
+/// let expandable = markdown_to_telegram_with_config(quote, 3);
+/// assert!(expandable.starts_with("**>line 1"));
+/// assert!(expandable.trim_end().ends_with("||"));
+///
+/// // A threshold of 0 always disables the expandable form.
+/// let never_expandable = markdown_to_telegram_with_config(quote, 0);
+/// assert!(!never_expandable.contains("**>"));
+/// ```
+#[must_use]
+pub fn markdown_to_telegram_with_config(
+    input: &str,
+    expandable_blockquote_min_lines: u32,
+) -> String {
     let options = Options::ENABLE_STRIKETHROUGH;
     let parser = Parser::new_ext(input, options);
-    let mut renderer = TelegramRenderer::new(input.len());
+    let mut renderer = TelegramRenderer::new(input.len(), expandable_blockquote_min_lines);
     for event in parser {
         renderer.push_event(event);
     }
@@ -132,18 +172,45 @@ pub fn utf8_chunks(text: &str, max_bytes: usize) -> Vec<&str> {
     chunks
 }
 
+/// Maximum tracked blockquote nesting depth. Levels beyond this are still parsed
+/// (pulldown-cmark emits balanced `Start`/`End` events regardless) but no `output`
+/// mark is recorded for them, so [`TelegramRenderer::blockquote_marks`] cannot grow
+/// past this bound even under adversarially deep nested input. Same defence-in-depth
+/// pattern as `MAX_CHUNK_DEPTH` (`crates/zeph-index/src/chunker.rs`, #6595) — this
+/// path has no native-recursion stack-overflow risk (pulldown-cmark's event stream
+/// and this renderer are both flat iterators), but the cap still bounds memory and
+/// gives a documented, tested ceiling instead of an unbounded one.
+const MAX_BLOCKQUOTE_NESTING_DEPTH: usize = 512;
+
 struct TelegramRenderer {
     output: String,
     in_code_block: bool,
     link_url: Option<String>,
+    /// Blockquote line-count threshold for the expandable form (0 = always disabled).
+    expandable_blockquote_min_lines: u32,
+    /// Stack of `output` byte offsets recorded at each `BlockQuote` start, up to
+    /// [`MAX_BLOCKQUOTE_NESTING_DEPTH`] entries. Only the outermost mark (stack empty
+    /// after popping) triggers the `>`-per-line prefix rewrite in
+    /// [`Self::end_blockquote`] — nested blockquotes are flattened to that single
+    /// level, since Telegram `MarkdownV2` has no nested-blockquote grammar.
+    blockquote_marks: Vec<usize>,
+    /// True `BlockQuote` nesting depth, incremented/decremented on every `Start`/`End`
+    /// regardless of the [`MAX_BLOCKQUOTE_NESTING_DEPTH`] cap — kept separate from
+    /// `blockquote_marks.len()` so `end_blockquote` can tell whether the level it is
+    /// closing had a mark recorded (within the cap) or not (beyond it), keeping
+    /// push/pop balanced either way.
+    blockquote_depth: usize,
 }
 
 impl TelegramRenderer {
-    fn new(capacity: usize) -> Self {
+    fn new(capacity: usize, expandable_blockquote_min_lines: u32) -> Self {
         Self {
             output: String::with_capacity(capacity),
             in_code_block: false,
             link_url: None,
+            expandable_blockquote_min_lines,
+            blockquote_marks: Vec::new(),
+            blockquote_depth: 0,
         }
     }
 
@@ -197,15 +264,92 @@ impl TelegramRenderer {
                 self.output.push_str("• ");
             }
             Event::Start(Tag::BlockQuote(_)) => {
-                self.output.push('>');
+                self.blockquote_depth += 1;
+                if self.blockquote_marks.len() < MAX_BLOCKQUOTE_NESTING_DEPTH {
+                    self.blockquote_marks.push(self.output.len());
+                }
             }
-            Event::End(TagEnd::Paragraph | TagEnd::Item | TagEnd::BlockQuote(_))
-            | Event::SoftBreak
-            | Event::HardBreak => {
+            Event::End(TagEnd::BlockQuote(_)) => {
+                self.end_blockquote();
+            }
+            Event::End(TagEnd::Paragraph | TagEnd::Item) | Event::SoftBreak | Event::HardBreak => {
                 self.output.push('\n');
             }
             _ => {}
         }
+    }
+
+    /// Close the innermost open blockquote: take everything emitted since its `Start`
+    /// event, split it into lines, and re-emit with a `>` prefix on every line (FR-005),
+    /// switching to the expandable form (`**>` … `\|\|`) when the line count meets
+    /// `expandable_blockquote_min_lines` (FR-006/FR-007).
+    ///
+    /// Always appends two trailing newlines after the prefixed block, mirroring the
+    /// pre-fix behaviour of the `TagEnd::Paragraph`/`TagEnd::BlockQuote` shared arm
+    /// (one newline from the inner paragraph's end, one from the blockquote's own end)
+    /// so that block-level spacing is unchanged for callers (NFR-002/NFR-003).
+    ///
+    /// Telegram `MarkdownV2` has no nested-blockquote grammar: a blockquote is exactly
+    /// one leading `>` per line, and a second `>` on the same line is an unescaped
+    /// reserved character that Telegram's parser rejects outright (`400 Bad Request`,
+    /// dropping the whole message). A `BlockQuote` end that is still nested inside
+    /// another open blockquote is therefore a no-op here: its content is left exactly
+    /// as emitted, so it stays part of the enclosing blockquote's captured span and
+    /// gets the single `>` prefix exactly once, when the outermost call below runs —
+    /// nested quotes are flattened to one level, never accumulated as `>>`. This also
+    /// keeps cost linear in the total content size regardless of nesting depth: only
+    /// the outermost call ever splits/rescans, instead of once per nesting level.
+    fn end_blockquote(&mut self) {
+        let Some(closing_level) = self.blockquote_depth.checked_sub(1) else {
+            // Unbalanced `BlockQuote` end with no matching start — pulldown-cmark never
+            // emits this for well-formed input, but fail safe rather than panic.
+            return;
+        };
+        self.blockquote_depth = closing_level;
+
+        if closing_level >= MAX_BLOCKQUOTE_NESTING_DEPTH {
+            // Beyond MAX_BLOCKQUOTE_NESTING_DEPTH: no mark was recorded for this level
+            // (see the `Start` handler), so there is nothing to pop or process — its
+            // content already flows straight into the nearest tracked ancestor.
+            return;
+        }
+
+        let Some(mark) = self.blockquote_marks.pop() else {
+            // Unreachable given the invariant above (marks.len() == min(depth, cap)
+            // at all times), but fail safe rather than panic.
+            return;
+        };
+        if !self.blockquote_marks.is_empty() {
+            // Still inside an enclosing blockquote — flatten (see doc comment above).
+            return;
+        }
+        let content = self.output.split_off(mark);
+        let trimmed = content.trim_end_matches('\n');
+        let lines: Vec<&str> = if trimmed.is_empty() {
+            vec![""]
+        } else {
+            trimmed.split('\n').collect()
+        };
+        let line_count = lines.len();
+        let line_count_u32 = u32::try_from(line_count).unwrap_or(u32::MAX);
+        let expandable = self.expandable_blockquote_min_lines > 0
+            && line_count_u32 >= self.expandable_blockquote_min_lines;
+
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 {
+                self.output.push('\n');
+            }
+            if expandable && i == 0 {
+                self.output.push_str("**>");
+            } else {
+                self.output.push('>');
+            }
+            self.output.push_str(line);
+            if expandable && i == line_count - 1 {
+                self.output.push_str("||");
+            }
+        }
+        self.output.push_str("\n\n");
     }
 
     fn escape_text(text: &str) -> String {
@@ -320,6 +464,154 @@ mod tests {
         let input = "> quote";
         let output = markdown_to_telegram(input);
         assert!(output.starts_with('>'));
+    }
+
+    #[test]
+    fn test_multiline_blockquote_prefixes_every_line() {
+        // 3 lines — below the default 10-line expandable threshold.
+        let input = "> line 1\n> line 2\n> line 3";
+        let output = markdown_to_telegram(input);
+        for line in ["line 1", "line 2", "line 3"] {
+            assert!(
+                output.contains(&format!(">{line}")),
+                "expected '>{line}' in output: {output:?}"
+            );
+        }
+        assert!(
+            !output.contains("**>"),
+            "must not be expandable: {output:?}"
+        );
+        assert!(!output.contains("||"), "must not be expandable: {output:?}");
+    }
+
+    #[test]
+    fn test_blockquote_line_counts_two_to_nine_below_default_threshold() {
+        for n in 2..=9 {
+            let lines: Vec<String> = (1..=n).map(|i| format!("> line {i}")).collect();
+            let input = lines.join("\n");
+            let output = markdown_to_telegram(&input);
+            for i in 1..=n {
+                assert!(
+                    output.contains(&format!(">line {i}")),
+                    "n={n}: expected '>line {i}' in output: {output:?}"
+                );
+            }
+            assert!(!output.contains("**>"), "n={n}: must not be expandable");
+        }
+    }
+
+    #[test]
+    fn test_blockquote_expandable_at_threshold_boundary() {
+        let lines: Vec<String> = (1..=5).map(|i| format!("> line {i}")).collect();
+        let input = lines.join("\n");
+
+        // Exactly at the threshold — must render expandable (>= comparison, FR-006).
+        let expandable = markdown_to_telegram_with_config(&input, 5);
+        assert!(
+            expandable.starts_with("**>line 1"),
+            "output: {expandable:?}"
+        );
+        assert!(
+            expandable.trim_end().ends_with("||"),
+            "output: {expandable:?}"
+        );
+
+        // One line short of the threshold — must render the regular form (FR-006/FR-007).
+        let regular = markdown_to_telegram_with_config(&input, 6);
+        assert!(!regular.contains("**>"), "output: {regular:?}");
+        assert!(!regular.ends_with("||"), "output: {regular:?}");
+        assert!(regular.starts_with(">line 1"), "output: {regular:?}");
+    }
+
+    #[test]
+    fn test_expandable_blockquote_min_lines_zero_disables_expandable_unconditionally() {
+        let lines: Vec<String> = (1..=50).map(|i| format!("> line {i}")).collect();
+        let input = lines.join("\n");
+        let output = markdown_to_telegram_with_config(&input, 0);
+        assert!(!output.contains("**>"), "output: {output:?}");
+        assert!(!output.ends_with("||"), "output: {output:?}");
+        for i in 1..=50 {
+            assert!(output.contains(&format!(">line {i}")));
+        }
+    }
+
+    #[test]
+    fn test_nested_blockquote_flattens_to_single_level() {
+        // Telegram MarkdownV2 has no nested-blockquote grammar: a blockquote is
+        // exactly one leading '>' per line. A second '>' is an unescaped reserved
+        // character that Telegram's parser rejects outright (400 Bad Request,
+        // dropping the whole message) — so nested quotes must flatten to one level,
+        // never accumulate as '>>'.
+        let input = "> outer\n> > inner";
+        let output = markdown_to_telegram(input);
+        assert_eq!(output, ">outer\n>inner\n");
+        assert!(
+            !output.contains(">>"),
+            "nested blockquote must never emit a doubled '>' prefix: {output:?}"
+        );
+    }
+
+    #[test]
+    fn test_blockquote_nesting_beyond_depth_cap_stays_bounded() {
+        // Regression for the depth-cap guard (same defence-in-depth pattern as
+        // MAX_CHUNK_DEPTH, #6595): nesting far past MAX_BLOCKQUOTE_NESTING_DEPTH must
+        // not panic, hang, or produce a doubled '>' — it flattens exactly like a
+        // shallow nested quote, just with all levels merged into the one tracked
+        // (outermost) blockquote.
+        let depth = 600; // comfortably past MAX_BLOCKQUOTE_NESTING_DEPTH (512)
+        let input = format!("{}deep", "> ".repeat(depth));
+        let output = markdown_to_telegram(&input);
+        assert_eq!(output, ">deep\n");
+        assert!(!output.contains(">>"), "output: {output:?}");
+    }
+
+    #[test]
+    fn test_blockquote_nesting_within_depth_cap_still_flattens() {
+        // A depth comfortably below the cap must behave identically to the
+        // beyond-cap case above — the cap must never change *correctness*, only bound
+        // the tracked-mark memory for pathological input.
+        let depth = 20; // far below MAX_BLOCKQUOTE_NESTING_DEPTH — guard must never engage
+        let input = format!("{}shallow", "> ".repeat(depth));
+        let output = markdown_to_telegram(&input);
+        assert_eq!(output, ">shallow\n");
+        assert!(!output.contains(">>"), "output: {output:?}");
+    }
+
+    #[test]
+    fn test_short_blockquote_unaffected_by_expandable_config() {
+        // A single-line blockquote must render identically regardless of the configured
+        // threshold — parity with pre-fix output for quotes below any reasonable threshold.
+        let input = "> quote";
+        let default_output = markdown_to_telegram(input);
+        let custom_output = markdown_to_telegram_with_config(input, 1);
+        assert_eq!(default_output, ">quote\n");
+        // threshold=1 with a single-line quote meets the expandable condition (1 >= 1).
+        assert!(custom_output.starts_with("**>quote"));
+        assert!(custom_output.trim_end().ends_with("||"));
+    }
+
+    #[test]
+    fn test_blockquote_line_with_special_chars_escaped_exactly_as_outside_blockquote() {
+        // Spec 007-3 §10: a blockquote line containing MarkdownV2 special characters is
+        // escaped exactly as it would be outside a blockquote — the '>' prefix is
+        // prepended to the already-escaped content, not interleaved with escaping.
+        let input = "> Special: . ! - + = | { }";
+        let output = markdown_to_telegram(input);
+        assert_eq!(output, ">Special: \\. \\! \\- \\+ \\= \\| \\{ \\}\n");
+    }
+
+    #[test]
+    fn test_fenced_code_block_inside_blockquote_pins_current_behavior() {
+        // Security/critic finding M1: whether Telegram's real MarkdownV2 parser wants
+        // the code-fence delimiters ("```") prefixed with '>' like every other quoted
+        // line, or wants code content excluded from per-line prefixing, is NOT
+        // verified here — that needs a live Telegram client (spec 007-3 SC-006/SC-007
+        // are still unrun). This test pins the CURRENT behavior (every captured line,
+        // fences included, gets a single '>' prefix) so a future change to it is a
+        // deliberate, reviewed decision instead of a silent regression either way.
+        let input = "> ```\n> code line\n> ```";
+        let output = markdown_to_telegram(input);
+        assert_eq!(output, ">```\n>code line\n>```\n");
     }
 
     #[test]

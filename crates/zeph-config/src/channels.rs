@@ -396,6 +396,7 @@ max_bot_chain_depth = 5
             bot_to_bot: false,
             allowed_bots: Vec::new(),
             max_bot_chain_depth: default_max_bot_chain_depth(),
+            expandable_blockquote_min_lines: default_expandable_blockquote_min_lines(),
         };
         let json = serde_json::to_string(&cfg).unwrap();
         assert!(!json.contains("real-secret-value"));
@@ -530,6 +531,10 @@ fn default_max_bot_chain_depth() -> u32 {
     1
 }
 
+fn default_expandable_blockquote_min_lines() -> u32 {
+    10
+}
+
 /// Telegram channel configuration, nested under `[telegram]` in TOML.
 ///
 /// When present, Zeph connects to Telegram as a bot using the provided token.
@@ -545,6 +550,7 @@ fn default_max_bot_chain_depth() -> u32 {
 /// bot_to_bot = true
 /// allowed_bots = ["@my_bot"]
 /// max_bot_chain_depth = 1
+/// expandable_blockquote_min_lines = 10
 /// ```
 #[derive(Clone, Deserialize, Serialize)]
 pub struct TelegramConfig {
@@ -606,6 +612,13 @@ pub struct TelegramConfig {
     /// prevention across multiple top-level exchanges.
     #[serde(default = "default_max_bot_chain_depth")]
     pub max_bot_chain_depth: u32,
+    /// Blockquotes with this many lines or more render as an expandable
+    /// (collapsed-by-default) blockquote (Bot API 10.1 `expandable_blockquote`).
+    ///
+    /// `0` disables the expandable form entirely — all blockquotes render as
+    /// regular (always-expanded) quotes regardless of length. Default: 10.
+    #[serde(default = "default_expandable_blockquote_min_lines")]
+    pub expandable_blockquote_min_lines: u32,
 }
 
 impl std::fmt::Debug for TelegramConfig {
@@ -620,6 +633,10 @@ impl std::fmt::Debug for TelegramConfig {
             .field("bot_to_bot", &self.bot_to_bot)
             .field("allowed_bots_count", &self.allowed_bots.len())
             .field("max_bot_chain_depth", &self.max_bot_chain_depth)
+            .field(
+                "expandable_blockquote_min_lines",
+                &self.expandable_blockquote_min_lines,
+            )
             .finish()
     }
 }

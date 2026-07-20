@@ -1201,3 +1201,102 @@ mod rate_limit_advisory_tests {
         assert_eq!(result.output, base);
     }
 }
+
+/// Step 104 — add an `expandable_blockquote_min_lines` advisory comment to an existing
+/// active `[telegram]` table (spec 007-3-telegram-rich-text, issue #6541).
+///
+/// Advisory only: `#[serde(default)]` already makes existing configs load with the field
+/// defaulted to `10`, so this migration is purely informational — it surfaces the option
+/// without changing behaviour. Skipped when the key is already present or `[telegram]` is
+/// absent (an unconfigured channel needs no advisory). Mirrors
+/// [`migrate_orchestration_idle_timeout`]'s shape exactly (same section-presence guard,
+/// same advisory-comment idiom).
+///
+/// # Errors
+///
+/// Returns [`MigrateError`] if the TOML document cannot be parsed.
+pub fn migrate_telegram_expandable_blockquote_config(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("expandable_blockquote_min_lines") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    if !section_header_present(toml_src, "telegram") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# expandable_blockquote_min_lines = 10  \
+        # blockquotes with this many lines or more render as an expandable \
+        # (collapsed-by-default) blockquote (Bot API 10.1); 0 disables the expandable form \
+        # entirely (spec 007-3-telegram-rich-text, issue #6541)\n";
+    let output = insert_after_section(toml_src, "telegram", comment);
+    // Defensive: the guards above already guarantee `[telegram]` is present and
+    // `insert_after_section` always inserts non-empty content when reached, so this is
+    // currently unreachable — kept for the same reason as
+    // `migrate_orchestration_idle_timeout` (#5945: a future change to either guard must not
+    // silently regress into reporting a change that didn't happen).
+    if output == toml_src {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["telegram.expandable_blockquote_min_lines".to_owned()],
+    })
+}
+
+#[cfg(test)]
+mod telegram_expandable_blockquote_tests {
+    use super::*;
+
+    #[test]
+    fn migrate_telegram_expandable_blockquote_appends_advisory_comment() {
+        let base = "[telegram]\ntoken = \"tok\"\nallowed_users = [\"alice\"]\n";
+        let result = migrate_telegram_expandable_blockquote_config(base).unwrap();
+        assert_eq!(result.changed_count, 1);
+        assert!(
+            result
+                .output
+                .contains("# expandable_blockquote_min_lines = 10")
+        );
+    }
+
+    #[test]
+    fn migrate_telegram_expandable_blockquote_noop_without_telegram_section() {
+        let base = "[agent]\nname = \"zeph\"\n";
+        let result = migrate_telegram_expandable_blockquote_config(base).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, base);
+    }
+
+    #[test]
+    fn migrate_telegram_expandable_blockquote_noop_when_key_already_present() {
+        let base = "[telegram]\ntoken = \"tok\"\nexpandable_blockquote_min_lines = 5\n";
+        let result = migrate_telegram_expandable_blockquote_config(base).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, base);
+    }
+
+    #[test]
+    fn migrate_telegram_expandable_blockquote_idempotent() {
+        let base = "[telegram]\ntoken = \"tok\"\n";
+        let first = migrate_telegram_expandable_blockquote_config(base).unwrap();
+        let second = migrate_telegram_expandable_blockquote_config(&first.output).unwrap();
+        assert_eq!(second.changed_count, 0, "second run must not double-append");
+        assert_eq!(second.output, first.output);
+    }
+}

@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::markdown::markdown_to_telegram;
+use crate::markdown::markdown_to_telegram_with_config;
 use crate::streaming::StreamingBuffer;
 use crate::telegram_api_ext::{BotAccessSettings, GuestMessage, TelegramApiClient};
 use axum::Router;
@@ -119,6 +119,10 @@ pub struct TelegramChannel {
     allowed_bots: Vec<String>,
     /// Maximum consecutive bot replies per chat before dropping.
     max_bot_chain_depth: u32,
+    /// Blockquotes with this many lines or more render as an expandable
+    /// (collapsed-by-default) blockquote (Bot API 10.1 `expandable_blockquote`).
+    /// `0` disables the expandable form unconditionally.
+    expandable_blockquote_min_lines: u32,
     /// Per-chat consecutive bot reply counters for loop prevention.
     bot_reply_counters: BotReplyCounters,
     /// Optional supervisor used to register the Telegram listener task in the
@@ -144,6 +148,10 @@ impl std::fmt::Debug for TelegramChannel {
             )
             .field("allowed_bots_count", &self.allowed_bots.len())
             .field("max_bot_chain_depth", &self.max_bot_chain_depth)
+            .field(
+                "expandable_blockquote_min_lines",
+                &self.expandable_blockquote_min_lines,
+            )
             .field("supervisor", &self.supervisor.is_some())
             .finish_non_exhaustive()
     }
@@ -196,6 +204,8 @@ impl TelegramChannel {
             bot_to_bot_active: Arc::new(AtomicBool::new(false)),
             allowed_bots: Vec::new(),
             max_bot_chain_depth: 1,
+            expandable_blockquote_min_lines:
+                crate::markdown::DEFAULT_EXPANDABLE_BLOCKQUOTE_MIN_LINES,
             bot_reply_counters: Arc::new(Mutex::new(HashMap::new())),
             supervisor: None,
             guest_proxy_handle: None,
@@ -262,6 +272,19 @@ impl TelegramChannel {
         self.bot_to_bot = enabled;
         self.allowed_bots = allowed;
         self.max_bot_chain_depth = max_depth;
+        self
+    }
+
+    /// Set the blockquote line-count threshold for the expandable form (Bot API 10.1
+    /// `expandable_blockquote`).
+    ///
+    /// Blockquotes with at least `min_lines` lines render as the expandable
+    /// (collapsed-by-default) form. `0` disables the expandable form unconditionally.
+    ///
+    /// Default: 10.
+    #[must_use]
+    pub fn with_expandable_blockquote_min_lines(mut self, min_lines: u32) -> Self {
+        self.expandable_blockquote_min_lines = min_lines;
         self
     }
 
@@ -466,6 +489,8 @@ impl TelegramChannel {
             bot_to_bot_active: Arc::new(AtomicBool::new(false)),
             allowed_bots: Vec::new(),
             max_bot_chain_depth: 1,
+            expandable_blockquote_min_lines:
+                crate::markdown::DEFAULT_EXPANDABLE_BLOCKQUOTE_MIN_LINES,
             bot_reply_counters: Arc::new(Mutex::new(HashMap::new())),
             supervisor: None,
             guest_proxy_handle: None,
@@ -530,7 +555,8 @@ impl TelegramChannel {
             &text_owned
         };
 
-        let formatted_text = markdown_to_telegram(text);
+        let formatted_text =
+            markdown_to_telegram_with_config(text, self.expandable_blockquote_min_lines);
 
         if formatted_text.is_empty() {
             tracing::debug!("skipping send: formatted text is empty");
@@ -696,6 +722,17 @@ fn spawn_guest_proxy(
         .route("/{*path}", any(proxy_handler))
         .with_state(state);
 
+    // `std::net::TcpListener` binds in blocking mode; tokio requires a non-blocking
+    // socket before `TcpListener::from_std` (undocumented UB pre-1.x, now a hard
+    // panic: "Registering a blocking socket with the tokio runtime is unsupported",
+    // see tokio-rs/tokio#7172). Was previously unreachable in the test suite because
+    // nothing exercised this path end-to-end (guest_mode was never wired into
+    // `create_channel`, see issue #6541 review) — found the moment that wiring
+    // landed and a test finally drove `TelegramChannel::start()` with
+    // `guest_mode = true`.
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| ChannelError::Other(format!("guest proxy: set_nonblocking failed: {e}")))?;
     let listener = tokio::net::TcpListener::from_std(listener).map_err(|e| {
         ChannelError::Other(format!("guest proxy: TcpListener conversion failed: {e}"))
     })?;
@@ -1175,7 +1212,7 @@ impl Channel for TelegramChannel {
 
     /// Send a complete message to the active Telegram chat.
     ///
-    /// The text is converted to `MarkdownV2` via [`markdown_to_telegram`]
+    /// The text is converted to `MarkdownV2` via [`markdown_to_telegram_with_config`]
     /// before sending.  Messages longer than 4096 bytes are split into
     /// multiple messages at UTF-8 / newline boundaries.
     ///
@@ -1199,7 +1236,8 @@ impl Channel for TelegramChannel {
             return Err(ChannelError::NoActiveSession);
         };
 
-        let formatted_text = markdown_to_telegram(text);
+        let formatted_text =
+            markdown_to_telegram_with_config(text, self.expandable_blockquote_min_lines);
 
         if formatted_text.is_empty() {
             tracing::debug!("skipping send: formatted text is empty");
@@ -1286,21 +1324,27 @@ impl Channel for TelegramChannel {
         );
 
         // Guest context: send accumulated text via answerGuestQuery (single call).
+        // Routed through the same markdown_to_telegram renderer as the regular send
+        // path — raw, unconverted LLM text must never reach answer_guest_query (spec
+        // 007-3 FR-001/FR-002, Key Invariants).
         if let Some(query_id) = self.guest_query_id.take() {
             let full_text = self.buffer.take();
-            let text = full_text.trim().to_owned();
-            if text.len() > MAX_MESSAGE_LEN {
+            let formatted = markdown_to_telegram_with_config(
+                full_text.trim(),
+                self.expandable_blockquote_min_lines,
+            );
+            if formatted.len() > MAX_MESSAGE_LEN {
                 tracing::warn!(
                     query_id,
-                    bytes = text.len(),
+                    bytes = formatted.len(),
                     max = MAX_MESSAGE_LEN,
                     "guest response exceeds 4096 bytes; Telegram truncates answerGuestQuery — consider shorter responses"
                 );
             }
-            if !text.is_empty()
+            if !formatted.is_empty()
                 && let Err(e) = self
                     .api_ext
-                    .answer_guest_query(&query_id, &text, Some("HTML"))
+                    .answer_guest_query(&query_id, &formatted, Some("MarkdownV2"))
                     .await
             {
                 tracing::warn!(query_id, "answer_guest_query failed: {e}");
@@ -1619,6 +1663,8 @@ mod tests {
             bot_to_bot_active: Arc::new(AtomicBool::new(false)),
             allowed_bots: Vec::new(),
             max_bot_chain_depth: 1,
+            expandable_blockquote_min_lines:
+                crate::markdown::DEFAULT_EXPANDABLE_BLOCKQUOTE_MIN_LINES,
             bot_reply_counters: Arc::new(Mutex::new(HashMap::new())),
             supervisor: None,
             guest_proxy_handle: None,
@@ -2402,6 +2448,128 @@ mod tests {
         );
         assert!(channel.guest_query_id.is_none());
         assert!(channel.buffer.is_empty());
+    }
+
+    /// Spec 007-3 FR-001/FR-002/SC-001/SC-002: guest-mode responses must be formatted
+    /// through `markdown_to_telegram` and sent with `parse_mode = "MarkdownV2"`, never raw
+    /// text with `"HTML"`.
+    #[tokio::test]
+    async fn flush_chunks_guest_mode_formats_markdown_and_uses_markdown_v2() {
+        use wiremock::matchers::{method, path};
+
+        let server = MockServer::start().await;
+        let answer_mock = Mock::given(method("POST"))
+            .and(path("/answerGuestQuery"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": {"message_id": 1, "chat_id": 2}
+            })));
+        let answer_handle = server.register_as_scoped(answer_mock).await;
+
+        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+        channel.guest_query_id = Some("qid42".to_string());
+        channel
+            .buffer
+            .push("**bold** and `code` and <b>raw html</b> & special . chars");
+
+        channel.flush_chunks().await.unwrap();
+
+        let requests = answer_handle.received_requests().await;
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value = requests[0].body_json().unwrap();
+        assert_eq!(
+            body["parse_mode"], "MarkdownV2",
+            "guest-mode send must never use HTML (SC-002): {body}"
+        );
+        let sent_text = body["text"].as_str().unwrap();
+        // Formatted through markdown_to_telegram: bold markers converted, special chars
+        // escaped — raw unconverted LLM text (with literal `**`/`<b>`) must never reach the
+        // wire (spec Key Invariants).
+        assert_eq!(
+            sent_text,
+            markdown_to_telegram_with_config(
+                "**bold** and `code` and <b>raw html</b> & special . chars",
+                channel.expandable_blockquote_min_lines,
+            )
+        );
+        assert!(sent_text.contains("*bold*"), "text: {sent_text:?}");
+        assert!(!sent_text.contains("**bold**"), "text: {sent_text:?}");
+    }
+
+    /// Spec 007-3 NFR-001: guest-mode and regular-message formatting must produce
+    /// identical output for the same input, verified through both real call sites.
+    #[tokio::test]
+    async fn guest_and_regular_send_produce_identical_formatted_text() {
+        use wiremock::matchers::{method, path, path_regex};
+
+        let input =
+            "# Title\n\n**bold** _italic_ `code`\n\n> line 1\n> line 2\n\n- item 1\n- item 2";
+
+        // Guest path.
+        let guest_server = MockServer::start().await;
+        let guest_mock = Mock::given(method("POST"))
+            .and(path("/answerGuestQuery"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": {"message_id": 1, "chat_id": 2}
+            })));
+        let guest_handle = guest_server.register_as_scoped(guest_mock).await;
+        let (mut guest_channel, _tx) = make_mocked_channel(&guest_server, vec![]).await;
+        guest_channel.guest_query_id = Some("qid".to_string());
+        guest_channel.buffer.push(input);
+        guest_channel.flush_chunks().await.unwrap();
+        let guest_requests = guest_handle.received_requests().await;
+        let guest_body: serde_json::Value = guest_requests[0].body_json().unwrap();
+        let guest_text = guest_body["text"].as_str().unwrap().to_owned();
+
+        // Regular path.
+        let regular_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex("(?i).*/sendmessage$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tg_ok_message()))
+            .mount(&regular_server)
+            .await;
+        let (mut regular_channel, _tx2) = make_mocked_channel(&regular_server, vec![]).await;
+        regular_channel.send(input).await.unwrap();
+        let regular_requests = regular_server.received_requests().await.unwrap();
+        let send_req = regular_requests
+            .iter()
+            .find(|r| r.url.path().to_lowercase().ends_with("/sendmessage"))
+            .unwrap();
+        let regular_body: serde_json::Value = send_req.body_json().unwrap();
+        let regular_text = regular_body["text"].as_str().unwrap();
+
+        assert_eq!(
+            guest_text, regular_text,
+            "guest-mode and regular formatting must be identical for the same input"
+        );
+        assert_eq!(regular_body["parse_mode"], "MarkdownV2");
+        assert_eq!(guest_body["parse_mode"], "MarkdownV2");
+    }
+
+    /// Spec 007-3 US-003/SC-007: a blockquote at/above the configured threshold renders
+    /// expandable end-to-end through the regular `send` path.
+    #[tokio::test]
+    async fn send_renders_expandable_blockquote_at_configured_threshold() {
+        use wiremock::matchers::{method, path_regex};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex("(?i).*/sendmessage$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tg_ok_message()))
+            .mount(&server)
+            .await;
+        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+        channel = channel.with_expandable_blockquote_min_lines(3);
+
+        let quote = "> line 1\n> line 2\n> line 3";
+        channel.send(quote).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = requests[0].body_json().unwrap();
+        let text = body["text"].as_str().unwrap();
+        assert!(text.starts_with("**>line 1"), "text: {text:?}");
+        assert!(text.trim_end().ends_with("||"), "text: {text:?}");
     }
 
     #[tokio::test]

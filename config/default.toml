@@ -1062,6 +1062,9 @@ circuit_breaker_cooldown_secs = 30
 # token = "your-bot-token"
 # Allowed usernames (empty = allow all except for /start command)
 # allowed_users = ["username1", "username2"]
+# Blockquotes with this many lines or more render as an expandable (collapsed-by-default)
+# blockquote (Bot API 10.1 expandable_blockquote). 0 disables the expandable form entirely.
+# expandable_blockquote_min_lines = 10
 
 [timeouts]
 # LLM chat completion timeout in seconds

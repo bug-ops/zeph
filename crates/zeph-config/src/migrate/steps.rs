@@ -123,10 +123,11 @@ use super::{
     migrate_session_recap_config, migrate_session_resume_config, migrate_shadow_sentinel_config,
     migrate_shell_checkpoints_config, migrate_shell_transactional,
     migrate_skill_trust_require_check, migrate_skills_registry, migrate_stt_to_provider,
-    migrate_supervisor_config, migrate_telemetry_config, migrate_tools_compression_config,
-    migrate_trace_metadata, migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config,
-    migrate_tui_theme_defaults, migrate_utility_high_gain_tools, migrate_vigil_config,
-    migrate_worktree_config, migrate_worktree_git_timeout, migrate_worktree_quota_fields,
+    migrate_supervisor_config, migrate_telegram_expandable_blockquote_config,
+    migrate_telemetry_config, migrate_tools_compression_config, migrate_trace_metadata,
+    migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults,
+    migrate_utility_high_gain_tools, migrate_vigil_config, migrate_worktree_config,
+    migrate_worktree_git_timeout, migrate_worktree_quota_fields,
 };
 
 // ── Wrapper structs for all 73 sequential migration steps ───────────────────────────────────────
@@ -1325,5 +1326,18 @@ impl Migration for MigrateMemoryConsentGateConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_memory_consent_gate_config(toml_src)
+    }
+}
+
+/// Step 104 — adds an `expandable_blockquote_min_lines` advisory comment to an existing
+/// active `[telegram]` table (spec 007-3-telegram-rich-text, issue #6541).
+pub(super) struct MigrateTelegramExpandableBlockquoteConfig;
+impl Migration for MigrateTelegramExpandableBlockquoteConfig {
+    fn name(&self) -> &'static str {
+        "migrate_telegram_expandable_blockquote_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_telegram_expandable_blockquote_config(toml_src)
     }
 }

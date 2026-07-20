@@ -100,6 +100,7 @@ async fn create_channel_telegram_without_token() {
         bot_to_bot: false,
         allowed_bots: vec![],
         max_bot_chain_depth: 3,
+        expandable_blockquote_min_lines: 10,
         allowed_tools: None,
     });
     let channel = create_channel(&config).await.unwrap();
@@ -135,10 +136,40 @@ async fn create_channel_telegram_with_token() {
         bot_to_bot: false,
         allowed_bots: vec![],
         max_bot_chain_depth: 3,
+        expandable_blockquote_min_lines: 10,
         allowed_tools: None,
     });
     let channel = create_channel(&config).await.unwrap();
     assert!(matches!(channel, AnyChannel::Telegram(_)));
+}
+
+/// Regression for the `guest_mode`/`bot_to_bot` wiring gap found in review (issue #6541):
+/// `create_channel` must actually thread these `TelegramConfig` fields into the
+/// `TelegramChannel` builder, not just accept them in config. Asserts via `Debug`
+/// output since the fields are private — `TelegramChannel`'s `Debug` impl exposes
+/// `guest_mode`, `bot_to_bot`, `max_bot_chain_depth`, and `allowed_bots_count`.
+#[tokio::test]
+async fn create_channel_telegram_wires_guest_mode_and_bot_to_bot_from_config() {
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.telegram = Some(zeph_core::config::TelegramConfig {
+        token: Some("test_token".to_string()),
+        allowed_users: vec!["testuser".to_string()],
+        skills: zeph_core::config::ChannelSkillsConfig::default(),
+        stream_interval_ms: 3000,
+        guest_mode: true,
+        bot_to_bot: true,
+        allowed_bots: vec!["@friendlybot".to_string()],
+        max_bot_chain_depth: 5,
+        expandable_blockquote_min_lines: 10,
+        allowed_tools: None,
+    });
+    let channel = create_channel(&config).await.unwrap();
+    assert!(matches!(channel, AnyChannel::Telegram(_)));
+    let debug = format!("{channel:?}");
+    assert!(debug.contains("guest_mode: true"), "debug: {debug}");
+    assert!(debug.contains("bot_to_bot: true"), "debug: {debug}");
+    assert!(debug.contains("max_bot_chain_depth: 5"), "debug: {debug}");
+    assert!(debug.contains("allowed_bots_count: 1"), "debug: {debug}");
 }
 
 #[cfg(feature = "discord")]
@@ -191,6 +222,7 @@ async fn create_channel_telegram_with_empty_allowed_users_errors() {
         bot_to_bot: false,
         allowed_bots: vec![],
         max_bot_chain_depth: 3,
+        expandable_blockquote_min_lines: 10,
     });
     let result = create_channel(&config).await;
     assert!(result.is_err());

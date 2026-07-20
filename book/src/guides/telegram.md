@@ -44,7 +44,8 @@ Telegram has API rate limits, so streaming works differently from CLI. Zeph batc
 - Subsequent chunks accumulate and edit the existing message in-place
 - Edit interval is configurable via `stream_interval_ms` (default 3000ms, minimum 500ms)
 - Long messages (>4096 chars) are automatically split
-- MarkdownV2 formatting is applied automatically
+- MarkdownV2 formatting is applied automatically, including multi-line blockquotes — every
+  quoted line renders inside Telegram's blockquote UI, not just the first
 
 ### Configuring Stream Interval
 
@@ -60,6 +61,21 @@ stream_interval_ms = 3000  # Edit every 3 seconds (default)
 ```
 
 Lower values provide more responsive feedback but consume more API quota. Higher values reduce API calls but responses appear less fluid. Start with the default and adjust based on your network speed and API rate limit tolerance.
+
+### Configuring Expandable Blockquotes
+
+Long blockquotes can render collapsed by default, using Telegram's expandable blockquote UI (Bot API 10.1):
+
+```toml
+[telegram]
+expandable_blockquote_min_lines = 10  # default
+# Collapse quotes of 5+ lines instead:
+# expandable_blockquote_min_lines = 5
+# Disable the expandable form entirely — always render fully expanded:
+# expandable_blockquote_min_lines = 0
+```
+
+Blockquotes with at least `expandable_blockquote_min_lines` lines render collapsed, with a "Show more" affordance in the Telegram client; shorter quotes render as a regular (always-expanded) blockquote. Setting this to `0` disables the expandable form unconditionally, regardless of quote length.
 
 ## Guest Mode and Bot-to-Bot Communication
 

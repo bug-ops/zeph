@@ -31,7 +31,8 @@ pub use features::{
     migrate_orchestration_ensemble, migrate_orchestration_idle_timeout,
     migrate_orchestration_persistence, migrate_orchestration_whole_plan_verifier_timeout,
     migrate_rate_limit_advisory, migrate_skill_trust_require_check, migrate_skills_registry,
-    migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults,
+    migrate_telegram_expandable_blockquote_config, migrate_tui_delights, migrate_tui_mouse,
+    migrate_tui_theme_config, migrate_tui_theme_defaults,
 };
 pub use infra::*;
 pub use integrity::migrate_integrity_config;
@@ -636,11 +637,11 @@ use steps::{
     MigrateSessionPersistenceConfig, MigrateSessionProviderPersistence, MigrateSessionRecapConfig,
     MigrateSessionResumeConfig, MigrateShadowSentinelConfig, MigrateShellCheckpointsConfig,
     MigrateShellTransactional, MigrateSkillTrustRequireCheck, MigrateSkillsRegistry,
-    MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelemetryConfig,
-    MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse,
-    MigrateTuiThemeConfig, MigrateTuiThemeDefaults, MigrateUtilityHighGainTools,
-    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
-    MigrateWorktreeQuotaFields,
+    MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelegramExpandableBlockquoteConfig,
+    MigrateTelemetryConfig, MigrateToolsCompressionConfig, MigrateTraceMetadata,
+    MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig, MigrateTuiThemeDefaults,
+    MigrateUtilityHighGainTools, MigrateVigilConfig, MigrateWorktreeConfig,
+    MigrateWorktreeGitTimeout, MigrateWorktreeQuotaFields,
 };
 
 /// Ordered registry of all sequential migration steps (steps 1–99).
@@ -856,6 +857,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 103 — add [memory.consent_gate] advisory block for the write-time
             // memory-consent gate (issue #6490, MemGhost)
             Box::new(MigrateMemoryConsentGateConfig),
+            // Step 104 — add expandable_blockquote_min_lines advisory comment to an
+            // existing active [telegram] table (spec 007-3-telegram-rich-text, #6541)
+            Box::new(MigrateTelegramExpandableBlockquoteConfig),
         ]
     });
 

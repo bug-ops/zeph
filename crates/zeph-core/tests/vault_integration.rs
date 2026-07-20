@@ -84,6 +84,7 @@ async fn age_vault_injects_token_into_existing_telegram_config() {
         bot_to_bot: false,
         allowed_bots: vec![],
         max_bot_chain_depth: 3,
+        expandable_blockquote_min_lines: 10,
     });
     config.resolve_secrets(&vault).await.unwrap();
 

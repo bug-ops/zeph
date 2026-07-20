@@ -188,10 +188,18 @@ The routing decision happens in `TelegramChannel::send` / `send_chunk`:
 ```
 if incoming.guest_query_id.is_some():
     accumulate all chunks → full_text
-    TelegramApiClient::answer_guest_query(query_id, full_text, ParseMode::Html)
+    formatted = markdown_to_telegram(full_text.trim())
+    TelegramApiClient::answer_guest_query(query_id, formatted, ParseMode::MarkdownV2)
 else:
     existing send_message / edit_message_text path
 ```
+
+> [!note] Corrected in spec 007-3 (Telegram Rich-Text Formatting, issue #6541)
+> The guest-mode response is formatted through the same `markdown_to_telegram` renderer
+> used by the regular `send` path before being handed to `answer_guest_query`, and sent
+> with `parse_mode = "MarkdownV2"`. An earlier revision of this spec documented a raw,
+> unconverted `ParseMode::Html` call here — that was the pre-fix defect
+> [[007-channels/007-3-telegram-rich-text]] fixes, not the intended design.
 
 > [!warning]
 > `answerGuestQuery` is a one-shot call. There is no equivalent of `editMessageText`

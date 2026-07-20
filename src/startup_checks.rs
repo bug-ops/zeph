@@ -90,6 +90,7 @@ mod tests {
                 bot_to_bot: false,
                 allowed_bots: vec![],
                 max_bot_chain_depth: 3,
+                expandable_blockquote_min_lines: 10,
                 allowed_tools: None,
             }),
             ..Default::default()

@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Fixed
+
+- `zeph-channels`: Telegram guest-mode responses (`TelegramChannel::flush_chunks`) are now
+  formatted through the same `markdown_to_telegram` renderer used by regular messages, and
+  sent with `parse_mode = "MarkdownV2"` instead of an unconverted `"HTML"` call — raw LLM
+  Markdown could previously break Telegram's HTML parser or render literal markup to guest
+  users (issue #6541, spec 007-3-telegram-rich-text). `TelegramRenderer` also now prefixes
+  every line of a multi-line blockquote with `>` (`markdown.rs`); previously only the first
+  line of a multi-line quote was actually quoted by Telegram's client. Nested blockquotes now
+  flatten to a single `>`-per-line level instead of accumulating an unescaped `>>` — Telegram
+  MarkdownV2 has no nested-blockquote grammar and rejects a doubled `>` outright (`400 can't
+  parse entities`, dropping the whole message); a nesting-depth cap
+  (`MAX_BLOCKQUOTE_NESTING_DEPTH = 512`, same defence-in-depth pattern as `MAX_CHUNK_DEPTH`,
+  #6595) bounds the tracked-mark memory for adversarially deep nested input.
+- `src/channel.rs`: `create_channel` now wires `TelegramConfig.guest_mode` and `.bot_to_bot`
+  (plus `allowed_bots`/`max_bot_chain_depth`) into `TelegramChannel` — previously these config
+  fields were accepted but never threaded into the builder, so Guest Mode and Bot-to-Bot were
+  unreachable in a real running agent even with both enabled in config (pre-existing gap,
+  found during review of #6541; not previously filed as its own issue).
+- `zeph-channels`: `TelegramChannel::start`'s Guest Mode proxy (`spawn_guest_proxy`) now calls
+  `set_nonblocking(true)` on the bound `std::net::TcpListener` before handing it to
+  `tokio::net::TcpListener::from_std` — tokio requires a non-blocking socket for that
+  conversion, and a recent tokio release turned the previous silent misbehavior into a hard
+  panic ("Registering a blocking socket with the tokio runtime is unsupported", see
+  tokio-rs/tokio#7172). Latent since Guest Mode's original implementation; unreachable in
+  tests or production until the `guest_mode` wiring fix above made this code path actually
+  run — without this fix, enabling `guest_mode = true` would have crashed the process.
+
+### Added
+
+- `zeph-channels`/`zeph-config`: adopt Telegram Bot API 10.1 expandable blockquotes
+  (issue #6541, spec 007-3-telegram-rich-text). New `TelegramConfig.expandable_blockquote_min_lines`
+  (default `10`) renders blockquotes at or above the configured line count as the expandable
+  (collapsed-by-default) form (`**>` … `\|\|`); `0` disables the expandable form
+  unconditionally. New `markdown::markdown_to_telegram_with_config` accepts an explicit
+  threshold; `markdown_to_telegram` is unchanged and delegates to it with the default of 10.
+  Wired into `--init` and `--migrate-config`.
+
 ### Removed
 
 - `zeph-agent-tools`: removed the unused `AgentChannel` sealed trait and its supporting

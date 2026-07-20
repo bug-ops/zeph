@@ -236,7 +236,15 @@ pub(crate) async fn create_channel_inner(
         let tg_cfg = config.telegram.as_ref().unwrap();
         let allowed = tg_cfg.allowed_users.clone();
         let stream_interval = std::time::Duration::from_millis(tg_cfg.stream_interval_ms);
-        let mut tg = TelegramChannel::new(token, allowed).with_stream_interval(stream_interval);
+        let mut tg = TelegramChannel::new(token, allowed)
+            .with_stream_interval(stream_interval)
+            .with_expandable_blockquote_min_lines(tg_cfg.expandable_blockquote_min_lines)
+            .with_guest_mode(tg_cfg.guest_mode)
+            .with_bot_to_bot(
+                tg_cfg.bot_to_bot,
+                tg_cfg.allowed_bots.clone(),
+                tg_cfg.max_bot_chain_depth,
+            );
         if let Some(sup) = supervisor {
             tg = tg.with_supervisor(sup);
         }
