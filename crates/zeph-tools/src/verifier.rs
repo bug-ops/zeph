@@ -539,9 +539,13 @@ impl InjectionPatternVerifier {
     }
 
     /// Walk all string leaf values in a JSON object, collecting field names for context.
-    fn check_object(&self, obj: &serde_json::Map<String, serde_json::Value>) -> VerificationResult {
+    fn check_object(
+        &self,
+        obj: &serde_json::Map<String, serde_json::Value>,
+        depth: usize,
+    ) -> VerificationResult {
         for (key, val) in obj {
-            let result = self.check_value(key, val);
+            let result = self.check_value(key, val, depth);
             if !matches!(result, VerificationResult::Allow) {
                 return result;
             }
@@ -549,19 +553,31 @@ impl InjectionPatternVerifier {
         VerificationResult::Allow
     }
 
-    fn check_value(&self, field: &str, val: &serde_json::Value) -> VerificationResult {
+    fn check_value(
+        &self,
+        field: &str,
+        val: &serde_json::Value,
+        depth: usize,
+    ) -> VerificationResult {
+        if depth >= MAX_JSON_DEPTH {
+            tracing::warn!(
+                depth,
+                "check_value: max JSON nesting depth reached, skipping further descent"
+            );
+            return VerificationResult::Allow;
+        }
         match val {
             serde_json::Value::String(s) => self.check_field_value(field, s),
             serde_json::Value::Array(arr) => {
                 for item in arr {
-                    let r = self.check_value(field, item);
+                    let r = self.check_value(field, item, depth + 1);
                     if !matches!(r, VerificationResult::Allow) {
                         return r;
                     }
                 }
                 VerificationResult::Allow
             }
-            serde_json::Value::Object(obj) => self.check_object(obj),
+            serde_json::Value::Object(obj) => self.check_object(obj, depth + 1),
             // Non-string primitives (numbers, booleans, null) cannot contain injection.
             _ => VerificationResult::Allow,
         }
@@ -575,7 +591,7 @@ impl PreExecutionVerifier for InjectionPatternVerifier {
 
     fn verify(&self, _tool_name: &str, args: &serde_json::Value) -> VerificationResult {
         match args {
-            serde_json::Value::Object(obj) => self.check_object(obj),
+            serde_json::Value::Object(obj) => self.check_object(obj, 0),
             // Flat string args (unusual but handle gracefully — treat as unnamed field).
             serde_json::Value::String(s) => self.check_field_value("_args", s),
             _ => VerificationResult::Allow,
@@ -733,6 +749,14 @@ static INSPECTED_FIELDS: &[&str] = &[
     "args",
 ];
 
+/// Maximum JSON nesting depth walked by this module's recursive tool-args scanners
+/// ([`FirewallVerifier::collect_strings`], [`InjectionPatternVerifier::check_value`]).
+///
+/// Guards against stack overflow on adversarially deep tool-call input (e.g. from
+/// prompt-injected LLM output). Beyond this depth, further descent is simply skipped —
+/// argument scanning just misses content past the bound rather than crashing.
+const MAX_JSON_DEPTH: usize = 256;
+
 impl FirewallVerifier {
     /// Build a `FirewallVerifier` from config.
     ///
@@ -778,7 +802,7 @@ impl FirewallVerifier {
             serde_json::Value::Object(map) => {
                 for field in INSPECTED_FIELDS {
                     if let Some(val) = map.get(*field) {
-                        Self::collect_strings(val, &mut out);
+                        Self::collect_strings(val, &mut out, 0);
                     }
                 }
             }
@@ -788,12 +812,19 @@ impl FirewallVerifier {
         out
     }
 
-    fn collect_strings(val: &serde_json::Value, out: &mut Vec<String>) {
+    fn collect_strings(val: &serde_json::Value, out: &mut Vec<String>, depth: usize) {
+        if depth >= MAX_JSON_DEPTH {
+            tracing::warn!(
+                depth,
+                "collect_strings: max JSON nesting depth reached, skipping further descent"
+            );
+            return;
+        }
         match val {
             serde_json::Value::String(s) => out.push(s.clone()),
             serde_json::Value::Array(arr) => {
                 for item in arr {
-                    Self::collect_strings(item, out);
+                    Self::collect_strings(item, out, depth + 1);
                 }
             }
             _ => {}
@@ -1775,5 +1806,78 @@ mod tests {
         assert!(cfg.blocked_paths.is_empty());
         assert!(cfg.blocked_env_vars.is_empty());
         assert!(cfg.exempt_tools.is_empty());
+    }
+
+    // --- FirewallVerifier::collect_strings depth guard ---
+
+    /// Wraps `leaf` in `depth` nested single-element arrays, e.g. `[[["leaf"]]]`.
+    fn nested_array(depth: usize, leaf: &str) -> serde_json::Value {
+        let mut v = json!(leaf);
+        for _ in 0..depth {
+            v = serde_json::Value::Array(vec![v]);
+        }
+        v
+    }
+
+    #[test]
+    fn collect_strings_adversarial_scale_does_not_crash() {
+        // Attacker-scale nesting, far beyond MAX_JSON_DEPTH, built programmatically to
+        // bypass serde_json's own parse-time recursion limit — must not overflow the
+        // stack; the depth guard caps real recursion depth regardless of input nesting.
+        let value = nested_array(10_000, "deep");
+        let mut out = Vec::new();
+        FirewallVerifier::collect_strings(&value, &mut out, 0);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn collect_strings_exact_depth_boundary() {
+        let just_inside = nested_array(MAX_JSON_DEPTH - 1, "just_inside");
+        let mut out = Vec::new();
+        FirewallVerifier::collect_strings(&just_inside, &mut out, 0);
+        assert_eq!(out, vec!["just_inside".to_string()]);
+
+        let just_outside = nested_array(MAX_JSON_DEPTH, "just_outside");
+        let mut out = Vec::new();
+        FirewallVerifier::collect_strings(&just_outside, &mut out, 0);
+        assert!(out.is_empty());
+    }
+
+    // --- InjectionPatternVerifier::check_value/check_object depth guard ---
+
+    /// Wraps `value` as `{"command": value}` without going through the `json!` macro's
+    /// non-literal-expression rule, which calls `serde_json::to_value` and would
+    /// re-serialize (and thus recursively re-walk) an already-deeply-nested `Value`.
+    fn wrap_command(value: serde_json::Value) -> serde_json::Value {
+        let mut map = serde_json::Map::new();
+        map.insert("command".to_string(), value);
+        serde_json::Value::Object(map)
+    }
+
+    #[test]
+    fn check_value_adversarial_scale_does_not_crash() {
+        // Attacker-scale nesting, far beyond MAX_JSON_DEPTH, built programmatically to
+        // bypass serde_json's own parse-time recursion limit — must not overflow the
+        // stack; the depth guard caps real recursion depth regardless of input nesting.
+        let args = wrap_command(nested_array(10_000, "; rm -rf /"));
+        let result = ipv().verify("shell", &args);
+        assert_matches!(result, VerificationResult::Allow);
+    }
+
+    #[test]
+    fn check_value_exact_depth_boundary() {
+        // Malicious leaf just inside the bound must still be reached and blocked.
+        let just_inside = wrap_command(nested_array(MAX_JSON_DEPTH - 1, "; rm -rf /"));
+        assert_matches!(
+            ipv().verify("shell", &just_inside),
+            VerificationResult::Block { .. }
+        );
+
+        // Malicious leaf just outside the bound is unreachable — guard fires, must Allow.
+        let just_outside = wrap_command(nested_array(MAX_JSON_DEPTH, "; rm -rf /"));
+        assert_matches!(
+            ipv().verify("shell", &just_outside),
+            VerificationResult::Allow
+        );
     }
 }

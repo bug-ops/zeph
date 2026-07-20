@@ -123,6 +123,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- `zeph-sanitizer`/`zeph-tools`: added explicit depth-cap guards (`MAX_JSON_DEPTH = 256`) to
+  three previously-unguarded recursive `serde_json::Value` walkers that traverse untrusted
+  tool-call arguments — `exfiltration::collect_strings` (`zeph-sanitizer`, recurses on
+  `Array`/`Object`), `FirewallVerifier::collect_strings` (`zeph-tools`, `Array`), and
+  `InjectionPatternVerifier::check_value`/`check_object` (`zeph-tools`, mutual recursion on
+  `Array`/`Object`, folded into this fix after adversarial review flagged the same defect
+  class in the same file). Same CWE-674 stack-overflow-DoS class as the recursion guards
+  added for #6551/#6554: not currently exploitable since `serde_json`'s default 128-deep
+  parse-time recursion limit already bounds these paths, but the fix removes the latent risk
+  should that upstream limit ever be disabled or the value originate from a non-`serde_json`
+  source (#6594).
+
 - `zeph-core`/`zeph-memory`/`zeph-llm`/`zeph-agent-context`: closed two TOCTOU bypasses of the
   write-time memory-consent gate shipped for #6490/MemGhost above, plus two related residual
   bypasses found during review — all in the same threat class (the gate reading a trust signal

@@ -400,7 +400,7 @@ impl ExfiltrationGuard {
 
         let mut events = Vec::new();
         let mut strings = Vec::new();
-        collect_strings(&parsed, &mut strings);
+        collect_strings(&parsed, &mut strings, 0);
 
         for s in &strings {
             for url_match in URL_EXTRACT_RE.find_iter(s) {
@@ -597,18 +597,32 @@ pub fn normalize_url_for_matching(url: &str) -> &str {
     }
 }
 
+/// Maximum JSON nesting depth walked by [`collect_strings`].
+///
+/// Guards against stack overflow on adversarially deep tool-call input (e.g. from
+/// prompt-injected LLM output). Beyond this depth, further descent is simply skipped —
+/// URL detection just misses strings past the bound rather than crashing.
+const MAX_JSON_DEPTH: usize = 256;
+
 /// Recursively collect all string leaves from a JSON value.
-fn collect_strings<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
+fn collect_strings<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>, depth: usize) {
+    if depth >= MAX_JSON_DEPTH {
+        tracing::warn!(
+            depth,
+            "collect_strings: max JSON nesting depth reached, skipping further descent"
+        );
+        return;
+    }
     match value {
         serde_json::Value::String(s) => out.push(s.as_str()),
         serde_json::Value::Array(arr) => {
             for v in arr {
-                collect_strings(v, out);
+                collect_strings(v, out, depth + 1);
             }
         }
         serde_json::Value::Object(map) => {
             for v in map.values() {
-                collect_strings(v, out);
+                collect_strings(v, out, depth + 1);
             }
         }
         _ => {}
@@ -1510,5 +1524,40 @@ mod tests {
             "//evil.com/x"
         );
         assert_eq!(normalize_url_for_matching("//evil.com/x"), "//evil.com/x");
+    }
+
+    // --- collect_strings depth guard ---
+
+    /// Wraps `leaf` in `depth` nested single-element arrays, e.g. `[[["leaf"]]]`.
+    fn nested_array(depth: usize, leaf: &str) -> serde_json::Value {
+        let mut v = serde_json::json!(leaf);
+        for _ in 0..depth {
+            v = serde_json::Value::Array(vec![v]);
+        }
+        v
+    }
+
+    #[test]
+    fn collect_strings_adversarial_scale_does_not_crash() {
+        // Attacker-scale nesting, far beyond MAX_JSON_DEPTH, built programmatically to
+        // bypass serde_json's own parse-time recursion limit — must not overflow the
+        // stack; the depth guard caps real recursion depth regardless of input nesting.
+        let value = nested_array(10_000, "deep");
+        let mut out = Vec::new();
+        collect_strings(&value, &mut out, 0);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn collect_strings_exact_depth_boundary() {
+        let just_inside = nested_array(MAX_JSON_DEPTH - 1, "just_inside");
+        let mut out = Vec::new();
+        collect_strings(&just_inside, &mut out, 0);
+        assert_eq!(out, vec!["just_inside"]);
+
+        let just_outside = nested_array(MAX_JSON_DEPTH, "just_outside");
+        let mut out = Vec::new();
+        collect_strings(&just_outside, &mut out, 0);
+        assert!(out.is_empty());
     }
 }
