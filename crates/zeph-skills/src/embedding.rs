@@ -162,9 +162,12 @@ impl AsRef<[f32]> for SkillEmbedding {
 
 /// Compute embeddings for a skill slice, skipping skills that fail or time out.
 ///
-/// Each skill description is embedded independently with a per-call `timeout`. Skills whose
-/// embed call times out or returns an error are skipped with a `tracing::warn!` and are not
-/// included in the returned vector. The caller receives only successfully embedded skills.
+/// Tries [`LlmProvider::embed_batch`] first, wrapped in a single `timeout` for the whole
+/// batch — one round trip on the common success path instead of `skills.len()` sequential
+/// calls. If the batch call errors, times out, or returns a mismatched result count, this
+/// falls back to embedding each skill individually (same per-item `timeout`), so one bad
+/// skill doesn't lose the others. Skills that fail or time out in the fallback path are
+/// skipped with a `tracing::warn!` and are not included in the returned vector.
 ///
 /// # Examples
 ///
@@ -184,6 +187,50 @@ impl AsRef<[f32]> for SkillEmbedding {
     fields(skill_count = skills.len())
 )]
 pub async fn embed_skills_with_timeout(
+    skills: &[SkillMeta],
+    embed_provider: &impl LlmProvider,
+    timeout: Duration,
+) -> Vec<(SkillMeta, SkillEmbedding)> {
+    if skills.is_empty() {
+        return Vec::new();
+    }
+
+    let texts: Vec<&str> = skills.iter().map(|s| s.description.as_str()).collect();
+    match tokio::time::timeout(timeout, embed_provider.embed_batch(&texts)).await {
+        Ok(Ok(embeddings)) if embeddings.len() == skills.len() => {
+            return skills
+                .iter()
+                .cloned()
+                .zip(embeddings)
+                .map(|(skill, emb)| (skill, SkillEmbedding::from_raw(emb)))
+                .collect();
+        }
+        Ok(Ok(embeddings)) => {
+            tracing::warn!(
+                expected = skills.len(),
+                actual = embeddings.len(),
+                "embed_batch returned mismatched result count, falling back to per-item embedding"
+            );
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "embed_batch failed, falling back to per-item embedding");
+        }
+        Err(_) => {
+            tracing::warn!(
+                timeout_ms = timeout.as_millis(),
+                "embed_batch timed out, falling back to per-item embedding"
+            );
+        }
+    }
+
+    embed_skills_sequential(skills, embed_provider, timeout).await
+}
+
+/// Fallback path: embed each skill independently with a per-call `timeout`.
+///
+/// Used by [`embed_skills_with_timeout`] when the batched call fails, so one bad or slow
+/// skill doesn't cause the whole batch to be lost.
+async fn embed_skills_sequential(
     skills: &[SkillMeta],
     embed_provider: &impl LlmProvider,
     timeout: Duration,
@@ -211,6 +258,7 @@ pub async fn embed_skills_with_timeout(
 mod tests {
     use super::*;
     use std::assert_matches;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn new_valid_dimension() {
@@ -304,5 +352,247 @@ mod tests {
             "L2 norm must be ~1.0 even with a dominant component, got sum_sq={sum_sq}"
         );
         assert!(emb.as_ref().iter().all(|x| x.is_finite()));
+    }
+
+    /// Test double distinguishing the batch path from the per-item fallback path: `embed_batch`
+    /// returns `[0.0, 1.0]` vectors, `embed` returns `[1.0, 0.0]` vectors, so assertions on the
+    /// returned embedding reveal which path actually produced a given result.
+    #[derive(Default)]
+    struct BatchTestProvider {
+        embed_calls: AtomicUsize,
+        batch_calls: AtomicUsize,
+        batch_delay: Duration,
+        batch_fail: bool,
+        batch_short: bool,
+        /// 1-indexed `embed()` call number that should fail; `None` means every call succeeds.
+        /// Lets a test pin down exactly *which* skill fails inside the per-item fallback loop,
+        /// to prove partial-failure tolerance (not just all-succeed or all-fail).
+        fail_embed_at_call: Option<usize>,
+    }
+
+    impl LlmProvider for BatchTestProvider {
+        async fn chat(
+            &self,
+            _messages: &[zeph_llm::provider::Message],
+        ) -> Result<String, zeph_llm::LlmError> {
+            unimplemented!("not exercised by embed_skills_with_timeout")
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: &[zeph_llm::provider::Message],
+        ) -> Result<zeph_llm::provider::ChatStream, zeph_llm::LlmError> {
+            unimplemented!("not exercised by embed_skills_with_timeout")
+        }
+
+        fn supports_streaming(&self) -> bool {
+            false
+        }
+
+        async fn embed(&self, _text: &str) -> Result<Vec<f32>, zeph_llm::LlmError> {
+            let call_no = self.embed_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if self.fail_embed_at_call == Some(call_no) {
+                return Err(zeph_llm::LlmError::Unavailable);
+            }
+            Ok(vec![1.0, 0.0])
+        }
+
+        fn embed_batch(
+            &self,
+            texts: &[&str],
+        ) -> impl std::future::Future<Output = Result<Vec<Vec<f32>>, zeph_llm::LlmError>> + Send
+        {
+            self.batch_calls.fetch_add(1, Ordering::SeqCst);
+            let requested = texts.len();
+            let fail = self.batch_fail;
+            let short = self.batch_short;
+            let delay = self.batch_delay;
+            async move {
+                if delay > Duration::ZERO {
+                    tokio::time::sleep(delay).await;
+                }
+                if fail {
+                    return Err(zeph_llm::LlmError::Unavailable);
+                }
+                let returned = if short {
+                    requested.saturating_sub(1)
+                } else {
+                    requested
+                };
+                Ok(vec![vec![0.0, 1.0]; returned])
+            }
+        }
+
+        fn supports_embeddings(&self) -> bool {
+            true
+        }
+
+        fn name(&self) -> &'static str {
+            "batch-test"
+        }
+    }
+
+    fn make_test_skill(name: &str) -> SkillMeta {
+        let content = format!(
+            "---\nname: {name}\ndescription: A test skill.\n---\n\n## Usage\n\nDo stuff.\n"
+        );
+        crate::loader::load_skill_meta_from_str(&content).unwrap().0
+    }
+
+    #[tokio::test]
+    async fn embed_skills_with_timeout_empty_skips_provider_call() {
+        let provider = BatchTestProvider::default();
+        let result = embed_skills_with_timeout(&[], &provider, Duration::from_secs(1)).await;
+        assert!(result.is_empty());
+        assert_eq!(provider.batch_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.embed_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn embed_skills_with_timeout_uses_batch_on_success() {
+        let provider = BatchTestProvider::default();
+        let skills = vec![
+            make_test_skill("a"),
+            make_test_skill("b"),
+            make_test_skill("c"),
+        ];
+        let result = embed_skills_with_timeout(&skills, &provider, Duration::from_secs(1)).await;
+
+        assert_eq!(result.len(), 3);
+        for (_, emb) in &result {
+            assert_eq!(
+                emb.as_ref(),
+                &[0.0_f32, 1.0],
+                "expected batch-path marker vector"
+            );
+        }
+        assert_eq!(provider.batch_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            provider.embed_calls.load(Ordering::SeqCst),
+            0,
+            "successful batch call must not fall back to per-item embedding"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_skills_with_timeout_falls_back_on_batch_error() {
+        let provider = BatchTestProvider {
+            batch_fail: true,
+            ..Default::default()
+        };
+        let skills = vec![
+            make_test_skill("a"),
+            make_test_skill("b"),
+            make_test_skill("c"),
+        ];
+        let result = embed_skills_with_timeout(&skills, &provider, Duration::from_secs(1)).await;
+
+        assert_eq!(result.len(), 3, "fallback must recover all skills");
+        for (_, emb) in &result {
+            assert_eq!(
+                emb.as_ref(),
+                &[1.0_f32, 0.0],
+                "expected per-item fallback marker vector"
+            );
+        }
+        assert_eq!(provider.batch_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.embed_calls.load(Ordering::SeqCst), 3);
+    }
+
+    /// Regression test for the exact guarantee #6481 asked to preserve: a batch failure
+    /// falling back to the per-item loop must still tolerate *individual* skill failures
+    /// inside that fallback — one bad skill must not lose the others, and it must not silently
+    /// let every skill through either. The prior three fallback tests only proved
+    /// batch → fallback routing with a uniformly-succeeding fallback; this proves the
+    /// fallback's own skip-and-continue behavior survives the new call path.
+    #[tokio::test]
+    async fn embed_skills_with_timeout_fallback_tolerates_individual_skill_failure() {
+        let provider = BatchTestProvider {
+            batch_fail: true,
+            fail_embed_at_call: Some(2),
+            ..Default::default()
+        };
+        let skills = vec![
+            make_test_skill("a"),
+            make_test_skill("b"),
+            make_test_skill("c"),
+        ];
+        let result = embed_skills_with_timeout(&skills, &provider, Duration::from_secs(1)).await;
+
+        assert_eq!(
+            result.len(),
+            2,
+            "exactly one skill's embed call fails; result must be neither 0 nor 3"
+        );
+        let names: Vec<&str> = result
+            .iter()
+            .map(|(skill, _)| skill.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["a", "c"],
+            "skill b's embed call failed and must be skipped; a and c must survive"
+        );
+        for (_, emb) in &result {
+            assert_eq!(
+                emb.as_ref(),
+                &[1.0_f32, 0.0],
+                "expected per-item fallback marker vector"
+            );
+        }
+        assert_eq!(provider.batch_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            provider.embed_calls.load(Ordering::SeqCst),
+            3,
+            "fallback must still attempt every skill even after one fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_skills_with_timeout_falls_back_on_mismatched_batch_length() {
+        let provider = BatchTestProvider {
+            batch_short: true,
+            ..Default::default()
+        };
+        let skills = vec![
+            make_test_skill("a"),
+            make_test_skill("b"),
+            make_test_skill("c"),
+        ];
+        let result = embed_skills_with_timeout(&skills, &provider, Duration::from_secs(1)).await;
+
+        assert_eq!(result.len(), 3, "fallback must recover all skills");
+        for (_, emb) in &result {
+            assert_eq!(
+                emb.as_ref(),
+                &[1.0_f32, 0.0],
+                "expected per-item fallback marker vector"
+            );
+        }
+        assert_eq!(provider.batch_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.embed_calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn embed_skills_with_timeout_falls_back_on_batch_timeout() {
+        // batch_delay comfortably exceeds the configured timeout so the batch call is
+        // guaranteed to time out; the per-item fallback (no artificial delay) then succeeds.
+        let provider = BatchTestProvider {
+            batch_delay: Duration::from_millis(300),
+            ..Default::default()
+        };
+        let skills = vec![make_test_skill("a"), make_test_skill("b")];
+        let result = embed_skills_with_timeout(&skills, &provider, Duration::from_millis(50)).await;
+
+        assert_eq!(result.len(), 2, "fallback must recover all skills");
+        for (_, emb) in &result {
+            assert_eq!(
+                emb.as_ref(),
+                &[1.0_f32, 0.0],
+                "expected per-item fallback marker vector"
+            );
+        }
+        assert_eq!(provider.batch_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.embed_calls.load(Ordering::SeqCst), 2);
     }
 }

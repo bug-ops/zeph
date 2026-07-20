@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Changed
 
+- `zeph-skills`: `embed_skills_with_timeout` now tries `LlmProvider::embed_batch` first
+  (wrapped in a single `timeout` for the whole batch) instead of embedding each skill
+  sequentially, so providers with a native batch embeddings endpoint (e.g. OpenAI) cost one
+  round trip instead of N (#6481). If the batch call errors, times out, or returns a
+  mismatched result count, it falls back to the previous per-item sequential loop, preserving
+  the existing partial-failure tolerance (one bad or slow skill no longer loses the rest).
+  Both callers (`SkillMiner`, trace-based skill extraction) are unaffected — the function
+  signature is unchanged.
+
 - `zeph-config`/`zeph-core`: the tool rate limiter (`[security.rate_limit]`) and the daily
   LLM cost cap (`[cost].max_daily_cents`) are now enabled by default, guarding a fresh install
   against a runaway agent loop hammering a tool category or burning unbounded API spend
