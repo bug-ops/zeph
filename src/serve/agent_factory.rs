@@ -207,6 +207,10 @@ pub(crate) async fn build_agent_factory(
         // Capture before apply_session_config consumes deps.session_config (mirrors
         // spawn_acp_agent's debug_config capture in src/acp.rs).
         let debug_config = deps.session_config.debug_config.clone();
+        // #6580/#6582: captured before Agent::new_with_registry_arc below moves deps.provider —
+        // the causal-IPI/NLI sanitizers need their own clone of the session's primary provider
+        // as a probe-call fallback, mirroring spawn_acp_agent's `provider.clone()` uses.
+        let security_provider = deps.provider.clone();
 
         // #6045: wrap ScopedToolExecutor fresh per session (when
         // `[security.capability_scopes]` is configured) around the already trust/policy/
@@ -320,6 +324,57 @@ pub(crate) async fn build_agent_factory(
         // #6386: propagate `[tools] enabled` onto this session's Agent so a `false` value
         // actually suppresses tool definitions, matching src/runner.rs/src/acp.rs/src/daemon.rs.
         .with_tools_enabled(deps.tools_enabled);
+        // #6580/#6582: wire the sanitizer/classifier security pipeline — quarantine, guardrail,
+        // ML injection classification, PII detection, causal-IPI, NLI, VIGIL, and secret masking
+        // — onto this session's Agent, using the same `_with_cfg` helpers and ordering
+        // `src/acp.rs`'s `spawn_acp_agent` uses (see its equivalent block for the two hard
+        // ordering constraints: enforcement-mode must follow the injection classifier, and
+        // secret-masking must run after every `with_*_provider` call above it, since it
+        // retroactively wraps each already-set `AnyProvider` field). Previously entirely absent
+        // from `/sessions*` agents — the HTTP/SSE entry point most exposed to untrusted external
+        // input (spec-068 §9) had none of this pipeline.
+        agent = crate::agent_setup::apply_quarantine_provider(agent, deps.quarantine_provider);
+        agent = crate::agent_setup::apply_guardrail(agent, deps.guardrail_provider);
+        #[cfg(feature = "classifiers")]
+        {
+            agent = crate::agent_setup::apply_injection_classifier_with_cfg(
+                agent,
+                &deps.classifiers_config,
+            );
+            if deps.classifiers_config.enabled {
+                agent = agent.with_enforcement_mode(deps.classifiers_config.enforcement_mode);
+            }
+            agent = crate::agent_setup::apply_three_class_classifier_with_cfg(
+                agent,
+                &deps.classifiers_config,
+            );
+            agent =
+                crate::agent_setup::apply_pii_classifier_with_cfg(agent, &deps.classifiers_config);
+            agent = crate::agent_setup::apply_pii_ner_classifier_with_cfg(
+                agent,
+                &deps.classifiers_config,
+                deps.pii_filter_enabled,
+            );
+        }
+        agent = crate::agent_setup::apply_causal_analyzer_with_cfg(
+            agent,
+            security_provider.clone(),
+            deps.causal_provider,
+            &deps.causal_ipi_config,
+            deps.secret_registry.as_ref(),
+        );
+        agent = crate::agent_setup::apply_nli_sanitizer_with_cfg(
+            agent,
+            security_provider,
+            deps.nli_provider,
+            &deps.nli_config,
+            deps.secret_registry.as_ref(),
+        );
+        agent = crate::agent_setup::apply_secret_masking(agent, deps.secret_registry);
+        agent = crate::agent_setup::apply_vigil(agent, &deps.vigil_config);
+        if let Some(fc) = deps.feedback_classifier {
+            agent = agent.with_llm_classifier(fc);
+        }
         if !preloaded_messages.is_empty() {
             agent = agent.with_preloaded_messages(preloaded_messages);
         }
@@ -949,6 +1004,19 @@ mod tests {
             safe_mode: false,
             allowed_paths: vec![],
             tools_enabled: true,
+            quarantine_provider: None,
+            guardrail_provider: None,
+            #[cfg(feature = "classifiers")]
+            classifiers_config: zeph_core::config::ClassifiersConfig::default(),
+            #[cfg(feature = "classifiers")]
+            pii_filter_enabled: false,
+            causal_ipi_config: zeph_sanitizer::causal_ipi::CausalIpiConfig::default(),
+            causal_provider: None,
+            nli_config: zeph_sanitizer::nli::NliConfig::default(),
+            nli_provider: None,
+            secret_registry: None,
+            vigil_config: zeph_config::VigilConfig::default(),
+            feedback_classifier: None,
         };
 
         let (_, build_agent) =
@@ -1040,6 +1108,19 @@ mod tests {
             safe_mode: false,
             allowed_paths: vec![],
             tools_enabled: true,
+            quarantine_provider: None,
+            guardrail_provider: None,
+            #[cfg(feature = "classifiers")]
+            classifiers_config: zeph_core::config::ClassifiersConfig::default(),
+            #[cfg(feature = "classifiers")]
+            pii_filter_enabled: false,
+            causal_ipi_config: zeph_sanitizer::causal_ipi::CausalIpiConfig::default(),
+            causal_provider: None,
+            nli_config: zeph_sanitizer::nli::NliConfig::default(),
+            nli_provider: None,
+            secret_registry: None,
+            vigil_config: zeph_config::VigilConfig::default(),
+            feedback_classifier: None,
         };
 
         let (resume_banner, build_agent) =
@@ -1128,6 +1209,19 @@ mod tests {
             safe_mode: false,
             allowed_paths: vec![],
             tools_enabled: true,
+            quarantine_provider: None,
+            guardrail_provider: None,
+            #[cfg(feature = "classifiers")]
+            classifiers_config: zeph_core::config::ClassifiersConfig::default(),
+            #[cfg(feature = "classifiers")]
+            pii_filter_enabled: false,
+            causal_ipi_config: zeph_sanitizer::causal_ipi::CausalIpiConfig::default(),
+            causal_provider: None,
+            nli_config: zeph_sanitizer::nli::NliConfig::default(),
+            nli_provider: None,
+            secret_registry: None,
+            vigil_config: zeph_config::VigilConfig::default(),
+            feedback_classifier: None,
         };
 
         let (_, build_agent) =
@@ -1242,6 +1336,19 @@ mod tests {
             safe_mode: false,
             allowed_paths: vec![],
             tools_enabled: true,
+            quarantine_provider: None,
+            guardrail_provider: None,
+            #[cfg(feature = "classifiers")]
+            classifiers_config: zeph_core::config::ClassifiersConfig::default(),
+            #[cfg(feature = "classifiers")]
+            pii_filter_enabled: false,
+            causal_ipi_config: zeph_sanitizer::causal_ipi::CausalIpiConfig::default(),
+            causal_provider: None,
+            nli_config: zeph_sanitizer::nli::NliConfig::default(),
+            nli_provider: None,
+            secret_registry: None,
+            vigil_config: zeph_config::VigilConfig::default(),
+            feedback_classifier: None,
         };
 
         let (_, build_agent) =
@@ -1345,6 +1452,19 @@ mod tests {
             safe_mode: false,
             allowed_paths: vec![],
             tools_enabled: true,
+            quarantine_provider: None,
+            guardrail_provider: None,
+            #[cfg(feature = "classifiers")]
+            classifiers_config: zeph_core::config::ClassifiersConfig::default(),
+            #[cfg(feature = "classifiers")]
+            pii_filter_enabled: false,
+            causal_ipi_config: zeph_sanitizer::causal_ipi::CausalIpiConfig::default(),
+            causal_provider: None,
+            nli_config: zeph_sanitizer::nli::NliConfig::default(),
+            nli_provider: None,
+            secret_registry: None,
+            vigil_config: zeph_config::VigilConfig::default(),
+            feedback_classifier: None,
         };
 
         let (_, build_agent) =
@@ -1447,6 +1567,19 @@ mod tests {
             safe_mode: false,
             allowed_paths: vec![],
             tools_enabled: true,
+            quarantine_provider: None,
+            guardrail_provider: None,
+            #[cfg(feature = "classifiers")]
+            classifiers_config: zeph_core::config::ClassifiersConfig::default(),
+            #[cfg(feature = "classifiers")]
+            pii_filter_enabled: false,
+            causal_ipi_config: zeph_sanitizer::causal_ipi::CausalIpiConfig::default(),
+            causal_provider: None,
+            nli_config: zeph_sanitizer::nli::NliConfig::default(),
+            nli_provider: None,
+            secret_registry: None,
+            vigil_config: zeph_config::VigilConfig::default(),
+            feedback_classifier: None,
         };
 
         let (_, build_agent) =
@@ -1546,6 +1679,19 @@ mod tests {
             safe_mode: false,
             allowed_paths: vec![],
             tools_enabled: true,
+            quarantine_provider: None,
+            guardrail_provider: None,
+            #[cfg(feature = "classifiers")]
+            classifiers_config: zeph_core::config::ClassifiersConfig::default(),
+            #[cfg(feature = "classifiers")]
+            pii_filter_enabled: false,
+            causal_ipi_config: zeph_sanitizer::causal_ipi::CausalIpiConfig::default(),
+            causal_provider: None,
+            nli_config: zeph_sanitizer::nli::NliConfig::default(),
+            nli_provider: None,
+            secret_registry: None,
+            vigil_config: zeph_config::VigilConfig::default(),
+            feedback_classifier: None,
         };
 
         let (_, build_agent) =
@@ -1628,6 +1774,19 @@ mod tests {
             safe_mode: false,
             allowed_paths: vec![],
             tools_enabled: true,
+            quarantine_provider: None,
+            guardrail_provider: None,
+            #[cfg(feature = "classifiers")]
+            classifiers_config: zeph_core::config::ClassifiersConfig::default(),
+            #[cfg(feature = "classifiers")]
+            pii_filter_enabled: false,
+            causal_ipi_config: zeph_sanitizer::causal_ipi::CausalIpiConfig::default(),
+            causal_provider: None,
+            nli_config: zeph_sanitizer::nli::NliConfig::default(),
+            nli_provider: None,
+            secret_registry: None,
+            vigil_config: zeph_config::VigilConfig::default(),
+            feedback_classifier: None,
         }
     }
 

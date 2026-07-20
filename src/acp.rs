@@ -460,27 +460,42 @@ pub(crate) struct SharedAgentDeps {
     // Optional runtime providers (contain HTTP client pools; excluded from session_config)
     summary_provider: Option<zeph_llm::any::AnyProvider>,
     judge_provider: Option<zeph_llm::any::AnyProvider>,
-    feedback_classifier: Option<zeph_llm::classifier::llm::LlmClassifier>,
+    /// `pub(crate)` (unlike most sibling fields) solely so the `#6580`/`#6582` serve/ACP
+    /// security-pipeline parity test
+    /// (`acp::tests::build_combined_deps_wires_equivalent_security_pipeline_from_config`) can
+    /// compare it against `ServeAgentDeps::feedback_classifier` — mirrors `memory`'s doc comment
+    /// above.
+    pub(crate) feedback_classifier: Option<zeph_llm::classifier::llm::LlmClassifier>,
+    /// `pub(crate)`: see `feedback_classifier`'s doc comment.
     #[cfg(feature = "classifiers")]
-    classifiers_config: zeph_core::config::ClassifiersConfig,
+    pub(crate) classifiers_config: zeph_core::config::ClassifiersConfig,
     /// `security.pii_filter.enabled` — gates the NER union-merge PII layer (#5463),
-    /// mirroring the check in `agent_setup::apply_pii_ner_classifier`.
+    /// mirroring the check in `agent_setup::apply_pii_ner_classifier`. `pub(crate)`: see
+    /// `feedback_classifier`'s doc comment.
     #[cfg(feature = "classifiers")]
-    pii_filter_enabled: bool,
-    causal_ipi_config: zeph_sanitizer::causal_ipi::CausalIpiConfig,
+    pub(crate) pii_filter_enabled: bool,
+    /// `pub(crate)`: see `feedback_classifier`'s doc comment.
+    pub(crate) causal_ipi_config: zeph_sanitizer::causal_ipi::CausalIpiConfig,
     causal_provider: Option<zeph_llm::any::AnyProvider>,
-    nli_config: zeph_sanitizer::nli::NliConfig,
+    /// `pub(crate)`: see `feedback_classifier`'s doc comment.
+    pub(crate) nli_config: zeph_sanitizer::nli::NliConfig,
     nli_provider: Option<zeph_llm::any::AnyProvider>,
-    secret_registry: Option<std::sync::Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
-    vigil_config: zeph_config::VigilConfig,
+    /// `pub(crate)`: see `feedback_classifier`'s doc comment.
+    pub(crate) secret_registry:
+        Option<std::sync::Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
+    /// `pub(crate)`: see `feedback_classifier`'s doc comment.
+    pub(crate) vigil_config: zeph_config::VigilConfig,
     probe_provider: Option<zeph_llm::any::AnyProvider>,
     planner_provider: Option<zeph_llm::any::AnyProvider>,
     verify_provider: Option<zeph_llm::any::AnyProvider>,
     ensemble_members: Vec<(String, zeph_llm::any::AnyProvider)>,
     orchestrator_provider: Option<zeph_llm::any::AnyProvider>,
     predicate_provider: Option<zeph_llm::any::AnyProvider>,
-    quarantine_provider: Option<(zeph_llm::any::AnyProvider, zeph_sanitizer::QuarantineConfig)>,
-    guardrail_provider: Option<(
+    /// `pub(crate)`: see `feedback_classifier`'s doc comment.
+    pub(crate) quarantine_provider:
+        Option<(zeph_llm::any::AnyProvider, zeph_sanitizer::QuarantineConfig)>,
+    /// `pub(crate)`: see `feedback_classifier`'s doc comment.
+    pub(crate) guardrail_provider: Option<(
         zeph_llm::any::AnyProvider,
         zeph_sanitizer::guardrail::GuardrailConfig,
     )>,
@@ -4813,6 +4828,157 @@ mod tests {
             "acp_deps.rl_head and serve_deps.rl_head must share the same in-memory RoutingHead \
              instance loaded once by build_shared_core (#5974)"
         );
+    }
+
+    /// #6580/#6582/#6581 parity regression: before this PR, `ServeAgentDeps` (`/sessions*`, the
+    /// HTTP/SSE entry point most exposed to untrusted external input, spec-068 §9) had no
+    /// quarantine/guardrail/classifier/causal-IPI/NLI/VIGIL/secret-masking/feedback-classifier
+    /// fields at all, so `assemble_serve_deps` never wired any of them regardless of config —
+    /// silently leaving `/sessions*` agents without most of the security pipeline CLI/TUI/daemon/
+    /// ACP already apply. Drives the real `build_combined_deps` against a config with every one
+    /// of these settings pushed to a non-default value (same pattern as
+    /// `build_combined_deps_wires_skill_matching_config_from_config` above), then asserts BOTH
+    /// `serve_deps` and `acp_deps` reflect the exact configured values — not just that the two
+    /// happen to match each other, which would also pass if both silently stayed on shared
+    /// struct defaults. This is the parity test that closes the gap meta-issue #6581 tracks (a
+    /// 24th instance of the wire-X-into-serve defect class): a future PR that drops one of these
+    /// fields from `assemble_serve_deps` fails this test instead of shipping unnoticed.
+    #[cfg(feature = "acp-http")]
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // exhaustive field-by-field assertions across 2 deps structs
+    async fn build_combined_deps_wires_equivalent_security_pipeline_from_config() {
+        let mut config =
+            zeph_core::config::Config::load(std::path::Path::new("/nonexistent")).unwrap();
+        config.llm.providers = vec![zeph_core::config::ProviderEntry {
+            provider_type: zeph_core::config::ProviderKind::Ollama,
+            base_url: Some("http://127.0.0.1:1".to_owned()),
+            model: Some("test-model".to_owned()),
+            ..Default::default()
+        }];
+        config.memory.sqlite_path = ":memory:".to_owned();
+        config.security.vigil.strict_mode = true;
+        config.security.vigil.sanitize_max_chars = 12345;
+        // Default quarantine model ("claude") is not in `[[llm.providers]]` above — point it at
+        // the configured ollama provider so resolution succeeds and both sides get `Some(..)`.
+        config.security.content_isolation.quarantine.enabled = true;
+        config.security.content_isolation.quarantine.model = "ollama".to_owned();
+        config.security.guardrail.enabled = true;
+        config.security.causal_ipi.enabled = true;
+        config.security.causal_ipi.threshold = 0.42;
+        config.security.content_isolation.nli.enabled = true;
+        config.security.content_isolation.nli.threshold = 0.33;
+        config.security.pii_filter.enabled = true;
+        // `detector_mode = Model` with an empty `feedback_provider` falls back to the session's
+        // primary provider (see `AppBuilder::build_feedback_classifier`), so no extra provider
+        // setup is needed for `feedback_classifier` to resolve to `Some(..)`.
+        config.skills.learning.detector_mode = zeph_core::config::DetectorMode::Model;
+        #[cfg(feature = "classifiers")]
+        {
+            config.classifiers.enabled = true;
+            config.classifiers.injection_threshold = 0.81;
+        }
+
+        let app = crate::bootstrap::AppBuilder::for_test(config);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let supervisor = std::sync::Arc::new(zeph_common::TaskSupervisor::new(cancel));
+
+        let (serve_deps, acp_deps, _keepalive) = Box::pin(build_combined_deps(&app, &supervisor))
+            .await
+            .expect("build_combined_deps must succeed against a mock-provider AppBuilder");
+
+        for (label, vigil) in [
+            ("serve_deps", &serve_deps.vigil_config),
+            ("acp_deps", &acp_deps.vigil_config),
+        ] {
+            assert!(
+                vigil.strict_mode,
+                "config.security.vigil.strict_mode must flow into {label}"
+            );
+            assert_eq!(
+                vigil.sanitize_max_chars, 12345,
+                "config.security.vigil.sanitize_max_chars must flow into {label}"
+            );
+        }
+        for (label, causal) in [
+            ("serve_deps", &serve_deps.causal_ipi_config),
+            ("acp_deps", &acp_deps.causal_ipi_config),
+        ] {
+            assert!(
+                causal.enabled,
+                "config.security.causal_ipi.enabled must flow into {label}"
+            );
+            assert!(
+                (causal.threshold - 0.42).abs() < f32::EPSILON,
+                "config.security.causal_ipi.threshold must flow into {label}"
+            );
+        }
+        for (label, nli) in [
+            ("serve_deps", &serve_deps.nli_config),
+            ("acp_deps", &acp_deps.nli_config),
+        ] {
+            assert!(
+                nli.enabled,
+                "config.security.content_isolation.nli.enabled must flow into {label}"
+            );
+            assert!(
+                (nli.threshold - 0.33).abs() < f32::EPSILON,
+                "config.security.content_isolation.nli.threshold must flow into {label}"
+            );
+        }
+        assert!(
+            serve_deps.quarantine_provider.is_some(),
+            "config.security.content_isolation.quarantine.enabled must produce a resolved \
+             quarantine_provider on serve_deps"
+        );
+        assert!(
+            acp_deps.quarantine_provider.is_some(),
+            "config.security.content_isolation.quarantine.enabled must produce a resolved \
+             quarantine_provider on acp_deps"
+        );
+        assert!(
+            serve_deps.guardrail_provider.is_some(),
+            "config.security.guardrail.enabled must produce a resolved guardrail_provider on \
+             serve_deps"
+        );
+        assert!(
+            acp_deps.guardrail_provider.is_some(),
+            "config.security.guardrail.enabled must produce a resolved guardrail_provider on \
+             acp_deps"
+        );
+        assert!(
+            serve_deps.feedback_classifier.is_some(),
+            "config.skills.learning.detector_mode = Model must produce a resolved \
+             feedback_classifier on serve_deps"
+        );
+        assert!(
+            acp_deps.feedback_classifier.is_some(),
+            "config.skills.learning.detector_mode = Model must produce a resolved \
+             feedback_classifier on acp_deps"
+        );
+        #[cfg(feature = "classifiers")]
+        {
+            for (label, classifiers) in [
+                ("serve_deps", &serve_deps.classifiers_config),
+                ("acp_deps", &acp_deps.classifiers_config),
+            ] {
+                assert!(
+                    classifiers.enabled,
+                    "config.classifiers.enabled must flow into {label}"
+                );
+                assert!(
+                    (classifiers.injection_threshold - 0.81).abs() < f32::EPSILON,
+                    "config.classifiers.injection_threshold must flow into {label}"
+                );
+            }
+            assert!(
+                serve_deps.pii_filter_enabled,
+                "config.security.pii_filter.enabled must flow into serve_deps"
+            );
+            assert!(
+                acp_deps.pii_filter_enabled,
+                "config.security.pii_filter.enabled must flow into acp_deps"
+            );
+        }
     }
 
     /// #5959/#6022 regression: before this PR, `SharedAgentDeps` had no

@@ -608,6 +608,19 @@ mod tests {
             safe_mode: false,
             allowed_paths: vec![],
             tools_enabled: true,
+            quarantine_provider: None,
+            guardrail_provider: None,
+            #[cfg(feature = "classifiers")]
+            classifiers_config: zeph_core::config::ClassifiersConfig::default(),
+            #[cfg(feature = "classifiers")]
+            pii_filter_enabled: false,
+            causal_ipi_config: zeph_sanitizer::causal_ipi::CausalIpiConfig::default(),
+            causal_provider: None,
+            nli_config: zeph_sanitizer::nli::NliConfig::default(),
+            nli_provider: None,
+            secret_registry: None,
+            vigil_config: zeph_config::VigilConfig::default(),
+            feedback_classifier: None,
         };
         AppState {
             registry: Arc::new(LiveSessionRegistry::new()),

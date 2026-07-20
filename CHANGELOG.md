@@ -198,6 +198,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `ignore_instructions` injection payload is spotlight-wrapped and flagged rather than stored
   verbatim, closing the gap where the original SEC-CC-03 sanitizer call had zero test coverage.
 
+- `zeph`: `zeph serve-sessions`'s `/sessions*` HTTP/SSE agents (spec-068 §9, the entry point most
+  exposed to untrusted external input) were missing most of the sanitizer/classifier security
+  pipeline that `runner.rs`/`daemon.rs`/`acp.rs` already apply — quarantine summarization,
+  guardrail filtering, the ML injection classifier + enforcement mode, the three-class refinement
+  classifier, PII detection (both the primary and NER union-merge layers), causal-IPI analysis,
+  NLI entailment sanitization, VIGIL pre-sanitizer gating, PAAC secret masking, and the
+  feedback/reward-signal classifier were all silently absent regardless of config (#6580, #6582;
+  meta-issue #6581, the "wire X into ACP/serve/daemon" defect class). `ServeAgentDeps`
+  (`src/serve/deps.rs`) gains `quarantine_provider`/`guardrail_provider`/`classifiers_config`
+  (feature-gated)/`pii_filter_enabled` (feature-gated)/`causal_ipi_config`/`causal_provider`/
+  `nli_config`/`nli_provider`/`secret_registry`/`vigil_config`/`feedback_classifier`, populated in
+  `assemble_serve_deps` with the same construction logic `src/acp.rs`'s `build_acp_deps` already
+  uses for `SharedAgentDeps`; `agent_factory::build_agent_factory`'s per-session `build_agent`
+  closure now wires all of them onto the built `Agent` via the same `_with_cfg` helpers and
+  ordering `spawn_acp_agent` uses (enforcement-mode after the injection classifier; secret-masking
+  last, after every `with_*_provider` call, since it retroactively wraps each already-set
+  provider). Tool-output anomaly detection (`config.tools.anomaly`) needed no change here — it is
+  already wired for `/sessions*` agents via the pre-existing `Agent::apply_session_config` call in
+  `build_agent_factory` (`crates/zeph-core/src/agent/builder.rs`'s `apply_session_config` calls
+  `with_anomaly_detector` internally when `[tools.anomaly] enabled = true`), the same path
+  `runner.rs`/`daemon.rs`/`acp.rs` go through; those three also make a second, redundant explicit
+  `with_anomaly_detector` call, which `serve` correctly does not duplicate. Added a parity
+  regression test
+  (`acp::tests::build_combined_deps_wires_equivalent_security_pipeline_from_config`) asserting
+  both `ServeAgentDeps` and `SharedAgentDeps` reflect the exact configured values for every field
+  above when built from the same config via the real `build_combined_deps`, so a future PR that
+  silently drops one of them fails a test instead of shipping unnoticed.
+
 - `zeph-core`: the vault-anchor reconcile sweep (`run_anchor_sweep`) hard-deleted a transcript/
   session anchor the instant its backing file was absent, with no grace period or persisted
   "was-anchored" record (#6462). Since file absence is attacker-controlled under this feature's

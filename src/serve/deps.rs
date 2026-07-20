@@ -129,6 +129,33 @@ pub(crate) struct ServeAgentDeps {
     /// `AdversarialPolicyGateExecutor` instances per session (via
     /// `agent_setup::apply_policy_gate_chain`) reusing these shared pieces.
     pub(crate) policy_gate_pieces: crate::agent_setup::PolicyGatePieces,
+    /// #6580/#6582: sanitizer/classifier security pipeline snapshot, wired into every session's
+    /// `Agent` in `agent_factory::build_agent_factory` via the same `_with_cfg` helpers
+    /// `src/acp.rs`'s `spawn_acp_agent` uses — mirrors `SharedAgentDeps`'s equivalent fields.
+    /// Previously `/sessions*` agents got none of quarantine/guardrail/ML injection
+    /// classification/PII detection/causal-IPI/NLI/VIGIL/secret-masking, leaving the HTTP/SSE
+    /// entry point (the one most exposed to untrusted external input, spec-068 §9) without most
+    /// of the security pipeline CLI/TUI/daemon/ACP already apply.
+    pub(crate) quarantine_provider: Option<(AnyProvider, zeph_sanitizer::QuarantineConfig)>,
+    pub(crate) guardrail_provider:
+        Option<(AnyProvider, zeph_sanitizer::guardrail::GuardrailConfig)>,
+    #[cfg(feature = "classifiers")]
+    pub(crate) classifiers_config: zeph_core::config::ClassifiersConfig,
+    /// `security.pii_filter.enabled` — gates the NER union-merge PII layer, mirroring the check
+    /// in `agent_setup::apply_pii_ner_classifier`.
+    #[cfg(feature = "classifiers")]
+    pub(crate) pii_filter_enabled: bool,
+    pub(crate) causal_ipi_config: zeph_sanitizer::causal_ipi::CausalIpiConfig,
+    pub(crate) causal_provider: Option<AnyProvider>,
+    pub(crate) nli_config: zeph_sanitizer::nli::NliConfig,
+    pub(crate) nli_provider: Option<AnyProvider>,
+    pub(crate) secret_registry: Option<Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
+    pub(crate) vigil_config: zeph_config::VigilConfig,
+    /// `config.skills.learning` feedback/reward-signal classifier (`detector_mode = "model"`) —
+    /// unrelated to the sanitizer pipeline above, but also absent from `/sessions*` agents before
+    /// #6580; wired into `Agent::with_llm_classifier` per session, mirroring `src/runner.rs`/
+    /// `src/daemon.rs`/`src/acp.rs`.
+    pub(crate) feedback_classifier: Option<zeph_llm::classifier::llm::LlmClassifier>,
     pub(crate) memory: Arc<SemanticMemory>,
     pub(crate) history_limit: u32,
     pub(crate) recall_limit: usize,
@@ -461,6 +488,50 @@ pub(crate) async fn assemble_serve_deps(
         app.secret_registry().as_ref(),
     );
 
+    // #6580/#6582: resolve the causal-IPI/NLI dedicated providers once here — provider
+    // resolution is static config work, mirroring `src/acp.rs`'s `SharedAgentDeps` build. The
+    // remaining sanitizer/classifier fields below (`quarantine_provider`, `guardrail_provider`,
+    // `classifiers_config`, `secret_registry`, `vigil_config`, `feedback_classifier`) need no
+    // extra resolution and are built inline in the `Ok(ServeAgentDeps { ... })` literal.
+    let causal_ipi_config = config.security.causal_ipi.clone();
+    let causal_provider = causal_ipi_config
+        .provider
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .and_then(
+            |name| match crate::bootstrap::create_named_provider(name, config) {
+                Ok(p) => {
+                    tracing::info!(provider = %name, "causal IPI dedicated provider configured (serve)");
+                    Some(p)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %name,
+                        error = %e,
+                        "causal IPI provider resolution failed, falling back to primary (serve)"
+                    );
+                    None
+                }
+            },
+        );
+    let nli_config = config.security.content_isolation.nli.clone();
+    let nli_provider = nli_config.provider.as_non_empty().and_then(|name| {
+        match crate::bootstrap::create_named_provider(name, config) {
+            Ok(p) => {
+                tracing::info!(provider = %name, "NLI dedicated provider configured (serve)");
+                Some(p)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    provider = %name,
+                    error = %e,
+                    "NLI provider resolution failed, falling back to primary (serve)"
+                );
+                None
+            }
+        }
+    });
+
     Ok(ServeAgentDeps {
         provider: core.provider.clone(),
         embedding_provider: core.embedding_provider.clone(),
@@ -489,6 +560,19 @@ pub(crate) async fn assemble_serve_deps(
         permission_policy,
         audit_logger,
         policy_gate_pieces,
+        quarantine_provider: app.build_quarantine_provider(),
+        guardrail_provider: app.build_guardrail_provider(),
+        #[cfg(feature = "classifiers")]
+        classifiers_config: config.classifiers.clone(),
+        #[cfg(feature = "classifiers")]
+        pii_filter_enabled: config.security.pii_filter.enabled,
+        causal_ipi_config,
+        causal_provider,
+        nli_config,
+        nli_provider,
+        secret_registry: app.secret_registry(),
+        vigil_config: config.security.vigil.clone(),
+        feedback_classifier: app.build_feedback_classifier(&core.provider),
         memory: Arc::clone(&core.memory),
         history_limit,
         recall_limit,
