@@ -233,6 +233,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   under attacker-scale nesting, and that nesting *depth* (not element count/width) is what's
   bounded.
 
+- `zeph-memory`: `GraphConfig::retrieval_strategy` (`bfs`/`astar`/`watercircles`/`beam_search`/
+  `hybrid`/`synapse`) was parsed, validated, and documented, but never consulted by the live
+  graph-recall path — every real entry point (CLI/ACP/daemon/serve) ran through
+  `ContextService::prepare_context` → `zeph-context`'s `fetch_graph_facts` →
+  `SemanticMemoryBackend::recall_graph_facts` → `SemanticMemory::recall_graph_view`, whose
+  strategy selection was a hardcoded boolean switch on `spreading_activation.enabled` (SYNAPSE
+  vs. BFS) with no knowledge of the other four variants (#6566). The only code that correctly
+  dispatched on all six variants (`zeph-agent-context::helpers::fetch_graph_facts_raw` and its
+  supporting chain) had zero production callers — a "wired in isolation, never connected"
+  defect. `zeph_common::memory::GraphRecallParams` gains a `retrieval_strategy`
+  (mirroring `zeph_config::memory::GraphRetrievalStrategy`), `beam_width`, and `ring_limit`
+  field; `zeph-context`'s `fetch_graph_facts` now maps the configured strategy through
+  (`spreading_activation.enabled` still force-overrides to `Synapse`), and
+  `SemanticMemoryBackend::recall_graph_facts` (`zeph-agent-context`, the only layer allowed to
+  see both `zeph-memory` and `zeph-context` interface types) dispatches to the matching
+  `SemanticMemory::recall_graph`/`recall_graph_astar`/`recall_graph_watercircles`/
+  `recall_graph_beam`/`recall_graph_activated` method, with `Hybrid` classifying the query first
+  via `classify_graph_strategy`. `ZoomIn`/`ZoomOut` `recall_view` enrichment (source-message
+  provenance, 1-hop neighbor expansion), previously only implemented inside
+  `SemanticMemory::recall_graph_view`, is preserved across all 6 strategies via a new shared
+  `SemanticMemory::enrich_recall_view` post-dispatch pass (extracted from `recall_graph_view`,
+  which now delegates to it) — `recall_graph_facts` runs it after whichever concrete method
+  produced the base fact set, so `memcot_config.recall_view = "zoom_in" | "zoom_out"` keeps
+  working regardless of `retrieval_strategy`. Removed the now-fully-dead `fetch_graph_facts`/
+  `fetch_graph_facts_raw` dispatch chain from `zeph-agent-context::helpers` (kept
+  `GRAPH_FACTS_PREFIX`, still used for stale-message stripping) and its 4 associated unit tests
+  in `zeph-core`, superseded by equivalent coverage in `zeph-context::assembler`'s own test
+  module plus new end-to-end regression tests proving `retrieval_strategy` actually changes
+  which `SemanticMemory` method is invoked and that view enrichment survives across strategies.
+
+  **BREAKING**: deployments running default graph-memory config (`spreading_activation.enabled
+  = false`, `[memory.graph] retrieval_strategy` left unset/`"synapse"`) will now use SYNAPSE
+  spreading-activation recall (`recall_graph_activated`) instead of the previous — unintentional
+  — plain-BFS fallback (`recall_graph`): before this fix, `retrieval_strategy` was never read at
+  all, and the live path fell back to BFS purely because `spreading_activation`'s own params
+  were only built when `enabled = true`. `retrieval_strategy`'s documented default (`synapse`,
+  "preserves existing SYNAPSE spreading-activation behavior") now actually takes effect. To keep
+  the prior BFS-only behavior, explicitly set `retrieval_strategy = "bfs"` under `[memory.graph]`.
+  Spreading activation is more expensive per-recall than plain BFS; deployments sensitive to
+  graph-recall latency/cost should benchmark before upgrading or pin `retrieval_strategy = "bfs"`.
+
 - `zeph-core`: `handle_compress_context` (the `compress_context`/`request_compaction` tool path,
   `crates/zeph-core/src/agent/tool_execution/focus.rs`) appended the compression LLM's summary
   directly to the pinned Knowledge block with no sanitizer pass, unlike its sibling

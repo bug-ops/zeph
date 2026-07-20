@@ -498,20 +498,46 @@ pub(crate) async fn fetch_graph_facts(
         _ => RecallView::Head,
     };
 
-    let sa_params = if sa_config.enabled {
-        Some(SpreadingActivationParams {
-            decay_lambda: sa_config.decay_lambda,
-            max_hops: sa_config.max_hops,
-            activation_threshold: sa_config.activation_threshold,
-            inhibition_threshold: sa_config.inhibition_threshold,
-            max_activated_nodes: sa_config.max_activated_nodes,
-            temporal_decay_rate,
-            seed_structural_weight: sa_config.seed_structural_weight,
-            seed_community_cap: sa_config.seed_community_cap,
-            alpha: sa_config.alpha,
-        })
+    // Built unconditionally (not gated on `sa_config.enabled`) so it is available both for
+    // an explicit `Synapse` strategy selection and for `Hybrid`'s classifier-fallback arm.
+    let sa_params = Some(SpreadingActivationParams {
+        decay_lambda: sa_config.decay_lambda,
+        max_hops: sa_config.max_hops,
+        activation_threshold: sa_config.activation_threshold,
+        inhibition_threshold: sa_config.inhibition_threshold,
+        max_activated_nodes: sa_config.max_activated_nodes,
+        temporal_decay_rate,
+        seed_structural_weight: sa_config.seed_structural_weight,
+        seed_community_cap: sa_config.seed_community_cap,
+        alpha: sa_config.alpha,
+    });
+
+    // `sa_config.enabled` overrides any configured strategy to `Synapse`; otherwise the
+    // configured `retrieval_strategy` takes effect verbatim.
+    let retrieval_strategy = if sa_config.enabled {
+        zeph_common::memory::GraphRetrievalStrategy::Synapse
     } else {
-        None
+        match memory.graph_config.retrieval_strategy {
+            zeph_config::memory::GraphRetrievalStrategy::Synapse => {
+                zeph_common::memory::GraphRetrievalStrategy::Synapse
+            }
+            zeph_config::memory::GraphRetrievalStrategy::Bfs => {
+                zeph_common::memory::GraphRetrievalStrategy::Bfs
+            }
+            zeph_config::memory::GraphRetrievalStrategy::AStar => {
+                zeph_common::memory::GraphRetrievalStrategy::AStar
+            }
+            zeph_config::memory::GraphRetrievalStrategy::WaterCircles => {
+                zeph_common::memory::GraphRetrievalStrategy::WaterCircles
+            }
+            zeph_config::memory::GraphRetrievalStrategy::BeamSearch => {
+                zeph_common::memory::GraphRetrievalStrategy::BeamSearch
+            }
+            zeph_config::memory::GraphRetrievalStrategy::Hybrid => {
+                zeph_common::memory::GraphRetrievalStrategy::Hybrid
+            }
+            _ => zeph_common::memory::GraphRetrievalStrategy::Synapse,
+        }
     };
 
     let timeout_ms = effective_recall_timeout_ms(sa_config.recall_timeout_ms);
@@ -525,6 +551,9 @@ pub(crate) async fn fetch_graph_facts(
             temporal_decay_rate,
             edge_types: &edge_types,
             spreading_activation: sa_params,
+            retrieval_strategy,
+            beam_width: memory.graph_config.beam_search.beam_width,
+            ring_limit: memory.graph_config.watercircles.ring_limit,
         },
     );
     let recalled = match tokio::time::timeout(
@@ -1577,9 +1606,9 @@ mod tests {
 
     use std::sync::{Arc, Mutex};
     use zeph_common::memory::{
-        ContextMemoryBackend, GraphRecallParams, MemCorrection, MemDocumentChunk, MemGraphFact,
-        MemPersonaFact, MemReasoningStrategy, MemRecalledMessage, MemSessionSummary, MemSummary,
-        MemTrajectoryEntry, MemTreeNode,
+        ContextMemoryBackend, GraphRecallParams, GraphRetrievalStrategy, MemCorrection,
+        MemDocumentChunk, MemGraphFact, MemPersonaFact, MemReasoningStrategy, MemRecalledMessage,
+        MemSessionSummary, MemSummary, MemTrajectoryEntry, MemTreeNode,
     };
 
     /// Known method names accepted by [`MockMemoryBackend::fail_on`].
@@ -1616,6 +1645,11 @@ mod tests {
         delay: Option<std::time::Duration>,
         /// Tracks IDs passed to `mark_reasoning_used`.
         marked_ids: Mutex<Vec<String>>,
+        /// Records the `retrieval_strategy` passed to the most recent `recall_graph_facts`
+        /// call — lets tests assert on the *effective* strategy resolved by `fetch_graph_facts`
+        /// (e.g. the `sa_config.enabled` override rule, issue #6566) without needing a real
+        /// `SemanticMemory` graph store.
+        captured_retrieval_strategy: Mutex<Option<GraphRetrievalStrategy>>,
     }
 
     impl MockMemoryBackend {
@@ -1825,7 +1859,7 @@ mod tests {
         fn recall_graph_facts<'a>(
             &'a self,
             _query: &'a str,
-            _params: GraphRecallParams<'a>,
+            params: GraphRecallParams<'a>,
         ) -> std::pin::Pin<
             Box<
                 dyn std::future::Future<
@@ -1837,6 +1871,7 @@ mod tests {
                     + 'a,
             >,
         > {
+            *self.captured_retrieval_strategy.lock().unwrap() = Some(params.retrieval_strategy);
             let result = if self.fail_on == Some("recall_graph_facts") {
                 Err(Self::fail_err("recall_graph_facts"))
             } else {
@@ -1957,6 +1992,66 @@ mod tests {
         let tc = NaiveTokenCounter;
         let result = fetch_graph_facts(&view, "test", 1000, &tc).await.unwrap();
         assert!(result.is_none());
+    }
+
+    // ── fetch_graph_facts retrieval_strategy resolution (issue #6566) ─────────
+
+    /// `sa_config.enabled = true` must force the effective strategy to `Synapse`
+    /// regardless of the configured `retrieval_strategy` — the override rule ported
+    /// verbatim from the pre-existing (previously dead) dispatch code.
+    #[tokio::test]
+    async fn fetch_graph_facts_forces_synapse_when_spreading_activation_enabled_regardless_of_configured_strategy()
+     {
+        let mock = Arc::new(MockMemoryBackend::default());
+        let mut view = empty_view();
+        view.memory = Some(mock.clone());
+        view.graph_config.enabled = true;
+        view.graph_config.spreading_activation.recall_timeout_ms = 5000;
+        view.graph_config.spreading_activation.enabled = true;
+        // Configured strategy is deliberately non-default/non-Synapse to prove the override
+        // rule wins regardless of what `retrieval_strategy` is set to.
+        view.graph_config.retrieval_strategy =
+            zeph_config::memory::GraphRetrievalStrategy::BeamSearch;
+        let tc = NaiveTokenCounter;
+
+        fetch_graph_facts(&view, "test", 1000, &tc).await.unwrap();
+
+        assert_eq!(
+            *mock.captured_retrieval_strategy.lock().unwrap(),
+            Some(GraphRetrievalStrategy::Synapse),
+            "sa_config.enabled=true must override retrieval_strategy=BeamSearch to Synapse"
+        );
+    }
+
+    /// Documents a real behavior change introduced by the #6566 fix: with a fully-default
+    /// `GraphConfig` (`spreading_activation.enabled = false`, `retrieval_strategy` at its own
+    /// default), the live path now resolves to `Synapse` (`recall_graph_activated`) — not the
+    /// pre-fix live behavior of plain BFS (`recall_graph`), since `sa_params` was previously
+    /// only built when `enabled = true`. `GraphRetrievalStrategy::default()` is `Synapse`, and
+    /// the override rule only forces `Synapse` when SA is *on*; when SA is off it now trusts
+    /// `retrieval_strategy` verbatim, which itself defaults to `Synapse`. This test exists so
+    /// the change is impossible to miss in review — it is not something to "fix" here; see
+    /// the developer's handoff (`.local/handoff/2026-07-20T18-05-09-developer.md`) for the
+    /// full trade-off discussion.
+    #[tokio::test]
+    async fn fetch_graph_facts_default_config_resolves_to_synapse_not_bfs() {
+        let mock = Arc::new(MockMemoryBackend::default());
+        let mut view = empty_view();
+        view.memory = Some(mock.clone());
+        view.graph_config.enabled = true;
+        view.graph_config.spreading_activation.recall_timeout_ms = 5000;
+        // Everything else left at `GraphConfig::default()`: spreading_activation.enabled =
+        // false, retrieval_strategy = GraphRetrievalStrategy::default() = Synapse.
+        let tc = NaiveTokenCounter;
+
+        fetch_graph_facts(&view, "test", 1000, &tc).await.unwrap();
+
+        assert_eq!(
+            *mock.captured_retrieval_strategy.lock().unwrap(),
+            Some(GraphRetrievalStrategy::Synapse),
+            "fully-default GraphConfig must resolve to Synapse, not Bfs — a real behavior \
+             change versus the pre-#6566 live path, flagged for reviewer sign-off"
+        );
     }
 
     // ── fetch_persona_facts ───────────────────────────────────────────────────

@@ -644,6 +644,37 @@ pub struct MemTrajectoryEntry {
     pub confidence: f64,
 }
 
+/// Graph traversal algorithm selector for a graph recall call.
+///
+/// Mirrors `zeph_config::memory::GraphRetrievalStrategy` so that `zeph-context` (Layer 1)
+/// can pass a strategy selection through [`GraphRecallParams`] without depending on
+/// `zeph-config`'s concrete enum. Concrete dispatch onto `SemanticMemory` methods happens
+/// in `zeph-agent-context::memory_backend` (Layer 4).
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::memory::GraphRetrievalStrategy;
+///
+/// assert_eq!(GraphRetrievalStrategy::default(), GraphRetrievalStrategy::Synapse);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GraphRetrievalStrategy {
+    /// SYNAPSE spreading activation (default, existing behavior).
+    #[default]
+    Synapse,
+    /// Hop-limited BFS traversal (pre-SYNAPSE behavior).
+    Bfs,
+    /// A* shortest-path traversal.
+    AStar,
+    /// Concentric BFS expanding outward from seed nodes.
+    WaterCircles,
+    /// Beam search: keep top-K candidates per hop.
+    BeamSearch,
+    /// Dynamic: LLM classifier selects strategy per query.
+    Hybrid,
+}
+
 // ── GraphRecallParams ─────────────────────────────────────────────────────────
 
 /// Parameters for a graph-view recall call, used by [`ContextMemoryBackend::recall_graph_facts`].
@@ -663,6 +694,12 @@ pub struct GraphRecallParams<'a> {
     pub edge_types: &'a [EdgeType],
     /// Spreading activation parameters. `None` disables spreading activation.
     pub spreading_activation: Option<SpreadingActivationParams>,
+    /// Graph traversal algorithm to use.
+    pub retrieval_strategy: GraphRetrievalStrategy,
+    /// Beam width for the `BeamSearch` strategy.
+    pub beam_width: usize,
+    /// Per-ring fact cap for the `WaterCircles` strategy. `0` = auto.
+    pub ring_limit: usize,
 }
 
 // ── ContextMemoryBackend trait ────────────────────────────────────────────────

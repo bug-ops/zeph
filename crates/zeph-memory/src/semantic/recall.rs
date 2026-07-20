@@ -1809,45 +1809,16 @@ impl SemanticMemory {
         edge_types: &[crate::graph::EdgeType],
         sa_params: Option<crate::graph::SpreadingActivationParams>,
     ) -> Result<Vec<crate::recall_view::RecalledFact>, MemoryError> {
-        use crate::recall_view::{RecallView, RecalledFact};
+        use crate::recall_view::RecalledFact;
 
         // Step 1: base retrieval.
-        let mut recalled: Vec<RecalledFact> = if let Some(params) = sa_params {
+        let recalled: Vec<RecalledFact> = if let Some(params) = sa_params {
             let activated = self
                 .recall_graph_activated(query, limit, params, edge_types)
                 .await?;
             activated
                 .into_iter()
-                .map(|af| {
-                    // ActivatedFact carries an Edge with id, fact, confidence, etc.
-                    // Build a RecalledFact preserving activation score and provenance.
-                    let activation_score = af.activation_score;
-                    let edge = &af.edge;
-                    let fact = crate::graph::types::GraphFact {
-                        entity_name: String::new(), // SA does not resolve entity names; assembler formats via `edge.fact`
-                        relation: edge.canonical_relation.clone(),
-                        target_name: String::new(),
-                        fact: edge.fact.clone(),
-                        entity_match_score: activation_score,
-                        hop_distance: 0,
-                        confidence: edge.confidence,
-                        valid_from: if edge.valid_from.is_empty() {
-                            None
-                        } else {
-                            Some(edge.valid_from.clone())
-                        },
-                        edge_type: edge.edge_type,
-                        retrieval_count: edge.retrieval_count,
-                        edge_id: Some(edge.id),
-                    };
-                    RecalledFact {
-                        fact,
-                        activation_score: Some(activation_score),
-                        provenance_message_id: edge.source_message_id,
-                        provenance_snippet: None,
-                        neighbors: Vec::new(),
-                    }
-                })
+                .map(RecalledFact::from_activated_fact)
                 .collect()
         } else {
             let facts = self
@@ -1866,14 +1837,64 @@ impl SemanticMemory {
                 .collect()
         };
 
-        // Step 2: Head view — no enrichment needed.
+        let enriched = self
+            .enrich_recall_view(recalled, view, neighbor_cap, limit, edge_types)
+            .await?;
+
+        #[cfg(feature = "profiling")]
+        tracing::Span::current().record("result_count", enriched.len());
+        Ok(enriched)
+    }
+
+    /// Apply `ZoomIn`/`ZoomOut` view enrichment to an already-retrieved fact set.
+    ///
+    /// Shared by [`Self::recall_graph_view`] and by callers that dispatch on
+    /// [`crate::graph::EdgeType`]-agnostic retrieval strategies (BFS, A*, `WaterCircles`, beam
+    /// search, SYNAPSE spreading activation) rather than going through `recall_graph_view`'s own
+    /// strategy switch — view-aware enrichment (source-message provenance, 1-hop neighbor
+    /// expansion) is orthogonal to which traversal algorithm produced the base fact set, so it is
+    /// applied as a separate post-processing pass here instead of being duplicated per strategy.
+    ///
+    /// - `Head`: no-op, returned as-is.
+    /// - `ZoomIn`: adds a source-message provenance snippet to each fact.
+    /// - `ZoomOut`: `ZoomIn` enrichment plus 1-hop neighbor expansion (capped at `neighbor_cap`
+    ///   per fact, `limit * neighbor_cap` total).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError`] only if constructing the future itself fails; individual
+    /// provenance/neighbor lookups degrade gracefully (logged via `tracing::warn!`, leaving the
+    /// affected fact's enrichment fields at their prior value) rather than failing the whole call.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use zeph_memory::{RecallView, RecalledFact};
+    ///
+    /// # async fn example(mem: &zeph_memory::semantic::SemanticMemory, facts: Vec<RecalledFact>) {
+    /// let enriched = mem
+    ///     .enrich_recall_view(facts, RecallView::ZoomOut, 3, 5, &[])
+    ///     .await
+    ///     .unwrap_or_default();
+    /// # }
+    /// ```
+    #[allow(clippy::too_many_lines)] // single-pass enrichment pipeline: splitting would lose readability
+    pub async fn enrich_recall_view(
+        &self,
+        mut recalled: Vec<crate::recall_view::RecalledFact>,
+        view: crate::recall_view::RecallView,
+        neighbor_cap: usize,
+        limit: usize,
+        edge_types: &[crate::graph::EdgeType],
+    ) -> Result<Vec<crate::recall_view::RecalledFact>, MemoryError> {
+        use crate::recall_view::RecallView;
+
+        // Head view — no enrichment needed.
         if view == RecallView::Head {
-            #[cfg(feature = "profiling")]
-            tracing::Span::current().record("result_count", recalled.len());
             return Ok(recalled);
         }
 
-        // Steps 3/4: Zoom-In / Zoom-Out — fetch provenance snippets.
+        // Zoom-In / Zoom-Out — fetch provenance snippets.
         if matches!(view, RecallView::ZoomIn | RecallView::ZoomOut) {
             let edge_ids: Vec<i64> = recalled.iter().filter_map(|r| r.fact.edge_id).collect();
 
@@ -1892,7 +1913,7 @@ impl SemanticMemory {
                             }
                         }
                         Err(e) => {
-                            tracing::warn!(error = %e, "recall_graph_view: provenance fetch failed");
+                            tracing::warn!(error = %e, "enrich_recall_view: provenance fetch failed");
                         }
                     }
                 }
@@ -1940,14 +1961,14 @@ impl SemanticMemory {
                             }
                         }
                         Err(e) => {
-                            tracing::warn!(error = %e, "recall_graph_view: message snippet fetch failed");
+                            tracing::warn!(error = %e, "enrich_recall_view: message snippet fetch failed");
                         }
                     }
                 }
             }
         }
 
-        // Step 5: Zoom-Out — expand 1-hop neighbors.
+        // Zoom-Out — expand 1-hop neighbors.
         if view == RecallView::ZoomOut
             && let Some(ref store) = self.graph_store
         {
@@ -1998,7 +2019,7 @@ impl SemanticMemory {
                 {
                     Ok(edges) => edges,
                     Err(e) => {
-                        tracing::warn!(error = %e, "recall_graph_view: zoom_out bfs failed");
+                        tracing::warn!(error = %e, "enrich_recall_view: zoom_out bfs failed");
                         continue;
                     }
                 };
@@ -2018,8 +2039,6 @@ impl SemanticMemory {
             }
         }
 
-        #[cfg(feature = "profiling")]
-        tracing::Span::current().record("result_count", recalled.len());
         Ok(recalled)
     }
 

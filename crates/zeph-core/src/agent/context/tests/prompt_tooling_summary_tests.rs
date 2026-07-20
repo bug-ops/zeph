@@ -5,7 +5,6 @@
 
 use std::sync::Arc;
 
-use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 
 use crate::agent::Agent;
@@ -14,7 +13,6 @@ use crate::agent::agent_tests::{
 };
 use crate::agent::context::{cap_summary, truncate_chars};
 use crate::agent::context_manager::CompactionState;
-use zeph_agent_context::helpers as assembler_helpers;
 
 // Helper: add a tool call/result message pair using ToolResult parts.
 fn make_tool_pair(agent: &mut Agent<MockChannel>, tool_name: &str) {
@@ -65,22 +63,6 @@ fn make_tool_result_message(content: &str) -> Message {
             is_error: false,
         }],
     )
-}
-
-async fn build_graph_memory() -> zeph_memory::semantic::SemanticMemory {
-    let mem = zeph_memory::semantic::SemanticMemory::new(
-        ":memory:",
-        "http://127.0.0.1:1",
-        None,
-        AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
-        "test-model",
-    )
-    .await
-    .unwrap();
-    let store = Arc::new(zeph_memory::graph::GraphStore::new(
-        mem.sqlite().pool().clone(),
-    ));
-    mem.with_graph_store(store)
 }
 
 #[test]
@@ -1096,60 +1078,6 @@ async fn summarizer_failure_prune_still_runs() {
     assert_eq!(freed, 0, "keep_recent=4 should protect all 4 tool messages");
 }
 
-#[tokio::test]
-async fn fetch_graph_facts_returns_none_when_graph_config_disabled() {
-    let memory = build_graph_memory().await;
-    let cid = memory.sqlite().create_conversation().await.unwrap();
-    let graph_config = zeph_config::GraphConfig {
-        enabled: false,
-        ..Default::default()
-    };
-    let mem = Arc::new(memory);
-    let tc = Arc::new(zeph_memory::TokenCounter::new());
-    let _ = cid;
-    let result =
-        assembler_helpers::fetch_graph_facts_raw(Some(&*mem), &graph_config, "test", 1000, &tc)
-            .await
-            .unwrap();
-    assert!(result.is_none());
-}
-
-#[tokio::test]
-async fn fetch_graph_facts_returns_none_when_budget_zero() {
-    let memory = build_graph_memory().await;
-    let cid = memory.sqlite().create_conversation().await.unwrap();
-    let graph_config = zeph_config::GraphConfig {
-        enabled: true,
-        ..Default::default()
-    };
-    let mem = Arc::new(memory);
-    let tc = Arc::new(zeph_memory::TokenCounter::new());
-    let _ = cid;
-    let result =
-        assembler_helpers::fetch_graph_facts_raw(Some(&*mem), &graph_config, "test", 0, &tc)
-            .await
-            .unwrap();
-    assert!(result.is_none());
-}
-
-#[tokio::test]
-async fn fetch_graph_facts_returns_none_when_graph_is_empty() {
-    let memory = build_graph_memory().await;
-    let cid = memory.sqlite().create_conversation().await.unwrap();
-    let graph_config = zeph_config::GraphConfig {
-        enabled: true,
-        ..Default::default()
-    };
-    let mem = Arc::new(memory);
-    let tc = Arc::new(zeph_memory::TokenCounter::new());
-    let _ = cid;
-    let result =
-        assembler_helpers::fetch_graph_facts_raw(Some(&*mem), &graph_config, "rust", 1000, &tc)
-            .await
-            .unwrap();
-    assert!(result.is_none(), "empty graph must return None");
-}
-
 // --- Deferred summarization tests ---
 
 #[tokio::test]
@@ -1479,70 +1407,6 @@ fn find_oldest_unsummarized_skips_pruned_content() {
         agent.find_oldest_unsummarized_pair(),
         Some((3, 4)),
         "pruned pair should be skipped"
-    );
-}
-
-#[tokio::test]
-async fn fetch_graph_facts_returns_some_with_entities_and_has_prefix() {
-    use zeph_memory::graph::{EntityType, GraphStore};
-
-    let memory = build_graph_memory().await;
-    let cid = memory.sqlite().create_conversation().await.unwrap();
-
-    {
-        let store = GraphStore::new(memory.sqlite().pool().clone());
-        let rust_id = store
-            .upsert_entity(
-                "rust",
-                "rust",
-                EntityType::Language,
-                Some("systems language"),
-                None,
-            )
-            .await
-            .unwrap()
-            .0;
-        let tokio_id = store
-            .upsert_entity(
-                "tokio",
-                "tokio",
-                EntityType::Tool,
-                Some("async runtime"),
-                None,
-            )
-            .await
-            .unwrap()
-            .0;
-        store
-            .insert_edge(
-                rust_id,
-                tokio_id,
-                "uses",
-                "Rust uses tokio",
-                0.9,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-    }
-
-    let graph_config = zeph_config::GraphConfig {
-        enabled: true,
-        ..Default::default()
-    };
-    let mem = Arc::new(memory);
-    let tc = Arc::new(zeph_memory::TokenCounter::new());
-    let _ = cid;
-    let result =
-        assembler_helpers::fetch_graph_facts_raw(Some(&*mem), &graph_config, "rust", 2000, &tc)
-            .await
-            .unwrap();
-    assert!(result.is_some());
-    let msg = result.unwrap();
-    assert!(
-        msg.content
-            .starts_with(zeph_agent_context::helpers::GRAPH_FACTS_PREFIX)
     );
 }
 

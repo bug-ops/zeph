@@ -70,6 +70,41 @@ impl RecalledFact {
             neighbors: Vec::new(),
         }
     }
+
+    /// Wrap a SYNAPSE spreading-activation result, preserving its activation score and
+    /// source-message provenance.
+    ///
+    /// `entity_name`/`target_name` are left empty because spreading activation does not
+    /// resolve entity names — callers format the fact via `edge.fact` instead.
+    #[must_use]
+    pub fn from_activated_fact(af: crate::graph::activation::ActivatedFact) -> Self {
+        let activation_score = af.activation_score;
+        let edge = af.edge;
+        let fact = GraphFact {
+            entity_name: String::new(),
+            relation: edge.canonical_relation.clone(),
+            target_name: String::new(),
+            fact: edge.fact.clone(),
+            entity_match_score: activation_score,
+            hop_distance: 0,
+            confidence: edge.confidence,
+            valid_from: if edge.valid_from.is_empty() {
+                None
+            } else {
+                Some(edge.valid_from.clone())
+            },
+            edge_type: edge.edge_type,
+            retrieval_count: edge.retrieval_count,
+            edge_id: Some(edge.id),
+        };
+        Self {
+            fact,
+            activation_score: Some(activation_score),
+            provenance_message_id: edge.source_message_id,
+            provenance_snippet: None,
+            neighbors: Vec::new(),
+        }
+    }
 }
 
 #[cfg(test)]
