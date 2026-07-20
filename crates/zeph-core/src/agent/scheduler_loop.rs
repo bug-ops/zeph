@@ -66,15 +66,50 @@ fn network_denied_for_task(task: Option<&zeph_orchestration::TaskNode>) -> bool 
     )
 }
 
-/// Extracts `task`'s `tool_allowlist` (if any) as the `HashSet` consumed by
-/// `SpawnContext::inherited_tool_allowlist` / `apply_constraint_propagation`. `None` (task
-/// missing or no per-task allowlist set) means no per-task narrowing is applied — the
-/// sub-agent's tool set is governed solely by its own `SubAgentDef` policy.
-fn task_tool_allowlist(
+/// Derive the per-task tool allowlist to intersect into `SpawnContext::inherited_tool_allowlist`
+/// for `task`, narrowed against the real spawn-time `universe` of usable tool ids (#6526).
+///
+/// Returns `None` when `task` carries no `tool_allowlist` (or the graph lookup missed) — no
+/// per-task narrowing is applied in that case, matching `network_denied_for_task`'s fail-open
+/// default.
+///
+/// `universe` must already be normalized (lowercased, `(...)`-suffix stripped, see
+/// `zeph_subagent::normalize_tool_id`). Names in the task's list that do not match any real
+/// tool in `universe` are dropped with a `tracing::warn!` rather than silently producing a
+/// zero-tool allowlist — a hallucinated or typo'd LLM-planner value degrades to a no-op
+/// narrowing instead of failing the task with no usable tools (critic M4, #6526).
+fn task_tool_allowlist_for_task(
     task: Option<&zeph_orchestration::TaskNode>,
+    universe: &std::collections::HashSet<String>,
 ) -> Option<std::collections::HashSet<String>> {
-    task.and_then(|t| t.tool_allowlist.as_ref())
-        .map(|v| v.iter().cloned().collect())
+    let list = task.and_then(|t| t.tool_allowlist.as_ref())?;
+
+    let mut matched = std::collections::HashSet::with_capacity(list.len());
+    let mut unknown = Vec::new();
+    for name in list {
+        let normalized = zeph_subagent::normalize_tool_id(name);
+        if universe.contains(&normalized) {
+            matched.insert(normalized);
+        } else {
+            unknown.push(name.clone());
+        }
+    }
+
+    if !unknown.is_empty() {
+        tracing::warn!(
+            unknown_tools = ?unknown,
+            "task_tool_allowlist_for_task: planner-emitted tool_allowlist names not found in \
+             the spawn-time tool universe, dropped as no-op rather than emptying the allowlist"
+        );
+    }
+
+    if matched.is_empty() {
+        // Every listed name was unrecognized — treat as if no per-task allowlist was
+        // given at all, rather than intersecting to a zero-tool set (M4).
+        None
+    } else {
+        Some(matched)
+    }
 }
 
 /// Reconstruct a [`zeph_orchestration::ToolCallSummary`] trace from a loaded transcript's
@@ -511,7 +546,6 @@ impl<C: crate::channel::Channel> Agent<C> {
         let task = scheduler.graph().tasks.get(task_id.index());
         let task_title = task.map_or("unknown", |t| t.title.as_str());
         let network_denied = network_denied_for_task(task);
-        let task_allowlist = task_tool_allowlist(task);
 
         let provider = self.provider.clone();
         let tool_executor = Arc::clone(&self.tool_executor);
@@ -535,7 +569,8 @@ impl<C: crate::channel::Channel> Agent<C> {
 
         let mut spawn_ctx = self.build_spawn_context(&cfg);
         spawn_ctx.network_denied = network_denied;
-        spawn_ctx.inherited_tool_allowlist = task_allowlist;
+        spawn_ctx.inherited_tool_allowlist =
+            self.intersect_task_tool_allowlist(task, spawn_ctx.inherited_tool_allowlist.take());
         // Autonomous DAG dispatch (spec 042, #5857): `build_spawn_context` sets `Explicit` as
         // its base value (correct for its other, user-command-driven callers) — this is the
         // one caller that isn't user-driven, so override it back to `Autonomous` here.
@@ -635,6 +670,27 @@ impl<C: crate::channel::Channel> Agent<C> {
                 (false, concurrency_fail, done_status)
             }
         }
+    }
+
+    /// Intersects the task's own planner-emitted `tool_allowlist` (if any) into the
+    /// parent-derived floor (#6527) `build_spawn_context` already set on `parent_floor`,
+    /// composing the two narrowing sources via `intersect_allowlists` (#6526) so the
+    /// result can only narrow further, never widen.
+    fn intersect_task_tool_allowlist(
+        &self,
+        task: Option<&zeph_orchestration::TaskNode>,
+        parent_floor: Option<std::collections::HashSet<String>>,
+    ) -> Option<std::collections::HashSet<String>> {
+        let universe: std::collections::HashSet<String> = self
+            .tool_executor
+            .tool_definitions_erased()
+            .into_iter()
+            .map(|d| zeph_subagent::normalize_tool_id(d.id.as_ref()))
+            .collect();
+        zeph_subagent::intersect_allowlists(
+            parent_floor,
+            task_tool_allowlist_for_task(task, &universe),
+        )
     }
 
     /// Execute a `RunInline` scheduler action: run the task synchronously in the current agent.
@@ -1665,7 +1721,7 @@ impl<C: crate::channel::Channel> Agent<C> {
 mod tests {
     use super::{
         CommandHandoffContext, append_shared_state_block, determine_task_outcome,
-        lookahead_effective_depth, network_denied_for_task, task_tool_allowlist,
+        lookahead_effective_depth, network_denied_for_task, task_tool_allowlist_for_task,
         tool_trace_from_messages,
     };
 
@@ -1733,32 +1789,85 @@ mod tests {
         assert!(network_denied_for_task(Some(&node)));
     }
 
-    // ── task_tool_allowlist (issue #6504) ───────────────────────────────────
+    // ── task_tool_allowlist_for_task (#6526) ─────────────────────────────────
 
-    fn task_with_allowlist(allowlist: Option<Vec<String>>) -> zeph_orchestration::TaskNode {
+    fn universe(tools: &[&str]) -> std::collections::HashSet<String> {
+        tools.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    fn task_with_allowlist(list: Option<Vec<&str>>) -> zeph_orchestration::TaskNode {
         let mut node = zeph_orchestration::TaskNode::new(0, "t", "d");
-        node.tool_allowlist = allowlist;
+        node.tool_allowlist = list.map(|v| v.into_iter().map(str::to_owned).collect());
         node
     }
 
     #[test]
-    fn no_task_allowlist_returns_none() {
-        assert_eq!(task_tool_allowlist(None), None);
+    fn no_task_returns_none() {
+        assert_eq!(
+            task_tool_allowlist_for_task(None, &universe(&["read", "bash"])),
+            None
+        );
     }
 
     #[test]
     fn missing_tool_allowlist_returns_none() {
         let node = task_with_allowlist(None);
-        assert_eq!(task_tool_allowlist(Some(&node)), None);
+        assert_eq!(
+            task_tool_allowlist_for_task(Some(&node), &universe(&["read", "bash"])),
+            None
+        );
     }
 
     #[test]
-    fn populated_tool_allowlist_converts_to_hash_set() {
-        let node = task_with_allowlist(Some(vec!["shell".to_string(), "read".to_string()]));
-        let expected: std::collections::HashSet<String> = ["shell".to_string(), "read".to_string()]
-            .into_iter()
-            .collect();
-        assert_eq!(task_tool_allowlist(Some(&node)), Some(expected));
+    fn matching_tool_allowlist_narrows_to_matched_set() {
+        let node = task_with_allowlist(Some(vec!["read", "grep"]));
+        let result =
+            task_tool_allowlist_for_task(Some(&node), &universe(&["read", "grep", "bash"]))
+                .expect("matching names must produce Some(set)");
+        assert_eq!(result, universe(&["read", "grep"]));
+    }
+
+    #[test]
+    fn unknown_tool_names_are_dropped_not_emptied() {
+        // M4: a hallucinated/typo'd planner value must degrade to a no-op narrowing
+        // (None), not intersect to a zero-tool set that fails the task.
+        let node = task_with_allowlist(Some(vec!["reed"]));
+        assert_eq!(
+            task_tool_allowlist_for_task(Some(&node), &universe(&["read", "bash"])),
+            None
+        );
+    }
+
+    #[test]
+    fn mixed_known_and_unknown_names_keeps_only_known() {
+        let node = task_with_allowlist(Some(vec!["read", "reed"]));
+        let result = task_tool_allowlist_for_task(Some(&node), &universe(&["read", "bash"]))
+            .expect("at least one known name must produce Some(set)");
+        assert_eq!(result, universe(&["read"]));
+    }
+
+    #[test]
+    fn tool_names_are_normalized_before_matching() {
+        let node = task_with_allowlist(Some(vec!["Bash(cargo *)"]));
+        let result = task_tool_allowlist_for_task(Some(&node), &universe(&["bash", "read"]))
+            .expect("normalized name must match the runtime tool id");
+        assert_eq!(result, universe(&["bash"]));
+    }
+
+    #[test]
+    fn composes_with_parent_floor_via_intersect_allowlists() {
+        // Mirrors handle_scheduler_spawn_action's wiring: the parent-derived floor
+        // (#6527, already present in spawn_ctx.inherited_tool_allowlist by the time this
+        // runs) and the per-task allowlist (#6526) must compose by intersection, never
+        // widen beyond either source.
+        let parent_floor = universe(&["read", "grep", "bash"]);
+        let node = task_with_allowlist(Some(vec!["grep", "bash"]));
+        let task_allowlist =
+            task_tool_allowlist_for_task(Some(&node), &universe(&["read", "grep", "bash"]));
+
+        let composed =
+            zeph_subagent::intersect_allowlists(Some(parent_floor), task_allowlist).unwrap();
+        assert_eq!(composed, universe(&["grep", "bash"]));
     }
 
     // ── determine_task_outcome / append_shared_state_block (spec-080, #6363) ────────

@@ -855,10 +855,7 @@ impl<C: Channel> Agent<C> {
             // receive higher privileges than the parent itself currently holds — this is the
             // only production call site that constructs a `SpawnContext`, so every spawn path
             // (foreground, background, and orchestration-driven via
-            // `handle_scheduler_spawn_action`) is covered. `inherited_tool_allowlist` is left
-            // `None`: the top-level agent has no explicit tool-allowlist concept of its own to
-            // narrow against (see issue tracking the follow-up per-task `TaskNode` allowlist
-            // plumbing for the orchestration layer).
+            // `handle_scheduler_spawn_action`) is covered.
             max_trust_level: Some(self.parent_effective_trust_level()),
             // This helper's own three callers (`handle_agent_background`,
             // `handle_agent_spawn_foreground`, `handle_agent_resume`) are all dispatched from
@@ -868,6 +865,36 @@ impl<C: Channel> Agent<C> {
             // immediately after calling this helper, mirroring how it already overrides
             // `network_denied`/`progress_at` post-construction.
             origin: zeph_subagent::SpawnOrigin::Explicit,
+            // #6527: derive a defense-in-depth / tool-visibility narrowing signal from the
+            // parent session's own `[tool.permissions]` deny rules. This is NOT the runtime
+            // security boundary — every spawned sub-agent's tool executor is a
+            // `FilteredToolExecutor` wrapping `Arc::clone(&self.tool_executor)`, which is
+            // itself the parent's `TrustGateExecutor`-gated tree (see `agent_setup.rs`
+            // `TrustGateExecutor::new(inner, permission_policy.clone())` and `runner.rs`'s
+            // `self.tool_executor` wiring). So every child tool call is already re-checked
+            // against this same `permission_policy` at call time, regardless of what this
+            // field narrows. This field only controls what the child's LLM *sees* in its
+            // tool catalog, saving wasted turns on tools that would be denied anyway.
+            //
+            // INVARIANT (do not break silently): the `None` returns inside
+            // `effective_tool_allowlist` (for `ReadOnly` autonomy and for "nothing is
+            // wholesale-denied") are safe ONLY because the child inherits the parent's
+            // gated executor as described above. If a future refactor gives subagents a
+            // fresh/ungated executor (e.g. remote/sandboxed subagents), these `None` returns
+            // become real escalation holes — a `ReadOnly` parent would spawn a write-capable
+            // child, and an unrestricted-by-rules parent would give the child no runtime
+            // gating at all. See `effective_tool_allowlist`'s own doc comment for the full
+            // narrowing algorithm and its edge cases.
+            inherited_tool_allowlist: self
+                .runtime
+                .config
+                .permission_policy
+                .effective_tool_allowlist(
+                    self.tool_executor
+                        .tool_definitions_erased()
+                        .into_iter()
+                        .map(|d| zeph_subagent::normalize_tool_id(d.id.as_ref())),
+                ),
             ..Default::default()
         }
     }
@@ -1272,6 +1299,8 @@ fn sanitize_parent_messages(
 
 #[cfg(test)]
 mod tests {
+    use zeph_tools::{ErasedToolExecutor, ToolCall};
+
     use super::*;
     use crate::agent::agent_tests::*;
 
@@ -1761,6 +1790,76 @@ mod tests {
         sink.dump_response(id, &zeph_llm::provider::ChatResponse::Text("ok".into()));
     }
 
+    // ── build_spawn_context: inherited_tool_allowlist wiring (#6527) ────────
+
+    #[test]
+    fn build_spawn_context_leaves_inherited_tool_allowlist_none_by_default() {
+        // Default PermissionPolicy has no rules, so no tool is wholesale-denied — must
+        // stay None, not Some(full universe) (§2a: would freeze InheritAll children).
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools().with_definitions(vec![ToolDef {
+            id: "bash".into(),
+            description: "shell".into(),
+            schema: schemars::Schema::default(),
+            invocation: zeph_tools::registry::InvocationHint::ToolCall,
+            output_schema: None,
+            server_id: None,
+        }]);
+        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let ctx = agent.build_spawn_context(&zeph_config::SubAgentConfig::default());
+        assert!(ctx.inherited_tool_allowlist.is_none());
+    }
+
+    #[test]
+    fn build_spawn_context_populates_inherited_tool_allowlist_from_parent_policy() {
+        // A wholesale-Deny rule on the parent's own PermissionPolicy must narrow
+        // SpawnContext::inherited_tool_allowlist, dropping the denied tool but keeping
+        // everything else in the parent's tool universe.
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools().with_definitions(vec![
+            ToolDef {
+                id: "bash".into(),
+                description: "shell".into(),
+                schema: schemars::Schema::default(),
+                invocation: zeph_tools::registry::InvocationHint::ToolCall,
+                output_schema: None,
+                server_id: None,
+            },
+            ToolDef {
+                id: "read".into(),
+                description: "read a file".into(),
+                schema: schemars::Schema::default(),
+                invocation: zeph_tools::registry::InvocationHint::ToolCall,
+                output_schema: None,
+                server_id: None,
+            },
+        ]);
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let mut rules = std::collections::HashMap::new();
+        rules.insert(
+            "bash".to_owned(),
+            vec![zeph_config::tools::PermissionRule {
+                pattern: "*".to_owned(),
+                action: zeph_config::tools::PermissionAction::Deny,
+            }],
+        );
+        agent.runtime.config.permission_policy = zeph_tools::PermissionPolicy::new(rules)
+            .with_autonomy(zeph_config::tools::AutonomyLevel::Supervised);
+
+        let ctx = agent.build_spawn_context(&zeph_config::SubAgentConfig::default());
+        let allowlist = ctx
+            .inherited_tool_allowlist
+            .expect("a wholesale-denied bash tool must produce a narrowed Some(set)");
+        assert!(!allowlist.contains("bash"));
+        assert!(allowlist.contains("read"));
+    }
+
     // ── build_spawn_context: trust-level constraint propagation (#6493) ─────
 
     #[test]
@@ -1888,6 +1987,105 @@ mod tests {
             "a sub-agent spawned while the parent's own effective trust is Quarantined must \
              never receive a higher (Trusted) effective trust on its own tool executor — \
              #6493's escalation gap"
+        );
+    }
+
+    // ── S2 (#6527 critic): spawned sub-agent shares the parent's gated executor ──
+
+    /// Records every tool call it receives via a shared counter cloned out *before*
+    /// `Agent::new` takes ownership of the executor. Only a literal `Arc::clone` of this
+    /// same allocation (not a fresh/ungated executor of the same shape) can increment the
+    /// caller's copy of the counter — proving the sub-agent's tool call reached the exact
+    /// same executor instance the parent itself holds.
+    #[derive(Default)]
+    struct RecordingExecutor {
+        calls: Mutex<u32>,
+    }
+
+    impl ToolExecutor for RecordingExecutor {
+        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+            Ok(None)
+        }
+
+        async fn execute_tool_call(
+            &self,
+            call: &ToolCall,
+        ) -> Result<Option<ToolOutput>, ToolError> {
+            *self.calls.lock().unwrap() += 1;
+            Ok(Some(ToolOutput {
+                tool_name: call.tool_id.clone(),
+                summary: "ran".into(),
+                blocks_executed: 1,
+                ..Default::default()
+            }))
+        }
+
+        fn set_skill_env(&self, _env: Option<std::collections::HashMap<String, String>>) {}
+
+        zeph_tools::tool_executor_no_inner_defaults!();
+    }
+
+    #[tokio::test]
+    async fn spawning_a_subagent_tool_call_reaches_parents_own_executor() {
+        // Backs the invariant comment on `build_spawn_context`'s `inherited_tool_allowlist`
+        // wiring: `effective_tool_allowlist`'s `None` returns are safe only because the
+        // child's tool calls are re-checked by whatever gates the parent's own
+        // `self.tool_executor` (a `TrustGateExecutor` in production). This test proves the
+        // production spawn path (`handle_agent_background` → `SubAgentManager::spawn` →
+        // `FilteredToolExecutor` wrapping `Arc::clone(&self.tool_executor)`) really does
+        // route the child's tool call through the SAME executor allocation the parent
+        // holds, not a fresh/ungated one.
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+
+        let (mock, _counter) = MockProvider::default().with_tool_use(vec![
+            ChatResponse::ToolUse {
+                text: None,
+                tool_calls: vec![ToolUseRequest {
+                    id: "call-1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "echo hi"}),
+                }],
+                thinking_blocks: vec![],
+            },
+            ChatResponse::Text("final answer".into()),
+        ]);
+
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let recorder = Arc::new(RecordingExecutor::default());
+        let mut agent = Agent::new(
+            AnyProvider::Mock(mock),
+            channel,
+            registry,
+            None,
+            5,
+            RecordingExecutor::default(),
+        );
+        // Replace with the tracked Arc so the test can observe calls made against the exact
+        // instance the production spawn path clones via `Arc::clone(&self.tool_executor)`.
+        agent.tool_executor = Arc::clone(&recorder) as Arc<dyn ErasedToolExecutor>;
+
+        let mut mgr = zeph_subagent::SubAgentManager::new(4);
+        mgr.definitions_mut().push(subagent_def("helper"));
+        agent.services.orchestration.subagent_manager = Some(mgr);
+
+        let resp = agent.handle_agent_background("helper", "do work").await;
+        assert!(
+            resp.is_some_and(|r| r.contains("started in background")),
+            "test setup: the real production spawn path must succeed"
+        );
+
+        for _ in 0..50 {
+            if !agent.poll_subagents().await.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        assert!(
+            *recorder.calls.lock().unwrap() >= 1,
+            "the sub-agent's tool call must reach the parent's own tool executor instance, \
+             proving no fresh/ungated executor is substituted for the child"
         );
     }
 

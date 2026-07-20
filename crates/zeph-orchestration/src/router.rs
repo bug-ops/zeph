@@ -162,6 +162,7 @@ mod tests {
             execution_environment: None,
             token_budget_cents: None,
             network_scope: None,
+            tool_allowlist: None,
             asset_sensitivity: None,
             tool_allowlist: None,
             timeout: None,

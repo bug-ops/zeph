@@ -265,6 +265,20 @@ fields — the `PlannedTask` DTO does not include `network_scope` or `asset_sens
 `schemars::JsonSchema` is derived for future planner schema integration; that wiring is tracked
 in OQ-1 and OQ-2.
 
+### 5.4 `TaskNode::tool_allowlist` is a separate, already-enforced mechanism (#6526)
+
+Unlike `asset_sensitivity` (OQ-2 below, still advisory-only), a distinct field
+`TaskNode::tool_allowlist: Option<Vec<String>>` is planner-emitted, intersection-only, and IS
+read by `handle_scheduler_spawn_action`, narrowing `SpawnContext::inherited_tool_allowlist`
+directly. This does **not** resolve OQ-2, which remains specifically about wiring
+`asset_sensitivity` to auto-tighten the allow-list — `tool_allowlist` is a different signal on
+the same `TaskNode`. See `044-subagent-lifecycle/spec.md` §12 "Producers of
+`inherited_tool_allowlist`" for the full mechanism, including its sibling producer
+`PermissionPolicy::effective_tool_allowlist` (#6527, parent-session-derived, not per-task).
+As with INVARIANT-5/6 below, this is defense-in-depth/tool-visibility hygiene — the
+`FilteredToolExecutor`/`TrustGateExecutor` runtime gate remains the actual enforcement layer
+regardless of what this field narrows.
+
 ---
 
 ## §6 Key Invariants

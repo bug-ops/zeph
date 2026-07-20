@@ -164,6 +164,10 @@ pub(crate) struct PlannedTask {
     /// means no gate is applied for this task.
     #[serde(default)]
     pub verify_criteria: Option<String>,
+    /// LLM-suggested tool names this task actually needs. Absent or `null` means no
+    /// per-task narrowing (see [`TaskNode::tool_allowlist`]).
+    #[serde(default)]
+    pub tool_allowlist: Option<Vec<String>>,
 }
 
 impl<P: LlmProvider + Send + Sync> Planner for LlmPlanner<P> {
@@ -261,17 +265,23 @@ fn build_prompt(goal: &str, agents: &[SubAgentDef], max_tasks: u32) -> Vec<Messa
            describing what a correct output must satisfy (e.g. \"output must contain a valid JSON \
            object\", \"response must list at least 3 recommendations\"). Set to null when no \
            explicit output criterion is needed. Downstream tasks will be blocked until the \
-           criterion is satisfied.\n\n\
+           criterion is satisfied.\n\
+         - For each task, you may include tool_allowlist: a list of tool names this task \
+           actually needs (e.g. [\"read\", \"grep\"]). This only narrows what the assigned \
+           agent can use for this task — it can never grant a tool the agent is not already \
+           permitted to use. Omit or set to null when the task needs the agent's full \
+           tool set.\n\n\
          Example (2-task plan):\n\
          {{\"tasks\": [\
            {{\"task_id\": \"fetch-data\", \"title\": \"Fetch raw data\", \
              \"description\": \"Download the dataset from source.\", \
              \"depends_on\": [], \"execution_mode\": \"parallel\", \
-             \"verify_criteria\": \"output must contain the raw dataset as valid JSON\"}},\
+             \"verify_criteria\": \"output must contain the raw dataset as valid JSON\", \
+             \"tool_allowlist\": [\"fetch\"]}},\
            {{\"task_id\": \"deploy\", \"title\": \"Deploy service\", \
              \"description\": \"Deploy the processed artifact to production.\", \
              \"depends_on\": [\"fetch-data\"], \"execution_mode\": \"sequential\", \
-             \"verify_criteria\": null}}\
+             \"verify_criteria\": null, \"tool_allowlist\": null}}\
          ]}}"
     );
 
@@ -416,6 +426,12 @@ fn convert_response(
             node.execution_mode = mode;
         }
 
+        if let Some(list) = &pt.tool_allowlist
+            && !list.is_empty()
+        {
+            node.tool_allowlist = Some(list.clone());
+        }
+
         if verify_predicate_enabled && let Some(criteria) = &pt.verify_criteria {
             let trimmed = criteria.trim();
             if !trimmed.is_empty() {
@@ -465,6 +481,7 @@ mod tests {
             failure_strategy: None,
             execution_mode: None,
             verify_criteria: None,
+            tool_allowlist: None,
         }
     }
 
@@ -604,6 +621,7 @@ mod tests {
                     failure_strategy: None,
                     execution_mode: None,
                     verify_criteria: None,
+                    tool_allowlist: None,
                 }],
             };
             let err = convert_response(response, "goal", &agents(), 20, true).unwrap_err();
@@ -789,6 +807,7 @@ mod tests {
                 failure_strategy: None,
                 execution_mode: Some(ExecutionMode::Parallel),
                 verify_criteria: None,
+                tool_allowlist: None,
             }],
         };
         let graph = convert_response(response, "goal", &agents(), 20, true).unwrap();
@@ -807,6 +826,7 @@ mod tests {
                 failure_strategy: None,
                 execution_mode: Some(ExecutionMode::Sequential),
                 verify_criteria: None,
+                tool_allowlist: None,
             }],
         };
         let graph = convert_response(response, "goal", &agents(), 20, true).unwrap();
@@ -820,6 +840,56 @@ mod tests {
         };
         let graph = convert_response(response, "goal", &agents(), 20, true).unwrap();
         assert_eq!(graph.tasks[0].execution_mode, ExecutionMode::Parallel);
+    }
+
+    // --- tool_allowlist tests (#6526) ---
+
+    #[test]
+    fn convert_tool_allowlist_maps_to_task_node() {
+        let response = PlannerResponse {
+            tasks: vec![PlannedTask {
+                tool_allowlist: Some(vec!["read".to_string(), "grep".to_string()]),
+                ..make_planned("t1", "T1", &[], None)
+            }],
+        };
+        let graph = convert_response(response, "goal", &agents(), 20, true).unwrap();
+        assert_eq!(
+            graph.tasks[0].tool_allowlist,
+            Some(vec!["read".to_string(), "grep".to_string()])
+        );
+    }
+
+    #[test]
+    fn convert_tool_allowlist_missing_defaults_none() {
+        let response = PlannerResponse {
+            tasks: vec![make_planned("t1", "T1", &[], None)],
+        };
+        let graph = convert_response(response, "goal", &agents(), 20, true).unwrap();
+        assert!(graph.tasks[0].tool_allowlist.is_none());
+    }
+
+    #[test]
+    fn convert_tool_allowlist_empty_list_stays_none() {
+        // An empty list from the LLM must not become Some(vec![]) — that would intersect
+        // to zero usable tools downstream. Treat it the same as omitted.
+        let response = PlannerResponse {
+            tasks: vec![PlannedTask {
+                tool_allowlist: Some(vec![]),
+                ..make_planned("t1", "T1", &[], None)
+            }],
+        };
+        let graph = convert_response(response, "goal", &agents(), 20, true).unwrap();
+        assert!(graph.tasks[0].tool_allowlist.is_none());
+    }
+
+    #[test]
+    fn build_prompt_includes_tool_allowlist() {
+        let msgs = build_prompt("goal", &agents(), 20);
+        let text = &msgs[0].content;
+        assert!(
+            text.contains("tool_allowlist"),
+            "prompt must mention tool_allowlist field"
+        );
     }
 
     // --- verify_predicate gating tests (#5403 regression) ---

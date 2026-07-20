@@ -43,7 +43,8 @@ fn collect_fenced_tags(executor: &dyn ErasedToolExecutor) -> Vec<&'static str> {
 /// Normalize a tool ID for policy matching: lowercase, strip everything from the first `(` onward.
 ///
 /// Examples: `"Read"` → `"read"`, `"Bash(cargo *)"` → `"bash"`, `"bash"` → `"bash"`.
-pub(crate) fn normalize_tool_id(s: &str) -> String {
+#[must_use]
+pub fn normalize_tool_id(s: &str) -> String {
     let base = s.split('(').next().unwrap_or(s);
     base.trim().to_lowercase()
 }

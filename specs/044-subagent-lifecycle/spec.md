@@ -369,6 +369,45 @@ constraints.
 - `InheritAll` tool policy with a non-None parent allowlist MUST be converted to `AllowList(parent_set)` — `InheritAll` must not survive into a constrained delegation chain
 - Constraint narrowing MUST be logged — silent narrowing is a security observability gap
 
+### Producers of `inherited_tool_allowlist` (#6526, #6527)
+
+Section 12 above describes the *consumer* (`apply_constraint_propagation`), which existed
+before either producer did — until #6526/#6527, `inherited_tool_allowlist` was always `None`
+on every production `SpawnContext`. There are now two producers, composed by intersection
+via `zeph_subagent::intersect_allowlists` (`None, None → None`; one `Some` → that set; both
+`Some` → their intersection — never widens):
+
+1. **Parent-derived floor** (#6527) — `PermissionPolicy::effective_tool_allowlist`
+   (`zeph-tools/src/permissions.rs`) derives a narrowed set from the parent session's own
+   `[tool.permissions]` rules: a tool is dropped when its first matching rule (first-match-wins,
+   mirroring `PermissionPolicy::check`) is a catch-all `Deny` (`""`, `"*"`, or `"**"`). Returns
+   `None` (no narrowing) when `autonomy_level` is not `Supervised`, or when no tool is actually
+   wholesale-denied — returning `Some(full universe)` in the latter case would incorrectly
+   freeze an `InheritAll` child's tool list, hiding dynamically-added MCP tools. Wired into
+   `build_spawn_context` (`zeph-core/src/agent/subagent_commands.rs`), so it covers every
+   spawn path: interactive `/agent`, `/agent resume`, and orchestrated spawns.
+2. **Per-task narrowing** (#6526) — `TaskNode.tool_allowlist: Option<Vec<String>>`
+   (`zeph-orchestration/src/graph.rs`), populated by the LLM planner via
+   `PlannedTask.tool_allowlist`. Intersected into the spawn context in
+   `handle_scheduler_spawn_action` (`zeph-core/src/agent/scheduler_loop.rs`) — orchestrated
+   spawns only, since interactive spawns have no `TaskNode`. Planner-emitted names that do not
+   match a real tool in the spawn-time tool universe are dropped (with a `tracing::warn!`)
+   rather than intersecting to a zero-tool allowlist, so a hallucinated/typo'd name degrades to
+   a no-op instead of failing the task.
+
+**Security framing — defense-in-depth, not the primary boundary:** neither producer is the
+runtime security boundary. A spawned sub-agent's tool executor is
+`Arc::clone(&self.tool_executor)` — the SAME `TrustGateExecutor`-gated tree the parent itself
+uses (see `agent_setup.rs`'s `TrustGateExecutor::new(inner, permission_policy.clone())` and
+`runner.rs`'s `self.tool_executor` wiring) — wrapped by a `FilteredToolExecutor`. So every
+child tool call is re-checked against the parent's own `PermissionPolicy` at call time,
+regardless of what `inherited_tool_allowlist` narrows. These two producers only control what
+the child's LLM *sees* in its tool catalog: hygiene and wasted-turn avoidance, not a new
+access-control layer. This coupling is load-bearing — if a future refactor gives subagents a
+fresh/ungated executor, the `None` returns from `effective_tool_allowlist` (for `ReadOnly`
+autonomy and for "nothing wholesale-denied") become real escalation holes; see the invariant
+comment at the `build_spawn_context` call site.
+
 ---
 
 ## 13. Open Questions

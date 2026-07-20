@@ -236,6 +236,46 @@ pub struct SpawnContext {
     pub origin: SpawnOrigin,
 }
 
+/// Intersect two optional tool allowlists, preserving the "narrow only" invariant shared by
+/// [`SpawnContext::inherited_tool_allowlist`] and `TaskNode::tool_allowlist` (#6526/#6527):
+/// `(None, None)` → `None` (no restriction from either source), one side `Some` → that side
+/// (the only source of narrowing), both `Some` → their set intersection. Never produces a
+/// wider set than either input, so composing a parent-derived floor with a per-task
+/// allowlist can only narrow further.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::collections::HashSet;
+/// use zeph_subagent::manager::intersect_allowlists;
+///
+/// assert_eq!(intersect_allowlists(None, None), None);
+///
+/// let a: HashSet<String> = ["read".to_owned(), "grep".to_owned()].into();
+/// assert_eq!(intersect_allowlists(Some(a.clone()), None), Some(a));
+///
+/// let b: HashSet<String> = ["grep".to_owned(), "bash".to_owned()].into();
+/// let want: HashSet<String> = ["grep".to_owned()].into();
+/// let a: HashSet<String> = ["read".to_owned(), "grep".to_owned()].into();
+/// assert_eq!(intersect_allowlists(Some(a), Some(b)), Some(want));
+/// ```
+// Every caller uses the std `RandomState` default hasher (constraint propagation on
+// SpawnContext/TaskNode allowlists, never a caller-supplied HashSet<_, S>), and
+// `HashSet::intersection` requires both sides to share the same hasher type anyway —
+// generalizing over `S` here would add a type parameter with no real call site benefit.
+#[allow(clippy::implicit_hasher)]
+#[must_use]
+pub fn intersect_allowlists(
+    a: Option<HashSet<String>>,
+    b: Option<HashSet<String>>,
+) -> Option<HashSet<String>> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(set), None) | (None, Some(set)) => Some(set),
+        (Some(a), Some(b)) => Some(a.intersection(&b).cloned().collect()),
+    }
+}
+
 /// Live status snapshot of a running sub-agent.
 ///
 /// Values are updated by the background agent loop via a [`tokio::sync::watch`] channel.

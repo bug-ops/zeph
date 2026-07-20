@@ -544,6 +544,28 @@ pub struct TaskNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_scope: Option<NetworkScope>,
 
+    /// Per-task tool allowlist, narrowing the spawned sub-agent's usable tools for the
+    /// duration of this task only.
+    ///
+    /// `None` means no per-task narrowing is applied — the sub-agent's own definition
+    /// policy (further narrowed by the parent session's own effective allowlist, see
+    /// `PermissionPolicy::effective_tool_allowlist`) determines the tool set. `Some(list)`
+    /// is intersected into `SpawnContext::inherited_tool_allowlist` by
+    /// `handle_scheduler_spawn_action`, so it can only narrow, never widen, the tool set
+    /// the sub-agent would otherwise receive. `Some([])` narrows the sub-agent to ZERO
+    /// tools (fail-closed) — use `None`, not an empty list, to impose no restriction. Tool
+    /// names are matched after `normalize_tool_id`, so raw names are fine.
+    ///
+    /// Currently populated only by the LLM planner (`Planner::plan` via
+    /// `PlannedTask::tool_allowlist`) — see #6526. Names that do not match any real tool
+    /// in the spawn-time tool universe are dropped with a `tracing::warn!` rather than
+    /// producing a zero-tool allowlist (a hallucinated/typo'd name degrades to a no-op,
+    /// not a task failure).
+    // TODO(critic): config/template producer for TaskNode.tool_allowlist deferred; planner
+    // path is the only producer for now (#6526).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_allowlist: Option<Vec<String>>,
+
     /// Sensitivity level of assets accessed by this task.
     ///
     /// Used by the orchestration planner to annotate tasks that touch sensitive resources
@@ -552,17 +574,6 @@ pub struct TaskNode {
     /// based on this field. See `specs/069-threat-model/spec.md §5`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset_sensitivity: Option<zeph_config::AssetSensitivity>,
-
-    /// Per-task tool allowlist inherited by the spawned sub-agent. When `Some(list)`, the
-    /// sub-agent's effective tool set is narrowed to the intersection of this list and its
-    /// own `SubAgentDef` policy (see `apply_constraint_propagation`). `None` = no per-task
-    /// narrowing. `Some([])` narrows the sub-agent to ZERO tools (fail-closed) — use `None`,
-    /// not an empty list, to impose no restriction. Tool names are matched after
-    /// `normalize_tool_id`, so raw names are fine. This is the explicit-allowlist mechanism;
-    /// any future `asset_sensitivity`-derived tool narrowing should populate this same field
-    /// rather than introduce a parallel path.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_allowlist: Option<Vec<String>>,
 
     /// Per-task timeout override. `None` = use the graph-global `task_timeout_secs`
     /// default for both spawned and `RunInline` dispatch. See [`TimeoutPolicy`].
@@ -641,8 +652,8 @@ impl TaskNode {
             execution_environment: None,
             token_budget_cents: None,
             network_scope: None,
-            asset_sensitivity: None,
             tool_allowlist: None,
+            asset_sensitivity: None,
             timeout: None,
             recovery: None,
             routed_from: None,
@@ -1190,6 +1201,32 @@ mod tests {
         assert!(node.tool_allowlist.is_none());
         assert!(node.timeout.is_none());
         assert!(node.recovery.is_none());
+    }
+
+    #[test]
+    fn test_task_node_missing_tool_allowlist_deserializes_as_none() {
+        // Old SQLite blobs without tool_allowlist must deserialize to None without error.
+        let json = r#"{
+            "id": 0,
+            "title": "t",
+            "description": "d",
+            "agent_hint": null,
+            "status": "pending",
+            "depends_on": [],
+            "result": null,
+            "assigned_agent": null,
+            "retry_count": 0,
+            "failure_strategy": null,
+            "max_retries": null
+        }"#;
+        let node: TaskNode = serde_json::from_str(json).expect("should deserialize old JSON");
+        assert!(node.tool_allowlist.is_none());
+    }
+
+    #[test]
+    fn test_task_node_new_has_none_tool_allowlist() {
+        let node = TaskNode::new(0, "t", "d");
+        assert!(node.tool_allowlist.is_none());
     }
 
     #[test]

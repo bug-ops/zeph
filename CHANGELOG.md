@@ -114,6 +114,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   modules. `cancel_tool_batch` and `skipped_output` widen from module-private to `pub(super)`
   since sibling modules now call them across files — the smallest necessary widening.
 
+### Added
+
+- `zeph-tools`/`zeph-subagent`/`zeph-orchestration`: added the two producers for
+  `SpawnContext::inherited_tool_allowlist` that #6504's plumbing (already landed, see
+  `### Fixed` below) left unpopulated (#6526, #6527). `PermissionPolicy::effective_tool_allowlist`
+  (`crates/zeph-tools/src/permissions.rs`) derives a narrowed tool set from the parent session's
+  own `[tool.permissions]` wholesale-deny rules, wired into `build_spawn_context`
+  (`crates/zeph-core/src/agent/subagent_commands.rs`) so it covers every spawn path (interactive
+  `/agent`, `/agent resume`, and orchestrated spawns). `TaskNode.tool_allowlist` is now populated
+  by the orchestration planner (`PlannedTask.tool_allowlist`), intersected into the spawn context
+  in `handle_scheduler_spawn_action` (`crates/zeph-core/src/agent/scheduler_loop.rs`); planner
+  names that do not match a real tool in the spawn-time universe are dropped with a
+  `tracing::warn!` rather than emptying the allowlist. Both sources compose via a new
+  `zeph_subagent::intersect_allowlists` helper — narrowing only, never widening — so the
+  parent-derived floor is never silently discarded when a task also carries its own
+  `tool_allowlist`. This is **defense-in-depth and tool-visibility hygiene, not the primary
+  security boundary**: spawned sub-agents already inherit the parent's `TrustGateExecutor`-gated
+  tool executor transitively, so every child tool call is re-checked against the same
+  `PermissionPolicy` at runtime regardless of what these fields narrow; they only control what
+  the child's LLM *sees* in its tool catalog, avoiding wasted turns on tools that would be
+  denied anyway.
+
 ### Fixed
 
 - `zeph-core`: the vault-anchor reconcile sweep (`run_anchor_sweep`) hard-deleted a transcript/

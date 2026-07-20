@@ -5235,3 +5235,43 @@ async fn concurrent_forwarding_subagents_do_not_cross_contaminate_buffers() {
     let _ = mgr.collect(&task_b).await;
     cancel.cancel();
 }
+
+// ── intersect_allowlists tests (#6526/#6527) ───────────────────────────────
+
+#[test]
+fn intersect_allowlists_none_none_is_none() {
+    assert_eq!(intersect_allowlists(None, None), None);
+}
+
+#[test]
+fn intersect_allowlists_left_some_right_none_returns_left() {
+    let a: std::collections::HashSet<String> = ["read".to_owned(), "grep".to_owned()].into();
+    assert_eq!(intersect_allowlists(Some(a.clone()), None), Some(a));
+}
+
+#[test]
+fn intersect_allowlists_left_none_right_some_returns_right() {
+    let b: std::collections::HashSet<String> = ["bash".to_owned()].into();
+    assert_eq!(intersect_allowlists(None, Some(b.clone())), Some(b));
+}
+
+#[test]
+fn intersect_allowlists_both_some_returns_intersection() {
+    let a: std::collections::HashSet<String> =
+        ["read".to_owned(), "grep".to_owned(), "bash".to_owned()].into();
+    let b: std::collections::HashSet<String> = ["grep".to_owned(), "bash".to_owned()].into();
+    let want: std::collections::HashSet<String> = ["grep".to_owned(), "bash".to_owned()].into();
+    assert_eq!(intersect_allowlists(Some(a), Some(b)), Some(want));
+}
+
+#[test]
+fn intersect_allowlists_disjoint_sets_returns_empty_not_none() {
+    // An empty intersection must still be Some(empty), not None — None would mean "no
+    // restriction", which is wrong when both sources actively narrowed to nothing.
+    let a: std::collections::HashSet<String> = ["read".to_owned()].into();
+    let b: std::collections::HashSet<String> = ["bash".to_owned()].into();
+    assert_eq!(
+        intersect_allowlists(Some(a), Some(b)),
+        Some(std::collections::HashSet::new())
+    );
+}

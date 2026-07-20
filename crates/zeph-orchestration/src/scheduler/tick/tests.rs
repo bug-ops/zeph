@@ -422,6 +422,7 @@ fn test_plan_with_verify_criteria_and_predicate_disabled_reaches_completed() {
                 failure_strategy: None,
                 execution_mode: None,
                 verify_criteria: Some("output must be valid JSON".to_string()),
+                tool_allowlist: None,
             },
             PlannedTask {
                 task_id: PlanSlug::from("child"),
@@ -432,6 +433,7 @@ fn test_plan_with_verify_criteria_and_predicate_disabled_reaches_completed() {
                 failure_strategy: None,
                 execution_mode: None,
                 verify_criteria: None,
+                tool_allowlist: None,
             },
         ],
     };
