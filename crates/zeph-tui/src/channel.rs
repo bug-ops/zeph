@@ -445,6 +445,27 @@ impl Channel for TuiChannel {
             });
         Ok(())
     }
+
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.notify_background_subagent_completed", skip_all)
+    )]
+    async fn notify_background_subagent_completed(
+        &mut self,
+        id: &str,
+        name: &str,
+        success: bool,
+    ) -> Result<(), ChannelError> {
+        // Non-critical: visual navigation only.
+        let _ = self
+            .agent_event_tx
+            .try_send(AgentEvent::BackgroundSubagentCompleted {
+                id: id.to_owned(),
+                name: name.to_owned(),
+                success,
+            });
+        Ok(())
+    }
 }
 
 #[cfg(test)]

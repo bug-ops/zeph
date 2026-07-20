@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use zeph_sanitizer::secret_shape::scrub_secret_shapes;
 use zeph_tools::registry::ToolDef;
 
 use super::{Agent, error};
@@ -38,35 +39,37 @@ impl<C: Channel> Agent<C> {
 
     /// Poll all active sub-agents for completed/failed/canceled results.
     ///
-    /// Non-blocking: returns immediately with a list of `(task_id, result)` pairs
-    /// for agents that have finished. Each completed agent is removed from the manager.
+    /// Non-blocking: returns immediately with a list of `(task_id, name, result, success)`
+    /// tuples for agents that have finished. Each completed agent is removed from the
+    /// manager. `name` and `success` are captured here (before `collect()` removes the
+    /// manager entry) so callers can notify view layers (e.g. the TUI transcript pane) about
+    /// the terminal state without needing to re-resolve the agent definition afterwards
+    /// (#6570).
     #[tracing::instrument(name = "core.agent.poll_subagents", skip_all, level = "debug")]
-    pub async fn poll_subagents(&mut self) -> Vec<(String, String)> {
+    pub async fn poll_subagents(&mut self) -> Vec<(String, String, String, bool)> {
         let Some(mgr) = &mut self.services.orchestration.subagent_manager else {
             return vec![];
         };
 
-        let finished: Vec<String> = mgr
-            .statuses()
-            .into_iter()
-            .filter_map(|(id, status)| {
-                if matches!(
-                    status.state,
-                    zeph_subagent::SubAgentState::Completed
-                        | zeph_subagent::SubAgentState::Failed
-                        | zeph_subagent::SubAgentState::Canceled
-                ) {
-                    Some(id)
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let finished: Vec<(String, bool)> =
+            mgr.statuses()
+                .into_iter()
+                .filter_map(|(id, status)| match status.state {
+                    zeph_subagent::SubAgentState::Completed => Some((id, true)),
+                    zeph_subagent::SubAgentState::Failed
+                    | zeph_subagent::SubAgentState::Canceled => Some((id, false)),
+                    _ => None,
+                })
+                .collect();
 
         let mut results = vec![];
-        for task_id in finished {
+        for (task_id, success) in finished {
+            let name = mgr.agents_def(&task_id).map_or_else(
+                || task_id[..8.min(task_id.len())].to_owned(),
+                |d| d.name.clone(),
+            );
             match mgr.collect(&task_id).await {
-                Ok(result) => results.push((task_id, result)),
+                Ok(result) => results.push((task_id, name, result, success)),
                 Err(e) => {
                     tracing::warn!(task_id, error = %e, "failed to collect sub-agent result");
                 }
@@ -119,7 +122,13 @@ impl<C: Channel> Agent<C> {
     /// Non-blocking poll: notify the user when background sub-agents complete.
     pub(super) async fn notify_completed_subagents(&mut self) -> Result<(), error::AgentError> {
         let completed = self.poll_subagents().await;
-        for (task_id, result) in completed {
+        for (task_id, name, result, success) in completed {
+            // #6571: `result` is the sub-agent's raw final text — nothing upstream (the agent
+            // loop's own return value, `SubAgentManager::collect`) sanitizes it before it
+            // reaches this operator-visible completion notice, so a generic secret-shaped
+            // string the sub-agent fabricates or echoes must be scrubbed here, the same as the
+            // live-forward path (`zeph-subagent::forward::sanitize_text`).
+            let result = scrub_secret_shapes(&result).into_owned();
             let notice = if result.is_empty() {
                 format!("[sub-agent {id}] completed (no output)", id = &task_id[..8])
             } else {
@@ -127,6 +136,16 @@ impl<C: Channel> Agent<C> {
             };
             if let Err(e) = self.channel.send(&notice).await {
                 tracing::warn!(error = %e, "failed to send sub-agent completion notice");
+            }
+            // Notify view layers (e.g. the TUI transcript pane) so a manually-opened
+            // background subagent view reaches a terminal state instead of stalling
+            // indefinitely once the manager entry backing it disappears (#6570).
+            if let Err(e) = self
+                .channel
+                .notify_background_subagent_completed(&task_id, &name, success)
+                .await
+            {
+                tracing::warn!(error = %e, "failed to notify background sub-agent completion");
             }
         }
         Ok(())
@@ -2174,6 +2193,110 @@ mod tests {
             *recorder.calls.lock().unwrap() >= 1,
             "the sub-agent's tool call must reach the parent's own tool executor instance, \
              proving no fresh/ungated executor is substituted for the child"
+        );
+    }
+
+    // ── #6570: background subagent completion notifies the view layer ────────────
+
+    /// `notify_completed_subagents` (the `/agent bg` background-poll path, distinct from the
+    /// foreground `handle_agent_spawn_foreground`/`handle_agent_resume` paths) must call
+    /// `Channel::notify_background_subagent_completed` with the agent's definition name and
+    /// success flag, in addition to the plain-text notice. Channels that support a manually
+    /// opened subagent view (e.g. the TUI sidebar) rely on this to reset the view once the
+    /// `SubAgentManager` entry backing it disappears, instead of leaving the transcript pane
+    /// stalled forever.
+    #[tokio::test]
+    async fn notify_completed_subagents_notifies_channel_of_background_completion() {
+        let provider = mock_provider(vec!["done".into()]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let mut mgr = zeph_subagent::SubAgentManager::new(4);
+        mgr.definitions_mut().push(subagent_def("helper"));
+        agent.services.orchestration.subagent_manager = Some(mgr);
+
+        let resp = agent.handle_agent_background("helper", "do work").await;
+        assert!(
+            resp.is_some_and(|r| r.contains("started in background")),
+            "test setup: the background spawn must succeed"
+        );
+
+        let mut notified = Vec::new();
+        for _ in 0..50 {
+            agent.notify_completed_subagents().await.unwrap();
+            notified = agent.channel.notify_background_completed_calls();
+            if !notified.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        assert_eq!(
+            notified.len(),
+            1,
+            "exactly one background-completion notification must be recorded"
+        );
+        let (_task_id, name, success) = &notified[0];
+        assert_eq!(name, "helper");
+        assert!(
+            *success,
+            "MockProvider's clean text response must be treated as a success"
+        );
+    }
+
+    // ── #6571: generic secret shape masked in the completion notice ──────────
+
+    /// A sub-agent that fabricates or echoes an API-key-shaped string in its final response
+    /// must not have it forwarded verbatim in the plain-text completion notice sent via
+    /// `channel.send` — the same class of leak #6571 reported for the live-forward path
+    /// (`zeph-subagent::forward::sanitize_text`), but on the completion-notice surface instead.
+    #[tokio::test]
+    async fn notify_completed_subagents_masks_generic_secret_shape_in_notice() {
+        // Two responses: a text-only first turn always draws a one-time nudge to use tools
+        // (`handle_no_tool_response`, `turns == 1 && !any_tool_called`), so the completion
+        // notice reflects the *second* queued response, not the first.
+        let provider = mock_provider(vec![
+            "thinking about it".into(),
+            "here is a key: sk-test-abc123def456, use it wisely".into(),
+        ]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+
+        let mut mgr = zeph_subagent::SubAgentManager::new(4);
+        mgr.definitions_mut().push(subagent_def("helper"));
+        agent.services.orchestration.subagent_manager = Some(mgr);
+
+        let resp = agent.handle_agent_background("helper", "do work").await;
+        assert!(
+            resp.is_some_and(|r| r.contains("started in background")),
+            "test setup: the background spawn must succeed"
+        );
+
+        let mut sent = Vec::new();
+        for _ in 0..50 {
+            agent.notify_completed_subagents().await.unwrap();
+            sent = agent.channel.sent_messages();
+            if !sent.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let notice = sent
+            .iter()
+            .find(|m| m.contains("completed"))
+            .expect("a completion notice must have been sent");
+        assert!(
+            !notice.contains("sk-test-abc123def456"),
+            "generic secret-shaped string must not appear verbatim in the completion notice: {notice}"
+        );
+        assert!(
+            notice.contains("[REDACTED]"),
+            "masked placeholder must be present in the completion notice: {notice}"
         );
     }
 

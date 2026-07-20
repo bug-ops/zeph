@@ -266,6 +266,29 @@ impl App {
                 self.trim_messages();
                 self.auto_scroll();
             }
+            AgentEvent::BackgroundSubagentCompleted { id, name, success } => {
+                // Only act if the user is currently viewing this subagent's transcript —
+                // background completions not being viewed are already surfaced via the
+                // Channel::send notice pushed to Main chat (notify_completed_subagents), so
+                // acting unconditionally here would double-notify every background subagent.
+                if self.sessions.current().view_target.subagent_id() == Some(id.as_str()) {
+                    let label = if success {
+                        format!("Sub-agent '{name}' completed")
+                    } else {
+                        format!("Sub-agent '{name}' failed")
+                    };
+                    self.set_view_target(super::AgentViewTarget::Main);
+                    self.sessions.current_mut().status_label = Some(label.clone());
+                    // Status change counts as progress so the wave animates (never reads Stalled).
+                    self.last_progress_at = Instant::now();
+                    self.sessions
+                        .current_mut()
+                        .messages
+                        .push(ChatMessage::new(MessageRole::System, label));
+                    self.trim_messages();
+                    self.auto_scroll();
+                }
+            }
             AgentEvent::ContextEstimate(tokens) => {
                 self.context_token_estimate = tokens;
             }
@@ -791,6 +814,120 @@ mod tests {
         });
 
         assert!(app.sessions.current().view_target.is_main());
+    }
+
+    // ── #6570 background subagent completion while manually viewed via sidebar ─────────
+
+    #[test]
+    fn background_subagent_completed_switches_back_when_viewing_subagent() {
+        // Reproduces the stuck-transcript bug: a background subagent (`/agent bg`) is
+        // manually opened via the sidebar's Enter action (set_view_target, not the
+        // ForegroundSubagentStarted event), then finishes. Before #6570, nothing ever told
+        // the TUI the viewed subagent had reached a terminal state — maybe_reload_transcript
+        // relies on `metrics.sub_agents`, which the manager empties synchronously at
+        // completion (SubAgentManager::collect), so the transcript pane was left frozen
+        // forever with no completion notice or reset to Main.
+        let mut app = make_app();
+        app.set_view_target(AgentViewTarget::SubAgent {
+            id: "sa-bg-1".into(),
+            name: "researcher".into(),
+        });
+        assert_eq!(
+            app.sessions.current().view_target.subagent_id(),
+            Some("sa-bg-1")
+        );
+
+        app.handle_agent_event(AgentEvent::BackgroundSubagentCompleted {
+            id: "sa-bg-1".into(),
+            name: "researcher".into(),
+            success: true,
+        });
+
+        assert!(
+            app.sessions.current().view_target.is_main(),
+            "view must return to Main once the manually-viewed background subagent completes"
+        );
+        assert_eq!(
+            app.sessions.current().status_label.as_deref(),
+            Some("Sub-agent 'researcher' completed")
+        );
+        let system_msg = app
+            .sessions
+            .current()
+            .messages
+            .iter()
+            .find(|m| m.role == MessageRole::System);
+        assert!(
+            system_msg.is_some(),
+            "a terminal completion marker must be pushed into the chat"
+        );
+    }
+
+    #[test]
+    fn background_subagent_completed_shows_failed_label_when_viewing_subagent() {
+        let mut app = make_app();
+        app.set_view_target(AgentViewTarget::SubAgent {
+            id: "sa-bg-2".into(),
+            name: "worker".into(),
+        });
+
+        app.handle_agent_event(AgentEvent::BackgroundSubagentCompleted {
+            id: "sa-bg-2".into(),
+            name: "worker".into(),
+            success: false,
+        });
+
+        assert!(app.sessions.current().view_target.is_main());
+        assert_eq!(
+            app.sessions.current().status_label.as_deref(),
+            Some("Sub-agent 'worker' failed")
+        );
+    }
+
+    #[test]
+    fn background_subagent_completed_ignored_when_not_viewing_that_subagent() {
+        // A background subagent completing while the user is looking at Main (or a
+        // different subagent) must not interrupt the current view — its plain-text
+        // completion notice is already delivered to Main chat separately via
+        // `Channel::send` in `notify_completed_subagents`; this event must be a no-op here.
+        let mut app = make_app();
+        assert!(app.sessions.current().view_target.is_main());
+        let messages_before = app.sessions.current().messages.len();
+
+        app.handle_agent_event(AgentEvent::BackgroundSubagentCompleted {
+            id: "sa-bg-elsewhere".into(),
+            name: "other".into(),
+            success: true,
+        });
+
+        assert!(app.sessions.current().view_target.is_main());
+        assert_eq!(
+            app.sessions.current().messages.len(),
+            messages_before,
+            "no message should be pushed for a background subagent that isn't being viewed"
+        );
+        assert_eq!(app.sessions.current().status_label, None);
+    }
+
+    #[test]
+    fn background_subagent_completed_respects_different_subagent_being_viewed() {
+        let mut app = make_app();
+        app.set_view_target(AgentViewTarget::SubAgent {
+            id: "sa-other".into(),
+            name: "other".into(),
+        });
+
+        app.handle_agent_event(AgentEvent::BackgroundSubagentCompleted {
+            id: "sa-bg-3".into(),
+            name: "worker".into(),
+            success: true,
+        });
+
+        assert_eq!(
+            app.sessions.current().view_target.subagent_id(),
+            Some("sa-other"),
+            "viewing a different subagent must not be disturbed by an unrelated completion"
+        );
     }
 
     #[test]

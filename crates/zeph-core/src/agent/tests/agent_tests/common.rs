@@ -106,6 +106,11 @@ pub(crate) struct MockChannel {
     /// `(task_id, name, success)`, in order — lets tests assert on TUI-completion-event count
     /// and content (e.g. that a durable replay does not re-fire it, #6027).
     pub(crate) notify_completed_calls: Arc<Mutex<Vec<(String, String, bool)>>>,
+    /// Records every `Channel::notify_background_subagent_completed` call as
+    /// `(task_id, name, success)`, in order — lets tests assert that background sub-agent
+    /// completions notify the view layer even though the parent turn was not blocking on
+    /// them (#6570).
+    pub(crate) notify_background_completed_calls: Arc<Mutex<Vec<(String, String, bool)>>>,
     pub(crate) exit_supported: bool,
     pub(crate) input_sanitization_required: bool,
     /// When `true`, `send()` fails with `ChannelError::ChannelClosed` instead of recording the
@@ -126,6 +131,7 @@ impl MockChannel {
             statuses: Arc::new(Mutex::new(Vec::new())),
             tool_starts: Arc::new(Mutex::new(Vec::new())),
             notify_completed_calls: Arc::new(Mutex::new(Vec::new())),
+            notify_background_completed_calls: Arc::new(Mutex::new(Vec::new())),
             exit_supported: true,
             input_sanitization_required: false,
             fail_send: false,
@@ -165,6 +171,13 @@ impl MockChannel {
 
     pub(crate) fn notify_completed_calls(&self) -> Vec<(String, String, bool)> {
         self.notify_completed_calls.lock().unwrap().clone()
+    }
+
+    pub(crate) fn notify_background_completed_calls(&self) -> Vec<(String, String, bool)> {
+        self.notify_background_completed_calls
+            .lock()
+            .unwrap()
+            .clone()
     }
 }
 
@@ -257,6 +270,19 @@ impl Channel for MockChannel {
         success: bool,
     ) -> Result<(), crate::channel::ChannelError> {
         self.notify_completed_calls
+            .lock()
+            .unwrap()
+            .push((id.to_owned(), name.to_owned(), success));
+        Ok(())
+    }
+
+    async fn notify_background_subagent_completed(
+        &mut self,
+        id: &str,
+        name: &str,
+        success: bool,
+    ) -> Result<(), crate::channel::ChannelError> {
+        self.notify_background_completed_calls
             .lock()
             .unwrap()
             .push((id.to_owned(), name.to_owned(), success));

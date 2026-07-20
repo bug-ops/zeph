@@ -251,6 +251,24 @@ pub enum AgentEvent {
         /// `true` if Completed state, `false` if Failed/Canceled.
         success: bool,
     },
+    /// A background subagent (`/agent bg`) has reached a terminal state.
+    ///
+    /// Fires for every background subagent, not just one the parent turn is blocking on.
+    /// The TUI only acts on it when `id` matches the subagent currently being viewed via the
+    /// sidebar's manual transcript view — resetting to Main and rendering a terminal marker,
+    /// since the sidebar list and the transcript reload trigger both key off
+    /// `MetricsSnapshot::sub_agents`, which no longer contains a completed agent by the time
+    /// this event is observed (#6570). Subagents not being viewed need no action here: their
+    /// completion notice is already pushed to Main chat via [`AgentEvent::FullMessage`] from
+    /// `Channel::send` in `notify_completed_subagents`.
+    BackgroundSubagentCompleted {
+        /// Stable sub-agent identifier.
+        id: String,
+        /// Human-readable agent definition name.
+        name: String,
+        /// `true` if Completed state, `false` if Failed/Canceled.
+        success: bool,
+    },
     /// Current context token count estimate, updated after each context assembly.
     ///
     /// The value is an approximation based on character-level heuristics and may

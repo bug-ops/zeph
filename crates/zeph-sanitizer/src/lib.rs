@@ -74,6 +74,7 @@ pub mod quarantine;
 pub mod response_verifier;
 mod sanitizer;
 pub mod secret_mask;
+pub mod secret_shape;
 pub mod shadow_memory;
 pub mod types;
 
@@ -82,6 +83,7 @@ pub use media::{MediaRejected, MediaSanitizer};
 pub use nli::{NliConfig, NliSanitizer, NliVerdict};
 pub use sanitizer::ContentSanitizer;
 pub use secret_mask::{SecretCategory, SecretMaskRegistry};
+pub use secret_shape::scrub_secret_shapes;
 pub use shadow_memory::{GoalDriftResult, ShadowEvent, ShadowMemory, classify_tool_permission};
 pub use types::{
     ContentSource, ContentSourceKind, ContentTrustLevel, InjectionFlag, MemorySourceHint,

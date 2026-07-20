@@ -182,6 +182,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-sanitizer`/`zeph-subagent`/`zeph-core`: a generic secret-shaped string (e.g. an
+  `sk-test-...`-prefixed API key) fabricated or echoed by a sub-agent in its own response text
+  passed through unmasked on two operator-visible surfaces (#6571). The two sanitize layers
+  already wired into sub-agent output — `SecretMaskRegistry` (exact-value masking of
+  registered vault secrets only) and `PiiFilter` (classic PII patterns only) — do not detect
+  secret *shapes* the sub-agent never registered. New `zeph-sanitizer::secret_shape::
+  scrub_secret_shapes` compiles the existing `zeph_common::secrets::{SECRET_PREFIXES,
+  BEARER_TOKEN_PATTERN, JWT_PATTERN}` constants into a shared shape-based scrubber (the same
+  detection `zeph-core::redact::redact_secrets` already used for debug dumps, now delegating to
+  it instead of duplicating the regex logic) and wires it into both leak surfaces: the live
+  transcript-forward pipeline (`zeph-subagent::forward::sanitize_text`, run after the exact-value
+  `SecretMaskRegistry` mask so a registered secret still gets its typed
+  `<SECRET:category:...>` placeholder) and the background sub-agent completion notice
+  (`notify_completed_subagents`, `crates/zeph-core/src/agent/subagent_commands.rs`), which had
+  no sanitization applied to the raw result text at all before this fix.
+
+- `zeph-tui`/`zeph-core`: a background sub-agent's (`/agent bg`) transcript view, opened
+  manually via the SubAgents sidebar (`a` → `j` → `Enter`), stalled indefinitely once the
+  sub-agent completed — no terminal state was ever rendered and the view never returned to
+  Main chat, even though the sidebar's own agent list emptied at the same moment (#6570).
+  `SubAgentManager::collect()` removes the finished agent from `mgr.statuses()` synchronously,
+  so `maybe_reload_transcript`'s reload trigger (which reads `metrics.sub_agents`) could never
+  observe the transition and fire once more. `Channel` gains a new
+  `notify_background_subagent_completed` method (default no-op), mirroring the existing
+  `notify_foreground_subagent_completed` used by the `/agent`-foreground and `/agent resume`
+  paths; `notify_completed_subagents` (`crates/zeph-core/src/agent/subagent_commands.rs`) now
+  calls it for every background sub-agent it collects, alongside the existing plain-text
+  completion notice. `TuiChannel` forwards this to a new `AgentEvent::BackgroundSubagentCompleted`
+  event; the TUI only acts on it when the completed id matches the subagent currently being
+  viewed, resetting `view_target` to Main and pushing a terminal completion/failure marker —
+  sub-agents not being viewed are unaffected, since their completion is already surfaced via
+  the existing plain-text notice in Main chat.
+
 - `zeph-core`: `handle_compress_context` (the `compress_context`/`request_compaction` tool path,
   `crates/zeph-core/src/agent/tool_execution/focus.rs`) appended the compression LLM's summary
   directly to the pinned Knowledge block with no sanitizer pass, unlike its sibling

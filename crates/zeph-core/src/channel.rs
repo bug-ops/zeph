@@ -577,6 +577,29 @@ pub trait Channel: Send {
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         async { Ok(()) }
     }
+
+    /// Notify channel that a *background* subagent (`/agent bg`) has reached a terminal
+    /// state. No-op by default.
+    ///
+    /// Called by `notify_completed_subagents` for every background subagent that just
+    /// finished, in addition to the plain-text completion notice sent via [`Self::send`].
+    /// Unlike [`Self::notify_foreground_subagent_completed`], this fires for subagents the
+    /// parent turn is not blocking on, so channels that support subagent views must only
+    /// act on it when the given `id` is the one currently being viewed (e.g. manually opened
+    /// via a sidebar) — otherwise every background completion would redundantly interrupt
+    /// unrelated views (#6570).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn notify_background_subagent_completed(
+        &mut self,
+        _id: &str,
+        _name: &str,
+        _success: bool,
+    ) -> impl Future<Output = Result<(), ChannelError>> + Send {
+        async { Ok(()) }
+    }
 }
 
 pub use zeph_common::StopHint;

@@ -6,7 +6,8 @@ use std::sync::LazyLock;
 
 use base64::Engine as _;
 use regex::Regex;
-use zeph_common::secrets::{BEARER_TOKEN_PATTERN, JWT_PATTERN, PATH_PREFIXES, SECRET_PREFIXES};
+use zeph_common::secrets::PATH_PREFIXES;
+use zeph_sanitizer::secret_shape::scrub_secret_shapes;
 
 /// Apply URL-credential stripping, secret redaction (including Bearer headers and JWTs),
 /// and path sanitization in a single pass.
@@ -26,20 +27,6 @@ pub fn scrub_content(text: &str) -> Cow<'_, str> {
     }
 }
 
-// Matches any secret prefix followed by non-whitespace characters.
-// Using alternation so a single pass covers all prefixes. Prefixes come from
-// zeph_common::secrets::SECRET_PREFIXES (the canonical, unescaped list — see #5917)
-// and are regex-escaped here since e.g. `ya29.` contains a literal dot.
-static SECRET_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    let pattern = SECRET_PREFIXES
-        .iter()
-        .map(|p| regex::escape(p))
-        .collect::<Vec<_>>()
-        .join("|");
-    let full = format!("(?:{pattern})[^\\s\"'`,;{{}}\\[\\]]*");
-    Regex::new(&full).expect("secret redaction regex is valid")
-});
-
 static PATH_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     let alt = PATH_PREFIXES.join("|");
     let full = format!(r#"(?:{alt})[^\s"'`,;{{}}\[\]]*"#);
@@ -52,42 +39,18 @@ static URL_CREDS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .expect("url credential redaction regex is valid")
 });
 
-// Matches `Authorization: Bearer <token>` headers, keeping the header name via capture group 1.
-static BEARER_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(BEARER_TOKEN_PATTERN).expect("bearer redaction regex is valid"));
-
-// Matches standalone JWTs (three Base64url-encoded segments separated by dots).
-static JWT_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(JWT_PATTERN).expect("jwt redaction regex is valid"));
-
 /// Replace tokens containing known secret patterns with `[REDACTED]`.
 ///
 /// Detects secrets embedded in URLs, JSON values, and quoted strings (via the
 /// [`zeph_common::secrets::SECRET_PREFIXES`] prefix list), `Authorization: Bearer` headers,
-/// and standalone JWTs. Returns `Cow::Borrowed` when nothing was redacted (zero-allocation
-/// fast path).
+/// and standalone JWTs. Delegates the actual shape matching to
+/// [`zeph_sanitizer::secret_shape::scrub_secret_shapes`] — the same shape-based detection used
+/// by the subagent transcript-forward sanitize pipeline (issue #6571) — so both consumers stay
+/// in sync against a single implementation. Returns `Cow::Borrowed` when nothing was redacted
+/// (zero-allocation fast path).
 #[must_use]
 pub fn redact_secrets(text: &str) -> Cow<'_, str> {
-    // Fast path: check for any prefix substring before running the (more expensive)
-    // alternation regex. Bearer/JWT regexes below are cheap enough to run unconditionally —
-    // `Regex::replace_all` itself returns `Cow::Borrowed` when there is no match.
-    let has_prefix_match = SECRET_PREFIXES.iter().any(|p| text.contains(*p));
-    let after_prefixes: Cow<'_, str> = if has_prefix_match {
-        SECRET_REGEX.replace_all(text, "[REDACTED]")
-    } else {
-        Cow::Borrowed(text)
-    };
-
-    let after_bearer: Cow<'_, str> =
-        match BEARER_REGEX.replace_all(after_prefixes.as_ref(), "${1}[REDACTED]") {
-            Cow::Borrowed(_) => after_prefixes,
-            Cow::Owned(s) => Cow::Owned(s),
-        };
-
-    match JWT_REGEX.replace_all(after_bearer.as_ref(), "[REDACTED_JWT]") {
-        Cow::Borrowed(_) => after_bearer,
-        Cow::Owned(s) => Cow::Owned(s),
-    }
+    scrub_secret_shapes(text)
 }
 
 /// Replace absolute filesystem paths with `[PATH]` to prevent information disclosure.
@@ -167,6 +130,7 @@ pub fn redact_binary_blobs(text: &str) -> Cow<'_, str> {
 mod tests {
     use super::*;
     use std::assert_matches;
+    use zeph_common::secrets::SECRET_PREFIXES;
 
     #[test]
     fn redacts_openai_key() {

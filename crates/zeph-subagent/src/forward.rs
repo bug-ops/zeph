@@ -43,6 +43,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use zeph_sanitizer::pii::PiiFilter;
 use zeph_sanitizer::secret_mask::SecretMaskRegistry;
+use zeph_sanitizer::secret_shape::scrub_secret_shapes;
 use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
 
 use crate::state::SubAgentState;
@@ -136,14 +137,17 @@ pub(crate) enum SanitizedChunkKind {
 
 /// The full sanitization pipeline applied at the drain's single sanitize point (NFR-005).
 ///
-/// Bundles the baseline injection/truncation pass (`ContentSanitizer`, always present) with
-/// two optional hardening layers that mirror the ones already guarding the analogous
-/// sub-agent-output *egress* path (debug dumps, see `PiiScrubbingDumpSink` / #6407 and
+/// Bundles the baseline injection/truncation pass (`ContentSanitizer`, always present), an
+/// always-on generic secret-*shape* scrub (`scrub_secret_shapes`, #6571 — catches API-key-
+/// shaped strings a subagent fabricates or echoes, not just registered vault values), and two
+/// optional hardening layers that mirror the ones already guarding the analogous sub-agent-
+/// output *egress* path (debug dumps, see `PiiScrubbingDumpSink` / #6407 and
 /// `apply_secret_masking` / #5437): a [`SecretMaskRegistry`] that replaces known vault
 /// secrets with opaque placeholders, and a [`PiiFilter`] that scrubs emails/phones/SSNs/etc.
-/// Both are `None` unless explicitly wired via `SubAgentManager::set_secret_registry` /
-/// `set_pii_filter` — forwarding remains fully functional (baseline sanitization only) when
-/// neither is configured, matching this crate's existing opt-in-hardening conventions.
+/// The latter two are `None` unless explicitly wired via `SubAgentManager::set_secret_registry`
+/// / `set_pii_filter` — forwarding remains fully functional (baseline + shape sanitization
+/// only) when neither is configured, matching this crate's existing opt-in-hardening
+/// conventions.
 pub(crate) struct SanitizeLayers {
     pub(crate) sanitizer: ContentSanitizer,
     pub(crate) secret_registry: Option<Arc<SecretMaskRegistry>>,
@@ -153,9 +157,13 @@ pub(crate) struct SanitizeLayers {
 fn sanitize_text(raw_text: &str, def_name: &str, layers: &SanitizeLayers) -> String {
     let source = ContentSource::new(ContentSourceKind::ToolResult).with_identifier(def_name);
     let mut body = layers.sanitizer.sanitize(raw_text, source).body;
+    // Exact-value registry masking runs first so a registered vault secret gets its typed
+    // `<SECRET:category:...>` placeholder; the shape-based scrub below then only catches
+    // whatever the registry didn't know about (e.g. a key a subagent fabricates or echoes).
     if let Some(registry) = &layers.secret_registry {
         body = registry.mask(&body);
     }
+    body = scrub_secret_shapes(&body).into_owned();
     if let Some(filter) = &layers.pii_filter {
         body = filter.scrub(&body).into_owned();
     }
@@ -821,6 +829,117 @@ mod tests {
                 SanitizedChunkKind::Terminal(_) => {}
             }
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn registered_secret_that_also_matches_a_shape_gets_typed_placeholder_not_generic() {
+        // A value that is BOTH registered with the SecretMaskRegistry AND shape-matched by
+        // `scrub_secret_shapes` (e.g. any `sk-...` value, since `SecretMaskRegistry::register`
+        // is commonly used for real API keys) must come out through the pipeline with the
+        // registry's typed `<SECRET:category:...>` placeholder, not the shape scrub's generic
+        // `[REDACTED]` marker — proving registry masking really does run before the shape scrub
+        // (see the ordering comment on `sanitize_text`) and the shape scrub does not re-process
+        // (double-mask) the registry's own placeholder output.
+        use zeph_sanitizer::secret_mask::{SecretCategory, SecretMaskRegistry};
+
+        let registry = Arc::new(SecretMaskRegistry::new());
+        registry.register(
+            "MY_KEY",
+            "sk-live-topsecretvalue123",
+            SecretCategory::ApiKey,
+        );
+
+        let task_id: Arc<str> = Arc::from("task-secret-typed");
+        let def_name: Arc<str> = Arc::from("agent-secret-typed");
+        let (sender, rx) = new_channel(Arc::clone(&task_id), Arc::clone(&def_name));
+        let buffer = new_buffer();
+
+        sender.send_text("the key is sk-live-topsecretvalue123, use it wisely");
+        sender.send_terminal(SubAgentState::Completed);
+        drop(sender);
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<SanitizedChunk>::new()));
+        let collected = Arc::clone(&seen);
+        let layers = SanitizeLayers {
+            sanitizer: ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default()),
+            secret_registry: Some(registry),
+            pii_filter: None,
+        };
+        run_forward_drain_with(
+            task_id,
+            def_name,
+            rx,
+            layers,
+            ForwardSurfaces {
+                tui: true,
+                bare: false,
+            },
+            buffer,
+            move |chunk, surfaces, buffer| {
+                collected.lock().unwrap().push(chunk.clone());
+                dispatch_chunk(chunk, surfaces, buffer);
+            },
+        )
+        .await;
+
+        let combined = collect_forwarded_text(&seen.lock().unwrap());
+        assert!(
+            !combined.contains("sk-live-topsecretvalue123"),
+            "raw secret must not survive the pipeline: {combined}"
+        );
+        assert!(
+            combined.contains("<SECRET:api_key:"),
+            "registry masking must run first and produce its typed placeholder: {combined}"
+        );
+        assert!(
+            !combined.contains("[REDACTED]"),
+            "shape scrub must not double-mask the registry's own placeholder output: {combined}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn generic_secret_shape_masked_without_registration() {
+        // #6571: a subagent that fabricates or echoes an API-key-shaped string in its own
+        // response text must have it masked even though it was never registered with a
+        // SecretMaskRegistry (no vault-loaded secret ever equals this value) — the always-on
+        // shape-based scrub (`scrub_secret_shapes`) is the only layer that can catch this.
+        let task_id: Arc<str> = Arc::from("task-shape");
+        let def_name: Arc<str> = Arc::from("agent-shape");
+        let (sender, rx) = new_channel(Arc::clone(&task_id), Arc::clone(&def_name));
+        let buffer = new_buffer();
+
+        sender.send_text("here is a key: sk-test-abc123def456, use it wisely");
+        sender.send_terminal(SubAgentState::Completed);
+        drop(sender);
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<SanitizedChunk>::new()));
+        let collected = Arc::clone(&seen);
+        run_forward_drain_with(
+            task_id,
+            def_name,
+            rx,
+            layers(),
+            ForwardSurfaces {
+                tui: true,
+                bare: false,
+            },
+            buffer,
+            move |chunk, surfaces, buffer| {
+                collected.lock().unwrap().push(chunk.clone());
+                dispatch_chunk(chunk, surfaces, buffer);
+            },
+        )
+        .await;
+
+        let combined = collect_forwarded_text(&seen.lock().unwrap());
+        assert!(
+            !combined.contains("sk-test-abc123def456"),
+            "generic secret-shaped string must be masked without prior registration: {combined}"
+        );
+        assert!(
+            combined.contains("[REDACTED]"),
+            "masked placeholder must be present in the combined forwarded text: {combined}"
+        );
     }
 
     #[tokio::test(start_paused = true)]
