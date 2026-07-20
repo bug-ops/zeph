@@ -17,6 +17,7 @@ related:
   - "[[011-tui/spec]]"
   - "[[007-channels/007-1-telegram-guest-mode]]"
   - "[[007-channels/007-2-telegram-bot-to-bot]]"
+  - "[[007-channels/007-3-telegram-rich-text]]"
   - "[[068-session-persistence/spec]]"
 ---
 
@@ -275,14 +276,15 @@ Two new tools allow group admins to remove reactions via the Telegram Bot API 10
 
 ---
 
-## Telegram Bot API 10.0 Extensions
+## Telegram Bot API 10.0/10.1/10.2 Extensions
 
-Sub-specs for Telegram Bot API 10.0 features live in this directory:
+Sub-specs for Telegram Bot API 10.x features live in this directory:
 
 | Spec | Feature | Issue |
 |------|---------|-------|
 | [[007-channels/007-1-telegram-guest-mode]] | Guest Mode — `answerGuestQuery`, `guest_message` update handling, access control | #3729 |
 | [[007-channels/007-2-telegram-bot-to-bot]] | Bot-to-Bot communication — `setManagedBotAccessSettings`, loop prevention, `allowed_bots` | #3730 |
+| [[007-channels/007-3-telegram-rich-text]] | Rich-Text Formatting (Bot API 10.1/10.2) — guest-mode escaping fix, multi-line/expandable blockquote, MarkdownV2-markup roadmap for spoiler/underline/custom emoji, `sendRichMessage` Phase 3 epic | #6541 |
 
 The `stream_interval_ms` config field (issue #3727) is documented in the
 [Telegram Streaming Interval](#telegram-streaming-interval) section above.
