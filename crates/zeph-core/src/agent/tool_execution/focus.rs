@@ -277,9 +277,21 @@ impl<C: Channel> Agent<C> {
             .map(|m| estimate_tokens(&m.content))
             .sum::<usize>();
 
-        self.services
-            .focus
-            .append_llm_knowledge(summary.trim().to_owned());
+        // Sanitize the LLM-supplied summary before storing it to the pinned Knowledge
+        // block, mirroring complete_focus_tool (SEC-CC-03). The summary may transitively
+        // carry injected instructions from compressed tool/web content, so use WebScrape
+        // (ExternalUntrusted trust level) for stricter spotlighting than ToolResult.
+        let sanitized_summary = self
+            .services
+            .security
+            .sanitizer
+            .sanitize(
+                summary.trim(),
+                zeph_sanitizer::ContentSource::new(zeph_sanitizer::ContentSourceKind::WebScrape),
+            )
+            .body;
+
+        self.services.focus.append_llm_knowledge(sanitized_summary);
         self.apply_compression_removals(to_remove_indices);
 
         self.context_manager.set_compaction_state(

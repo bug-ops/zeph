@@ -182,6 +182,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-core`: `handle_compress_context` (the `compress_context`/`request_compaction` tool path,
+  `crates/zeph-core/src/agent/tool_execution/focus.rs`) appended the compression LLM's summary
+  directly to the pinned Knowledge block with no sanitizer pass, unlike its sibling
+  `complete_focus_tool`, which sanitizes the LLM-authored summary before the identical sink per
+  SEC-CC-03 (#6562). Since the Knowledge block is re-inserted at index 1 (immediately after the
+  system prompt) on every turn, an injection carried transitively through compressed tool/web
+  content into the compression summary could reach the model unfiltered on every subsequent
+  turn. `handle_compress_context` now sanitizes the summary with the same
+  `ContentSource::new(ContentSourceKind::WebScrape)` (`ExternalUntrusted` trust level) call used
+  by `complete_focus_tool`, before it is passed to `append_llm_knowledge`. Added regression
+  coverage (#6572) for both sinks — `complete_focus_sanitizes_summary_before_storing_knowledge`
+  and `compress_context_sanitizes_summary_before_storing_knowledge`
+  (`crates/zeph-core/src/agent/tool_execution/tests/native_tests.rs`) — asserting a known
+  `ignore_instructions` injection payload is spotlight-wrapped and flagged rather than stored
+  verbatim, closing the gap where the original SEC-CC-03 sanitizer call had zero test coverage.
+
 - `zeph-core`: the vault-anchor reconcile sweep (`run_anchor_sweep`) hard-deleted a transcript/
   session anchor the instant its backing file was absent, with no grace period or persisted
   "was-anchored" record (#6462). Since file absence is attacker-controlled under this feature's
