@@ -7,6 +7,9 @@ use crate::cli::SkillCommand;
 pub(crate) async fn handle_skill_command(
     cmd: SkillCommand,
     config_path: Option<&std::path::Path>,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&std::path::Path>,
+    vault_path_override: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
     use crate::bootstrap::{load_config_or_default, managed_skills_dir, resolve_config_path};
     use std::collections::HashMap;
@@ -449,7 +452,14 @@ pub(crate) async fn handle_skill_command(
         SkillCommand::Search { query } => {
             #[cfg(feature = "registry")]
             {
-                registry_search(&config, &query).await?;
+                registry_search(
+                    &config,
+                    &query,
+                    vault_override,
+                    vault_key_override,
+                    vault_path_override,
+                )
+                .await?;
             }
             #[cfg(not(feature = "registry"))]
             {
@@ -464,11 +474,26 @@ pub(crate) async fn handle_skill_command(
         SkillCommand::Get { registry_id } => {
             #[cfg(feature = "registry")]
             {
-                registry_get(&config, &mgr, &managed_dir, &sqlite_path, &registry_id).await?;
+                registry_get(
+                    &config,
+                    &mgr,
+                    &managed_dir,
+                    &sqlite_path,
+                    &registry_id,
+                    vault_override,
+                    vault_key_override,
+                    vault_path_override,
+                )
+                .await?;
             }
             #[cfg(not(feature = "registry"))]
             {
-                let _ = &registry_id;
+                let _ = (
+                    &registry_id,
+                    vault_override,
+                    vault_key_override,
+                    vault_path_override,
+                );
                 println!(
                     "This zeph build was compiled without the `registry` feature; rebuild \
                      with `--features registry` (or `full`) to use `zeph skill get`."
@@ -489,7 +514,13 @@ pub(crate) async fn handle_skill_command(
 /// coverage.
 #[cfg(feature = "registry")]
 #[tracing::instrument(name = "skill.registry_search", skip(config), fields(query))]
-async fn registry_search(config: &zeph_core::config::Config, query: &str) -> anyhow::Result<()> {
+async fn registry_search(
+    config: &zeph_core::config::Config,
+    query: &str,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&std::path::Path>,
+    vault_path_override: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
     use crate::commands::registry_client::{
         REGISTRY_NOT_CONFIGURED_MSG, build_registry_client, resolve_registry_token,
     };
@@ -499,7 +530,13 @@ async fn registry_search(config: &zeph_core::config::Config, query: &str) -> any
         anyhow::bail!("{REGISTRY_NOT_CONFIGURED_MSG}");
     }
 
-    let token = resolve_registry_token(config).await?;
+    let token = resolve_registry_token(
+        config,
+        vault_override,
+        vault_key_override,
+        vault_path_override,
+    )
+    .await?;
     let client = build_registry_client(config, token);
     registry_search_with(client.as_ref(), query).await
 }
@@ -537,6 +574,9 @@ async fn registry_get(
     managed_dir: &std::path::Path,
     sqlite_path: &str,
     registry_id: &str,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&std::path::Path>,
+    vault_path_override: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
     use crate::commands::registry_client::{
         REGISTRY_NOT_CONFIGURED_MSG, build_registry_client, resolve_registry_token,
@@ -547,7 +587,13 @@ async fn registry_get(
         anyhow::bail!("{REGISTRY_NOT_CONFIGURED_MSG}");
     }
 
-    let token = resolve_registry_token(config).await?;
+    let token = resolve_registry_token(
+        config,
+        vault_override,
+        vault_key_override,
+        vault_path_override,
+    )
+    .await?;
     let client = build_registry_client(config, token);
     registry_get_with(client.as_ref(), mgr, managed_dir, sqlite_path, registry_id).await
 }
@@ -741,7 +787,9 @@ mod registry_tests {
         let config = zeph_core::config::Config::default();
         assert!(!config.skills.registry.enabled);
 
-        let err = registry_search(&config, "query").await.unwrap_err();
+        let err = registry_search(&config, "query", None, None, None)
+            .await
+            .unwrap_err();
         assert_eq!(err.to_string(), REGISTRY_NOT_CONFIGURED_MSG);
     }
 
@@ -763,6 +811,9 @@ mod registry_tests {
             &managed_dir,
             sqlite_path.to_str().unwrap(),
             "acme/x",
+            None,
+            None,
+            None,
         )
         .await
         .unwrap_err();
@@ -818,6 +869,9 @@ mod trust_promotion_tests {
                 source: skill_src.to_string_lossy().into_owned(),
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         ))
         .await
         .unwrap();
@@ -848,6 +902,9 @@ mod trust_promotion_tests {
                 no_require_check: false,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         ))
         .await;
 
@@ -881,6 +938,9 @@ mod trust_promotion_tests {
                 no_require_check: true,
             },
             Some(&config_path),
+            None,
+            None,
+            None,
         ))
         .await;
 

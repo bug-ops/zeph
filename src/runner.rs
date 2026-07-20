@@ -912,7 +912,14 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             );
         }
         Some(Command::Skill { command: skill_cmd }) => {
-            return handle_skill_command(skill_cmd, cli.config.as_deref()).await;
+            return handle_skill_command(
+                skill_cmd,
+                cli.config.as_deref(),
+                cli.vault.as_deref(),
+                cli.vault_key.as_deref(),
+                cli.vault_path.as_deref(),
+            )
+            .await;
         }
         Some(Command::Plugin {
             command: plugin_cmd,
@@ -920,6 +927,9 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             return crate::commands::plugin::handle_plugin_command(
                 plugin_cmd,
                 cli.config.as_deref(),
+                cli.vault.as_deref(),
+                cli.vault_key.as_deref(),
+                cli.vault_path.as_deref(),
             )
             .await;
         }

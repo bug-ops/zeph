@@ -24,6 +24,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   appears as a standalone word in unrelated prose (e.g. "the id was ok") still satisfies the
   check — this is a disclosed partial mitigation, not a full close of all accidental matches
   (issue #6575).
+- `src/commands/registry_client.rs`: `resolve_registry_token` no longer hardcodes `default_vault_dir()`
+  for the `Age` vault backend, ignoring any `--vault`/`--vault-key`/`--vault-path` CLI
+  overrides — every sibling vault-backed CLI path (`durable.rs`, `scheduler_daemon.rs`, per
+  #6590) already resolved these overrides, but the registry token lookup silently fell back to
+  the default vault directory even when the user pointed at a different vault (issue #6591).
+  `crate::bootstrap::resolve_vault_paths` is now threaded through `handle_skill_command` and
+  `handle_plugin_command` (`src/commands/skill.rs`, `src/commands/plugin.rs`) and their
+  registry search/get helpers, so registry authentication resolves against the same vault as
+  the rest of the command.
 - `zeph-channels`: Telegram guest-mode responses (`TelegramChannel::flush_chunks`) are now
   formatted through the same `markdown_to_telegram` renderer used by regular messages, and
   sent with `parse_mode = "MarkdownV2"` instead of an unconverted `"HTML"` call — raw LLM

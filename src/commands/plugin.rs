@@ -54,9 +54,13 @@ fn print_overlay_section(plugins_dir: &std::path::Path) -> anyhow::Result<()> {
 // `async` regardless, since `runner.rs` always `.await`s this call and the feature is a
 // caller-invisible build-time choice (M1, critic handoff).
 #[allow(clippy::unused_async)]
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn handle_plugin_command(
     cmd: PluginCommand,
     config_path: Option<&std::path::Path>,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&std::path::Path>,
+    vault_path_override: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
     use crate::bootstrap::{load_config_or_default, resolve_config_path};
 
@@ -136,7 +140,14 @@ pub(crate) async fn handle_plugin_command(
         PluginCommand::Search { query } => {
             #[cfg(feature = "registry")]
             {
-                registry_search(&config, &query).await?;
+                registry_search(
+                    &config,
+                    &query,
+                    vault_override,
+                    vault_key_override,
+                    vault_path_override,
+                )
+                .await?;
             }
             #[cfg(not(feature = "registry"))]
             {
@@ -155,11 +166,24 @@ pub(crate) async fn handle_plugin_command(
                 // they get the same reputation check (spec-043, #5864). No `--strict-reputation`
                 // flag on `get` — config's `enforcement` applies as-is.
                 let mgr = mgr.with_reputation_config(&config.plugins.reputation, false);
-                registry_get(&config, &mgr, &registry_id).await?;
+                registry_get(
+                    &config,
+                    &mgr,
+                    &registry_id,
+                    vault_override,
+                    vault_key_override,
+                    vault_path_override,
+                )
+                .await?;
             }
             #[cfg(not(feature = "registry"))]
             {
-                let _ = &registry_id;
+                let _ = (
+                    &registry_id,
+                    vault_override,
+                    vault_key_override,
+                    vault_path_override,
+                );
                 println!(
                     "This zeph build was compiled without the `registry` feature; rebuild \
                      with `--features registry` (or `full`) to use `zeph plugin get`."
@@ -179,7 +203,13 @@ pub(crate) async fn handle_plugin_command(
 /// [`registry_search_with`] — see that fn's tests for `MockRegistryClient`-driven coverage.
 #[cfg(feature = "registry")]
 #[tracing::instrument(name = "plugin.registry_search", skip(config), fields(query))]
-async fn registry_search(config: &zeph_core::config::Config, query: &str) -> anyhow::Result<()> {
+async fn registry_search(
+    config: &zeph_core::config::Config,
+    query: &str,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&std::path::Path>,
+    vault_path_override: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
     use crate::commands::registry_client::{
         REGISTRY_NOT_CONFIGURED_MSG, build_registry_client, resolve_registry_token,
     };
@@ -189,7 +219,13 @@ async fn registry_search(config: &zeph_core::config::Config, query: &str) -> any
         anyhow::bail!("{REGISTRY_NOT_CONFIGURED_MSG}");
     }
 
-    let token = resolve_registry_token(config).await?;
+    let token = resolve_registry_token(
+        config,
+        vault_override,
+        vault_key_override,
+        vault_path_override,
+    )
+    .await?;
     let client = build_registry_client(config, token);
     registry_search_with(client.as_ref(), query).await
 }
@@ -226,6 +262,9 @@ async fn registry_get(
     config: &zeph_core::config::Config,
     mgr: &zeph_plugins::PluginManager,
     registry_id: &str,
+    vault_override: Option<&str>,
+    vault_key_override: Option<&std::path::Path>,
+    vault_path_override: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
     use crate::commands::registry_client::{
         REGISTRY_NOT_CONFIGURED_MSG, build_registry_client, resolve_registry_token,
@@ -236,7 +275,13 @@ async fn registry_get(
         anyhow::bail!("{REGISTRY_NOT_CONFIGURED_MSG}");
     }
 
-    let token = resolve_registry_token(config).await?;
+    let token = resolve_registry_token(
+        config,
+        vault_override,
+        vault_key_override,
+        vault_path_override,
+    )
+    .await?;
     let client = build_registry_client(config, token);
     registry_get_with(client.as_ref(), mgr, registry_id).await
 }
@@ -400,7 +445,9 @@ mod registry_tests {
         let config = zeph_core::config::Config::default();
         assert!(!config.skills.registry.enabled);
 
-        let err = registry_search(&config, "query").await.unwrap_err();
+        let err = registry_search(&config, "query", None, None, None)
+            .await
+            .unwrap_err();
         assert_eq!(err.to_string(), REGISTRY_NOT_CONFIGURED_MSG);
     }
 
@@ -414,7 +461,9 @@ mod registry_tests {
         let config = zeph_core::config::Config::default();
         assert!(!config.skills.registry.enabled);
 
-        let err = registry_get(&config, &mgr, "acme/x").await.unwrap_err();
+        let err = registry_get(&config, &mgr, "acme/x", None, None, None)
+            .await
+            .unwrap_err();
         assert_eq!(err.to_string(), REGISTRY_NOT_CONFIGURED_MSG);
     }
 }
