@@ -22,7 +22,8 @@
 #
 # Format: <path> <verdict> [# note]
 
-crates/zeph-acp/src/agent/mod.rs VERIFIED # opens SessionEventLog via chain-verifying open()/open_exclusive()
+crates/zeph-acp/src/agent/session.rs VERIFIED # opens SessionEventLog via chain-verifying open()/open_exclusive() in load_session_replay_events; relocated verbatim from mod.rs (#6546 ZephAcpAgentState god-object split), same code, same verdict
+crates/zeph-acp/src/agent/turn.rs DISPLAY_ONLY # matches only via a code comment mentioning `ReplayEngine::replay` as unimplemented future work (§12.3 read-handler thinning follow-up); the file relays already-verified/durably-persisted session content (via Agent::persist_message/SessionSink) to IDE notifications, it does not itself open or read the event log
 crates/zeph-acp/src/transport/http.rs VERIFIED # session inspection endpoint, open() verifies chain
 crates/zeph-agent-persistence/src/condense.rs VERIFIED # reads via SessionEventLog, chain-verified on open/read
 crates/zeph-agent-persistence/src/hydrate.rs VERIFIED # INV-SP-1 log-first hydration path, primary session-resume reader
