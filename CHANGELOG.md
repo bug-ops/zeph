@@ -272,6 +272,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-experiments`: `ParameterRange`'s derived `Deserialize` populated its private fields
+  directly, bypassing the `min < max` / finite-bounds / `min <= default <= max` invariants
+  enforced by `ParameterRange::new` (issue #6552). A config- or TOML-sourced range with an
+  inverted or non-finite bound deserialized successfully but later panicked in
+  `ParameterRange::clamp` (`f64::clamp` requires `min <= max`). Fixed by deserializing through
+  a private `RawParameterRange` shadow struct (`#[serde(try_from = "RawParameterRange")]`)
+  whose `TryFrom` impl routes every value through `ParameterRange::new`, making an invalid
+  `ParameterRange` structurally unrepresentable regardless of construction path. Removed
+  `SearchSpace::is_valid`, the dead bypass-guarding method this fix supersedes (had zero
+  callers outside its own doctest).
+
 - `zeph-memory`: `graph_recall_watercircles`'s ring-hop filter dropped every edge regardless of
   `ring_limit`, returning empty results for any typical seed-outward graph (#6596). `hop_dist`
   was computed by preferring the edge's source-node depth (falling back to target only when

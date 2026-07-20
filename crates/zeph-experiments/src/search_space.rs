@@ -32,12 +32,36 @@ use super::types::ParameterKind;
 /// assert!((range.quantize(0.73) - 0.7).abs() < 1e-10);
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "RawParameterRange")]
 pub struct ParameterRange {
     kind: ParameterKind,
     min: f64,
     max: f64,
     step: Option<f64>,
     default: f64,
+}
+
+/// Deserialization shadow of [`ParameterRange`] with the same fields but no invariants.
+///
+/// Deserializing straight into `ParameterRange` would populate its private fields directly,
+/// bypassing [`ParameterRange::new`]'s validation. Routing through this struct and
+/// [`ParameterRange::try_from`] instead forces every deserialized value through the same
+/// checks as programmatic construction.
+#[derive(Deserialize)]
+struct RawParameterRange {
+    kind: ParameterKind,
+    min: f64,
+    max: f64,
+    step: Option<f64>,
+    default: f64,
+}
+
+impl TryFrom<RawParameterRange> for ParameterRange {
+    type Error = EvalError;
+
+    fn try_from(raw: RawParameterRange) -> Result<Self, Self::Error> {
+        Self::new(raw.kind, raw.min, raw.max, raw.step, raw.default)
+    }
 }
 
 impl ParameterRange {
@@ -247,7 +271,6 @@ impl ParameterRange {
 /// use zeph_experiments::{SearchSpace, ParameterKind};
 ///
 /// let space = SearchSpace::default();
-/// assert!(space.is_valid());
 /// assert!(space.grid_size() > 0);
 /// assert!(space.range_for(ParameterKind::Temperature).is_some());
 /// ```
@@ -297,31 +320,6 @@ impl SearchSpace {
     #[must_use]
     pub fn range_for(&self, kind: ParameterKind) -> Option<&ParameterRange> {
         self.parameters.iter().find(|r| r.kind() == kind)
-    }
-
-    /// Return `true` if all parameter ranges in this space passed construction-time validation.
-    ///
-    /// Because [`ParameterRange::new`] enforces invariants at construction time, ranges stored
-    /// in a `SearchSpace` built programmatically are always valid. This method is retained for
-    /// spaces deserialized from untrusted config where struct-update syntax could bypass `new`.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use zeph_experiments::SearchSpace;
-    ///
-    /// assert!(SearchSpace::default().is_valid());
-    /// assert!(SearchSpace { parameters: vec![] }.is_valid()); // empty is valid
-    /// ```
-    #[must_use]
-    pub fn is_valid(&self) -> bool {
-        self.parameters.iter().all(|r| {
-            r.min().is_finite()
-                && r.max().is_finite()
-                && r.default_value().is_finite()
-                && r.min() < r.max()
-                && r.step().is_none_or(|s| s.is_finite() && s > 0.0)
-        })
     }
 
     /// Total number of discrete grid points across all parameters that have a step.
@@ -559,18 +557,58 @@ mod tests {
     }
 
     #[test]
-    fn search_space_is_valid_for_default() {
-        assert!(SearchSpace::default().is_valid());
+    fn deserialize_rejects_inverted_range() {
+        let json = r#"{"kind":"temperature","min":2.0,"max":0.0,"step":null,"default":1.0}"#;
+        let result: Result<ParameterRange, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "min > max must fail deserialization");
     }
 
     #[test]
-    fn search_space_invalid_when_range_inverted() {
-        // Construct an invalid range by bypassing new() via serde deserialization isn't easy;
-        // instead, test is_valid() directly on a SearchSpace with a mutated range.
-        let mut space = SearchSpace::default();
-        // Directly mutate to simulate a deserialized-but-invalid range
-        space.parameters[0].min = 2.0;
-        space.parameters[0].max = 0.0;
-        assert!(!space.is_valid());
+    fn deserialize_rejects_default_out_of_range() {
+        let json = r#"{"kind":"temperature","min":0.0,"max":1.0,"step":null,"default":5.0}"#;
+        let result: Result<ParameterRange, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "default outside [min, max] must fail deserialization"
+        );
+    }
+
+    #[test]
+    fn deserialize_rejects_nonfinite_bounds() {
+        // JSON has no NaN/Infinity literal, so use TOML (which does) to exercise the
+        // `is_finite()` check in `ParameterRange::new` via the deserialization path.
+        let toml_src = "kind = \"temperature\"\nmin = nan\nmax = 1.0\nstep = 0.1\ndefault = 0.5\n";
+        let result: Result<ParameterRange, _> = toml::from_str(toml_src);
+        assert!(result.is_err(), "non-finite min must fail deserialization");
+    }
+
+    #[test]
+    fn deserialize_accepts_valid_range() {
+        let json = r#"{"kind":"temperature","min":0.0,"max":1.0,"step":0.1,"default":0.5}"#;
+        let r: ParameterRange = serde_json::from_str(json).unwrap();
+        assert!((r.min() - 0.0).abs() < f64::EPSILON);
+        assert!((r.max() - 1.0).abs() < f64::EPSILON);
+        assert!((r.default_value() - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn deserialize_search_space_rejects_invalid_range() {
+        let json = r#"{"parameters":[{"kind":"temperature","min":1.0,"max":0.0,"step":null,"default":0.5}]}"#;
+        let result: Result<SearchSpace, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "SearchSpace must reject an inverted range in any member"
+        );
+    }
+
+    #[test]
+    fn roundtrip_serialize_deserialize_preserves_range() {
+        let r = make_range(ParameterKind::TopP, 0.1, 1.0, Some(0.05), 0.9);
+        let json = serde_json::to_string(&r).unwrap();
+        let r2: ParameterRange = serde_json::from_str(&json).unwrap();
+        assert_eq!(r.kind(), r2.kind());
+        assert!((r.min() - r2.min()).abs() < f64::EPSILON);
+        assert!((r.max() - r2.max()).abs() < f64::EPSILON);
+        assert!((r.default_value() - r2.default_value()).abs() < f64::EPSILON);
     }
 }
