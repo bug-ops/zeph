@@ -277,6 +277,11 @@ impl ReasoningMemory {
     ///
     /// Returns an empty vec when no vector store is configured.
     ///
+    /// `top_k` is clamped to `[1, `[`MAX_SEARCH_LIMIT`](crate::MAX_SEARCH_LIMIT)`]` before
+    /// being forwarded to Qdrant (issue #6553) — the bound is enforced here rather than
+    /// relying on every caller to clamp before calling. A one-shot `tracing::warn!` fires
+    /// the first time this actually reduces the requested value.
+    ///
     /// # Errors
     ///
     /// Returns an error if the Qdrant search or `SQLite` fetch fails.
@@ -294,6 +299,16 @@ impl ReasoningMemory {
             return Ok(Vec::new());
         };
 
+        static CLAMP_WARNED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if let Ok(requested) = usize::try_from(top_k) {
+            crate::warn_if_search_limit_clamped(
+                "ReasoningMemory::retrieve_by_embedding",
+                requested,
+                &CLAMP_WARNED,
+            );
+        }
+        let top_k = top_k.clamp(1, crate::MAX_SEARCH_LIMIT as u64);
         let scored = vs
             .search(REASONING_COLLECTION, embedding.to_vec(), top_k, None)
             .await?;
@@ -1009,6 +1024,40 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "abc-123");
         assert_eq!(rows[0].outcome, Outcome::Success);
+    }
+
+    /// Issue #6553: `retrieve_by_embedding` must clamp an oversized `top_k` to
+    /// `MAX_SEARCH_LIMIT` internally, rather than relying on every caller to clamp, and must
+    /// log a one-shot warning so a config-driven candidate pool silently shrunk by the clamp
+    /// is observable (critic finding S1).
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn retrieve_by_embedding_clamps_oversized_top_k() {
+        let pool = make_test_pool().await;
+        let vector_store = std::sync::Arc::new(crate::in_memory_store::InMemoryVectorStore::new());
+        vector_store
+            .ensure_collection(REASONING_COLLECTION, 4)
+            .await
+            .unwrap();
+        let mem = ReasoningMemory::new(pool, Some(vector_store));
+
+        for i in 0..(crate::MAX_SEARCH_LIMIT + 10) {
+            let id = format!("strat-{i}");
+            mem.insert(&make_strategy(&id), vec![1.0, 0.0, 0.0, 0.0])
+                .await
+                .unwrap();
+        }
+
+        let results = mem
+            .retrieve_by_embedding(&[1.0, 0.0, 0.0, 0.0], u64::MAX)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), crate::MAX_SEARCH_LIMIT);
+        assert!(
+            logs_contain("requested search limit exceeds MAX_SEARCH_LIMIT"),
+            "expected a one-shot warn when the clamp actually reduces the requested limit"
+        );
     }
 
     #[cfg(feature = "sqlite")]

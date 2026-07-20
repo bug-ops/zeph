@@ -114,7 +114,48 @@ impl Config {
                 .validate()
                 .map_err(ConfigError::Validation)?;
         }
+        self.warn_insecure_qdrant_endpoint();
         Ok(())
+    }
+
+    /// Log a warning when `memory.qdrant_url` points at a non-loopback host without TLS or
+    /// an API key configured (issue #6553).
+    ///
+    /// Deliberately non-fatal — repointing at a remote/managed Qdrant cluster without TLS or
+    /// auth is a real deployment (e.g. an internal network already trusted by other means),
+    /// so this warns instead of hard-failing like the bound checks in [`Self::validate`] above.
+    /// Skipped entirely for loopback targets (`localhost`, `127.0.0.1`, `::1`): connecting to
+    /// your own machine is definitionally not the plaintext-over-the-wire risk this guards
+    /// against, matching the same carve-out `A2aClientConfig` documents for `--connect`.
+    fn warn_insecure_qdrant_endpoint(&self) {
+        let Ok(url) = url::Url::parse(&self.memory.qdrant_url) else {
+            return;
+        };
+        let Some(host) = url.host_str() else {
+            return;
+        };
+        if zeph_common::net::is_loopback_host(host) {
+            return;
+        }
+
+        let has_tls = url.scheme().eq_ignore_ascii_case("https");
+        let has_api_key = self
+            .memory
+            .qdrant_api_key
+            .as_ref()
+            .is_some_and(|k| !k.expose().trim().is_empty());
+
+        if !has_tls || !has_api_key {
+            tracing::warn!(
+                qdrant_url = %self.memory.qdrant_url,
+                tls = has_tls,
+                api_key_configured = has_api_key,
+                "memory.qdrant_url points at a non-loopback host without TLS and/or an API key \
+                 configured — memory content would travel in plaintext with no server \
+                 authentication; set qdrant_url to an https:// endpoint and configure \
+                 memory.qdrant_api_key (vault key ZEPH_QDRANT_API_KEY) for remote/managed Qdrant"
+            );
+        }
     }
 
     /// Validate scalar bounds for memory, agent, a2a, and gateway fields.
@@ -1879,5 +1920,56 @@ weight = 0.3
         let mut cfg = config_with_ensemble(false, false, vec![]);
         cfg.orchestration.ensemble.ema_alpha = 5.0;
         assert!(cfg.validate().is_ok());
+    }
+
+    // ── warn_insecure_qdrant_endpoint (issue #6553) ───────────────────────────
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn qdrant_loopback_url_never_warns() {
+        let mut cfg = Config::default();
+        cfg.memory.qdrant_url = "http://localhost:6334".into();
+        assert!(cfg.validate().is_ok());
+        assert!(!logs_contain("memory.qdrant_url"));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn qdrant_non_loopback_plaintext_no_key_warns() {
+        let mut cfg = Config::default();
+        cfg.memory.qdrant_url = "http://qdrant.example.com:6334".into();
+        assert!(cfg.validate().is_ok(), "must warn, not hard-fail");
+        assert!(logs_contain("memory.qdrant_url"));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn qdrant_non_loopback_https_with_key_does_not_warn() {
+        let mut cfg = Config::default();
+        cfg.memory.qdrant_url = "https://qdrant.example.com:6334".into();
+        cfg.memory.qdrant_api_key = Some(zeph_common::secret::Secret::new("test-key"));
+        assert!(cfg.validate().is_ok());
+        assert!(!logs_contain("memory.qdrant_url"));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn qdrant_non_loopback_https_without_key_still_warns() {
+        let mut cfg = Config::default();
+        cfg.memory.qdrant_url = "https://qdrant.example.com:6334".into();
+        assert!(cfg.validate().is_ok());
+        assert!(logs_contain("memory.qdrant_url"));
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn qdrant_non_loopback_plaintext_with_key_still_warns() {
+        // TLS is still required even with an API key — a key sent over plaintext HTTP is
+        // itself exposed on the wire.
+        let mut cfg = Config::default();
+        cfg.memory.qdrant_url = "http://qdrant.example.com:6334".into();
+        cfg.memory.qdrant_api_key = Some(zeph_common::secret::Secret::new("test-key"));
+        assert!(cfg.validate().is_ok());
+        assert!(logs_contain("memory.qdrant_url"));
     }
 }

@@ -53,7 +53,7 @@
 //! let peer_card = registry.discover("http://peer-agent.example.com").await?;
 //!
 //! // Send a message to the peer agent.
-//! let client = A2aClient::new(reqwest::Client::new());
+//! let client = A2aClient::new_insecure(reqwest::Client::new());
 //! let params = SendMessageParams {
 //!     message: Message::user_text("Hello, peer agent!"),
 //!     configuration: None,

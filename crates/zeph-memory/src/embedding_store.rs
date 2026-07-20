@@ -464,6 +464,11 @@ impl EmbeddingStore {
 
     /// Search for similar vectors in Qdrant, returning up to `limit` results.
     ///
+    /// `limit` is clamped to `[1, `[`MAX_SEARCH_LIMIT`](crate::MAX_SEARCH_LIMIT)`]` before
+    /// being forwarded to Qdrant (issue #6553) — the bound is enforced here rather than
+    /// relying on every caller to clamp before calling. A one-shot `tracing::warn!` fires
+    /// the first time this actually reduces the requested value.
+    ///
     /// # Errors
     ///
     /// Returns an error if the Qdrant search fails.
@@ -474,6 +479,10 @@ impl EmbeddingStore {
         limit: usize,
         filter: Option<SearchFilter>,
     ) -> Result<Vec<SearchResult>, MemoryError> {
+        static CLAMP_WARNED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        crate::warn_if_search_limit_clamped("EmbeddingStore::search", limit, &CLAMP_WARNED);
+        let limit = limit.clamp(1, crate::MAX_SEARCH_LIMIT);
         let limit_u64 = u64::try_from(limit)?;
 
         let vector_filter = filter.as_ref().and_then(|f| {
@@ -640,6 +649,11 @@ impl EmbeddingStore {
 
     /// Search a named Qdrant collection, returning scored points with payloads.
     ///
+    /// `limit` is clamped to `[1, `[`MAX_SEARCH_LIMIT`](crate::MAX_SEARCH_LIMIT)`]` before
+    /// being forwarded to Qdrant (issue #6553) — the bound is enforced here rather than
+    /// relying on every caller to clamp before calling. A one-shot `tracing::warn!` fires
+    /// the first time this actually reduces the requested value.
+    ///
     /// # Errors
     ///
     /// Returns an error if the Qdrant search fails.
@@ -651,6 +665,14 @@ impl EmbeddingStore {
         limit: usize,
         filter: Option<VectorFilter>,
     ) -> Result<Vec<crate::ScoredVectorPoint>, MemoryError> {
+        static CLAMP_WARNED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        crate::warn_if_search_limit_clamped(
+            "EmbeddingStore::search_collection",
+            limit,
+            &CLAMP_WARNED,
+        );
+        let limit = limit.clamp(1, crate::MAX_SEARCH_LIMIT);
         let limit_u64 = u64::try_from(limit)?;
         let results = self
             .ops
@@ -1047,6 +1069,47 @@ mod tests {
         assert!((results[0].score - 1.0).abs() < 0.001);
     }
 
+    /// Issue #6553: `search` must clamp an oversized `limit` to `MAX_SEARCH_LIMIT` internally,
+    /// rather than relying on every caller to clamp before calling, and must log a one-shot
+    /// warning so a config-driven candidate pool silently shrunk by the clamp is observable
+    /// (critic finding S1).
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn embedding_store_search_clamps_oversized_limit() {
+        let (store, sqlite) = setup_with_store().await;
+        let cid = sqlite.create_conversation().await.unwrap();
+
+        for i in 0..(crate::MAX_SEARCH_LIMIT + 10) {
+            let msg_id = sqlite
+                .save_message(cid, "user", &format!("message {i}"))
+                .await
+                .unwrap();
+            store
+                .store(
+                    msg_id,
+                    cid,
+                    "user",
+                    vec![1.0, 0.0, 0.0, 0.0],
+                    MessageKind::Regular,
+                    "test-model",
+                    0,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        let results = store
+            .search(&[1.0, 0.0, 0.0, 0.0], usize::MAX, None)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), crate::MAX_SEARCH_LIMIT);
+        assert!(
+            logs_contain("requested search limit exceeds MAX_SEARCH_LIMIT"),
+            "expected a one-shot warn when the clamp actually reduces the requested limit"
+        );
+    }
+
     /// #5742 regression: two independent databases (own `conversation_id` counters, each starting
     /// at 1) share one backing vector store. Before the fix, `search()`'s `conversation_id`-only
     /// filter would let a message stored under db-b leak into db-a's scoped search and vice versa.
@@ -1207,6 +1270,37 @@ mod tests {
             .unwrap();
         assert_eq!(results.len(), 1);
         assert!(!results[0].payload.contains_key("category"));
+    }
+
+    /// Issue #6553: `search_collection` must clamp an oversized `limit` to `MAX_SEARCH_LIMIT`
+    /// internally, rather than relying on every caller to clamp before calling, and must log a
+    /// one-shot warning so a config-driven candidate pool silently shrunk by the clamp is
+    /// observable (critic finding S1).
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn embedding_store_search_collection_clamps_oversized_limit() {
+        let (store, _sqlite) = setup_with_store().await;
+
+        for _ in 0..(crate::MAX_SEARCH_LIMIT + 10) {
+            store
+                .store_to_collection(
+                    COLLECTION_NAME,
+                    serde_json::json!({}),
+                    vec![1.0, 0.0, 0.0, 0.0],
+                )
+                .await
+                .unwrap();
+        }
+
+        let results = store
+            .search_collection(COLLECTION_NAME, &[1.0, 0.0, 0.0, 0.0], usize::MAX, None)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), crate::MAX_SEARCH_LIMIT);
+        assert!(
+            logs_contain("requested search limit exceeds MAX_SEARCH_LIMIT"),
+            "expected a one-shot warn when the clamp actually reduces the requested limit"
+        );
     }
 
     /// `store_with_tool_context` must write `tool_name`, `exit_code`, and `timestamp` payload

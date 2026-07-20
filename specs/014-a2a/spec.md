@@ -174,8 +174,11 @@ Terminal states: `completed | failed | canceled | rejected`
 
 `A2aClient` accepts a [`SecurityPolicy`] (`crates/zeph-a2a/src/client.rs`) with two independent
 flags: `require_tls` and `ssrf_protection`. `SecurityPolicy::hardened()` enables both;
-`SecurityPolicy::permissive()` (the `A2aClient::new` default) disables both, for local/dev use
-against trusted endpoints.
+`SecurityPolicy::permissive()` disables both, for local/dev use against trusted endpoints.
+`A2aClient::new` requires the policy as an explicit constructor argument — it has no default —
+so a call site can never silently inherit a permissive client by omission (issue #6553).
+`A2aClient::new_insecure` is the explicit opt-in to `SecurityPolicy::permissive()` for
+local/dev callers that want the previous default-constructor behavior.
 
 ### SSRF invariant: validated address == connected address
 

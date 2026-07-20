@@ -97,6 +97,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `fetch_document_rag`, `fetch_summaries`, `fetch_cross_session`); `fetch_graph_facts` was left
   untouched since its three-way timeout/error/success split is not a fit for the shared helper.
 
+### Security
+
+- `zeph-memory`: added a crate-level `MAX_SEARCH_LIMIT` (100) enforced directly inside
+  `EmbeddingStore::search`/`search_collection`, `EmbeddingRegistry::search_raw`, and
+  `ReasoningMemory::retrieve_by_embedding` — every caller-supplied `limit`/`top_k` is now
+  clamped to `[1, MAX_SEARCH_LIMIT]` inside the crate itself instead of relying on the sole
+  existing external clamp (`crates/zeph-core/src/memory_tools.rs`'s MCP tool clamp of
+  `[1, 20]`, unaffected). Defense-in-depth: no exploitable path today, but closes a gap where
+  a future caller forwarding an externally-supplied limit without its own clamp could trigger
+  an oversized Qdrant result-set allocation (issue #6553).
+- `zeph-config`: `Config::validate` now logs a `tracing::warn!` when `memory.qdrant_url`
+  resolves to a non-loopback host without TLS (`https://`) and/or `memory.qdrant_api_key`
+  configured — memory content would otherwise travel in plaintext with no server
+  authentication. Non-fatal (does not block startup) and skipped entirely for loopback
+  targets (`localhost`, `127.0.0.1`, `::1`), matching the existing `A2aClientConfig` carve-out
+  (issue #6553).
+- `zeph-a2a`: `zeph --connect <URL>` now logs a `tracing::warn!` at discovery time when
+  `a2a_client.card_trust_policy` resolves to `ignore` (the default), noting that the peer's
+  AgentCard is accepted without signature/URL-origin verification. The default itself is
+  unchanged (`ignore`, byte-identical to pre-#5928 behavior) — impact was already bounded
+  because the A2A session connects to the CLI/config-supplied URL, never the discovered
+  card's self-declared URL (issue #6553).
+- **BREAKING** `zeph-a2a`: `A2aClient::new` now requires an explicit `SecurityPolicy` argument
+  instead of defaulting to `SecurityPolicy::permissive()` — a call site can no longer silently
+  inherit an insecure (no TLS enforcement, no SSRF protection) client by omission. Added
+  `A2aClient::new_insecure` for callers that want the previous permissive-by-default behavior
+  explicitly (local/dev use). The one production call site (`src/tui_remote.rs`) already
+  computed and applied a config-driven `SecurityPolicy` via `.with_security`, and now passes
+  it directly to `new` (issue #6553). `zeph-a2a` is a published crate — existing callers of
+  `A2aClient::new(client)` must migrate to either `A2aClient::new(client, policy)` or
+  `A2aClient::new_insecure(client)`.
+
 ### Added
 
 - `zeph-channels`/`zeph-config`: adopt Telegram Bot API 10.1 expandable blockquotes

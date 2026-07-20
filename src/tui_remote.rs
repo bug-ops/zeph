@@ -212,6 +212,17 @@ pub(crate) async fn run_tui_remote(
     let discovery_base_url = discovery_origin(&url);
     let discovery_client = hardened_discovery_client(&discovery_base_url, security).await?;
     let trust_policy = convert_card_trust_policy(config.a2a_client.card_trust_policy);
+    if trust_policy == zeph_a2a::CardTrustPolicy::Ignore {
+        // Default policy (issue #6553): peer AgentCards are accepted without signature or
+        // URL-origin verification. Bounded risk — the A2A session below connects to the
+        // CLI/config-supplied `url`, never to the discovered card's self-declared `url` — but
+        // still worth a visible signal since it means capability metadata is fully trusted.
+        tracing::warn!(
+            "a2a discovery: card_trust_policy=ignore — peer AgentCard accepted without \
+             signature/origin verification; set a2a_client.card_trust_policy to \"prefer\" or \
+             \"require\" to verify peer identity"
+        );
+    }
     let registry = zeph_a2a::AgentRegistry::new(discovery_client, Duration::from_mins(5))
         .with_trust(
             trust_policy,
@@ -237,8 +248,7 @@ pub(crate) async fn run_tui_remote(
         }
     }
 
-    let client =
-        zeph_a2a::A2aClient::new(zeph_core::http::default_client()).with_security(security);
+    let client = zeph_a2a::A2aClient::new(zeph_core::http::default_client(), security);
 
     // Cloned before `url` is moved into the `async move` SSE pump block below.
     let remote_daemon_url = url.clone();
@@ -247,6 +257,25 @@ pub(crate) async fn run_tui_remote(
     // We receive on user_rx and forward to the A2A SSE pump.
     let (user_tx, mut user_rx) = tokio::sync::mpsc::channel::<String>(32);
     let (agent_tx, agent_rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(256);
+
+    if trust_policy == zeph_a2a::CardTrustPolicy::Ignore {
+        // Mirrors the `tracing::warn!` above, but the `tracing::warn!` alone is not a
+        // reliable signal once the TUI screen is up: `init_tracing` only keeps the stderr
+        // layer when `--tui` was NOT passed (`tracing_init.rs`), yet this function renders a
+        // ratatui screen unconditionally — so `zeph --tui --connect <URL>` would otherwise
+        // suppress the warning to the file-only log layer with no on-screen trace at all
+        // (CLAUDE.md TUI Rules: implicit/security-relevant state needs a visible indicator).
+        // Queued on `agent_tx` before `App::new` even takes `agent_rx`, so it is guaranteed to
+        // be the first system message the chat pane renders once the TUI starts.
+        let _ = agent_tx
+            .send(zeph_tui::AgentEvent::FullMessage(
+                "Warning: card_trust_policy=ignore — peer AgentCard accepted without \
+                 signature/origin verification. Set a2a_client.card_trust_policy to \
+                 \"prefer\" or \"require\" to verify peer identity."
+                    .into(),
+            ))
+            .await;
+    }
 
     let tui_cancel = tokio_util::sync::CancellationToken::new();
     let tui_supervisor = zeph_common::TaskSupervisor::new(tui_cancel.clone());

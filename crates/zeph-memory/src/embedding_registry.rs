@@ -295,6 +295,11 @@ impl EmbeddingRegistry {
     ///
     /// Consumers map the payloads to their domain types.
     ///
+    /// `limit` is clamped to `[1, `[`MAX_SEARCH_LIMIT`](crate::MAX_SEARCH_LIMIT)`]` before
+    /// being forwarded to Qdrant (issue #6553) — the bound is enforced here rather than
+    /// relying on every caller to clamp before calling. A one-shot `tracing::warn!` fires
+    /// the first time this actually reduces the requested value.
+    ///
     /// # Errors
     ///
     /// Returns [`EmbeddingRegistryError::DimensionProbe`] when the query vector dimension does not
@@ -307,6 +312,10 @@ impl EmbeddingRegistry {
         limit: usize,
         embed_fn: impl Fn(&str) -> EmbedFuture,
     ) -> Result<Vec<crate::ScoredVectorPoint>, EmbeddingRegistryError> {
+        static CLAMP_WARNED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        crate::warn_if_search_limit_clamped("EmbeddingRegistry::search_raw", limit, &CLAMP_WARNED);
+        let limit = limit.clamp(1, crate::MAX_SEARCH_LIMIT);
         let query_vec = embed_fn(query)
             .await
             .map_err(|e| EmbeddingRegistryError::Embedding(e.to_string()))?;
@@ -816,6 +825,34 @@ mod tests {
         assert!(
             !matches!(result, Err(EmbeddingRegistryError::DimensionProbe(_))),
             "guard must not fire when dimensions match"
+        );
+    }
+
+    /// Issue #6553: an oversized `limit` must be clamped to `MAX_SEARCH_LIMIT` before it
+    /// reaches the `u64` conversion / Qdrant call, rather than forwarded as-is. `QdrantOps`
+    /// has no test seam (concrete gRPC client, not a trait object), so this cannot assert the
+    /// clamped *count* end-to-end the way `EmbeddingStore::search`/`search_collection` and
+    /// `ReasoningMemory::retrieve_by_embedding` do (those accept an injectable `VectorStore`).
+    /// It does assert, via the one-shot `tracing::warn!`, that the clamp logic actually ran
+    /// with the oversized value rather than being skipped or short-circuited — a stronger
+    /// signal than "did not panic" alone (critic finding M5).
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn search_raw_oversized_limit_does_not_panic() {
+        let ops = QdrantOps::new("http://127.0.0.1:1", None).unwrap(); // unreachable — forces network error
+        let ns = uuid::Uuid::from_bytes([0u8; 16]);
+        let reg = EmbeddingRegistry::new(ops, "test_oversized_limit", ns);
+        reg.set_cached_dim(2).await;
+
+        let embed_fn = |_: &str| -> EmbedFuture { Box::pin(async { Ok(vec![1.0_f32, 0.0]) }) };
+        let result = reg.search_raw("query", usize::MAX, embed_fn).await;
+        assert!(
+            !matches!(result, Err(EmbeddingRegistryError::DimensionProbe(_))),
+            "clamp must not corrupt the dimension guard"
+        );
+        assert!(
+            logs_contain("requested search limit exceeds MAX_SEARCH_LIMIT"),
+            "expected the one-shot clamp warning to fire for an oversized limit"
         );
     }
 

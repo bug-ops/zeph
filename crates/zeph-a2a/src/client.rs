@@ -53,8 +53,9 @@ pub enum TaskEvent {
 /// ```rust
 /// use zeph_a2a::{A2aClient, SecurityPolicy};
 ///
-/// // Recommended for production: reject HTTP and private/loopback targets.
-/// let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy::hardened());
+/// // Recommended for production: reject HTTP and private/loopback targets. Pass the
+/// // policy directly to `new` so it can never be silently inherited by omission.
+/// let client = A2aClient::new(reqwest::Client::new(), SecurityPolicy::hardened());
 ///
 /// // Partial policy via named fields — no ambiguity about which flag is which.
 /// let tls_only = SecurityPolicy {
@@ -132,11 +133,15 @@ struct PinnedTarget {
 ///
 /// # Security
 ///
-/// Use [`with_security`](A2aClient::with_security) to harden the client for
-/// production deployments — see [`SecurityPolicy`]. When either flag is enabled,
-/// each request is sent through a dedicated per-request `reqwest::Client` with
-/// redirects disabled and, when `ssrf_protection` is on, the connection pinned to
-/// the exact addresses that were validated (no re-resolution at connect time).
+/// [`new`](Self::new) requires an explicit [`SecurityPolicy`] so a call site can never
+/// silently inherit a permissive default by omission (issue #6553) — use
+/// [`SecurityPolicy::hardened()`] for production, or [`new_insecure`](Self::new_insecure)
+/// to opt into [`SecurityPolicy::permissive()`] explicitly for local/dev use.
+/// [`with_security`](A2aClient::with_security) can still override the policy after
+/// construction. When either flag is enabled, each request is sent through a dedicated
+/// per-request `reqwest::Client` with redirects disabled and, when `ssrf_protection` is
+/// on, the connection pinned to the exact addresses that were validated (no re-resolution
+/// at connect time).
 ///
 /// # Examples
 ///
@@ -144,8 +149,7 @@ struct PinnedTarget {
 /// use zeph_a2a::{A2aClient, SecurityPolicy, SendMessageParams, Message};
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let client = A2aClient::new(reqwest::Client::new())
-///     .with_security(SecurityPolicy::hardened());
+/// let client = A2aClient::new(reqwest::Client::new(), SecurityPolicy::hardened());
 ///
 /// let params = SendMessageParams {
 ///     message: Message::user_text("Summarize this page."),
@@ -175,32 +179,63 @@ pub struct A2aClient {
 }
 
 impl A2aClient {
-    /// Create a new `A2aClient` with no security restrictions.
+    /// Create a new `A2aClient` with an explicit [`SecurityPolicy`].
     ///
-    /// Security features are disabled by default for local/dev usage. Enable them
-    /// with [`with_security`](Self::with_security) for production deployments.
-    #[must_use]
-    pub fn new(client: reqwest::Client) -> Self {
-        Self {
-            client,
-            security: SecurityPolicy::permissive(),
-            request_timeout: Duration::from_secs(30),
-            ibct_key: None,
-            ibct_ttl: Duration::from_mins(5),
-        }
-    }
-
-    /// Configure the [`SecurityPolicy`] for this client.
-    ///
-    /// Defaults to [`SecurityPolicy::permissive()`] (no restrictions). This method
-    /// uses the builder pattern and can be chained directly after [`new`](Self::new).
+    /// The policy is a mandatory argument (issue #6553) so a call site states its
+    /// security intent at construction time instead of silently inheriting a
+    /// permissive default by omission. Use [`SecurityPolicy::hardened()`] for
+    /// production deployments, or [`new_insecure`](Self::new_insecure) to opt into
+    /// [`SecurityPolicy::permissive()`] explicitly for local/dev use.
     ///
     /// # Examples
     ///
     /// ```rust
     /// use zeph_a2a::{A2aClient, SecurityPolicy};
     ///
-    /// let client = A2aClient::new(reqwest::Client::new())
+    /// let client = A2aClient::new(reqwest::Client::new(), SecurityPolicy::hardened());
+    /// ```
+    #[must_use]
+    pub fn new(client: reqwest::Client, security: SecurityPolicy) -> Self {
+        Self {
+            client,
+            security,
+            request_timeout: Duration::from_secs(30),
+            ibct_key: None,
+            ibct_ttl: Duration::from_mins(5),
+        }
+    }
+
+    /// Create a new `A2aClient` with [`SecurityPolicy::permissive()`] — no TLS
+    /// enforcement or SSRF protection.
+    ///
+    /// Suitable only for local development against trusted, non-adversarial endpoints
+    /// (e.g. `http://localhost`). Production code should call [`new`](Self::new) with
+    /// an explicit policy instead of relying on this insecure default.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_a2a::A2aClient;
+    ///
+    /// let client = A2aClient::new_insecure(reqwest::Client::new());
+    /// ```
+    #[must_use]
+    pub fn new_insecure(client: reqwest::Client) -> Self {
+        Self::new(client, SecurityPolicy::permissive())
+    }
+
+    /// Configure the [`SecurityPolicy`] for this client.
+    ///
+    /// Overrides whatever policy was set at construction time ([`new`](Self::new) or
+    /// [`new_insecure`](Self::new_insecure)). This method uses the builder pattern and
+    /// can be chained directly after either constructor.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_a2a::{A2aClient, SecurityPolicy};
+    ///
+    /// let client = A2aClient::new_insecure(reqwest::Client::new())
     ///     .with_security(SecurityPolicy::hardened());
     /// ```
     #[must_use]
@@ -238,7 +273,7 @@ impl A2aClient {
     /// use zeph_a2a::{A2aClient, IbctKey};
     ///
     /// let key = IbctKey { key_id: "k1".into(), key_bytes: b"secret".to_vec() };
-    /// let client = A2aClient::new(reqwest::Client::new()).with_ibct_key(key);
+    /// let client = A2aClient::new_insecure(reqwest::Client::new()).with_ibct_key(key);
     /// ```
     #[must_use]
     pub fn with_ibct_key(mut self, key: IbctKey) -> Self {
@@ -601,7 +636,7 @@ mod tests {
 
     #[test]
     fn a2a_client_construction() {
-        let client = A2aClient::new(reqwest::Client::new());
+        let client = A2aClient::new_insecure(reqwest::Client::new());
         drop(client);
     }
 
@@ -637,10 +672,11 @@ mod tests {
 
     #[tokio::test]
     async fn tls_enforcement_rejects_http() {
-        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
-            require_tls: true,
-            ssrf_protection: false,
-        });
+        let client =
+            A2aClient::new_insecure(reqwest::Client::new()).with_security(SecurityPolicy {
+                require_tls: true,
+                ssrf_protection: false,
+            });
         let result = client.validate_endpoint("http://example.com/rpc").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -650,20 +686,22 @@ mod tests {
 
     #[tokio::test]
     async fn tls_enforcement_allows_https() {
-        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
-            require_tls: true,
-            ssrf_protection: false,
-        });
+        let client =
+            A2aClient::new_insecure(reqwest::Client::new()).with_security(SecurityPolicy {
+                require_tls: true,
+                ssrf_protection: false,
+            });
         let result = client.validate_endpoint("https://example.com/rpc").await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn ssrf_protection_rejects_localhost() {
-        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
-            require_tls: false,
-            ssrf_protection: true,
-        });
+        let client =
+            A2aClient::new_insecure(reqwest::Client::new()).with_security(SecurityPolicy {
+                require_tls: false,
+                ssrf_protection: true,
+            });
         let result = client.validate_endpoint("http://127.0.0.1:8080/rpc").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("SSRF"));
@@ -671,7 +709,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_security_allows_http_localhost() {
-        let client = A2aClient::new(reqwest::Client::new());
+        let client = A2aClient::new_insecure(reqwest::Client::new());
         let result = client.validate_endpoint("http://127.0.0.1:8080/rpc").await;
         assert!(result.is_ok());
     }
@@ -727,7 +765,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_connection_error() {
-        let client = A2aClient::new(reqwest::Client::new());
+        let client = A2aClient::new_insecure(reqwest::Client::new());
         let params = SendMessageParams {
             message: Message::user_text("hello"),
             configuration: None,
@@ -741,7 +779,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_task_connection_error() {
-        let client = A2aClient::new(reqwest::Client::new());
+        let client = A2aClient::new_insecure(reqwest::Client::new());
         let params = TaskIdParams {
             id: "t-1".into(),
             history_length: None,
@@ -755,7 +793,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_task_connection_error() {
-        let client = A2aClient::new(reqwest::Client::new());
+        let client = A2aClient::new_insecure(reqwest::Client::new());
         let params = TaskIdParams {
             id: "t-1".into(),
             history_length: None,
@@ -769,7 +807,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_message_connection_error() {
-        let client = A2aClient::new(reqwest::Client::new());
+        let client = A2aClient::new_insecure(reqwest::Client::new());
         let params = SendMessageParams {
             message: Message::user_text("stream me"),
             configuration: None,
@@ -782,10 +820,11 @@ mod tests {
 
     #[tokio::test]
     async fn stream_message_tls_required_rejects_http() {
-        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
-            require_tls: true,
-            ssrf_protection: false,
-        });
+        let client =
+            A2aClient::new_insecure(reqwest::Client::new()).with_security(SecurityPolicy {
+                require_tls: true,
+                ssrf_protection: false,
+            });
         let params = SendMessageParams {
             message: Message::user_text("hello"),
             configuration: None,
@@ -801,10 +840,11 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_tls_required_rejects_http() {
-        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
-            require_tls: true,
-            ssrf_protection: false,
-        });
+        let client =
+            A2aClient::new_insecure(reqwest::Client::new()).with_security(SecurityPolicy {
+                require_tls: true,
+                ssrf_protection: false,
+            });
         let params = SendMessageParams {
             message: Message::user_text("hello"),
             configuration: None,
@@ -818,10 +858,11 @@ mod tests {
 
     #[tokio::test]
     async fn get_task_tls_required_rejects_http() {
-        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
-            require_tls: true,
-            ssrf_protection: false,
-        });
+        let client =
+            A2aClient::new_insecure(reqwest::Client::new()).with_security(SecurityPolicy {
+                require_tls: true,
+                ssrf_protection: false,
+            });
         let params = TaskIdParams {
             id: "t-1".into(),
             history_length: None,
@@ -835,10 +876,11 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_task_tls_required_rejects_http() {
-        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
-            require_tls: true,
-            ssrf_protection: false,
-        });
+        let client =
+            A2aClient::new_insecure(reqwest::Client::new()).with_security(SecurityPolicy {
+                require_tls: true,
+                ssrf_protection: false,
+            });
         let params = TaskIdParams {
             id: "t-1".into(),
             history_length: None,
@@ -852,10 +894,11 @@ mod tests {
 
     #[tokio::test]
     async fn validate_endpoint_invalid_url_with_ssrf() {
-        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
-            require_tls: false,
-            ssrf_protection: true,
-        });
+        let client =
+            A2aClient::new_insecure(reqwest::Client::new()).with_security(SecurityPolicy {
+                require_tls: false,
+                ssrf_protection: true,
+            });
         let result = client.validate_endpoint("not-a-url").await;
         assert!(result.is_err());
         assert_matches!(result.unwrap_err(), A2aError::Security(_));
@@ -863,24 +906,24 @@ mod tests {
 
     #[test]
     fn with_security_returns_configured_client() {
-        let client =
-            A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy::hardened());
+        let client = A2aClient::new_insecure(reqwest::Client::new())
+            .with_security(SecurityPolicy::hardened());
         assert!(client.security.require_tls);
         assert!(client.security.ssrf_protection);
     }
 
     #[test]
     fn default_client_no_security() {
-        let client = A2aClient::new(reqwest::Client::new());
+        let client = A2aClient::new_insecure(reqwest::Client::new());
         assert!(!client.security.require_tls);
         assert!(!client.security.ssrf_protection);
     }
 
     #[test]
     fn needs_hardened_client_reflects_policy() {
-        assert!(!A2aClient::new(reqwest::Client::new()).needs_hardened_client());
+        assert!(!A2aClient::new_insecure(reqwest::Client::new()).needs_hardened_client());
         assert!(
-            A2aClient::new(reqwest::Client::new())
+            A2aClient::new_insecure(reqwest::Client::new())
                 .with_security(SecurityPolicy {
                     require_tls: true,
                     ssrf_protection: false,
@@ -888,7 +931,7 @@ mod tests {
                 .needs_hardened_client()
         );
         assert!(
-            A2aClient::new(reqwest::Client::new())
+            A2aClient::new_insecure(reqwest::Client::new())
                 .with_security(SecurityPolicy {
                     require_tls: false,
                     ssrf_protection: true,
@@ -896,7 +939,7 @@ mod tests {
                 .needs_hardened_client()
         );
         assert!(
-            A2aClient::new(reqwest::Client::new())
+            A2aClient::new_insecure(reqwest::Client::new())
                 .with_security(SecurityPolicy::hardened())
                 .needs_hardened_client()
         );
@@ -994,7 +1037,7 @@ mod tests {
             key_id: "k1".into(),
             key_bytes: b"secret".to_vec(),
         };
-        let client = A2aClient::new(reqwest::Client::new()).with_ibct_key(key);
+        let client = A2aClient::new_insecure(reqwest::Client::new()).with_ibct_key(key);
         assert!(client.ibct_key.is_some());
         assert_eq!(client.ibct_ttl, Duration::from_mins(5));
     }
@@ -1005,7 +1048,7 @@ mod tests {
             key_id: "k1".into(),
             key_bytes: b"secret".to_vec(),
         };
-        let client = A2aClient::new(reqwest::Client::new())
+        let client = A2aClient::new_insecure(reqwest::Client::new())
             .with_ibct_key(key)
             .with_ibct_ttl(Duration::from_mins(1));
         assert_eq!(client.ibct_ttl, Duration::from_mins(1));
@@ -1013,7 +1056,7 @@ mod tests {
 
     #[test]
     fn no_ibct_key_configured_yields_no_header() {
-        let client = A2aClient::new(reqwest::Client::new());
+        let client = A2aClient::new_insecure(reqwest::Client::new());
         assert!(
             client
                 .ibct_header_value("https://agent.example.com", "task-1")
@@ -1028,7 +1071,7 @@ mod tests {
             key_id: "k1".into(),
             key_bytes: b"secret".to_vec(),
         };
-        let client = A2aClient::new(reqwest::Client::new()).with_ibct_key(key);
+        let client = A2aClient::new_insecure(reqwest::Client::new()).with_ibct_key(key);
         let header = client
             .ibct_header_value("https://agent.example.com", "task-1")
             .expect("header should be issued when ibct feature is enabled");
@@ -1081,7 +1124,7 @@ mod tests {
             key_id: "k1".into(),
             key_bytes: b"secret".to_vec(),
         };
-        let client = A2aClient::new(reqwest::Client::new()).with_ibct_key(key);
+        let client = A2aClient::new_insecure(reqwest::Client::new()).with_ibct_key(key);
 
         let header_a2a = client
             .ibct_header_value("http://127.0.0.1:8080/a2a", "task-1")
@@ -1141,7 +1184,7 @@ mod wiremock_tests {
             .mount(&server)
             .await;
 
-        let client = A2aClient::new(reqwest::Client::new());
+        let client = A2aClient::new_insecure(reqwest::Client::new());
         let params = SendMessageParams {
             message: Message::user_text("hello"),
             configuration: None,
@@ -1162,7 +1205,7 @@ mod wiremock_tests {
             .mount(&server)
             .await;
 
-        let client = A2aClient::new(reqwest::Client::new());
+        let client = A2aClient::new_insecure(reqwest::Client::new());
         let params = SendMessageParams {
             message: Message::user_text("hi"),
             configuration: None,
@@ -1185,7 +1228,7 @@ mod wiremock_tests {
             .mount(&server)
             .await;
 
-        let client = A2aClient::new(reqwest::Client::new());
+        let client = A2aClient::new_insecure(reqwest::Client::new());
         let params = SendMessageParams {
             message: Message::user_text("secure"),
             configuration: None,
@@ -1210,7 +1253,7 @@ mod wiremock_tests {
             .mount(&server)
             .await;
 
-        let client = A2aClient::new(reqwest::Client::new());
+        let client = A2aClient::new_insecure(reqwest::Client::new());
         let params = TaskIdParams {
             id: "task-get".into(),
             history_length: None,
@@ -1231,7 +1274,7 @@ mod wiremock_tests {
             .mount(&server)
             .await;
 
-        let client = A2aClient::new(reqwest::Client::new());
+        let client = A2aClient::new_insecure(reqwest::Client::new());
         let params = TaskIdParams {
             id: "task-cancel".into(),
             history_length: None,
@@ -1252,7 +1295,7 @@ mod wiremock_tests {
             .mount(&server)
             .await;
 
-        let client = A2aClient::new(reqwest::Client::new());
+        let client = A2aClient::new_insecure(reqwest::Client::new());
         let params = SendMessageParams {
             message: Message::user_text("stream"),
             configuration: None,
@@ -1274,7 +1317,7 @@ mod wiremock_tests {
             .mount(&server)
             .await;
 
-        let client = A2aClient::new(reqwest::Client::new());
+        let client = A2aClient::new_insecure(reqwest::Client::new());
         let params = SendMessageParams {
             message: Message::user_text("fail"),
             configuration: None,
@@ -1306,7 +1349,7 @@ mod wiremock_tests {
             .mount(&server)
             .await;
 
-        let client = A2aClient::new(reqwest::Client::new())
+        let client = A2aClient::new_insecure(reqwest::Client::new())
             .with_request_timeout(std::time::Duration::from_millis(100));
         let params = SendMessageParams {
             message: Message::user_text("hello"),
@@ -1337,10 +1380,11 @@ mod wiremock_tests {
 
         let addr = *server.address();
         let fake_host = "zeph-a2a-pin-test.invalid";
-        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
-            require_tls: false,
-            ssrf_protection: true,
-        });
+        let client =
+            A2aClient::new_insecure(reqwest::Client::new()).with_security(SecurityPolicy {
+                require_tls: false,
+                ssrf_protection: true,
+            });
         let pinned = PinnedTarget {
             host: fake_host.to_owned(),
             addrs: vec![addr],
@@ -1372,10 +1416,11 @@ mod wiremock_tests {
 
         let addr = *server.address();
         let fake_host = "zeph-a2a-redirect-test.invalid";
-        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
-            require_tls: false,
-            ssrf_protection: true,
-        });
+        let client =
+            A2aClient::new_insecure(reqwest::Client::new()).with_security(SecurityPolicy {
+                require_tls: false,
+                ssrf_protection: true,
+            });
         let pinned = PinnedTarget {
             host: fake_host.to_owned(),
             addrs: vec![addr],
@@ -1408,10 +1453,11 @@ mod wiremock_tests {
 
         let addr = *server.address();
         let fake_host = "zeph-a2a-tls-test.invalid";
-        let client = A2aClient::new(reqwest::Client::new()).with_security(SecurityPolicy {
-            require_tls: true,
-            ssrf_protection: true,
-        });
+        let client =
+            A2aClient::new_insecure(reqwest::Client::new()).with_security(SecurityPolicy {
+                require_tls: true,
+                ssrf_protection: true,
+            });
         let pinned = PinnedTarget {
             host: fake_host.to_owned(),
             addrs: vec![addr],
@@ -1445,7 +1491,7 @@ mod wiremock_tests {
             key_id: "k1".into(),
             key_bytes: b"secret".to_vec(),
         };
-        let client = A2aClient::new(reqwest::Client::new()).with_ibct_key(key);
+        let client = A2aClient::new_insecure(reqwest::Client::new()).with_ibct_key(key);
         let params = SendMessageParams {
             message: Message::user_text("hello"),
             configuration: None,

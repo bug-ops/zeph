@@ -65,6 +65,57 @@
 //! | `pdf` | Enable `PdfLoader` for PDF ingestion. |
 //! | `postgres` | Enable PostgreSQL support via `zeph-db`. |
 
+/// Upper bound clamped onto every caller-supplied `limit`/`top_k` search parameter
+/// inside this crate (issue #6553).
+///
+/// [`embedding_store::EmbeddingStore::search`], [`embedding_store::EmbeddingStore::search_collection`],
+/// [`embedding_registry::EmbeddingRegistry::search_raw`], and
+/// [`reasoning::ReasoningMemory::retrieve_by_embedding`] all enforce this bound directly, so the
+/// safety guarantee does not depend on every external caller (MCP tools, plugins, future
+/// call sites) remembering to clamp before forwarding a value here.
+///
+/// `100` bounds the Qdrant result set Zeph will allocate/deserialize in a single call. Note
+/// this **can** clamp a legitimate config-driven candidate pool: `memory.retrieval.depth` and
+/// `memory.session.recall_limit` have no upper-bound validation today, and `retrieval.depth`'s
+/// own doc actively recommends raising it ("higher for better MMR diversity") with no ceiling
+/// — an operator who does so past `100` gets a silently smaller ANN pool than configured. Each
+/// clamping call site logs a `tracing::warn!` the first time this happens so the degradation is
+/// observable rather than silent; there is deliberately no config knob to raise this ceiling,
+/// since doing so would reopen the oversized-result-set `DoS` this constant exists to close.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_memory::MAX_SEARCH_LIMIT;
+///
+/// let requested = 5_000_usize;
+/// assert_eq!(requested.clamp(1, MAX_SEARCH_LIMIT), MAX_SEARCH_LIMIT);
+/// ```
+pub const MAX_SEARCH_LIMIT: usize = 100;
+
+/// Log a one-shot `tracing::warn!` the first time a caller's requested search limit is
+/// actually reduced by [`MAX_SEARCH_LIMIT`] (issue #6553 follow-up).
+///
+/// `warned` is a call-site-local flag (a `static AtomicBool`) so each of the four clamping
+/// functions warns independently and at most once per process — a config-driven candidate
+/// pool that regularly exceeds the ceiling would otherwise log on every search call.
+pub(crate) fn warn_if_search_limit_clamped(
+    site: &'static str,
+    requested: usize,
+    warned: &std::sync::atomic::AtomicBool,
+) {
+    if requested > MAX_SEARCH_LIMIT && !warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!(
+            site,
+            requested,
+            max = MAX_SEARCH_LIMIT,
+            "requested search limit exceeds MAX_SEARCH_LIMIT and was clamped — a config-driven \
+             candidate pool (e.g. memory.retrieval.depth) larger than this will silently return \
+             a smaller ANN pool than configured"
+        );
+    }
+}
+
 pub mod admission;
 pub mod anchored_summary;
 pub mod compaction_probe;
