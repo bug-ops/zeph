@@ -74,6 +74,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-mcp`: **breaking** — `McpClient::connect` no longer takes two adjacent positional
+  `bool` parameters (`suppress_stderr`, `env_isolation`); it now takes `StderrPolicy`
+  (`Forward`/`Suppress`) and `EnvPolicy` (`InheritAll`/`Isolated`) instead. `McpClient::connect_url`,
+  `connect_url_with_headers`, and `connect_url_oauth` no longer take a bare `trusted: bool`;
+  they now take `McpTrustLevel` directly, matched on internally instead of being downgraded
+  to a `bool` at the call site. Both changes eliminate a class of silent, compile-clean
+  argument-order-swap regressions (issue #6478) — a swap between the two new enum-typed
+  `connect` parameters is now a type error, and the SSRF-skip check on `connect_url*` matches
+  on `McpTrustLevel` directly rather than on a bool that discarded which variant it came from.
+  No runtime behavior change; existing callers must map their `bool`/`trusted` values to the
+  new enum variants.
+
 - `zeph-context`: internal refactor of `assembler.rs`, no behavior change (issues #6573, #6577).
   `schedule_context_fetchers` took 15 positional parameters, including 5 consecutive `usize`
   budget values that duplicated fields already on `BudgetAllocation` — an undetected

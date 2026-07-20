@@ -11,10 +11,10 @@ use tokio_util::sync::CancellationToken;
 use dashmap::DashMap;
 use tokio::sync::mpsc;
 
-use crate::client::{McpClient, ToolRefreshEvent};
+use crate::client::{EnvPolicy, McpClient, StderrPolicy, ToolRefreshEvent};
 use crate::error::McpError;
 
-use super::{McpTransport, McpTrustLevel, ServerEntry, StatusTx};
+use super::{McpTransport, ServerEntry, StatusTx};
 
 /// Compute the sleep duration before retry attempt `attempt + 1`.
 ///
@@ -216,6 +216,16 @@ pub(super) async fn connect_entry(
 ) -> Result<McpClient, McpError> {
     match &entry.transport {
         McpTransport::Stdio { command, args, env } => {
+            let stderr_policy = if suppress_stderr {
+                StderrPolicy::Suppress
+            } else {
+                StderrPolicy::Forward
+            };
+            let env_policy = if entry.env_isolation {
+                EnvPolicy::Isolated
+            } else {
+                EnvPolicy::InheritAll
+            };
             McpClient::connect(
                 &entry.id,
                 command,
@@ -223,8 +233,8 @@ pub(super) async fn connect_entry(
                 env,
                 allowed_commands,
                 entry.timeout,
-                suppress_stderr,
-                entry.env_isolation,
+                stderr_policy,
+                env_policy,
                 tx,
                 last_refresh,
                 handler_cfg.clone(),
@@ -232,13 +242,12 @@ pub(super) async fn connect_entry(
             .await
         }
         McpTransport::Http { url, headers } => {
-            let trusted = matches!(entry.trust_level, McpTrustLevel::Trusted);
             if headers.is_empty() {
                 McpClient::connect_url(
                     &entry.id,
                     url,
                     entry.timeout,
-                    trusted,
+                    entry.trust_level,
                     tx,
                     last_refresh,
                     handler_cfg.clone(),
@@ -250,7 +259,7 @@ pub(super) async fn connect_entry(
                     url,
                     headers,
                     entry.timeout,
-                    trusted,
+                    entry.trust_level,
                     tx,
                     last_refresh,
                     handler_cfg.clone(),

@@ -30,9 +30,56 @@ use url::Url;
 use zeph_common::net::{ResolveError, resolve_and_validate};
 use zeph_tools::is_private_ip;
 
+use crate::McpTrustLevel;
 use crate::elicitation::ElicitationEvent;
 use crate::error::McpError;
 use crate::tool::McpTool;
+
+/// Whether a spawned stdio MCP server process inherits the parent environment.
+///
+/// Passed to [`McpClient::connect`] instead of a bare `bool` so it cannot be
+/// silently swapped with the adjacent [`StderrPolicy`] parameter — an order-swap
+/// between the two would otherwise compile cleanly while leaking the full parent
+/// environment (including any secrets reachable through it) to the child process.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_mcp::EnvPolicy;
+///
+/// let policy = EnvPolicy::Isolated;
+/// assert_eq!(policy, EnvPolicy::Isolated);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvPolicy {
+    /// Spawn with the full parent process environment, plus the server's declared `env` map.
+    InheritAll,
+    /// Spawn with only the minimal base env vars (see
+    /// [`crate::security::build_isolated_env`]) plus the server's declared `env` map.
+    Isolated,
+}
+
+/// Whether a spawned stdio MCP server process's stderr is forwarded or suppressed.
+///
+/// Passed to [`McpClient::connect`] instead of a bare `bool` so it cannot be
+/// silently swapped with the adjacent [`EnvPolicy`] parameter. Purely a log-verbosity
+/// control — unlike [`EnvPolicy`], it has no security implications.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_mcp::StderrPolicy;
+///
+/// let policy = StderrPolicy::Suppress;
+/// assert_eq!(policy, StderrPolicy::Suppress);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StderrPolicy {
+    /// Forward the child process's stderr to the parent's stderr (default OS inheritance).
+    Forward,
+    /// Redirect the child process's stderr to a null sink.
+    Suppress,
+}
 
 /// Minimum interval between tool list refreshes per server (rate limiting).
 const MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -413,8 +460,8 @@ impl McpClient {
         env: &std::collections::HashMap<String, String>,
         allowed_commands: &[String],
         timeout: Duration,
-        suppress_stderr: bool,
-        env_isolation: bool,
+        stderr_policy: StderrPolicy,
+        env_policy: EnvPolicy,
         tx: Sender<ToolRefreshEvent>,
         last_refresh: Arc<DashMap<String, Instant>>,
         handler_cfg: HandlerConfig,
@@ -422,22 +469,21 @@ impl McpClient {
         crate::security::validate_command(command, allowed_commands)?;
         crate::security::validate_env(env)?;
 
-        let effective_env = if env_isolation {
-            crate::security::build_isolated_env(env)
-        } else {
-            env.clone()
+        let effective_env = match env_policy {
+            EnvPolicy::Isolated => crate::security::build_isolated_env(env),
+            EnvPolicy::InheritAll => env.clone(),
         };
 
         let mut cmd = Command::new(command);
         cmd.args(args);
-        if env_isolation {
+        if env_policy == EnvPolicy::Isolated {
             cmd.env_clear();
         }
         for (k, v) in &effective_env {
             cmd.env(k, v);
         }
 
-        let transport = if suppress_stderr {
+        let transport = if stderr_policy == StderrPolicy::Suppress {
             let (proc, _stderr) = TokioChildProcess::builder(cmd)
                 .stderr(std::process::Stdio::null())
                 .spawn()
@@ -466,9 +512,9 @@ impl McpClient {
     /// Connect to a remote MCP server over Streamable HTTP.
     ///
     /// Performs SSRF validation before connecting — blocks URLs that resolve
-    /// to private, loopback, or link-local IP ranges — unless `trusted` is
-    /// `true`, in which case the check is skipped (use only for
-    /// operator-controlled static config).
+    /// to private, loopback, or link-local IP ranges — unless `trust_level` is
+    /// [`McpTrustLevel::Trusted`], in which case the check is skipped (use only
+    /// for operator-controlled static config).
     ///
     /// # Errors
     ///
@@ -484,11 +530,12 @@ impl McpClient {
         server_id: &str,
         url: &str,
         timeout: Duration,
-        trusted: bool,
+        trust_level: McpTrustLevel,
         tx: Sender<ToolRefreshEvent>,
         last_refresh: Arc<DashMap<String, Instant>>,
         handler_cfg: HandlerConfig,
     ) -> Result<Self, McpError> {
+        let trusted = matches!(trust_level, McpTrustLevel::Trusted);
         let pinned = validate_and_pin_url(url, trusted).await?;
         let client = build_hardened_client(server_id, pinned.as_ref())?;
         let config = StreamableHttpClientTransportConfig::with_uri(url.to_owned());
@@ -511,7 +558,8 @@ impl McpClient {
     ///
     /// # Errors
     ///
-    /// Returns `McpError::SsrfBlocked` if the URL resolves to a private IP (unless `trusted`),
+    /// Returns `McpError::SsrfBlocked` if the URL resolves to a private IP (unless
+    /// `trust_level` is [`McpTrustLevel::Trusted`]),
     /// `McpError::Timeout` if the handshake exceeds `timeout`, or
     /// `McpError::Connection` if the handshake fails.
     #[allow(clippy::too_many_arguments)]
@@ -526,11 +574,12 @@ impl McpClient {
         url: &str,
         headers: &HashMap<String, String>,
         timeout: Duration,
-        trusted: bool,
+        trust_level: McpTrustLevel,
         tx: Sender<ToolRefreshEvent>,
         last_refresh: Arc<DashMap<String, Instant>>,
         handler_cfg: HandlerConfig,
     ) -> Result<Self, McpError> {
+        let trusted = matches!(trust_level, McpTrustLevel::Trusted);
         let pinned = validate_and_pin_url(url, trusted).await?;
 
         let custom_headers: HashMap<HeaderName, HeaderValue> = headers
@@ -596,12 +645,13 @@ impl McpClient {
         callback_port: u16,
         client_name: &str,
         credential_store: Arc<dyn CredentialStore>,
-        trusted: bool,
+        trust_level: McpTrustLevel,
         tx: Sender<ToolRefreshEvent>,
         last_refresh: Arc<DashMap<String, Instant>>,
         timeout: Duration,
         handler_cfg: HandlerConfig,
     ) -> Result<OAuthConnectResult, McpError> {
+        let trusted = matches!(trust_level, McpTrustLevel::Trusted);
         let pinned = validate_and_pin_url(url, trusted).await?;
         let hardened_client = build_hardened_client(server_id, pinned.as_ref())?;
 
@@ -1381,6 +1431,68 @@ mod tests {
             .await
             .unwrap_err();
         assert_matches!(err, McpError::SsrfBlocked { .. });
+    }
+
+    /// Minimal fixture for exercising `McpClient::connect_url` at its public signature.
+    /// SSRF validation runs before any network I/O, so `tx`/`last_refresh`/`handler_cfg`
+    /// are never touched when the call is expected to fail at that first check.
+    fn connect_url_test_fixture() -> (
+        Sender<ToolRefreshEvent>,
+        Arc<DashMap<String, Instant>>,
+        HandlerConfig,
+    ) {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<ToolRefreshEvent>(1);
+        let handler_cfg = HandlerConfig {
+            roots: Arc::new(vec![]),
+            max_description_bytes: 1024,
+            elicitation_tx: None,
+            elicitation_timeout: Duration::from_secs(5),
+        };
+        (tx, Arc::new(DashMap::new()), handler_cfg)
+    }
+
+    /// Exercises the `McpTrustLevel` pass-through this PR introduced at the actual public
+    /// `connect_url` signature (not just the private `validate_and_pin_url` helper with a
+    /// bare `bool`): `Untrusted` must still trigger the SSRF check.
+    #[tokio::test]
+    async fn connect_url_untrusted_blocks_private_ip() {
+        let (tx, last_refresh, handler_cfg) = connect_url_test_fixture();
+        let err = McpClient::connect_url(
+            "test-server",
+            "http://127.0.0.1:1/mcp",
+            Duration::from_secs(5),
+            McpTrustLevel::Untrusted,
+            tx,
+            last_refresh,
+            handler_cfg,
+        )
+        .await
+        .unwrap_err();
+        assert_matches!(err, McpError::SsrfBlocked { .. });
+    }
+
+    /// Companion to `connect_url_untrusted_blocks_private_ip`: `Trusted` must skip the SSRF
+    /// check entirely at the same public entry point. The connection itself still fails
+    /// (nothing listens on `127.0.0.1:1`), but the failure must not be `SsrfBlocked` —
+    /// proving `trust_level` reached `validate_and_pin_url` as `Trusted`, not `Untrusted`.
+    #[tokio::test]
+    async fn connect_url_trusted_skips_ssrf_check() {
+        let (tx, last_refresh, handler_cfg) = connect_url_test_fixture();
+        let err = McpClient::connect_url(
+            "test-server",
+            "http://127.0.0.1:1/mcp",
+            Duration::from_millis(500),
+            McpTrustLevel::Trusted,
+            tx,
+            last_refresh,
+            handler_cfg,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            !matches!(err, McpError::SsrfBlocked { .. }),
+            "trusted connect_url must not run the SSRF check, got {err:?}"
+        );
     }
 
     #[tokio::test]

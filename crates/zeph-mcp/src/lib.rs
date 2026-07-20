@@ -139,7 +139,7 @@ pub mod mock;
 
 pub use attestation::{AttestationResult, ServerTrustBoundary, ToolFingerprint, attest_tools};
 pub use caller::McpCaller;
-pub use client::{OAuthConnectResult, OAuthPending, ToolRefreshEvent};
+pub use client::{EnvPolicy, OAuthConnectResult, OAuthPending, StderrPolicy, ToolRefreshEvent};
 pub use content::{render_content_block, render_content_blocks};
 pub use elicitation::ElicitationEvent;
 pub use embedding_guard::{EmbeddingAnomalyGuard, EmbeddingGuardEvent, EmbeddingGuardResult};

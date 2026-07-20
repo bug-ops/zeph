@@ -436,7 +436,7 @@ impl McpManager {
             let scopes = scopes.clone();
             let client_name = client_name.clone();
             let server_id = config.id.clone();
-            let trusted = matches!(config.trust_level, McpTrustLevel::Trusted);
+            let trust_level = config.trust_level;
             let timeout = config.timeout;
             let handler_cfg = self.handler_cfg_for(&config).await;
             let status_tx = self.status_tx.clone();
@@ -457,7 +457,7 @@ impl McpManager {
                 callback_port,
                 client_name,
                 credential_store,
-                trusted,
+                trust_level,
                 tx,
                 last_refresh,
                 timeout,
@@ -705,7 +705,7 @@ async fn run_oauth_handshake(
     callback_port: u16,
     client_name: String,
     credential_store: Arc<dyn CredentialStore>,
-    trusted: bool,
+    trust_level: McpTrustLevel,
     tx: mpsc::Sender<ToolRefreshEvent>,
     last_refresh: Arc<DashMap<String, Instant>>,
     timeout: Duration,
@@ -719,7 +719,7 @@ async fn run_oauth_handshake(
         callback_port,
         &client_name,
         credential_store,
-        trusted,
+        trust_level,
         tx,
         last_refresh,
         timeout,
