@@ -577,6 +577,7 @@ async fn skipped_output_processing_does_not_reset_cross_iteration_utility_window
                 &mut None,
                 &mut Vec::new(),
                 &mut 0,
+                &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             )
             .await
             .unwrap();

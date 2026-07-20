@@ -225,6 +225,10 @@ impl SqliteStore {
 
     /// Save a message with visibility metadata.
     ///
+    /// Thin wrapper over [`Self::save_message_with_provenance`] with `source_kind`/
+    /// `trust_level` left `NULL` — use that method directly at call sites that have
+    /// provenance information available (issue #6490).
+    ///
     /// # Errors
     ///
     /// Returns an error if the insert fails.
@@ -235,6 +239,41 @@ impl SqliteStore {
         content: &str,
         parts_json: &str,
         visibility: MessageVisibility,
+    ) -> Result<MessageId, MemoryError> {
+        self.save_message_with_provenance(
+            conversation_id,
+            role,
+            content,
+            parts_json,
+            visibility,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Save a message with visibility metadata and write-time provenance tagging (issue #6490).
+    ///
+    /// `source_kind`/`trust_level` should be the `as_str()` output of
+    /// `zeph_sanitizer::ContentSourceKind`/`ContentTrustLevel`. `zeph-memory` stores them as
+    /// opaque strings rather than depending on `zeph-sanitizer` directly — that crate already
+    /// depends on `zeph-memory`, so the reverse edge would create a cycle. `None` leaves the
+    /// column `NULL`, meaning "provenance not recorded" (legacy rows, or writers that have not
+    /// been updated yet); it is never used to mean "trusted".
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the insert fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn save_message_with_provenance(
+        &self,
+        conversation_id: ConversationId,
+        role: &str,
+        content: &str,
+        parts_json: &str,
+        visibility: MessageVisibility,
+        source_kind: Option<&str>,
+        trust_level: Option<&str>,
     ) -> Result<MessageId, MemoryError> {
         const MAX_BYTES: usize = 100 * 1024;
 
@@ -258,8 +297,10 @@ impl SqliteStore {
         let importance_score = crate::semantic::importance::compute_importance(&content_cow, role);
         let json_cast = <ActiveDialect as zeph_db::dialect::Dialect>::JSON_CAST;
         let insert_sql = zeph_db::rewrite_placeholders(&format!(
-            "INSERT INTO messages (conversation_id, role, content, parts, visibility, importance_score) \
-             VALUES (?, ?, ?, ?{json_cast}, ?, ?) RETURNING id"
+            "INSERT INTO messages \
+             (conversation_id, role, content, parts, visibility, importance_score, \
+              source_kind, trust_level) \
+             VALUES (?, ?, ?, ?{json_cast}, ?, ?, ?, ?) RETURNING id"
         ));
         let row: (MessageId,) = zeph_db::query_as(sqlx::AssertSqlSafe(insert_sql))
             .bind(conversation_id)
@@ -268,6 +309,8 @@ impl SqliteStore {
             .bind(parts_json)
             .bind(visibility.as_db_str())
             .bind(importance_score)
+            .bind(source_kind)
+            .bind(trust_level)
             .fetch_one(&self.pool)
             .await?;
         Ok(row.0)

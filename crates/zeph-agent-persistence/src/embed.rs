@@ -72,6 +72,10 @@ pub fn should_embed_message(
 /// - `parts_json` — JSON-serialized message parts
 /// - `goal_text` — Optional current conversation goal (used for embedding enrichment)
 /// - `should_embed` — Whether to embed into Qdrant or write to `SQLite` only
+/// - `source_kind`/`trust_level` — write-time provenance tag (issue #6490); the `as_str()`
+///   output of `zeph_sanitizer::ContentSourceKind`/`ContentTrustLevel`. `None` leaves both
+///   columns `NULL` ("provenance not recorded").
+#[allow(clippy::too_many_arguments)]
 #[tracing::instrument(name = "persistence.write_message", skip_all, fields(cid = %cid, role = ?role, should_embed))]
 pub async fn write_message_to_memory(
     memory: &SemanticMemory,
@@ -81,11 +85,21 @@ pub async fn write_message_to_memory(
     parts_json: &str,
     goal_text: Option<&str>,
     should_embed: bool,
+    source_kind: Option<&str>,
+    trust_level: Option<&str>,
 ) -> Option<(bool, i64)> {
     if should_embed {
         let span = tracing::info_span!("persistence.remember_with_parts");
         match memory
-            .remember_with_parts(cid, role_str(role), content, parts_json, goal_text)
+            .remember_with_parts_and_provenance(
+                cid,
+                role_str(role),
+                content,
+                parts_json,
+                goal_text,
+                source_kind,
+                trust_level,
+            )
             .instrument(span)
             .await
         {
@@ -102,7 +116,14 @@ pub async fn write_message_to_memory(
     } else {
         let span = tracing::info_span!("persistence.save_only");
         match memory
-            .save_only(cid, role_str(role), content, parts_json)
+            .save_only_with_provenance(
+                cid,
+                role_str(role),
+                content,
+                parts_json,
+                source_kind,
+                trust_level,
+            )
             .instrument(span)
             .await
         {

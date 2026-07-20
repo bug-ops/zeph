@@ -25,6 +25,8 @@ impl Default for SecurityState {
             ),
             flagged_urls: std::collections::HashSet::new(),
             user_provided_urls: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            memory_consent_trust: Arc::new(RwLock::new(0u8)),
+            consent_gate_config: zeph_config::ConsentGateConfig::default(),
             pii_filter: zeph_sanitizer::pii::PiiFilter::new(
                 zeph_sanitizer::pii::PiiFilterConfig::default(),
             ),

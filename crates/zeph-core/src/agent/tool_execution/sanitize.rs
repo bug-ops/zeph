@@ -112,9 +112,18 @@ impl<C: Channel> Agent<C> {
         &mut self,
         body: &str,
         tool_name: &str,
-    ) -> (String, bool) {
+    ) -> (String, bool, zeph_sanitizer::ContentTrustLevel) {
         let source = build_tool_output_source(tool_name);
         let kind = source.kind;
+        let trust_level = source.trust_level;
+        // Ratchet the turn-scoped memory-consent trust tracker (issue #6490, MemGhost) so
+        // `MemoryToolExecutor::memory_save` can require confirmation when the LLM tries to
+        // save content derived from this turn's untrusted tool output. Never lowers the
+        // value — reset only happens at turn boundaries (`process_response`/history clear).
+        {
+            let mut slot = self.services.security.memory_consent_trust.write();
+            *slot = (*slot).max(trust_level as u8);
+        }
         #[cfg(feature = "classifiers")]
         let memory_hint = source.memory_hint;
         #[cfg(not(feature = "classifiers"))]
@@ -153,11 +162,11 @@ impl<C: Channel> Agent<C> {
         self.update_metrics(|m| m.sanitizer_runs += 1);
 
         #[cfg(feature = "classifiers")]
-        if let Some(result) = self
+        if let Some((b, f)) = self
             .apply_classifier_verdict(&body, tool_name, memory_hint)
             .await
         {
-            return result;
+            return (b, f, trust_level);
         }
 
         let is_cross_boundary = self.services.security.is_acp_session
@@ -170,26 +179,26 @@ impl<C: Channel> Agent<C> {
             && kind == ContentSourceKind::McpResponse;
 
         if is_cross_boundary
-            && let Some(result) = self
+            && let Some((b, f)) = self
                 .handle_cross_boundary_quarantine(&sanitized, tool_name, has_injection_flags)
                 .await
         {
-            return result;
+            return (b, f, trust_level);
         }
 
         if !is_cross_boundary
-            && let Some(result) = self
+            && let Some((b, f)) = self
                 .handle_quarantine_summary(&sanitized, tool_name, kind, has_injection_flags)
                 .await
         {
-            return result;
+            return (b, f, trust_level);
         }
 
         let body = sanitized.body;
         self.record_nli_verdict(&body, tool_name).await;
         let body = self.apply_guardrail_to_tool_output(body, tool_name).await;
 
-        (body, has_injection_flags)
+        (body, has_injection_flags, trust_level)
     }
 
     /// Run the SONAR NLI entailment check on tool output and record a flagged verdict.
@@ -366,6 +375,8 @@ impl<C: Channel> Agent<C> {
         );
         if let Some(ref logger) = self.tool_orchestrator.audit_logger {
             let entry = zeph_tools::AuditEntry {
+                source_kind: None,
+                trust_level: None,
                 timestamp: zeph_tools::chrono_now(),
                 tool: tool_name.into(),
                 command: String::new(),

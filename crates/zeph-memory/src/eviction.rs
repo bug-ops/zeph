@@ -515,6 +515,7 @@ mod tests {
                 crate::embedding_store::MessageKind::Regular,
                 "test",
                 0,
+                None,
             )
             .await
             .unwrap();

@@ -139,6 +139,9 @@ impl MessageAccess for MessageAccessImpl<'_> {
         self.msg.pending_image_parts.clear();
         self.tool_orchestrator.clear_cache();
         self.security.user_provided_urls.write().clear();
+        // Issue #6490 (MemGhost): reset the turn-scoped memory-consent trust tracker on
+        // /clear, matching begin_turn's per-turn reset — see agent/mod.rs.
+        *self.security.memory_consent_trust.write() = 0;
         self.msg.recompute_non_system_count();
     }
 
@@ -584,6 +587,18 @@ mod tests {
         assert_eq!(ctx.transcript_len(), 2);
         ctx.clear_history();
         assert_eq!(ctx.transcript_len(), 0);
+    }
+
+    /// Regression for critic finding C1 (#6490): `/clear` must reset the turn-scoped
+    /// memory-consent trust tracker, matching the doc comment's stated intent
+    /// (`sanitize.rs`/`memory_tools.rs` both claim "reset at turn boundaries, /clear").
+    #[test]
+    fn clear_history_resets_memory_consent_trust_to_zero() {
+        let mut agent = make_agent();
+        *agent.services.security.memory_consent_trust.write() = 2; // ExternalUntrusted
+        let mut ctx = access(&mut agent);
+        ctx.clear_history();
+        assert_eq!(*agent.services.security.memory_consent_trust.read(), 0);
     }
 
     /// Regression for the direct-append + recompute pattern used by `builder.rs:237`

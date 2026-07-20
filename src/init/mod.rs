@@ -252,6 +252,8 @@ pub(crate) struct WizardState {
     // Cross-thread key-value store (spec-080, #6363, opt-in)
     pub(crate) store_enabled: bool,
     pub(crate) store_max_value_bytes: usize,
+    // Write-time memory-consent gate (issue #6490, MemGhost)
+    pub(crate) consent_gate_enabled: bool,
     // Session recap on resume (#3064)
     pub(crate) recap_on_resume: bool,
     // Resume-visibility banner on CLI/TUI startup (spec-068 §13, #6420)
@@ -544,6 +546,7 @@ impl Default for WizardState {
             digest_enabled: false,
             store_enabled: false,
             store_max_value_bytes: 65536,
+            consent_gate_enabled: true,
             recap_on_resume: true,
             resume_show_banner: true,
             plugins_reputation_enabled: true,
@@ -1082,6 +1085,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.memory.digest.enabled = state.digest_enabled;
     config.memory.store.enabled = state.store_enabled;
     config.memory.store.max_value_bytes = state.store_max_value_bytes;
+    config.memory.consent_gate.enabled = state.consent_gate_enabled;
     config.session.recap.on_resume = state.recap_on_resume;
     config.session.resume.show_banner = state.resume_show_banner;
     config.plugins.reputation.enabled = state.plugins_reputation_enabled;

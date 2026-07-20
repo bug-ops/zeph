@@ -153,6 +153,8 @@ impl<T: ToolExecutor> AdversarialPolicyGateExecutor<T> {
     ) {
         let Some(audit) = &self.audit else { return };
         let entry = AuditEntry {
+            source_kind: None,
+            trust_level: None,
             timestamp: chrono_now(),
             tool: call.tool_id.clone(),
             command: params_summary(&call.params),

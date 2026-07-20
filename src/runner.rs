@@ -2367,14 +2367,31 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     let skill_paths_for_features = skill_paths.clone();
     let plugin_dirs_supplier = app.plugin_dirs_supplier();
 
+    // Write-time memory-consent gate (issue #6490, MemGhost): the slot is created here and
+    // shared with the `Agent` via `with_memory_consent_trust_slot` below — `Agent::
+    // sanitize_tool_output` ratchets it up per tool call, `MemoryToolExecutor` reads it to
+    // decide whether `memory_save` needs confirmation.
+    let memory_consent_trust_slot: zeph_core::memory_tools::MemoryConsentTrustSlot =
+        std::sync::Arc::new(parking_lot::RwLock::new(0u8));
     let memory_executor = {
-        let e = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
+        let mut e = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
             std::sync::Arc::clone(&memory),
             conversation_id,
             zeph_sanitizer::memory_validation::MemoryWriteValidator::new(
                 config.security.memory_validation.clone(),
             ),
         );
+        if config.memory.consent_gate.enabled {
+            e = e.with_consent_gate(
+                std::sync::Arc::clone(&memory_consent_trust_slot),
+                zeph_core::memory_tools::parse_consent_trust_level(
+                    &config.memory.consent_gate.confirm_threshold,
+                ),
+            );
+        }
+        if let Some(ref logger) = tool_setup.audit_logger {
+            e = e.with_audit(std::sync::Arc::clone(logger));
+        }
         if exec_mode.bare { e.ephemeral() } else { e }
     };
     let overflow_executor = zeph_core::overflow_tools::OverflowToolExecutor::new(
@@ -2793,6 +2810,10 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         .with_signal_queue(trajectory_signal_queue)
         .with_trajectory_config(config.security.trajectory.clone())
         .0;
+    // Write-time memory-consent gate (issue #6490, MemGhost): share the same slot with
+    // `memory_executor` (wired above) so sanitize_tool_output's ratcheting is visible to
+    // MemoryToolExecutor's confirmation check.
+    let agent = agent.with_memory_consent_trust_slot(memory_consent_trust_slot);
     let agent = agent.with_risk_chain_accumulator(tool_setup.risk_chain_accumulator);
     // Wire MAGE accumulator from config — replaces the noop set by SecurityState::default().
     let agent = agent.with_mage_accumulator_config(config.memory.shadow_memory.clone());

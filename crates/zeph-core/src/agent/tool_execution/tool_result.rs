@@ -38,6 +38,8 @@ impl<C: Channel> Agent<C> {
             )
         };
         let entry = zeph_tools::AuditEntry {
+            source_kind: None,
+            trust_level: None,
             timestamp: zeph_tools::chrono_now(),
             tool: tool_name.to_owned().into(),
             command: String::new(),
@@ -390,7 +392,7 @@ impl<C: Channel> Agent<C> {
         fields(tool_name = %tc.name),
         err
     )]
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub(super) async fn process_one_tool_result(
         &mut self,
         tc: &zeph_llm::provider::ToolUseRequest,
@@ -403,6 +405,7 @@ impl<C: Channel> Agent<C> {
         pending_reflection: &mut Option<String>,
         pending_outcomes: &mut Vec<crate::agent::learning::PendingSkillOutcome>,
         images_attached_this_turn: &mut usize,
+        batch_trust_level: &mut zeph_sanitizer::ContentTrustLevel,
     ) -> Result<(), crate::agent::error::AgentError> {
         let ToolResultClassification {
             output,
@@ -465,16 +468,21 @@ impl<C: Channel> Agent<C> {
         let (processed, vigil_outcome) = self.run_vigil_gate(tc.name.as_str(), processed);
         self.fire_vigil_audit_entry(tc.name.as_str(), vigil_outcome.as_ref());
 
-        let (llm_content, tool_had_injection_flags) = match &vigil_outcome {
-            Some(super::VigilOutcome::Blocked { sentinel, .. }) => {
+        let (llm_content, tool_had_injection_flags) =
+            if let Some(super::VigilOutcome::Blocked { sentinel, .. }) = &vigil_outcome {
                 is_error = true;
                 (sentinel.clone(), false)
-            }
-            _ => {
-                self.sanitize_tool_output(&processed, tc.name.as_str())
-                    .await
-            }
-        };
+            } else {
+                let (body, flags, trust) = self
+                    .sanitize_tool_output(&processed, tc.name.as_str())
+                    .await;
+                // Batch-level worst-case trust (issue #6490, MemGhost): the whole batch is
+                // persisted as one message, so its provenance tag reflects the least-trusted
+                // tool call in the batch — mirrors the existing has_any_injection_flags/
+                // flagged_urls OR-aggregation pattern below.
+                *batch_trust_level = (*batch_trust_level).max(trust);
+                (body, flags)
+            };
         *has_any_injection_flags |= tool_had_injection_flags;
 
         let vigil_blocked = vigil_outcome
@@ -830,7 +838,7 @@ impl<C: Channel> Agent<C> {
             })
             .await?;
 
-        let (llm_body, has_injection_flags) = self
+        let (llm_body, has_injection_flags, _trust_level) = self
             .sanitize_tool_output(&processed, output.tool_name.as_str())
             .await;
         let user_msg = Message::from_parts(
@@ -919,7 +927,7 @@ impl<C: Channel> Agent<C> {
                         started_at: Some(confirmed_started_at),
                     })
                     .await?;
-                let (llm_body, has_injection_flags) = self
+                let (llm_body, has_injection_flags, _trust_level) = self
                     .sanitize_tool_output(&processed, out.tool_name.as_str())
                     .await;
                 let confirmed_msg = Message::from_parts(

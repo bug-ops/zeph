@@ -489,6 +489,8 @@ impl WebScrapeExecutor {
                     )
                 });
             let entry = AuditEntry {
+                source_kind: None,
+                trust_level: None,
                 timestamp: chrono_now(),
                 tool: tool.into(),
                 command: command.into(),

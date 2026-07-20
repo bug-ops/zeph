@@ -29,6 +29,18 @@ pub struct PersistMessageRequest {
     /// When `true`, Qdrant embedding is skipped if `guard_memory_writes` is enabled.
     /// Set by the exfiltration guard when injection patterns are detected.
     pub has_injection_flags: bool,
+    /// Write-time content-origin tag (issue #6490, `MemGhost`).
+    ///
+    /// The `as_str()` output of `zeph_sanitizer::ContentSourceKind`. `None` leaves the
+    /// `messages.source_kind` column `NULL` ("provenance not recorded") rather than implying
+    /// a trust level.
+    pub source_kind: Option<String>,
+    /// Write-time trust tier tag (issue #6490, `MemGhost`).
+    ///
+    /// The `as_str()` output of `zeph_sanitizer::ContentTrustLevel`. `None` leaves the
+    /// `messages.trust_level` column `NULL` ("provenance not recorded") rather than implying
+    /// `Trusted`.
+    pub trust_level: Option<String>,
 }
 
 impl PersistMessageRequest {
@@ -64,7 +76,37 @@ impl PersistMessageRequest {
             content: content.to_owned(),
             parts: parts.to_vec(),
             has_injection_flags,
+            source_kind: None,
+            trust_level: None,
         }
+    }
+
+    /// Set the write-time provenance tag (issue #6490, `MemGhost`).
+    ///
+    /// Builder method — chain after [`Self::from_borrowed`]/[`Self::from_role_parts`] at call
+    /// sites that know the content's origin (e.g. tool output already run through
+    /// `ContentSanitizer::sanitize`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_agent_persistence::request::PersistMessageRequest;
+    /// use zeph_llm::provider::Role;
+    ///
+    /// let req = PersistMessageRequest::from_borrowed(Role::User, "hello", &[], false)
+    ///     .with_provenance(Some("web_scrape"), Some("external_untrusted"));
+    /// assert_eq!(req.source_kind.as_deref(), Some("web_scrape"));
+    /// assert_eq!(req.trust_level.as_deref(), Some("external_untrusted"));
+    /// ```
+    #[must_use]
+    pub fn with_provenance(
+        mut self,
+        source_kind: Option<impl Into<String>>,
+        trust_level: Option<impl Into<String>>,
+    ) -> Self {
+        self.source_kind = source_kind.map(Into::into);
+        self.trust_level = trust_level.map(Into::into);
+        self
     }
 }
 

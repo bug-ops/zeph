@@ -61,6 +61,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `--init` wizard and `--migrate-config` (existing `[agents] enabled = true` configs gain an
   explicit `delegation_mode = "proactive"`) are updated accordingly.
 
+- `zeph-core`/`zeph-memory`/`zeph-sanitizer`/`zeph-tools`: write-time memory-consent gate closing
+  the MemGhost write-time consent gap (#6490) — the complement to #3960's retrieval-time trust
+  filtering. Every durable memory write now carries write-time provenance: `ContentSourceKind`/
+  `ContentTrustLevel` (already computed by `sanitize_tool_output`) threads through
+  `PersistenceService`/`SemanticMemory::remember*` into new nullable `messages.source_kind`/
+  `trust_level` columns (migration 114) and a Qdrant payload field. `NULL` means "provenance not
+  recorded" (legacy rows / not-yet-migrated writers) — never interpreted as trusted. The
+  interactive `memory_save` tool now requires `Channel::confirm` (via the existing
+  `ToolError::ConfirmationRequired`/`handle_confirmation_phase` protocol) when the current
+  turn's tool output reached `confirm_threshold` (default `external_untrusted`), tracked via a
+  turn-scoped `MemoryConsentTrustSlot` shared between `Agent::sanitize_tool_output` and
+  `MemoryToolExecutor`; the model-supplied `role` field is no longer trusted as a provenance
+  signal. Autonomous background tool-output writes never block — instead emit a visible in-turn
+  channel disclosure note when the batch's trust reaches `disclose_threshold` (default
+  `local_untrusted`). Every write (trusted or not) is recorded via a new
+  `AuditEntry::memory_write` constructor (`source_kind`/`trust_level` fields, reuses
+  `ClaimSource::Memory` and the existing JSONL audit sink) when `audit_all = true` (default).
+  New `[memory.consent_gate]` config section (`enabled`, `confirm_threshold`,
+  `disclose_threshold`, `audit_all`), wired through `AgentSessionConfig` (covers all four agent
+  entry points: CLI/TUI, ACP, A2A daemon, `/sessions*` server), the `--init` wizard (step 3/10),
+  and `--migrate-config` (step 103).
+
 ### Changed
 
 - `zeph-context`: `fetch_semantic_recall`, `fetch_document_rag`, `fetch_summaries`, and

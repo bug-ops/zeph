@@ -662,6 +662,7 @@ async fn load_promotion_window_populates_embeddings_from_qdrant() {
             MessageKind::Regular,
             "m",
             0,
+            None,
         )
         .await
         .unwrap();
@@ -674,6 +675,7 @@ async fn load_promotion_window_populates_embeddings_from_qdrant() {
             MessageKind::Regular,
             "m",
             0,
+            None,
         )
         .await
         .unwrap();

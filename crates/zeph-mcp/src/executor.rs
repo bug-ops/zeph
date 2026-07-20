@@ -224,6 +224,8 @@ impl McpToolExecutor {
         };
         logger
             .log(&zeph_tools::AuditEntry {
+                source_kind: None,
+                trust_level: None,
                 timestamp: zeph_tools::chrono_now(),
                 tool: tool_name.to_owned().into(),
                 command: format!("mime={mime} bytes={bytes}"),
@@ -275,6 +277,8 @@ impl McpToolExecutor {
         };
         logger
             .log(&zeph_tools::AuditEntry {
+                source_kind: None,
+                trust_level: None,
                 timestamp: zeph_tools::chrono_now(),
                 tool: tool_name.to_owned().into(),
                 command: format!("mime={mime} bytes={bytes}"),

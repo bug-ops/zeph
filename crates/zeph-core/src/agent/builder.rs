@@ -1131,6 +1131,22 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Inject an externally created write-time memory-consent trust slot (issue #6490,
+    /// `MemGhost`).
+    ///
+    /// Used when the slot is created before the agent (e.g. in the runner to share with
+    /// `MemoryToolExecutor::with_consent_gate`). The existing slot is replaced so both sides
+    /// see the same `Arc` — `sanitize_tool_output` ratchets it up, `MemoryToolExecutor` reads
+    /// it to decide whether `memory_save` needs confirmation.
+    #[must_use]
+    pub fn with_memory_consent_trust_slot(
+        mut self,
+        slot: crate::memory_tools::MemoryConsentTrustSlot,
+    ) -> Self {
+        self.services.security.memory_consent_trust = slot;
+        self
+    }
+
     /// Inject an externally created trajectory risk slot.
     ///
     /// Used when the slot is created before the agent (e.g. in the runner to share with
@@ -2675,6 +2691,7 @@ impl<C: Channel> Agent<C> {
             compaction_cooldown_turns,
             prune_protect_tokens,
             redact_credentials,
+            consent_gate,
             security,
             timeouts,
             learning,
@@ -2782,6 +2799,7 @@ impl<C: Channel> Agent<C> {
         self.services.skill.subagent_skill_token_budget = subagent_skill_token_budget;
         self.runtime.config.recap_config = recap;
         self.runtime.config.resume_config = resume;
+        self.services.security.consent_gate_config = consent_gate;
         self.runtime.config.loop_min_interval_secs = loop_min_interval_secs;
         self.runtime.config.mcp_media = mcp_media;
         self.runtime.config.media_passthrough_note_enabled = media_passthrough_note_enabled;

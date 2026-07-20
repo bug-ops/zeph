@@ -151,6 +151,8 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
     async fn log_audit(&self, call: &ToolCall, result: AuditResult, error_category: Option<&str>) {
         let Some(audit) = &self.audit else { return };
         let entry = AuditEntry {
+            source_kind: None,
+            trust_level: None,
             timestamp: chrono_now(),
             tool: call.tool_id.clone(),
             command: truncate_params(&call.params),
@@ -207,6 +209,8 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                 debug!(tool = %call.tool_id, trace = %trace, "policy: allow");
                 if let Some(audit) = &self.audit {
                     let entry = AuditEntry {
+                        source_kind: None,
+                        trust_level: None,
                         timestamp: chrono_now(),
                         tool: call.tool_id.clone(),
                         command: truncate_params(&call.params),
@@ -243,6 +247,8 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
                 self.push_signal(1);
                 if let Some(audit) = &self.audit {
                     let entry = AuditEntry {
+                        source_kind: None,
+                        trust_level: None,
                         timestamp: chrono_now(),
                         tool: call.tool_id.clone(),
                         command: truncate_params(&call.params),
@@ -316,6 +322,8 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
             let server_id = output.tool_name.as_str()[..colon].to_owned();
             if let Some(audit) = &self.audit {
                 let entry = AuditEntry {
+                    source_kind: None,
+                    trust_level: None,
                     timestamp: chrono_now(),
                     tool: call.tool_id.clone(),
                     command: truncate_params(&call.params),

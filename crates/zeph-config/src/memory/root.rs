@@ -13,13 +13,13 @@ use zeph_common::secret::Secret;
 
 use super::{
     AdmissionConfig, AutoDreamConfig, CategoryConfig, CompressionConfig,
-    CompressionGuidelinesConfig, ConsolidationConfig, ContextStrategy, CrossThreadStoreConfig,
-    DigestConfig, DocumentConfig, EmGraphConfig, EpisodicConsolidationConfig, EvictionConfig,
-    FiveSignalConfig, ForgettingConfig, GraphConfig, HebbianConfig, MemCotConfig,
-    MicrocompactConfig, OpticalForgettingConfig, PersonaConfig, ReasoningConfig, RetrievalConfig,
-    RetrievalFailuresConfig, SemanticConfig, SessionsConfig, SidequestConfig, StoreRoutingConfig,
-    TierConfig, TieredRetrievalConfig, TrajectoryConfig, TrajectoryRiskAccumulatorConfig,
-    TreeConfig, TypeAwareComposeConfig, WriteQualityGateConfig,
+    CompressionGuidelinesConfig, ConsentGateConfig, ConsolidationConfig, ContextStrategy,
+    CrossThreadStoreConfig, DigestConfig, DocumentConfig, EmGraphConfig,
+    EpisodicConsolidationConfig, EvictionConfig, FiveSignalConfig, ForgettingConfig, GraphConfig,
+    HebbianConfig, MemCotConfig, MicrocompactConfig, OpticalForgettingConfig, PersonaConfig,
+    ReasoningConfig, RetrievalConfig, RetrievalFailuresConfig, SemanticConfig, SessionsConfig,
+    SidequestConfig, StoreRoutingConfig, TierConfig, TieredRetrievalConfig, TrajectoryConfig,
+    TrajectoryRiskAccumulatorConfig, TreeConfig, TypeAwareComposeConfig, WriteQualityGateConfig,
 };
 
 fn default_sqlite_pool_size() -> u32 {
@@ -538,6 +538,16 @@ pub struct MemoryConfig {
     /// behavior change (FR-A-001).
     #[serde(default)]
     pub store: CrossThreadStoreConfig,
+    /// Write-time memory-consent gate (issue #6490, `MemGhost`).
+    ///
+    /// When `consent_gate.enabled = true`, memory writes derived from untrusted content
+    /// (tool output, web scrapes, MCP responses) are gated: the interactive `memory_save`
+    /// tool path requires `Channel::confirm` at or above `confirm_threshold`, and autonomous
+    /// background tool-output writes emit a visible in-turn disclosure note at or above
+    /// `disclose_threshold`. Every write is audit-logged with source attribution when
+    /// `audit_all = true`.
+    #[serde(default)]
+    pub consent_gate: ConsentGateConfig,
 }
 
 fn default_crossover_turn_threshold() -> u32 {

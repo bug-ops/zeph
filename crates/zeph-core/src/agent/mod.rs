@@ -1003,6 +1003,10 @@ impl<C: Channel> Agent<C> {
         // keep agent-wide token in sync with per-turn token — TODO(#3498): consolidate in Phase 2
         self.runtime.lifecycle.cancel_token = cancel_token.clone();
         self.services.security.user_provided_urls.write().clear();
+        // Issue #6490 (MemGhost): reset the turn-scoped memory-consent trust tracker so trust
+        // from a prior turn's untrusted tool output does not leak into this turn's memory_save
+        // gate decision — see sanitize_tool_output's ratchet-up and MemoryToolExecutor's read.
+        *self.services.security.memory_consent_trust.write() = 0;
         // Reset per-turn LLM request counter for the notification gate.
         self.runtime.lifecycle.turn_llm_requests = 0;
         // Reset per-turn tool-call dispatch counter (feeds TurnSummary::tool_calls).
@@ -1052,6 +1056,8 @@ impl<C: Channel> Agent<C> {
             && let Some(logger) = self.tool_orchestrator.audit_logger.clone()
         {
             let entry = zeph_tools::AuditEntry {
+                source_kind: None,
+                trust_level: None,
                 timestamp: zeph_tools::chrono_now(),
                 tool: "<sentinel>".to_owned().into(),
                 command: String::new(),

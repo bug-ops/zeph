@@ -528,6 +528,8 @@ impl<E: ToolExecutor> ToolExecutor for ScopedToolExecutor<E> {
             // F4: emit audit entry with error_category = "out_of_scope".
             if let Some(ref audit) = self.audit {
                 let entry = AuditEntry {
+                    source_kind: None,
+                    trust_level: None,
                     timestamp: chrono_now(),
                     tool: call.tool_id.clone(),
                     command: String::new(),
@@ -588,6 +590,8 @@ impl<E: ToolExecutor> ToolExecutor for ScopedToolExecutor<E> {
             }
             if let Some(ref audit) = self.audit {
                 let entry = AuditEntry {
+                    source_kind: None,
+                    trust_level: None,
                     timestamp: chrono_now(),
                     tool: call.tool_id.clone(),
                     command: String::new(),

@@ -1669,18 +1669,38 @@ async fn spawn_acp_agent(
     // Capture per-session fields before session_config is consumed by apply_session_config.
     let debug_config = session_config.debug_config.clone();
     let memory_validation_config = session_config.security.memory_validation.clone();
+    let consent_gate_config = session_config.consent_gate.clone();
+
+    // Write-time memory-consent gate (issue #6490, MemGhost): the slot is created here and
+    // shared with the `Agent` via `with_memory_consent_trust_slot` below.
+    let memory_consent_trust_slot: zeph_core::memory_tools::MemoryConsentTrustSlot =
+        Arc::new(parking_lot::RwLock::new(0u8));
 
     // Build tool executor: ACP executors take priority via CompositeExecutor (first-match-wins).
     // DynExecutor wraps Arc<dyn ErasedToolExecutor> so it satisfies Agent::new's ToolExecutor bound.
     // When conversation_id is None (store unavailable), memory_tools use id=0 which maps to no
     // persisted history — the tool calls succeed but return empty results.
-    let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
-        Arc::clone(&memory),
-        session_ctx
-            .conversation_id
-            .unwrap_or(zeph_memory::ConversationId(0)),
-        zeph_sanitizer::memory_validation::MemoryWriteValidator::new(memory_validation_config),
-    );
+    let memory_executor = {
+        let mut e = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
+            Arc::clone(&memory),
+            session_ctx
+                .conversation_id
+                .unwrap_or(zeph_memory::ConversationId(0)),
+            zeph_sanitizer::memory_validation::MemoryWriteValidator::new(memory_validation_config),
+        );
+        if consent_gate_config.enabled {
+            e = e.with_consent_gate(
+                Arc::clone(&memory_consent_trust_slot),
+                zeph_core::memory_tools::parse_consent_trust_level(
+                    &consent_gate_config.confirm_threshold,
+                ),
+            );
+        }
+        if let Some(ref logger) = d.audit_logger {
+            e = e.with_audit(Arc::clone(logger));
+        }
+        e
+    };
     let overflow_executor = {
         let mut ex =
             zeph_core::overflow_tools::OverflowToolExecutor::new(Arc::new(memory.sqlite().clone()));
@@ -2076,6 +2096,10 @@ async fn spawn_acp_agent(
         .with_signal_queue(trajectory_signal_queue)
         .with_trajectory_config(d.trajectory_sentinel_config.clone())
         .0;
+    // Write-time memory-consent gate (issue #6490, MemGhost): share the same slot with
+    // `memory_executor` (wired above) so sanitize_tool_output's ratcheting is visible to
+    // MemoryToolExecutor's confirmation check.
+    agent = agent.with_memory_consent_trust_slot(memory_consent_trust_slot);
 
     // SkillOrchestra: wire the RL routing head, if enabled (#5921). `d.rl_head` is loaded/
     // cold-started exactly once in `build_shared_core` and cloned (cheap `Arc` clone) into every

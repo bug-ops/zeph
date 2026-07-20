@@ -1792,6 +1792,8 @@ impl ShellExecutor {
             )
         });
         AuditEntry {
+            source_kind: None,
+            trust_level: None,
             timestamp: chrono_now(),
             tool: "shell".into(),
             command: command.into(),

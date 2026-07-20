@@ -579,6 +579,9 @@ impl<C: Channel> Agent<C> {
 
         self.services.security.user_provided_urls.write().clear();
         self.services.security.flagged_urls.clear();
+        // Issue #6490 (MemGhost): reset the turn-scoped memory-consent trust tracker, matching
+        // begin_turn's per-turn reset — see agent/mod.rs.
+        *self.services.security.memory_consent_trust.write() = 0;
 
         self.context_manager.reset_compaction();
         self.services.focus.reset();

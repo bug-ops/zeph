@@ -229,6 +229,8 @@ impl PersistenceService {
             &parts_json,
             goal_text.as_deref(),
             should_embed,
+            request.source_kind.as_deref(),
+            request.trust_level.as_deref(),
         )
         .await
         else {

@@ -218,6 +218,80 @@ pub struct AuditEntry {
     /// injected into the system prompt for the current turn, not per-call causation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skill_name: Option<Vec<String>>,
+    /// Content-origin tag for memory-write audit records (issue #6490, `MemGhost`).
+    ///
+    /// The `as_str()` output of `zeph_sanitizer::ContentSourceKind` (e.g. `"web_scrape"`,
+    /// `"tool_result"`). `None` for non-memory-write entries and for memory writes with
+    /// unrecorded provenance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<String>,
+    /// Trust tier for memory-write audit records (issue #6490, `MemGhost`).
+    ///
+    /// The `as_str()` output of `zeph_sanitizer::ContentTrustLevel` (e.g. `"trusted"`,
+    /// `"external_untrusted"`). `None` for non-memory-write entries and for memory writes
+    /// with unrecorded provenance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust_level: Option<String>,
+}
+
+impl AuditEntry {
+    /// Build a memory-write audit record (issue #6490, `MemGhost`).
+    ///
+    /// Reuses [`ClaimSource::Memory`](crate::executor::ClaimSource::Memory) and the existing
+    /// JSONL sink rather than a parallel log. Every memory write should produce one of these
+    /// records regardless of whether the content ended up embedded into Qdrant.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_tools::AuditEntry;
+    ///
+    /// let entry = AuditEntry::memory_write(
+    ///     "tool_output",
+    ///     "saved: some content preview",
+    ///     Some("web_scrape"),
+    ///     Some("external_untrusted"),
+    /// );
+    /// assert_eq!(entry.caller_id.as_deref(), Some("tool_output"));
+    /// assert_eq!(entry.trust_level.as_deref(), Some("external_untrusted"));
+    /// ```
+    #[must_use]
+    pub fn memory_write(
+        caller_id: impl Into<String>,
+        preview: impl Into<String>,
+        source_kind: Option<&str>,
+        trust_level: Option<&str>,
+    ) -> Self {
+        Self {
+            timestamp: chrono_now(),
+            tool: zeph_common::ToolName::new("memory_write"),
+            command: preview.into(),
+            result: AuditResult::Success,
+            duration_ms: 0,
+            error_category: None,
+            error_domain: None,
+            error_phase: None,
+            claim_source: Some(crate::executor::ClaimSource::Memory),
+            mcp_server_id: None,
+            injection_flagged: false,
+            embedding_anomalous: false,
+            cross_boundary_mcp_to_acp: false,
+            adversarial_policy_decision: None,
+            exit_code: None,
+            truncated: false,
+            caller_id: Some(caller_id.into()),
+            policy_match: None,
+            correlation_id: None,
+            vigil_risk: None,
+            execution_env: None,
+            resolved_cwd: None,
+            scope_at_definition: None,
+            scope_at_dispatch: None,
+            skill_name: None,
+            source_kind: source_kind.map(str::to_owned),
+            trust_level: trust_level.map(str::to_owned),
+        }
+    }
 }
 
 #[non_exhaustive]
@@ -434,6 +508,8 @@ mod tests {
     #[test]
     fn audit_entry_serialization() {
         let entry = AuditEntry {
+            source_kind: None,
+            trust_level: None,
             timestamp: "1234567890".into(),
             tool: "shell".into(),
             command: "echo hello".into(),
@@ -469,6 +545,8 @@ mod tests {
     #[test]
     fn audit_result_blocked_serialization() {
         let entry = AuditEntry {
+            source_kind: None,
+            trust_level: None,
             timestamp: "0".into(),
             tool: "shell".into(),
             command: "sudo rm".into(),
@@ -505,6 +583,8 @@ mod tests {
     #[test]
     fn audit_result_error_serialization() {
         let entry = AuditEntry {
+            source_kind: None,
+            trust_level: None,
             timestamp: "0".into(),
             tool: "shell".into(),
             command: "bad".into(),
@@ -540,6 +620,8 @@ mod tests {
     #[test]
     fn audit_result_timeout_serialization() {
         let entry = AuditEntry {
+            source_kind: None,
+            trust_level: None,
             timestamp: "0".into(),
             tool: "shell".into(),
             command: "sleep 999".into(),
@@ -579,6 +661,8 @@ mod tests {
         };
         let logger = AuditLogger::from_config(&config, false).await.unwrap();
         let entry = AuditEntry {
+            source_kind: None,
+            trust_level: None,
             timestamp: "0".into(),
             tool: "shell".into(),
             command: "echo test".into(),
@@ -619,6 +703,8 @@ mod tests {
         };
         let logger = AuditLogger::from_config(&config, false).await.unwrap();
         let entry = AuditEntry {
+            source_kind: None,
+            trust_level: None,
             timestamp: "0".into(),
             tool: "shell".into(),
             command: "echo test".into(),
@@ -686,6 +772,8 @@ mod tests {
     #[test]
     fn audit_entry_claim_source_none_omitted() {
         let entry = AuditEntry {
+            source_kind: None,
+            trust_level: None,
             timestamp: "0".into(),
             tool: "shell".into(),
             command: "echo".into(),
@@ -723,6 +811,8 @@ mod tests {
     fn audit_entry_claim_source_some_present() {
         use crate::executor::ClaimSource;
         let entry = AuditEntry {
+            source_kind: None,
+            trust_level: None,
             timestamp: "0".into(),
             tool: "shell".into(),
             command: "echo".into(),
@@ -769,6 +859,8 @@ mod tests {
 
         for i in 0..5 {
             let entry = AuditEntry {
+                source_kind: None,
+                trust_level: None,
                 timestamp: i.to_string(),
                 tool: "shell".into(),
                 command: format!("cmd{i}"),
@@ -805,6 +897,8 @@ mod tests {
     #[test]
     fn audit_entry_exit_code_serialized() {
         let entry = AuditEntry {
+            source_kind: None,
+            trust_level: None,
             timestamp: "0".into(),
             tool: "shell".into(),
             command: "echo hi".into(),
@@ -841,6 +935,8 @@ mod tests {
     #[test]
     fn audit_entry_exit_code_none_omitted() {
         let entry = AuditEntry {
+            source_kind: None,
+            trust_level: None,
             timestamp: "0".into(),
             tool: "file".into(),
             command: "read /tmp/x".into(),

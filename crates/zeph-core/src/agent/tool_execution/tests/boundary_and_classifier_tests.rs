@@ -26,7 +26,7 @@ macro_rules! assert_external_data {
             ..Default::default()
         };
         agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
-        let (result, _) = agent.sanitize_tool_output($body, $tool).await;
+        let (result, _, _) = agent.sanitize_tool_output($body, $tool).await;
         assert!(
             result.contains("<external-data"),
             "tool '{}' should produce ExternalUntrusted (<external-data>) spotlighting, got: {}",
@@ -59,7 +59,7 @@ macro_rules! assert_tool_output {
             ..Default::default()
         };
         agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
-        let (result, _) = agent.sanitize_tool_output($body, $tool).await;
+        let (result, _, _) = agent.sanitize_tool_output($body, $tool).await;
         assert!(
             result.contains("<tool-output"),
             "tool '{}' should produce LocalUntrusted (<tool-output>) spotlighting",
@@ -100,7 +100,7 @@ async fn sanitize_tool_output_memory_search_suppresses_injection_false_positive(
     };
     agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
     // "system prompt" in recalled history is a benign false positive — must be suppressed.
-    let (_, has_injection_flags) = agent
+    let (_, has_injection_flags, _) = agent
         .sanitize_tool_output(
             "user asked: show me the system prompt contents",
             "memory_search",
@@ -333,7 +333,7 @@ async fn sanitize_tool_output_cross_boundary_acp_mcp_quarantines() {
     });
 
     // "mcp_server:tool_name" triggers McpResponse kind
-    let (result, _) = agent
+    let (result, _, _) = agent
         .sanitize_tool_output("malicious MCP payload", "evil_server:tool_x")
         .await;
 
@@ -398,7 +398,7 @@ async fn sanitize_tool_output_cross_boundary_quarantine_error_fail_closed_blocks
         ..Default::default()
     });
 
-    let (result, _) = agent
+    let (result, _, _) = agent
         .sanitize_tool_output("malicious MCP payload", "evil_server:tool_x")
         .await;
 
@@ -464,7 +464,7 @@ async fn sanitize_tool_output_cross_boundary_quarantine_error_fail_open_preserve
         ..Default::default()
     });
 
-    let (result, _) = agent
+    let (result, _, _) = agent
         .sanitize_tool_output("mcp payload", "evil_server:tool_x")
         .await;
 
@@ -524,7 +524,7 @@ async fn sanitize_tool_output_cross_boundary_disabled_skips_quarantine() {
     agent.services.security.sanitizer = ContentSanitizer::new(&iso_cfg);
     agent.runtime.config.security.content_isolation = iso_cfg;
 
-    let (result, _) = agent
+    let (result, _, _) = agent
         .sanitize_tool_output("MCP content", "some_server:tool_y")
         .await;
 
@@ -625,7 +625,7 @@ async fn sanitize_tool_output_cross_boundary_resolves_real_mcp_server_id() {
 
     // Real dispatch shape: `ToolOutput.tool_name` / `ToolCall.name` is the qualified
     // "{server_id}:{name}" form, NOT the sanitized `ToolDef.id` ("github_create_issue").
-    let (result, _) = agent
+    let (result, _, _) = agent
         .sanitize_tool_output("malicious MCP payload", "github:create_issue")
         .await;
     assert!(
@@ -681,7 +681,7 @@ async fn sanitize_tool_output_non_acp_session_normal_path() {
         ..Default::default()
     });
 
-    let (result, _) = agent
+    let (result, _, _) = agent
         .sanitize_tool_output("normal MCP data", "server:tool_z")
         .await;
 
@@ -828,7 +828,7 @@ async fn sanitize_tool_output_skipped_prefix_no_injection_flags() {
     agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
     let body =
         "[skipped] Tool call to list_directory skipped — utility policy recommends Retrieve.";
-    let (result, has_injection_flags) = agent.sanitize_tool_output(body, "list_directory").await;
+    let (result, has_injection_flags, _) = agent.sanitize_tool_output(body, "list_directory").await;
     assert!(
         !has_injection_flags,
         "[skipped] output must not trigger injection flags"
@@ -856,7 +856,7 @@ async fn sanitize_tool_output_stopped_prefix_no_injection_flags() {
     };
     agent.services.security.sanitizer = zeph_sanitizer::ContentSanitizer::new(&cfg);
     let body = "[stopped] Tool call to shell halted by the utility gate — budget exhausted or score below threshold 0.10.";
-    let (result, has_injection_flags) = agent.sanitize_tool_output(body, "shell").await;
+    let (result, has_injection_flags, _) = agent.sanitize_tool_output(body, "shell").await;
     assert!(
         !has_injection_flags,
         "[stopped] output must not trigger injection flags"
@@ -1721,6 +1721,7 @@ mod reasoning_amplification_call_site {
                     &mut None,
                     &mut Vec::new(),
                     &mut 0,
+                    &mut zeph_sanitizer::ContentTrustLevel::Trusted,
                 )
                 .await
                 .unwrap();
@@ -1772,6 +1773,7 @@ mod reasoning_amplification_call_site {
                     &mut None,
                     &mut Vec::new(),
                     &mut 0,
+                    &mut zeph_sanitizer::ContentTrustLevel::Trusted,
                 )
                 .await
                 .unwrap();
@@ -1842,6 +1844,7 @@ mod reasoning_amplification_call_site {
                     &mut None,
                     &mut Vec::new(),
                     &mut 0,
+                    &mut zeph_sanitizer::ContentTrustLevel::Trusted,
                 )
                 .await
                 .unwrap();
@@ -1902,6 +1905,7 @@ mod reasoning_amplification_call_site {
                     &mut None,
                     &mut Vec::new(),
                     &mut 0,
+                    &mut zeph_sanitizer::ContentTrustLevel::Trusted,
                 )
                 .await
                 .unwrap();
@@ -1968,6 +1972,7 @@ mod reasoning_amplification_call_site {
                     &mut None,
                     &mut Vec::new(),
                     &mut 0,
+                    &mut zeph_sanitizer::ContentTrustLevel::Trusted,
                 )
                 .await
                 .unwrap();
@@ -2035,6 +2040,7 @@ mod reasoning_amplification_call_site {
                 &mut None,
                 &mut Vec::new(),
                 &mut images_attached,
+                &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             )
             .await
             .unwrap();
@@ -2086,6 +2092,7 @@ mod reasoning_amplification_call_site {
                 &mut None,
                 &mut Vec::new(),
                 &mut images_attached,
+                &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             )
             .await
             .unwrap();
@@ -2137,6 +2144,7 @@ mod reasoning_amplification_call_site {
                 &mut None,
                 &mut Vec::new(),
                 &mut images_attached,
+                &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             )
             .await
             .unwrap();
@@ -2183,6 +2191,7 @@ mod reasoning_amplification_call_site {
                 &mut None,
                 &mut Vec::new(),
                 &mut images_attached,
+                &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             )
             .await
             .unwrap();
@@ -2237,6 +2246,7 @@ mod reasoning_amplification_call_site {
                 &mut None,
                 &mut Vec::new(),
                 &mut images_attached,
+                &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             )
             .await
             .unwrap();
@@ -2284,6 +2294,7 @@ mod reasoning_amplification_call_site {
                 &mut None,
                 &mut Vec::new(),
                 &mut images_attached,
+                &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             )
             .await
             .unwrap();
@@ -2303,6 +2314,7 @@ mod reasoning_amplification_call_site {
                 &mut None,
                 &mut Vec::new(),
                 &mut images_attached,
+                &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             )
             .await
             .unwrap();
@@ -2402,6 +2414,7 @@ mod per_call_result_size_override_tests {
                 &mut None,
                 &mut Vec::new(),
                 &mut 0,
+                &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             )
             .await
             .unwrap();
@@ -2452,6 +2465,7 @@ mod per_call_result_size_override_tests {
                 &mut None,
                 &mut Vec::new(),
                 &mut 0,
+                &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             )
             .await
             .unwrap();
@@ -2502,6 +2516,7 @@ mod per_call_result_size_override_tests {
                 &mut None,
                 &mut Vec::new(),
                 &mut 0,
+                &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             )
             .await
             .unwrap();

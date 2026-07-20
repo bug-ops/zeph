@@ -157,6 +157,8 @@ impl<C: Channel> Agent<C> {
                         if let Some(ref logger) = self.tool_orchestrator.audit_logger {
                             let args_json = serde_json::to_string(&args_value).unwrap_or_default();
                             let entry = zeph_tools::AuditEntry {
+                                source_kind: None,
+                                trust_level: None,
                                 timestamp: zeph_tools::chrono_now(),
                                 tool: call.tool_id.clone(),
                                 command: args_json,
@@ -1912,6 +1914,11 @@ impl<C: Channel> Agent<C> {
         // Running per-turn counter for attached MCP-sourced images (spec-072 §3.4
         // max_images_per_turn), aggregated across every tool call in this batch.
         let mut images_attached_this_turn: usize = 0;
+        // Batch-level worst-case content-trust tier (issue #6490, MemGhost): the whole batch
+        // is persisted as one message, so its write-time provenance tag reflects the
+        // least-trusted tool call in the batch — same OR-aggregation shape as
+        // has_any_injection_flags/flagged_urls below.
+        let mut batch_trust_level = zeph_sanitizer::ContentTrustLevel::Trusted;
         for idx in 0..tool_calls.len() {
             let tc = &tool_calls[idx];
             let tool_call_id = &tool_call_ids[idx];
@@ -1928,6 +1935,7 @@ impl<C: Channel> Agent<C> {
                 &mut pending_reflection,
                 &mut pending_outcomes,
                 &mut images_attached_this_turn,
+                &mut batch_trust_level,
             )
             .await?;
         }
@@ -1966,13 +1974,36 @@ impl<C: Channel> Agent<C> {
         let tool_results_have_flags =
             has_any_injection_flags || !self.services.security.flagged_urls.is_empty();
         tracing::debug!("tool_batch: calling persist_message for tool results");
-        self.persist_message(
-            Role::User,
-            &user_msg.content,
-            &user_msg.parts,
-            tool_results_have_flags,
-        )
-        .await;
+        // Issue #6490 (MemGhost): tag the batch with its write-time provenance. `source_kind`
+        // is a coarse per-batch label (multiple tool calls with different origins can share one
+        // persisted message) — `ExternalUntrusted` maps to WebScrape, `LocalUntrusted` to
+        // ToolResult, matching the two ContentSourceKind buckets those tiers are drawn from in
+        // `build_tool_output_source`. Trusted batches use the default trusted `persist_message`.
+        if batch_trust_level == zeph_sanitizer::ContentTrustLevel::Trusted {
+            self.persist_message(
+                Role::User,
+                &user_msg.content,
+                &user_msg.parts,
+                tool_results_have_flags,
+            )
+            .await;
+        } else {
+            let source_kind =
+                if batch_trust_level == zeph_sanitizer::ContentTrustLevel::ExternalUntrusted {
+                    zeph_sanitizer::ContentSourceKind::WebScrape
+                } else {
+                    zeph_sanitizer::ContentSourceKind::ToolResult
+                };
+            self.persist_message_with_provenance(
+                Role::User,
+                &user_msg.content,
+                &user_msg.parts,
+                tool_results_have_flags,
+                source_kind,
+                batch_trust_level,
+            )
+            .await;
+        }
         tracing::debug!("tool_batch: persist_message done, pushing message");
         self.push_message(user_msg);
         tracing::debug!("tool_batch: message pushed, starting LSP hooks");

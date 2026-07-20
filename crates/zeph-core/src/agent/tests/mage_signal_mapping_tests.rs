@@ -134,3 +134,20 @@ fn risk_signal_from_code_matches_assumed_variants() {
         RiskSignal::VigilFlagged(VigilRiskLevel::Low)
     );
 }
+
+/// Regression for critic finding C1 (#6490): `begin_turn` must reset the turn-scoped
+/// memory-consent trust tracker so a prior turn's untrusted tool output cannot leak into a
+/// later turn's `memory_save` confirmation-gate decision. Doc comments in `sanitize.rs`,
+/// `memory_tools.rs`, and `state/mod.rs` all claim this reset already happens here.
+#[test]
+fn begin_turn_resets_memory_consent_trust_to_zero() {
+    let mut agent = make_agent_with_mage();
+    // Simulate sanitize_tool_output having ratcheted the slot up during the prior turn.
+    *agent.services.security.memory_consent_trust.write() = 2; // ExternalUntrusted
+    let _turn = agent.begin_turn(TurnInput::new("hi".to_owned(), vec![]));
+    assert_eq!(
+        *agent.services.security.memory_consent_trust.read(),
+        0,
+        "memory_consent_trust must reset to 0 (Trusted) at the start of a new turn"
+    );
+}

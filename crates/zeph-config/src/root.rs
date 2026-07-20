@@ -359,6 +359,7 @@ impl Default for Config {
                 five_signal: crate::memory::FiveSignalConfig::default(),
                 fidelity: None,
                 store: crate::memory::CrossThreadStoreConfig::default(),
+                consent_gate: crate::memory::ConsentGateConfig::default(),
             },
             telegram: None,
             discord: None,

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures::{StreamExt as _, TryStreamExt as _};
-use zeph_llm::provider::{LlmProvider as _, Message};
+use zeph_llm::provider::{LlmProvider as _, Message, MessageVisibility};
 
 /// Approximate characters per token (conservative estimate for mixed content).
 const CHARS_PER_TOKEN: usize = 4;
@@ -226,6 +226,37 @@ impl SemanticMemory {
         content: &str,
         goal_text: Option<&str>,
     ) -> Result<Option<MessageId>, MemoryError> {
+        self.remember_with_provenance(conversation_id, role, content, goal_text, None, None)
+            .await
+    }
+
+    /// Save a message to `SQLite` and optionally embed and store in Qdrant, tagging the write
+    /// with its origin (issue #6490).
+    ///
+    /// `source_kind`/`trust_level` should be the `as_str()` output of
+    /// `zeph_sanitizer::ContentSourceKind`/`ContentTrustLevel`. `None` leaves both columns
+    /// `NULL` — see [`crate::store::SqliteStore::save_message_with_provenance`].
+    ///
+    /// Returns `Ok(Some(message_id))` when admitted and persisted.
+    /// Returns `Ok(None)` when A-MAC admission control rejects the message (not an error).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `SQLite` save fails. Embedding failures are logged but not
+    /// propagated.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.remember", skip_all, fields(content_len = %content.len()))
+    )]
+    pub async fn remember_with_provenance(
+        &self,
+        conversation_id: ConversationId,
+        role: &str,
+        content: &str,
+        goal_text: Option<&str>,
+        source_kind: Option<&str>,
+        trust_level: Option<&str>,
+    ) -> Result<Option<MessageId>, MemoryError> {
         let admission_decision = match self
             .run_admission_gate(conversation_id, role, content, goal_text)
             .await
@@ -243,7 +274,15 @@ impl SemanticMemory {
 
         let message_id = self
             .sqlite
-            .save_message(conversation_id, role, content)
+            .save_message_with_provenance(
+                conversation_id,
+                role,
+                content,
+                "[]",
+                MessageVisibility::Both,
+                source_kind,
+                trust_level,
+            )
             .await?;
 
         self.record_admission_sample_opt(
@@ -255,7 +294,7 @@ impl SemanticMemory {
         )
         .await;
 
-        self.embed_and_store_regular(message_id, conversation_id, role, content);
+        self.embed_and_store_regular(message_id, conversation_id, role, content, trust_level);
 
         Ok(Some(message_id))
     }
@@ -280,6 +319,48 @@ impl SemanticMemory {
         parts_json: &str,
         goal_text: Option<&str>,
     ) -> Result<(Option<MessageId>, bool), MemoryError> {
+        self.remember_with_parts_and_provenance(
+            conversation_id,
+            role,
+            content,
+            parts_json,
+            goal_text,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Save a message with pre-serialized parts JSON to `SQLite` and optionally embed in
+    /// Qdrant, tagging the write with its origin (issue #6490).
+    ///
+    /// `source_kind`/`trust_level` should be the `as_str()` output of
+    /// `zeph_sanitizer::ContentSourceKind`/`ContentTrustLevel`. `None` leaves both columns
+    /// `NULL` — see [`crate::store::SqliteStore::save_message_with_provenance`]. This is the
+    /// primary write path for tool-output messages persisted via
+    /// `zeph-agent-persistence::PersistenceService::persist_message`.
+    ///
+    /// Returns `Ok((Some(message_id), embedding_stored))` when admitted and persisted.
+    /// Returns `Ok((None, false))` when A-MAC admission control rejects the message.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `SQLite` save fails.
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "memory.remember", skip_all, fields(content_len = %content.len()))
+    )]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn remember_with_parts_and_provenance(
+        &self,
+        conversation_id: ConversationId,
+        role: &str,
+        content: &str,
+        parts_json: &str,
+        goal_text: Option<&str>,
+        source_kind: Option<&str>,
+        trust_level: Option<&str>,
+    ) -> Result<(Option<MessageId>, bool), MemoryError> {
         let admission_decision = match self
             .run_admission_gate(conversation_id, role, content, goal_text)
             .await
@@ -297,7 +378,15 @@ impl SemanticMemory {
 
         let message_id = self
             .sqlite
-            .save_message_with_parts(conversation_id, role, content, parts_json)
+            .save_message_with_provenance(
+                conversation_id,
+                role,
+                content,
+                parts_json,
+                MessageVisibility::Both,
+                source_kind,
+                trust_level,
+            )
             .await?;
 
         self.record_admission_sample_opt(
@@ -310,7 +399,7 @@ impl SemanticMemory {
         .await;
 
         let embedding_stored =
-            self.embed_and_store_regular(message_id, conversation_id, role, content);
+            self.embed_and_store_regular(message_id, conversation_id, role, content, trust_level);
 
         Ok((Some(message_id), embedding_stored))
     }
@@ -682,6 +771,11 @@ impl SemanticMemory {
                             &embedding_model,
                             chunk_index,
                             category.as_deref(),
+                            // `remember_categorized` writers (persona facts, structured
+                            // summaries) do not currently carry provenance (issue #6490
+                            // scoped write-time tagging covers `remember`/`remember_with_parts`/
+                            // `save_only` — the primary tool-output and interactive-save paths).
+                            None,
                         )
                         .await
                         .map(|_| ())
@@ -709,6 +803,7 @@ impl SemanticMemory {
         conversation_id: ConversationId,
         role: &str,
         content: &str,
+        trust_level: Option<&str>,
     ) -> bool {
         let Some(qdrant) = self.qdrant.clone() else {
             return false;
@@ -720,6 +815,7 @@ impl SemanticMemory {
         let store_qdrant = Arc::clone(&qdrant);
         let embedding_model = self.embedding_model.clone();
         let role = role.to_owned();
+        let trust_level = trust_level.map(str::to_owned);
         let store_chunk =
             move |chunk_index: u32,
                   vector: Vec<f32>|
@@ -727,6 +823,7 @@ impl SemanticMemory {
                 let qdrant = Arc::clone(&store_qdrant);
                 let embedding_model = embedding_model.clone();
                 let role = role.clone();
+                let trust_level = trust_level.clone();
                 Box::pin(async move {
                     qdrant
                         .store(
@@ -737,6 +834,7 @@ impl SemanticMemory {
                             MessageKind::Regular,
                             &embedding_model,
                             chunk_index,
+                            trust_level.as_deref(),
                         )
                         .await
                         .map(|_| ())
@@ -798,6 +896,11 @@ impl SemanticMemory {
                                 &tool_name,
                                 embed_ctx.exit_code,
                                 embed_ctx.timestamp.as_deref(),
+                                // `remember_tool_output` is not currently on the primary
+                                // production tool-output write path (that goes through
+                                // `remember_with_parts`/`save_only` via `PersistenceService`;
+                                // issue #6490 scopes provenance tagging to those call sites).
+                                None,
                             )
                             .await
                             .map(|_| ())
@@ -811,6 +914,7 @@ impl SemanticMemory {
                                 MessageKind::Regular,
                                 &embedding_model,
                                 chunk_index,
+                                None,
                             )
                             .await
                             .map(|_| ())
@@ -844,8 +948,39 @@ impl SemanticMemory {
         content: &str,
         parts_json: &str,
     ) -> Result<MessageId, MemoryError> {
+        self.save_only_with_provenance(conversation_id, role, content, parts_json, None, None)
+            .await
+    }
+
+    /// Save a message to `SQLite` without generating an embedding, tagging the write with its
+    /// origin (issue #6490).
+    ///
+    /// `source_kind`/`trust_level` should be the `as_str()` output of
+    /// `zeph_sanitizer::ContentSourceKind`/`ContentTrustLevel`. `None` leaves both columns
+    /// `NULL` — see [`crate::store::SqliteStore::save_message_with_provenance`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `SQLite` save fails.
+    pub async fn save_only_with_provenance(
+        &self,
+        conversation_id: ConversationId,
+        role: &str,
+        content: &str,
+        parts_json: &str,
+        source_kind: Option<&str>,
+        trust_level: Option<&str>,
+    ) -> Result<MessageId, MemoryError> {
         self.sqlite
-            .save_message_with_parts(conversation_id, role, content, parts_json)
+            .save_message_with_provenance(
+                conversation_id,
+                role,
+                content,
+                parts_json,
+                MessageVisibility::Both,
+                source_kind,
+                trust_level,
+            )
             .await
     }
 
@@ -2158,7 +2293,10 @@ impl SemanticMemory {
 
             let results: Vec<bool> = futures::stream::iter(rows)
                 .map(|(msg_id, conv_id, role, content)| async move {
-                    self.embed_and_store_regular(msg_id, conv_id, &role, &content)
+                    // Backfill sweep for pre-existing unembedded messages: provenance was
+                    // never recorded for these rows (written before issue #6490), so `None`
+                    // is the correct "unknown" tag rather than an implicit trust claim.
+                    self.embed_and_store_regular(msg_id, conv_id, &role, &content, None)
                 })
                 .buffer_unordered(4)
                 .collect()

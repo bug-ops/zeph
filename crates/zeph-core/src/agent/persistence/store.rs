@@ -13,13 +13,84 @@ use zeph_agent_persistence::{
     MemoryPersistenceView, MetricsView, PersistMessageRequest, PersistenceService, SecurityView,
 };
 use zeph_llm::provider::{MessagePart, Role};
+use zeph_sanitizer::{ContentSourceKind, ContentTrustLevel};
 
 impl<C: Channel> Agent<C> {
+    /// Persist a message to memory.
+    ///
+    /// Write-time provenance defaults to `Trusted` — this is the path used for direct user
+    /// turns, model/assistant output, and other content that never went through
+    /// `sanitize_tool_output`. Tool-output call sites should use
+    /// [`Self::persist_message_with_provenance`] instead (issue #6490, `MemGhost`).
+    ///
+    /// See [`Self::persist_message_inner`] for the shared implementation.
+    #[tracing::instrument(name = "core.persist.persist_message", skip_all, level = "debug")]
+    pub(crate) async fn persist_message(
+        &mut self,
+        role: Role,
+        content: &str,
+        parts: &[MessagePart],
+        has_injection_flags: bool,
+    ) {
+        self.persist_message_inner(role, content, parts, has_injection_flags, None)
+            .await;
+    }
+
+    /// Persist a message to memory, tagging it with its write-time content-origin provenance
+    /// (issue #6490, `MemGhost`).
+    ///
+    /// Use for tool-output messages whose `ContentSource` was already computed by
+    /// `sanitize_tool_output` — the primary disclosed write-time consent-gap in #6490.
+    ///
+    /// See [`Self::persist_message_inner`] for the shared implementation.
+    #[tracing::instrument(
+        name = "core.persist.persist_message_with_provenance",
+        skip_all,
+        level = "debug"
+    )]
+    pub(crate) async fn persist_message_with_provenance(
+        &mut self,
+        role: Role,
+        content: &str,
+        parts: &[MessagePart],
+        has_injection_flags: bool,
+        source_kind: ContentSourceKind,
+        trust_level: ContentTrustLevel,
+    ) {
+        self.persist_message_inner(
+            role,
+            content,
+            parts,
+            has_injection_flags,
+            Some((source_kind, trust_level)),
+        )
+        .await;
+    }
+
     /// Persist a message to memory.
     ///
     /// `has_injection_flags` controls whether Qdrant embedding is skipped for this message.
     /// When `true` and `guard_memory_writes` is enabled, only `SQLite` is written — the message
     /// is saved for conversation continuity but will not pollute semantic search (M2, D2).
+    ///
+    /// `provenance` is `Some((kind, trust))` for tool-output call sites
+    /// ([`Self::persist_message_with_provenance`]) and `None` for the default trusted path
+    /// ([`Self::persist_message`]) — direct user turns and model/assistant output default to
+    /// `Trusted` per issue #6490's scoped fix (audit finding: the write API previously took no
+    /// provenance parameter at all).
+    ///
+    /// Two `[memory.consent_gate]` behaviors fire here when the write actually persists, each
+    /// gated independently — see the critic-confirmed fix for #6490 (an operator disabling the
+    /// interactive/disclosure gate must not also lose the audit trail):
+    /// - **Audit** (`audit_all` alone, independent of `enabled`): every write — trusted or not —
+    ///   is recorded via [`zeph_tools::AuditEntry::memory_write`] when `audit_all = true`.
+    ///   Mirrors [`crate::memory_tools::MemoryToolExecutor::do_memory_save`]'s audit emission,
+    ///   which likewise fires whenever a logger is attached, not gated on `enabled`.
+    /// - **Disclosure** (`enabled` AND `provenance` at or above `disclose_threshold`): an
+    ///   unambiguous in-turn channel note — background tool-output writes never block on
+    ///   `Channel::confirm` (CLAUDE.md non-blocking contract, spec-039); the interactive
+    ///   `memory_save` confirmation gate lives in [`crate::memory_tools::MemoryToolExecutor`]
+    ///   instead, which has a live `Channel` handle this deep write path does not.
     ///
     /// `MessagePart::Image` parts are deliberately stripped (via [`MessagePart::strip_images`])
     /// before either persistence writer below sees `parts` — they are ephemeral, current-turn-only
@@ -28,13 +99,14 @@ impl<C: Channel> Agent<C> {
     /// not an omission; the `parts` slice passed in by the caller is untouched, so the in-memory
     /// `Message` already pushed via `push_message` keeps its `Image` parts for the current turn's
     /// provider request.
-    #[tracing::instrument(name = "core.persist.persist_message", skip_all, level = "debug")]
-    pub(crate) async fn persist_message(
+    #[allow(clippy::too_many_lines)]
+    async fn persist_message_inner(
         &mut self,
         role: Role,
         content: &str,
         parts: &[MessagePart],
         has_injection_flags: bool,
+        provenance: Option<(ContentSourceKind, ContentTrustLevel)>,
     ) {
         // M2: call should_guard_memory_write for its diagnostic side effects (tracing + security
         // event). The bool result is passed into SecurityView so the service can decide whether
@@ -73,12 +145,21 @@ impl<C: Channel> Agent<C> {
             tracing::debug!("persist_message: session_sink.record_message done");
         }
 
+        // Issue #6490 (MemGhost): `None` provenance (direct user turns, model/assistant output)
+        // defaults to an explicit `Trusted` tag rather than leaving the column `NULL` — `NULL`
+        // is reserved for "provenance not recorded" (legacy rows / writers not yet migrated).
+        let (source_kind_str, trust_level_str): (Option<&'static str>, Option<&'static str>) =
+            match provenance {
+                Some((kind, trust)) => (Some(kind.as_str()), Some(trust.as_str())),
+                None => (None, Some(ContentTrustLevel::Trusted.as_str())),
+            };
         let req = PersistMessageRequest::from_borrowed(
             role,
             content,
             &persisted_parts,
             has_injection_flags,
-        );
+        )
+        .with_provenance(source_kind_str, trust_level_str);
 
         let mut unsummarized = self.services.memory.persistence.unsummarized_count;
         let memory_arc = self.services.memory.persistence.memory.clone();
@@ -127,6 +208,61 @@ impl<C: Channel> Agent<C> {
 
         if outcome.message_id.is_none() {
             return;
+        }
+
+        // Issue #6490 (MemGhost) parts C+D: disclosure for untrusted background writes, and
+        // audit-log attribution for every write. Fires once, regardless of whether the write
+        // got embedded into Qdrant — matches part D's "emit ... regardless of embed/skip".
+        //
+        // Audit (part D) is gated on `audit_all` ONLY, independent of `consent_gate.enabled` —
+        // an operator disabling the interactive/disclosure gate (UX friction) must not also
+        // silently lose the audit trail. This matches `MemoryToolExecutor::do_memory_save`'s
+        // audit emission, which likewise fires whenever a logger is attached, not gated on
+        // `enabled`.
+        let consent_cfg = self.services.security.consent_gate_config.clone();
+        if consent_cfg.audit_all
+            && let Some(logger) = self.tool_orchestrator.audit_logger.clone()
+        {
+            let preview: String = content.chars().take(120).collect();
+            // "tool_output" identifies writes tagged via persist_message_with_provenance
+            // (the disclosed write-time gap); "conversation" covers the default-trusted
+            // path (direct user turns, model/assistant output).
+            let caller_id = if provenance.is_some() {
+                "tool_output"
+            } else {
+                "conversation"
+            };
+            let entry = zeph_tools::AuditEntry::memory_write(
+                caller_id,
+                format!("save: {preview}"),
+                source_kind_str,
+                trust_level_str,
+            );
+            logger.log(&entry).await;
+        }
+
+        // Disclosure only — background tool-output writes must never block on
+        // `Channel::confirm` (CLAUDE.md non-blocking contract, spec-039). The interactive
+        // confirm gate lives on the `memory_save` tool path
+        // (`crate::memory_tools::MemoryToolExecutor`), which has a live `Channel` handle
+        // this deep write path does not. Unlike audit, disclosure is pure UX and stays gated
+        // on the master `enabled` switch.
+        if consent_cfg.enabled
+            && let Some((kind, trust)) = provenance
+        {
+            let disclose_at = ContentTrustLevel::from_str_opt(&consent_cfg.disclose_threshold)
+                .unwrap_or(ContentTrustLevel::LocalUntrusted);
+            if trust >= disclose_at {
+                let preview: String = content.chars().take(120).collect();
+                let note = format!(
+                    "Saved to memory: {preview} — source: {} ({})",
+                    kind.as_str(),
+                    trust.as_str()
+                );
+                if let Err(e) = self.channel.send(&note).await {
+                    tracing::warn!(error = %e, "failed to send memory-write disclosure note");
+                }
+            }
         }
 
         // Phase 2: enqueue enrichment tasks via supervisor (non-blocking).

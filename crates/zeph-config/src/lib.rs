@@ -158,9 +158,9 @@ pub use mcp_security::{CapabilityClass, DataSensitivity, FlaggedParameter, ToolS
 pub use memory::{
     AconConfig, AdmissionConfig, AdmissionStrategy, AdmissionWeights, ArcCompactionConfig,
     AutoDreamConfig, BeliefRevisionConfig, CategoryConfig, CompressionConfig, CompressionStrategy,
-    ConflictResolutionStrategy, ConsolidationDaemonConfig, ContextFormat, ContextStrategy,
-    CrossThreadStoreConfig, DigestConfig, DocumentConfig, EmGraphConfig, FiveSignalConfig,
-    FiveSignalConsolidationConfig, ForgettingConfig, GraphConfig, HebbianConfig,
+    ConflictResolutionStrategy, ConsentGateConfig, ConsolidationDaemonConfig, ContextFormat,
+    ContextStrategy, CrossThreadStoreConfig, DigestConfig, DocumentConfig, EmGraphConfig,
+    FiveSignalConfig, FiveSignalConsolidationConfig, ForgettingConfig, GraphConfig, HebbianConfig,
     ImplicitConflictConfig, MagicDocsConfig, MemCotConfig, MemoryConfig, MicrocompactConfig,
     NoteLinkingConfig, OpticalForgettingConfig, PersonaConfig, PruningStrategy, ReasoningConfig,
     RecallViewConfig, RetrievalConfig, RetrievalFailuresConfig, RpeConfig, SemanticConfig,

@@ -1191,6 +1191,37 @@ fn migrate_memory_store_config_noop_when_active_section_present() {
     assert_eq!(result.output, base);
 }
 
+// ── Step 102 — migrate_memory_consent_gate_config (issue #6490, MemGhost) ──────────
+
+#[test]
+fn migrate_memory_consent_gate_config_idempotent_on_commented_output() {
+    let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n";
+    let first = migrate_memory_consent_gate_config(base).unwrap();
+    assert_eq!(first.changed_count, 1);
+    assert!(first.output.contains("# [memory.consent_gate]"));
+    assert!(first.output.contains("# enabled = true"));
+    let second = migrate_memory_consent_gate_config(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0, "second run must not double-append");
+    assert_eq!(second.output, first.output);
+}
+
+#[test]
+fn migrate_memory_consent_gate_config_noop_when_memory_section_absent() {
+    let base = "[agent]\nname = \"Zeph\"\n";
+    let result = migrate_memory_consent_gate_config(base).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, base);
+}
+
+#[test]
+fn migrate_memory_consent_gate_config_noop_when_active_section_present() {
+    let base =
+        "[memory]\ndb_path = \"~/.zeph/memory.db\"\n\n[memory.consent_gate]\nenabled = false\n";
+    let result = migrate_memory_consent_gate_config(base).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, base);
+}
+
 // ── Step 94 — migrate_session_resume_config (spec-068 §13, §18, #6420) ──────────────
 
 #[test]
@@ -2237,6 +2268,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_integrity_config",
         "migrate_rate_limit_advisory",
         "migrate_agents_delegation_mode",
+        "migrate_memory_consent_gate_config",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);

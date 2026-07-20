@@ -66,6 +66,7 @@ async fn store_and_search_vector() {
             MessageKind::Regular,
             "qwen3-embedding",
             0,
+            None,
         )
         .await
         .unwrap();
@@ -103,6 +104,7 @@ async fn search_with_conversation_filter() {
             MessageKind::Regular,
             "qwen3-embedding",
             0,
+            None,
         )
         .await
         .unwrap();
@@ -115,6 +117,7 @@ async fn search_with_conversation_filter() {
             MessageKind::Regular,
             "qwen3-embedding",
             0,
+            None,
         )
         .await
         .unwrap();

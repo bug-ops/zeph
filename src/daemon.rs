@@ -807,13 +807,31 @@ pub(crate) async fn run_daemon(
             .collect(),
     );
     let base_executor = agent_setup::with_search_executor(base_executor, web_search_executor);
-    let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
-        std::sync::Arc::clone(&memory),
-        conversation_id,
-        zeph_sanitizer::memory_validation::MemoryWriteValidator::new(
-            config.security.memory_validation.clone(),
-        ),
-    );
+    // Write-time memory-consent gate (issue #6490, MemGhost): the slot is created here and
+    // shared with the `Agent` via `with_memory_consent_trust_slot` below.
+    let memory_consent_trust_slot: zeph_core::memory_tools::MemoryConsentTrustSlot =
+        std::sync::Arc::new(parking_lot::RwLock::new(0u8));
+    let memory_executor = {
+        let mut e = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
+            std::sync::Arc::clone(&memory),
+            conversation_id,
+            zeph_sanitizer::memory_validation::MemoryWriteValidator::new(
+                config.security.memory_validation.clone(),
+            ),
+        );
+        if config.memory.consent_gate.enabled {
+            e = e.with_consent_gate(
+                std::sync::Arc::clone(&memory_consent_trust_slot),
+                zeph_core::memory_tools::parse_consent_trust_level(
+                    &config.memory.consent_gate.confirm_threshold,
+                ),
+            );
+        }
+        if let Some(ref logger) = daemon_audit_logger {
+            e = e.with_audit(std::sync::Arc::clone(logger));
+        }
+        e
+    };
     let overflow_executor = zeph_core::overflow_tools::OverflowToolExecutor::new(
         std::sync::Arc::new(memory.sqlite().clone()),
     )
@@ -1260,6 +1278,10 @@ pub(crate) async fn run_daemon(
         .with_signal_queue(trajectory_signal_queue)
         .with_trajectory_config(config.security.trajectory.clone())
         .0;
+    // Write-time memory-consent gate (issue #6490, MemGhost): share the same slot with
+    // `memory_executor` (wired above) so sanitize_tool_output's ratcheting is visible to
+    // MemoryToolExecutor's confirmation check.
+    agent = agent.with_memory_consent_trust_slot(memory_consent_trust_slot);
 
     // #5951: wire the self-check quality pipeline, matching src/runner.rs.
     agent = agent.with_quality_pipeline(agent_setup::build_quality_pipeline(

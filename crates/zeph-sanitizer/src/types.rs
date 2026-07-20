@@ -32,16 +32,90 @@ use serde::{Deserialize, Serialize};
 /// let elevated = source.with_trust_level(ContentTrustLevel::Trusted);
 /// assert_eq!(elevated.trust_level, ContentTrustLevel::Trusted);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
+#[repr(u8)]
 pub enum ContentTrustLevel {
     /// System prompt, hardcoded instructions, direct user input. No wrapping applied.
-    Trusted,
+    Trusted = 0,
     /// Tool results from local executors (shell, file I/O). Lighter warning.
-    LocalUntrusted,
+    LocalUntrusted = 1,
     /// External sources: web scrape, MCP, A2A, memory retrieval. Strongest warning.
-    ExternalUntrusted,
+    ExternalUntrusted = 2,
+}
+
+impl ContentTrustLevel {
+    /// Returns the `snake_case` identifier string for this trust level.
+    ///
+    /// Used for `SQLite`/Qdrant persistence (issue #6490 write-time provenance tagging),
+    /// mirroring [`ContentSourceKind::as_str`].
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_sanitizer::ContentTrustLevel;
+    ///
+    /// assert_eq!(ContentTrustLevel::Trusted.as_str(), "trusted");
+    /// assert_eq!(ContentTrustLevel::ExternalUntrusted.as_str(), "external_untrusted");
+    /// ```
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Trusted => "trusted",
+            Self::LocalUntrusted => "local_untrusted",
+            Self::ExternalUntrusted => "external_untrusted",
+        }
+    }
+
+    /// Parse a `&str` into a [`ContentTrustLevel`].
+    ///
+    /// Returns `None` for unrecognized strings so callers can fall back to a conservative
+    /// default and log a warning instead of failing deserialization.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_sanitizer::ContentTrustLevel;
+    ///
+    /// assert_eq!(ContentTrustLevel::from_str_opt("local_untrusted"), Some(ContentTrustLevel::LocalUntrusted));
+    /// assert_eq!(ContentTrustLevel::from_str_opt("unknown"), None);
+    /// ```
+    #[must_use]
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s {
+            "trusted" => Some(Self::Trusted),
+            "local_untrusted" => Some(Self::LocalUntrusted),
+            "external_untrusted" => Some(Self::ExternalUntrusted),
+            _ => None,
+        }
+    }
+
+    /// Reconstruct from the `u8` discriminant.
+    ///
+    /// Used by turn-scoped trust-tier trackers (issue #6490) that store the tier as a bare
+    /// `u8` in a lock-free slot (`AtomicU8`/`RwLock<u8>`) for cheap ratcheting via
+    /// `fetch_max`/`max`. Values ≥ 2 saturate to [`ExternalUntrusted`](Self::ExternalUntrusted)
+    /// (the most conservative tier) rather than panicking, so a slot value from a future added
+    /// variant fails safe instead of undefined behavior.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_sanitizer::ContentTrustLevel;
+    ///
+    /// assert_eq!(ContentTrustLevel::from_ordinal(0), ContentTrustLevel::Trusted);
+    /// assert_eq!(ContentTrustLevel::from_ordinal(2), ContentTrustLevel::ExternalUntrusted);
+    /// assert_eq!(ContentTrustLevel::from_ordinal(255), ContentTrustLevel::ExternalUntrusted);
+    /// ```
+    #[must_use]
+    pub fn from_ordinal(ordinal: u8) -> Self {
+        match ordinal {
+            0 => Self::Trusted,
+            1 => Self::LocalUntrusted,
+            _ => Self::ExternalUntrusted,
+        }
+    }
 }
 
 /// All known content source categories.
@@ -120,7 +194,19 @@ impl ContentSourceKind {
         }
     }
 
-    pub(crate) fn as_str(self) -> &'static str {
+    /// Returns the `snake_case` identifier string for this source kind.
+    ///
+    /// Used for `SQLite`/Qdrant persistence (issue #6490 write-time provenance tagging).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_sanitizer::ContentSourceKind;
+    ///
+    /// assert_eq!(ContentSourceKind::WebScrape.as_str(), "web_scrape");
+    /// ```
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::ToolResult => "tool_result",
             Self::WebScrape => "web_scrape",
@@ -510,6 +596,37 @@ mod tests {
         );
         assert_ne!(
             ContentTrustLevel::LocalUntrusted,
+            ContentTrustLevel::ExternalUntrusted
+        );
+    }
+
+    // --- ContentTrustLevel::as_str / from_str_opt roundtrip (issue #6490) ---
+
+    #[test]
+    fn trust_level_from_str_opt_known_variants_roundtrip() {
+        let variants = [
+            (ContentTrustLevel::Trusted, "trusted"),
+            (ContentTrustLevel::LocalUntrusted, "local_untrusted"),
+            (ContentTrustLevel::ExternalUntrusted, "external_untrusted"),
+        ];
+        for (level, s) in &variants {
+            assert_eq!(ContentTrustLevel::from_str_opt(s), Some(*level));
+            assert_eq!(level.as_str(), *s);
+        }
+    }
+
+    #[test]
+    fn trust_level_from_str_opt_unknown_returns_none() {
+        assert_eq!(ContentTrustLevel::from_str_opt("unknown"), None);
+        assert_eq!(ContentTrustLevel::from_str_opt(""), None);
+    }
+
+    #[test]
+    fn trust_level_ord_matches_severity() {
+        assert!(ContentTrustLevel::Trusted < ContentTrustLevel::LocalUntrusted);
+        assert!(ContentTrustLevel::LocalUntrusted < ContentTrustLevel::ExternalUntrusted);
+        assert_eq!(
+            ContentTrustLevel::Trusted.max(ContentTrustLevel::ExternalUntrusted),
             ContentTrustLevel::ExternalUntrusted
         );
     }

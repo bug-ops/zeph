@@ -896,3 +896,54 @@ pub fn migrate_memory_store_config(toml_src: &str) -> Result<MigrationResult, Mi
         sections_changed: vec!["memory.store".to_owned()],
     })
 }
+
+/// Add a commented-out `[memory.consent_gate]` section if absent (issue #6490, `MemGhost`).
+///
+/// All `ConsentGateConfig` fields have `#[serde(default)]` so existing configs parse
+/// unchanged; this migration surfaces the new section for users upgrading from older configs.
+/// Enabled by default at the struct-default level — the comment documents the active defaults
+/// rather than a disabled opt-in, matching the security-sensitive nature of this gate.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_memory_consent_gate_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Idempotency: comments are invisible to toml_edit, so check the raw source.
+    if section_header_present(toml_src, "memory.consent_gate")
+        || toml_src.contains("# [memory.consent_gate]")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    if !doc.contains_key("memory") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Write-time memory-consent gate (issue #6490, MemGhost).\n\
+         # Gates memory writes derived from untrusted tool output (web scrape, MCP) behind an\n\
+         # interactive confirmation on the memory_save tool path, and a visible disclosure note\n\
+         # on autonomous background tool-output writes. Every write is audit-logged with source\n\
+         # attribution when audit_all = true. Enabled by default.\n\
+         # [memory.consent_gate]\n\
+         # enabled = true\n\
+         # confirm_threshold = \"external_untrusted\"  # trust tier (inclusive) requiring Channel::confirm\n\
+         # disclose_threshold = \"local_untrusted\"    # trust tier (inclusive) requiring a visible note\n\
+         # audit_all = true                           # log every memory write, regardless of trust tier\n";
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory.consent_gate".to_owned()],
+    })
+}

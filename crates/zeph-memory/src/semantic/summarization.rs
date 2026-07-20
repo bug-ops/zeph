@@ -178,6 +178,9 @@ impl SemanticMemory {
                             MessageKind::Summary,
                             &self.embedding_model,
                             0,
+                            // LLM-generated from already-persisted (and thus already
+                            // provenance-tagged) history — treated as trusted (issue #6490).
+                            Some("trusted"),
                         )
                         .await
                     {

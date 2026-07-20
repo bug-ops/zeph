@@ -263,6 +263,8 @@ impl WebSearchExecutor {
                     )
                 });
             let entry = AuditEntry {
+                source_kind: None,
+                trust_level: None,
                 timestamp: chrono_now(),
                 tool: TOOL_ID.into(),
                 command: command.into(),

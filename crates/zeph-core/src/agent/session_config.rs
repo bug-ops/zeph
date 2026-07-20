@@ -79,6 +79,8 @@ pub struct AgentSessionConfig {
     pub compaction_cooldown_turns: u8,
     pub prune_protect_tokens: usize,
     pub redact_credentials: bool,
+    /// Write-time memory-consent gate (issue #6490, `MemGhost`).
+    pub consent_gate: zeph_config::ConsentGateConfig,
 
     // Security
     pub security: SecurityConfig,
@@ -198,6 +200,7 @@ impl AgentSessionConfig {
             compaction_cooldown_turns: config.memory.compaction_cooldown_turns,
             prune_protect_tokens: config.memory.prune_protect_tokens,
             redact_credentials: config.memory.redact_credentials,
+            consent_gate: config.memory.consent_gate.clone(),
             security: config.security.clone(),
             timeouts: config.timeouts,
             learning: config.skills.learning.clone(),

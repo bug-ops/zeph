@@ -196,6 +196,16 @@ pub(super) fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
             .interact_text()?;
     }
 
+    state.consent_gate_enabled = Confirm::new()
+        .with_prompt(
+            "Enable the write-time memory-consent gate? (requires interactive confirmation \
+             before memory_save persists content derived from untrusted tool output, and \
+             discloses autonomous background memory writes from untrusted sources; \
+             advanced thresholds are config-file-only, #6490)",
+        )
+        .default(true)
+        .interact()?;
+
     let strategy_options = ["full_history", "adaptive", "memory_first"];
     let strategy_idx = Select::new()
         .with_prompt(

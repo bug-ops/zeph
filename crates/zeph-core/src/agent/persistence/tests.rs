@@ -3247,4 +3247,56 @@ mod image_persistence_strip {
             "in-memory Message must keep its Image part — the strip is persistence-only"
         );
     }
+
+    /// Regression for critic finding C2 (#6490): the memory-write audit trail (part D) must
+    /// fire whenever `audit_all = true`, independent of `consent_gate.enabled` — an operator
+    /// disabling the interactive/disclosure gate (UX friction) must not also silently lose the
+    /// audit trail. Mirrors `MemoryToolExecutor::do_memory_save`'s audit emission, which
+    /// likewise never gates on `enabled`.
+    #[tokio::test]
+    async fn persist_message_audits_even_when_consent_gate_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit_path = dir.path().join("audit.jsonl");
+        let audit_config = zeph_tools::AuditConfig {
+            enabled: true,
+            destination: zeph_tools::AuditDestination::File(audit_path.clone()),
+            ..Default::default()
+        };
+        let logger = std::sync::Arc::new(
+            zeph_tools::AuditLogger::from_config(&audit_config, false)
+                .await
+                .unwrap(),
+        );
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor)
+            .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+            .with_audit_logger(std::sync::Arc::clone(&logger));
+        agent.services.security.consent_gate_config = zeph_config::ConsentGateConfig {
+            enabled: false,
+            audit_all: true,
+            ..zeph_config::ConsentGateConfig::default()
+        };
+
+        agent
+            .persist_message(Role::User, "a message", &[], false)
+            .await;
+        drop(logger);
+
+        let content = tokio::fs::read_to_string(&audit_path)
+            .await
+            .unwrap_or_default();
+        assert!(
+            content.contains("memory_write") && content.contains("\"caller_id\":\"conversation\""),
+            "audit log must contain a memory_write entry even with consent_gate.enabled=false; \
+             got: {content}"
+        );
+    }
 }

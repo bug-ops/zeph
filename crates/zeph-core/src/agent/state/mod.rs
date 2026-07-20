@@ -384,6 +384,16 @@ pub(crate) struct SecurityState {
     /// Populated from raw user message text; cleared on `/clear`.
     /// Shared with `UrlGroundingVerifier` to check `fetch`/`web_scrape` calls at dispatch time.
     pub(crate) user_provided_urls: Arc<RwLock<HashSet<String>>>,
+    /// Turn-scoped maximum content-trust tier observed in tool output so far (issue #6490,
+    /// `MemGhost` write-time memory-consent gap). Stores the `u8` discriminant of
+    /// `zeph_sanitizer::ContentTrustLevel`, ratcheted up (never down) by `sanitize_tool_output`
+    /// and reset to `0` (`Trusted`) at turn boundaries (`process_response`, `/clear`). Shared
+    /// with `MemoryToolExecutor` so the interactive `memory_save` tool can require confirmation
+    /// when the LLM tries to save content derived from this turn's untrusted tool output.
+    pub(crate) memory_consent_trust: crate::memory_tools::MemoryConsentTrustSlot,
+    /// Write-time memory-consent gate config snapshot (issue #6490, `MemGhost`). Wired via
+    /// `AgentSessionConfig::consent_gate` -> `Agent::apply_session_config`.
+    pub(crate) consent_gate_config: zeph_config::ConsentGateConfig,
     pub(crate) pii_filter: zeph_sanitizer::pii::PiiFilter,
     /// NER classifier for PII detection (`classifiers.ner_model`). When `Some`, the PII path
     /// runs both regex (`pii_filter`) and NER, then merges spans before redaction.

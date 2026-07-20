@@ -168,12 +168,27 @@ pub(crate) async fn build_agent_factory(
     // `serve::deps::assemble_serve_deps`'s startup capability-scope validation (#6045/F1) — one
     // source of truth for the tool-id surface a configured scope pattern may reference.
     let memory_validation_config = deps.session_config.security.memory_validation.clone();
+    // Write-time memory-consent gate (issue #6490, MemGhost): the slot is created here and
+    // shared with the `Agent` via `with_memory_consent_trust_slot` below.
+    let memory_consent_trust_slot: zeph_core::memory_tools::MemoryConsentTrustSlot =
+        Arc::new(parking_lot::RwLock::new(0u8));
+    let consent_gate_config = deps.session_config.consent_gate.clone();
+    let consent_gate = consent_gate_config.enabled.then(|| {
+        (
+            Arc::clone(&memory_consent_trust_slot),
+            zeph_core::memory_tools::parse_consent_trust_level(
+                &consent_gate_config.confirm_threshold,
+            ),
+        )
+    });
     let (composed_base, trust_snapshot) = compose_session_tool_tree(
         deps.tool_executor,
         &deps.registry,
         &deps.memory,
         conversation_id,
         memory_validation_config,
+        consent_gate,
+        deps.audit_logger.clone(),
     );
 
     // SEC-H1 / R1: each session gets its own gate stack, wrapping the composed per-session tree
@@ -321,6 +336,11 @@ pub(crate) async fn build_agent_factory(
             .with_signal_queue(trajectory_signal_queue)
             .with_trajectory_config(deps.trajectory_sentinel_config)
             .0;
+        // Write-time memory-consent gate (issue #6490, MemGhost): share the same slot with
+        // `memory_executor` (wired above via compose_session_tool_tree) so
+        // sanitize_tool_output's ratcheting is visible to MemoryToolExecutor's confirmation
+        // check.
+        agent = agent.with_memory_consent_trust_slot(memory_consent_trust_slot);
         if let Some(head) = rl_head {
             agent = agent.with_rl_head(head);
         }
@@ -475,6 +495,10 @@ fn wrap_capability_scope(
 /// caller may pass placeholder values (e.g. `ConversationId(0)`,
 /// `MemoryWriteValidationConfig::default()`) safely; only the tool *ids* are used for
 /// registry-based scope validation, never the executors' dispatch behavior.
+/// `consent_gate`/`audit_logger` wire `MemoryToolExecutor`'s write-time memory-consent gate
+/// (issue #6490, `MemGhost`) — like `conversation_id`/`memory_validation_config`, these only
+/// affect runtime dispatch behavior, not `tool_definitions()`, so the validation-only caller in
+/// `serve::deps::assemble_serve_deps` may safely pass `None` for both.
 #[allow(clippy::type_complexity)]
 pub(super) fn compose_session_tool_tree(
     base: Arc<dyn ErasedToolExecutor>,
@@ -482,15 +506,29 @@ pub(super) fn compose_session_tool_tree(
     memory: &Arc<zeph_memory::semantic::SemanticMemory>,
     conversation_id: zeph_memory::ConversationId,
     memory_validation_config: zeph_config::MemoryWriteValidationConfig,
+    consent_gate: Option<(
+        zeph_core::memory_tools::MemoryConsentTrustSlot,
+        zeph_sanitizer::ContentTrustLevel,
+    )>,
+    audit_logger: Option<Arc<zeph_tools::AuditLogger>>,
 ) -> (
     Arc<dyn ErasedToolExecutor>,
     Arc<parking_lot::RwLock<std::collections::HashMap<String, zeph_core::SkillTrustSnapshot>>>,
 ) {
-    let memory_executor = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
-        Arc::clone(memory),
-        conversation_id,
-        zeph_sanitizer::memory_validation::MemoryWriteValidator::new(memory_validation_config),
-    );
+    let memory_executor = {
+        let mut e = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
+            Arc::clone(memory),
+            conversation_id,
+            zeph_sanitizer::memory_validation::MemoryWriteValidator::new(memory_validation_config),
+        );
+        if let Some((slot, threshold)) = consent_gate {
+            e = e.with_consent_gate(slot, threshold);
+        }
+        if let Some(logger) = audit_logger {
+            e = e.with_audit(logger);
+        }
+        e
+    };
     let overflow_executor =
         zeph_core::overflow_tools::OverflowToolExecutor::new(Arc::new(memory.sqlite().clone()))
             .with_conversation(conversation_id.0);

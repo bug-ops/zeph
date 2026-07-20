@@ -315,6 +315,8 @@ pub(crate) async fn assemble_serve_deps(
                 &core.memory,
                 zeph_memory::ConversationId(0),
                 zeph_config::MemoryWriteValidationConfig::default(),
+                None,
+                None,
             );
         let registry_ids: std::collections::HashSet<String> = composed_for_validation
             .tool_definitions_erased()

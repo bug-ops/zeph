@@ -17,7 +17,9 @@
 //! - `persona` — persona inference and trajectory risk accumulation
 //! - `reasoning` — memory-augmented reasoning, probes, and `MemCoT`
 //! - `store` — cross-thread key-value store (spec-080, #6363)
+//! - `consent_gate` — write-time memory-consent gate (issue #6490)
 
+mod consent_gate;
 mod consolidation;
 mod fidelity;
 mod graph;
@@ -31,6 +33,7 @@ mod store;
 #[cfg(test)]
 mod tests;
 
+pub use consent_gate::*;
 pub use consolidation::*;
 pub use fidelity::*;
 pub use graph::*;

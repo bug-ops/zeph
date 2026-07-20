@@ -618,13 +618,14 @@ use steps::{
     MigrateHooksTurnComplete, MigrateIntegrityConfig, MigrateKnowledgeConfig,
     MigrateLlmStreamLimits, MigrateMagicDocsConfig, MigrateMcpElicitationConfig,
     MigrateMcpMaxConnectAttempts, MigrateMcpMediaConfig, MigrateMcpRetryAndToolTimeout,
-    MigrateMcpTrustLevels, MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported,
-    MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread,
-    MigrateMemoryPersonaConfig, MigrateMemoryReasoning, MigrateMemoryReasoningJudge,
-    MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig,
-    MigrateMemoryTypeAwareCompose, MigrateMicrocompactConfig, MigrateNliConfig,
-    MigrateOrchestrationAssetSensitivity, MigrateOrchestrationCommandConfig,
-    MigrateOrchestrationEnsemble, MigrateOrchestrationIdleTimeout, MigrateOrchestrationPersistence,
+    MigrateMcpTrustLevels, MigrateMemoryConsentGateConfig, MigrateMemoryGraph,
+    MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
+    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
+    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
+    MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig, MigrateMemoryTypeAwareCompose,
+    MigrateMicrocompactConfig, MigrateNliConfig, MigrateOrchestrationAssetSensitivity,
+    MigrateOrchestrationCommandConfig, MigrateOrchestrationEnsemble,
+    MigrateOrchestrationIdleTimeout, MigrateOrchestrationPersistence,
     MigrateOrchestrationWholePlanVerifierTimeout, MigrateOrchestratorProvider, MigrateOtelFilter,
     MigrateOverflowMaxPerCallOverride, MigratePiiFilterNames, MigratePlannerModelToProvider,
     MigratePluginsReputationConfig, MigratePolicyProviderAndUtilityWindow,
@@ -852,6 +853,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 102 — insert active delegation_mode = "proactive" into an existing
             // [agents] table with enabled = true and no delegation_mode key (#5857)
             Box::new(MigrateAgentsDelegationMode),
+            // Step 103 — add [memory.consent_gate] advisory block for the write-time
+            // memory-consent gate (issue #6490, MemGhost)
+            Box::new(MigrateMemoryConsentGateConfig),
         ]
     });
 

@@ -4,13 +4,62 @@
 use std::fmt::Write as _;
 use std::sync::Arc;
 
+use parking_lot::RwLock;
 use zeph_memory::embedding_store::SearchFilter;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::types::ConversationId;
 use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params};
 use zeph_tools::registry::{InvocationHint, ToolDef};
+use zeph_tools::{CheckpointActionResult, CheckpointListResult};
 
+use zeph_sanitizer::ContentTrustLevel;
 use zeph_sanitizer::memory_validation::MemoryWriteValidator;
+
+/// Shared turn-scoped maximum content-trust-tier slot (issue #6490, `MemGhost`).
+///
+/// Stores the `u8` discriminant of [`ContentTrustLevel`]. `Agent::sanitize_tool_output`
+/// ratchets this up (never down) as tool output is sanitized during a turn, and resets it to
+/// `0` (`Trusted`) at turn boundaries (`process_response`, `/clear`). `MemoryToolExecutor`
+/// reads it to decide whether the interactive `memory_save` tool call needs user confirmation
+/// before content derived from this turn's untrusted tool output is persisted.
+pub type MemoryConsentTrustSlot = Arc<RwLock<u8>>;
+
+/// Write-time consent-gate parameters attached via [`MemoryToolExecutor::with_consent_gate`].
+struct ConsentGate {
+    trust_slot: MemoryConsentTrustSlot,
+    confirm_threshold: ContentTrustLevel,
+}
+
+/// Parse a `[memory.consent_gate]` trust-tier config string (`confirm_threshold`/
+/// `disclose_threshold`) into a [`ContentTrustLevel`], falling back to
+/// [`ContentTrustLevel::ExternalUntrusted`] (the most conservative tier) and logging a warning
+/// on an unrecognized value.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_core::memory_tools::parse_consent_trust_level;
+/// use zeph_sanitizer::ContentTrustLevel;
+///
+/// assert_eq!(
+///     parse_consent_trust_level("local_untrusted"),
+///     ContentTrustLevel::LocalUntrusted
+/// );
+/// assert_eq!(
+///     parse_consent_trust_level("not_a_real_tier"),
+///     ContentTrustLevel::ExternalUntrusted
+/// );
+/// ```
+#[must_use]
+pub fn parse_consent_trust_level(s: &str) -> ContentTrustLevel {
+    ContentTrustLevel::from_str_opt(s).unwrap_or_else(|| {
+        tracing::warn!(
+            value = s,
+            "invalid memory.consent_gate trust-tier value, falling back to external_untrusted"
+        );
+        ContentTrustLevel::ExternalUntrusted
+    })
+}
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 struct MemorySearchParams {
@@ -45,6 +94,12 @@ pub struct MemoryToolExecutor {
     validator: MemoryWriteValidator,
     /// When `true` the backing store is in-memory (bare mode) and saves do not persist across sessions.
     ephemeral: bool,
+    /// Write-time memory-consent gate (issue #6490). `None` when `memory.consent_gate.enabled
+    /// = false` — `memory_save` never requires confirmation in that case.
+    consent_gate: Option<ConsentGate>,
+    /// Audit sink for memory-write attribution (issue #6490). `None` when audit logging is
+    /// disabled — `memory_save` writes are not logged, matching other executors' behavior.
+    audit_logger: Option<Arc<zeph_tools::AuditLogger>>,
 }
 
 impl MemoryToolExecutor {
@@ -58,6 +113,8 @@ impl MemoryToolExecutor {
                 zeph_sanitizer::memory_validation::MemoryWriteValidationConfig::default(),
             ),
             ephemeral: false,
+            consent_gate: None,
+            audit_logger: None,
         }
     }
 
@@ -73,6 +130,8 @@ impl MemoryToolExecutor {
             conversation_id,
             validator,
             ephemeral: false,
+            consent_gate: None,
+            audit_logger: None,
         }
     }
 
@@ -84,6 +143,132 @@ impl MemoryToolExecutor {
     pub fn ephemeral(mut self) -> Self {
         self.ephemeral = true;
         self
+    }
+
+    /// Attach the write-time memory-consent gate (issue #6490, `MemGhost`).
+    ///
+    /// `trust_slot` must be the same [`MemoryConsentTrustSlot`] the owning `Agent` ratchets up
+    /// in `sanitize_tool_output` — see `AgentBuilder::with_memory_consent_trust_slot`.
+    /// `confirm_threshold` is the minimum trust tier (inclusive) that requires
+    /// `Channel::confirm` before `memory_save` persists (`memory.consent_gate.confirm_threshold`
+    /// in config).
+    #[must_use]
+    pub fn with_consent_gate(
+        mut self,
+        trust_slot: MemoryConsentTrustSlot,
+        confirm_threshold: ContentTrustLevel,
+    ) -> Self {
+        self.consent_gate = Some(ConsentGate {
+            trust_slot,
+            confirm_threshold,
+        });
+        self
+    }
+
+    /// Attach an audit sink so every `memory_save` write is recorded with source attribution
+    /// (issue #6490, `MemGhost` part D).
+    #[must_use]
+    pub fn with_audit(mut self, logger: Arc<zeph_tools::AuditLogger>) -> Self {
+        self.audit_logger = Some(logger);
+        self
+    }
+
+    /// Current turn-scoped maximum trust tier, or [`ContentTrustLevel::Trusted`] when no
+    /// consent gate is attached (gate disabled).
+    fn current_trust_level(&self) -> ContentTrustLevel {
+        self.consent_gate
+            .as_ref()
+            .map_or(ContentTrustLevel::Trusted, |gate| {
+                ContentTrustLevel::from_ordinal(*gate.trust_slot.read())
+            })
+    }
+
+    /// Perform the actual `memory_save` write, bypassing the consent-gate confirmation check.
+    ///
+    /// Called both by `execute_tool_call` (when no confirmation is required) and
+    /// `execute_tool_call_confirmed` (after the user has approved).
+    async fn do_memory_save(
+        &self,
+        params: &MemorySaveParams,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        if params.content.is_empty() {
+            return Err(ToolError::InvalidParams {
+                message: "content must not be empty".to_owned(),
+            });
+        }
+        if params.content.len() > 4096 {
+            return Err(ToolError::InvalidParams {
+                message: "content exceeds maximum length of 4096 characters".to_owned(),
+            });
+        }
+
+        // Schema validation: check content before writing to memory.
+        if let Err(e) = self.validator.validate_memory_save(&params.content) {
+            return Err(ToolError::InvalidParams {
+                message: format!("memory write rejected: {e}"),
+            });
+        }
+
+        let role = params.role.as_str();
+        let trust_level = self.current_trust_level();
+
+        // Explicit user-directed saves bypass goal-conditioned scoring (goal_text = None).
+        // Provenance (issue #6490): the LLM-supplied `role` is never used as a trust signal —
+        // trust is derived from the turn's actual tool-output origin via the consent-gate slot.
+        let message_id_opt = self
+            .memory
+            .remember_with_provenance(
+                self.conversation_id,
+                role,
+                &params.content,
+                None,
+                None,
+                Some(trust_level.as_str()),
+            )
+            .await
+            .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+
+        if let Some(logger) = &self.audit_logger {
+            let preview: String = params.content.chars().take(120).collect();
+            let entry = zeph_tools::AuditEntry::memory_write(
+                "memory_save",
+                format!("save: {preview}"),
+                None,
+                Some(trust_level.as_str()),
+            );
+            logger.log(&entry).await;
+        }
+
+        let summary = match message_id_opt {
+            Some(message_id) => {
+                if self.ephemeral {
+                    format!(
+                        "Saved to session memory (message_id: {message_id}, conversation: {}). Ephemeral — not available after session ends.",
+                        self.conversation_id
+                    )
+                } else {
+                    format!(
+                        "Saved to memory (message_id: {message_id}, conversation: {}). Content will be available for future recall.",
+                        self.conversation_id
+                    )
+                }
+            }
+            None => "Memory admission rejected: message did not meet quality threshold.".to_owned(),
+        };
+
+        Ok(Some(ToolOutput {
+            tool_name: zeph_common::ToolName::new("memory_save"),
+            summary,
+            blocks_executed: 1,
+            filter_stats: None,
+            diff: None,
+            streamed: false,
+            terminal_id: None,
+            locations: None,
+            raw_response: None,
+            claim_source: Some(zeph_tools::ClaimSource::Memory),
+            ..Default::default()
+        }))
     }
 }
 
@@ -190,70 +375,76 @@ impl ToolExecutor for MemoryToolExecutor {
             "memory_save" => {
                 let params: MemorySaveParams = deserialize_params(&call.params)?;
 
-                if params.content.is_empty() {
-                    return Err(ToolError::InvalidParams {
-                        message: "content must not be empty".to_owned(),
+                // Write-time consent gate (issue #6490, MemGhost): require interactive
+                // confirmation when this turn already contains tool output at or above the
+                // configured trust threshold. Uses the same ConfirmationRequired ->
+                // Channel::confirm protocol as TrustGateExecutor::check_trust — the agent's
+                // `handle_confirmation_phase` catches this and re-dispatches via
+                // `execute_tool_call_confirmed` on approval.
+                if let Some(gate) = &self.consent_gate
+                    && self.current_trust_level() >= gate.confirm_threshold
+                {
+                    let preview: String = params.content.chars().take(80).collect();
+                    let ellipsis = if params.content.chars().count() > 80 {
+                        "…"
+                    } else {
+                        ""
+                    };
+                    let trust = self.current_trust_level();
+                    return Err(ToolError::ConfirmationRequired {
+                        command: format!(
+                            "Save to memory: {preview}{ellipsis} [source: {}]",
+                            trust.as_str()
+                        ),
                     });
                 }
-                if params.content.len() > 4096 {
-                    return Err(ToolError::InvalidParams {
-                        message: "content exceeds maximum length of 4096 characters".to_owned(),
-                    });
-                }
 
-                // Schema validation: check content before writing to memory.
-                if let Err(e) = self.validator.validate_memory_save(&params.content) {
-                    return Err(ToolError::InvalidParams {
-                        message: format!("memory write rejected: {e}"),
-                    });
-                }
-
-                let role = params.role.as_str();
-
-                // Explicit user-directed saves bypass goal-conditioned scoring (goal_text = None).
-                let message_id_opt = self
-                    .memory
-                    .remember(self.conversation_id, role, &params.content, None)
-                    .await
-                    .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
-
-                let summary = match message_id_opt {
-                    Some(message_id) => {
-                        if self.ephemeral {
-                            format!(
-                                "Saved to session memory (message_id: {message_id}, conversation: {}). Ephemeral — not available after session ends.",
-                                self.conversation_id
-                            )
-                        } else {
-                            format!(
-                                "Saved to memory (message_id: {message_id}, conversation: {}). Content will be available for future recall.",
-                                self.conversation_id
-                            )
-                        }
-                    }
-                    None => "Memory admission rejected: message did not meet quality threshold."
-                        .to_owned(),
-                };
-
-                Ok(Some(ToolOutput {
-                    tool_name: zeph_common::ToolName::new("memory_save"),
-                    summary,
-                    blocks_executed: 1,
-                    filter_stats: None,
-                    diff: None,
-                    streamed: false,
-                    terminal_id: None,
-                    locations: None,
-                    raw_response: None,
-                    claim_source: Some(zeph_tools::ClaimSource::Memory),
-                    ..Default::default()
-                }))
+                self.do_memory_save(&params).await
             }
             _ => Ok(None),
         }
     }
 
-    zeph_tools::tool_executor_no_inner_defaults!();
+    fn requires_confirmation(&self, call: &ToolCall) -> bool {
+        if call.tool_id.as_str() != "memory_save" {
+            return false;
+        }
+        let Some(gate) = &self.consent_gate else {
+            return false;
+        };
+        self.current_trust_level() >= gate.confirm_threshold
+    }
+
+    /// Execute bypassing the consent-gate confirmation check (called after the user approves).
+    ///
+    /// `memory_search` has no confirmation policy of its own, so it delegates to
+    /// [`ToolExecutor::execute_tool_call`] unchanged.
+    async fn execute_tool_call_confirmed(
+        &self,
+        call: &ToolCall,
+    ) -> Result<Option<ToolOutput>, ToolError> {
+        if call.tool_id.as_str() == "memory_save" {
+            let params: MemorySaveParams = deserialize_params(&call.params)?;
+            return self.do_memory_save(&params).await;
+        }
+        self.execute_tool_call(call).await
+    }
+
+    fn checkpoint_undo(&self, _n: usize) -> CheckpointActionResult {
+        CheckpointActionResult::unsupported()
+    }
+
+    fn checkpoint_redo(&self) -> CheckpointActionResult {
+        CheckpointActionResult::unsupported()
+    }
+
+    fn checkpoint_list(&self) -> CheckpointListResult {
+        CheckpointListResult::default()
+    }
+
+    fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -442,6 +633,100 @@ mod tests {
             "bare-mode save must not claim cross-session persistence; got: {}",
             output.summary
         );
+    }
+
+    fn memory_save_call(content: &str) -> ToolCall {
+        let mut params = serde_json::Map::new();
+        params.insert("content".into(), serde_json::Value::String(content.into()));
+        ToolCall {
+            tool_id: zeph_common::ToolName::new("memory_save"),
+            params,
+            caller_id: None,
+            context: None,
+            tool_call_id: String::new(),
+            skill_name: None,
+        }
+    }
+
+    // ── Write-time memory-consent gate (issue #6490, MemGhost) ─────────────────────
+
+    #[tokio::test]
+    async fn memory_save_without_consent_gate_never_requires_confirmation() {
+        let memory = make_memory().await;
+        let sqlite = memory.sqlite().clone();
+        let cid = sqlite.create_conversation().await.unwrap();
+        // No `.with_consent_gate(...)` attached — must behave exactly as before #6490.
+        let executor = MemoryToolExecutor::new(Arc::new(memory), cid);
+        let call = memory_save_call("a fact");
+        let result = executor.execute_tool_call(&call).await;
+        assert!(result.is_ok(), "expected no confirmation gate: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn memory_save_requires_confirmation_when_turn_trust_at_or_above_threshold() {
+        let memory = make_memory().await;
+        let sqlite = memory.sqlite().clone();
+        let cid = sqlite.create_conversation().await.unwrap();
+        let trust_slot: MemoryConsentTrustSlot = Arc::new(RwLock::new(0u8));
+        let executor = MemoryToolExecutor::new(Arc::new(memory), cid).with_consent_gate(
+            Arc::clone(&trust_slot),
+            ContentTrustLevel::ExternalUntrusted,
+        );
+
+        // Simulate sanitize_tool_output having ratcheted the slot up this turn.
+        *trust_slot.write() = ContentTrustLevel::ExternalUntrusted as u8;
+
+        let call = memory_save_call("derived from untrusted web content");
+        let result = executor.execute_tool_call(&call).await;
+        assert!(
+            matches!(result, Err(ToolError::ConfirmationRequired { .. })),
+            "expected ConfirmationRequired, got: {result:?}"
+        );
+        assert!(executor.requires_confirmation(&call));
+    }
+
+    #[tokio::test]
+    async fn memory_save_below_confirm_threshold_does_not_require_confirmation() {
+        let memory = make_memory().await;
+        let sqlite = memory.sqlite().clone();
+        let cid = sqlite.create_conversation().await.unwrap();
+        let trust_slot: MemoryConsentTrustSlot = Arc::new(RwLock::new(0u8));
+        let executor = MemoryToolExecutor::new(Arc::new(memory), cid).with_consent_gate(
+            Arc::clone(&trust_slot),
+            ContentTrustLevel::ExternalUntrusted,
+        );
+
+        // Only LocalUntrusted this turn — below the ExternalUntrusted confirm threshold.
+        *trust_slot.write() = ContentTrustLevel::LocalUntrusted as u8;
+
+        let call = memory_save_call("derived from a local shell command");
+        let result = executor.execute_tool_call(&call).await;
+        assert!(result.is_ok(), "expected no confirmation gate: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn execute_tool_call_confirmed_bypasses_consent_gate_and_saves() {
+        let memory = make_memory().await;
+        let sqlite = memory.sqlite().clone();
+        let cid = sqlite.create_conversation().await.unwrap();
+        let trust_slot: MemoryConsentTrustSlot = Arc::new(RwLock::new(0u8));
+        let executor = MemoryToolExecutor::new(Arc::new(memory), cid).with_consent_gate(
+            Arc::clone(&trust_slot),
+            ContentTrustLevel::ExternalUntrusted,
+        );
+        *trust_slot.write() = ContentTrustLevel::ExternalUntrusted as u8;
+
+        let call = memory_save_call("approved after confirmation");
+        // First attempt is gated.
+        assert!(matches!(
+            executor.execute_tool_call(&call).await,
+            Err(ToolError::ConfirmationRequired { .. })
+        ));
+        // Confirmed re-dispatch bypasses the gate and actually saves.
+        let result = executor.execute_tool_call_confirmed(&call).await;
+        assert!(result.is_ok(), "confirmed save should succeed: {result:?}");
+        let output = result.unwrap().unwrap();
+        assert!(output.summary.contains("Saved to memory"));
     }
 
     /// `memory_search` description must mention user-provided facts so the model

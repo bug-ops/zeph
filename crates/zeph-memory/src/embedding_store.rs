@@ -274,6 +274,7 @@ impl EmbeddingStore {
         tool_name: &str,
         exit_code: Option<i32>,
         timestamp: Option<&str>,
+        trust_level: Option<&str>,
     ) -> Result<String, MemoryError> {
         self.store_impl(
             message_id,
@@ -283,6 +284,7 @@ impl EmbeddingStore {
             kind,
             model,
             chunk_index,
+            trust_level,
             StoreExtra::ToolContext {
                 tool_name,
                 exit_code,
@@ -313,6 +315,7 @@ impl EmbeddingStore {
         kind: MessageKind,
         model: &str,
         chunk_index: u32,
+        trust_level: Option<&str>,
     ) -> Result<String, MemoryError> {
         self.store_impl(
             message_id,
@@ -322,6 +325,7 @@ impl EmbeddingStore {
             kind,
             model,
             chunk_index,
+            trust_level,
             StoreExtra::None,
         )
         .await
@@ -352,6 +356,7 @@ impl EmbeddingStore {
         model: &str,
         chunk_index: u32,
         category: Option<&str>,
+        trust_level: Option<&str>,
     ) -> Result<String, MemoryError> {
         self.store_impl(
             message_id,
@@ -361,6 +366,7 @@ impl EmbeddingStore {
             kind,
             model,
             chunk_index,
+            trust_level,
             StoreExtra::Category(category),
         )
         .await
@@ -369,6 +375,9 @@ impl EmbeddingStore {
     /// Shared point-id/dimensions/base-payload construction and `embeddings_metadata` upsert
     /// for [`Self::store`], [`Self::store_with_tool_context`], and [`Self::store_with_category`]
     /// (#5486). `extra` supplies the payload fields that differ between the three callers.
+    /// `trust_level` is the write-time provenance tier (issue #6490); `None` omits the payload
+    /// field entirely rather than writing a placeholder, matching the `category` field's
+    /// no-silent-false-positive convention.
     #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     async fn store_impl(
         &self,
@@ -379,6 +388,7 @@ impl EmbeddingStore {
         kind: MessageKind,
         model: &str,
         chunk_index: u32,
+        trust_level: Option<&str>,
         extra: StoreExtra<'_>,
     ) -> Result<String, MemoryError> {
         let point_id = uuid::Uuid::new_v4().to_string();
@@ -400,6 +410,9 @@ impl EmbeddingStore {
                 serde_json::json!(kind.is_summary()),
             ),
         ]);
+        if let Some(trust) = trust_level {
+            payload.insert("trust_level".to_owned(), serde_json::json!(trust));
+        }
         match extra {
             StoreExtra::None => {}
             StoreExtra::Category(category) => {
@@ -1022,6 +1035,7 @@ mod tests {
                 MessageKind::Regular,
                 "test-model",
                 0,
+                None,
             )
             .await
             .unwrap();
@@ -1081,6 +1095,7 @@ mod tests {
                 MessageKind::Regular,
                 "test-model",
                 0,
+                None,
             )
             .await
             .unwrap();
@@ -1093,6 +1108,7 @@ mod tests {
                 MessageKind::Regular,
                 "test-model",
                 0,
+                None,
             )
             .await
             .unwrap();
@@ -1146,6 +1162,7 @@ mod tests {
                 "test-model",
                 0,
                 Some("preference"),
+                None,
             )
             .await
             .unwrap();
@@ -1178,6 +1195,7 @@ mod tests {
                 MessageKind::Regular,
                 "m",
                 0,
+                None,
                 None,
             )
             .await
@@ -1214,6 +1232,7 @@ mod tests {
                 "shell",
                 Some(0),
                 Some("2026-07-02T00:00:00Z"),
+                None,
             )
             .await
             .unwrap();
@@ -1261,6 +1280,7 @@ mod tests {
                 MessageKind::Regular,
                 "test-model",
                 0,
+                None,
             )
             .await
             .unwrap();
@@ -1285,6 +1305,7 @@ mod tests {
                 MessageKind::Regular,
                 "m",
                 0,
+                None,
             )
             .await
             .unwrap();
@@ -1297,6 +1318,7 @@ mod tests {
                 MessageKind::Regular,
                 "m",
                 0,
+                None,
             )
             .await
             .unwrap();
@@ -1387,6 +1409,7 @@ mod tests {
                 MessageKind::Regular,
                 "m",
                 0,
+                None,
             )
             .await
             .unwrap();
@@ -1399,6 +1422,7 @@ mod tests {
                 MessageKind::Regular,
                 "m",
                 0,
+                None,
             )
             .await
             .unwrap();
@@ -1427,6 +1451,7 @@ mod tests {
                 MessageKind::Regular,
                 "m",
                 0,
+                None,
             )
             .await
             .unwrap();
@@ -1463,6 +1488,7 @@ mod tests {
                 MessageKind::Regular,
                 "m",
                 0,
+                None,
             )
             .await
             .unwrap();
@@ -1475,6 +1501,7 @@ mod tests {
                 MessageKind::Regular,
                 "m",
                 1,
+                None,
             )
             .await
             .unwrap();
@@ -1511,6 +1538,7 @@ mod tests {
                 MessageKind::Regular,
                 "test-model",
                 0,
+                None,
             )
             .await
             .unwrap();
