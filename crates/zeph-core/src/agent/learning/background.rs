@@ -171,7 +171,7 @@ async fn arise_check_domain_gate(args: &AriseTaskArgs, generated: &str) -> bool 
 }
 
 #[tracing::instrument(name = "core.learning.arise_store_version", skip_all, level = "debug")]
-async fn arise_store_version(args: AriseTaskArgs, generated: String) {
+pub(super) async fn arise_store_version(args: AriseTaskArgs, generated: String) {
     let active = match args
         .memory
         .sqlite()
@@ -200,9 +200,18 @@ async fn arise_store_version(args: AriseTaskArgs, generated: String) {
         }
     };
     let predecessor_id = active.as_ref().map(|v| v.id);
-    // CRITICAL: ARISE-generated versions MUST start at quarantined trust level.
-    // When auto_activate is set, save and activate atomically to prevent orphaned versions.
-    let save_result = if args.auto_activate {
+
+    // CRITICAL: ARISE-generated versions MUST start at quarantined trust level, and a body
+    // that fails the injection scan must never reach the live SKILL.md. This is now enforced
+    // below (#6568 S2), mirroring store_improved_version's ordering: scan -> cap trust ->
+    // activate -> write. `save_and_activate_skill_version`'s atomic transaction is only used
+    // when the gate passes; a blocked/fail-closed body falls back to a save-only (inactive)
+    // insert, same as store_improved_version's hard-block path.
+    let should_activate = args.auto_activate
+        && super::trust::scan_and_cap_for_activation(&args.memory, &args.skill_name, &generated)
+            .await;
+
+    let save_result = if should_activate {
         args.memory
             .sqlite()
             .save_and_activate_skill_version(
@@ -234,7 +243,7 @@ async fn arise_store_version(args: AriseTaskArgs, generated: String) {
         return;
     }
     tracing::info!(skill = %args.skill_name, version = next_ver, "ARISE: saved trace-improved version (quarantined)");
-    if args.auto_activate
+    if should_activate
         && let Err(e) = write_skill_file(
             &args.skill_paths,
             &args.skill_name,

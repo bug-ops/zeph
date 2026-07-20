@@ -156,6 +156,105 @@ async fn try_auto_promote(
     }
 }
 
+/// Caps a newly auto-improved skill version's trust at `Quarantined` before activation,
+/// instead of letting it silently inherit the pre-existing (possibly `Trusted`) parent
+/// trust level. Returns `true` when the cap was written successfully; `false` means the
+/// caller must fail closed and skip activation (spec 084 NFR-001).
+pub(crate) async fn cap_auto_version_trust(
+    memory: &zeph_memory::semantic::SemanticMemory,
+    skill_name: &str,
+) -> bool {
+    // Explicit match, not `.ok().flatten()`: a DB read `Err` must fail closed, not be
+    // coerced into "no parent row" — that would silently raise an already-`Blocked` parent
+    // to `Quarantined` on a transient read failure (NFR-001).
+    let parent_level = match memory.sqlite().load_skill_trust(skill_name).await {
+        Ok(row) => row.map(|r| r.trust_level),
+        Err(e) => {
+            tracing::warn!(
+                skill = skill_name,
+                error = %e,
+                "cap_auto_version_trust: trust read failed, skipping activation (fail-closed)"
+            );
+            return false;
+        }
+    };
+    let capped = match parent_level {
+        Some(level) => level.min_trust(zeph_common::SkillTrustLevel::Quarantined),
+        None => zeph_common::SkillTrustLevel::Quarantined,
+    };
+
+    let trust_write_result = if parent_level.is_some() {
+        memory
+            .sqlite()
+            .set_skill_trust_level(skill_name, capped)
+            .await
+    } else {
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                skill_name,
+                capped,
+                zeph_memory::store::SourceKind::Local,
+                None,
+                None,
+                "",
+            )
+            .await
+            .map(|()| true)
+    };
+
+    match trust_write_result {
+        Ok(true) => {
+            tracing::info!(
+                skill = skill_name,
+                trust = %capped,
+                "store_improved_version: capped auto-improved version trust"
+            );
+            true
+        }
+        Ok(false) => {
+            tracing::warn!(
+                skill = skill_name,
+                "store_improved_version: trust write affected no rows, skipping activation (fail-closed)"
+            );
+            false
+        }
+        Err(e) => {
+            tracing::warn!(
+                skill = skill_name,
+                error = %e,
+                "store_improved_version: trust write failed, skipping activation (fail-closed)"
+            );
+            false
+        }
+    }
+}
+
+/// Runs the injection scan + trust cap gate that any write of a skill body to the live
+/// `SKILL.md` must pass before activation. Shared by `activate_version_and_write`
+/// (`/skill activate`, `/skill approve`, `/skill reset`) and ARISE's `arise_store_version` —
+/// the choke points, besides `store_improved_version`, where a version can reach production.
+///
+/// Returns `true` when the caller may proceed to activate + write the body; `false` means
+/// hard-blocked (injection scan matched) or fail-closed (trust write error), and the caller
+/// must leave the prior activation state untouched.
+pub(crate) async fn scan_and_cap_for_activation(
+    memory: &zeph_memory::semantic::SemanticMemory,
+    skill_name: &str,
+    body: &str,
+) -> bool {
+    let scan = zeph_skills::scanner::scan_skill_body(body);
+    if scan.has_matches() {
+        tracing::warn!(
+            skill = skill_name,
+            patterns = ?scan.matched_patterns,
+            "scan_and_cap_for_activation: hard-blocking activation, injection scan matched"
+        );
+        return false;
+    }
+    cap_auto_version_trust(memory, skill_name).await
+}
+
 /// Demote a skill to quarantined if it is currently trusted or verified.
 async fn try_auto_demote(
     memory: &zeph_memory::semantic::SemanticMemory,

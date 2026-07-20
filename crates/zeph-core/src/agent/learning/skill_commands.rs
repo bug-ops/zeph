@@ -414,8 +414,14 @@ impl<C: Channel> Agent<C> {
             return Ok(format!("Version {ver} not found for \"{name}\"."));
         };
 
-        self.activate_version_and_write(&memory, name, target_id, &target_desc, &target_body)
+        let activated = self
+            .activate_version_and_write(&memory, name, target_id, &target_desc, &target_body)
             .await?;
+        if !activated {
+            return Ok(format!(
+                "Activation blocked for \"{name}\" v{ver}: failed the injection scan or trust check."
+            ));
+        }
 
         Ok(format!("Activated v{ver} for \"{name}\"."))
     }
@@ -444,8 +450,14 @@ impl<C: Channel> Agent<C> {
             return Ok(format!("No pending auto version for \"{name}\"."));
         };
 
-        self.activate_version_and_write(&memory, name, target_id, &target_desc, &target_body)
+        let activated = self
+            .activate_version_and_write(&memory, name, target_id, &target_desc, &target_body)
             .await?;
+        if !activated {
+            return Ok(format!(
+                "Approval blocked for \"{name}\" v{target_ver}: failed the injection scan or trust check."
+            ));
+        }
 
         Ok(format!(
             "Approved and activated v{target_ver} for \"{name}\"."
@@ -475,8 +487,14 @@ impl<C: Channel> Agent<C> {
             return Ok(format!("Original version not found for \"{name}\"."));
         };
 
-        self.activate_version_and_write(&memory, name, v1_id, &v1_desc, &v1_body)
+        let activated = self
+            .activate_version_and_write(&memory, name, v1_id, &v1_desc, &v1_body)
             .await?;
+        if !activated {
+            return Ok(format!(
+                "Reset blocked for \"{name}\": v1 failed the injection scan or trust check."
+            ));
+        }
 
         Ok(format!("Reset \"{name}\" to original v1."))
     }
@@ -484,7 +502,15 @@ impl<C: Channel> Agent<C> {
     /// Activate `target_id` as the active skill version and rewrite `SKILL.md` to match.
     ///
     /// Shared by activate/approve/reset handlers, which each select `target_id` via a
-    /// different predicate before delegating the write-through here.
+    /// different predicate before delegating the write-through here. This is the sole choke
+    /// point for those three commands, so it runs the same injection scan + trust cap as
+    /// `store_improved_version` unconditionally — regardless of the target version's
+    /// `source` — to close the gap where a flagged or previously-hard-blocked `"auto"` body
+    /// could be manually re-selected and activated with no re-scan (#6568 S1).
+    ///
+    /// Returns `Ok(true)` when the version was activated, `Ok(false)` when it was blocked
+    /// by the scan or trust cap — the version stays saved-but-inactive and the caller must
+    /// report that instead of claiming success.
     async fn activate_version_and_write(
         &mut self,
         memory: &Arc<SemanticMemory>,
@@ -492,7 +518,11 @@ impl<C: Channel> Agent<C> {
         target_id: i64,
         target_desc: &str,
         target_body: &str,
-    ) -> Result<(), super::super::error::AgentError> {
+    ) -> Result<bool, super::super::error::AgentError> {
+        if !super::trust::scan_and_cap_for_activation(memory, name, target_body).await {
+            return Ok(false);
+        }
+
         memory
             .sqlite()
             .activate_skill_version(name, target_id)
@@ -506,7 +536,7 @@ impl<C: Channel> Agent<C> {
         )
         .await?;
 
-        Ok(())
+        Ok(true)
     }
 }
 

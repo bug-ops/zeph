@@ -316,7 +316,7 @@ impl<C: Channel> Agent<C> {
         self.provider.chat(&messages).await.map_err(Into::into)
     }
 
-    async fn store_improved_version(
+    pub(crate) async fn store_improved_version(
         &self,
         memory: &SemanticMemory,
         config: &LearningConfig,
@@ -346,6 +346,23 @@ impl<C: Channel> Agent<C> {
             .await?;
 
         tracing::info!("generated v{next_ver} for skill {skill_name} (id={version_id})");
+
+        // Mirrors SkillGenerator::parse_and_validate / heuristic_promotion::build_generated_skill —
+        // every code path that can write a new skill body must run the same injection scan.
+        let scan = zeph_skills::scanner::scan_skill_body(generated_body);
+        if scan.has_matches() {
+            tracing::warn!(
+                skill = skill_name,
+                patterns = ?scan.matched_patterns,
+                "store_improved_version: injection patterns detected in auto-improved body"
+            );
+        }
+
+        // Spec 084 FR-005 is deliberately NOT implemented literally here: trust is stored per
+        // skill_name (one row), not per version, so eagerly writing a demoted trust level when
+        // auto_activate=false would wrongly demote the still-live, previously-vetted body that
+        // this unactivated version has not replaced. See spec.md §9 (open question, deferred to
+        // a follow-up issue) — the trust cap below is only applied at the activation site.
 
         if config.domain_success_gate {
             let gate_prompt = zeph_skills::evolution::build_domain_gate_prompt(
@@ -383,7 +400,28 @@ impl<C: Channel> Agent<C> {
         }
 
         if config.auto_activate {
-            // Activate atomically after the gate passed.
+            if scan.has_matches() {
+                // Hard-block: matches SkillCommands::create's precedent (#2621) for
+                // manually-generated skills. The version row stays saved for forensics;
+                // the old body remains live and this is not treated as a turn-level error.
+                tracing::warn!(
+                    skill = skill_name,
+                    "store_improved_version: hard-blocking activation, injection scan matched"
+                );
+                return Ok(());
+            }
+
+            // Auto-improved content must never silently inherit the parent skill's trust
+            // level unchanged — cap it at Quarantined (or the parent's level, if already
+            // worse than Quarantined) before the live body is ever written. Ordering is
+            // load-bearing: the cap must be written and confirmed BEFORE the live file is
+            // written, or a failed trust write would reproduce the vulnerability this fix
+            // closes.
+            if !super::trust::cap_auto_version_trust(memory, skill_name).await {
+                return Ok(());
+            }
+
+            // Activate atomically after the gate passed and trust was capped.
             memory
                 .sqlite()
                 .activate_skill_version(skill_name, version_id)
