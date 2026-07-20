@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+### Removed
+
+- `zeph-core`: removed the `#[cfg(test)]`-only legacy sequential-dispatch harness in
+  `agent/tool_execution/tool_result.rs` (`handle_tool_result`, `record_tool_output_outcome`,
+  `process_successful_tool_output`, `handle_confirmation_required`) and the parallel legacy LLM
+  dispatch harness in `agent/tool_execution/llm_dispatch.rs` (`call_llm_with_timeout`,
+  `call_llm_non_streaming`, `call_llm_with_retry`) — both were superseded in production by
+  `process_one_tool_result`/`handle_confirmation_phase` (tier_loop.rs) and
+  `call_chat_with_tools_retry`/`call_chat_with_tools` respectively, but were kept around only to
+  keep their dependent tests green, which previously masked a real production gap (issue #6364).
+  All ~20 dependent tests across `parallel_and_handle_tests.rs`, `retry_and_skill_env_tests.rs`,
+  and `compaction_e2e.rs` were repointed to exercise the real production entry points
+  (`process_one_tool_result`, `stamp_and_send_tier_start`, `call_chat_with_tools_retry`,
+  `process_response`); response-cache tests were consolidated into the existing native-tool-use
+  cache coverage in `sanitize_and_native_tests.rs` (issue #6560).
+
 ### Fixed
 
 - `zeph-core`/`zeph-skills`: the failure-driven self-learning path (`store_improved_version`)

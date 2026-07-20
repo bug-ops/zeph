@@ -633,7 +633,7 @@ Text previews use safe UTF-8 truncation (`truncate_chars()`) that never splits a
 
 ## Reactive Retry on Context Length Errors
 
-LLM calls in the agent loop (`call_llm_with_retry()` and `call_chat_with_tools_retry()`) intercept context length errors and automatically compact before retrying. The flow:
+LLM calls in the agent loop (`call_chat_with_tools_retry()`) intercept context length errors and automatically compact before retrying. The flow:
 
 1. Send messages to the LLM provider
 2. If the provider returns a context length error, trigger `compact_context()`

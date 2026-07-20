@@ -99,6 +99,14 @@ impl zeph_tools::executor::ToolExecutor for FailingNthExecutor {
     zeph_tools::tool_executor_no_inner_defaults!();
 }
 
+fn make_tool_use_request(id: &str, name: &str) -> zeph_llm::provider::ToolUseRequest {
+    zeph_llm::provider::ToolUseRequest {
+        id: id.into(),
+        name: name.into(),
+        input: serde_json::json!({}),
+    }
+}
+
 fn make_calls(n: usize) -> Vec<ToolCall> {
     (0..n)
         .map(|i| ToolCall {
@@ -297,11 +305,11 @@ fn last_user_query_no_user_messages_returns_empty() {
 }
 
 #[tokio::test]
-async fn handle_tool_result_blocked_returns_false() {
+async fn process_one_tool_result_blocked_is_error_with_policy_message() {
     use crate::agent::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
-    use zeph_tools::executor::ToolError;
+    use zeph_llm::provider::MessagePart;
 
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);
@@ -309,31 +317,48 @@ async fn handle_tool_result_blocked_returns_false() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
 
-    let result = agent
-        .handle_tool_result(
-            "response",
-            Err(ToolError::Blocked {
+    let tc = make_tool_use_request("id-blocked", "bash");
+    let mut result_parts = Vec::new();
+    agent
+        .process_one_tool_result(
+            &tc,
+            "id-blocked",
+            &Instant::now(),
+            Err(zeph_tools::ToolError::Blocked {
                 command: "rm -rf /".into(),
             }),
+            &mut result_parts,
+            &mut Vec::new(),
+            &mut false,
+            &mut None,
+            &mut Vec::new(),
+            &mut 0,
+            &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+            &mut zeph_sanitizer::ContentSourceKind::ToolResult,
         )
         .await
         .unwrap();
-    assert!(!result);
+
+    let is_error = result_parts
+        .iter()
+        .any(|p| matches!(p, MessagePart::ToolResult { is_error: true, .. }));
+    assert!(is_error, "a blocked command must be classified as an error");
     assert!(
         agent
             .channel
             .sent_messages()
             .iter()
-            .any(|s| s.contains("blocked"))
+            .any(|s| s.contains("blocked")),
+        "the policy-blocked message must reach the channel"
     );
 }
 
 #[tokio::test]
-async fn handle_tool_result_cancelled_returns_false() {
+async fn process_one_tool_result_cancelled_is_error() {
     use crate::agent::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
-    use zeph_tools::executor::ToolError;
+    use zeph_llm::provider::MessagePart;
 
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);
@@ -341,19 +366,41 @@ async fn handle_tool_result_cancelled_returns_false() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
 
-    let result = agent
-        .handle_tool_result("response", Err(ToolError::Cancelled))
+    let tc = make_tool_use_request("id-cancel", "bash");
+    let mut result_parts = Vec::new();
+    agent
+        .process_one_tool_result(
+            &tc,
+            "id-cancel",
+            &Instant::now(),
+            Err(zeph_tools::ToolError::Cancelled),
+            &mut result_parts,
+            &mut Vec::new(),
+            &mut false,
+            &mut None,
+            &mut Vec::new(),
+            &mut 0,
+            &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+            &mut zeph_sanitizer::ContentSourceKind::ToolResult,
+        )
         .await
         .unwrap();
-    assert!(!result);
+
+    let is_error = result_parts
+        .iter()
+        .any(|p| matches!(p, MessagePart::ToolResult { is_error: true, .. }));
+    assert!(
+        is_error,
+        "a cancelled tool call must be classified as an error"
+    );
 }
 
 #[tokio::test]
-async fn handle_tool_result_sandbox_violation_returns_false() {
+async fn process_one_tool_result_sandbox_violation_is_error_with_sandbox_message() {
     use crate::agent::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
-    use zeph_tools::executor::ToolError;
+    use zeph_llm::provider::MessagePart;
 
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);
@@ -361,30 +408,51 @@ async fn handle_tool_result_sandbox_violation_returns_false() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
 
-    let result = agent
-        .handle_tool_result(
-            "response",
-            Err(ToolError::SandboxViolation {
+    let tc = make_tool_use_request("id-sandbox", "bash");
+    let mut result_parts = Vec::new();
+    agent
+        .process_one_tool_result(
+            &tc,
+            "id-sandbox",
+            &Instant::now(),
+            Err(zeph_tools::ToolError::SandboxViolation {
                 path: "/etc/passwd".into(),
             }),
+            &mut result_parts,
+            &mut Vec::new(),
+            &mut false,
+            &mut None,
+            &mut Vec::new(),
+            &mut 0,
+            &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+            &mut zeph_sanitizer::ContentSourceKind::ToolResult,
         )
         .await
         .unwrap();
-    assert!(!result);
+
+    let is_error = result_parts
+        .iter()
+        .any(|p| matches!(p, MessagePart::ToolResult { is_error: true, .. }));
+    assert!(
+        is_error,
+        "a sandbox violation must be classified as an error"
+    );
     assert!(
         agent
             .channel
             .sent_messages()
             .iter()
-            .any(|s| s.contains("sandbox"))
+            .any(|s| s.contains("sandbox")),
+        "the sandbox-violation message must reach the channel"
     );
 }
 
 #[tokio::test]
-async fn handle_tool_result_none_returns_false() {
+async fn process_one_tool_result_ok_none_is_success_with_no_output_marker() {
     use crate::agent::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
+    use zeph_llm::provider::MessagePart;
 
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);
@@ -392,18 +460,48 @@ async fn handle_tool_result_none_returns_false() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
 
-    let result = agent
-        .handle_tool_result("response", Ok(None))
+    let tc = make_tool_use_request("id-none", "bash");
+    let mut result_parts = Vec::new();
+    agent
+        .process_one_tool_result(
+            &tc,
+            "id-none",
+            &Instant::now(),
+            Ok(None),
+            &mut result_parts,
+            &mut Vec::new(),
+            &mut false,
+            &mut None,
+            &mut Vec::new(),
+            &mut 0,
+            &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+            &mut zeph_sanitizer::ContentSourceKind::ToolResult,
+        )
         .await
         .unwrap();
-    assert!(!result);
+
+    let (content, is_error) = result_parts
+        .iter()
+        .find_map(|p| match p {
+            MessagePart::ToolResult {
+                content, is_error, ..
+            } => Some((content.clone(), *is_error)),
+            _ => None,
+        })
+        .expect("a ToolResult message part must be pushed");
+    assert!(!is_error, "Ok(None) must not be classified as an error");
+    assert!(
+        content.contains("no output"),
+        "Ok(None) must surface a no-output marker, got: {content}"
+    );
 }
 
 #[tokio::test]
-async fn handle_tool_result_with_output_returns_true() {
+async fn process_one_tool_result_with_output_pushes_success_tool_result() {
     use crate::agent::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
+    use zeph_llm::provider::MessagePart;
 
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);
@@ -411,6 +509,7 @@ async fn handle_tool_result_with_output_returns_true() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
 
+    let tc = make_tool_use_request("id-out", "bash");
     let output = ToolOutput {
         tool_name: "bash".into(),
         summary: "hello from tool".into(),
@@ -424,18 +523,48 @@ async fn handle_tool_result_with_output_returns_true() {
         claim_source: None,
         ..Default::default()
     };
-    let result = agent
-        .handle_tool_result("response", Ok(Some(output)))
+    let mut result_parts = Vec::new();
+    agent
+        .process_one_tool_result(
+            &tc,
+            "id-out",
+            &Instant::now(),
+            Ok(Some(output)),
+            &mut result_parts,
+            &mut Vec::new(),
+            &mut false,
+            &mut None,
+            &mut Vec::new(),
+            &mut 0,
+            &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+            &mut zeph_sanitizer::ContentSourceKind::ToolResult,
+        )
         .await
         .unwrap();
-    assert!(result);
+
+    let (content, is_error) = result_parts
+        .iter()
+        .find_map(|p| match p {
+            MessagePart::ToolResult {
+                content, is_error, ..
+            } => Some((content.clone(), *is_error)),
+            _ => None,
+        })
+        .expect("a ToolResult message part must be pushed");
+    assert!(!is_error);
+    assert!(content.contains("hello from tool"));
 }
 
 #[tokio::test]
-async fn handle_tool_result_empty_output_returns_false() {
+async fn process_one_tool_result_whitespace_only_output_is_still_success() {
+    // Unlike the removed legacy harness (which special-cased a trim()-empty summary as an
+    // early "no further action" skip), the production classify_tool_result path only treats
+    // output as an error when it contains "[error]"/"[stderr]" markers — whitespace-only
+    // output is not special-cased. This asserts the current, real behavior.
     use crate::agent::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
+    use zeph_llm::provider::MessagePart;
 
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);
@@ -443,9 +572,10 @@ async fn handle_tool_result_empty_output_returns_false() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
 
+    let tc = make_tool_use_request("id-empty", "bash");
     let output = ToolOutput {
         tool_name: "bash".into(),
-        summary: "   ".into(), // whitespace only → considered empty
+        summary: "   ".into(),
         blocks_executed: 0,
         diff: None,
         filter_stats: None,
@@ -456,15 +586,36 @@ async fn handle_tool_result_empty_output_returns_false() {
         claim_source: None,
         ..Default::default()
     };
-    let result = agent
-        .handle_tool_result("response", Ok(Some(output)))
+    let mut result_parts = Vec::new();
+    agent
+        .process_one_tool_result(
+            &tc,
+            "id-empty",
+            &Instant::now(),
+            Ok(Some(output)),
+            &mut result_parts,
+            &mut Vec::new(),
+            &mut false,
+            &mut None,
+            &mut Vec::new(),
+            &mut 0,
+            &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+            &mut zeph_sanitizer::ContentSourceKind::ToolResult,
+        )
         .await
         .unwrap();
-    assert!(!result);
+
+    let is_error = result_parts
+        .iter()
+        .any(|p| matches!(p, MessagePart::ToolResult { is_error: true, .. }));
+    assert!(
+        !is_error,
+        "whitespace-only output must not be classified as an error"
+    );
 }
 
 #[tokio::test]
-async fn handle_tool_result_error_prefix_triggers_anomaly_error() {
+async fn process_one_tool_result_error_prefix_records_tool_failure_outcome() {
     use crate::agent::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
@@ -474,7 +625,10 @@ async fn handle_tool_result_error_prefix_triggers_anomaly_error() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+    // reflection_used = true so the self-reflection path is skipped
+    agent.services.learning_engine.mark_reflection_used();
 
+    let tc = make_tool_use_request("id-error-prefix", "bash");
     let output = ToolOutput {
         tool_name: "bash".into(),
         summary: "[error] spawn failed".into(),
@@ -488,51 +642,35 @@ async fn handle_tool_result_error_prefix_triggers_anomaly_error() {
         claim_source: None,
         ..Default::default()
     };
-    // reflection_used = true so reflection path is skipped
-    agent.services.learning_engine.mark_reflection_used();
-    let result = agent
-        .handle_tool_result("response", Ok(Some(output)))
+    let mut pending_outcomes = Vec::new();
+    agent
+        .process_one_tool_result(
+            &tc,
+            "id-error-prefix",
+            &Instant::now(),
+            Ok(Some(output)),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut false,
+            &mut None,
+            &mut pending_outcomes,
+            &mut 0,
+            &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+            &mut zeph_sanitizer::ContentSourceKind::ToolResult,
+        )
         .await
         .unwrap();
-    // Returns true because the tool loop continues after recording failure
-    assert!(result);
+
+    assert!(
+        pending_outcomes.iter().any(|o| o.outcome == "tool_failure"),
+        "output containing [error] must be recorded as a tool_failure skill outcome"
+    );
 }
 
-#[tokio::test]
-async fn handle_tool_result_stderr_prefix_triggers_anomaly_error() {
-    use crate::agent::agent_tests::{
-        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-    };
-
-    let provider = mock_provider(vec![]);
-    let channel = MockChannel::new(vec![]);
-    let registry = create_test_registry();
-    let executor = MockToolExecutor::no_tools();
-    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
-
-    // [stderr] prefix is produced by ShellExecutor when the child process writes to stderr.
-    // Prior to this fix, such output was silently classified as AnomalyOutcome::Success.
-    let output = ToolOutput {
-        tool_name: "bash".into(),
-        summary: "[stderr] warning: deprecated API used".into(),
-        blocks_executed: 1,
-        diff: None,
-        filter_stats: None,
-        streamed: false,
-        terminal_id: None,
-        locations: None,
-        raw_response: None,
-        claim_source: None,
-        ..Default::default()
-    };
-    agent.services.learning_engine.mark_reflection_used();
-    let result = agent
-        .handle_tool_result("response", Ok(Some(output)))
-        .await
-        .unwrap();
-    // handle_tool_result returns true (tool loop continues) regardless of anomaly outcome
-    assert!(result);
-}
+// classify_tool_result's "[stderr]" branch (tool_result.rs:295) currently has no test that can
+// distinguish Error from Success classification for it — a pre-existing gap, not introduced by
+// this PR (the removed legacy-harness test was equally non-discriminating). Follow-up test-
+// coverage issue to be filed separately.
 
 #[tokio::test]
 async fn buffered_preserves_order() {
@@ -694,190 +832,4 @@ fn inject_active_skill_env_clears_after_call() {
     assert_eq!(calls.len(), 2, "inject + clear = 2 calls");
     assert!(calls[0].is_some(), "first call must set env");
     assert!(calls[1].is_none(), "second call must clear env");
-}
-
-#[tokio::test]
-async fn call_llm_returns_cached_response_without_provider_call() {
-    use crate::agent::agent_tests::{
-        MockChannel, MockToolExecutor, create_test_registry, mock_provider_streaming,
-    };
-    use std::sync::Arc;
-    use zeph_llm::provider::{Message, MessageMetadata, Role};
-    use zeph_memory::{ResponseCache, store::SqliteStore};
-
-    let channel = MockChannel::new(vec![]);
-    let registry = create_test_registry();
-    let executor = MockToolExecutor::no_tools();
-    // Streaming provider — cache must be consulted regardless of streaming support.
-    let provider = mock_provider_streaming(vec!["uncached response".into()]);
-    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
-
-    // Set up a response cache with a pre-populated entry.
-    let store = SqliteStore::new(":memory:").await.unwrap();
-    let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
-
-    // Pre-populate cache for the user message we're about to add.
-    let user_content = "what is 2+2?";
-    let key = ResponseCache::compute_key(user_content, &agent.runtime.config.model_name);
-    cache
-        .put(&key, "cached response", "test-model")
-        .await
-        .unwrap();
-
-    agent.services.session.response_cache = Some(cache);
-
-    agent.msg.messages.push(Message {
-        role: Role::User,
-        content: user_content.into(),
-        parts: vec![],
-        metadata: MessageMetadata::default(),
-    });
-
-    let result = agent.call_llm_with_timeout().await.unwrap();
-    assert_eq!(result.as_deref(), Some("cached response"));
-    // Channel should have received the cached response
-    assert!(
-        agent
-            .channel
-            .sent_messages()
-            .iter()
-            .any(|s| s == "cached response")
-    );
-}
-
-#[tokio::test]
-async fn store_response_in_cache_enables_second_call_to_return_cached() {
-    use crate::agent::agent_tests::{
-        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
-    };
-    use std::sync::Arc;
-    use zeph_llm::provider::{Message, MessageMetadata, Role};
-    use zeph_memory::{ResponseCache, store::SqliteStore};
-
-    // Non-streaming provider has one response; the second call must come from cache.
-    let provider = mock_provider(vec!["provider response".into()]);
-    let channel = MockChannel::new(vec![]);
-    let registry = create_test_registry();
-    let executor = MockToolExecutor::no_tools();
-    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
-
-    let store = SqliteStore::new(":memory:").await.unwrap();
-    let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
-    agent.services.session.response_cache = Some(cache);
-
-    agent.msg.messages.push(Message {
-        role: Role::User,
-        content: "what is 3+3?".into(),
-        parts: vec![],
-        metadata: MessageMetadata::default(),
-    });
-
-    // First call — hits provider, stores response in cache.
-    let first = agent.call_llm_with_timeout().await.unwrap();
-    assert_eq!(first.as_deref(), Some("provider response"));
-
-    // Second call with the same messages — must return cached value.
-    let second = agent.call_llm_with_timeout().await.unwrap();
-    assert_eq!(
-        second.as_deref(),
-        Some("provider response"),
-        "second call must return cached response"
-    );
-
-    // Both first call (provider) and second call (cache hit) send via channel.send().
-    let sent = agent.channel.sent_messages();
-    assert!(
-        sent.iter().any(|s| s == "provider response"),
-        "provider response must have been sent via channel"
-    );
-}
-
-#[tokio::test]
-async fn cache_key_stable_across_growing_history() {
-    use crate::agent::agent_tests::{
-        MockChannel, MockToolExecutor, create_test_registry, mock_provider_streaming,
-    };
-    use std::sync::Arc;
-    use zeph_llm::provider::{Message, MessageMetadata, Role};
-    use zeph_memory::{ResponseCache, store::SqliteStore};
-
-    let provider = mock_provider_streaming(vec!["turn2 response".into()]);
-    let channel = MockChannel::new(vec![]);
-    let registry = create_test_registry();
-    let executor = MockToolExecutor::no_tools();
-    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
-
-    let store = SqliteStore::new(":memory:").await.unwrap();
-    let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
-
-    // Simulate turn 1: store a cached response for user message "hello".
-    let user_msg = "hello";
-    let key = ResponseCache::compute_key(user_msg, &agent.runtime.config.model_name);
-    cache
-        .put(&key, "cached hello response", "test-model")
-        .await
-        .unwrap();
-    agent.services.session.response_cache = Some(cache);
-
-    // Add history from turn 1: system context + prior exchange.
-    agent.msg.messages.push(Message {
-        role: Role::Assistant,
-        content: "cached hello response".into(),
-        parts: vec![],
-        metadata: MessageMetadata::default(),
-    });
-
-    // Turn 2: same user message "hello" but history has grown.
-    agent.msg.messages.push(Message {
-        role: Role::User,
-        content: user_msg.into(),
-        parts: vec![],
-        metadata: MessageMetadata::default(),
-    });
-
-    // Must hit cache despite history growth — key is based on last user message only.
-    let result = agent.call_llm_with_timeout().await.unwrap();
-    assert_eq!(
-        result.as_deref(),
-        Some("cached hello response"),
-        "cache must hit for same user message regardless of preceding history"
-    );
-}
-
-#[tokio::test]
-async fn cache_skipped_when_no_user_message() {
-    use crate::agent::agent_tests::{
-        MockChannel, MockToolExecutor, create_test_registry, mock_provider_streaming,
-    };
-    use std::sync::Arc;
-    use zeph_llm::provider::{Message, MessageMetadata, Role};
-    use zeph_memory::{ResponseCache, store::SqliteStore};
-
-    let provider = mock_provider_streaming(vec!["llm response".into()]);
-    let channel = MockChannel::new(vec![]);
-    let registry = create_test_registry();
-    let executor = MockToolExecutor::no_tools();
-    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
-
-    let store = SqliteStore::new(":memory:").await.unwrap();
-    let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
-    agent.services.session.response_cache = Some(cache);
-
-    // Only system/assistant messages, no user message.
-    agent.msg.messages.push(Message {
-        role: Role::System,
-        content: "you are helpful".into(),
-        parts: vec![],
-        metadata: MessageMetadata::default(),
-    });
-    agent.msg.messages.push(Message {
-        role: Role::Assistant,
-        content: "hello".into(),
-        parts: vec![],
-        metadata: MessageMetadata::default(),
-    });
-
-    // Should skip cache (no user message) and call LLM.
-    let result = agent.call_llm_with_timeout().await.unwrap();
-    assert_eq!(result.as_deref(), Some("llm response"));
 }

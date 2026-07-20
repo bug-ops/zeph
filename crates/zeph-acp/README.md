@@ -120,7 +120,7 @@ The agent loop emits `StopHint` values that `ZephAcpAgent` maps to protocol-leve
 1. **Before execution** — `SessionUpdate::ToolCall` with `status: InProgress` is sent as soon as tool invocation begins, enabling the IDE to display a running indicator.
 2. **After execution** — `SessionUpdate::ToolCallUpdate` with `status: Completed` (or `Failed` on error) carries the output content and optional file locations.
 
-Each tool call is identified by a UUID generated per invocation. The UUID is threaded through `LoopbackEvent::ToolStart` / `LoopbackEvent::ToolOutput` so the update correctly references the original announcement. Both the fenced-block execution path (`handle_tool_result`) and the structured parallel tool-call path emit this full two-step sequence unconditionally — output content always appears inside a tool call block in the IDE regardless of which path handled the tool.
+Each tool call is identified by a UUID generated per invocation. The UUID is threaded through `LoopbackEvent::ToolStart` / `LoopbackEvent::ToolOutput` so the update correctly references the original announcement. The structured parallel tool-call path emits this full two-step sequence unconditionally — output content always appears inside a tool call block in the IDE.
 
 **Terminal release ordering** — when a shell tool call embeds a terminal via `ToolCallContent::Terminal`, the ACP spec requires the terminal to remain alive until the IDE has processed the `tool_call_update` notification. `ZephAcpAgent` defers `terminal/release` until after all notifications for that event are dispatched. The deferred release is triggered from the `prompt()` event loop via `AcpShellExecutor::release_terminal()`, which is retained in `SessionEntry` for exactly this purpose.
 

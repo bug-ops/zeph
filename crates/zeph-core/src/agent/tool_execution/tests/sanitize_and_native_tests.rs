@@ -1090,6 +1090,120 @@ async fn native_tool_use_cache_stores_only_text_responses() {
     );
 }
 
+#[tokio::test]
+#[allow(clippy::large_futures)]
+async fn native_tool_use_cache_key_stable_across_growing_history() {
+    use crate::agent::agent_tests::*;
+    use std::sync::Arc;
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+    use zeph_llm::provider::{ChatResponse, Message, MessageMetadata, Role};
+    use zeph_memory::{ResponseCache, store::SqliteStore};
+
+    let (mock, call_count) = MockProvider::with_responses(vec![])
+        .with_tool_use(vec![ChatResponse::Text("turn2 response".into())]);
+    let provider = AnyProvider::Mock(mock);
+
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
+
+    // Simulate turn 1: store a cached response for user message "hello".
+    let user_msg = "hello";
+    let key = ResponseCache::compute_key(user_msg, &agent.runtime.config.model_name);
+    cache
+        .put(&key, "cached hello response", "test-model")
+        .await
+        .unwrap();
+    agent.services.session.response_cache = Some(cache);
+
+    // Add history from turn 1: prior exchange.
+    agent.msg.messages.push(Message {
+        role: Role::Assistant,
+        content: "cached hello response".into(),
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    });
+
+    // Turn 2: same user message "hello" but history has grown.
+    agent.msg.messages.push(Message {
+        role: Role::User,
+        content: user_msg.into(),
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    });
+
+    // Must hit cache despite history growth — key is based on last user message only.
+    agent.process_response().await.unwrap();
+
+    assert_eq!(
+        *call_count.lock().unwrap(),
+        0,
+        "provider must not be called: cache key is based on the last user message only"
+    );
+    let sent = agent.channel.sent_messages();
+    assert!(
+        sent.iter().any(|s| s == "cached hello response"),
+        "cached response must be sent despite grown history; got: {sent:?}"
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::large_futures)]
+async fn native_tool_use_cache_skipped_when_no_user_message() {
+    use crate::agent::agent_tests::*;
+    use std::sync::Arc;
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+    use zeph_llm::provider::{ChatResponse, Message, MessageMetadata, Role};
+    use zeph_memory::{ResponseCache, store::SqliteStore};
+
+    let (mock, call_count) = MockProvider::with_responses(vec![])
+        .with_tool_use(vec![ChatResponse::Text("llm response".into())]);
+    let provider = AnyProvider::Mock(mock);
+
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+
+    let store = SqliteStore::new(":memory:").await.unwrap();
+    let cache = Arc::new(ResponseCache::new(store.pool().clone(), 3600));
+    agent.services.session.response_cache = Some(cache);
+
+    // Only system/assistant messages, no user message.
+    agent.msg.messages.push(Message {
+        role: Role::System,
+        content: "you are helpful".into(),
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    });
+    agent.msg.messages.push(Message {
+        role: Role::Assistant,
+        content: "hello".into(),
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    });
+
+    // Should skip cache (no user message) and call the LLM.
+    agent.process_response().await.unwrap();
+
+    assert_eq!(
+        *call_count.lock().unwrap(),
+        1,
+        "provider must be called when there is no user message to key the cache on"
+    );
+    let sent = agent.channel.sent_messages();
+    assert!(
+        sent.iter().any(|s| s == "llm response"),
+        "llm response must be sent when cache is skipped; got: {sent:?}"
+    );
+}
+
 // ── handle_native_tool_calls retry (RF-2) ────────────────────────────────
 
 /// Returns `Transient` io error for the first `fail_times` calls, then success.

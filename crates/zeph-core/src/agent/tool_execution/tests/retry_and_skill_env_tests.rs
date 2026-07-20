@@ -1,84 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-mod retry_tests {
-    use crate::agent::agent_tests::*;
-    use zeph_llm::LlmError;
-    use zeph_llm::any::AnyProvider;
-    use zeph_llm::mock::MockProvider;
-    use zeph_llm::provider::{Message, MessageMetadata, Role};
-
-    fn agent_with_provider(provider: AnyProvider) -> crate::agent::Agent<MockChannel> {
-        let channel = MockChannel::new(vec![]);
-        let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools();
-        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
-        agent.msg.messages.push(Message {
-            role: Role::User,
-            content: "hello".into(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        });
-        agent
-    }
-
-    #[tokio::test]
-    async fn call_llm_with_retry_succeeds_on_first_attempt() {
-        let provider = AnyProvider::Mock(MockProvider::with_responses(vec!["ok".into()]));
-        let mut agent = agent_with_provider(provider);
-        let result = agent.call_llm_with_retry(2).await.unwrap();
-        assert_eq!(result.as_deref(), Some("ok"));
-    }
-
-    #[tokio::test]
-    async fn call_llm_with_retry_recovers_after_context_length_error() {
-        // First call returns ContextLengthExceeded, second succeeds.
-        // compact_context() is a no-op with only 1 non-system message + system prompt,
-        // but the retry logic itself must still re-call after compaction.
-        let provider = AnyProvider::Mock(
-            MockProvider::with_responses(vec!["recovered".into()])
-                .with_errors(vec![LlmError::ContextLengthExceeded]),
-        );
-        let mut agent = agent_with_provider(provider);
-        // Add context budget so compact_context can run
-        agent.context_manager.budget = Some(zeph_core_budget_for_test());
-        let result = agent.call_llm_with_retry(2).await.unwrap();
-        assert_eq!(result.as_deref(), Some("recovered"));
-    }
-
-    fn zeph_core_budget_for_test() -> crate::context::ContextBudget {
-        crate::context::ContextBudget::new(200_000, 0.20)
-    }
-
-    #[tokio::test]
-    async fn call_llm_with_retry_propagates_non_context_error() {
-        let provider = AnyProvider::Mock(
-            MockProvider::with_responses(vec![])
-                .with_errors(vec![LlmError::Other("network error".into())]),
-        );
-        let mut agent = agent_with_provider(provider);
-        let result: Result<Option<String>, _> = agent.call_llm_with_retry(2).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(!err.is_context_length_error());
-    }
-
-    #[tokio::test]
-    async fn call_llm_with_retry_exhausts_all_attempts() {
-        // Two context length errors, max_attempts=2 — second attempt has no guard,
-        // so it returns the error directly.
-        let provider = AnyProvider::Mock(MockProvider::with_responses(vec![]).with_errors(vec![
-            LlmError::ContextLengthExceeded,
-            LlmError::ContextLengthExceeded,
-        ]));
-        let mut agent = agent_with_provider(provider);
-        agent.context_manager.budget = Some(zeph_core_budget_for_test());
-        let result: Result<Option<String>, _> = agent.call_llm_with_retry(2).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().is_context_length_error());
-    }
-}
-
 mod retry_integration {
     use crate::agent::agent_tests::*;
     use zeph_llm::LlmError;
@@ -148,12 +70,61 @@ mod retry_integration {
         assert!(result.is_err());
         assert!(result.unwrap_err().is_context_length_error());
     }
+
+    #[tokio::test]
+    async fn call_chat_with_tools_retry_propagates_non_context_error() {
+        let provider = AnyProvider::Mock(
+            MockProvider::with_responses(vec![])
+                .with_errors(vec![LlmError::Other("network error".into())]),
+        );
+        let mut agent = agent_with_provider(provider);
+        let result: Result<Option<_>, _> = agent.call_chat_with_tools_retry(&no_tools(), 2).await;
+        assert!(result.is_err());
+        assert!(!result.unwrap_err().is_context_length_error());
+    }
+}
+
+fn make_tool_use_request(id: &str, name: &str) -> zeph_llm::provider::ToolUseRequest {
+    zeph_llm::provider::ToolUseRequest {
+        id: id.into(),
+        name: name.into(),
+        input: serde_json::json!({}),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn call_process_one_tool_result<C: crate::channel::Channel>(
+    agent: &mut crate::agent::Agent<C>,
+    tc: &zeph_llm::provider::ToolUseRequest,
+    tool_call_id: &str,
+    started_at: &std::time::Instant,
+    tool_result: Result<Option<zeph_tools::executor::ToolOutput>, zeph_tools::executor::ToolError>,
+) -> Vec<zeph_llm::provider::MessagePart> {
+    let mut result_parts = Vec::new();
+    agent
+        .process_one_tool_result(
+            tc,
+            tool_call_id,
+            started_at,
+            tool_result,
+            &mut result_parts,
+            &mut Vec::new(),
+            &mut false,
+            &mut None,
+            &mut Vec::new(),
+            &mut 0,
+            &mut zeph_sanitizer::ContentTrustLevel::Trusted,
+            &mut zeph_sanitizer::ContentSourceKind::ToolResult,
+        )
+        .await
+        .unwrap();
+    result_parts
 }
 
 // Regression tests for issue #1003: tool output must reach all channel types
 // regardless of whether the tool streamed its output.
 #[tokio::test]
-async fn handle_tool_result_sends_output_when_streamed_true() {
+async fn process_one_tool_result_sends_output_when_streamed_true() {
     use crate::agent::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
@@ -165,6 +136,7 @@ async fn handle_tool_result_sends_output_when_streamed_true() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
 
+    let tc = make_tool_use_request("id-streamed", "bash");
     let output = ToolOutput {
         tool_name: "bash".into(),
         summary: "streamed content".into(),
@@ -178,10 +150,14 @@ async fn handle_tool_result_sends_output_when_streamed_true() {
         claim_source: None,
         ..Default::default()
     };
-    agent
-        .handle_tool_result("response", Ok(Some(output)))
-        .await
-        .unwrap();
+    call_process_one_tool_result(
+        &mut agent,
+        &tc,
+        "id-streamed",
+        &std::time::Instant::now(),
+        Ok(Some(output)),
+    )
+    .await;
 
     let sent = agent.channel.sent_messages();
     assert!(
@@ -191,7 +167,7 @@ async fn handle_tool_result_sends_output_when_streamed_true() {
 }
 
 #[tokio::test]
-async fn handle_tool_result_fenced_emits_tool_start_then_output_via_loopback() {
+async fn process_one_tool_result_emits_tool_start_then_output_via_loopback() {
     use crate::agent::agent_tests::{MockToolExecutor, create_test_registry, mock_provider};
     use crate::channel::{LoopbackChannel, LoopbackEvent};
     use zeph_tools::executor::ToolOutput;
@@ -201,6 +177,23 @@ async fn handle_tool_result_fenced_emits_tool_start_then_output_via_loopback() {
     let registry = create_test_registry();
     let executor = MockToolExecutor::no_tools();
     let mut agent = crate::agent::Agent::new(provider, loopback, registry, None, 5, executor);
+
+    // Mirrors the real per-tier dispatch sequence in tier_loop.rs: ToolStart is stamped and
+    // sent before the tool executes, then process_one_tool_result handles the result — the
+    // two are separate production call sites, not a single legacy convenience wrapper.
+    let tc = make_tool_use_request("call-grep", "grep");
+    let tool_call_id = "call-grep".to_owned();
+    let mut started_ats = [std::time::Instant::now()];
+    agent
+        .stamp_and_send_tier_start(
+            &[0],
+            std::slice::from_ref(&tc),
+            std::slice::from_ref(&tool_call_id),
+            &mut started_ats,
+            &std::collections::HashSet::new(),
+        )
+        .await
+        .unwrap();
 
     let output = ToolOutput {
         tool_name: "grep".into(),
@@ -215,10 +208,14 @@ async fn handle_tool_result_fenced_emits_tool_start_then_output_via_loopback() {
         claim_source: None,
         ..Default::default()
     };
-    agent
-        .handle_tool_result("response", Ok(Some(output)))
-        .await
-        .unwrap();
+    call_process_one_tool_result(
+        &mut agent,
+        &tc,
+        &tool_call_id,
+        &started_ats[0],
+        Ok(Some(output)),
+    )
+    .await;
 
     drop(agent);
 
@@ -271,7 +268,7 @@ async fn handle_tool_result_fenced_emits_tool_start_then_output_via_loopback() {
 }
 
 #[tokio::test]
-async fn handle_tool_result_locations_propagated_to_loopback_event() {
+async fn process_one_tool_result_locations_propagated_to_loopback_event() {
     use crate::agent::agent_tests::{MockToolExecutor, create_test_registry, mock_provider};
     use crate::channel::{LoopbackChannel, LoopbackEvent};
     use zeph_tools::executor::ToolOutput;
@@ -282,6 +279,7 @@ async fn handle_tool_result_locations_propagated_to_loopback_event() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = crate::agent::Agent::new(provider, loopback, registry, None, 5, executor);
 
+    let tc = make_tool_use_request("id-locations", "read_file");
     let output = ToolOutput {
         tool_name: "read_file".into(),
         summary: "file content".into(),
@@ -295,10 +293,14 @@ async fn handle_tool_result_locations_propagated_to_loopback_event() {
         claim_source: None,
         ..Default::default()
     };
-    agent
-        .handle_tool_result("response", Ok(Some(output)))
-        .await
-        .unwrap();
+    call_process_one_tool_result(
+        &mut agent,
+        &tc,
+        "id-locations",
+        &std::time::Instant::now(),
+        Ok(Some(output)),
+    )
+    .await;
     drop(agent);
 
     let mut events = Vec::new();
@@ -325,7 +327,7 @@ async fn handle_tool_result_locations_propagated_to_loopback_event() {
 // `send_tool_output`, which caused newlines inside the output to be lost in ACP consumers
 // that read `terminal_output.data` or `raw_output` as plain text.
 #[tokio::test]
-async fn handle_tool_result_display_is_raw_body_not_markdown_wrapped() {
+async fn process_one_tool_result_display_is_raw_body_not_markdown_wrapped() {
     use crate::agent::agent_tests::{MockToolExecutor, create_test_registry, mock_provider};
     use crate::channel::{LoopbackChannel, LoopbackEvent};
     use zeph_tools::executor::ToolOutput;
@@ -336,6 +338,7 @@ async fn handle_tool_result_display_is_raw_body_not_markdown_wrapped() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = crate::agent::Agent::new(provider, loopback, registry, None, 5, executor);
 
+    let tc = make_tool_use_request("id-raw-body", "bash");
     let output = ToolOutput {
         tool_name: "bash".into(),
         summary: "line1\nline2\nline3".into(),
@@ -349,10 +352,14 @@ async fn handle_tool_result_display_is_raw_body_not_markdown_wrapped() {
         claim_source: None,
         ..Default::default()
     };
-    agent
-        .handle_tool_result("response", Ok(Some(output)))
-        .await
-        .unwrap();
+    call_process_one_tool_result(
+        &mut agent,
+        &tc,
+        "id-raw-body",
+        &std::time::Instant::now(),
+        Ok(Some(output)),
+    )
+    .await;
     drop(agent);
 
     let mut events = Vec::new();

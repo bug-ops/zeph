@@ -33,14 +33,9 @@ async fn agent_recovers_from_context_length_exceeded_and_produces_response() {
         metadata: MessageMetadata::default(),
     });
 
-    // call_llm_with_retry is the direct entry point for the retry/compact flow
-    let result = agent.call_llm_with_retry(2).await.unwrap();
-
-    assert!(
-        result.is_some(),
-        "agent must produce a response after recovering from context length error"
-    );
-    assert_eq!(result.as_deref(), Some("final answer"));
+    // process_response is the real production entry point for the native tool loop, which
+    // internally retries via call_chat_with_tools_retry(_, 2) on a context-length error.
+    agent.process_response().await.unwrap();
 
     // Verify the channel received the recovered response
     let sent = agent.channel.sent_messages();

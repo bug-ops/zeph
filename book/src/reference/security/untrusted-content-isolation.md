@@ -102,10 +102,10 @@ The sanitizer is applied at every untrusted boundary:
 
 | Source | Trust Level | Integration Point |
 |--------|------------|-------------------|
-| Shell / file tool results | `LocalUntrusted` | `handle_tool_result()` — both normal and confirmation-required paths |
-| Web scrape output | `ExternalUntrusted` | `handle_tool_result()` |
-| MCP tool responses | `ExternalUntrusted` | `handle_tool_result()` |
-| A2A messages | `ExternalUntrusted` | `handle_tool_result()` |
+| Shell / file tool results | `LocalUntrusted` | `process_one_tool_result()` — both normal and confirmation-resolved paths (`handle_confirmation_phase()`) |
+| Web scrape output | `ExternalUntrusted` | `process_one_tool_result()` |
+| MCP tool responses | `ExternalUntrusted` | `process_one_tool_result()` |
+| A2A messages | `ExternalUntrusted` | `process_one_tool_result()` |
 | Native tool-use results (Claude provider) | `LocalUntrusted` or `ExternalUntrusted` | `handle_native_tool_calls()` — routes through `sanitize_tool_output()` before placing output in `ToolResult` parts |
 | Semantic memory recall | `ExternalUntrusted` | `prepare_context()` |
 | Cross-session memory | `ExternalUntrusted` | `prepare_context()` |
