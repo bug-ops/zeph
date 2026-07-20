@@ -215,14 +215,23 @@ pub(crate) struct ServeAgentDeps {
     /// Typed-page CAM fidelity state (#6574), built once at startup via
     /// `agent_setup::build_typed_pages_state` since `[memory.compression.typed_pages]` is static
     /// config. `agent_factory` clones the `Arc` into every session via
-    /// `agent_setup::apply_entrypoint_security_controls` — mirrors `src/runner.rs`,
-    /// `src/daemon.rs`, and `src/acp.rs`.
+    /// `agent_setup::apply_security_pipeline` — mirrors `src/runner.rs`, `src/daemon.rs`, and
+    /// `src/acp.rs`.
     pub(crate) typed_pages_state: Option<Arc<zeph_context::typed_page::TypedPagesState>>,
     /// `config.memory.shadow_memory` (#6579), wired into `Agent::with_mage_accumulator_config`
-    /// per session via `agent_setup::apply_entrypoint_security_controls` — mirrors
-    /// `src/runner.rs`, `src/daemon.rs`, and `src/acp.rs`. Replaces the noop
-    /// `TrajectoryRiskAccumulator` set by `SecurityState::default()`.
+    /// per session via `agent_setup::apply_security_pipeline` — mirrors `src/runner.rs`,
+    /// `src/daemon.rs`, and `src/acp.rs`. Replaces the noop `TrajectoryRiskAccumulator` set by
+    /// `SecurityState::default()`.
     pub(crate) shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig,
+    /// `config.hooks.clone()` (D1, #6581), wired into every session's `Agent` via
+    /// `Agent::with_hooks_config` per session via `agent_setup::apply_security_pipeline`,
+    /// mirroring `src/runner.rs`/`src/daemon.rs`/`src/acp.rs`. Previously `/sessions*` agents
+    /// had no hooks wired at all — the `false` passed for `no_mcp_media` in
+    /// [`build_serve_deps`] is unrelated (serve still has no MCP tools connected, see the
+    /// "Known gap" above; only the media-passthrough gate, not hooks, depends on that flag).
+    /// Gated on `safe_mode` at the `apply_security_pipeline` call site, matching the other three
+    /// entry points.
+    pub(crate) hooks_config: zeph_config::HooksConfig,
 }
 
 /// Assemble [`ServeAgentDeps`] once at `zeph serve-sessions` startup, plus the resolved bearer
@@ -247,8 +256,11 @@ pub(crate) async fn build_serve_deps(
 ) -> anyhow::Result<(ServeAgentDeps, Option<String>)> {
     use crate::bootstrap::AppBuilder;
 
-    // Serve wires no hooks or MCP tools today (see `ServeSessionsArgs::safe_mode` doc), so
-    // there is no media-passthrough surface to gate here — pass `false` unconditionally.
+    // `no_mcp_media` only gates MCP image-passthrough sanitization (`build_tool_setup`'s
+    // `no_mcp_media` param) — unrelated to hooks (D1, #6581: serve now wires hooks, see
+    // `ServeAgentDeps::hooks_config`). Serve still has no MCP tools connected (see the "Known
+    // gap" in this module's docs), so there is no media-passthrough surface to gate either way
+    // — pass `false` unconditionally.
     let app = AppBuilder::new(
         config_path,
         vault_backend,
@@ -287,7 +299,8 @@ pub(crate) async fn assemble_serve_deps(
     if config.cli.safe_mode {
         tracing::info!(
             "safe mode active: plugins and skills are disabled for every session built from \
-             this serve-sessions process (serve wires no hooks or MCP tools yet)"
+             this serve-sessions process (hooks are also gated off under safe mode, matching \
+             runner.rs/daemon.rs/acp.rs; serve still has no MCP tools connected)"
         );
     }
     let (tool_executor, permission_policy, audit_logger, shell_ingredients) =
@@ -638,6 +651,7 @@ pub(crate) async fn assemble_serve_deps(
         tools_enabled: config.tools.enabled,
         typed_pages_state,
         shadow_memory_config: config.memory.shadow_memory.clone(),
+        hooks_config: config.hooks.clone(),
     })
 }
 

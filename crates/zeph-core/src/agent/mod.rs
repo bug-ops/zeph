@@ -7,7 +7,7 @@ pub(crate) mod agent_supervisor;
 mod autodream;
 mod autonomous_turn;
 mod builder;
-pub use builder::SkillConfigParams;
+pub use builder::{SecurityWiringSnapshot, SkillConfigParams};
 #[cfg(feature = "cocoon")]
 mod cocoon_cmd;
 mod command_context_impls;

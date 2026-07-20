@@ -113,6 +113,41 @@ pub struct SkillConfigParams {
     pub semantic_scan_provider_name: String,
 }
 
+/// Bool snapshot of which security-relevant `AgentBuilder` setters have been applied.
+///
+/// Returned by [`Agent::security_wiring_snapshot`] — see that method's doc comment for which
+/// setters are (and are deliberately not) represented here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // independent wiring flags, one per setter; mirrors serve/deps.rs's ServeAgentDeps
+pub struct SecurityWiringSnapshot {
+    /// `true` when [`Agent::with_risk_chain_accumulator`] has been called.
+    pub risk_chain_accumulator: bool,
+    /// `true` when [`Agent::with_mage_accumulator_config`] installed a live (non-noop)
+    /// accumulator.
+    pub mage_accumulator_enabled: bool,
+    /// `true` when [`Agent::with_typed_pages_state`] was called with `Some`.
+    pub typed_pages_state: bool,
+    /// `true` when [`Agent::with_shadow_sentinel`] has been called.
+    pub shadow_sentinel: bool,
+    /// `true` when [`Agent::with_vigil_config`] attached a `VigilGate`.
+    pub vigil_config: bool,
+    /// `true` when [`Agent::with_hooks_config`] was called with a non-empty `HooksConfig`.
+    pub hooks_config: bool,
+    /// `true` when [`Agent::with_mcp_tool_ids_handle`] has been called.
+    pub mcp_tool_ids_handle: bool,
+    /// `true` when [`Agent::with_llm_classifier`] has been called.
+    pub llm_classifier: bool,
+    /// `true` when [`Agent::with_injection_classifier`] attached a classifier backend.
+    #[cfg(feature = "classifiers")]
+    pub injection_classifier: bool,
+    /// `true` when [`Agent::with_enforcement_mode`] set `InjectionEnforcementMode::Block`.
+    #[cfg(feature = "classifiers")]
+    pub enforcement_mode_blocking: bool,
+    /// `true` when [`Agent::with_scan_user_input`] set `scan_user_input = true`.
+    #[cfg(feature = "classifiers")]
+    pub scan_user_input: bool,
+}
+
 /// Extracts the fields [`Agent::with_skill_config`] needs from a full `[skills]` config
 /// section — the shape available at `src/runner.rs`'s and `src/daemon.rs`'s call sites, which
 /// hold the whole `Config` rather than pre-extracted scalars.
@@ -1787,6 +1822,40 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn has_code_retriever(&self) -> bool {
         self.services.index.retriever.is_some()
+    }
+
+    /// Reports which security-relevant setters (issue #6581) have been applied to this `Agent`.
+    ///
+    /// Primarily used by the binary crate's structural + behavioral guardrail tests
+    /// (`src/agent_setup.rs`) to assert wiring without accessing the `pub(crate)`
+    /// `SecurityState`/`FeedbackState` fields directly, mirroring [`Self::has_code_retriever`].
+    ///
+    /// `with_trajectory_risk_slot`, `with_trajectory_config`, `with_memory_consent_trust_slot`,
+    /// and `with_signal_queue` are deliberately not represented here: those fields are
+    /// always-present (non-`Option`, `Arc`-shared or plain owned state) rather than toggled, so
+    /// "was it wired" is only meaningfully observable via `Arc::strong_count` on the caller's
+    /// own clone — see `apply_security_pipeline`'s behavioral test, which follows the same
+    /// convention as the pre-existing
+    /// `wire_risk_chain_attaches_the_returned_accumulator_to_the_executor` test.
+    #[must_use]
+    pub fn security_wiring_snapshot(&self) -> SecurityWiringSnapshot {
+        SecurityWiringSnapshot {
+            risk_chain_accumulator: self.services.security.risk_chain_accumulator.is_some(),
+            mage_accumulator_enabled: self.services.security.mage_accumulator.is_enabled(),
+            typed_pages_state: self.services.compression.typed_pages_state.is_some(),
+            shadow_sentinel: self.services.security.shadow_sentinel.is_some(),
+            vigil_config: self.services.security.vigil.is_some(),
+            hooks_config: !self.services.session.hooks_config.is_empty(),
+            mcp_tool_ids_handle: self.services.security.mcp_tool_ids.is_some(),
+            llm_classifier: self.services.feedback.llm_classifier.is_some(),
+            #[cfg(feature = "classifiers")]
+            injection_classifier: self.services.security.sanitizer.has_classifier_backend(),
+            #[cfg(feature = "classifiers")]
+            enforcement_mode_blocking: self.services.security.sanitizer.enforcement_mode()
+                == zeph_config::InjectionEnforcementMode::Block,
+            #[cfg(feature = "classifiers")]
+            scan_user_input: self.services.security.sanitizer.scan_user_input(),
+        }
     }
 
     // ---- Debug & Diagnostics ----

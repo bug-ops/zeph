@@ -606,12 +606,11 @@ pub(crate) struct SharedAgentDeps {
     /// Typed-page CAM fidelity state (#6574), built once per connection via
     /// `agent_setup::build_typed_pages_state` since `[memory.compression.typed_pages]` is static
     /// config. `spawn_acp_agent` clones the `Arc` into every session via
-    /// `agent_setup::apply_entrypoint_security_controls` — mirrors `src/runner.rs` and
-    /// `src/daemon.rs`.
+    /// `agent_setup::apply_security_pipeline` — mirrors `src/runner.rs` and `src/daemon.rs`.
     typed_pages_state: Option<std::sync::Arc<zeph_context::typed_page::TypedPagesState>>,
     /// `config.memory.shadow_memory` (#6579), wired into `Agent::with_mage_accumulator_config`
-    /// per session via `agent_setup::apply_entrypoint_security_controls` — mirrors
-    /// `src/runner.rs` and `src/daemon.rs`. Replaces the noop `TrajectoryRiskAccumulator` set by
+    /// per session via `agent_setup::apply_security_pipeline` — mirrors `src/runner.rs` and
+    /// `src/daemon.rs`. Replaces the noop `TrajectoryRiskAccumulator` set by
     /// `SecurityState::default()`.
     shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig,
 
@@ -2194,18 +2193,33 @@ async fn spawn_acp_agent(
         memory.sqlite().pool().clone(),
     );
 
-    // #5958: wire the trajectory risk slot/signal queue built above (spec 050 Invariant 2) plus
-    // the TrajectorySentinel state machine itself into the agent, matching src/runner.rs and
-    // src/daemon.rs.
-    agent = agent
-        .with_trajectory_risk_slot(trajectory_risk_slot)
-        .with_signal_queue(trajectory_signal_queue)
-        .with_trajectory_config(d.trajectory_sentinel_config.clone())
-        .0;
-    // Write-time memory-consent gate (issue #6490, MemGhost): share the same slot with
-    // `memory_executor` (wired above) so sanitize_tool_output's ratcheting is visible to
-    // MemoryToolExecutor's confirmation check.
-    agent = agent.with_memory_consent_trust_slot(memory_consent_trust_slot);
+    // Security-relevant AgentBuilder setters — risk-chain accumulator (#6578), MAGE
+    // trajectory-risk gate (#6579), typed-page CAM fidelity (#6574), trajectory risk
+    // slot/signal queue/config (spec 050 Invariant 2), write-time memory-consent trust slot
+    // (#6490), ShadowSentinel (spec 050 Phase 2), VIGIL, hooks, the MCP tool-id registry
+    // handle (#5747), and (when `classifiers` is enabled) the ML injection classifier +
+    // enforcement mode — shared with src/runner.rs/src/daemon.rs/src/serve/agent_factory.rs
+    // via one call site so these controls cannot silently drop out of sync across entry
+    // points again (#6581).
+    agent = agent_setup::apply_security_pipeline(
+        agent,
+        agent_setup::SecurityWiringInputs {
+            risk_chain_accumulator,
+            mage_accumulator_config,
+            typed_pages_state: d.typed_pages_state.clone(),
+            trajectory_risk_slot,
+            trajectory_signal_queue,
+            trajectory_config: d.trajectory_sentinel_config.clone(),
+            memory_consent_trust_slot,
+            shadow_sentinel: shadow_sentinel_arc,
+            vigil_config,
+            hooks_config: (!safe_mode).then_some(hooks_config),
+            mcp_tool_ids_handle: mcp_ids_handle,
+            #[cfg(feature = "classifiers")]
+            classifiers_config: classifiers_config.clone(),
+            llm_classifier: feedback_classifier,
+        },
+    );
 
     // SkillOrchestra: wire the RL routing head, if enabled (#5921). `d.rl_head` is loaded/
     // cold-started exactly once in `build_shared_core` and cloned (cheap `Arc` clone) into every
@@ -2278,9 +2292,6 @@ async fn spawn_acp_agent(
     if let Some(jp) = judge_provider {
         agent = agent.with_judge_provider(jp);
     }
-    if let Some(fc) = feedback_classifier {
-        agent = agent.with_llm_classifier(fc);
-    }
 
     if let Some(pp) = probe_provider {
         agent = agent.with_probe_provider(pp);
@@ -2310,10 +2321,6 @@ async fn spawn_acp_agent(
     }
     #[cfg(feature = "classifiers")]
     {
-        agent = agent_setup::apply_injection_classifier_with_cfg(agent, &classifiers_config);
-        if classifiers_config.enabled {
-            agent = agent.with_enforcement_mode(classifiers_config.enforcement_mode);
-        }
         agent = agent_setup::apply_three_class_classifier_with_cfg(agent, &classifiers_config);
         agent = agent_setup::apply_pii_classifier_with_cfg(agent, &classifiers_config);
         agent = agent_setup::apply_pii_ner_classifier_with_cfg(
@@ -2337,18 +2344,6 @@ async fn spawn_acp_agent(
         secret_registry.as_ref(),
     );
     agent = agent_setup::apply_secret_masking(agent, secret_registry);
-    agent = agent_setup::apply_vigil(agent, &vigil_config);
-    // Risk-chain accumulator (#6561/#6588: this session's own instance, built alongside its
-    // `ShellExecutor` above — see the comment there), MAGE trajectory-risk gate (#6579),
-    // typed-page CAM fidelity (#6574) — shared with src/runner.rs/src/daemon.rs/
-    // src/serve/agent_factory.rs via one call site so the three controls cannot silently drop
-    // out of sync across entry points again (#6581).
-    agent = agent_setup::apply_entrypoint_security_controls(
-        agent,
-        risk_chain_accumulator,
-        mage_accumulator_config.clone(),
-        d.typed_pages_state.clone(),
-    );
 
     if debug_config.enabled {
         // Use session_id as a subdirectory prefix so concurrent sessions never share the same
@@ -2364,18 +2359,6 @@ async fn spawn_acp_agent(
         )
         .0;
     }
-
-    if !safe_mode {
-        agent = agent.with_hooks_config(&hooks_config);
-    }
-    // Spec 050 Phase 2 (#5913): wire ShadowSentinel into the agent so begin_turn() calls
-    // advance_turn(), matching src/runner.rs.
-    if let Some(sentinel) = shadow_sentinel_arc {
-        agent = agent.with_shadow_sentinel(sentinel);
-    }
-    // Keep TrustGateExecutor's MCP tool-id registry in sync with MCP servers connected after
-    // startup (#5747) — without this, check_tool_refresh has no handle to update.
-    agent = agent.with_mcp_tool_ids_handle(mcp_ids_handle);
 
     drop(d);
 

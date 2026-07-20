@@ -229,7 +229,7 @@ pub(crate) async fn build_agent_factory(
     // (base + skill_loader + skill_invoke + memory + overflow, #6046) — see
     // `gate_serve_session_executor`'s doc comment for the full rationale and the INVARIANT that
     // binds future serve tool-executor changes.
-    let gated_executor = gate_serve_session_executor(
+    let (gated_executor, mcp_ids_handle) = gate_serve_session_executor(
         composed_base,
         &deps.permission_policy,
         &deps.policy_gate_pieces,
@@ -371,13 +371,6 @@ pub(crate) async fn build_agent_factory(
         agent = crate::agent_setup::apply_guardrail(agent, deps.guardrail_provider);
         #[cfg(feature = "classifiers")]
         {
-            agent = crate::agent_setup::apply_injection_classifier_with_cfg(
-                agent,
-                &deps.classifiers_config,
-            );
-            if deps.classifiers_config.enabled {
-                agent = agent.with_enforcement_mode(deps.classifiers_config.enforcement_mode);
-            }
             agent = crate::agent_setup::apply_three_class_classifier_with_cfg(
                 agent,
                 &deps.classifiers_config,
@@ -405,40 +398,35 @@ pub(crate) async fn build_agent_factory(
             deps.secret_registry.as_ref(),
         );
         agent = crate::agent_setup::apply_secret_masking(agent, deps.secret_registry);
-        agent = crate::agent_setup::apply_vigil(agent, &deps.vigil_config);
-        if let Some(fc) = deps.feedback_classifier {
-            agent = agent.with_llm_classifier(fc);
-        }
         if !preloaded_messages.is_empty() {
             agent = agent.with_preloaded_messages(preloaded_messages);
         }
-        // Spec 050 Phase 2 (#5913): wire ShadowSentinel into the agent so begin_turn() calls
-        // advance_turn(), matching src/runner.rs/src/acp.rs/src/daemon.rs.
-        if let Some(sentinel) = shadow_sentinel_arc {
-            agent = agent.with_shadow_sentinel(sentinel);
-        }
-        // #5958: wire the trajectory risk slot/signal queue built above (spec 050 Invariant 2)
-        // plus the TrajectorySentinel state machine itself into the agent, matching
-        // src/runner.rs/src/acp.rs/src/daemon.rs.
-        agent = agent
-            .with_trajectory_risk_slot(trajectory_risk_slot)
-            .with_signal_queue(trajectory_signal_queue)
-            .with_trajectory_config(deps.trajectory_sentinel_config)
-            .0;
-        // Write-time memory-consent gate (issue #6490, MemGhost): share the same slot with
-        // `memory_executor` (wired above via compose_session_tool_tree) so
-        // sanitize_tool_output's ratcheting is visible to MemoryToolExecutor's confirmation
-        // check.
-        agent = agent.with_memory_consent_trust_slot(memory_consent_trust_slot);
-        // Risk-chain accumulator (#6561/#6588: this session's own instance, built alongside its
-        // `ShellExecutor` above), MAGE trajectory-risk gate (#6579), typed-page CAM fidelity
-        // (#6574) — shared with src/runner.rs/src/daemon.rs/src/acp.rs via one call site so the
-        // three controls cannot silently drop out of sync across entry points again (#6581).
-        agent = crate::agent_setup::apply_entrypoint_security_controls(
+        // Security-relevant AgentBuilder setters — risk-chain accumulator (#6578), MAGE
+        // trajectory-risk gate (#6579), typed-page CAM fidelity (#6574), trajectory risk
+        // slot/signal queue/config (spec 050 Invariant 2), write-time memory-consent trust slot
+        // (#6490), ShadowSentinel (spec 050 Phase 2), VIGIL, hooks (D1, #6581), the MCP tool-id
+        // registry handle (D2, #6581, built by `gate_serve_session_executor` above), and (when
+        // `classifiers` is enabled) the ML injection classifier + enforcement mode (D3, #6581)
+        // — shared with src/runner.rs/src/daemon.rs/src/acp.rs via one call site so these
+        // controls cannot silently drop out of sync across entry points again.
+        agent = crate::agent_setup::apply_security_pipeline(
             agent,
-            risk_chain_accumulator,
-            deps.shadow_memory_config,
-            deps.typed_pages_state,
+            crate::agent_setup::SecurityWiringInputs {
+                risk_chain_accumulator,
+                mage_accumulator_config: deps.shadow_memory_config,
+                typed_pages_state: deps.typed_pages_state,
+                trajectory_risk_slot,
+                trajectory_signal_queue,
+                trajectory_config: deps.trajectory_sentinel_config,
+                memory_consent_trust_slot,
+                shadow_sentinel: shadow_sentinel_arc,
+                vigil_config: deps.vigil_config,
+                hooks_config: (!deps.safe_mode).then_some(deps.hooks_config),
+                mcp_tool_ids_handle: mcp_ids_handle,
+                #[cfg(feature = "classifiers")]
+                classifiers_config: deps.classifiers_config,
+                llm_classifier: deps.feedback_classifier,
+            },
         );
         if let Some(head) = rl_head {
             agent = agent.with_rl_head(head);
@@ -485,6 +473,13 @@ pub(crate) async fn build_agent_factory(
 /// the same signal queue too, but that wrap happens separately, per session, in
 /// `wrap_capability_scope` (called by `build_agent_factory` after this function returns) — see
 /// its doc comment for why.
+///
+/// Also returns the `TrustGateExecutor` MCP tool-id handle built internally (D2, #6581): before
+/// this fix the handle was constructed here, fed once to `register_mcp_tool_ids`, and then
+/// dropped — never attached to the `Agent` via `with_mcp_tool_ids_handle`, so MCP servers
+/// connected after startup could never refresh it (#5747, though moot until serve actually
+/// connects MCP tools — see the "Known gap" in `serve::deps`'s module docs). The caller now
+/// threads this handle into [`crate::agent_setup::apply_security_pipeline`].
 fn gate_serve_session_executor(
     tool_executor: Arc<dyn zeph_tools::ErasedToolExecutor>,
     permission_policy: &zeph_tools::PermissionPolicy,
@@ -494,7 +489,10 @@ fn gate_serve_session_executor(
         &zeph_tools::TrajectoryRiskSlot,
         &zeph_tools::RiskSignalQueue,
     )>,
-) -> zeph_tools::DynExecutor {
+) -> (
+    zeph_tools::DynExecutor,
+    crate::agent_setup::McpToolIdsHandle,
+) {
     let (trust_gated, mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
         zeph_tools::DynExecutor(tool_executor),
         permission_policy,
@@ -502,12 +500,13 @@ fn gate_serve_session_executor(
     // R7: serve has no MCP-provided tools yet (deps.rs's "Known gap") — this empty-slice call
     // is the exact seam a future MCP-wiring PR must populate with the connected tool list.
     crate::agent_setup::register_mcp_tool_ids(&mcp_ids_handle, &[]);
-    crate::agent_setup::apply_policy_gate_chain(
+    let gated = crate::agent_setup::apply_policy_gate_chain(
         trust_gated,
         policy_gate_pieces,
         audit_logger,
         trajectory,
-    )
+    );
+    (gated, mcp_ids_handle)
 }
 
 /// Wraps `tool_executor` (the already trust/policy/adversarial-gated tree from
@@ -1070,6 +1069,7 @@ mod tests {
             feedback_classifier: None,
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
+            hooks_config: zeph_config::HooksConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1177,6 +1177,7 @@ mod tests {
             feedback_classifier: None,
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
+            hooks_config: zeph_config::HooksConfig::default(),
         };
 
         let (resume_banner, build_agent) =
@@ -1281,6 +1282,7 @@ mod tests {
             feedback_classifier: None,
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
+            hooks_config: zeph_config::HooksConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1411,6 +1413,7 @@ mod tests {
             feedback_classifier: None,
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
+            hooks_config: zeph_config::HooksConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1440,6 +1443,7 @@ mod tests {
     /// and asserts the exact values echoed by `/skills injection`'s `Display` output, not just
     /// "non-default", so a swapped argument in `with_skill_group_config` would also be caught.
     #[tokio::test]
+    #[allow(clippy::too_many_lines)] // pushed over the limit by the new hooks_config fixture field (#6581)
     async fn build_agent_factory_wires_skill_group_config() {
         use zeph_commands::SkillAccess as _;
 
@@ -1530,6 +1534,7 @@ mod tests {
             feedback_classifier: None,
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
+            hooks_config: zeph_config::HooksConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1648,6 +1653,7 @@ mod tests {
             feedback_classifier: None,
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
+            hooks_config: zeph_config::HooksConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1763,6 +1769,7 @@ mod tests {
             feedback_classifier: None,
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
+            hooks_config: zeph_config::HooksConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1861,6 +1868,7 @@ mod tests {
             feedback_classifier: None,
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
+            hooks_config: zeph_config::HooksConfig::default(),
         }
     }
 
@@ -2041,7 +2049,7 @@ mod tests {
         let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
             Arc::new(parking_lot::Mutex::new(Vec::new()));
 
-        let gated = gate_serve_session_executor(
+        let (gated, _mcp_ids_handle) = gate_serve_session_executor(
             Arc::new(zeph_tools::SetCwdExecutor::new(vec![])),
             &zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full),
             &policy_gate_pieces,
@@ -2132,7 +2140,7 @@ mod tests {
         ));
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
-        let gated = gate_serve_session_executor(
+        let (gated, _mcp_ids_handle) = gate_serve_session_executor(
             composite,
             &policy,
             &crate::agent_setup::PolicyGatePieces::default(),

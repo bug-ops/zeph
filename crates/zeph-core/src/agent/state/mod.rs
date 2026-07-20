@@ -1100,6 +1100,19 @@ pub(crate) struct HooksConfigSnapshot {
     pub(crate) post_tool_use: Vec<zeph_config::HookMatcher>,
 }
 
+impl HooksConfigSnapshot {
+    /// Returns `true` when no hooks are configured in any section — mirrors
+    /// `zeph_config::HooksConfig::is_empty()` for the post-`with_hooks_config` snapshot shape.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.cwd_changed.is_empty()
+            && self.file_changed_hooks.is_empty()
+            && self.permission_denied.is_empty()
+            && self.turn_complete.is_empty()
+            && self.pre_tool_use.is_empty()
+            && self.post_tool_use.is_empty()
+    }
+}
+
 // Groups message buffering and image staging state.
 pub(crate) struct MessageState {
     pub(crate) messages: Vec<Message>,

@@ -363,8 +363,8 @@ impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
 /// never wires session-sink, compression, autosave, shutdown-summary, compaction-provider,
 /// tiered-retrieval, or bare-mode config at all. Typed-pages state, the risk-chain accumulator,
 /// and the MAGE trajectory-risk gate are wired post-`build_daemon_agent` via
-/// `agent_setup::apply_entrypoint_security_controls`, not through this struct (#6574/#6578/
-/// #6579). Forcing both paths into one struct would need `None`/default placeholders for
+/// `agent_setup::apply_security_pipeline`, not through this struct (#6574/#6578/#6579/#6581).
+/// Forcing both paths into one struct would need `None`/default placeholders for
 /// whichever fields the other path doesn't use, reintroducing the exact default-vs-omitted
 /// wiring-regression defect class this issue exists to catch.
 struct BuildDaemonAgentDeps<'a, F>
@@ -1139,15 +1139,32 @@ pub(crate) async fn run_daemon(
     };
     let agent = Box::pin(build_daemon_agent(deps, loopback_channel)).await;
 
-    // Risk-chain accumulator (#6578), MAGE trajectory-risk gate (#6579), typed-page CAM fidelity
-    // (#6574) — shared with src/runner.rs/src/acp.rs/src/serve/agent_factory.rs via one call
-    // site so the three controls cannot silently drop out of sync across entry points again
-    // (#6581).
-    let agent = agent_setup::apply_entrypoint_security_controls(
+    // Security-relevant AgentBuilder setters — risk-chain accumulator (#6578), MAGE
+    // trajectory-risk gate (#6579), typed-page CAM fidelity (#6574), trajectory risk
+    // slot/signal queue/config (spec 050 Invariant 2), write-time memory-consent trust slot
+    // (#6490), ShadowSentinel (spec 050 Phase 2), VIGIL, hooks, the MCP tool-id registry
+    // handle (#5747), and (when `classifiers` is enabled) the ML injection classifier +
+    // enforcement mode — shared with src/runner.rs/src/acp.rs/src/serve/agent_factory.rs via
+    // one call site so these controls cannot silently drop out of sync across entry points
+    // again (#6581).
+    let agent = agent_setup::apply_security_pipeline(
         agent,
-        risk_chain_accumulator,
-        config.memory.shadow_memory.clone(),
-        typed_pages_state,
+        agent_setup::SecurityWiringInputs {
+            risk_chain_accumulator,
+            mage_accumulator_config: config.memory.shadow_memory.clone(),
+            typed_pages_state,
+            trajectory_risk_slot,
+            trajectory_signal_queue,
+            trajectory_config: config.security.trajectory.clone(),
+            memory_consent_trust_slot,
+            shadow_sentinel: shadow_sentinel_arc,
+            vigil_config: config.security.vigil.clone(),
+            hooks_config: (!config.cli.safe_mode).then(|| config.hooks.clone()),
+            mcp_tool_ids_handle: mcp_ids_handle,
+            #[cfg(feature = "classifiers")]
+            classifiers_config: config.classifiers.clone(),
+            llm_classifier: app.build_feedback_classifier(&provider),
+        },
     );
 
     // #6022: wire code-RAG retrieval (static repo-map/IndexMcpServer injection plus automatic
@@ -1236,10 +1253,6 @@ pub(crate) async fn run_daemon(
     let agent = agent_setup::apply_quarantine_provider(agent, app.build_quarantine_provider());
     let agent = agent_setup::apply_guardrail(agent, app.build_guardrail_provider());
     #[cfg(feature = "classifiers")]
-    let agent = agent_setup::apply_injection_classifier(agent, config);
-    #[cfg(feature = "classifiers")]
-    let agent = agent_setup::apply_enforcement_mode(agent, config);
-    #[cfg(feature = "classifiers")]
     let agent = agent_setup::apply_three_class_classifier(agent, config);
     #[cfg(feature = "classifiers")]
     let agent = agent_setup::apply_pii_classifier(agent, config);
@@ -1257,7 +1270,6 @@ pub(crate) async fn run_daemon(
         config,
         app.secret_registry().as_ref(),
     );
-    let agent = agent_setup::apply_vigil(agent, &config.security.vigil);
 
     let judge_provider = app.build_judge_provider();
     let agent = if let Some(jp) = judge_provider {
@@ -1270,11 +1282,6 @@ pub(crate) async fn run_daemon(
     // masking is structural, not per-call-site. judge_provider is the last provider setter in
     // this chain, so secret masking is wired here, not earlier alongside the other classifiers.
     let agent = agent_setup::apply_secret_masking(agent, app.secret_registry());
-    let agent = if let Some(fc) = app.build_feedback_classifier(&provider) {
-        agent.with_llm_classifier(fc)
-    } else {
-        agent
-    };
 
     let agent = agent_setup::apply_cost_tracker(agent, config);
 
@@ -1288,35 +1295,7 @@ pub(crate) async fn run_daemon(
         agent
     };
 
-    let agent = agent.with_document_config(config.memory.documents.clone());
-    // Safe-mode gate (#6031): daemon had no prior bare-mode gate on hooks (unlike
-    // `runner.rs`'s `exec_mode.bare`) — this is a fresh gate, safe-mode only.
-    let agent = if config.cli.safe_mode {
-        agent
-    } else {
-        agent.with_hooks_config(&config.hooks)
-    };
-    // Keep TrustGateExecutor's MCP tool-id registry in sync with MCP servers connected
-    // after startup (#5747) — without this, check_tool_refresh has no handle to update.
-    let mut agent = agent.with_mcp_tool_ids_handle(mcp_ids_handle);
-
-    // Spec 050 Phase 2 (#5913): wire ShadowSentinel into the agent so begin_turn() calls
-    // advance_turn(), matching src/runner.rs and src/acp.rs.
-    if let Some(sentinel) = shadow_sentinel_arc {
-        agent = agent.with_shadow_sentinel(sentinel);
-    }
-
-    // #5958: wire the trajectory risk slot/signal queue built above (spec 050 Invariant 2) plus
-    // the TrajectorySentinel state machine itself into the agent, matching src/runner.rs.
-    agent = agent
-        .with_trajectory_risk_slot(trajectory_risk_slot)
-        .with_signal_queue(trajectory_signal_queue)
-        .with_trajectory_config(config.security.trajectory.clone())
-        .0;
-    // Write-time memory-consent gate (issue #6490, MemGhost): share the same slot with
-    // `memory_executor` (wired above) so sanitize_tool_output's ratcheting is visible to
-    // MemoryToolExecutor's confirmation check.
-    agent = agent.with_memory_consent_trust_slot(memory_consent_trust_slot);
+    let mut agent = agent.with_document_config(config.memory.documents.clone());
 
     // #5951: wire the self-check quality pipeline, matching src/runner.rs.
     agent = agent.with_quality_pipeline(agent_setup::build_quality_pipeline(

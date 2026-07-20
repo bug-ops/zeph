@@ -36,6 +36,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   activation) if the trust write itself errors. Retroactive re-scan of pre-existing `"auto"`
   versions and per-version (rather than per-skill-name) trust restoration on rollback are
   deferred as follow-ups (issue #6568).
+- `src/agent_setup.rs`: consolidated every security-relevant `AgentBuilder` setter (risk-chain
+  accumulator, MAGE trajectory-risk gate, typed-page CAM fidelity, trajectory risk
+  slot/signal queue/config, write-time memory-consent trust slot, `ShadowSentinel`, VIGIL,
+  hooks, the MCP tool-id registry handle, and the ML injection classifier + its enforcement
+  mode) into one `apply_security_pipeline` call site shared by `src/runner.rs`,
+  `src/daemon.rs`, `src/acp.rs`, and `src/serve/agent_factory.rs`, superseding the narrower
+  `apply_entrypoint_security_controls`. This closes three real divergences: `serve-sessions`
+  never wired `[hooks]` at all; `serve/agent_factory.rs` built a `TrustGateExecutor` MCP
+  tool-id handle but never attached it to the `Agent` (only fed it to
+  `register_mcp_tool_ids`); and `acp.rs`/`serve/agent_factory.rs` set the injection-classifier
+  enforcement mode inline instead of through the shared helper, bypassing the documented
+  "must follow the injection classifier" ordering constraint (still correct by luck of call
+  order, now enforced structurally). Added `Agent::security_wiring_snapshot()` and two
+  binary-crate guardrail tests (a structural inline-call scan across the four entry points,
+  and a behavioral test asserting `apply_security_pipeline` populates every field) so a future
+  entry point cannot silently reintroduce this class of drift (issue #6581).
 - `zeph-core`: `build_compression_prompt` (`agent/tool_execution/focus.rs`) now repairs
   spotlight-wrapper integrity when its existing 500-char truncation cuts off the closing tag
   of an already-applied untrusted-content wrapper (`<tool-output>`/`<external-data>`, added

@@ -170,6 +170,7 @@ impl ServeTestHarness {
             feedback_classifier: None,
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
+            hooks_config: zeph_config::HooksConfig::default(),
         };
 
         let state = AppState {

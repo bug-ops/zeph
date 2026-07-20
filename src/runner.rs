@@ -2642,8 +2642,8 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
 
     // Build TypedPagesState if enabled (#3630). Done before the builder chain because
     // CompactionAuditSink::open is async. Applied post-`build_agent` via
-    // `agent_setup::apply_entrypoint_security_controls`, alongside the risk-chain and MAGE
-    // accumulator wiring, so all 4 entry points share one call site (#6574/#6578/#6579).
+    // `agent_setup::apply_security_pipeline`, alongside the risk-chain and MAGE accumulator
+    // wiring, so all 4 entry points share one call site (#6574/#6578/#6579/#6581).
     let typed_pages_state = agent_setup::build_typed_pages_state(config, Some(&*supervisor)).await;
 
     // Precompute before moving into `BuildAgentDeps` — mirrors the inline chain's prior
@@ -2767,34 +2767,32 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     } else {
         agent
     };
-    // Wire the trajectory risk slot and signal queue (spec 050 Invariant 2).
-    let agent = agent
-        .with_trajectory_risk_slot(trajectory_risk_slot)
-        .with_signal_queue(trajectory_signal_queue)
-        .with_trajectory_config(config.security.trajectory.clone())
-        .0;
-    // Write-time memory-consent gate (issue #6490, MemGhost): share the same slot with
-    // `memory_executor` (wired above) so sanitize_tool_output's ratcheting is visible to
-    // MemoryToolExecutor's confirmation check.
-    let agent = agent.with_memory_consent_trust_slot(memory_consent_trust_slot);
-    // Risk-chain accumulator (#6578), MAGE trajectory-risk gate (#6579), typed-page CAM fidelity
-    // (#6574) — shared with daemon.rs/acp.rs/serve/agent_factory.rs via one call site so the
-    // three controls cannot silently drop out of sync across entry points again (#6581).
-    let agent = agent_setup::apply_entrypoint_security_controls(
+    // Security-relevant AgentBuilder setters — risk-chain accumulator (#6578), MAGE
+    // trajectory-risk gate (#6579), typed-page CAM fidelity (#6574), trajectory risk
+    // slot/signal queue/config (spec 050 Invariant 2), write-time memory-consent trust slot
+    // (#6490), ShadowSentinel (spec 050 Phase 2), VIGIL, hooks, the MCP tool-id registry
+    // handle (#5747), and (when `classifiers` is enabled) the ML injection classifier +
+    // enforcement mode — shared with daemon.rs/acp.rs/serve/agent_factory.rs via one call site
+    // so these controls cannot silently drop out of sync across entry points again (#6581).
+    let agent = agent_setup::apply_security_pipeline(
         agent,
-        tool_setup.risk_chain_accumulator,
-        config.memory.shadow_memory.clone(),
-        typed_pages_state,
+        agent_setup::SecurityWiringInputs {
+            risk_chain_accumulator: tool_setup.risk_chain_accumulator,
+            mage_accumulator_config: config.memory.shadow_memory.clone(),
+            typed_pages_state,
+            trajectory_risk_slot,
+            trajectory_signal_queue,
+            trajectory_config: config.security.trajectory.clone(),
+            memory_consent_trust_slot,
+            shadow_sentinel: shadow_sentinel_arc,
+            vigil_config: config.security.vigil.clone(),
+            hooks_config: (!(exec_mode.bare || exec_mode.safe_mode)).then(|| config.hooks.clone()),
+            mcp_tool_ids_handle: mcp_ids_handle,
+            #[cfg(feature = "classifiers")]
+            classifiers_config: config.classifiers.clone(),
+            llm_classifier: app.build_feedback_classifier(&provider),
+        },
     );
-    // Spec 050 Phase 2: wire ShadowSentinel into agent so begin_turn() calls advance_turn().
-    let agent = if let Some(sentinel) = shadow_sentinel_arc {
-        agent.with_shadow_sentinel(sentinel)
-    } else {
-        agent
-    };
-    // Keep TrustGateExecutor's MCP tool-id registry in sync with MCP servers connected after
-    // startup (#5747) — without this, check_tool_refresh has no handle to update.
-    let agent = agent.with_mcp_tool_ids_handle(mcp_ids_handle);
 
     // Load provider-specific and explicit instruction files.
     // base_dir is the process CWD at startup — the most natural project root for local tools.
@@ -2969,10 +2967,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     let agent = agent_setup::apply_guardrail(agent, app.build_guardrail_provider());
     let agent = agent.with_notifications(config.notifications.clone());
     #[cfg(feature = "classifiers")]
-    let agent = agent_setup::apply_injection_classifier(agent, config);
-    #[cfg(feature = "classifiers")]
-    let agent = agent_setup::apply_enforcement_mode(agent, config);
-    #[cfg(feature = "classifiers")]
     let agent = agent_setup::apply_three_class_classifier(agent, config);
     #[cfg(feature = "classifiers")]
     let agent = agent_setup::apply_pii_classifier(agent, config);
@@ -2990,7 +2984,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         config,
         app.secret_registry().as_ref(),
     );
-    let agent = agent_setup::apply_vigil(agent, &config.security.vigil);
 
     let (_index_watcher, index_progress_rx) = if exec_mode.bare {
         (None, None)
@@ -3070,11 +3063,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         agent.with_lsp_hooks(runner)
     } else {
         agent
-    };
-    let agent = if exec_mode.bare || exec_mode.safe_mode {
-        agent
-    } else {
-        agent.with_hooks_config(&config.hooks)
     };
     let agent = agent.with_channel_skills(channel_skills_config);
     let agent = agent.with_channel_tool_allowlist(channel_tool_allowlist);
@@ -3159,11 +3147,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // masking is structural, not per-call-site. judge_provider is the last provider setter in
     // this chain, so secret masking is wired here, not earlier alongside the other classifiers.
     let agent = agent_setup::apply_secret_masking(agent, app.secret_registry());
-    let agent = if let Some(fc) = app.build_feedback_classifier(&provider) {
-        agent.with_llm_classifier(fc)
-    } else {
-        agent
-    };
 
     let agent = if config.tools.anomaly.enabled {
         agent.with_anomaly_detector(zeph_tools::AnomalyDetector::new(

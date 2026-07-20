@@ -222,6 +222,13 @@ impl ContentSanitizer {
         self
     }
 
+    /// Returns the currently configured injection-classifier enforcement mode.
+    #[cfg(feature = "classifiers")]
+    #[must_use]
+    pub fn enforcement_mode(&self) -> zeph_config::InjectionEnforcementMode {
+        self.enforcement_mode
+    }
+
     /// Attach a three-class classifier backend for `AlignSentinel` refinement.
     ///
     /// When attached, content flagged by the binary classifier is passed to this model.

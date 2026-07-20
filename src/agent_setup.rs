@@ -701,7 +701,7 @@ pub(crate) async fn build_tool_setup(
 /// detector (`SensitiveRead` -> `NetworkEgress`, e.g. `exfil_read_then_send`) is actually
 /// enforced — without it, `ShellExecutor::execute`'s risk-chain check is silently skipped
 /// (#6578). Pass the returned `Arc` to `Agent::with_risk_chain_accumulator` (via
-/// [`apply_entrypoint_security_controls`]) so `begin_turn()` advances it (prunes calls older
+/// [`apply_security_pipeline`]) so `begin_turn()` advances it (prunes calls older
 /// than its cross-turn window and recomputes the score — see
 /// [`zeph_tools::risk_chain::RiskChainAccumulator::advance_turn`]) at each turn boundary.
 ///
@@ -1028,41 +1028,114 @@ pub(crate) async fn build_typed_pages_state(
     }))
 }
 
-/// Apply the three security/fidelity controls that must stay identical across every entry point:
-/// the shell risk-chain accumulator (#6578), the MAGE trajectory-risk gate (#6579), and typed-page
-/// CAM fidelity enforcement (#6574). Previously each was wired only in `runner.rs`'s CLI/TUI
-/// bootstrap and silently skipped by `daemon.rs`, `acp.rs`, and `serve/agent_factory.rs` — this
-/// helper is the single call site all four entry points share so the three controls cannot drift
-/// out of sync again (tracked defect class: `#6581`).
+/// Decomposed inputs for [`apply_security_pipeline`] — the single call site all four entry
+/// points (`runner.rs`, `daemon.rs`, `acp.rs`, `serve/agent_factory.rs`) use to wire every
+/// security-relevant `AgentBuilder` setter in one place, in the correct order, so a future entry
+/// point cannot silently omit one (tracked defect class: `#6581`).
 ///
-/// `risk_chain_accumulator` is the `Arc` returned by [`wire_risk_chain`] — the same instance
-/// attached to the entry point's `ShellExecutor`. `mage_accumulator_config` is
-/// `config.memory.shadow_memory.clone()`. `typed_pages_state` is the result of
-/// [`build_typed_pages_state`]. Takes the decomposed config value rather than `&Config` because
-/// `acp.rs`'s `SharedAgentDeps` never holds a full `Config` (it decomposes config into
-/// per-session fields at connection-build time) — matching that convention keeps the call site
-/// identical across all four entry points.
-pub(crate) fn apply_entrypoint_security_controls<C: Channel>(
-    agent: Agent<C>,
-    risk_chain_accumulator: Arc<zeph_tools::RiskChainAccumulator>,
-    mage_accumulator_config: zeph_config::TrajectoryRiskAccumulatorConfig,
-    typed_pages_state: Option<Arc<zeph_context::typed_page::TypedPagesState>>,
-) -> Agent<C> {
-    agent
-        .with_risk_chain_accumulator(risk_chain_accumulator)
-        .with_mage_accumulator_config(mage_accumulator_config)
-        .with_typed_pages_state(typed_pages_state)
+/// Takes decomposed values rather than `&Config` because `acp.rs`'s `SharedAgentDeps` and
+/// `serve/deps.rs`'s `ServeAgentDeps` never hold a full `Config` — they decompose config into
+/// per-session fields at connection/session-build time (matching [`apply_vigil`]'s and
+/// `apply_injection_classifier_with_cfg`'s existing convention).
+pub(crate) struct SecurityWiringInputs {
+    /// The `Arc` returned by [`wire_risk_chain`] — the same instance attached to the entry
+    /// point's `ShellExecutor` (#6578).
+    pub(crate) risk_chain_accumulator: Arc<zeph_tools::RiskChainAccumulator>,
+    /// `config.memory.shadow_memory.clone()` (#6579).
+    pub(crate) mage_accumulator_config: zeph_config::TrajectoryRiskAccumulatorConfig,
+    /// The result of [`build_typed_pages_state`] (#6574).
+    pub(crate) typed_pages_state: Option<Arc<zeph_context::typed_page::TypedPagesState>>,
+    /// Shared risk slot (spec 050 Invariant 2) — same `Arc` passed to
+    /// `PolicyGateExecutor`/`ScopedToolExecutor`.
+    pub(crate) trajectory_risk_slot: zeph_tools::TrajectoryRiskSlot,
+    /// Shared signal queue (spec 050 §2) — same `Arc` passed to
+    /// `PolicyGateExecutor`/`ScopedToolExecutor`.
+    pub(crate) trajectory_signal_queue: zeph_tools::RiskSignalQueue,
+    /// `config.security.trajectory.clone()`.
+    pub(crate) trajectory_config: zeph_config::TrajectorySentinelConfig,
+    /// Write-time memory-consent trust slot (#6490), shared with the memory tool executor.
+    pub(crate) memory_consent_trust_slot: zeph_core::memory_tools::MemoryConsentTrustSlot,
+    /// `Some` when `security.shadow_sentinel.enabled = true` for this session (spec 050 Phase 2).
+    pub(crate) shadow_sentinel: Option<Arc<zeph_core::agent::shadow_sentinel::ShadowSentinel>>,
+    /// `config.security.vigil.clone()`.
+    pub(crate) vigil_config: zeph_config::VigilConfig,
+    /// `Some(config.hooks.clone())` to wire hooks; `None` to skip (bare/safe-mode gate) —
+    /// mirrors the existing `if !bare/safe_mode { with_hooks_config }` pattern.
+    pub(crate) hooks_config: Option<zeph_config::HooksConfig>,
+    /// Handle into `TrustGateExecutor`'s MCP tool-id registry (#5747).
+    pub(crate) mcp_tool_ids_handle: McpToolIdsHandle,
+    /// `config.classifiers.clone()` — drives both the injection classifier (#6580) and the
+    /// enforcement mode (D3, #6581); the pipeline applies enforcement mode AFTER the injection
+    /// classifier (verified ordering constraint).
+    #[cfg(feature = "classifiers")]
+    pub(crate) classifiers_config: zeph_config::ClassifiersConfig,
+    /// `config.skills.learning` feedback/reward-signal classifier (`detector_mode = "model"`).
+    pub(crate) llm_classifier: Option<zeph_llm::classifier::llm::LlmClassifier>,
 }
 
-/// Wire the `CandleClassifier` injection backend into the agent's sanitizer.
+/// Wires every security-relevant `AgentBuilder` setter onto `agent` in one call — the shell
+/// risk-chain accumulator (#6578), the MAGE trajectory-risk gate (#6579), typed-page CAM
+/// fidelity enforcement (#6574), the trajectory sentinel risk slot/signal queue/config, the
+/// write-time memory-consent trust slot (#6490), `ShadowSentinel` (spec 050 Phase 2), VIGIL
+/// (#6581), hooks (D1), the MCP tool-id registry handle (D2), and — when the `classifiers`
+/// feature is enabled — the ML injection classifier followed by its enforcement mode (D3).
 ///
-/// Only active when `classifiers.enabled = true` in config.
-#[cfg(feature = "classifiers")]
-pub(crate) fn apply_injection_classifier<C: Channel>(
-    agent: zeph_core::agent::Agent<C>,
-    config: &Config,
-) -> zeph_core::agent::Agent<C> {
-    apply_injection_classifier_with_cfg(agent, &config.classifiers)
+/// Supersedes the narrower `apply_entrypoint_security_controls` (#6574/#6578/#6579): that helper
+/// only covered 3 of these setters, leaving the rest to drift independently across
+/// `runner.rs`/`daemon.rs`/`acp.rs`/`serve/agent_factory.rs` — `with_hooks_config` was missing
+/// entirely from `serve`, `with_enforcement_mode` was inlined (bypassing the ordering
+/// constraint) in `acp.rs`/`serve/agent_factory.rs`, and the MCP tool-id handle built in
+/// `serve/agent_factory.rs` was never attached to the `Agent` at all.
+///
+/// # Ordering
+///
+/// The injection classifier is applied before `with_enforcement_mode` — `with_enforcement_mode`
+/// is a no-op unless a classifier is already attached to the sanitizer. This function encodes
+/// that ordering internally so no call site can get it wrong.
+pub(crate) fn apply_security_pipeline<C: Channel>(
+    agent: Agent<C>,
+    inputs: SecurityWiringInputs,
+) -> Agent<C> {
+    let agent = agent
+        .with_risk_chain_accumulator(inputs.risk_chain_accumulator)
+        .with_mage_accumulator_config(inputs.mage_accumulator_config)
+        .with_typed_pages_state(inputs.typed_pages_state);
+
+    let agent = agent
+        .with_trajectory_risk_slot(inputs.trajectory_risk_slot)
+        .with_signal_queue(inputs.trajectory_signal_queue)
+        .with_trajectory_config(inputs.trajectory_config)
+        .0;
+
+    let agent = agent.with_memory_consent_trust_slot(inputs.memory_consent_trust_slot);
+
+    let agent = if let Some(sentinel) = inputs.shadow_sentinel {
+        agent.with_shadow_sentinel(sentinel)
+    } else {
+        agent
+    };
+
+    let agent = apply_vigil(agent, &inputs.vigil_config);
+
+    let agent = if let Some(ref hooks) = inputs.hooks_config {
+        agent.with_hooks_config(hooks)
+    } else {
+        agent
+    };
+
+    let agent = agent.with_mcp_tool_ids_handle(inputs.mcp_tool_ids_handle);
+
+    #[cfg(feature = "classifiers")]
+    let agent = {
+        let agent = apply_injection_classifier_with_cfg(agent, &inputs.classifiers_config);
+        apply_enforcement_mode_with_cfg(agent, &inputs.classifiers_config)
+    };
+
+    if let Some(fc) = inputs.llm_classifier {
+        agent.with_llm_classifier(fc)
+    } else {
+        agent
+    }
 }
 
 /// Wire the `CandleClassifier` injection backend into the agent's sanitizer (takes `ClassifiersConfig` directly).
@@ -1195,19 +1268,21 @@ pub(crate) fn apply_pii_ner_classifier_with_cfg<C: Channel>(
     )
 }
 
-/// Wire `enforcement_mode` from config into the agent's injection classifier.
+/// Wire `enforcement_mode` from config into the agent's injection classifier (takes
+/// `ClassifiersConfig` directly).
 ///
-/// Must be called AFTER `apply_injection_classifier` so the sanitizer already has
-/// a classifier attached. Safe to call when classifiers are disabled (no-op).
+/// Must be called AFTER `apply_injection_classifier_with_cfg` so the sanitizer already has a
+/// classifier attached — [`apply_security_pipeline`] encodes this ordering. Safe to call when
+/// classifiers are disabled (no-op).
 #[cfg(feature = "classifiers")]
-pub(crate) fn apply_enforcement_mode<C: Channel>(
+pub(crate) fn apply_enforcement_mode_with_cfg<C: Channel>(
     agent: zeph_core::agent::Agent<C>,
-    config: &Config,
+    classifiers: &zeph_core::config::ClassifiersConfig,
 ) -> zeph_core::agent::Agent<C> {
-    if !config.classifiers.enabled {
+    if !classifiers.enabled {
         return agent;
     }
-    agent.with_enforcement_mode(config.classifiers.enforcement_mode)
+    agent.with_enforcement_mode(classifiers.enforcement_mode)
 }
 
 /// Wire the three-class `AlignSentinel` refinement model into the agent's sanitizer.
@@ -4503,20 +4578,20 @@ mod tests {
         );
     }
 
-    // --- #6578/#6579/#6574 entry-point security wiring regressions ---
+    // --- #6578/#6579/#6574/#6581 entry-point security wiring regressions ---
     //
     // `Agent::services` (where `risk_chain_accumulator`/`mage_accumulator`/`typed_pages_state`
     // actually live) is `pub(crate)` to `zeph-core`, not visible from this binary crate, so
     // these tests cannot assert "the Agent now contains X" directly the way zeph-core's own
     // `agent/tests/mage_signal_mapping_tests.rs` does. Instead they prove wiring via `Arc`
-    // strong-count: `wire_risk_chain`/`apply_entrypoint_security_controls` must retain a live
-    // clone of the accumulator/typed-pages `Arc`, not merely construct-and-discard it — the
-    // exact failure mode of the original bug (`ShellExecutor.risk_chain`/`AgentBuilder`'s
-    // security services silently staying `None`/noop when a call site is missing). Full
-    // integration coverage across daemon/acp/serve is impractical here (heavy bootstrap); the
-    // architectural defense is that all 4 entry points now call the same
-    // `apply_entrypoint_security_controls`/`wire_risk_chain` functions tested below, so a future
-    // dropped call site is a one-line diff against a shared, tested helper rather than a
+    // strong-count (`wire_risk_chain`/`apply_security_pipeline` must retain a live clone of
+    // each `Arc`-backed field, not merely construct-and-discard it — the exact failure mode of
+    // the original bug: `ShellExecutor.risk_chain`/`AgentBuilder`'s security services silently
+    // staying `None`/noop when a call site is missing) and, for non-`Arc` fields,
+    // `Agent::security_wiring_snapshot()`. Full integration coverage across daemon/acp/serve is
+    // impractical here (heavy bootstrap); the architectural defense is that all 4 entry points
+    // now call the same `apply_security_pipeline`/`wire_risk_chain` functions tested below, so a
+    // future dropped call site is a one-line diff against a shared, tested helper rather than a
     // silently-incomplete duplicated wiring block.
 
     /// #6578: `wire_risk_chain` must hand `ShellExecutor::with_risk_chain` a live clone of the
@@ -4543,47 +4618,210 @@ mod tests {
         );
     }
 
-    /// #6578/#6574: `apply_entrypoint_security_controls` — the single call site all 4 entry
-    /// points (`runner.rs`, `daemon.rs`, `acp.rs`, `serve/agent_factory.rs`) now share — must
-    /// actually forward `risk_chain_accumulator` and `typed_pages_state` onto the `Agent` via
-    /// `with_risk_chain_accumulator`/`with_typed_pages_state`, not drop them on the floor.
-    /// `with_mage_accumulator_config` (#6579) constructs a fresh, non-`Arc` accumulator from the
-    /// config value, so it has no refcount to assert on here; exercising it below is a
-    /// panic/compile smoke check that the call happens at all — the accumulator's own
-    /// enabled/disabled behavior is covered by zeph-core's `mage_signal_mapping_tests.rs`.
+    /// #6581: structural guardrail — none of the 12 security-relevant `AgentBuilder` setters
+    /// consolidated by `apply_security_pipeline` may be called inline (bypassing the pipeline)
+    /// from any of the four agent entry points. A future entry point (or a regression in an
+    /// existing one) that reaches for e.g. `.with_shadow_sentinel(...)` directly, instead of
+    /// going through `apply_security_pipeline`, defeats the single-call-site guarantee this
+    /// consolidation establishes.
+    ///
+    /// `with_signal_queue`, `with_enforcement_mode`, and `with_scan_user_input` are
+    /// intentionally excluded from `SETTER_NAMES` — those method names are also defined on
+    /// `ScopedToolExecutor`/`PolicyGateExecutor`/`ContentSanitizer` (multi-receiver), so a
+    /// name-only scan would false-positive on those legitimate non-`Agent` call sites (e.g.
+    /// `scoped.with_signal_queue(...)`). Covered instead by the behavioral snapshot test below.
+    ///
+    /// KNOWN LIMITATION: this proves the four entry points don't inline these setters; it does
+    /// NOT prove an entry point actually calls `apply_security_pipeline` with populated
+    /// (non-default/non-`None`) inputs — an entry point could theoretically call the pipeline
+    /// with an empty/default `SecurityWiringInputs` and still pass this test while wiring
+    /// nothing. This mirrors the project's `tokio::spawn` awk-scan "known limitation"
+    /// convention (`.claude/rules/continuous-improvement.md`) and is an accepted, documented
+    /// limitation, not a defect to fix here.
     #[test]
-    fn apply_entrypoint_security_controls_attaches_risk_chain_and_typed_pages() {
+    fn entry_points_never_inline_security_setters() {
+        const SETTER_NAMES: &[&str] = &[
+            "with_risk_chain_accumulator",
+            "with_mage_accumulator_config",
+            "with_typed_pages_state",
+            "with_shadow_sentinel",
+            "with_vigil_config",
+            "with_hooks_config",
+            "with_mcp_tool_ids_handle",
+            "with_trajectory_risk_slot",
+            "with_trajectory_config",
+            "with_memory_consent_trust_slot",
+            "with_llm_classifier",
+            "with_injection_classifier",
+        ];
+        let entry_points: &[&str] = &[
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/runner.rs"),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/daemon.rs"),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/acp.rs"),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/serve/agent_factory.rs"),
+        ];
+
+        let mut violations = Vec::new();
+        for path in entry_points {
+            let content = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+            for name in SETTER_NAMES {
+                // Word/`.`-anchored: a leading `.` excludes the setter's own `pub fn` definition
+                // (never in these 4 files anyway) and requiring `(` immediately after `name`
+                // excludes longer identifiers like `with_shadow_sentinel_sets_field(`.
+                let needle = format!(".{name}(");
+                if content.contains(&needle) {
+                    violations.push(format!("{path}: inline `{needle}` call"));
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "security setters must only be called through apply_security_pipeline, found \
+             inline calls bypassing it:\n{violations:#?}"
+        );
+    }
+
+    /// #6581: `apply_security_pipeline` — the single call site all 4 entry points now share —
+    /// must actually forward every field of a fully-populated `SecurityWiringInputs` onto the
+    /// `Agent`, not drop any of them on the floor. This is the exact failure mode the
+    /// consolidation defends against: D1 (`with_hooks_config` missing from serve), D2
+    /// (`mcp_tool_ids_handle` built but never attached in serve), D3 (`with_enforcement_mode`
+    /// inlined, bypassing the injection-classifier ordering constraint, in acp/serve).
+    ///
+    /// `Agent::services` is `pub(crate)` to `zeph-core`, so `Arc`-backed always-present fields
+    /// (`trajectory_risk_slot`/`trajectory_signal_queue`/`memory_consent_trust_slot`, which have
+    /// no `Option` to observe) are verified via `Arc::strong_count` — mirrors
+    /// `wire_risk_chain_attaches_the_returned_accumulator_to_the_executor` above — and every
+    /// other field via `Agent::security_wiring_snapshot()`.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // exhaustively constructs + asserts every field once
+    async fn apply_security_pipeline_wires_every_field() {
         let agent = make_agent();
+
         let risk_chain_accumulator = Arc::new(zeph_tools::RiskChainAccumulator::new(None));
         let typed_pages_state = Arc::new(zeph_context::typed_page::TypedPagesState {
             registry: zeph_context::typed_page::InvariantRegistry::default(),
             audit_sink: None,
             is_active: false,
         });
-        assert_eq!(Arc::strong_count(&risk_chain_accumulator), 1);
-        assert_eq!(Arc::strong_count(&typed_pages_state), 1);
+        let trajectory_risk_slot: zeph_tools::TrajectoryRiskSlot =
+            Arc::new(parking_lot::RwLock::new(0u8));
+        let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
+            Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let memory_consent_trust_slot: zeph_core::memory_tools::MemoryConsentTrustSlot =
+            Arc::new(parking_lot::RwLock::new(0u8));
+        let mcp_tool_ids_handle: McpToolIdsHandle =
+            Arc::new(parking_lot::RwLock::new(std::collections::HashSet::new()));
 
-        let agent = apply_entrypoint_security_controls(
-            agent,
-            Arc::clone(&risk_chain_accumulator),
-            zeph_config::TrajectoryRiskAccumulatorConfig::default(),
-            Some(Arc::clone(&typed_pages_state)),
+        let store = zeph_core::agent::shadow_sentinel::ShadowEventStore::new(memory_pool().await);
+        let probe = zeph_core::agent::shadow_sentinel::LlmSafetyProbe::new(
+            Arc::new(offline_provider()),
+            1_000,
+            false,
         );
+        let shadow_sentinel = Arc::new(zeph_core::agent::shadow_sentinel::ShadowSentinel::new(
+            store,
+            Box::new(probe),
+            zeph_config::ShadowSentinelConfig::default(),
+            "test-session",
+        ));
+
+        #[cfg(feature = "classifiers")]
+        let classifiers_config = zeph_core::config::ClassifiersConfig {
+            enabled: true,
+            scan_user_input: true,
+            enforcement_mode: zeph_config::InjectionEnforcementMode::Block,
+            ..Default::default()
+        };
+
+        let inputs = SecurityWiringInputs {
+            risk_chain_accumulator: Arc::clone(&risk_chain_accumulator),
+            mage_accumulator_config: zeph_config::TrajectoryRiskAccumulatorConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            typed_pages_state: Some(Arc::clone(&typed_pages_state)),
+            trajectory_risk_slot: Arc::clone(&trajectory_risk_slot),
+            trajectory_signal_queue: Arc::clone(&trajectory_signal_queue),
+            trajectory_config: zeph_config::TrajectorySentinelConfig::default(),
+            memory_consent_trust_slot: Arc::clone(&memory_consent_trust_slot),
+            shadow_sentinel: Some(Arc::clone(&shadow_sentinel)),
+            vigil_config: zeph_config::VigilConfig::default(),
+            hooks_config: Some(zeph_config::HooksConfig {
+                turn_complete: vec![zeph_config::HookDef {
+                    action: zeph_config::HookAction::Command {
+                        command: "true".to_owned(),
+                    },
+                    timeout_secs: 30,
+                    fail_closed: false,
+                    r#if: None,
+                }],
+                ..Default::default()
+            }),
+            mcp_tool_ids_handle: Arc::clone(&mcp_tool_ids_handle),
+            #[cfg(feature = "classifiers")]
+            classifiers_config,
+            llm_classifier: Some(zeph_llm::classifier::llm::LlmClassifier::new(Arc::new(
+                offline_provider(),
+            ))),
+        };
+
+        let agent = apply_security_pipeline(agent, inputs);
 
         assert_eq!(
             Arc::strong_count(&risk_chain_accumulator),
             2,
-            "apply_entrypoint_security_controls must store the accumulator on the Agent via \
-             with_risk_chain_accumulator (#6578) — a count that never rises above 1 reproduces \
-             the bug where 3 of 4 entry points silently skipped this wiring"
+            "apply_security_pipeline must store the accumulator via with_risk_chain_accumulator"
         );
         assert_eq!(
             Arc::strong_count(&typed_pages_state),
             2,
-            "apply_entrypoint_security_controls must store the state on the Agent via \
-             with_typed_pages_state (#6574) — a count that never rises above 1 reproduces the \
-             bug where 3 of 4 entry points silently skipped typed-page CAM fidelity enforcement"
+            "apply_security_pipeline must store the state via with_typed_pages_state"
         );
+        assert_eq!(
+            Arc::strong_count(&trajectory_risk_slot),
+            2,
+            "apply_security_pipeline must store the slot via with_trajectory_risk_slot"
+        );
+        assert_eq!(
+            Arc::strong_count(&trajectory_signal_queue),
+            2,
+            "apply_security_pipeline must store the queue via with_signal_queue"
+        );
+        assert_eq!(
+            Arc::strong_count(&memory_consent_trust_slot),
+            2,
+            "apply_security_pipeline must store the slot via with_memory_consent_trust_slot"
+        );
+        assert_eq!(
+            Arc::strong_count(&mcp_tool_ids_handle),
+            2,
+            "apply_security_pipeline must store the handle via with_mcp_tool_ids_handle"
+        );
+        assert_eq!(
+            Arc::strong_count(&shadow_sentinel),
+            2,
+            "apply_security_pipeline must store the sentinel via with_shadow_sentinel"
+        );
+
+        let snapshot = agent.security_wiring_snapshot();
+        assert!(snapshot.risk_chain_accumulator);
+        assert!(snapshot.mage_accumulator_enabled);
+        assert!(snapshot.typed_pages_state);
+        assert!(snapshot.shadow_sentinel);
+        assert!(snapshot.vigil_config);
+        assert!(snapshot.hooks_config);
+        assert!(snapshot.mcp_tool_ids_handle);
+        assert!(snapshot.llm_classifier);
+        #[cfg(feature = "classifiers")]
+        {
+            assert!(snapshot.injection_classifier);
+            assert!(snapshot.enforcement_mode_blocking);
+            assert!(snapshot.scan_user_input);
+        }
+
         drop(agent);
         assert_eq!(
             Arc::strong_count(&risk_chain_accumulator),
@@ -4594,6 +4832,31 @@ mod tests {
             Arc::strong_count(&typed_pages_state),
             1,
             "dropping the Agent must release its clone of the typed-pages state"
+        );
+        assert_eq!(
+            Arc::strong_count(&trajectory_risk_slot),
+            1,
+            "dropping the Agent must release its clone of the trajectory risk slot"
+        );
+        assert_eq!(
+            Arc::strong_count(&trajectory_signal_queue),
+            1,
+            "dropping the Agent must release its clone of the trajectory signal queue"
+        );
+        assert_eq!(
+            Arc::strong_count(&memory_consent_trust_slot),
+            1,
+            "dropping the Agent must release its clone of the memory-consent trust slot"
+        );
+        assert_eq!(
+            Arc::strong_count(&mcp_tool_ids_handle),
+            1,
+            "dropping the Agent must release its clone of the MCP tool-id handle"
+        );
+        assert_eq!(
+            Arc::strong_count(&shadow_sentinel),
+            1,
+            "dropping the Agent must release its clone of the shadow sentinel"
         );
     }
 }
