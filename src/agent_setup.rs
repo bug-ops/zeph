@@ -642,9 +642,7 @@ pub(crate) async fn build_tool_setup(
     if let Some(ref logger) = audit_logger {
         mcp_executor = mcp_executor.with_audit(Arc::clone(logger));
     }
-    let risk_chain_accumulator = Arc::new(zeph_tools::RiskChainAccumulator::new(None));
-    shell_executor = shell_executor.with_risk_chain(Arc::clone(&risk_chain_accumulator));
-    tracing::info!("security.risk_chain: RiskChainAccumulator wired to ShellExecutor");
+    let (shell_executor, risk_chain_accumulator) = wire_risk_chain(shell_executor);
     let shell_policy_handle = shell_executor.policy_handle();
     let shell_executor = Arc::new(shell_executor);
     let shell_executor_handle = Some(Arc::clone(&shell_executor));
@@ -689,6 +687,45 @@ pub(crate) async fn build_tool_setup(
         mcp_media_enabled,
         clock,
     }
+}
+
+/// Construct a [`zeph_tools::RiskChainAccumulator`] and attach it to `shell_executor` via
+/// `.with_risk_chain(...)`.
+///
+/// Every entry point that builds its own `ShellExecutor` (`runner.rs` via [`build_tool_setup`],
+/// `daemon.rs`, `acp.rs`, `serve/deps.rs`) must call this so the multi-step shell attack-chain
+/// detector (`SensitiveRead` -> `NetworkEgress`, e.g. `exfil_read_then_send`) is actually
+/// enforced — without it, `ShellExecutor::execute`'s risk-chain check is silently skipped
+/// (#6578). Pass the returned `Arc` to `Agent::with_risk_chain_accumulator` (via
+/// [`apply_entrypoint_security_controls`]) so `begin_turn()` resets the per-turn score at each
+/// turn boundary.
+///
+/// # Known limitation: cross-session sharing in ACP/serve
+///
+/// [`zeph_tools::RiskChainAccumulator`]'s own contract is "one instance per agent turn, reset at
+/// each turn boundary." `runner.rs` and `daemon.rs` satisfy this exactly (one agent per process).
+/// `acp.rs` and `serve/deps.rs`, however, call this function once per **connection**/**server**
+/// (because the underlying `ShellExecutor` itself is already shared at that scope, predating this
+/// fix) and then hand the *same* `Arc` to every concurrent session built on top of it. Since
+/// `Agent::begin_turn()` unconditionally calls `reset()` on whatever accumulator it holds, one
+/// session's turn boundary can wipe another concurrent session's mid-chain `SensitiveRead` state
+/// (false negative — silently defeats the very detector this function exists to wire in), and
+/// interleaved calls from different sessions can cross-combine into a spurious chain fire on an
+/// unrelated session (false positive). This is not a regression introduced here — these entry
+/// points had zero risk-chain detection before this fix — but it means the detector is not fully
+/// session-isolated under concurrent ACP/serve load. A real fix needs either a per-session
+/// `ShellExecutor` or routing `record()` calls through session-scoped state at call time; both are
+/// out of scope for this wiring-consistency fix (#6578/#6581).
+pub(crate) fn wire_risk_chain(
+    shell_executor: zeph_tools::ShellExecutor,
+) -> (
+    zeph_tools::ShellExecutor,
+    Arc<zeph_tools::RiskChainAccumulator>,
+) {
+    let risk_chain_accumulator = Arc::new(zeph_tools::RiskChainAccumulator::new(None));
+    let shell_executor = shell_executor.with_risk_chain(Arc::clone(&risk_chain_accumulator));
+    tracing::info!("security.risk_chain: RiskChainAccumulator wired to ShellExecutor");
+    (shell_executor, risk_chain_accumulator)
 }
 
 /// Wrap `inner` in a [`zeph_tools::CompressedExecutor`] when `cfg.enabled = true` and a DB pool
@@ -908,6 +945,104 @@ pub(crate) fn apply_guardrail<C: Channel>(
     } else {
         agent
     }
+}
+
+/// Build [`zeph_context::typed_page::TypedPagesState`] from config, or return `None` when disabled.
+///
+/// Opens the audit sink (async) before the synchronous agent builder chain so that
+/// [`zeph_context::typed_page::CompactionAuditSink::open`] can be awaited here.
+///
+/// # Security
+///
+/// `config.memory.compression.typed_pages.audit_path` is **operator-only trusted input** — it is
+/// read from the agent's configuration file, which already requires file-system write access.
+/// No canonicalization or prefix-check is performed because the threat model does not include
+/// less-privileged config editing. Do not propagate this path from end-user input.
+#[tracing::instrument(name = "agent_setup.build_typed_pages_state", skip_all)]
+pub(crate) async fn build_typed_pages_state(
+    config: &Config,
+    supervisor: Option<&zeph_common::TaskSupervisor>,
+) -> Option<Arc<zeph_context::typed_page::TypedPagesState>> {
+    use zeph_config::TypedPagesEnforcement;
+    use zeph_context::typed_page::{CompactionAuditSink, InvariantRegistry, TypedPagesState};
+
+    let tp_cfg = &config.memory.compression.typed_pages;
+    if !tp_cfg.enabled {
+        return None;
+    }
+
+    let audit_sink = if tp_cfg.audit_path.is_empty() {
+        // Derive a default audit path from the SQLite parent directory.
+        let default_path = Path::new(&config.memory.sqlite_path)
+            .parent()
+            .map(|p| p.join("audit").join("compaction.jsonl"));
+
+        if let Some(path) = default_path {
+            match CompactionAuditSink::open(&path, tp_cfg.audit_channel_capacity, supervisor).await
+            {
+                Ok(sink) => {
+                    tracing::info!(
+                        path = %path.display(),
+                        "typed-pages audit sink opened (default path)"
+                    );
+                    Some(sink)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "typed-pages audit sink could not be opened at default path, audit disabled: {e:#}"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        let path = PathBuf::from(&tp_cfg.audit_path);
+        match CompactionAuditSink::open(&path, tp_cfg.audit_channel_capacity, supervisor).await {
+            Ok(sink) => {
+                tracing::info!(path = %path.display(), "typed-pages audit sink opened");
+                Some(sink)
+            }
+            Err(e) => {
+                tracing::warn!("typed-pages audit sink could not be opened, audit disabled: {e:#}");
+                None
+            }
+        }
+    };
+
+    let is_active = tp_cfg.enforcement == TypedPagesEnforcement::Active;
+    Some(Arc::new(TypedPagesState {
+        registry: InvariantRegistry::default(),
+        audit_sink,
+        is_active,
+    }))
+}
+
+/// Apply the three security/fidelity controls that must stay identical across every entry point:
+/// the shell risk-chain accumulator (#6578), the MAGE trajectory-risk gate (#6579), and typed-page
+/// CAM fidelity enforcement (#6574). Previously each was wired only in `runner.rs`'s CLI/TUI
+/// bootstrap and silently skipped by `daemon.rs`, `acp.rs`, and `serve/agent_factory.rs` — this
+/// helper is the single call site all four entry points share so the three controls cannot drift
+/// out of sync again (tracked defect class: `#6581`).
+///
+/// `risk_chain_accumulator` is the `Arc` returned by [`wire_risk_chain`] — the same instance
+/// attached to the entry point's `ShellExecutor`. `mage_accumulator_config` is
+/// `config.memory.shadow_memory.clone()`. `typed_pages_state` is the result of
+/// [`build_typed_pages_state`]. Takes the decomposed config value rather than `&Config` because
+/// `acp.rs`'s `SharedAgentDeps` never holds a full `Config` (it decomposes config into
+/// per-session fields at connection-build time) — matching that convention keeps the call site
+/// identical across all four entry points.
+pub(crate) fn apply_entrypoint_security_controls<C: Channel>(
+    agent: Agent<C>,
+    risk_chain_accumulator: Arc<zeph_tools::RiskChainAccumulator>,
+    mage_accumulator_config: zeph_config::TrajectoryRiskAccumulatorConfig,
+    typed_pages_state: Option<Arc<zeph_context::typed_page::TypedPagesState>>,
+) -> Agent<C> {
+    agent
+        .with_risk_chain_accumulator(risk_chain_accumulator)
+        .with_mage_accumulator_config(mage_accumulator_config)
+        .with_typed_pages_state(typed_pages_state)
 }
 
 /// Wire the `CandleClassifier` injection backend into the agent's sanitizer.
@@ -4176,6 +4311,99 @@ mod tests {
             names.contains("mem-hebbian-consolidation"),
             "status_tx=Some(...) must still register the hebbian-consolidation loop, got \
              {names:?}"
+        );
+    }
+
+    // --- #6578/#6579/#6574 entry-point security wiring regressions ---
+    //
+    // `Agent::services` (where `risk_chain_accumulator`/`mage_accumulator`/`typed_pages_state`
+    // actually live) is `pub(crate)` to `zeph-core`, not visible from this binary crate, so
+    // these tests cannot assert "the Agent now contains X" directly the way zeph-core's own
+    // `agent/tests/mage_signal_mapping_tests.rs` does. Instead they prove wiring via `Arc`
+    // strong-count: `wire_risk_chain`/`apply_entrypoint_security_controls` must retain a live
+    // clone of the accumulator/typed-pages `Arc`, not merely construct-and-discard it — the
+    // exact failure mode of the original bug (`ShellExecutor.risk_chain`/`AgentBuilder`'s
+    // security services silently staying `None`/noop when a call site is missing). Full
+    // integration coverage across daemon/acp/serve is impractical here (heavy bootstrap); the
+    // architectural defense is that all 4 entry points now call the same
+    // `apply_entrypoint_security_controls`/`wire_risk_chain` functions tested below, so a future
+    // dropped call site is a one-line diff against a shared, tested helper rather than a
+    // silently-incomplete duplicated wiring block.
+
+    /// #6578: `wire_risk_chain` must hand `ShellExecutor::with_risk_chain` a live clone of the
+    /// `Arc` it returns to the caller — a strong count that never rises above 1 would mean the
+    /// executor never actually retained the accumulator, reproducing the original defect where
+    /// `ShellExecutor.risk_chain` stayed `None` and the multi-step attack-chain check
+    /// (`SensitiveRead` -> `NetworkEgress`) was silently skipped.
+    #[test]
+    fn wire_risk_chain_attaches_the_returned_accumulator_to_the_executor() {
+        let shell_executor = zeph_tools::ShellExecutor::new(&zeph_tools::ShellConfig::default());
+        let (shell_executor, accumulator) = wire_risk_chain(shell_executor);
+        assert_eq!(
+            Arc::strong_count(&accumulator),
+            2,
+            "ShellExecutor::with_risk_chain must retain a clone of the accumulator it was \
+             given, not just construct-and-discard it"
+        );
+        drop(shell_executor);
+        assert_eq!(
+            Arc::strong_count(&accumulator),
+            1,
+            "dropping the wired ShellExecutor must release its clone of the accumulator"
+        );
+    }
+
+    /// #6578/#6574: `apply_entrypoint_security_controls` — the single call site all 4 entry
+    /// points (`runner.rs`, `daemon.rs`, `acp.rs`, `serve/agent_factory.rs`) now share — must
+    /// actually forward `risk_chain_accumulator` and `typed_pages_state` onto the `Agent` via
+    /// `with_risk_chain_accumulator`/`with_typed_pages_state`, not drop them on the floor.
+    /// `with_mage_accumulator_config` (#6579) constructs a fresh, non-`Arc` accumulator from the
+    /// config value, so it has no refcount to assert on here; exercising it below is a
+    /// panic/compile smoke check that the call happens at all — the accumulator's own
+    /// enabled/disabled behavior is covered by zeph-core's `mage_signal_mapping_tests.rs`.
+    #[test]
+    fn apply_entrypoint_security_controls_attaches_risk_chain_and_typed_pages() {
+        let agent = make_agent();
+        let risk_chain_accumulator = Arc::new(zeph_tools::RiskChainAccumulator::new(None));
+        let typed_pages_state = Arc::new(zeph_context::typed_page::TypedPagesState {
+            registry: zeph_context::typed_page::InvariantRegistry::default(),
+            audit_sink: None,
+            is_active: false,
+        });
+        assert_eq!(Arc::strong_count(&risk_chain_accumulator), 1);
+        assert_eq!(Arc::strong_count(&typed_pages_state), 1);
+
+        let agent = apply_entrypoint_security_controls(
+            agent,
+            Arc::clone(&risk_chain_accumulator),
+            zeph_config::TrajectoryRiskAccumulatorConfig::default(),
+            Some(Arc::clone(&typed_pages_state)),
+        );
+
+        assert_eq!(
+            Arc::strong_count(&risk_chain_accumulator),
+            2,
+            "apply_entrypoint_security_controls must store the accumulator on the Agent via \
+             with_risk_chain_accumulator (#6578) — a count that never rises above 1 reproduces \
+             the bug where 3 of 4 entry points silently skipped this wiring"
+        );
+        assert_eq!(
+            Arc::strong_count(&typed_pages_state),
+            2,
+            "apply_entrypoint_security_controls must store the state on the Agent via \
+             with_typed_pages_state (#6574) — a count that never rises above 1 reproduces the \
+             bug where 3 of 4 entry points silently skipped typed-page CAM fidelity enforcement"
+        );
+        drop(agent);
+        assert_eq!(
+            Arc::strong_count(&risk_chain_accumulator),
+            1,
+            "dropping the Agent must release its clone of the risk-chain accumulator"
+        );
+        assert_eq!(
+            Arc::strong_count(&typed_pages_state),
+            1,
+            "dropping the Agent must release its clone of the typed-pages state"
         );
     }
 }

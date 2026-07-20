@@ -581,6 +581,24 @@ pub(crate) struct SharedAgentDeps {
     startup_shell_overlay: zeph_core::ShellOverlaySnapshot,
     /// Live-rebuild handle for the `ShellExecutor`'s `blocked_commands` policy.
     shell_policy_handle: zeph_tools::ShellPolicyHandle,
+    /// Shared multi-step shell attack-chain detector, attached to the shared `ShellExecutor`
+    /// above via `agent_setup::wire_risk_chain`. `spawn_acp_agent` passes the same `Arc` into
+    /// every session's `Agent::with_risk_chain_accumulator` via
+    /// `agent_setup::apply_entrypoint_security_controls` (#6578) — mirrors `src/runner.rs` and
+    /// `src/daemon.rs`. See `agent_setup::wire_risk_chain`'s doc comment for the cross-session
+    /// sharing caveat under concurrent ACP sessions on this connection.
+    risk_chain_accumulator: std::sync::Arc<zeph_tools::RiskChainAccumulator>,
+    /// Typed-page CAM fidelity state (#6574), built once per connection via
+    /// `agent_setup::build_typed_pages_state` since `[memory.compression.typed_pages]` is static
+    /// config. `spawn_acp_agent` clones the `Arc` into every session via
+    /// `agent_setup::apply_entrypoint_security_controls` — mirrors `src/runner.rs` and
+    /// `src/daemon.rs`.
+    typed_pages_state: Option<std::sync::Arc<zeph_context::typed_page::TypedPagesState>>,
+    /// `config.memory.shadow_memory` (#6579), wired into `Agent::with_mage_accumulator_config`
+    /// per session via `agent_setup::apply_entrypoint_security_controls` — mirrors
+    /// `src/runner.rs` and `src/daemon.rs`. Replaces the noop `TrajectoryRiskAccumulator` set by
+    /// `SecurityState::default()`.
+    shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig,
 
     // Scheduler runtime objects (broadcast senders; not config-derived values)
     /// Scheduler executor shared across sessions. Initialized once at startup.
@@ -816,6 +834,11 @@ async fn build_acp_deps(
         }
         acp_audit_logger = Some(logger);
     }
+    // #6578: wire the multi-step shell attack-chain detector, matching src/runner.rs's
+    // `agent_setup::build_tool_setup` — previously only the CLI/TUI path constructed a
+    // `RiskChainAccumulator`, so ACP sessions' `ShellExecutor` silently skipped the
+    // `SensitiveRead` -> `NetworkEgress` chain check entirely.
+    let (shell_executor, risk_chain_accumulator) = agent_setup::wire_risk_chain(shell_executor);
     let file_executor = zeph_tools::FileExecutor::new(
         config
             .tools
@@ -1132,6 +1155,12 @@ async fn build_acp_deps(
     // `provider_pool` too (previously left empty, breaking `resolve_background_provider`).
     let provider_config_snapshot = agent_setup::build_provider_config_snapshot(config);
     let acp_auth_clients = resolve_acp_auth_clients(&config.acp, app.vault()).await?;
+    // #6574: typed-page CAM fidelity enforcement, matching src/runner.rs and src/daemon.rs —
+    // previously only the CLI/TUI path built `TypedPagesState`, so ACP sessions' compaction
+    // pipeline silently skipped invariant enforcement/audit even when
+    // `[memory.compression.typed_pages] enabled = true`.
+    let typed_pages_state =
+        agent_setup::build_typed_pages_state(config, Some(&acp_mem_supervisor)).await;
 
     let deps = SharedAgentDeps {
         provider,
@@ -1320,6 +1349,9 @@ async fn build_acp_deps(
             zeph_core::ShellOverlaySnapshot { blocked, allowed }
         },
         shell_policy_handle,
+        risk_chain_accumulator,
+        typed_pages_state,
+        shadow_memory_config: config.memory.shadow_memory.clone(),
     };
 
     let keepalive: Box<dyn std::any::Any> = Box::new((skill_watcher, config_watcher));
@@ -1631,6 +1663,7 @@ async fn spawn_acp_agent(
     let nli_provider = d.nli_provider.clone();
     let secret_registry = d.secret_registry.clone();
     let vigil_config = d.vigil_config.clone();
+    let mage_accumulator_config = d.shadow_memory_config.clone();
     let probe_provider = d.probe_provider.clone();
     let planner_provider = d.planner_provider.clone();
     let verify_provider = d.verify_provider.clone();
@@ -2247,6 +2280,16 @@ async fn spawn_acp_agent(
     );
     agent = agent_setup::apply_secret_masking(agent, secret_registry);
     agent = agent_setup::apply_vigil(agent, &vigil_config);
+    // Risk-chain accumulator (#6578), MAGE trajectory-risk gate (#6579), typed-page CAM fidelity
+    // (#6574) — shared with src/runner.rs/src/daemon.rs/src/serve/agent_factory.rs via one call
+    // site so the three controls cannot silently drop out of sync across entry points again
+    // (#6581).
+    agent = agent_setup::apply_entrypoint_security_controls(
+        agent,
+        d.risk_chain_accumulator.clone(),
+        mage_accumulator_config.clone(),
+        d.typed_pages_state.clone(),
+    );
 
     if debug_config.enabled {
         // Use session_id as a subdirectory prefix so concurrent sessions never share the same

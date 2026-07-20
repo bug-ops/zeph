@@ -226,6 +226,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   above when built from the same config via the real `build_combined_deps`, so a future PR that
   silently drops one of them fails a test instead of shipping unnoticed.
 
+- `zeph-tools`/`zeph-core`/`zeph-context`: three security- and fidelity-relevant controls were
+  wired only from `src/runner.rs` (the CLI/TUI entry point) and silently skipped by
+  `src/daemon.rs` (A2A/gateway daemon), `src/acp.rs` (ACP/IDE embedding), and
+  `src/serve/agent_factory.rs`/`src/serve/deps.rs` (Telegram/Discord/Slack multi-channel
+  serving) — the latest instances of a recurring "wire X into ACP/serve/daemon" defect class
+  (tracked in #6581, 23+ confirmed instances). `RiskChainAccumulator`, the shell executor's
+  multi-step attack-chain detector (`SensitiveRead` -> `NetworkEgress`, e.g.
+  `exfil_read_then_send`/`cred_then_egress`), was never constructed outside the CLI path, so
+  `ShellExecutor::execute`'s risk-chain check was a silent no-op in 3 of 4 deployment modes
+  (#6578). The MAGE shadow-memory trajectory risk gate (`mage_accumulator`,
+  `config.memory.shadow_memory`) stayed on `TrajectoryRiskAccumulator::new_noop()` outside the
+  CLI path, regressing previously-closed #4417 (#6579). Typed-page CAM fidelity enforcement
+  (`TypedPagesState`, `config.memory.compression.typed_pages`) was never built outside the CLI
+  path, so invariant enforcement/audit for compaction was unconditionally disabled elsewhere
+  (#6574). All three are now extracted into shared helpers in `src/agent_setup.rs`
+  (`wire_risk_chain`, `build_typed_pages_state`, `apply_entrypoint_security_controls`) called
+  identically from all four entry points, so a future dropped call site is a one-line diff
+  against a shared, tested helper rather than a silently-incomplete duplicated wiring block.
+
 - `zeph-core`: the vault-anchor reconcile sweep (`run_anchor_sweep`) hard-deleted a transcript/
   session anchor the instant its backing file was absent, with no grace period or persisted
   "was-anchored" record (#6462). Since file absence is attacker-controlled under this feature's

@@ -150,78 +150,6 @@ fn check_legacy_artifact_paths(config: &Config) {
     }
 }
 
-/// Build [`zeph_context::typed_page::TypedPagesState`] from config, or return `None` when disabled.
-///
-/// Opens the audit sink (async) before the synchronous agent builder chain so that
-/// [`zeph_context::typed_page::CompactionAuditSink::open`] can be awaited here.
-///
-/// # Security
-///
-/// `config.memory.compression.typed_pages.audit_path` is **operator-only trusted input** — it is
-/// read from the agent's configuration file, which already requires file-system write access.
-/// No canonicalization or prefix-check is performed because the threat model does not include
-/// less-privileged config editing. Do not propagate this path from end-user input.
-#[tracing::instrument(name = "runner.build_typed_pages_state", skip_all)]
-async fn build_typed_pages_state(
-    config: &Config,
-    supervisor: Option<&zeph_common::TaskSupervisor>,
-) -> Option<std::sync::Arc<zeph_context::typed_page::TypedPagesState>> {
-    use zeph_config::TypedPagesEnforcement;
-    use zeph_context::typed_page::{CompactionAuditSink, InvariantRegistry, TypedPagesState};
-
-    let tp_cfg = &config.memory.compression.typed_pages;
-    if !tp_cfg.enabled {
-        return None;
-    }
-
-    let audit_sink = if tp_cfg.audit_path.is_empty() {
-        // Derive a default audit path from the SQLite parent directory.
-        let default_path = std::path::Path::new(&config.memory.sqlite_path)
-            .parent()
-            .map(|p| p.join("audit").join("compaction.jsonl"));
-
-        if let Some(path) = default_path {
-            match CompactionAuditSink::open(&path, tp_cfg.audit_channel_capacity, supervisor).await
-            {
-                Ok(sink) => {
-                    tracing::info!(
-                        path = %path.display(),
-                        "typed-pages audit sink opened (default path)"
-                    );
-                    Some(sink)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "typed-pages audit sink could not be opened at default path, audit disabled: {e:#}"
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        }
-    } else {
-        let path = std::path::PathBuf::from(&tp_cfg.audit_path);
-        match CompactionAuditSink::open(&path, tp_cfg.audit_channel_capacity, supervisor).await {
-            Ok(sink) => {
-                tracing::info!(path = %path.display(), "typed-pages audit sink opened");
-                Some(sink)
-            }
-            Err(e) => {
-                tracing::warn!("typed-pages audit sink could not be opened, audit disabled: {e:#}");
-                None
-            }
-        }
-    };
-
-    let is_active = tp_cfg.enforcement == TypedPagesEnforcement::Active;
-    Some(std::sync::Arc::new(TypedPagesState {
-        registry: InvariantRegistry::default(),
-        audit_sink,
-        is_active,
-    }))
-}
-
 /// Merge on-disk logging config with the optional CLI `--log-file` override.
 ///
 /// Priority: CLI flag > config file > built-in defaults.
@@ -264,7 +192,6 @@ where
     memory: std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
     conversation_id: zeph_memory::ConversationId,
     session_sink: Option<std::sync::Arc<zeph_agent_persistence::SessionSink>>,
-    typed_pages_state: Option<std::sync::Arc<zeph_context::typed_page::TypedPagesState>>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     config_path: std::path::PathBuf,
     config_reload_rx: tokio::sync::mpsc::Receiver<zeph_core::config_watcher::ConfigEvent>,
@@ -323,7 +250,6 @@ where
     .with_session_sink(deps.session_sink)
     .with_session_persistence_config(Some(config.session.clone()))
     .with_compression(config.memory.compression.clone())
-    .with_typed_pages_state(deps.typed_pages_state)
     .with_routing(config.memory.store_routing.clone())
     .with_shutdown(deps.shutdown_rx)
     .with_config_reload(deps.config_path, deps.config_reload_rx)
@@ -2679,8 +2605,10 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     let channel = crate::gateway_spawn::GatewayChannel::new(channel, gateway_input_rx);
 
     // Build TypedPagesState if enabled (#3630). Done before the builder chain because
-    // CompactionAuditSink::open is async.
-    let typed_pages_state = build_typed_pages_state(config, Some(&*supervisor)).await;
+    // CompactionAuditSink::open is async. Applied post-`build_agent` via
+    // `agent_setup::apply_entrypoint_security_controls`, alongside the risk-chain and MAGE
+    // accumulator wiring, so all 4 entry points share one call site (#6574/#6578/#6579).
+    let typed_pages_state = agent_setup::build_typed_pages_state(config, Some(&*supervisor)).await;
 
     // Precompute before moving into `BuildAgentDeps` — mirrors the inline chain's prior
     // expression-argument evaluation order exactly.
@@ -2713,7 +2641,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             memory: std::sync::Arc::clone(&memory),
             conversation_id,
             session_sink: session_sink.clone(),
-            typed_pages_state,
             shutdown_rx: shutdown_rx.clone(),
             config_path,
             config_reload_rx,
@@ -2814,9 +2741,15 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // `memory_executor` (wired above) so sanitize_tool_output's ratcheting is visible to
     // MemoryToolExecutor's confirmation check.
     let agent = agent.with_memory_consent_trust_slot(memory_consent_trust_slot);
-    let agent = agent.with_risk_chain_accumulator(tool_setup.risk_chain_accumulator);
-    // Wire MAGE accumulator from config — replaces the noop set by SecurityState::default().
-    let agent = agent.with_mage_accumulator_config(config.memory.shadow_memory.clone());
+    // Risk-chain accumulator (#6578), MAGE trajectory-risk gate (#6579), typed-page CAM fidelity
+    // (#6574) — shared with daemon.rs/acp.rs/serve/agent_factory.rs via one call site so the
+    // three controls cannot silently drop out of sync across entry points again (#6581).
+    let agent = agent_setup::apply_entrypoint_security_controls(
+        agent,
+        tool_setup.risk_chain_accumulator,
+        config.memory.shadow_memory.clone(),
+        typed_pages_state,
+    );
     // Spec 050 Phase 2: wire ShadowSentinel into agent so begin_turn() calls advance_turn().
     let agent = if let Some(sentinel) = shadow_sentinel_arc {
         agent.with_shadow_sentinel(sentinel)
@@ -4836,7 +4769,6 @@ mod tests {
             memory: std::sync::Arc::clone(&memory),
             conversation_id,
             session_sink: None,
-            typed_pages_state: None,
             shutdown_rx,
             config_path: std::path::PathBuf::new(),
             config_reload_rx,
@@ -4929,7 +4861,6 @@ mod tests {
             memory: std::sync::Arc::clone(&memory),
             conversation_id,
             session_sink: None,
-            typed_pages_state: None,
             shutdown_rx,
             config_path: std::path::PathBuf::new(),
             config_reload_rx,

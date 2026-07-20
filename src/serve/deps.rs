@@ -205,6 +205,24 @@ pub(crate) struct ServeAgentDeps {
     /// `Agent::with_tools_enabled` so `[tools] enabled = false` actually suppresses tool
     /// definitions for `/sessions`-built agents, matching `runner.rs`/`daemon.rs`/`acp.rs`.
     pub(crate) tools_enabled: bool,
+    /// Shared multi-step shell attack-chain detector, attached to the shared `ShellExecutor`
+    /// inside `tool_executor` via `agent_setup::wire_risk_chain`. `agent_factory` passes the
+    /// same `Arc` into every session's `Agent::with_risk_chain_accumulator` via
+    /// `agent_setup::apply_entrypoint_security_controls` (#6578) — mirrors `src/runner.rs`,
+    /// `src/daemon.rs`, and `src/acp.rs`. See `agent_setup::wire_risk_chain`'s doc comment for
+    /// the cross-session sharing caveat under concurrent `/sessions*` load.
+    pub(crate) risk_chain_accumulator: Arc<zeph_tools::RiskChainAccumulator>,
+    /// Typed-page CAM fidelity state (#6574), built once at startup via
+    /// `agent_setup::build_typed_pages_state` since `[memory.compression.typed_pages]` is static
+    /// config. `agent_factory` clones the `Arc` into every session via
+    /// `agent_setup::apply_entrypoint_security_controls` — mirrors `src/runner.rs`,
+    /// `src/daemon.rs`, and `src/acp.rs`.
+    pub(crate) typed_pages_state: Option<Arc<zeph_context::typed_page::TypedPagesState>>,
+    /// `config.memory.shadow_memory` (#6579), wired into `Agent::with_mage_accumulator_config`
+    /// per session via `agent_setup::apply_entrypoint_security_controls` — mirrors
+    /// `src/runner.rs`, `src/daemon.rs`, and `src/acp.rs`. Replaces the noop
+    /// `TrajectoryRiskAccumulator` set by `SecurityState::default()`.
+    pub(crate) shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig,
 }
 
 /// Assemble [`ServeAgentDeps`] once at `zeph serve-sessions` startup, plus the resolved bearer
@@ -272,8 +290,14 @@ pub(crate) async fn assemble_serve_deps(
              this serve-sessions process (serve wires no hooks or MCP tools yet)"
         );
     }
-    let (tool_executor, permission_policy, audit_logger) =
+    let (tool_executor, permission_policy, audit_logger, risk_chain_accumulator) =
         build_tool_executor(config, supervisor).await?;
+    // #6574: typed-page CAM fidelity enforcement, matching src/runner.rs/src/daemon.rs/
+    // src/acp.rs — previously only the CLI/TUI path built `TypedPagesState`, so `/sessions`-
+    // built agents' compaction pipeline silently skipped invariant enforcement/audit even when
+    // `[memory.compression.typed_pages] enabled = true`.
+    let typed_pages_state =
+        crate::agent_setup::build_typed_pages_state(config, Some(supervisor)).await;
     // R2 (SEC-H1): built once, eagerly, here — its outputs (`PolicyEnforcer`/`PolicyValidator`/
     // `PolicyLlmClient` Arcs) are immutable and safe to share across sessions; this also keeps
     // the fallible/logging async prep (policy-file load, provider resolution) at server
@@ -596,6 +620,9 @@ pub(crate) async fn assemble_serve_deps(
             .map(PathBuf::from)
             .collect(),
         tools_enabled: config.tools.enabled,
+        risk_chain_accumulator,
+        typed_pages_state,
+        shadow_memory_config: config.memory.shadow_memory.clone(),
     })
 }
 
@@ -643,6 +670,7 @@ async fn build_tool_executor(
     Arc<dyn ErasedToolExecutor>,
     zeph_tools::PermissionPolicy,
     Option<Arc<zeph_tools::AuditLogger>>,
+    Arc<zeph_tools::RiskChainAccumulator>,
 )> {
     let permission_policy =
         zeph_tools::build_permission_policy(&config.tools, config.security.autonomy_level);
@@ -701,6 +729,12 @@ async fn build_tool_executor(
         }
         audit_logger = Some(logger);
     }
+    // #6578: wire the multi-step shell attack-chain detector, matching src/runner.rs's
+    // `agent_setup::build_tool_setup` — previously only the CLI/TUI path constructed a
+    // `RiskChainAccumulator`, so `/sessions`-built agents' `ShellExecutor` silently skipped the
+    // `SensitiveRead` -> `NetworkEgress` chain check entirely.
+    let (shell_executor, risk_chain_accumulator) =
+        crate::agent_setup::wire_risk_chain(shell_executor);
     let file_executor = zeph_tools::FileExecutor::new(
         config
             .tools
@@ -729,7 +763,12 @@ async fn build_tool_executor(
             ),
         ),
     ));
-    Ok((base, permission_policy, audit_logger))
+    Ok((
+        base,
+        permission_policy,
+        audit_logger,
+        risk_chain_accumulator,
+    ))
 }
 
 #[cfg(test)]

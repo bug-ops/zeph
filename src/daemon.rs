@@ -360,11 +360,13 @@ impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
 /// Deliberately its own struct, not merged with `crate::runner::BuildAgentDeps`: the daemon
 /// path wires `with_mcp`/`with_mcp_shared_tools`/`with_provider_pool` inline (the CLI path
 /// defers those to feature-gated chaining after `build_agent` returns, inside `run()`), and
-/// never wires session-sink, compression, typed-pages, autosave, shutdown-summary,
-/// compaction-provider, tiered-retrieval, or bare-mode config at all. Forcing both paths into
-/// one struct would need `None`/default placeholders for whichever fields the other path
-/// doesn't use, reintroducing the exact default-vs-omitted wiring-regression defect class this
-/// issue exists to catch.
+/// never wires session-sink, compression, autosave, shutdown-summary, compaction-provider,
+/// tiered-retrieval, or bare-mode config at all. Typed-pages state, the risk-chain accumulator,
+/// and the MAGE trajectory-risk gate are wired post-`build_daemon_agent` via
+/// `agent_setup::apply_entrypoint_security_controls`, not through this struct (#6574/#6578/
+/// #6579). Forcing both paths into one struct would need `None`/default placeholders for
+/// whichever fields the other path doesn't use, reintroducing the exact default-vs-omitted
+/// wiring-regression defect class this issue exists to catch.
 struct BuildDaemonAgentDeps<'a, F>
 where
     F: Fn() -> Vec<PathBuf> + Send + Sync + 'static,
@@ -735,6 +737,11 @@ pub(crate) async fn run_daemon(
         }
         daemon_audit_logger = Some(logger);
     }
+    // #6578: wire the multi-step shell attack-chain detector, matching src/runner.rs's
+    // `agent_setup::build_tool_setup` — previously only the CLI/TUI path constructed a
+    // `RiskChainAccumulator`, so the daemon's `ShellExecutor` silently skipped the
+    // `SensitiveRead` -> `NetworkEgress` chain check entirely.
+    let (shell_executor, risk_chain_accumulator) = agent_setup::wire_risk_chain(shell_executor);
     let file_executor = zeph_tools::FileExecutor::new(
         config
             .tools
@@ -1088,6 +1095,12 @@ pub(crate) async fn run_daemon(
         None
     };
 
+    // #6574: typed-page CAM fidelity enforcement, matching src/runner.rs — previously only the
+    // CLI/TUI path built `TypedPagesState`, so the daemon's compaction pipeline silently skipped
+    // invariant enforcement/audit even when `[memory.compression.typed_pages] enabled = true`.
+    let typed_pages_state =
+        agent_setup::build_typed_pages_state(config, Some(&task_supervisor)).await;
+
     let deps = BuildDaemonAgentDeps {
         config,
         provider: provider.clone(),
@@ -1114,6 +1127,17 @@ pub(crate) async fn run_daemon(
         clock,
     };
     let agent = Box::pin(build_daemon_agent(deps, loopback_channel)).await;
+
+    // Risk-chain accumulator (#6578), MAGE trajectory-risk gate (#6579), typed-page CAM fidelity
+    // (#6574) — shared with src/runner.rs/src/acp.rs/src/serve/agent_factory.rs via one call
+    // site so the three controls cannot silently drop out of sync across entry points again
+    // (#6581).
+    let agent = agent_setup::apply_entrypoint_security_controls(
+        agent,
+        risk_chain_accumulator,
+        config.memory.shadow_memory.clone(),
+        typed_pages_state,
+    );
 
     // #6022: wire code-RAG retrieval (static repo-map/IndexMcpServer injection plus automatic
     // per-turn code-context retrieval) — mirrors src/runner.rs. Previously the daemon only

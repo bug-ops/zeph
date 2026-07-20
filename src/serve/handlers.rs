@@ -621,6 +621,9 @@ mod tests {
             secret_registry: None,
             vigil_config: zeph_config::VigilConfig::default(),
             feedback_classifier: None,
+            risk_chain_accumulator: Arc::new(zeph_tools::RiskChainAccumulator::new(None)),
+            typed_pages_state: None,
+            shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
         };
         AppState {
             registry: Arc::new(LiveSessionRegistry::new()),

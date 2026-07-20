@@ -396,6 +396,16 @@ pub(crate) async fn build_agent_factory(
         // sanitize_tool_output's ratcheting is visible to MemoryToolExecutor's confirmation
         // check.
         agent = agent.with_memory_consent_trust_slot(memory_consent_trust_slot);
+        // Risk-chain accumulator (#6578), MAGE trajectory-risk gate (#6579), typed-page CAM
+        // fidelity (#6574) — shared with src/runner.rs/src/daemon.rs/src/acp.rs via one call
+        // site so the three controls cannot silently drop out of sync across entry points again
+        // (#6581).
+        agent = crate::agent_setup::apply_entrypoint_security_controls(
+            agent,
+            deps.risk_chain_accumulator,
+            deps.shadow_memory_config,
+            deps.typed_pages_state,
+        );
         if let Some(head) = rl_head {
             agent = agent.with_rl_head(head);
         }
@@ -1017,6 +1027,9 @@ mod tests {
             secret_registry: None,
             vigil_config: zeph_config::VigilConfig::default(),
             feedback_classifier: None,
+            risk_chain_accumulator: Arc::new(zeph_tools::RiskChainAccumulator::new(None)),
+            typed_pages_state: None,
+            shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1121,6 +1134,9 @@ mod tests {
             secret_registry: None,
             vigil_config: zeph_config::VigilConfig::default(),
             feedback_classifier: None,
+            risk_chain_accumulator: Arc::new(zeph_tools::RiskChainAccumulator::new(None)),
+            typed_pages_state: None,
+            shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
         };
 
         let (resume_banner, build_agent) =
@@ -1222,6 +1238,9 @@ mod tests {
             secret_registry: None,
             vigil_config: zeph_config::VigilConfig::default(),
             feedback_classifier: None,
+            risk_chain_accumulator: Arc::new(zeph_tools::RiskChainAccumulator::new(None)),
+            typed_pages_state: None,
+            shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1349,6 +1368,9 @@ mod tests {
             secret_registry: None,
             vigil_config: zeph_config::VigilConfig::default(),
             feedback_classifier: None,
+            risk_chain_accumulator: Arc::new(zeph_tools::RiskChainAccumulator::new(None)),
+            typed_pages_state: None,
+            shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1465,6 +1487,9 @@ mod tests {
             secret_registry: None,
             vigil_config: zeph_config::VigilConfig::default(),
             feedback_classifier: None,
+            risk_chain_accumulator: Arc::new(zeph_tools::RiskChainAccumulator::new(None)),
+            typed_pages_state: None,
+            shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1580,6 +1605,9 @@ mod tests {
             secret_registry: None,
             vigil_config: zeph_config::VigilConfig::default(),
             feedback_classifier: None,
+            risk_chain_accumulator: Arc::new(zeph_tools::RiskChainAccumulator::new(None)),
+            typed_pages_state: None,
+            shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1692,6 +1720,9 @@ mod tests {
             secret_registry: None,
             vigil_config: zeph_config::VigilConfig::default(),
             feedback_classifier: None,
+            risk_chain_accumulator: Arc::new(zeph_tools::RiskChainAccumulator::new(None)),
+            typed_pages_state: None,
+            shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1787,6 +1818,9 @@ mod tests {
             secret_registry: None,
             vigil_config: zeph_config::VigilConfig::default(),
             feedback_classifier: None,
+            risk_chain_accumulator: Arc::new(zeph_tools::RiskChainAccumulator::new(None)),
+            typed_pages_state: None,
+            shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
         }
     }
 
