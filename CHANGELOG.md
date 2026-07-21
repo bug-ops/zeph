@@ -7,6 +7,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ## [0.22.3] - 2026-07-22
+### Fixed
+
+- `.github/workflows/ci-non-linux.yml`: the sharded macOS/Windows `Test` jobs intermittently
+  crashed with `fatal runtime error: stack overflow, aborting` on
+  `serve::agent_factory::tests::build_agent_factory_gates_trust_state_independently_per_session`
+  and `build_combined_deps_wires_policy_gate_through_to_session_agent` (run 29873938646) — the
+  same root cause already fixed for the `coverage` job (Config-heavy async test frames that
+  build more than one `Agent`/`ServeAgentDeps` at once overflow the smaller default per-test
+  stack on non-Linux runners even though they pass on Linux). Added `RUST_MIN_STACK: "33554432"`
+  (32 MiB) to the sharded `test` job's env, scoped to that job only.
+- `src/agent_setup.rs`, `src/acp.rs`: `build_tool_setup_wires_risk_chain_and_blocks_exfil_sequence`
+  and `acp_session_risk_chain_state_does_not_leak_across_sessions` executed `cat /etc/passwd` to
+  trigger the risk chain's `SensitiveRead` classification and asserted the call succeeds — the
+  classifier only pattern-matches the command text (`classify()` in `risk_chain.rs`), so the
+  path never needed to actually exist, but a real `/etc/passwd` read failed on Windows runners
+  where the path is absent. Swapped to `echo /etc/passwd`, which preserves the classification
+  match while succeeding on every platform.
+- `src/commands/durable.rs`: `durable_db_is_filename_namespaced_sibling_of_sqlite_path` asserted
+  a hardcoded forward-slash path against `resolve_durable_db_url`'s `Path::join`-built output,
+  which uses the platform's native separator — a mismatch on Windows (`\` vs `/`). The expected
+  value is now built via the same `Path::join` the function under test uses.
+- `src/acp.rs`: `already_locked_session_log_notifies_client_proactively_without_prompt` drives
+  genuine `flock(2)` contention through `SessionEventLog::open_exclusive`, whose advisory lock is
+  a documented no-op on non-Unix targets (`AdvisoryLock`, `zeph-session`'s `log.rs`) — a second
+  `open_exclusive` never contends on Windows, so the test never exercised its own assertion
+  there. Gated `#[cfg(unix)]`, matching `zeph-session`'s own tests for the same primitive.
+
 ### Removed
 
 - `zeph-core`: removed the `#[cfg(test)]`-only legacy sequential-dispatch harness in
