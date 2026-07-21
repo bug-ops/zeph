@@ -19,8 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - uses: taiki-e/install-action@afc483d62172accfff644fa56e82b4dab50727fc # cargo-deny
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: taiki-e/install-action@af8167eefce493c60337887d7b96ffbc22df840c # cargo-deny
       - name: Check advisories and licenses
         run: cargo deny --config .github/deny.toml check
         env:
