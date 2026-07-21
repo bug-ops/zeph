@@ -325,6 +325,14 @@ impl LlmProvider for MaskedProvider {
         LlmProvider::last_usage(self.inner.as_ref())
     }
 
+    fn last_reasoning_tokens(&self) -> Option<u64> {
+        LlmProvider::last_reasoning_tokens(self.inner.as_ref())
+    }
+
+    fn last_ttft_ms(&self) -> Option<u64> {
+        LlmProvider::last_ttft_ms(self.inner.as_ref())
+    }
+
     fn debug_request_json(
         &self,
         messages: &[Message],

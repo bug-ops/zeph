@@ -630,11 +630,17 @@ impl OpenAiProvider {
                 frequency_penalty,
                 presence_penalty,
             };
-            send_with_retry("OpenAI", MAX_RETRIES, self.status_tx.as_ref(), || {
-                self.openai_post(format!("{}/chat/completions", self.base_url))
-                    .json(&body)
-                    .send()
-            })
+            send_with_retry(
+                "OpenAI",
+                MAX_RETRIES,
+                self.status_tx.as_ref(),
+                Some(&self.usage),
+                || {
+                    self.openai_post(format!("{}/chat/completions", self.base_url))
+                        .json(&body)
+                        .send()
+                },
+            )
             .await?
         } else {
             let api_messages = convert_messages(messages);
@@ -649,11 +655,17 @@ impl OpenAiProvider {
                 frequency_penalty,
                 presence_penalty,
             };
-            send_with_retry("OpenAI", MAX_RETRIES, self.status_tx.as_ref(), || {
-                self.openai_post(format!("{}/chat/completions", self.base_url))
-                    .json(&body)
-                    .send()
-            })
+            send_with_retry(
+                "OpenAI",
+                MAX_RETRIES,
+                self.status_tx.as_ref(),
+                Some(&self.usage),
+                || {
+                    self.openai_post(format!("{}/chat/completions", self.base_url))
+                        .json(&body)
+                        .send()
+                },
+            )
             .await?
         };
 
@@ -695,11 +707,17 @@ impl OpenAiProvider {
             presence_penalty,
         };
 
-        let response = send_with_retry("OpenAI", MAX_RETRIES, self.status_tx.as_ref(), || {
-            self.openai_post(format!("{}/chat/completions", self.base_url))
-                .json(&body)
-                .send()
-        })
+        let response = send_with_retry(
+            "OpenAI",
+            MAX_RETRIES,
+            self.status_tx.as_ref(),
+            Some(&self.usage),
+            || {
+                self.openai_post(format!("{}/chat/completions", self.base_url))
+                    .json(&body)
+                    .send()
+            },
+        )
         .await?;
 
         let status = response.status();
@@ -923,6 +941,10 @@ impl LlmProvider for OpenAiProvider {
         self.usage.last_reasoning()
     }
 
+    fn last_ttft_ms(&self) -> Option<u64> {
+        self.usage.last_ttft_ms()
+    }
+
     fn debug_request_json(
         &self,
         messages: &[Message],
@@ -1135,11 +1157,17 @@ impl LlmProvider for OpenAiProvider {
             presence_penalty,
         };
 
-        let response = send_with_retry("OpenAI", MAX_RETRIES, self.status_tx.as_ref(), || {
-            self.openai_post(format!("{}/chat/completions", self.base_url))
-                .json(&body)
-                .send()
-        })
+        let response = send_with_retry(
+            "OpenAI",
+            MAX_RETRIES,
+            self.status_tx.as_ref(),
+            Some(&self.usage),
+            || {
+                self.openai_post(format!("{}/chat/completions", self.base_url))
+                    .json(&body)
+                    .send()
+            },
+        )
         .await?;
 
         let (status, text) = crate::http::read_response_body(response).await?;

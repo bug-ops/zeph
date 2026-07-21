@@ -192,7 +192,7 @@ impl CocoonClient {
         let span = tracing::info_span!("llm.cocoon.request", path);
         async {
             let url = format!("{}{path}", self.base_url);
-            send_with_retry("cocoon", MAX_RETRIES, status_tx, || {
+            send_with_retry("cocoon", MAX_RETRIES, status_tx, None, || {
                 // Build synchronously so the `FnMut` borrow of `build_form` doesn't
                 // need to escape into the returned future.
                 let form_result = build_form();
@@ -220,22 +220,26 @@ impl CocoonClient {
     /// The full request lifecycle (connect + send + body read) is bounded by the
     /// `reqwest::Client` timeout configured at construction time.
     ///
+    /// `usage`, when `Some`, receives a TTFB sample per attempt (issue #6549) — pass the
+    /// calling provider's own [`crate::usage::UsageTracker`] so `last_ttft_ms()` surfaces it.
+    ///
     /// # Errors
     ///
     /// Returns [`LlmError::Http`] on connection failure, or once retries against repeated
     /// 429/503 responses are exhausted: [`LlmError::RateLimited`] if the last response was
     /// 429, or [`LlmError::Unavailable`] if it was 503.
-    pub async fn post(
+    pub(crate) async fn post(
         &self,
         path: &str,
         body: &[u8],
         status_tx: Option<&StatusTx>,
+        usage: Option<&crate::usage::UsageTracker>,
     ) -> Result<reqwest::Response, LlmError> {
         let span = tracing::info_span!("llm.cocoon.request", path);
         async {
             let url = format!("{}{path}", self.base_url);
 
-            send_with_retry("cocoon", MAX_RETRIES, status_tx, || {
+            send_with_retry("cocoon", MAX_RETRIES, status_tx, usage, || {
                 let mut req = self
                     .client
                     .post(&url)

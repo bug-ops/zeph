@@ -996,6 +996,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             &self.services.orchestration.orchestration_config,
         )
         .with_sanitizer(aggregator_sanitizer);
+        let aggregator_call_start = std::time::Instant::now();
         match aggregator
             .aggregate(&completed_graph)
             .instrument(tracing::info_span!("core.plan.finalize_completed"))
@@ -1011,6 +1012,25 @@ impl<C: crate::channel::Channel> Agent<C> {
                 });
                 self.record_cost_and_cache(aggr_prompt, aggr_completion);
                 self.record_successful_task();
+                // Issue #6549: background call, no persisted conversational message —
+                // message_id stays None. Written immediately (no pending-snapshot roundtrip
+                // needed since there's no later persist to pair it with).
+                let aggr_latency =
+                    u64::try_from(aggregator_call_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                if let Some(record) = self.build_usage_record(
+                    aggregator.provider(),
+                    zeph_memory::UsageSource::Aggregator,
+                    None,
+                    self.services.memory.persistence.conversation_id,
+                    aggr_prompt,
+                    aggr_completion,
+                    aggr_latency,
+                    None,
+                ) && let Some(memory) = self.services.memory.persistence.memory.clone()
+                    && let Err(e) = memory.sqlite().record_usage_row(&record).await
+                {
+                    tracing::warn!(error = %e, "failed to record aggregator usage_records row");
+                }
                 self.channel.send(&synthesis).await?;
             }
             Err(e) => {
@@ -1145,10 +1165,12 @@ impl<C: crate::channel::Channel> Agent<C> {
         Some(hint)
     }
 
-    fn record_plan_metrics(
+    async fn record_plan_metrics(
         &mut self,
         graph: &zeph_orchestration::TaskGraph,
         usage: Option<(u64, u64)>,
+        planner_provider: &zeph_llm::any::AnyProvider,
+        latency_ms: u64,
     ) {
         let task_count = graph.tasks.len() as u64;
         let snapshot = crate::metrics::TaskGraphSnapshot::from(graph);
@@ -1164,6 +1186,26 @@ impl<C: crate::channel::Channel> Agent<C> {
         });
         self.record_cost_and_cache(planner_prompt, planner_completion);
         self.record_successful_task();
+
+        // Issue #6549: `usage` is `None` on a plan-cache hit — no LLM call was made, so no
+        // ledger row is owed. Background call, no persisted conversational message —
+        // message_id stays None.
+        if usage.is_some()
+            && let Some(record) = self.build_usage_record(
+                planner_provider,
+                zeph_memory::UsageSource::Planner,
+                None,
+                self.services.memory.persistence.conversation_id,
+                planner_prompt,
+                planner_completion,
+                latency_ms,
+                None,
+            )
+            && let Some(memory) = self.services.memory.persistence.memory.clone()
+            && let Err(e) = memory.sqlite().record_usage_row(&record).await
+        {
+            tracing::warn!(error = %e, "failed to record planner usage_records row");
+        }
     }
 
     pub(super) async fn handle_plan_goal_as_string(
@@ -1218,6 +1260,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         let embed_model = self.services.skill.embedding_model.clone();
         let max_tasks = cfg.max_tasks;
         let verify_predicate_enabled = cfg.verify_predicate_enabled;
+        let planner_call_start = std::time::Instant::now();
         let (graph, planner_usage) = {
             use zeph_orchestration::Planner as _;
             let use_cache = topology_hint
@@ -1247,7 +1290,10 @@ impl<C: crate::channel::Channel> Agent<C> {
         };
 
         self.services.orchestration.pending_goal_embedding = goal_embedding;
-        self.record_plan_metrics(&graph, planner_usage);
+        let planner_latency =
+            u64::try_from(planner_call_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.record_plan_metrics(&graph, planner_usage, planner.provider(), planner_latency)
+            .await;
 
         let summary = format_plan_summary(&graph);
         if confirm_before_execute {
@@ -2136,6 +2182,139 @@ mod tests {
         assert!(
             result.is_none(),
             "an honest, grounded whole-plan verdict must not trigger a replan: {result:?}"
+        );
+    }
+
+    // ── Per-message usage reconciliation (issue #6549, spec 082 US-001 AC) ──────────
+
+    async fn usage_reconciliation_test_memory() -> zeph_memory::semantic::SemanticMemory {
+        let provider = zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+        zeph_memory::semantic::SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            None,
+            provider,
+            "test-model",
+        )
+        .await
+        .expect("in-memory SemanticMemory construction must not fail")
+    }
+
+    /// Reconciliation invariant: `SUM(usage_records.cost_cents)` for the current day must
+    /// equal `CostTracker.current_spend()`, driven through the real turn-loop write path
+    /// (`record_cost_and_cache` + `build_usage_record`, as `metrics_compact.rs` calls them)
+    /// AND the real planner write path (`record_plan_metrics`, as `handle_plan_goal_as_string`
+    /// calls it) — not hand-built `UsageRecord`s. Covers 2 of the 4 production sites; the
+    /// aggregator (`plan.rs`) and ensemble (`scheduler_loop.rs`) sites use the same
+    /// `build_usage_record`/`price_of` machinery already exercised here and are covered by a
+    /// separate targeted test rather than forced into this one (tester's recommendation).
+    #[tokio::test]
+    async fn reconciliation_sum_matches_cost_tracker_across_turn_and_planner_sites() {
+        use crate::agent::agent_tests::*;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = usage_reconciliation_test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let memory_arc = std::sync::Arc::new(memory);
+
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor)
+            .with_memory(std::sync::Arc::clone(&memory_arc), cid, 50, 5, 100)
+            .with_cost_tracker(crate::cost::CostTracker::new(true, 1000.0));
+        // gpt-4o is a known-priced model — a zero-cost model would make this test vacuous.
+        "gpt-4o".clone_into(&mut agent.runtime.config.model_name);
+
+        // Turn-loop site.
+        agent.record_cost_and_cache(1000, 500);
+        let turn_provider = agent.provider.clone();
+        let turn_record = agent
+            .build_usage_record(
+                &turn_provider,
+                zeph_memory::UsageSource::Conversation,
+                None,
+                Some(cid),
+                1000,
+                500,
+                50,
+                None,
+            )
+            .expect("cost_tracker is Some, build_usage_record must return a row");
+        memory_arc
+            .sqlite()
+            .record_usage_row(&turn_record)
+            .await
+            .unwrap();
+
+        // Planner site.
+        let planner_provider = agent.provider.clone();
+        let graph = zeph_orchestration::TaskGraph::new("goal");
+        agent
+            .record_plan_metrics(&graph, Some((300, 150)), &planner_provider, 80)
+            .await;
+
+        let expected = agent
+            .runtime
+            .metrics
+            .cost_tracker
+            .as_ref()
+            .unwrap()
+            .current_spend();
+        let actual = memory_arc.sqlite().usage_cost_since(0).await.unwrap();
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "SUM(usage_records.cost_cents)={actual} must equal \
+             CostTracker.current_spend()={expected}"
+        );
+        assert!(
+            expected > 0.0,
+            "gpt-4o must be a priced model — a zero-cost test proves nothing"
+        );
+    }
+
+    /// Gating: when cost tracking is disabled (`[cost] enabled = false`, `cost_tracker` is
+    /// `None`), no `usage_records` row is written — `build_usage_record` mirrors
+    /// `record_cost_and_cache`'s existing no-op gating.
+    #[tokio::test]
+    async fn no_usage_row_written_when_cost_tracker_disabled() {
+        use crate::agent::agent_tests::*;
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = usage_reconciliation_test_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let memory_arc = std::sync::Arc::new(memory);
+
+        let agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor)
+            .with_memory(std::sync::Arc::clone(&memory_arc), cid, 50, 5, 100);
+        // No .with_cost_tracker() — cost_tracker stays None, mirroring [cost] enabled = false.
+        assert!(agent.runtime.metrics.cost_tracker.is_none());
+
+        let provider_ref = agent.provider.clone();
+        let record = agent.build_usage_record(
+            &provider_ref,
+            zeph_memory::UsageSource::Conversation,
+            None,
+            Some(cid),
+            1000,
+            500,
+            50,
+            None,
+        );
+        assert!(
+            record.is_none(),
+            "build_usage_record must return None when cost tracking is disabled"
+        );
+
+        let total = memory_arc.sqlite().usage_cost_since(0).await.unwrap();
+        assert!(
+            (total - 0.0).abs() < 1e-9,
+            "no usage_records row should exist when cost tracking is disabled"
         );
     }
 }

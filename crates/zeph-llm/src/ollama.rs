@@ -490,7 +490,7 @@ impl OllamaProvider {
         let url = format!("{}api/chat", self.client.url_str());
         let body = chat_request_body(request, false)?;
 
-        let response = send_with_retry(self.name(), MAX_RETRIES, None, || {
+        let response = send_with_retry(self.name(), MAX_RETRIES, None, Some(&self.usage), || {
             send_with_transport_retry(|| self.http_client.post(&url).json(&body).send())
         })
         .await
@@ -598,7 +598,7 @@ impl LlmProvider for OllamaProvider {
         let url = format!("{}api/chat", self.client.url_str());
         let body = chat_request_body(&request, true)?;
 
-        let response = send_with_retry(self.name(), MAX_RETRIES, None, || {
+        let response = send_with_retry(self.name(), MAX_RETRIES, None, Some(&self.usage), || {
             send_with_transport_retry(|| self.http_client.post(&url).json(&body).send())
         })
         .await
@@ -820,6 +820,10 @@ impl LlmProvider for OllamaProvider {
 
     fn last_usage(&self) -> Option<(u64, u64)> {
         self.usage.last_usage()
+    }
+
+    fn last_ttft_ms(&self) -> Option<u64> {
+        self.usage.last_ttft_ms()
     }
 }
 

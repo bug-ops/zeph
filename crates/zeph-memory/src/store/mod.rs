@@ -28,6 +28,7 @@
 //! | `channel_preferences` | Per-channel UX preferences (e.g. last active provider) |
 //! | `agent_sessions` | Fleet session lifecycle records ([`AgentSessionRow`]) |
 //! | `cross_thread` | Generic namespaced cross-thread key-value store ([`StoreItem`], spec-080) |
+//! | `usage_records` | Per-LLM-call usage/cost/latency ledger ([`crate::UsageRecord`], issue #6549) |
 
 mod acp_sessions;
 pub mod admission_training;
@@ -51,6 +52,7 @@ mod skills;
 mod summaries;
 pub mod trajectory;
 mod trust;
+pub mod usage_records;
 
 #[allow(unused_imports)]
 use zeph_db::sql;

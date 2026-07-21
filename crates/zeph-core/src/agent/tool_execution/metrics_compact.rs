@@ -83,6 +83,22 @@ impl<C: Channel> Agent<C> {
         self.record_cost_and_cache(final_prompt, final_completion);
         self.record_successful_task();
 
+        // Issue #6549: snapshot this call's usage for the durable per-message ledger.
+        // Consumed at the next assistant message persist (store.rs eager-take, S2) — the
+        // message_id isn't known until that SQLite INSERT returns.
+        let conversation_id = self.services.memory.persistence.conversation_id;
+        let stream_ttft_ms = self.runtime.metrics.stream_ttft_ms.take();
+        self.runtime.metrics.pending_usage = self.build_usage_record(
+            &self.provider,
+            zeph_memory::UsageSource::Conversation,
+            None,
+            conversation_id,
+            final_prompt,
+            final_completion,
+            latency,
+            stream_ttft_ms,
+        );
+
         if let Some(ref recorder) = self.runtime.metrics.histogram_recorder {
             recorder.observe_llm_latency(elapsed);
         }

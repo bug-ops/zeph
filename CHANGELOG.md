@@ -235,6 +235,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `zeph-memory`/`zeph-core`/`zeph-llm`: per-message usage and cost tracking (issue #6549,
+  spec `082-per-message-usage-cost-tracking`). New `usage_records` table (migration 115,
+  both SQLite/Postgres) durably records token counts, cost, latency, TTFT/TTFB, and
+  tokens/sec for every LLM call that feeds `CostTracker::record_usage` — the turn loop
+  (`message_id`-linked), the orchestration planner and aggregator, and verifier-ensemble
+  members (all three background sources carry `message_id = NULL`, since no persisted
+  conversational message exists for them). New `zeph_memory::{UsageRecord, UsageSource}`
+  types and `SqliteStore::{record_usage_row, message_usage, conversation_usage,
+  usage_cost_since}` query API. `CostTracker::price_of` is a new pure-pricing extraction
+  from the existing cost formula, used by every write site so a row's cost always matches
+  the value folded into the live daily aggregate for the same call. `LlmProvider::last_ttft_ms`
+  is a new trait method (Claude/OpenAI/Gemini/Ollama/Gonka/Cocoon implement it, and `AnyProvider`/
+  `MaskedProvider`/`TriageRouter` delegate it to the active inner provider): true time-to-first-token
+  on the streaming path, a time-to-first-byte proxy (measured inside `retry::send_with_retry`,
+  attributed to the actual successful attempt even when earlier attempts were retried) on the
+  non-streaming path; `NULL` only for the in-process Candle backend. The one production streaming
+  path (speculative decoding) additionally captures true time-to-first-token at its own
+  stream-consumption point (`SpeculativeStreamDrainer::drive` in `zeph-core`), which takes
+  priority over the TTFB proxy when building a row. Usage-row writes follow the existing
+  `[cost] enabled` gate and are inline-awaited on the same call sites that already update
+  `CostTracker` — no new `tokio::spawn`. No new config surface: this is additive telemetry, not
+  a new toggle.
+
 - `zeph-channels`/`zeph-config`: adopt Telegram Bot API 10.1 expandable blockquotes
   (issue #6541, spec 007-3-telegram-rich-text). New `TelegramConfig.expandable_blockquote_min_lines`
   (default `10`) renders blockquotes at or above the configured line count as the expandable

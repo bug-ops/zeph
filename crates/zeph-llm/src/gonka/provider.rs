@@ -275,6 +275,10 @@ impl GonkaProvider {
                 .body(body_owned.clone())
                 .send();
 
+            // TTFB proxy (issue #6549): measured around this attempt's send only, so a
+            // failed/retried earlier attempt against another pool node never inflates it —
+            // same principle as `retry::send_with_retry`'s per-attempt reset.
+            let attempt_start = std::time::Instant::now();
             match tokio::time::timeout(self.timeout, fut).await {
                 Ok(Ok(resp)) if resp.status().is_success() || resp.status().as_u16() == 400 => {
                     tracing::debug!(
@@ -282,6 +286,8 @@ impl GonkaProvider {
                         endpoint = %endpoint.base_url,
                         "gonka response received"
                     );
+                    let ms = u64::try_from(attempt_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    self.usage.record_ttft(ms);
                     return Ok(resp);
                 }
                 Ok(Ok(resp)) => {
@@ -371,6 +377,10 @@ impl LlmProvider for GonkaProvider {
 
     fn last_usage(&self) -> Option<(u64, u64)> {
         self.usage.last_usage()
+    }
+
+    fn last_ttft_ms(&self) -> Option<u64> {
+        self.usage.last_ttft_ms()
     }
 
     fn last_cache_usage(&self) -> Option<(u64, u64)> {

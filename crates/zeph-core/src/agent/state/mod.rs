@@ -667,6 +667,16 @@ pub(crate) struct ProviderState {
 pub(crate) struct MetricsState {
     pub(crate) metrics_tx: Option<watch::Sender<MetricsSnapshot>>,
     pub(crate) cost_tracker: Option<CostTracker>,
+    /// Usage snapshot for the LLM call the turn loop just made, awaiting the paired
+    /// `messages` row's id (issue #6549). Consumed (`.take()`) at the next assistant
+    /// message persist — see `persistence::store::persist_message_inner`'s eager-take.
+    pub(crate) pending_usage: Option<zeph_memory::UsageRecord>,
+    /// True time-to-first-token (milliseconds) captured by
+    /// `SpeculativeStreamDrainer::drive` on the speculative-decoding streaming path (issue
+    /// #6549). Set by `dispatch_chat_with_tools` right after a stream call returns; consumed
+    /// (`.take()`) by `build_usage_record`, which prefers it over the provider-level TTFB
+    /// proxy when present. `None` on the (dominant) non-streaming path.
+    pub(crate) stream_ttft_ms: Option<u64>,
     pub(crate) token_counter: Arc<TokenCounter>,
     /// Set to `true` when Claude extended context (`enable_extended_context = true`) is active.
     /// Read from config at build time, not derived from provider internals.
@@ -1658,6 +1668,8 @@ impl MetricsState {
         Self {
             metrics_tx: None,
             cost_tracker: None,
+            pending_usage: None,
+            stream_ttft_ms: None,
             token_counter,
             extended_context: false,
             classifier_metrics: Some(Arc::new(zeph_llm::ClassifierMetrics::new(

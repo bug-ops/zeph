@@ -207,7 +207,12 @@ impl<C: Channel> Agent<C> {
                 }
             };
             return match timeout_result {
-                Ok(Ok(resp)) => Ok(Some(resp)),
+                Ok(Ok((resp, ttft_ms))) => {
+                    // Issue #6549: true TTFT from the speculative stream, consumed by the
+                    // next build_usage_record call in record_chat_metrics_and_compact.
+                    self.runtime.metrics.stream_ttft_ms = ttft_ms;
+                    Ok(Some(resp))
+                }
                 Ok(Err(e)) => {
                     tracing::warn!(error = %e, "speculative SSE stream failed, falling back");
                     self.call_non_streaming(tool_defs, llm_timeout, tracing::Span::none())

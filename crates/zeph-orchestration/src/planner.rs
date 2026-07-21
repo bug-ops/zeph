@@ -118,6 +118,17 @@ impl<P: LlmProvider> LlmPlanner<P> {
             verify_predicate_enabled: config.verify_predicate_enabled,
         }
     }
+
+    /// Return the underlying provider.
+    ///
+    /// Lets callers read call-specific transient state (e.g. `last_cache_usage`,
+    /// `last_ttft_ms`) left on the provider's usage tracker after a planning call
+    /// returns — used by the per-message usage ledger (issue #6549) to attribute a durable
+    /// `usage_records` row to this call.
+    #[must_use]
+    pub fn provider(&self) -> &P {
+        &self.provider
+    }
 }
 
 /// Serde helper: deserialize `Option<FailureStrategy>` from an optional string, mapping unknown

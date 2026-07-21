@@ -1111,9 +1111,13 @@ impl ClaudeProvider {
     async fn send_request(&self, messages: &[Message]) -> Result<String, LlmError> {
         let mut retried = false;
         loop {
-            let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
-                self.build_request(messages, false).send()
-            })
+            let response = send_with_retry(
+                "Claude",
+                MAX_RETRIES,
+                self.status_tx.as_ref(),
+                Some(&self.usage),
+                || self.build_request(messages, false).send(),
+            )
             .await?;
 
             let (status, text) = crate::http::read_response_body(response).await?;
@@ -1208,19 +1212,25 @@ impl ClaudeProvider {
         loop {
             body.context_management = self.context_management();
             let beta = self.beta_header(has_tools);
-            let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
-                let mut req = self
-                    .client
-                    .post(&self.api_url)
-                    .header("x-api-key", &self.api_key)
-                    .header("anthropic-version", ANTHROPIC_VERSION);
-                if let Some(ref b) = beta {
-                    req = req.header("anthropic-beta", b);
-                }
-                req.header("content-type", "application/json")
-                    .json(&body)
-                    .send()
-            })
+            let response = send_with_retry(
+                "Claude",
+                MAX_RETRIES,
+                self.status_tx.as_ref(),
+                Some(&self.usage),
+                || {
+                    let mut req = self
+                        .client
+                        .post(&self.api_url)
+                        .header("x-api-key", &self.api_key)
+                        .header("anthropic-version", ANTHROPIC_VERSION);
+                    if let Some(ref b) = beta {
+                        req = req.header("anthropic-beta", b);
+                    }
+                    req.header("content-type", "application/json")
+                        .json(&body)
+                        .send()
+                },
+            )
             .await?;
 
             let status = response.status();
@@ -1244,9 +1254,13 @@ impl ClaudeProvider {
     ) -> Result<reqwest::Response, LlmError> {
         let mut retried = false;
         loop {
-            let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
-                self.build_request(messages, true).send()
-            })
+            let response = send_with_retry(
+                "Claude",
+                MAX_RETRIES,
+                self.status_tx.as_ref(),
+                Some(&self.usage),
+                || self.build_request(messages, true).send(),
+            )
             .await?;
 
             let status = response.status();
@@ -1389,19 +1403,25 @@ impl LlmProvider for ClaudeProvider {
         loop {
             body.context_management = self.context_management();
             let beta = self.beta_header(true);
-            let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
-                let mut req = self
-                    .client
-                    .post(&self.api_url)
-                    .header("x-api-key", &self.api_key)
-                    .header("anthropic-version", ANTHROPIC_VERSION);
-                if let Some(ref b) = beta {
-                    req = req.header("anthropic-beta", b);
-                }
-                req.header("content-type", "application/json")
-                    .json(&body)
-                    .send()
-            })
+            let response = send_with_retry(
+                "Claude",
+                MAX_RETRIES,
+                self.status_tx.as_ref(),
+                Some(&self.usage),
+                || {
+                    let mut req = self
+                        .client
+                        .post(&self.api_url)
+                        .header("x-api-key", &self.api_key)
+                        .header("anthropic-version", ANTHROPIC_VERSION);
+                    if let Some(ref b) = beta {
+                        req = req.header("anthropic-beta", b);
+                    }
+                    req.header("content-type", "application/json")
+                        .json(&body)
+                        .send()
+                },
+            )
             .await?;
             let (status, text) = crate::http::read_response_body(response).await?;
             if !status.is_success() {
@@ -1442,6 +1462,10 @@ impl LlmProvider for ClaudeProvider {
 
     fn last_usage(&self) -> Option<(u64, u64)> {
         self.usage.last_usage()
+    }
+
+    fn last_ttft_ms(&self) -> Option<u64> {
+        self.usage.last_ttft_ms()
     }
 
     fn take_compaction_summary(&self) -> Option<String> {
@@ -1555,19 +1579,25 @@ impl LlmProvider for ClaudeProvider {
         loop {
             body.context_management = self.context_management();
             let beta = self.beta_header(has_tools);
-            let response = send_with_retry("Claude", MAX_RETRIES, self.status_tx.as_ref(), || {
-                let mut req = self
-                    .client
-                    .post(&self.api_url)
-                    .header("x-api-key", &self.api_key)
-                    .header("anthropic-version", ANTHROPIC_VERSION);
-                if let Some(ref b) = beta {
-                    req = req.header("anthropic-beta", b);
-                }
-                req.header("content-type", "application/json")
-                    .json(&body)
-                    .send()
-            })
+            let response = send_with_retry(
+                "Claude",
+                MAX_RETRIES,
+                self.status_tx.as_ref(),
+                Some(&self.usage),
+                || {
+                    let mut req = self
+                        .client
+                        .post(&self.api_url)
+                        .header("x-api-key", &self.api_key)
+                        .header("anthropic-version", ANTHROPIC_VERSION);
+                    if let Some(ref b) = beta {
+                        req = req.header("anthropic-beta", b);
+                    }
+                    req.header("content-type", "application/json")
+                        .json(&body)
+                        .send()
+                },
+            )
             .await?;
 
             let (status, text) = crate::http::read_response_body(response).await?;

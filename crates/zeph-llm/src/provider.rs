@@ -952,6 +952,24 @@ pub trait LlmProvider: Send + Sync {
         None
     }
 
+    /// Return the time-to-first-byte (milliseconds) of the last API call, if available.
+    ///
+    /// This trait method always returns a TTFB proxy (measured around the HTTP request send,
+    /// `retry::send_with_retry` or the equivalent per-attempt retry loop for providers that
+    /// don't use that shared helper) — it never reflects true time-to-first-token, even for
+    /// calls that streamed. `None` for providers with no HTTP round-trip (Candle) or that
+    /// have not made a call yet.
+    ///
+    /// The one production streaming path (speculative decoding) captures true
+    /// time-to-first-token separately, at its own stream-consumption point, and injects it
+    /// alongside (overriding) this method's TTFB value when building a `usage_records` row —
+    /// see `zeph_core::agent::speculative::stream_drainer::SpeculativeStreamDrainer::drive`.
+    /// This trait method itself is not aware of that override; callers that need the true
+    /// streaming value must go through that call site, not this one.
+    fn last_ttft_ms(&self) -> Option<u64> {
+        None
+    }
+
     /// Return the compaction summary from the most recent API call, if a server-side
     /// compaction occurred (Claude compact-2026-01-12 beta). Clears the stored value.
     fn take_compaction_summary(&self) -> Option<String> {

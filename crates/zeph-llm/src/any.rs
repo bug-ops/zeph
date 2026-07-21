@@ -818,6 +818,14 @@ impl LlmProvider for AnyProvider {
         delegate_provider!(self, |p| p.last_usage())
     }
 
+    fn last_reasoning_tokens(&self) -> Option<u64> {
+        delegate_provider!(self, |p| p.last_reasoning_tokens())
+    }
+
+    fn last_ttft_ms(&self) -> Option<u64> {
+        delegate_provider!(self, |p| p.last_ttft_ms())
+    }
+
     fn debug_request_json(
         &self,
         messages: &[Message],

@@ -1150,6 +1150,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                                     )
                                 });
 
+                                let verify_start = std::time::Instant::now();
                                 match ev
                                     .verify(
                                         &task,
@@ -1168,6 +1169,13 @@ impl<C: crate::channel::Channel> Agent<C> {
                                             tie_broken = outcome.tie_broken,
                                             "ensemble per-task verification result"
                                         );
+                                        // Members are dispatched in parallel (join_all), so the
+                                        // whole-verify wall-clock elapsed is the best available
+                                        // per-member latency approximation (#6549) — no
+                                        // per-member timing is tracked inside EnsembleVerifier.
+                                        let verify_latency_ms =
+                                            u64::try_from(verify_start.elapsed().as_millis())
+                                                .unwrap_or(u64::MAX);
                                         if let Some(ref tracker) = self.runtime.metrics.cost_tracker
                                         {
                                             for usage in ev.last_usage() {
@@ -1196,6 +1204,57 @@ impl<C: crate::channel::Channel> Agent<C> {
                                                     0,
                                                     usage.output_tokens,
                                                 );
+
+                                                // Issue #6549: durable ledger row, priced via
+                                                // the exact same tracker.price_of used above.
+                                                let cost_cents = tracker.price_of(
+                                                    model,
+                                                    usage.input_tokens,
+                                                    0,
+                                                    0,
+                                                    usage.output_tokens,
+                                                );
+                                                let (ttft_ms, reasoning_tokens) = member_provider
+                                                    .map_or((None, None), |(_, p)| {
+                                                        (
+                                                            p.last_ttft_ms(),
+                                                            p.last_reasoning_tokens(),
+                                                        )
+                                                    });
+                                                let record = zeph_memory::UsageRecord {
+                                                    message_id: None,
+                                                    conversation_id: self
+                                                        .services
+                                                        .memory
+                                                        .persistence
+                                                        .conversation_id,
+                                                    source:
+                                                        zeph_memory::UsageSource::EnsembleMember,
+                                                    provider_name: usage.member.clone(),
+                                                    model_name: model.to_owned(),
+                                                    input_tokens: usage.input_tokens,
+                                                    output_tokens: usage.output_tokens,
+                                                    cache_read_tokens: 0,
+                                                    cache_write_tokens: 0,
+                                                    reasoning_tokens,
+                                                    cost_cents,
+                                                    latency_ms: verify_latency_ms,
+                                                    ttft_ms,
+                                                    tokens_per_sec: None,
+                                                };
+                                                if let Some(memory) =
+                                                    self.services.memory.persistence.memory.clone()
+                                                    && let Err(e) = memory
+                                                        .sqlite()
+                                                        .record_usage_row(&record)
+                                                        .await
+                                                {
+                                                    tracing::warn!(
+                                                        error = %e,
+                                                        "failed to record ensemble member \
+                                                         usage_records row"
+                                                    );
+                                                }
                                             }
                                         }
                                         let member_stats = ev.tracker().snapshot();

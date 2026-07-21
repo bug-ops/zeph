@@ -2182,6 +2182,49 @@ fn store_cache_usage_updates_last_usage() {
     assert_eq!(provider.last_usage(), Some((42, 17)));
 }
 
+/// C1 (issue #6549 review): `AnyProvider::last_ttft_ms()` must delegate to the wrapped
+/// provider's own `last_ttft_ms()` — the enum dispatch previously fell through to the
+/// `LlmProvider` trait default (`None`) for every variant, silently defeating the
+/// per-message usage ledger's `ttft_ms`/`tokens_per_sec` columns.
+#[test]
+fn any_provider_claude_surfaces_last_ttft_ms() {
+    let provider = ClaudeProvider::new("k".into(), "m".into(), 256);
+    assert!(provider.last_ttft_ms().is_none());
+    provider.usage.record_ttft(123);
+    assert_eq!(provider.last_ttft_ms(), Some(123));
+
+    let any = crate::any::AnyProvider::Claude(provider);
+    assert_eq!(
+        LlmProvider::last_ttft_ms(&any),
+        Some(123),
+        "AnyProvider must delegate last_ttft_ms to the inner provider"
+    );
+}
+
+/// C1 (issue #6549 review): `MaskedProvider` had the identical omission as `AnyProvider` —
+/// `last_usage`/`last_cache_usage` were delegated but `last_ttft_ms` was not.
+#[test]
+fn masked_provider_surfaces_last_ttft_ms() {
+    #[derive(Debug)]
+    struct NoopMasker;
+    impl crate::masking::OutboundMasker for NoopMasker {
+        fn mask(&self, _text: &str) -> Option<String> {
+            None
+        }
+    }
+
+    let provider = ClaudeProvider::new("k".into(), "m".into(), 256);
+    provider.usage.record_ttft(456);
+    let any = crate::any::AnyProvider::Claude(provider);
+    let masked = crate::masking::MaskedProvider::new(any, std::sync::Arc::new(NoopMasker));
+
+    assert_eq!(
+        LlmProvider::last_ttft_ms(&masked),
+        Some(456),
+        "MaskedProvider must delegate last_ttft_ms to the inner provider"
+    );
+}
+
 // ── Opus no-prefill: trailing assistant messages must be stripped ──────────
 
 #[test]

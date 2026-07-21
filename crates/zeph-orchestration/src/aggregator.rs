@@ -80,6 +80,17 @@ impl<P: LlmProvider> LlmAggregator<P> {
         }
     }
 
+    /// Return the underlying provider.
+    ///
+    /// Lets callers read call-specific transient state (e.g. `last_cache_usage`,
+    /// `last_ttft_ms`) left on the provider's usage tracker after [`Self::aggregate`]
+    /// returns — used by the per-message usage ledger (issue #6549) to attribute a durable
+    /// `usage_records` row to this call.
+    #[must_use]
+    pub fn provider(&self) -> &P {
+        &self.provider
+    }
+
     /// Override the default [`zeph_common::IdentitySanitizer`] with a real sanitizer.
     ///
     /// Callers in `zeph-core` must call this with `Arc::new(ContentSanitizer::new(cfg))`

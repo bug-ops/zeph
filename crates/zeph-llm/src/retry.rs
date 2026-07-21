@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::future::Future;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::error::LlmError;
 use crate::provider::StatusTx;
+use crate::usage::UsageTracker;
 
 const BASE_BACKOFF_SECS: u64 = 1;
 
@@ -36,6 +37,13 @@ pub(crate) fn retry_delay(response: &reqwest::Response, attempt: u32) -> Duratio
 /// emits a status message and waits before retrying. Returns the successful `Response`
 /// for further processing by the caller, or an error.
 ///
+/// When `usage` is `Some`, records a time-to-first-byte sample (milliseconds, measured
+/// around each attempt's `f().await`) into it on every attempt. Because retried attempts
+/// overwrite the previous sample, the value left behind when this function returns always
+/// belongs to the attempt whose response was actually used — never inflated by the
+/// backoff sleeps or failed attempts that preceded it (issue #6549, D-S2: measuring from
+/// outside this loop would collapse `ttft_ms` to `latency_ms` on any retried call).
+///
 /// # Errors
 ///
 /// If all attempts are exhausted, returns `LlmError::RateLimited` when the last response
@@ -46,6 +54,7 @@ pub(crate) async fn send_with_retry<F, Fut>(
     provider_name: &str,
     max_retries: u32,
     status_tx: Option<&StatusTx>,
+    usage: Option<&UsageTracker>,
     mut f: F,
 ) -> Result<reqwest::Response, LlmError>
 where
@@ -53,7 +62,12 @@ where
     Fut: Future<Output = Result<reqwest::Response, reqwest::Error>>,
 {
     for attempt in 0..=max_retries {
+        let send_start = Instant::now();
         let response = f().await.map_err(LlmError::Http)?;
+        if let Some(tracker) = usage {
+            let ms = u64::try_from(send_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            tracker.record_ttft(ms);
+        }
         let status = response.status();
 
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS
@@ -143,7 +157,7 @@ mod tests {
         let client = reqwest::Client::new();
         let url = format!("http://127.0.0.1:{port}/test");
 
-        let result = send_with_retry("test", 3, None, || {
+        let result = send_with_retry("test", 3, None, None, || {
             let req = client.get(&url).build().unwrap();
             let c = client.clone();
             async move { c.execute(req).await }
@@ -166,7 +180,7 @@ mod tests {
         let url = format!("http://127.0.0.1:{port}/test");
 
         // max_retries=1 means: attempt 0 (429 → retry), attempt 1 (429 → fail)
-        let result = send_with_retry("test", 1, None, || {
+        let result = send_with_retry("test", 1, None, None, || {
             let req = client.get(&url).build().unwrap();
             let c = client.clone();
             async move { c.execute(req).await }
@@ -191,7 +205,7 @@ mod tests {
         let url = format!("http://127.0.0.1:{port}/test");
 
         // max_retries=1 means: attempt 0 (503 → retry), attempt 1 (503 → fail)
-        let result = send_with_retry("test", 1, None, || {
+        let result = send_with_retry("test", 1, None, None, || {
             let req = client.get(&url).build().unwrap();
             let c = client.clone();
             async move { c.execute(req).await }
@@ -222,7 +236,7 @@ mod tests {
         let client = reqwest::Client::new();
         let url = format!("http://127.0.0.1:{port}/test");
 
-        let result = send_with_retry("test", 2, None, || {
+        let result = send_with_retry("test", 2, None, None, || {
             let req = client.get(&url).build().unwrap();
             let c = client.clone();
             async move { c.execute(req).await }
@@ -253,7 +267,7 @@ mod tests {
         let client = reqwest::Client::new();
         let url = format!("http://127.0.0.1:{port}/test");
 
-        let result = send_with_retry("test", 2, None, || {
+        let result = send_with_retry("test", 2, None, None, || {
             let req = client.get(&url).build().unwrap();
             let c = client.clone();
             async move { c.execute(req).await }
@@ -277,7 +291,7 @@ mod tests {
         let client = reqwest::Client::new();
         let url = format!("http://127.0.0.1:{port}/test");
 
-        let result = send_with_retry("test", 2, None, || {
+        let result = send_with_retry("test", 2, None, None, || {
             let req = client.get(&url).build().unwrap();
             let c = client.clone();
             async move { c.execute(req).await }
@@ -289,6 +303,66 @@ mod tests {
             "expected Ok after one retry, got: {result:?}"
         );
         assert_eq!(result.unwrap().status(), 200);
+    }
+
+    /// D-S2 (issue #6549): a retried call's `ttft_ms` must reflect only the successful
+    /// attempt's send time, never the earlier failed attempt plus the backoff sleep between
+    /// them. Uses a 1-second `Retry-After` so a caller-side (outside-the-loop) measurement
+    /// would be forced to at least ~1000ms; the fix must stay far below that.
+    #[tokio::test]
+    async fn send_with_retry_ttft_reflects_final_attempt_not_backoff_delay() {
+        let rate_limit_response =
+            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Length: 0\r\n\r\n";
+        let ok_response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+
+        let (port, _handle) = spawn_mock_server(vec![rate_limit_response, ok_response]).await;
+
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{port}/test");
+        let usage = UsageTracker::default();
+
+        let result = send_with_retry("test", 1, None, Some(&usage), || {
+            let req = client.get(&url).build().unwrap();
+            let c = client.clone();
+            async move { c.execute(req).await }
+        })
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "expected Ok after one retry, got: {result:?}"
+        );
+        let ttft = usage
+            .last_ttft_ms()
+            .expect("send_with_retry must record a ttft sample when usage is Some");
+        assert!(
+            ttft < 500,
+            "ttft_ms={ttft} must reflect only the final attempt's send time, not the \
+             1000ms Retry-After backoff sleep between attempts"
+        );
+    }
+
+    /// D-S2: every attempt overwrites the tracker, so a call that fails on attempt 0 and
+    /// succeeds on attempt 1 must still leave a `Some` value (never lost, never stale-`None`).
+    #[tokio::test]
+    async fn send_with_retry_records_ttft_on_first_attempt_success_too() {
+        let ok_response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+        let (port, _handle) = spawn_mock_server(vec![ok_response]).await;
+
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{port}/test");
+        let usage = UsageTracker::default();
+
+        assert!(usage.last_ttft_ms().is_none());
+        let result = send_with_retry("test", 3, None, Some(&usage), || {
+            let req = client.get(&url).build().unwrap();
+            let c = client.clone();
+            async move { c.execute(req).await }
+        })
+        .await;
+
+        assert!(result.is_ok());
+        assert!(usage.last_ttft_ms().is_some());
     }
 
     use proptest::prelude::*;

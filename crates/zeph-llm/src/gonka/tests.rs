@@ -88,9 +88,14 @@ async fn gonka_chat_signed_request() {
         .await;
 
     let provider = make_provider(&server.uri());
+    assert!(LlmProvider::last_ttft_ms(&provider).is_none());
     let messages = user_message("hi");
     let result = provider.chat(&messages).await.unwrap();
     assert_eq!(result, "hello");
+    assert!(
+        LlmProvider::last_ttft_ms(&provider).is_some(),
+        "issue #6549: a real signed HTTP round-trip must populate last_ttft_ms"
+    );
 
     // Verify signature headers were sent.
     let reqs = server.received_requests().await.unwrap();

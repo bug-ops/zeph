@@ -126,7 +126,7 @@ async fn cocoon_post_with_access_hash() {
 
     let client = make_client(&server.uri(), Some("test-hash-value".into()));
     let result = client
-        .post("/v1/chat/completions", b"{\"messages\":[]}", None)
+        .post("/v1/chat/completions", b"{\"messages\":[]}", None, None)
         .await;
     assert!(result.is_ok());
 }
@@ -148,7 +148,7 @@ async fn cocoon_post_without_access_hash() {
 
     let client = make_client(&server.uri(), None);
     let result = client
-        .post("/v1/chat/completions", b"{\"messages\":[]}", None)
+        .post("/v1/chat/completions", b"{\"messages\":[]}", None, None)
         .await;
     assert!(result.is_ok());
     let reqs = server.received_requests().await.unwrap();
@@ -275,8 +275,13 @@ async fn cocoon_chat_happy_path() {
         .await;
 
     let provider = make_provider(&server.uri());
+    assert!(LlmProvider::last_ttft_ms(&provider).is_none());
     let result = provider.chat(&user_message("hi")).await.unwrap();
     assert_eq!(result, "hello");
+    assert!(
+        LlmProvider::last_ttft_ms(&provider).is_some(),
+        "issue #6549: a real HTTP round-trip must populate last_ttft_ms via CocoonClient::post"
+    );
 }
 
 /// Test 8: `chat_stream` happy path — assembles SSE chunks into full text.

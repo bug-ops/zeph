@@ -854,6 +854,26 @@ impl LlmProvider for TriageRouter {
             .and_then(|(_, p)| p.last_cache_usage())
     }
 
+    fn last_reasoning_tokens(&self) -> Option<u64> {
+        let idx = self.last_provider_idx.load(Ordering::Relaxed);
+        if idx == NO_LAST_PROVIDER {
+            return None;
+        }
+        self.tier_providers
+            .get(idx)
+            .and_then(|(_, p)| p.last_reasoning_tokens())
+    }
+
+    fn last_ttft_ms(&self) -> Option<u64> {
+        let idx = self.last_provider_idx.load(Ordering::Relaxed);
+        if idx == NO_LAST_PROVIDER {
+            return None;
+        }
+        self.tier_providers
+            .get(idx)
+            .and_then(|(_, p)| p.last_ttft_ms())
+    }
+
     fn debug_request_json(
         &self,
         messages: &[Message],

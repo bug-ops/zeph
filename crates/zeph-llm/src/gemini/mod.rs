@@ -317,15 +317,21 @@ impl GeminiProvider {
             self.base_url, self.model
         );
 
-        let response = send_with_retry("gemini", MAX_RETRIES, self.status_tx.as_ref(), || {
-            let req = self
-                .client
-                .post(&url)
-                .header("x-goog-api-key", &self.api_key)
-                .header("Content-Type", "application/json")
-                .body(body_bytes.clone());
-            async move { req.send().await }
-        })
+        let response = send_with_retry(
+            "gemini",
+            MAX_RETRIES,
+            self.status_tx.as_ref(),
+            Some(&self.usage),
+            || {
+                let req = self
+                    .client
+                    .post(&url)
+                    .header("x-goog-api-key", &self.api_key)
+                    .header("Content-Type", "application/json")
+                    .body(body_bytes.clone());
+                async move { req.send().await }
+            },
+        )
         .await?;
 
         let status = response.status();
@@ -379,15 +385,21 @@ impl GeminiProvider {
             self.base_url, self.model
         );
 
-        let response = send_with_retry("gemini", MAX_RETRIES, self.status_tx.as_ref(), || {
-            let req = self
-                .client
-                .post(&url)
-                .header("x-goog-api-key", &self.api_key)
-                .header("Content-Type", "application/json")
-                .body(body_bytes.clone());
-            async move { req.send().await }
-        })
+        let response = send_with_retry(
+            "gemini",
+            MAX_RETRIES,
+            self.status_tx.as_ref(),
+            Some(&self.usage),
+            || {
+                let req = self
+                    .client
+                    .post(&url)
+                    .header("x-goog-api-key", &self.api_key)
+                    .header("Content-Type", "application/json")
+                    .body(body_bytes.clone());
+                async move { req.send().await }
+            },
+        )
         .await?;
 
         let status = response.status();
@@ -418,15 +430,21 @@ impl GeminiProvider {
             self.base_url, self.model
         );
 
-        let response = send_with_retry("gemini", MAX_RETRIES, self.status_tx.as_ref(), || {
-            let req = self
-                .client
-                .post(&url)
-                .header("x-goog-api-key", &self.api_key)
-                .header("Content-Type", "application/json")
-                .body(body_bytes.clone());
-            async move { req.send().await }
-        })
+        let response = send_with_retry(
+            "gemini",
+            MAX_RETRIES,
+            self.status_tx.as_ref(),
+            Some(&self.usage),
+            || {
+                let req = self
+                    .client
+                    .post(&url)
+                    .header("x-goog-api-key", &self.api_key)
+                    .header("Content-Type", "application/json")
+                    .body(body_bytes.clone());
+                async move { req.send().await }
+            },
+        )
         .await?;
 
         let status = response.status();
@@ -452,13 +470,19 @@ impl GeminiProvider {
     ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
         let url = format!("{}/v1beta/models", self.base_url);
 
-        let response = send_with_retry("gemini", MAX_RETRIES, self.status_tx.as_ref(), || {
-            let req = self
-                .client
-                .get(&url)
-                .header("x-goog-api-key", &self.api_key);
-            async move { req.send().await }
-        })
+        let response = send_with_retry(
+            "gemini",
+            MAX_RETRIES,
+            self.status_tx.as_ref(),
+            Some(&self.usage),
+            || {
+                let req = self
+                    .client
+                    .get(&url)
+                    .header("x-goog-api-key", &self.api_key);
+                async move { req.send().await }
+            },
+        )
         .await?;
 
         let status = response.status();
@@ -1333,15 +1357,21 @@ impl LlmProvider for GeminiProvider {
 
         let body_bytes = serde_json::to_vec(&body)?;
 
-        let response = send_with_retry("gemini", MAX_RETRIES, self.status_tx.as_ref(), || {
-            let req = self
-                .client
-                .post(&url)
-                .header("x-goog-api-key", &self.api_key)
-                .header("Content-Type", "application/json")
-                .body(body_bytes.clone());
-            async move { req.send().await }
-        })
+        let response = send_with_retry(
+            "gemini",
+            MAX_RETRIES,
+            self.status_tx.as_ref(),
+            Some(&self.usage),
+            || {
+                let req = self
+                    .client
+                    .post(&url)
+                    .header("x-goog-api-key", &self.api_key)
+                    .header("Content-Type", "application/json")
+                    .body(body_bytes.clone());
+                async move { req.send().await }
+            },
+        )
         .await?;
 
         let status = response.status();
@@ -1395,6 +1425,10 @@ impl LlmProvider for GeminiProvider {
 
     fn last_usage(&self) -> Option<(u64, u64)> {
         self.usage.last_usage()
+    }
+
+    fn last_ttft_ms(&self) -> Option<u64> {
+        self.usage.last_ttft_ms()
     }
 
     fn debug_request_json(

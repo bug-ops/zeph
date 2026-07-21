@@ -3447,4 +3447,92 @@ mod image_persistence_strip {
              independent switches, got: {sent:?}"
         );
     }
+
+    fn fake_usage_record(cost_cents: f64) -> zeph_memory::UsageRecord {
+        zeph_memory::UsageRecord {
+            message_id: None,
+            conversation_id: None,
+            source: zeph_memory::UsageSource::Conversation,
+            provider_name: "test".to_owned(),
+            model_name: "test-model".to_owned(),
+            input_tokens: 10,
+            output_tokens: 20,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            reasoning_tokens: None,
+            cost_cents,
+            latency_ms: 100,
+            ttft_ms: None,
+            tokens_per_sec: None,
+        }
+    }
+
+    /// S2 (issue #6549, critic-confirmed): `pending_usage` must be taken eagerly at the top
+    /// of the `role == Assistant` branch, independent of whether this specific persist
+    /// actually produces a `message_id`. A persist that fails to produce a `message_id` (here:
+    /// memory transiently unavailable — structurally the same `message_id: None` outcome as a
+    /// filtered/deduped/empty-content persist) must discard its own pending snapshot instead
+    /// of leaking it forward to misattribute the NEXT assistant persist's usage row.
+    #[tokio::test]
+    async fn pending_usage_from_a_dropped_persist_never_leaks_into_the_next_row() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+
+        let memory = test_memory(&AnyProvider::Mock(zeph_llm::mock::MockProvider::default())).await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let memory_arc = std::sync::Arc::new(memory);
+
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            std::sync::Arc::clone(&memory_arc),
+            cid,
+            50,
+            5,
+            100,
+        );
+
+        // Simulate LLM call #1's snapshot, then force this persist to fail to produce a
+        // message_id (memory unavailable is one concrete way `PersistenceService::persist_message`
+        // returns `message_id: None` — the S2 fix applies uniformly regardless of *why*).
+        agent.runtime.metrics.pending_usage = Some(fake_usage_record(1.11));
+        agent.services.memory.persistence.memory = None;
+        agent
+            .persist_message(Role::Assistant, "dropped — no memory available", &[], false)
+            .await;
+        assert!(
+            agent.runtime.metrics.pending_usage.is_none(),
+            "S2: pending_usage must be taken (discarded) even when this persist produces no \
+             message_id"
+        );
+
+        // Restore memory, simulate LLM call #2's snapshot, and persist for real.
+        agent.services.memory.persistence.memory = Some(std::sync::Arc::clone(&memory_arc));
+        agent.runtime.metrics.pending_usage = Some(fake_usage_record(2.22));
+        agent
+            .persist_message(Role::Assistant, "real assistant reply", &[], false)
+            .await;
+        assert!(agent.runtime.metrics.pending_usage.is_none());
+
+        let history = memory_arc.sqlite().load_history(cid, 50).await.unwrap();
+        assert_eq!(
+            history.len(),
+            1,
+            "only the successful persist saved a message"
+        );
+        let message_id = zeph_memory::MessageId(history[0].metadata.db_id.unwrap());
+
+        let row = memory_arc
+            .sqlite()
+            .message_usage(message_id)
+            .await
+            .unwrap()
+            .expect("a usage row must exist for the successfully persisted message");
+        assert!(
+            (row.cost_cents - 2.22).abs() < 1e-9,
+            "row must reflect call #2's cost (2.22), not call #1's leaked-forward 1.11 — \
+             got {}",
+            row.cost_cents
+        );
+    }
 }

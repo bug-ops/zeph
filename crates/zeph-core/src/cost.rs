@@ -147,6 +147,38 @@ impl CostTracker {
         self
     }
 
+    /// Compute the cost in cents for a single LLM call's token counts, without recording it.
+    ///
+    /// Pure pricing arithmetic, extracted from [`Self::record_usage`] (issue #6549) so the
+    /// per-message usage ledger can compute the exact same cost as the live daily aggregate
+    /// for the same call — single pricing source of truth. Replicates `record_usage`'s
+    /// missing-model fallback: an unknown model prices at zero, silently. `record_usage`
+    /// additionally emits a WARN/debug log for that case (it has `provider_kind`, which this
+    /// pure signature does not); callers that want the log must check pricing themselves.
+    #[must_use]
+    pub fn price_of(
+        &self,
+        model: &str,
+        input_tokens: u64,
+        cache_read_tokens: u64,
+        cache_write_tokens: u64,
+        output_tokens: u64,
+    ) -> f64 {
+        let pricing = self.pricing.get(model).cloned().unwrap_or(ModelPricing {
+            prompt_cents_per_1k: 0.0,
+            completion_cents_per_1k: 0.0,
+            cache_read_cents_per_1k: 0.0,
+            cache_write_cents_per_1k: 0.0,
+        });
+        #[allow(clippy::cast_precision_loss)]
+        {
+            pricing.prompt_cents_per_1k * (input_tokens as f64) / 1000.0
+                + pricing.completion_cents_per_1k * (output_tokens as f64) / 1000.0
+                + pricing.cache_read_cents_per_1k * (cache_read_tokens as f64) / 1000.0
+                + pricing.cache_write_cents_per_1k * (cache_write_tokens as f64) / 1000.0
+        }
+    }
+
     /// Record token usage for a single LLM call, attributed to `provider_name`.
     ///
     /// `provider_kind` must be the value returned by `AnyProvider::provider_kind_str()`:
@@ -170,9 +202,7 @@ impl CostTracker {
         if !self.enabled {
             return;
         }
-        let pricing = if let Some(p) = self.pricing.get(model).cloned() {
-            p
-        } else {
+        if !self.pricing.contains_key(model) {
             let is_local = matches!(provider_kind, "ollama" | "candle" | "local");
             if is_local {
                 tracing::debug!(model, "local model; cost recorded as zero");
@@ -182,18 +212,14 @@ impl CostTracker {
                     "model not found in pricing table; cost recorded as zero"
                 );
             }
-            ModelPricing {
-                prompt_cents_per_1k: 0.0,
-                completion_cents_per_1k: 0.0,
-                cache_read_cents_per_1k: 0.0,
-                cache_write_cents_per_1k: 0.0,
-            }
-        };
-        #[allow(clippy::cast_precision_loss)]
-        let cost = pricing.prompt_cents_per_1k * (input_tokens as f64) / 1000.0
-            + pricing.completion_cents_per_1k * (output_tokens as f64) / 1000.0
-            + pricing.cache_read_cents_per_1k * (cache_read_tokens as f64) / 1000.0
-            + pricing.cache_write_cents_per_1k * (cache_write_tokens as f64) / 1000.0;
+        }
+        let cost = self.price_of(
+            model,
+            input_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            output_tokens,
+        );
 
         let mut state = self.state.lock();
         reset_if_new_day(&mut state);
@@ -390,6 +416,44 @@ mod tests {
         let tracker = CostTracker::new(true, 100.0);
         record(&tracker, "unknown", "totally-unknown-model", 5000, 5000);
         assert!((tracker.current_spend() - 0.0).abs() < 0.001);
+    }
+
+    /// M2 (issue #6549): `price_of` must be the exact pricing source of truth `record_usage`
+    /// itself uses — a per-message ledger row computed via `price_of` must always match the
+    /// cost `record_usage` folded into the daily aggregate for the same call, including the
+    /// missing-model fallback (unpriced/local models price at zero in both places).
+    #[test]
+    fn price_of_matches_record_usage_for_known_model() {
+        let tracker = CostTracker::new(true, 1000.0);
+        let expected = tracker.price_of("gpt-4o", 1000, 0, 0, 1000);
+        record(&tracker, "openai", "gpt-4o", 1000, 1000);
+        assert!(
+            (tracker.current_spend() - expected).abs() < 1e-9,
+            "price_of={expected} current_spend={}",
+            tracker.current_spend()
+        );
+    }
+
+    #[test]
+    fn price_of_zero_for_unpriced_model_matches_record_usage_fallback() {
+        let tracker = CostTracker::new(true, 1000.0);
+        let price = tracker.price_of("totally-unknown-model", 5000, 0, 0, 5000);
+        assert!(
+            (price - 0.0).abs() < 1e-9,
+            "unpriced model must price at zero"
+        );
+
+        record(&tracker, "unknown", "totally-unknown-model", 5000, 5000);
+        assert!((tracker.current_spend() - price).abs() < 1e-9);
+    }
+
+    #[test]
+    fn price_of_includes_cache_tokens() {
+        let tracker = CostTracker::new(true, 1000.0);
+        // Mirrors cache_write_cost_included_in_total: claude-opus-4-6 cache_write = 125% of
+        // prompt price (0.5 cents/1k) -> 1000 tokens = 0.625 cents.
+        let price = tracker.price_of("claude-opus-4-6", 0, 0, 1000, 0);
+        assert!((price - 0.625).abs() < 0.001);
     }
 
     #[test]

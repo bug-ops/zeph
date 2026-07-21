@@ -277,6 +277,10 @@ impl LlmProvider for CocoonProvider {
         self.usage.last_cache_usage()
     }
 
+    fn last_ttft_ms(&self) -> Option<u64> {
+        self.usage.last_ttft_ms()
+    }
+
     fn debug_request_json(
         &self,
         messages: &[Message],
@@ -299,7 +303,12 @@ impl LlmProvider for CocoonProvider {
 
             let response = self
                 .client
-                .post("/v1/chat/completions", &body_bytes, self.status_tx.as_ref())
+                .post(
+                    "/v1/chat/completions",
+                    &body_bytes,
+                    self.status_tx.as_ref(),
+                    Some(&self.usage),
+                )
                 .await?;
             let status = response.status();
             let text = response.text().await.map_err(LlmError::Http)?;
@@ -339,7 +348,12 @@ impl LlmProvider for CocoonProvider {
 
             let response = self
                 .client
-                .post("/v1/chat/completions", &body_bytes, self.status_tx.as_ref())
+                .post(
+                    "/v1/chat/completions",
+                    &body_bytes,
+                    self.status_tx.as_ref(),
+                    Some(&self.usage),
+                )
                 .await?;
             let status = response.status();
             if !status.is_success() {
@@ -374,7 +388,12 @@ impl LlmProvider for CocoonProvider {
 
             let response = self
                 .client
-                .post("/v1/embeddings", &body_bytes, self.status_tx.as_ref())
+                .post(
+                    "/v1/embeddings",
+                    &body_bytes,
+                    self.status_tx.as_ref(),
+                    Some(&self.usage),
+                )
                 .await?;
             let status = response.status();
             let body_text = response.text().await.map_err(LlmError::Http)?;
@@ -434,7 +453,12 @@ impl LlmProvider for CocoonProvider {
 
             let response = self
                 .client
-                .post("/v1/embeddings", &body_bytes, self.status_tx.as_ref())
+                .post(
+                    "/v1/embeddings",
+                    &body_bytes,
+                    self.status_tx.as_ref(),
+                    Some(&self.usage),
+                )
                 .await?;
             let status = response.status();
             let body_text = response.text().await.map_err(LlmError::Http)?;
@@ -483,7 +507,12 @@ impl LlmProvider for CocoonProvider {
 
             let response = self
                 .client
-                .post("/v1/chat/completions", &body, self.status_tx.as_ref())
+                .post(
+                    "/v1/chat/completions",
+                    &body,
+                    self.status_tx.as_ref(),
+                    Some(&self.usage),
+                )
                 .await?;
             let status = response.status();
             let text = response.text().await.map_err(LlmError::Http)?;
@@ -534,7 +563,12 @@ impl LlmProvider for CocoonProvider {
 
             let response = self
                 .client
-                .post("/v1/chat/completions", &body_bytes, self.status_tx.as_ref())
+                .post(
+                    "/v1/chat/completions",
+                    &body_bytes,
+                    self.status_tx.as_ref(),
+                    Some(&self.usage),
+                )
                 .await?;
             let status = response.status();
             let text = response.text().await.map_err(LlmError::Http)?;

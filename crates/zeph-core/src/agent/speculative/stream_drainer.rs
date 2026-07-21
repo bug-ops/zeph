@@ -58,12 +58,18 @@ impl SpeculativeStreamDrainer {
     /// Drain the stream, firing speculative dispatches and building the final `ChatResponse`.
     ///
     /// Returns the assembled `ChatResponse` — identical contract to
-    /// `LlmProvider::chat_with_tools`. On stream error, returns the first error encountered.
+    /// `LlmProvider::chat_with_tools` — paired with the true time-to-first-token in
+    /// milliseconds (issue #6549): the elapsed time from the start of this call to the first
+    /// SSE event received, `None` if the stream ended without ever yielding one. This is the
+    /// only production streaming path that feeds the per-message usage ledger (speculative
+    /// decoding, `SpeculationMode::Decoding`/`Both`) — capturing it here, at the actual
+    /// consumption point, avoids threading a shared usage tracker through `zeph-llm`'s SSE
+    /// combinators just for this one call site.
     ///
     /// # Errors
     ///
     /// Returns an `LlmError` if the SSE stream signals a parse or API error.
-    pub async fn drive(mut self) -> Result<ChatResponse, zeph_llm::LlmError> {
+    pub async fn drive(mut self) -> Result<(ChatResponse, Option<u64>), zeph_llm::LlmError> {
         let mut tool_calls: Vec<ToolUseRequest> = Vec::new();
         let mut thinking_blocks: Vec<ThinkingBlock> = Vec::new();
         let mut text_buf = String::new();
@@ -71,8 +77,14 @@ impl SpeculativeStreamDrainer {
         let mut tool_meta: HashMap<usize, (String, String)> = HashMap::new();
         // Track which tool indices have had their speculation fired.
         let mut dispatched: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let drive_start = std::time::Instant::now();
+        let mut ttft_ms: Option<u64> = None;
 
         while let Some(event) = self.stream.next().await {
+            if ttft_ms.is_none() {
+                ttft_ms =
+                    Some(u64::try_from(drive_start.elapsed().as_millis()).unwrap_or(u64::MAX));
+            }
             match event {
                 ToolSseEvent::ToolBlockStart { index, id, name } => {
                     // Populate tool_meta immediately at block open so InputJsonDelta handlers
@@ -148,15 +160,16 @@ impl SpeculativeStreamDrainer {
             Some(text_buf)
         };
 
-        if tool_calls.is_empty() {
-            Ok(ChatResponse::Text(text.unwrap_or_default()))
+        let response = if tool_calls.is_empty() {
+            ChatResponse::Text(text.unwrap_or_default())
         } else {
-            Ok(ChatResponse::ToolUse {
+            ChatResponse::ToolUse {
                 text,
                 tool_calls,
                 thinking_blocks,
-            })
-        }
+            }
+        };
+        Ok((response, ttft_ms))
     }
 }
 
@@ -316,7 +329,7 @@ mod tests {
 
         let drainer =
             SpeculativeStreamDrainer::new(Box::pin(tokio_stream::iter(events)), engine, 0.0);
-        let result = drainer.drive().await.unwrap();
+        let (result, _ttft_ms) = drainer.drive().await.unwrap();
         // Drainer assembled a ToolUse response.
         assert_matches!(result, ChatResponse::ToolUse { .. });
         // SpyExec.is_tool_speculatable was called at least once (dispatch was attempted).
@@ -371,8 +384,12 @@ mod tests {
             SpeculativeConfig::default(),
         ));
         let drainer = SpeculativeStreamDrainer::new(Box::pin(tokio_stream::empty()), engine, 0.8);
-        let result = drainer.drive().await.unwrap();
+        let (result, ttft_ms) = drainer.drive().await.unwrap();
         assert_matches!(result, ChatResponse::Text(s) if s.is_empty());
+        assert_eq!(
+            ttft_ms, None,
+            "issue #6549: a stream that never yields an event has no TTFT"
+        );
     }
 
     #[tokio::test]
@@ -422,8 +439,12 @@ mod tests {
         let events = vec![ToolSseEvent::ContentChunk("Hello world".into())];
         let drainer =
             SpeculativeStreamDrainer::new(Box::pin(tokio_stream::iter(events)), engine, 0.8);
-        let result = drainer.drive().await.unwrap();
+        let (result, ttft_ms) = drainer.drive().await.unwrap();
         assert_matches!(result, ChatResponse::Text(s) if s == "Hello world");
+        assert!(
+            ttft_ms.is_some(),
+            "issue #6549: a stream that yields at least one event must report a TTFT"
+        );
     }
 
     #[tokio::test]
@@ -478,7 +499,7 @@ mod tests {
         }];
         let drainer =
             SpeculativeStreamDrainer::new(Box::pin(tokio_stream::iter(events)), engine, 0.8);
-        let result = drainer.drive().await.unwrap();
+        let (result, _ttft_ms) = drainer.drive().await.unwrap();
         match result {
             ChatResponse::ToolUse { tool_calls, .. } => {
                 assert_eq!(tool_calls.len(), 1);

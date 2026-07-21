@@ -361,6 +361,86 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Build a durable [`zeph_memory::UsageRecord`] for one LLM call, or `None` when cost
+    /// tracking is disabled (mirrors [`Self::record_cost_and_cache`]'s no-op gating, issue
+    /// #6549 — usage-row writes follow the existing `[cost] enabled` switch).
+    ///
+    /// `provider` supplies the call-specific transient state (`last_cache_usage`,
+    /// `last_ttft_ms`, `last_reasoning_tokens`) — pass the exact [`zeph_llm::any::AnyProvider`]
+    /// instance that served this call (e.g. `orchestrator_provider` for `plan.rs`'s
+    /// planner/aggregator sites), since each provider clone owns an independent usage tracker.
+    /// Naming and pricing intentionally always resolve from `self.runtime.config`
+    /// (`active_provider_name`/`model_name`), matching [`Self::record_cost_and_cache`]'s
+    /// existing resolution exactly — mirroring its behavior is what keeps this row's cost
+    /// identical to the value that call folds into the live daily aggregate (M2), even though
+    /// that means a background call served by an alternate provider is still priced against
+    /// the agent's primary model config (pre-existing `record_cost_and_cache` behavior, not
+    /// changed here).
+    ///
+    /// `message_id`/`conversation_id` are left to the caller: the turn-loop path fills
+    /// `message_id` in only once the paired `messages` row is persisted; `plan.rs`/
+    /// `scheduler_loop.rs` background call sites pass `None` for `message_id` (no persisted
+    /// conversational message exists for them).
+    #[allow(clippy::too_many_arguments)] // mirrors CostTracker::record_usage's own allow — a *Params struct would be more verbose without simplifying the call sites
+    pub(crate) fn build_usage_record(
+        &self,
+        provider: &zeph_llm::any::AnyProvider,
+        source: zeph_memory::UsageSource,
+        message_id: Option<zeph_memory::MessageId>,
+        conversation_id: Option<zeph_memory::ConversationId>,
+        input_tokens: u64,
+        output_tokens: u64,
+        latency_ms: u64,
+        stream_ttft_ms: Option<u64>,
+    ) -> Option<zeph_memory::UsageRecord> {
+        let tracker = self.runtime.metrics.cost_tracker.as_ref()?;
+        let (cache_write, cache_read) = provider.last_cache_usage().unwrap_or((0, 0));
+        let reasoning_tokens = provider.last_reasoning_tokens();
+        // Issue #6549 S1: prefer the true first-content-token time captured at the SSE stream
+        // consumption point (speculative-decoding path) over the provider-level TTFB proxy —
+        // `stream_ttft_ms` is `Some` only when this call actually streamed.
+        let ttft_ms = stream_ttft_ms.or_else(|| provider.last_ttft_ms());
+        let provider_name = if self.runtime.config.active_provider_name.is_empty() {
+            self.provider.name()
+        } else {
+            self.runtime.config.active_provider_name.as_str()
+        };
+        let cost_cents = tracker.price_of(
+            &self.runtime.config.model_name,
+            input_tokens,
+            cache_read,
+            cache_write,
+            output_tokens,
+        );
+        // Generation-window throughput: only derivable once TTFT/TTFB is known and the
+        // remaining window (latency - ttft) is positive.
+        let tokens_per_sec = ttft_ms.and_then(|ttft| {
+            if latency_ms <= ttft {
+                return None;
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let window_secs = (latency_ms - ttft) as f64 / 1000.0;
+            #[allow(clippy::cast_precision_loss)]
+            Some(output_tokens as f64 / window_secs)
+        });
+        Some(zeph_memory::UsageRecord {
+            message_id,
+            conversation_id,
+            source,
+            provider_name: provider_name.to_owned(),
+            model_name: self.runtime.config.model_name.clone(),
+            input_tokens,
+            output_tokens,
+            cache_read_tokens: cache_read,
+            cache_write_tokens: cache_write,
+            reasoning_tokens,
+            cost_cents,
+            latency_ms,
+            ttft_ms,
+            tokens_per_sec,
+        })
+    }
+
     pub(crate) fn record_successful_task(&self) {
         if let Some(ref tracker) = self.runtime.metrics.cost_tracker {
             tracker.record_successful_task();

@@ -206,6 +206,26 @@ impl<C: Channel> Agent<C> {
             m.exfiltration_memory_guards += guard_delta;
         });
 
+        // Issue #6549 (S2, critic-confirmed): take the pending usage snapshot eagerly, gated
+        // only on `role`, independent of whether this specific persist actually produced a
+        // message_id. A filtered/dropped assistant persist (empty `cleaned` text,
+        // autosave_min_length, dedup, cache-hit — see tier_loop.rs:2251/2443) must discard its
+        // own snapshot here rather than leaking it into the NEXT assistant persist, which would
+        // misattribute it to the wrong message. Durable-turn-replay persists an assistant
+        // message with no fresh LLM call (M5) — `pending_usage` is `None` there, so this is a
+        // no-op by construction; no row is written for the replayed message, which is expected.
+        if role == Role::Assistant
+            && let Some(mut pending) = self.runtime.metrics.pending_usage.take()
+            && let Some(message_id) = outcome.message_id
+        {
+            pending.message_id = Some(zeph_memory::MessageId(message_id));
+            if let Some(memory) = self.services.memory.persistence.memory.clone()
+                && let Err(e) = memory.sqlite().record_usage_row(&pending).await
+            {
+                tracing::warn!(error = %e, "failed to record usage_records row");
+            }
+        }
+
         if outcome.message_id.is_none() {
             return;
         }
