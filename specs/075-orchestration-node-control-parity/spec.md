@@ -277,8 +277,9 @@ performed.
   project convention.
 - Whether `default_idle_timeout_secs` gets a dedicated CLI/TUI surface beyond config.toml/`--init`
   — the existing `task_timeout_secs` precedent has none, and FR-018 does not require one, but this
-  is worth confirming against current TUI settings-editor conventions (`[[061-tui-settings-editor-parity/spec]]`
-  if it exists) before implementation.
+  is worth confirming against current TUI settings-editor conventions before implementation. (No
+  `*-tui-settings-editor-parity` spec exists under `/specs/` as of the 2026-07 audit — if TUI
+  settings-editor conventions are formalized in a dedicated spec later, cross-link it here.)
 
 ### Never
 

@@ -46,7 +46,7 @@ Quality attributes covered and their relevance:
 | Performance Efficiency | Critical — agent latency and binary size directly affect developer UX |
 | Reliability | High — single-user: crashes must not lose data; Qdrant/MCP absence must degrade gracefully |
 | Security | Critical — vault, secrets, SSRF, injection defense, PII |
-| Maintainability | High — 24-crate workspace, pre-v1.0 rapid iteration |
+| Maintainability | High — 32-crate workspace, pre-v1.0 rapid iteration |
 | Portability | Medium — macOS + Linux; Windows out of scope |
 | Usability | Medium — CLI ergonomics and TUI responsiveness |
 | Compatibility | High — MCP, A2A, ACP, Ollama, OpenAI protocol compliance |
@@ -273,8 +273,8 @@ Quality attributes covered and their relevance:
 
 | ID | Requirement | Details |
 |----|------------|---------|
-| NFR-MNT-001 | Workspace structure | 24-crate Cargo workspace with a strict 5-layer DAG; same-layer imports prohibited |
-| NFR-MNT-002 | Feature flag discipline | `default = []`; optional features declared with `dep:zeph-<name>`; no optional feature enabled by default |
+| NFR-MNT-001 | Workspace structure | 32-crate Cargo workspace with a strict layered DAG (see [[constitution#I. Architecture]]); same-layer imports prohibited |
+| NFR-MNT-002 | Feature flag discipline | `default = ["scheduler", "sqlite"]`; optional features declared with `dep:zeph-<name>`; no optional feature beyond that pair enabled by default |
 | NFR-MNT-003 | Dependency additions | New external dependencies require version check via context7 MCP and explicit justification in PR description |
 | NFR-MNT-004 | No backward-compatibility shims before v1.0 | Breaking changes documented in `CHANGELOG.md`; no `#[deprecated]` shims required before v1.0 |
 | NFR-MNT-005 | No unsafe code | `unsafe_code = "deny"` in workspace `Cargo.toml`; verified by CI |
@@ -285,7 +285,7 @@ Quality attributes covered and their relevance:
 |----|------------|---------|
 | NFR-MNT-010 | Pre-merge test pass | `cargo nextest run --config-file .github/nextest.toml --workspace --features full --lib --bins` passes with zero failures on every PR |
 | NFR-MNT-011 | Formatting check | `cargo +nightly fmt --check` passes on every PR |
-| NFR-MNT-012 | Lint check | `cargo clippy --all-targets --all-features --workspace -- -D warnings` passes on every PR |
+| NFR-MNT-012 | Lint check | `cargo clippy --profile ci --workspace --all-targets --features "desktop,ide,server,chat,pdf,scheduler,testing" -- -D warnings` passes on every PR (`--all-features` is unsupported — `sqlite`/`postgres` are mutually exclusive and trigger `compile_error!`, see [[029-feature-flags/spec#6. NEVER]]) |
 | NFR-MNT-013 | Doc-test coverage | `cargo test --doc --workspace --features "desktop,ide,server,chat,pdf,scheduler"` passes for all touched crates |
 | NFR-MNT-014 | LLM serialization gate | Any PR touching LLM request/response serialization paths requires a live API session test with debug dump verification |
 | NFR-MNT-015 | Integration tests | `cargo nextest run -- --ignored` covers Qdrant-dependent tests; run in CI with Qdrant service |

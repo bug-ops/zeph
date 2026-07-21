@@ -53,6 +53,9 @@ status: moc
 - [[012-graph-memory/spec|Entity Graph Memory]] — entity graph, BFS recall, community detection, MAGMA typed edges, SYNAPSE spreading activation; works with [[004-memory/spec|Memory Pipeline]]
   - [[004-memory/004-6-graph-memory|Graph Memory (memory sub-spec)]] — concise reference within the memory subsystem: data model overview, MAGMA edge types, SYNAPSE config, key invariants
   - [[004-memory/004-16-memory-type-aware-retrieval|MemGuard Type-Aware Retrieval (memory sub-spec)]] — opt-in fetch-time gate on `schedule_context_fetchers`, `FunctionalType` enum, intent-scoped widening via existing `HeuristicRouter` (no new LLM call), `BehavioralRule` always-composed safety invariant; retrieval-only, byte-for-byte no-op when disabled; GitHub #6086, #6226
+  - [[004-memory/004-16-shadow-memory-safety|Shadow Memory Safety (memory sub-spec)]] — `TrajectoryRiskAccumulator` MAGE multi-turn goal-hijacking detection, `ShadowMemory`/`GoalDriftResult`; SafeHarbor guardrail tree aspirational; GitHub #3695
+  - [[004-memory/004-17-implicit-conflict-detection|Implicit Conflict Detection (memory sub-spec)]] — write-time `ImplicitConflictDetector` (STALE/CUPMem fuzzy predicate matching), propagation-aware SYNAPSE recall; GitHub #3702
+  - [[004-memory/004-18-five-signal-retrieval|Five-Signal Retrieval (memory sub-spec)]] — access frequency, causal distance, novelty, recency, goal-relevance signals + async consolidation daemon (MemTier); GitHub #3703
 - [[067-knowledge-ingest/spec|Knowledge Ingest]] — `zeph knowledge ingest` operator command; static artifacts → semantic notes (existing `IngestionPipeline`, no graph), subagent transcripts → graph (gated by measurement spike); Phase 0 provenance (`origin`/`import_batch_id`/`source_uri`) + `rollback`; honors write-gate (004-9) + admission (004-3), bypasses only RPE; sanitizer on write path; external Claude/Codex import deferred; code stays in [[017-index/spec|zeph-index]]
 
 ### Configuration & Loading
@@ -170,7 +173,7 @@ status: moc
 ## System-Wide Features
 
 ### Feature Flags & Dependencies
-- [[029-feature-flags/spec|Feature Flags]] — feature flag decision rules, surviving flag inventory (22 flags), bundle definitions (desktop, ide, server, full), always-on capabilities (openai, compatible, orchestrator, router, self-learning, qdrant, vault-age, mcp); `default = []` in Cargo.toml
+- [[029-feature-flags/spec|Feature Flags]] — feature flag decision rules, surviving flag inventory, bundle definitions (desktop, ide, server, full), always-on capabilities (openai, compatible, orchestrator, router, self-learning, qdrant, vault-age, mcp); `default = ["scheduler", "sqlite"]` in Cargo.toml
 - [[041-experiments/spec|Experiments & Runtime Feature Gating]] — runtime A/B testing via `[experiments]` config section, ExperimentConfig, rollout percentage, experiment results reporting, CLI subcommands; distinct from compile-time feature flags
 
 ### Database Abstraction
@@ -224,7 +227,6 @@ status: moc
 | 024 | [[024-multi-model-design/spec\|Multi-Model Design]] | specify | approved |
 | 025 | [[025-classifiers/spec\|ML Classifiers]] | specify | approved |
 | 026 | [[026-tui-subagent-management/spec\|TUI Subagents]] | specify | approved |
-| 026 | [[026-tui-subagent-management/plan\|TUI Subagents]] | plan | approved |
 | 027 | [[027-runtime-layer/spec\|Runtime Layer]] | specify | approved |
 | 028 | [[028-hooks/spec\|Hooks]] | specify | approved |
 | 029 | [[029-feature-flags/spec\|Feature Flags]] | specify | approved |
@@ -244,6 +246,24 @@ status: moc
 | 042 | [[042-zeph-commands/spec\|Slash Command Registry]] | specify | approved |
 | 043 | [[043-zeph-common/spec\|Shared Primitives]] | specify | approved |
 | 044 | [[044-subagent-lifecycle/spec\|Subagent Lifecycle]] | specify | approved |
+| 045 | [[045-interop-protocol-gaps/spec\|Interop Protocol Gaps]] | specify | approved |
+| 046 | [[046-march-quality/spec\|MARCH Quality Pipeline]] | specify | approved |
+| 047 | [[047-cli-modes/spec\|CLI Execution Modes]] | specify | approved |
+| 048 | [[048-slm-cost-metrics/spec\|SLM Cost Metrics]] | specify | approved |
+| 049 | [[049-agent-decomposition/spec\|Agent Decomposition]] | specify | draft |
+| 050 | [[050-security-capability-governance/spec\|Security Capability Governance]] | specify | draft |
+| 051 | [[051-gonka-gateway/spec\|Gonka Gateway]] | specify | implemented |
+| 052 | [[052-gonka-native/spec\|Gonka Native]] | specify | implemented |
+| 053 | [[053-speculation-engine/spec\|Speculation Engine]] | specify | implemented |
+| 054 | [[054-agent-feedback/spec\|Agent Feedback Detection]] | specify | approved |
+| 055 | [[055-cocoon/spec\|Cocoon Distributed Compute]] | specify | draft |
+| 056 | [[056-autoskill-trace-extraction/spec\|AutoSkill A1: Trace Extraction]] | specify | implemented |
+| 057 | [[057-autoskill-versioned-merging/spec\|AutoSkill A2: Versioned Merging]] | specify | implemented |
+| 058 | [[058-autoskill-query-rewriting/spec\|AutoSkill A3: Query Rewriting]] | specify | implemented |
+| 059 | [[059-autoskill-bm25-hybrid/spec\|AutoSkill A4: BM25 Hybrid]] | specify | implemented |
+| 060 | [[060-autoskill-trigger-sets/spec\|AutoSkill A5: Trigger Sets]] | specify | implemented |
+| 061 | [[061-autoskill-heuristic-promotion/spec\|AutoSkill A6: Heuristic Promotion]] | specify | implemented |
+| 062 | [[062-context-adaptive-memory/spec\|Context-Adaptive Memory]] | tasks | approved |
 | 063 | [[063-worktree-subsystem/spec\|Worktree Subsystem]] | specify | approved |
 | 064 | [[064-durable-execution/spec\|Durable Execution]] | specify | approved |
 | 065 | [[065-ephemeral-plugins-provider-overrides/spec\|Ephemeral Plugins & Provider Overrides]] | specify | implemented |
@@ -251,12 +271,18 @@ status: moc
 | 067 | [[067-knowledge-ingest/spec\|Knowledge Ingest]] | specify | draft |
 | 068 | [[068-session-persistence/spec\|Session Persistence]] | specify | draft |
 | 069 | [[069-threat-model/spec\|MATRA Threat Model]] | specify | approved |
+| 070 | [[070-runtime-thinking-controls/spec\|Runtime Thinking Controls]] | specify | approved |
+| 071 | [[071-router-thinking-budget-delegation/spec\|Router Thinking Budget Delegation]] | specify | approved |
 | 072 | [[072-multimodal-mcp-passthrough/spec\|Multimodal MCP Passthrough]] | specify | draft |
 | 073 | [[073-orch-ensemble-merge/spec\|ORCH Ensemble-Merge]] | specify | approved |
 | 074 | [[074-orchestration-hitl-interrupt/spec\|Declarative HITL Interrupt]] | tasks | draft |
 | 075 | [[075-orchestration-node-control-parity/spec\|Node Timeout / Retry-Exhausted Recovery]] | tasks | approved |
 | 076 | [[076-cli-init-migrate-config-flag-mismatch/spec\|CLI Init/Migrate-Config Flag Mismatch]] | specify | draft |
 | 077 | [[077-safe-mode-and-cd-command/spec\|Safe Mode & /cd Command]] | specify | implemented |
+| 078 | [[078-agent-persistence/spec\|Agent Persistence]] | specify | approved |
+| 079 | [[079-plugins/spec\|Plugin Management]] | specify | approved |
+| 080 | [[080-cross-thread-store-dynamic-handoff/spec\|Cross-Thread Store & Dynamic Handoff]] | specify | approved |
+| 081 | [[081-transcript-integrity/spec\|Transcript Integrity]] | specify | implemented |
 
 ---
 
@@ -295,7 +321,7 @@ The following large specs have been broken into atomic child specs for focused s
 ## Navigation
 
 - **By Layer**: [[#Foundation & Architecture]] → [[#Core Agent Systems]] → [[#Execution & Tools]] → [[#User Interface & Channels]]
-- **By Phase**: Specs 001–030 are Phase 1 (specification); only 026 has Phase 2 (plan)
+- **By Phase**: Specs 001–061 are Phase 1 (specification) only; several later specs (062, 063, 065, 066, 067, 068, 070, 072, 073, 074, 075) additionally have `plan.md`/`tasks.md` (and some `brd.md`/`srs.md`/`nfr.md`) companion documents — see each directory for its actual file set
 - **By Crate**: See crate field in README.md for crate mapping
 - **Search**: Use Obsidian search by tag (e.g., `tag:sdd`) or filter by status
 

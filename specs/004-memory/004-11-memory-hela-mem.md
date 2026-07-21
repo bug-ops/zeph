@@ -216,7 +216,7 @@ folding_cooldown_turns = 10
 
 ## 5. Acceptance Criteria
 
-- [x] `graph_edges` table has `weight` column after migration 077; existing rows default to 1.0 (HL-F1 — implemented #3344)
+- [x] `graph_edges` table has `weight` column after migration 078 (`078_hebbian_edge_weight.sql`); existing rows default to 1.0 (HL-F1 — implemented #3344)
 - [x] Co-activated node pairs show incremented weights after retrieval when `hebbian.enabled = true` (HL-F2 — implemented #3344)
 - [x] Consolidation pass runs on background task (HL-F3/F4 — implemented #3345, #3380)
 - [x] Spreading activation retrieval (`hela_spreading_recall`) implemented with BFS, multiplicative path weights, and circuit breaker (HL-F5 — implemented #3346)

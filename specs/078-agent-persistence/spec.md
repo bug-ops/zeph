@@ -17,7 +17,7 @@ related:
   - "[[001-system-invariants/spec]]"
   - "[[002-agent-loop/spec]]"
   - "[[004-memory/spec]]"
-  - "[[032-database-abstraction/spec]]"
+  - "[[031-database-abstraction/spec]]"
   - "[[010-security/spec]]"
 ---
 
@@ -414,4 +414,4 @@ None.
 - [[002-agent-loop/spec]] — agent loop and context pressure
 - [[004-memory/spec]] — SemanticMemory backend
 - [[010-security/spec]] — exfiltration guard and security model
-- [[032-database-abstraction/spec]] — database abstraction layer for SQLite/PostgreSQL
+- [[031-database-abstraction/spec]] — database abstraction layer for SQLite/PostgreSQL

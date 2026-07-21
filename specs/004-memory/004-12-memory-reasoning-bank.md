@@ -202,12 +202,12 @@ Token budget enforced by existing `ContextBudget` mechanism.
 
 ---
 
-## 6. Implementation Priority
+## 7. Implementation Priority
 
 **P2 — Medium priority.** Core read/write path is 2 weeks estimated complexity. MaTTS scaling variant (more compute per task for diverse experiences) is a separate follow-up sprint. Recommend: SQLite table + distillation pipeline first, Qdrant retrieval second, context injection third.
 
 ---
 
-## 7. Related Issues
+## 8. Related Issues
 
 - Closes #3312

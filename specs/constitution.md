@@ -21,7 +21,7 @@ related:
 
 ## I. Architecture
 
-- Cargo workspace (Edition 2024, resolver 3): 29 crates (including `zeph-common`, `zeph-commands`, `zeph-context`), root binary `zeph`
+- Cargo workspace (Edition 2024, resolver 3): 32 crates (including `zeph-common`, `zeph-commands`, `zeph-context`), root binary `zeph`
 - `zeph-core` orchestrates all crates. Crate dependencies must follow the layered DAG:
   - **Layer 0a** (zero zeph-* deps): `zeph-common`, `zeph-commands`
   - **Layer 0b** (depends on L0a only): `zeph-config`, `zeph-vault`, `zeph-db`

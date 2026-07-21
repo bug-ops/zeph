@@ -18,10 +18,18 @@ related:
   - "[[010-1-vault]]"
   - "[[010-3-authorization]]"
   - "[[010-4-audit]]"
-  - "[[025-classifiers]]"
+  - "[[025-classifiers/spec]]"
 ---
 
 # Spec: Injection Defense & Content Isolation
+
+> [!danger] Stale content — 2026-07 audit
+> The `IpiDetector`/`PiiDetector`/`DeBERTaClassifier` code blocks below are fictional — none of
+> these type names exist in the codebase — and were not corrected in this pass (rewrite, not a text
+> fix). Real code: `crates/zeph-llm/src/classifier/` (`CandleClassifier`, `CandlePiiClassifier`) and
+> `crates/zeph-sanitizer/src/causal_ipi.rs` (`TurnCausalAnalyzer`). The "User Verification Gate"
+> section's direct `println!(...)` also contradicts [[001-system-invariants/spec#1. Channel Contract]]
+> ("the `Channel` trait is the only I/O boundary") — do not copy that pattern.
 
 Indirect Prompt Injection (IPI) defense, DeBERTa-backed detection, AlignSentinel confidence scoring, PII NER detection, content isolation.
 
@@ -263,8 +271,8 @@ redact_mode = "mask"             # or "block"
 
 ## Integration Points
 
-- [[008-mcp]] — MCP tool outputs scanned before reaching agent
-- [[025-classifiers]] — DeBERTa inference infrastructure
+- [[008-mcp/spec]] — MCP tool outputs scanned before reaching agent
+- [[025-classifiers/spec]] — DeBERTa inference infrastructure
 - [[010-4-audit]] — IPI detection logged for compliance
 - WebFetch tool — Content scanned before returning
 
@@ -272,5 +280,5 @@ redact_mode = "mask"             # or "block"
 
 - [[010-security/spec]] — Parent
 - [[010-1-vault]] — Prevent secret leakage from redaction
-- [[025-classifiers]] — DeBERTa and NER models
+- [[025-classifiers/spec]] — DeBERTa and NER models
 - [[010-4-audit]] — Audit log of IPI detections

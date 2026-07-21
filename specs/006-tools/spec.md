@@ -37,7 +37,7 @@ related:
 | `crates/zeph-tools/src/composite.rs` | `CompositeExecutor`, chain ordering |
 | `crates/zeph-tools/src/filter/mod.rs` | `FilterPipeline`, `CommandMatcher`, `OutputFilterRegistry` |
 | `crates/zeph-tools/src/filter/security.rs` | `SecurityPatterns`, 17 regex patterns |
-| `crates/zeph-tools/src/filter/declarative.rs` | Per-filter TOML config |
+| `crates/zeph-tools/src/filter/declarative/mod.rs` | Per-filter TOML config |
 
 ---
 
@@ -254,12 +254,12 @@ loaded tools bypassed the confirmation gate even when the underlying executor re
 ### Fix
 
 `DynExecutor::requires_confirmation(&call)` now delegates to the inner executor's
-`requires_confirmation` method via the `ErasedToolExecutor` vtable:
+`requires_confirmation_erased` method via the `ErasedToolExecutor` vtable:
 
 ```rust
 impl ToolExecutor for DynExecutor {
-    fn requires_confirmation_erased(&self, call: &ToolCall) -> bool {
-        self.inner.requires_confirmation_erased(call)
+    fn requires_confirmation(&self, call: &ToolCall) -> bool {
+        self.0.requires_confirmation_erased(call)
     }
 }
 ```
@@ -497,7 +497,7 @@ rules = {}
 
 ## Tool Error Taxonomy
 
-`crates/zeph-tools/src/error.rs`. Issue #2203.
+`crates/zeph-tools/src/error_taxonomy.rs`. Issue #2203.
 
 ### Overview
 

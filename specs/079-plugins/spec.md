@@ -20,7 +20,7 @@ related:
   - "[[005-skills/spec]]"
   - "[[008-mcp/spec]]"
   - "[[010-security/spec]]"
-  - "[[028-runtime-layer/spec]]"
+  - "[[027-runtime-layer/spec]]"
 ---
 
 # Spec: Plugin Management System (`zeph-plugins`)
@@ -704,10 +704,10 @@ None.
 
 ---
 
-## 13. See Also
+## 18. See Also
 
 - [[001-system-invariants/spec]] — system-wide invariants
 - [[005-skills/spec]] — skill registry and trust model
 - [[008-mcp/spec]] — MCP server lifecycle and server commands
 - [[010-security/spec]] — security model and authorization
-- [[028-runtime-layer/spec]] — config overlay merge timing
+- [[027-runtime-layer/spec]] — config overlay merge timing

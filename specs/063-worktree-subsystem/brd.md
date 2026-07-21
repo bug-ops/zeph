@@ -11,8 +11,7 @@ status: approved
 related:
   - "[[specs/063-worktree-subsystem/srs]]"
   - "[[specs/063-worktree-subsystem/spec]]"
-  - "[[specs/parity-claude-code-3918/spec]]"
-  - "[[specs/045-subagent-lifecycle/spec]]"
+  - "[[044-subagent-lifecycle/spec]]"
 ---
 
 # BRD-063: Worktree Subsystem + `worktree.base_ref`
@@ -27,7 +26,8 @@ also operating in. This creates two problems:
 2. **Lack of isolation** — multiple subagents running concurrently may step on each other's filesystem
    changes, producing unpredictable results.
 
-Claude Code (the primary parity target, `specs/parity-claude-code-3918/spec.md`) provides
+Claude Code (the primary parity target, issue #3918 — no `parity-claude-code-3918/spec.md` exists
+under `/specs/` as of the 2026-07 audit; likely a `.local/`-scoped working doc) provides
 `worktree.baseRef` semantics that give each agent an isolated git worktree. Zeph deferred this
 capability in the parity spec (rows 40–41) because no worktree subsystem existed. Issue #4655 delivers
 that subsystem as a prerequisite for the deferred parity items.

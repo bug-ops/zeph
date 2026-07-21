@@ -293,38 +293,10 @@ slots unchanged.
 
 ## 10. PRISM Query-Sensitive Edge Costing (#4079, #4360)
 
-PRISM adds an opt-in query-sensitive A* cost function to graph recall in `zeph-memory`.
-When enabled, the BFS traversal weights each candidate entity by cosine similarity to the
-current query embedding rather than using confidence-only cost.
-
-### Cost Function
-
-```
-cost = (1 - confidence) * (1 - cosine_sim).max(0.01)
-```
-
-- `confidence` = edge confidence from MAGMA typed edge
-- `cosine_sim` = cosine similarity between query vector and entity vector (0.0–1.0)
-- `.max(0.01)` prevents zero-cost edges from causing BFS to skip valid nodes
-
-### Implementation Details
-
-- Query embedding is fetched **once per graph recall call** — not per entity
-- Entity vectors are batch-fetched via `qdrant_point_ids_for_entities` + `get_vectors_from_collection`
-- Embed call is bounded by a 10 s timeout; on timeout, falls back to confidence-only cost (no error)
-
-### Config
-
-```toml
-[memory.graph]
-query_sensitive_cost = false  # default off — no behavior change when disabled
-```
-
-### Key Invariants
-
-- Default is `false` — existing behavior unchanged without explicit opt-in
-- Fallback to confidence-only cost is silent (logged at `DEBUG` only)
-- NEVER fetch query embedding per entity — exactly one embed call per graph recall invocation
+PRISM is a `zeph-memory` graph-recall traversal enhancement, not a `zeph-context` feature — full
+spec (cost function, implementation details, config, Key Invariants) lives in
+[[012-graph-memory/spec#PRISM: Query-Sensitive A* Edge Costing (#4079, #4360)]]. This section is
+intentionally kept as a pointer rather than a duplicate to avoid the two files drifting apart.
 
 ---
 
@@ -364,7 +336,7 @@ None.
 
 ---
 
-## 11. See Also
+## 13. See Also
 
 - [[constitution]] — project principles
 - [[001-system-invariants/spec]] — cross-cutting invariants

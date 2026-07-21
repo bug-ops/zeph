@@ -97,8 +97,8 @@ Config migration step 50 adds these fields. Both live under `[[mcp.servers]]`.
 | File | Contents |
 |---|---|
 | `crates/zeph-mcp/src/` | `McpManager`, server lifecycle, tool registry |
-| `crates/zeph-tools/src/composite.rs` | `McpExecutor` in composite chain |
-| `crates/zeph-tui/src/channel.rs` | `suppress_stderr` integration |
+| `crates/zeph-mcp/src/executor.rs` | `McpToolExecutor` in composite chain |
+| `crates/zeph-mcp/src/manager/{mod.rs,builder.rs,connect.rs,server.rs,retry.rs}` | `suppress_stderr` integration |
 
 ---
 

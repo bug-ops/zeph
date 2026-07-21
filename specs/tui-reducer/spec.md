@@ -16,8 +16,8 @@ related:
   - "[[MOC-specs]]"
   - "[[001-system-invariants/spec]]"
   - "[[011-tui/spec]]"
-  - "[[027-tui-subagent-management/spec]]"
-  - "[[031-tui-slash-autocomplete/spec]]"
+  - "[[026-tui-subagent-management/spec]]"
+  - "[[030-tui-slash-autocomplete/spec]]"
 ---
 
 # Spec: TUI Reducer / Action Decomposition + Opt-in Mouse Mode

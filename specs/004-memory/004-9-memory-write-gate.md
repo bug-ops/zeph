@@ -10,7 +10,7 @@ tags:
   - admission
   - experimental
 created: 2026-04-19
-status: draft
+status: implemented
 related:
   - "[[MOC-specs]]"
   - "[[constitution]]"
@@ -27,7 +27,7 @@ related:
 > with a **content-quality** scorer that rejects redundant, reference-incomplete, or
 > self-contradictory entries. Rule-based MVP with optional LLM-assisted scoring via
 > `quality_gate_provider`. Resolves GitHub issue
-> [#3222](https://github.com/rabax/zeph/issues/3222).
+> [#3222](https://github.com/bug-ops/zeph/issues/3222).
 
 ## Sources
 
@@ -39,8 +39,8 @@ related:
 | File | Contents |
 |---|---|
 | `crates/zeph-memory/src/admission.rs` | Existing A-MAC importance scorer |
-| `crates/zeph-memory/src/facade.rs` | `SemanticMemory::remember()` entry point |
-| `crates/zeph-memory/src/router.rs` | Memory routing decisions |
+| `crates/zeph-memory/src/semantic/recall.rs` | `SemanticMemory::remember()` entry point |
+| `crates/zeph-memory/src/quality_gate.rs` | `QualityGate` implementation |
 | `crates/zeph-memory/src/types.rs` | `Message`, `MessagePart` definitions |
 
 ---
@@ -74,7 +74,7 @@ MVP; LLM-assisted scoring is opt-in via `quality_gate_provider`.
 
 - Replacing or removing A-MAC (the gates compose: A-MAC first, quality second)
 - Retrospective cleanup of existing low-quality entries (handled by `#[forgetting]`)
-- Graph-edge admission (see `[[memory-apex-magma/spec]]`)
+- Graph-edge admission (see `[[004-7-memory-apex-magma]]`)
 - Tool-output admission (always admitted; quality runs only on conversational writes)
 
 ---
@@ -326,6 +326,6 @@ AND the LLM timeout counter increments
 - [[constitution]] — project principles
 - [[004-memory/spec]] — memory pipeline
 - [[004-3-admission-control]] — upstream A-MAC admission
-- [[memory-apex-magma/spec]] — graph-side conflict handling (composes with `contradiction_risk`)
+- [[004-7-memory-apex-magma]] — graph-side conflict handling (composes with `contradiction_risk`)
 - [[024-multi-model-design/spec]] — provider tier guidance
 - [[MOC-specs]] — all specifications

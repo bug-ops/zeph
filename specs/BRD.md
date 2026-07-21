@@ -398,12 +398,12 @@ Detailed targets are in [[NFR]]. High-level constraints for business context:
 
 ### Technical Constraints
 
-- Language: Rust 1.94 (MSRV), Edition 2024, no `unsafe` blocks.
+- Language: Rust 1.97 (MSRV), Edition 2024, no `unsafe` blocks.
 - Async: tokio; no `async-trait` crate in library crates.
 - TLS: rustls only; `openssl-sys` banned.
 - YAML: `serde_norway` only; `serde_yaml` / `serde_yml` banned.
 - Database: SQLite (default) or PostgreSQL (opt-in); `sqlx::Any` banned.
-- Feature flags: `default = []`; always-on capabilities compiled without flags.
+- Feature flags: `default = ["scheduler", "sqlite"]`; always-on capabilities compiled without flags.
 - Binary size: release binary must stay under 15 MiB.
 - Unsafe code: `unsafe_code = "deny"` workspace-wide.
 

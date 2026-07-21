@@ -33,19 +33,19 @@ related:
 ### Internal
 | File | Contents |
 |---|---|
-| `crates/zeph-core/src/orchestration/mod.rs` | `OrchestrationEngine`, public API |
-| `crates/zeph-core/src/orchestration/dag.rs` | `TaskGraph`, DAG structure (petgraph) |
-| `crates/zeph-core/src/orchestration/scheduler.rs` | `DagScheduler`, tick loop |
-| `crates/zeph-core/src/orchestration/planner.rs` | `LlmPlanner`, goal decomposition |
-| `crates/zeph-core/src/orchestration/router.rs` | `AgentRouter`, 3-step fallback |
-| `crates/zeph-core/src/orchestration/aggregator.rs` | `LlmAggregator`, per-task token budget |
-| `crates/zeph-core/src/orchestration/command.rs` | `/plan` command parsing |
-| `crates/zeph-core/src/orchestration/graph.rs` | Internal graph utilities |
-| `crates/zeph-core/src/orchestration/error.rs` | `OrchestrationError` |
+| `crates/zeph-orchestration/src/lib.rs` | `OrchestrationEngine`, public API |
+| `crates/zeph-orchestration/src/dag.rs` | `TaskGraph`, DAG structure (petgraph) |
+| `crates/zeph-orchestration/src/scheduler/mod.rs` | `DagScheduler`, tick loop |
+| `crates/zeph-orchestration/src/planner.rs` | `LlmPlanner`, goal decomposition |
+| `crates/zeph-orchestration/src/router.rs` | `AgentRouter`, 3-step fallback |
+| `crates/zeph-orchestration/src/aggregator.rs` | `LlmAggregator`, per-task token budget |
+| `crates/zeph-orchestration/src/command.rs` | `/plan` command parsing |
+| `crates/zeph-orchestration/src/graph.rs` | Internal graph utilities |
+| `crates/zeph-orchestration/src/error.rs` | `OrchestrationError` |
 
 ---
 
-`crates/zeph-core/src/orchestration/` (feature: `orchestration`) — DAG task planning and execution.
+`crates/zeph-orchestration/src/` (feature: `orchestration`) — DAG task planning and execution.
 
 ## Components
 
@@ -286,7 +286,7 @@ For `Hierarchical` topology: tasks are grouped into levels (depth layers). `DagS
 
 ```toml
 [orchestration]
-topology_selection = true  # opt-in
+topology_selection = false  # opt-in; default false (crates/zeph-config/src/experiment.rs)
 ```
 
 ### Key Invariants

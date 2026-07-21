@@ -67,12 +67,17 @@ trait Channel: Send {
 ```rust
 pub enum AnyChannel {
     Cli(CliChannel),
+    JsonCli(JsonCliChannel),
     Telegram(TelegramChannel),
     #[cfg(feature = "discord")] Discord(DiscordChannel),
     #[cfg(feature = "slack")]   Slack(SlackChannel),
-    #[cfg(feature = "tui")]     Tui(TuiChannel),
 }
 ```
+
+`TuiChannel` is **not** an `AnyChannel` variant — it implements `Channel` directly
+(`crates/zeph-tui/src/channel.rs`) and is used standalone in TUI mode, since TUI and the
+multi-channel dispatch path are mutually exclusive session modes (see
+[[001-system-invariants/spec#10. Concurrency & Safety Contract]]).
 
 - Macro dispatch: `dispatch_channel!(self, method, args...)`
 - **Only place** where multi-channel dispatch happens — no other dyn dispatch for channels
@@ -163,13 +168,24 @@ stream_interval_ms = 3000
 
 Epic #1978. `crates/zeph-channels/`, `crates/zeph-core/src/channel.rs`.
 
+> [!note] `AppChannel` correction — 2026-07 audit
+> This section previously referred to a type named `AppChannel` as the TUI's forwarding target.
+> No such type exists. `TuiChannel` (`crates/zeph-tui/src/channel.rs`) implements the `Channel`
+> trait directly and is used standalone in TUI mode — it is not a variant of `AnyChannel`
+> (`crates/zeph-channels/src/any.rs`, whose real variants are `Cli`, `JsonCli`, `Telegram`, and
+> the feature-gated `Discord`/`Slack`). "Forward every method" below applies to both dispatch
+> surfaces independently. Also note: the `Channel` trait has grown well beyond 16 methods since
+> this section was written (confirmed ~25 in `crates/zeph-core/src/channel.rs`) — the exact
+> current count and the "Methods That Must Be Forwarded" list need a full re-audit, not corrected
+> in this pass.
+
 ### Overview
 
-Channel feature parity ensures all `AnyChannel` variants and `AppChannel` forward every method defined in the `Channel` trait. Previously, four methods fell through to no-op trait defaults in some dispatch paths, silently dropping events. The parity initiative enforces full method forwarding and behavioral consistency across channels.
+Channel feature parity ensures all `AnyChannel` variants and `TuiChannel` forward every method defined in the `Channel` trait. Previously, four methods fell through to no-op trait defaults in some dispatch paths, silently dropping events. The parity initiative enforces full method forwarding and behavioral consistency across channels.
 
 ### Methods That Must Be Forwarded
 
-The `Channel` trait defines 16 methods. All must be explicitly dispatched in `AnyChannel` and `AppChannel`:
+The `Channel` trait defined 16 methods at the time this section was written (see the note above — the current count is higher). All must be explicitly dispatched in `AnyChannel` and `TuiChannel`:
 
 Previously dropped (CHAN-01 fix):
 - `send_thinking_chunk` — streams extended thinking tokens
@@ -177,7 +193,7 @@ Previously dropped (CHAN-01 fix):
 - `send_usage` — delivers token usage stats to channel
 - `send_tool_start` — notifies channel of tool execution start
 
-These four now have explicit dispatch in `AnyChannel` and `AppChannel`, matching the existing dispatch for `send`, `send_chunk`, `send_typing`, `send_status`, `send_tool_output`, `recv`, `supports_exit`, and others.
+These four now have explicit dispatch in `AnyChannel` and `TuiChannel`, matching the existing dispatch for `send`, `send_chunk`, `send_typing`, `send_status`, `send_tool_output`, `recv`, `supports_exit`, and others.
 
 ### Timeout Consistency (CHAN-02)
 
@@ -202,11 +218,11 @@ Discord channel registers slash commands (`/reset`, `/skills`, `/agent`) at star
 
 ### Key Invariants
 
-- `AnyChannel` `dispatch_channel!` macro must include ALL 16 `Channel` trait methods — no method may fall through to a default
+- `AnyChannel` `dispatch_channel!` macro must include ALL `Channel` trait methods — no method may fall through to a default
 - `CONFIRM_TIMEOUT` (30s) is the canonical timeout for all channel `confirm()` implementations — never hardcode different values per channel
 - Discord slash command registration is fire-and-forget — startup must not fail if registration fails
 - `send_thinking_chunk` must be forwarded even if the channel renders it as a no-op — the event must reach the channel impl
-- NEVER add a new `Channel` trait method without updating `AnyChannel`, `AppChannel`, and all channel implementations
+- NEVER add a new `Channel` trait method without updating `AnyChannel`, `TuiChannel`, and all channel implementations
 - Behavioral differences between channels (e.g. Telegram batching) are acceptable — method dropping is not
 
 ---

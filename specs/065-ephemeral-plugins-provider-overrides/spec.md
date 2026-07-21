@@ -201,4 +201,4 @@ Per project rules, all new functionality must wire up:
 | Feature A | `[[specs/079-plugins/spec]]` | Extends plugin system with ephemeral variant |
 | Feature A | `[[specs/010-security/spec]]` | Must comply with SSRF + path traversal guards |
 | Feature B | `[[specs/003-llm-providers/spec]]` | Extends provider persistence; `ProviderOverrides` is a new type in the provider config layer |
-| Feature B | `[[specs/021-config-loading/spec]]` | New `persist_provider_overrides` key follows existing config resolution rules |
+| Feature B | `[[020-config-loading/spec]]` | New `persist_provider_overrides` key follows existing config resolution rules |

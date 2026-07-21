@@ -63,15 +63,17 @@ A feature flag is **not** justified when:
 ### 3.1 Default Features
 
 ```toml
-default = ["scheduler", "sqlite", "profiling", "sandbox"]
+default = ["scheduler", "sqlite"]
 ```
 
 | Flag | Justification |
 |---|---|
 | `scheduler` | Pulls in `dep:zeph-scheduler`, `dep:cron`, `dep:schemars`, `dep:chrono` |
 | `sqlite` | Mutually exclusive with `postgres`; selects the SQLite backend in `zeph-db` |
-| `profiling` | Pulls in `dep:tracing-chrome`, `dep:chrono`, `dep:uuid`, `dep:sysinfo`; enables diagnostic tracing spans. Zero overhead when not actively tracing. |
-| `sandbox` | Pulls in `dep:landlock`, `dep:seccompiler` on Linux; macOS Seatbelt compiles unconditionally. Runtime-disabled by default (`tools.sandbox.enabled = false`). |
+
+> [!note]
+> `profiling` and `sandbox` are optional flags (see §3.2), not part of `default` — verified against
+> `Cargo.toml` `[features] default = [...]`. Both are included in the `full` bundle (§4) used by CI.
 
 **Removed from default (consolidated as always-on per §3.3):**
 
@@ -102,9 +104,23 @@ default = ["scheduler", "sqlite", "profiling", "sandbox"]
 | `sqlite` | `zeph-db/sqlite`, `zeph-memory/sqlite` | Mutually exclusive with `postgres` (also in default) |
 | `deep-link` | `zeph-common/deep-link`, `zeph-config/deep-link` | `zeph://` URI scheme registration/dispatch (spec #066); optional OS integration |
 | `session` | `dep:axum`, `dep:tokio-stream`, `zeph-common/http-middleware` | Session persistence + `zeph serve` mode (spec #068, new `zeph-session` crate); HTTP/SSE session API |
+| `profiling` | `dep:tracing-chrome`, `dep:sysinfo` (+ per-crate `profiling` propagation) | Diagnostic tracing spans and system metrics; zero overhead when not actively tracing |
+| `sandbox` | `zeph-tools/sandbox` (`dep:landlock`, `dep:seccompiler` on Linux; macOS Seatbelt compiles unconditionally) | Runtime-disabled by default (`tools.sandbox.enabled = false`) |
+| `prometheus` | `gateway`, `dep:prometheus-client`, `zeph-gateway/prometheus` | OpenMetrics `/metrics` endpoint (spec #036); requires `gateway` |
+| `gonka` | `zeph-llm/gonka`, `zeph-core/gonka` | gonka.ai inference provider (specs #051, #052) |
+| `cocoon` | `zeph-llm/cocoon`, `zeph-core/cocoon`, `zeph-tui?/cocoon` | Cocoon distributed compute provider (spec #055) |
+| `index` | `zeph-core/index` | AST-based code indexing (spec #017) |
+| `registry` | `zeph-plugins/registry` | Skill/plugin marketplace discovery client (spec #045) |
+| `testing` | `zeph-llm/testing` | Test-only provider harness helpers |
+| `bench` | `dep:zeph-bench` | Benchmark harness CLI (spec #034) |
 
 > [!note]
-> This table is not a complete enumeration of every flag in the root `Cargo.toml` — flags added since the §1 count was last taken (e.g. `prometheus`, `testing`, `bench`, `profiling-alloc`, `profiling-pyroscope`, `gonka`, `cocoon`, `index`) are not all listed here yet. Only `deep-link` and `session`, introduced in the same cycle that added specs #066/#068, are backfilled above; a full inventory reconciliation against `Cargo.toml`'s `[features]` block is tracked as follow-up work.
+> `prometheus`, `gonka`, `cocoon`, `index`, `registry`, `testing`, and `bench` were backfilled above
+> (2026-07 reconciliation pass against `Cargo.toml`'s `[features]` block). `profiling-alloc` and
+> `profiling-pyroscope` are still not individually documented here — both are thin variants of
+> `profiling` (`profiling-alloc = ["profiling", "zeph-core/profiling-alloc"]`,
+> `profiling-pyroscope = ["profiling", "otel", "dep:pprof"]`) and are omitted as low-risk; add rows
+> for them if either gains independent justification beyond extending `profiling`.
 
 ### 3.3 Always-On Capabilities (No Flag)
 
@@ -139,12 +155,12 @@ Bundles are the **only** mechanism for enabling groups of features. Do not instr
 
 | Bundle | Expands to | Target use case |
 |---|---|---|
-| `desktop` | `tui` | Local developer workstation with terminal UI |
+| `desktop` | `tui`, `deep-link`, `session` | Local developer workstation with terminal UI |
 | `ide` | `acp`, `acp-http` | IDE integration via Agent-Client Protocol |
-| `server` | `gateway`, `a2a`, `otel` | Headless server: webhook ingestion, A2A, telemetry |
+| `server` | `gateway`, `a2a`, `otel`, `prometheus`, `session` | Headless server: webhook ingestion, A2A, telemetry, metrics |
 | `chat` | `discord`, `slack` | Bot deployment on messaging platforms |
 | `ml` | `candle`, `pdf` | On-device ML inference and PDF memory |
-| `full` | `desktop`, `ide`, `server`, `chat`, `pdf`, `scheduler`, `classifiers` | CI, pre-merge checks, complete feature matrix |
+| `full` | `desktop`, `ide`, `server`, `chat`, `pdf`, `scheduler`, `classifiers`, `profiling`, `sandbox`, `gonka`, `cocoon`, `testing`, `registry` | CI, pre-merge checks, complete feature matrix |
 
 Bundle invariants:
 - `full` must activate every flag that is safe to combine (excluding `metal`, `cuda`, `postgres` — platform/exclusive).

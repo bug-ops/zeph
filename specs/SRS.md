@@ -216,11 +216,11 @@ Major functional areas:
 
 ### 2.5 Design and Implementation Constraints
 
-- Rust 1.94 (MSRV), Edition 2024; `unsafe_code = "deny"` workspace-wide.
+- Rust 1.97 (MSRV), Edition 2024; `unsafe_code = "deny"` workspace-wide.
 - Async: tokio; no `async-trait` crate in library crates.
 - TLS: rustls; `openssl-sys` banned.
 - Crate layering: `zeph-core` orchestrates all leaf crates; same-layer imports prohibited.
-- Feature flags: `default = []`; bundles (`desktop`, `ide`, `server`, `full`) for CI.
+- Feature flags: `default = ["scheduler", "sqlite"]`; bundles (`desktop`, `ide`, `server`, `full`) for CI.
 - Binary size: release binary ≤ 15 MiB.
 - No blocking I/O in async hot paths.
 
@@ -1096,7 +1096,7 @@ the TOML, THE SYSTEM SHALL produce sensible defaults and MUST NOT panic.
   without Qdrant or MCP servers.
 - **Security**: no plaintext secrets; blocklist gate before permission policy;
   SSRF protection; PII redaction.
-- **Maintainability**: 24-crate workspace with strict layered DAG; no same-layer
+- **Maintainability**: 32-crate workspace with strict layered DAG; no same-layer
   imports; comprehensive rustdoc for all `pub` items.
 
 ---

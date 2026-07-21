@@ -14,10 +14,20 @@ related:
   - "[[008-mcp/spec]]"
   - "[[008-2-discovery]]"
   - "[[008-3-security]]"
-  - "[[002-agent-loop]]"
+  - "[[002-agent-loop/spec]]"
 ---
 
 # Spec: MCP Server Lifecycle
+
+> [!danger] Stale content — 2026-07 audit
+> The "Startup Auto-Retry with Exponential Backoff (#3578)" section and most of the pseudocode below
+> (`McpConnection`, `JsonRpcTransport`, `Waiter`, `log::warn!`/`log::info!` calls) do not match the
+> real implementation and were not corrected in this pass (rewrite, not a text fix). Real code:
+> `crates/zeph-mcp/src/manager/{mod.rs,builder.rs,connect.rs,server.rs,retry.rs}`. Real retry config
+> fields are `startup_retry_backoff_ms`/`tool_timeout_secs` (see `[[008-mcp/spec]]`), not
+> `startup_retry_base_delay_ms`/`startup_retry_max_delay_ms`/`startup_retry_backoff_factor`/
+> `max_startup_retries` as stated below. `log::*` macros are banned project-wide (`tracing` only,
+> see `[[constitution]]` II/IV) — do not copy the logging calls in this file's pseudocode.
 
 Server startup/shutdown, connection management, stdio environment isolation, graceful cleanup.
 
@@ -264,10 +274,10 @@ allow_env_vars = ["PATH", "HOME", "RUST_LOG"]
 
 ## Integration Points
 
-- [[002-agent-loop]] — MCP servers initialized during agent startup
+- [[002-agent-loop/spec]] — MCP servers initialized during agent startup
 - [[008-2-discovery]] — Server capabilities discovered after initialization
 - [[008-3-security]] — Environment scrubbing occurs before spawn
-- [[010-security]] — Subprocess isolation enforced here
+- [[010-security/spec]] — Subprocess isolation enforced here
 
 ## See Also
 

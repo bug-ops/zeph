@@ -40,7 +40,7 @@ related:
 | AnyProvider enum | `crates/zeph-llm/src/any.rs` |
 | Message / MessagePart | `crates/zeph-llm/src/provider.rs` |
 | ToolExecutor trait | `crates/zeph-tools/src/executor.rs` |
-| Config struct | `crates/zeph-core/src/config/types/mod.rs` |
+| Config struct | `crates/zeph-config/src/root.rs` |
 | Feature flags | `Cargo.toml` |
 
 ---
@@ -158,7 +158,7 @@ file I/O in the agent loop.
 
 ## 8a. Provider Registry Contract
 
-`[[llm.providers]]` (`crates/zeph-config/src/providers.rs`) is the **single source of truth** for all LLM provider declarations:
+`[[llm.providers]]` (`crates/zeph-config/src/providers/` — `mod.rs`, `entry.rs`, `llm.rs`, `router.rs`, `thinking.rs`, `candle.rs`) is the **single source of truth** for all LLM provider declarations:
 
 - All providers are declared **once** in `[[llm.providers]]` with a `name` field; no other section duplicates provider credentials or model names
 - Subsystems that call LLMs reference a provider by name via a `*_provider` config field (e.g., `extract_provider = "fast"`)
@@ -177,7 +177,7 @@ See `.local/specs/022-config-simplification/spec.md` for the full schema and exa
 
 Feature flags (`Cargo.toml [features]`):
 
-- `default` includes features required for the standard CLI experience: database backend (`sqlite`), scheduler, task metrics, profiling instrumentation, and OS-level sandbox availability. See spec 029 §3.1 for the canonical list.
+- `default = ["scheduler", "sqlite"]` — the minimal set required for the standard CLI experience: cron scheduler and the SQLite database backend. Per-task CPU/wall-time metrics are an always-on capability (no flag, see spec 029 §3.3), not a default feature. See spec 029 §3.1 for the canonical list.
 - Default features must satisfy two criteria: (a) the feature gates a real optional dependency (not a pure behavioral marker), and (b) the feature has `Tested` status in coverage-status.md with no open P0/P1 issues.
 - **Always-on** (compiled in without feature flags): openai, compatible, orchestrator, router, self-learning, qdrant, vault-age, mcp
 - New optional crates: `dep:zeph-<name>` in the feature definition — never unconditionally import

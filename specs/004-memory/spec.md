@@ -46,6 +46,16 @@ specific areas, refer to the child specs below.
 | [[004-4-embeddings]] | Embedding Generation | Batch strategies, backfill, concurrent workers, TUI integration |
 | [[004-5-temporal-decay]] | Retention Scoring | Ebbinghaus forgetting curve, access frequency, decay-based eviction |
 | [[004-6-graph-memory]] | Graph Memory | Entity graph, BFS recall, MAGMA typed edges, SYNAPSE spreading activation, A-MEM link weights |
+| [[004-7-memory-apex-magma]] | APEX-MEM / MAGMA | Append-only edge log, ontology normalization, SYNAPSE conflict resolution; BeliefMem pre-commitment layer |
+| [[004-8-memory-typed-pages]] | ClawVM Typed Pages | `PageType` classification, minimum-fidelity invariants, compaction audit log |
+| [[004-9-memory-write-gate]] | MemReader Write Gate | Three-signal write quality scorer composed with A-MAC admission control |
+| [[004-13-memory-memcot]] | MemCoT | `SemanticStateAccumulator`, Zoom-In/Zoom-Out evidence localization and causal expansion |
+| [[004-16-memory-type-aware-retrieval]] | MemGuard Type-Aware Retrieval | `FunctionalType`-gated retrieval composition, `BehavioralRule` always-composed safety invariant |
+
+See also §"Sub-Specifications" below for [[004-10-memory-memmachine-retrieval]], [[004-11-memory-hela-mem]],
+[[004-12-memory-reasoning-bank]], [[004-14-memory-tiering-rfc-decision]],
+[[004-15-memory-skill-coevolution-rfc-decision]], [[004-16-shadow-memory-safety]],
+[[004-17-implicit-conflict-detection]], and [[004-18-five-signal-retrieval]].
 
 ---
 
@@ -71,8 +81,11 @@ SemanticMemory (Arc)
 
 ### Admission Control
 - Not all messages admitted to memory (noise filtering via A-MAC)
-- Six-factor scoring: recency, relevance, tool-use, entity-density, length, frequency
-- Frequency factor: entity mention count with temporal decay (ref. [[004-3-admission-control]])
+- Five-factor scoring (A-MAC paper, arXiv:2603.04549): `future_utility` (0.30, LLM-estimated reuse
+  probability), `factual_confidence` (0.15, inverse hedging heuristic), `semantic_novelty` (0.30,
+  1 − max similarity to top-3 neighbors), `temporal_recency` (0.10, always 1.0 at write time),
+  `content_type_prior` (0.15, message-role prior) — see [[004-3-admission-control]] for the full
+  model, including the superseded six-factor design it replaced (issue #4141)
 - Threshold-based gate: score < threshold → rejected (returns None)
 - Fail-open: admission error → admit message anyway
 
@@ -110,7 +123,7 @@ Memory is organized in three tiers; retrieval strategy adapts to query complexit
 - Search: all three tiers (working + episodic + semantic), aggregate by relevance
 - Outcome: highest recall, higher token cost
 
-Complexity classification via [[024-complexity-triage-routing]]; same signal applied to memory tier selection.
+Complexity classification via [[023-complexity-triage-routing/spec]]; same signal applied to memory tier selection.
 See [[004-14-memory-tiering-rfc-decision]] for design rationale.
 
 ---
@@ -135,7 +148,7 @@ Idle-time memory reorganization via clustering on co-occurrence patterns:
 - See [[004-11-memory-hela-mem]] §3.6 for details
 
 ### Future: MemQ Value Learning Path (RFC #4218, P3)
-When [[042-experiments]] framework matures:
+When [[041-experiments/spec]] framework matures:
 - Track `(memory_fact_id, retrieval_context) → outcome` tuples
 - Compute Q-values via temporal difference learning
 - High-Q facts promoted based on retrieval-context utility
@@ -228,6 +241,8 @@ When disabled, the prior `recall_semantic` path is used unchanged.
 | [[004-10-memory-memmachine-retrieval]] | MemMachine retrieval depth, query bias correction, episode preservation |
 | [[004-11-memory-hela-mem]] | HeLa-Mem Hebbian edge weights, consolidation, spreading activation |
 | [[004-12-memory-reasoning-bank]] | ReasoningBank distilled strategy memory, self-judge pipeline |
+| [[004-14-memory-tiering-rfc-decision]] | RFC #4217 decision: memory tiering architecture analysis |
+| [[004-15-memory-skill-coevolution-rfc-decision]] | RFC #4218 decision: memory–skill coevolution analysis |
 | [[004-16-shadow-memory-safety]] | Shadow Memory Safety — trajectory-level attack defense (MAGE, issue #3695) |
 | [[004-17-implicit-conflict-detection]] | Implicit Conflict Detection — STALE/CUPMem fuzzy predicate matching and propagation-aware SYNAPSE recall (issue #3702) |
 | [[004-18-five-signal-retrieval]] | Five-Signal Retrieval — access frequency, causal distance, novelty signals + async consolidation daemon (MemTier, issue #3703) |

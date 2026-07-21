@@ -63,9 +63,9 @@ specific areas, refer to the child specs below.
 ### Internal
 | File | Contents |
 |---|---|
-| `crates/zeph-core/src/vault/` | `VaultProvider`, age/env backends |
-| `crates/zeph-core/src/config/types/security.rs` | `SecurityConfig` |
-| `crates/zeph-tools/src/filter/security.rs` | `SecurityPatterns`, 17 regex patterns |
+| `crates/zeph-vault/src/{lib.rs,age.rs,env.rs}` | `VaultProvider` trait, age/env backends |
+| `crates/zeph-config/src/security.rs` | `SecurityConfig` |
+| `crates/zeph-tools/src/filter/security.rs` | Regex security pattern bank (free functions: `compile_extra_patterns`, `extract_security_lines`, `append_security_warnings`) |
 | `crates/zeph-gateway/src/transport/auth.rs` | BLAKE3 + `ct_eq` bearer auth |
 | `crates/zeph-acp/src/transport/auth.rs` | ACP bearer token auth |
 | `crates/zeph-acp/src/fs.rs` | `resolve_resource_link`, SSRF/path checks |
@@ -79,7 +79,7 @@ Multiple crates — security is cross-cutting.
 
 ## Vault (Secret Management)
 
-`crates/zeph-core/src/vault/` — backend abstraction for secrets:
+`crates/zeph-vault/` — backend abstraction for secrets:
 
 | Backend | Activation |
 |---|---|
@@ -226,7 +226,10 @@ auto-promotion and reload trust-assignment are out of scope for this default).
 ## IPI Defense: DeBERTa Soft-Signal, AlignSentinel, TurnCausalAnalyzer
 
 
-Three-layer indirect prompt injection (IPI) defense stack in `zeph-classifiers`:
+Three-layer indirect prompt injection (IPI) defense stack — classifiers in
+`crates/zeph-llm/src/classifier/` (`CandleClassifier`, `CandleThreeClassClassifier` for the
+three-class `AlignSentinel` model), turn-level analysis in `crates/zeph-sanitizer/src/causal_ipi.rs`
+(`TurnCausalAnalyzer`); there is no standalone `zeph-classifiers` crate:
 
 ### DeBERTa Soft-Signal
 

@@ -13,8 +13,7 @@ related:
   - "[[specs/063-worktree-subsystem/srs]]"
   - "[[specs/063-worktree-subsystem/nfr]]"
   - "[[specs/063-worktree-subsystem/plan]]"
-  - "[[specs/parity-claude-code-3918/spec]]"
-  - "[[specs/045-subagent-lifecycle/spec]]"
+  - "[[044-subagent-lifecycle/spec]]"
   - "[[constitution]]"
 ---
 
@@ -23,7 +22,10 @@ related:
 **GitHub:** #4655  
 **Branch:** `feat/4655-worktree-baseref-config`  
 **Crate:** `zeph-worktree` (new), `zeph-config` (extends), `zeph-subagent` (extends)  
-**Parent parity spec:** `[[specs/parity-claude-code-3918/spec]]` rows 40–41 (deferred)
+**Parent parity spec:** issue #3918 (Claude Code parity tracking), rows 40–41 (deferred). No
+`parity-claude-code-3918/spec.md` exists under `/specs/` as of the 2026-07 audit — this was likely
+a `.local/`-scoped working doc (e.g. the competitive-parity playbook) rather than a permanent spec;
+the wikilink is left unresolved pending confirmation of the correct target.
 
 ---
 

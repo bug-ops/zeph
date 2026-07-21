@@ -446,5 +446,5 @@ D1 is entirely deferred.
 - [[067-knowledge-ingest/plan]] — implementation plan, phases, risk register
 - [[004-memory/spec]] — memory subsystem
 - [[004-memory/004-9-memory-write-gate]] — write-quality gate (must not be bypassed)
-- [[041-sanitizer/spec]] — PII/exfiltration validators
+- [[040-sanitizer/spec]] — PII/exfiltration validators
 - [[001-system-invariants/spec]] — system contracts (INV-1 dependency direction)

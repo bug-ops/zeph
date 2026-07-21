@@ -28,7 +28,7 @@ related:
 > canonicalization; adds a SYNAPSE-side conflict resolution pass that deterministically
 > (or, optionally, via LLM) selects the authoritative value when multiple edges assert
 > conflicting values for the same `(subject, predicate)`. Resolves GitHub issue
-> [#3223](https://github.com/rabax/zeph/issues/3223).
+> [#3223](https://github.com/bug-ops/zeph/issues/3223).
 
 ## Sources
 
@@ -151,7 +151,7 @@ AND the result is accessible via the /graph TUI command without enabling any deb
 | FR-009 | The conflict resolver strategy SHALL be one of: `recency` (pick newest `valid_from`), `confidence` (pick highest `confidence`), `llm` (call `conflict_resolution_provider`) | must |
 | FR-010 | `llm` strategy SHALL respect a 500 ms timeout AND a per-turn budget `conflict_llm_budget_per_turn` (default 3 resolutions); on timeout or budget exhaustion fall back to `recency` | must |
 | FR-011 | WHEN conflict resolution drops an edge from the result set THE SYSTEM SHALL retain the dropped edge in a diagnostic "alternatives" field accessible via `/graph` tooling, not passed to the main LLM. Default `retain_alternatives_for_diagnostics = false` | should |
-| FR-012 | DB migration 042 SHALL be atomic (`BEGIN IMMEDIATE; … COMMIT;`); on failure the DB remains in the pre-042 state. Operations: (a) `ADD COLUMN supersedes`, (b) `ADD COLUMN canonical_relation`, (c) `ADD COLUMN cardinality` to ontology table if persisted, (d) backfill `canonical_relation = relation`, `supersedes = NULL`, (e) create partial index `idx_edges_head_active`, (f) **replace** (not drop) the pre-APEX uniqueness index with a new partial unique index restricted to the active head (see §3). `DROP INDEX` MUST NOT occur without a replacement constraint inside the same transaction | must |
+| FR-012 | DB migration 075 SHALL be atomic (`BEGIN IMMEDIATE; … COMMIT;`); on failure the DB remains in the pre-075 state. Operations: (a) `ADD COLUMN supersedes`, (b) `ADD COLUMN canonical_relation`, (c) `ADD COLUMN cardinality` to ontology table if persisted, (d) backfill `canonical_relation = relation`, `supersedes = NULL`, (e) create partial index `idx_edges_head_active`, (f) **replace** (not drop) the pre-APEX uniqueness index with a new partial unique index restricted to the active head (see §3). `DROP INDEX` MUST NOT occur without a replacement constraint inside the same transaction | must |
 | FR-013 | WHEN `[memory.graph.apex_mem]` is disabled THE SYSTEM SHALL behave as pre-APEX MAGMA: legacy `store.rs` write path honours the partial unique index on active heads (rollback-safe, see §3) | must |
 | FR-014 | Ontology entries SHALL carry a `cardinality` field in `{1, n}` defaulting to `n` (multi-valued) when unspecified. The `default.toml` SHALL explicitly mark cardinality-1 predicates (`works_at`, `lives_in`, `born_in`, `manages`) | must |
 | FR-015 | WHEN a write asserts a value byte-identical to the current head (same `target`, `relation`, `fact`, `edge_type`) THE SYSTEM SHALL insert a **reassertion event row** in the `edge_reassertions` table `(head_edge_id, asserted_at, episode_id, confidence)` instead of inserting a new edge; this preserves provenance without violating the immutability invariant (FR-002) | must |
@@ -167,7 +167,7 @@ AND the result is accessible via the /graph TUI command without enabling any deb
 | NFR-002 | Performance | Ontology resolution SHALL complete in < 1 ms for table hits; LLM fallback is bounded to 500 ms via timeout with a `recency` fallback ensuring no call blocks indefinitely |
 | NFR-003 | Performance | Conflict resolution via `recency` or `confidence` strategy SHALL complete in < 5 ms at p99 (SQL sort on indexed columns); `llm` strategy respects the 500 ms timeout with `recency` fallback |
 | NFR-004 | Performance | Head-of-chain query (`idx_edges_head_active` partial index) SHALL not degrade BFS or SYNAPSE latency by more than 5% vs. pre-APEX on benchmark fixtures with 100k edges |
-| NFR-005 | Reliability | DB migration 042 is atomic (`BEGIN IMMEDIATE; … COMMIT;`); a failed migration leaves the DB in pre-042 state with no half-applied columns or indexes |
+| NFR-005 | Reliability | DB migration 075 is atomic (`BEGIN IMMEDIATE; … COMMIT;`); a failed migration leaves the DB in pre-075 state with no half-applied columns or indexes |
 | NFR-006 | Reliability | Feature flag `enabled = false` is a safe runtime rollback — legacy write path satisfies both the old and new partial indexes without requiring a reverse migration |
 | NFR-007 | Reliability | `llm` conflict resolver and ontology fallback both fail to `recency` on timeout or error — no write or recall operation blocks on an LLM call |
 | NFR-008 | Maintainability | Ontology table is a plain TOML file with a documented schema; operators can add canonical mappings and reload without a process restart (`/graph ontology reload`) |
@@ -181,36 +181,36 @@ AND the result is accessible via the /graph TUI command without enabling any deb
 
 ## 5. Data Model Changes
 
-### Schema Migration (`042_apex_mem.sql`)
+### Schema Migration (`075_apex_mem.sql`)
 
 Wrapped in a single transaction (`BEGIN IMMEDIATE; … COMMIT;`). Either the DB lands
-fully on 042 or fully on 041; no half-migrated state.
+fully on 075 or fully on 074; no half-migrated state.
 
 ```sql
 BEGIN IMMEDIATE;
 
-ALTER TABLE edges ADD COLUMN supersedes INTEGER REFERENCES edges(id);
-ALTER TABLE edges ADD COLUMN canonical_relation TEXT;
+ALTER TABLE graph_edges ADD COLUMN supersedes INTEGER REFERENCES graph_edges(id);
+ALTER TABLE graph_edges ADD COLUMN canonical_relation TEXT;
 
 -- backfill phase 1: copy raw relation as canonical (idempotent)
-UPDATE edges SET canonical_relation = relation WHERE canonical_relation IS NULL;
+UPDATE graph_edges SET canonical_relation = relation WHERE canonical_relation IS NULL;
 
 -- replace the legacy active-head unique index WITHOUT an intermediate drop-only state.
 -- The old index 'uq_graph_edges_active' remains usable by rollback (enabled=false).
 -- The new partial index tightens uniqueness to the append-only head of chain.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_graph_edges_active_head
-  ON edges(source_entity_id, target_entity_id, canonical_relation, edge_type)
+  ON graph_edges(source_entity_id, target_entity_id, canonical_relation, edge_type)
   WHERE valid_to IS NULL AND expired_at IS NULL;
 
-CREATE INDEX IF NOT EXISTS idx_edges_supersedes ON edges(supersedes);
+CREATE INDEX IF NOT EXISTS idx_edges_supersedes ON graph_edges(supersedes);
 CREATE INDEX IF NOT EXISTS idx_edges_head_active
-  ON edges(source_entity_id, canonical_relation, edge_type, created_at DESC)
+  ON graph_edges(source_entity_id, canonical_relation, edge_type, created_at DESC)
   WHERE valid_to IS NULL AND expired_at IS NULL;
 
 -- reassertion events (FR-015)
 CREATE TABLE IF NOT EXISTS edge_reassertions (
     id             INTEGER PRIMARY KEY,
-    head_edge_id   INTEGER NOT NULL REFERENCES edges(id),
+    head_edge_id   INTEGER NOT NULL REFERENCES graph_edges(id),
     asserted_at    INTEGER NOT NULL,
     episode_id     TEXT,
     confidence     REAL NOT NULL
@@ -236,7 +236,7 @@ and lets ontology tuning take effect on the next `/graph ontology reload` withou
 schema churn.
 
 A secondary opt-in pass `migrate_canonical_relations(ontology)` is provided as a
-separate CLI subcommand (not part of 042) — it re-canonicalises legacy rows by
+separate CLI subcommand (not part of 075) — it re-canonicalises legacy rows by
 inserting new supersedes rows. Default is not to run it; users opt in after reviewing
 the ontology table. Documented as a known limitation: without this pass, pre-existing
 synonym edges remain under their raw predicates.
@@ -312,7 +312,7 @@ LLM-fallback entries that fail validation against the fresh table are evicted.
 - Conflict resolver runs only for cardinality-1 predicates; cardinality-n predicates pass all head edges through unchanged
 - `llm` strategy bounded by 500 ms timeout AND per-turn budget with `recency` fallback
 - Disabled feature flag bypasses all new code paths; legacy uniqueness index is retained so rollback is safe
-- Migration 042 is wrapped in `BEGIN IMMEDIATE; ... COMMIT;` — half-migrated state is impossible
+- Migration 075 is wrapped in `BEGIN IMMEDIATE; ... COMMIT;` — half-migrated state is impossible
 
 ### Ask First
 - Changing the default conflict strategy from `recency`
@@ -377,7 +377,7 @@ retain_alternatives_for_diagnostics = false   # opt-in; default off to save memo
 ## 9. Success Criteria
 
 - [ ] Property test: 10k random edge rewrites never produce a `supersedes` cycle
-- [ ] Migration 042 is idempotent (running twice leaves the DB byte-equivalent)
+- [ ] Migration 075 is idempotent (running twice leaves the DB byte-equivalent)
 - [ ] Disabling the flag reproduces pre-APEX behavior on an integration fixture
 - [ ] Default BFS returns only head edges (unit test with seeded superseded history)
 - [ ] `edge_history()` walks the chain in reverse chronological order
@@ -514,7 +514,7 @@ memory commands or external memory injection.
 - [[004-memory/spec]] — memory pipeline
 - [[012-graph-memory/spec]] — MAGMA + SYNAPSE (extended by this spec)
 - [[004-6-graph-memory]] — graph memory sub-spec
-- [[memory-write-gate/spec]] — upstream quality gate (contradiction_risk signal composes with APEX-MEM conflicts)
+- [[004-9-memory-write-gate]] — upstream quality gate (contradiction_risk signal composes with APEX-MEM conflicts)
 - [[024-multi-model-design/spec]] — provider tier guidance
 - [[MOC-specs]] — all specifications
 

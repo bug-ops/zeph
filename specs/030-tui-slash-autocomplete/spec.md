@@ -8,7 +8,7 @@ tags:
   - tui
   - ui
 created: 2026-04-04
-status: draft
+status: approved
 related:
   - "[[MOC-specs]]"
   - "[[011-tui/spec]]"
@@ -304,7 +304,7 @@ crates/zeph-tui/src/widgets/slash_autocomplete.rs   — SlashAutocompleteState s
 ### Modified files
 
 ```
-crates/zeph-tui/src/app.rs
+crates/zeph-tui/src/app/
     — add field: slash_autocomplete: Option<SlashAutocompleteState>
     — add method: handle_slash_autocomplete_key(&mut self, key: KeyEvent)
     — modify handle_insert_key: delegate to handle_slash_autocomplete_key when active
@@ -313,7 +313,7 @@ crates/zeph-tui/src/app.rs
 crates/zeph-tui/src/widgets/mod.rs
     — pub mod slash_autocomplete;
 
-crates/zeph-tui/src/app.rs (render section)
+crates/zeph-tui/src/app/ (render section)
     — render slash_autocomplete popup after input bar, before command_palette
 ```
 
@@ -432,6 +432,6 @@ None. All design decisions are resolved in this spec.
 
 - `crates/zeph-tui/src/command.rs` — `CommandEntry`, `filter_commands`, `fuzzy_score`
 - `crates/zeph-tui/src/widgets/command_palette.rs` — `CommandPaletteState` pattern to follow
-- `crates/zeph-tui/src/app.rs` — `handle_insert_key`, `handle_palette_key`, modal routing
+- `crates/zeph-tui/src/app/` — `handle_insert_key`, `handle_palette_key`, modal routing
 - `.local/specs/011-tui/spec.md` — TUI architecture, Spinner Rule
 - `.local/specs/constitution.md` — project-wide constraints

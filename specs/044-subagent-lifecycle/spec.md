@@ -465,7 +465,17 @@ interleaves two different JSON schemas on stdout — unsupported for now; use `-
 
 ---
 
-## 15. Delegation Mode Gate (spec `042-subagent-delegation-mode-parity`, issue #5857)
+## 15. Delegation Mode Gate (issue #5857)
+
+> [!note] Broken cross-reference — 2026-07 audit
+> This section previously cited a companion spec `042-subagent-delegation-mode-parity`. No such
+> spec exists in `/specs/` — `042` is already assigned to
+> [[042-zeph-commands/spec|Slash Command Registry]], and no directory matching
+> `*-subagent-delegation-mode-parity` exists anywhere under `/specs/`. Either the companion spec
+> was never created or was misnumbered at authoring time. The motivation is summarized inline
+> below instead of via a dangling link; if a dedicated spec for delegation-mode parity across
+> subsystems is still wanted, it should be filed as a new numbered spec (follow-up, not created in
+> this corrective pass).
 
 ### Problem
 
@@ -473,7 +483,7 @@ Prior to this addition, `SubAgentConfig.enabled: bool` was the only lever govern
 spawning, and it was **inert** — no code path actually read it. An operator had no way to keep
 the sub-agent subsystem enabled and useful while forbidding the main agent from autonomously
 deciding to spawn one (e.g. in a semi-trusted channel where prompt-injected input could reach
-the agent) — see `[[042-subagent-delegation-mode-parity/spec]]` for the full motivation.
+the agent).
 
 ### Mechanism
 
@@ -537,7 +547,7 @@ so it remains permitted under `explicit_request_only` and `proactive`).
 
 ---
 
-## 10. See Also
+## 16. See Also
 
 - [[constitution]] — project principles
 - [[002-agent-loop/spec]] — parent agent loop that uses `SubAgentManager`

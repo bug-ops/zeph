@@ -10,7 +10,7 @@ tags:
   - graph
   - experimental
 created: 2026-05-18
-status: draft
+status: implemented
 related:
   - "[[MOC-specs]]"
   - "[[constitution]]"
@@ -27,7 +27,7 @@ related:
 > detection via fuzzy predicate matching and propagation-aware SYNAPSE recall that
 > resolves conflicting beliefs before returning fact sets to the agent.
 > Addresses the gap identified in STALE benchmark (arXiv:2605.06527) and tracked
-> in GitHub issue [#3702](https://github.com/rabax/zeph/issues/3702).
+> in GitHub issue [#3702](https://github.com/bug-ops/zeph/issues/3702).
 
 ## Sources
 
@@ -198,8 +198,8 @@ AND a log entry records: pair_ids, resolution_strategy, resolved_at, outcome
 ```sql
 CREATE TABLE IF NOT EXISTS implicit_conflict_candidates (
     id              INTEGER PRIMARY KEY,
-    edge_a_id       INTEGER NOT NULL REFERENCES edges(id),
-    edge_b_id       INTEGER NOT NULL REFERENCES edges(id),
+    edge_a_id       INTEGER NOT NULL REFERENCES graph_edges(id),
+    edge_b_id       INTEGER NOT NULL REFERENCES graph_edges(id),
     similarity      REAL    NOT NULL,
     method          TEXT    NOT NULL,  -- "levenshtein" | "embedding" | "both"
     status          TEXT    NOT NULL DEFAULT 'pending',
@@ -222,7 +222,7 @@ stored in `implicit_conflict_candidates` with foreign keys to edge ids.
 
 ### Database migration
 
-Migration `047_implicit_conflict_candidates.sql` — creates the staging table above.
+Migration `090_implicit_conflict_candidates.sql` — creates the staging table above.
 Wrapped in `BEGIN IMMEDIATE; ... COMMIT;` per constitution.
 
 ---
@@ -363,7 +363,7 @@ AND SYNAPSE results contain no is_implicit_conflict annotations
   `graph.implicit_conflict.enabled = true` and `consolidation_daemon.enabled = true`.
   It shares the `ConsolidationTask` infrastructure introduced by HeLa-Mem
   [[004-11-memory-hela-mem]] to avoid duplicating scheduler registration boilerplate.
-- Migration 047 is separate from APEX-MEM migration 042; both can be applied independently.
+- Migration 090 is separate from APEX-MEM migration 075; both can be applied independently.
 
 ---
 

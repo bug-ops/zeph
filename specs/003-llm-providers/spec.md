@@ -44,12 +44,12 @@ related:
 |---|---|
 | `crates/zeph-llm/src/provider.rs` | `LlmProvider` trait, `Message`, `MessagePart`, `ChatResponse` |
 | `crates/zeph-llm/src/any.rs` | `AnyProvider` enum dispatch |
-| `crates/zeph-llm/src/claude.rs` | Claude impl, `split_system_into_blocks`, prompt caching |
-| `crates/zeph-llm/src/openai.rs` | OpenAI impl |
+| `crates/zeph-llm/src/claude/mod.rs` | Claude impl, `split_system_into_blocks`, prompt caching |
+| `crates/zeph-llm/src/openai/mod.rs` | OpenAI impl |
 | `crates/zeph-llm/src/ollama.rs` | Ollama impl |
 | `crates/zeph-llm/src/compatible.rs` | OpenAI-compatible HTTP impl |
-| `crates/zeph-llm/src/gemini.rs` | Gemini impl |
-| `crates/zeph-llm/src/orchestrator.rs` | Multi-provider routing, Thompson Sampling, EMA |
+| `crates/zeph-llm/src/gemini/mod.rs` | Gemini impl |
+| `crates/zeph-llm/src/router/` (`thompson.rs`, `reputation.rs`, `builder.rs`, `config.rs`) | Multi-provider routing, Thompson Sampling, EMA reputation |
 
 ---
 
@@ -79,7 +79,9 @@ trait LlmProvider: Send + Sync {
 Runtime dispatch — no `Box<dyn LlmProvider>` in hot paths:
 
 ```
-AnyProvider { Claude, OpenAI, Ollama, Compatible, Candle, Gemini }
+AnyProvider { Ollama, Claude, OpenAi, Gemini, Candle (feature "candle"),
+              Compatible, Router(Box<RouterProvider>), Triage(Box<TriageRouter>),
+              Gonka (feature "gonka"), Cocoon (feature "cocoon") }
 ```
 
 ## Implementations
@@ -133,7 +135,7 @@ The `prompt_cache_ttl` field defaults to `None` (interpreted as `ephemeral`). Sp
 
 ## Orchestrator
 
-`crates/zeph-llm/src/orchestrator.rs` — multi-provider routing:
+`crates/zeph-llm/src/router/` (`RouterProvider`, `thompson.rs`, `reputation.rs`) — multi-provider routing:
 
 - **Rule-based routing**: match provider by name pattern, task type, or cost threshold
 - **Thompson Sampling router**: Beta-distribution exploration/exploitation for model selection

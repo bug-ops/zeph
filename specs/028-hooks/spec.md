@@ -37,7 +37,7 @@ related:
 ## Overview
 
 Reactive hooks allow operators to run shell commands or invoke MCP tools in response to
-agent lifecycle events. Five event types are supported:
+agent lifecycle events. Six event types are supported:
 
 | Event | Trigger |
 |---|---|

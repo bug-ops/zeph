@@ -1,7 +1,6 @@
 ---
 aliases:
   - MCP Security
-  - MCP Elicitation
   - OAP Authorization
   - SMCP Secure MCP
 tags:
@@ -17,11 +16,23 @@ related:
   - "[[008-mcp/spec]]"
   - "[[008-1-lifecycle]]"
   - "[[008-2-discovery]]"
-  - "[[010-security]]"
+  - "[[010-security/spec]]"
   - "[[010-3-authorization]]"
 ---
 
 # Spec: MCP Security & OAP Authorization
+
+> [!danger] Stale content — 2026-07 audit
+> Most of this file (Elicitation Phases pseudocode, `InjectionDetector`/`DeBERTaClassifier`,
+> `OAPPolicy`, `SmcpEnvelope`) does not match the real implementation and was not corrected in this
+> pass (rewrite, not a text fix) — none of `OAPPolicy`, `SmcpEnvelope`, `InjectionDetector`,
+> `DeBERTaClassifier` exist in the codebase. Real analogues: `ContentSanitizer`,
+> `ExfiltrationGuard`, `RiskChainAccumulator` (`crates/zeph-sanitizer/`), `CandleClassifier`/
+> `CandlePiiClassifier` (`crates/zeph-llm/src/classifier/`). Elicitation itself is accurately
+> documented in [[008-4-elicitation]] — treat that file as authoritative for elicitation, not the
+> "Elicitation Phases" section below. The top `## Key Invariants` block (Untrusted/tool_allowlist/
+> allow_untrusted_without_allowlist fail-closed behavior) reads as accurate and should be preserved
+> when this file is rewritten.
 
 Elicitation phases, injection detection, OAP (Org-Aware Permission) authorization, SMCP secure protocol.
 
@@ -284,14 +295,14 @@ capability = "PublicRead"
 
 - [[008-1-lifecycle]] — Security checks during subprocess spawning
 - [[008-2-discovery]] — Tool descriptions scanned for injection before caching
-- [[010-security]] — Parent security spec; refers to injection defense
+- [[010-security/spec]] — Parent security spec; refers to injection defense
 - [[010-3-authorization]] — OAP policy enforcement
-- [[025-classifiers]] — DeBERTa-backed injection detection
+- [[025-classifiers/spec]] — DeBERTa-backed injection detection
 
 ## See Also
 
 - [[008-mcp/spec]] — Parent
 - [[008-1-lifecycle]] — Server lifecycle where security starts
 - [[008-2-discovery]] — Tool discovery with injection scanning
-- [[010-security]] — Cross-cutting security constraints
+- [[010-security/spec]] — Cross-cutting security constraints
 - [[010-3-authorization]] — OAP authorization policies

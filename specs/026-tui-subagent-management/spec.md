@@ -293,6 +293,6 @@ forwarding is disabled.
 - `011-tui/spec.md` — TUI invariants (spinner rule, no blocking I/O, resize handling)
 - `009-orchestration/spec.md` — DAG scheduler, task states, plan view
 - `crates/zeph-tui/src/widgets/subagents.rs` — existing sidebar widget (render-only)
-- `crates/zeph-subagent/src/manager.rs` — `SubAgentManager`, `SubAgentStatus`, `SubAgentHandle`
+- `crates/zeph-subagent/src/manager/mod.rs` — `SubAgentManager`, `SubAgentStatus`, `SubAgentHandle`
 - `crates/zeph-subagent/src/transcript.rs` — `TranscriptReader`, `TranscriptEntry`
 - `crates/zeph-core/src/metrics.rs` — `SubAgentMetrics`, `MetricsSnapshot`

@@ -880,7 +880,7 @@ Enabling `group_structured = true` changes the LLM prompt format in Block 3. Thi
 - Default `group_structured = false` preserves existing behaviour for all existing configs — no migration required.
 - No new database tables or storage migrations are needed — grouping is stateless and computed per-turn.
 - `format_skills_prompt()` in `crates/zeph-skills/src/prompt.rs` requires a signature change to accept `SkillGroup` input. The existing flat-list overload must be retained (or a compatibility wrapper provided) for the `group_structured = false` path.
-- `SkillState::rebuild_prompt` in `crates/zeph-core/src/agent/state/skill.rs` must route to the new group-aware formatter when `group_structured = true`.
+- `Agent::rebuild_system_prompt` (`crates/zeph-core/src/agent/mod.rs`; `SkillState` itself is defined in `crates/zeph-core/src/agent/state/mod.rs`) must route to the new group-aware formatter when `group_structured = true`.
 
 ### Future Consideration: Toward Explicit Skill Dependencies
 

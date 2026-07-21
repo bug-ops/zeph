@@ -11,7 +11,7 @@ tags:
   - context
   - experimental
 created: 2026-04-19
-status: draft
+status: implemented
 related:
   - "[[MOC-specs]]"
   - "[[constitution]]"
@@ -27,7 +27,7 @@ related:
 > Classifies every context segment into a typed "page" with a per-type minimum-fidelity
 > invariant enforced at every compaction boundary. Replaces the current untyped
 > truncation/summarization pipeline in `zeph-context` with a page-aware compactor.
-> Resolves GitHub issue [#3221](https://github.com/rabax/zeph/issues/3221).
+> Resolves GitHub issue [#3221](https://github.com/bug-ops/zeph/issues/3221).
 
 ## Sources
 

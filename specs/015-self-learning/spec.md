@@ -31,14 +31,14 @@ related:
 ### Internal
 | File | Contents |
 |---|---|
-| `crates/zeph-core/src/agent/feedback_detector.rs` | `FeedbackDetector`, `JudgeDetector`, `CorrectionSignal`, `CorrectionKind` |
+| `crates/zeph-agent-feedback/src/lib.rs` | `FeedbackDetector`, `JudgeDetector`, `CorrectionSignal`, `CorrectionKind` |
 | `crates/zeph-skills/src/trust_score.rs` | `posterior_weight` (Wilson score), `rerank` |
 | `crates/zeph-skills/src/evolution.rs` | `SkillMetrics`, `SkillEvaluation`, self-improvement |
 | `crates/zeph-skills/src/registry.rs` | BM25 index, hybrid search, `max_active_skills` |
 
 ---
 
-`crates/zeph-skills/src/`, `crates/zeph-core/src/agent/feedback_detector.rs` — feedback detection, skill ranking, trust model.
+`crates/zeph-skills/src/`, `crates/zeph-agent-feedback/src/lib.rs` — feedback detection, skill ranking, trust model.
 
 ## Feedback Detection (Two Paths)
 
@@ -139,7 +139,7 @@ Per-provider EMA (exponential moving average) latency:
 
 ## Multi-Language FeedbackDetector
 
-Issue #1424. `crates/zeph-core/src/agent/feedback_detector.rs`.
+Issue #1424. `crates/zeph-agent-feedback/src/lib.rs`.
 
 ### Overview
 

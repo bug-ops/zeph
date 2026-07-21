@@ -8,7 +8,7 @@ tags:
   - benchmarking
   - testing
 created: 2026-04-08
-status: draft
+status: approved
 related:
   - "[[MOC-specs]]"
 ---
@@ -303,7 +303,10 @@ zeph bench show --results <path>
 
 ## 13. Layer Placement
 
-`zeph-bench` is a **Layer 4 consumer** (same tier as `zeph-channels`, `zeph-tui`):
+`zeph-bench` is a **Special** crate per [[constitution#I. Architecture]] ("feature-gated, no
+mandatory deps") — it depends on `zeph-core` (a Layer 4 orchestrator) and other crates spanning
+multiple layers, which is atypical for the Layer 0–5 DAG and is why it is excluded from that DAG
+rather than assigned a specific layer number:
 - Depends on: `zeph-core` (Channel trait, Agent), `zeph-memory` (per-scenario `SemanticMemory`
   instance backed by a fresh `SQLite` file), `zeph-llm` (provider override), `zeph-config`
   (provider registry)

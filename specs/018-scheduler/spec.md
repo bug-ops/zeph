@@ -167,7 +167,7 @@ Zeph's RTW-A defense implements four mechanisms active when `rtwa_enabled = true
 |---|---|
 | **Mech1 (Write-then-read quarantine)** | A task added via the control channel in the same tick is quarantined and does not fire that tick. |
 | **Mech2 (Trust gate)** | Only tasks with `provenance = "static"` or `"user_added"` may run custom prompts. External tasks (`provenance = "external"`) are suppressed. |
-| **Mech3 (Injection scan)** | Task prompt scanned via `sanitize_task_prompt` before execution. Matched injection patterns block the task with `SchedulerError::InjectionBlocked`. |
+| **Mech3 (Injection scan)** | Task prompt scanned via `sanitize_task_prompt` before execution. Matched injection patterns block the task with `SchedulerError::PromptInjectionBlocked`. |
 | **Mech4 (External-read suppression)** | When the tick reads from an external source, tasks with `"external"` provenance suppress their custom prompt for that tick. |
 
 ### Provenance Field
@@ -190,6 +190,6 @@ RTW-A defense is enabled by default. Pass `Scheduler::with_rtwa(false)` to disab
 
 - Mech1 applies only within a single tick — a task added in tick N is eligible to fire from tick N+1
 - Mech3 injection scan MUST run before task prompt is passed to the agent `message_queue`
-- `SchedulerError::InjectionBlocked` and `SchedulerError::TaskQuarantined` are distinct variants
+- `SchedulerError::PromptInjectionBlocked` and `SchedulerError::TaskQuarantined` are distinct variants
 - NEVER fire a task with `provenance = "external"` custom prompt during an external-read tick (Mech4)
 - `adversarial_policy_bypass` in `list_tasks` responses is blocked — task listing enforces the same policy filter as execution (commit #4536)

@@ -10,7 +10,7 @@ status: approved
 spec_id: "066"
 related:
   - "[[013-acp/spec]]"
-  - "[[044-zeph-common/spec]]"
+  - "[[043-zeph-common/spec]]"
   - "[[001-system-invariants/spec]]"
   - "[[010-security/spec]]"
 ---

@@ -30,7 +30,7 @@ related:
 > semantic relevance), and introduces an async consolidation daemon that promotes
 > high-utility episodic facts to the semantic layer.
 > Based on MemTier analysis (arXiv:2605.03675). Tracked in GitHub issue
-> [#3703](https://github.com/rabax/zeph/issues/3703).
+> [#3703](https://github.com/bug-ops/zeph/issues/3703).
 
 ## Sources
 
@@ -227,7 +227,7 @@ ALTER TABLE messages ADD COLUMN memory_tier TEXT DEFAULT 'episodic';
 ALTER TABLE messages ADD COLUMN qdrant_promoted INTEGER DEFAULT 0;  -- boolean
 ```
 
-Database migration: `048_five_signal_retrieval.sql` — adds `fact_access_log` table,
+Database migration: `091_five_signal_retrieval.sql` — adds `fact_access_log` table,
 alters `messages` table. Wrapped in `BEGIN IMMEDIATE; ... COMMIT;`.
 
 ---
@@ -368,8 +368,8 @@ AND SYNAPSE latency is indistinguishable from the pre-spec baseline
 - PPO-based weight adaptation (MemTier §5) is deferred to `zeph-experiments` as a
   follow-on enhancement. The weight config section is designed to accept automated
   updates from the experiments framework without schema changes.
-- Database migration 048 is independent of APEX-MEM migration 042 and CUPMem migration
-  047; all three can be applied in any order.
+- Database migration 091 is independent of APEX-MEM migration 075 and CUPMem migration
+  090; all three can be applied in any order.
 
 ---
 
@@ -401,7 +401,6 @@ Key implementation details:
 
 - `SemanticMemory::with_five_signal()` wires the `FiveSignalRuntime` into `recall_merge_and_rank`
 - Five-signal scoring runs as a post-processing step after Qdrant and SQLite candidate retrieval
-- `TrajectoryRiskAccumulator` and `ImplicitConflictDetector` implemented in commits #4386, #4408
 - Consolidation daemon wired into `zeph-scheduler` and A* node cap added (commits #4377, #4418)
 - Prometheus metrics exported: `five_signal_recall_total`, consolidation counters (commit #4418)
 - `mage_accumulator` config properly wired in agent builder (commit #4428)

@@ -8,8 +8,8 @@ tags:
 created: 2026-04-27
 status: permanent
 related:
-  - "[[049-agent-decomposition]]"
-  - "[[002-agent-loop]]"
+  - "[[049-agent-decomposition/spec]]"
+  - "[[002-agent-loop/spec]]"
 ---
 
 # TurnContext Value Type

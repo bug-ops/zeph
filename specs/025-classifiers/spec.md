@@ -24,16 +24,17 @@ related:
 
 ## Overview
 
-`zeph-classifiers` (feature: `classifiers`, implies `candle`) — Candle-backed ML classifiers for injection detection and PII detection. All classifiers are lazy-loaded on first use and cached for the session.
+Candle-backed ML classifiers for injection detection and PII detection (feature: `classifiers`, implies `candle`). There is no standalone `zeph-classifiers` crate — the classifier infrastructure lives in `crates/zeph-llm/src/classifier/` and is consumed by `zeph-sanitizer`'s `ContentSanitizer`. All classifiers are lazy-loaded on first use and cached for the session.
 
 ## Sources
 
 | File | Contents |
 |---|---|
-| `crates/zeph-classifiers/src/classifier.rs` | `ClassifierBackend` trait, `CandleClassifier` |
-| `crates/zeph-classifiers/src/pii.rs` | `CandlePiiClassifier`, `PiiDetector` trait |
-| `crates/zeph-classifiers/src/sanitizer.rs` | `ContentSanitizer::classify_injection()`, `detect_pii()` |
-| `crates/zeph-classifiers/src/llm.rs` | `LlmClassifier` wrapping `AnyProvider` |
+| `crates/zeph-llm/src/classifier/mod.rs` | `ClassifierBackend` trait (injection), `PiiDetector` trait, shared types (`PiiSpan`, `PiiResult`, `ClassificationResult`, `NerSpan`) |
+| `crates/zeph-llm/src/classifier/candle.rs` | `CandleClassifier` — injection detection implementation |
+| `crates/zeph-llm/src/classifier/candle_pii.rs` | `CandlePiiClassifier` — PII detection implementation |
+| `crates/zeph-llm/src/classifier/llm.rs` | `LlmClassifier` wrapping `AnyProvider`, returns `FeedbackVerdict` |
+| `crates/zeph-sanitizer/src/sanitizer.rs` | `ContentSanitizer::classify_injection()`, `detect_pii()`, `sanitize()` — consumes the classifiers above |
 
 ## ClassifierBackend Trait
 
@@ -85,10 +86,12 @@ enabled = false
 pii_enabled = false
 pii_threshold = 0.75
 
-[self_learning]
+[skills.learning]
 detector_mode = "model"       # "model" uses LlmClassifier
 feedback_provider = "fast"    # named provider reference
 ```
+
+See [[015-self-learning/spec]] for the full `LearningConfig` schema (`crates/zeph-config/src/learning.rs`, nested under `SkillsConfig.learning`).
 
 `--migrate-config` adds `[classifiers]` section with `enabled = false` to existing configs.
 
@@ -103,9 +106,11 @@ zeph classifiers download --model pii|injection|all
 
 The ML injection classifier (DeBERTa) is bypassed for outputs from internal Zeph tools that produce only Zeph-generated text (#3384, #3394, #3396). The pattern-based sanitizer continues to run on these outputs for telemetry purposes.
 
-**Bypassed tool names** (exact match on unnamespaced tool name):
-`invoke_skill`, `load_skill`, `memory_save`, `memory_search`, `compress_context`,
-`complete_focus`, `start_focus`, `schedule_periodic`, `schedule_deferred`, `cancel_task`
+**Bypassed tool names** (exact match on unnamespaced tool name, `INTERNAL_TOOLS` in
+`crates/zeph-core/src/agent/tool_execution/sanitize.rs`):
+`bash`, `shell`, `invoke_skill`, `load_skill`, `memory_save`, `memory_search`,
+`compress_context`, `request_compaction`, `complete_focus`, `start_focus`,
+`schedule_periodic`, `schedule_deferred`, `cancel_task`
 
 **Adversarial-MCP guard**: colon-namespaced tool names (e.g. `server:invoke_skill`) are NEVER matched against the bypass allowlist — only bare names qualify. This prevents a malicious MCP server from registering a tool named `server:invoke_skill` to escape ML classification.
 

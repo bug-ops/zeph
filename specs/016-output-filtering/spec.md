@@ -31,7 +31,7 @@ related:
 |---|---|
 | `crates/zeph-tools/src/filter/mod.rs` | `OutputFilterRegistry`, `FilterPipeline`, `CommandMatcher`, `FilterMetrics` |
 | `crates/zeph-tools/src/filter/security.rs` | `SecurityPatterns`, 17 `LazyLock<Regex>` |
-| `crates/zeph-tools/src/filter/declarative.rs` | Per-filter TOML config structs |
+| `crates/zeph-tools/src/filter/declarative/mod.rs` | Per-filter TOML config structs |
 
 ---
 

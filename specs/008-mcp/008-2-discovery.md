@@ -16,10 +16,22 @@ related:
   - "[[008-mcp/spec]]"
   - "[[008-1-lifecycle]]"
   - "[[008-3-security]]"
-  - "[[006-tools]]"
+  - "[[006-tools/spec]]"
 ---
 
 # Spec: MCP Tool Discovery & Pruning
+
+> [!danger] Stale content — 2026-07 audit
+> The "Per-Message Tool Pruning" (`ToolPruningCache`) and "Tool Embedding Precomputation" sections
+> below do not match the real implementation and were not corrected in this pass (rewrite, not a
+> text fix). Real pruning cache is `PruningCache` (`crates/zeph-mcp/src/pruning.rs`) — a single-slot
+> cache keyed on `(message_content_hash, tool_list_hash)` that selects tools via an **LLM call**, not
+> embedding/dot-product ranking as described below. Real collision detection is
+> `detect_collisions::<S: BuildHasher>` / `ToolCollision` (`crates/zeph-mcp/src/tool.rs`) plus
+> `log_tool_collisions` (`crates/zeph-mcp/src/manager/connect.rs`). `log::warn!` calls in the
+> pseudocode below are banned project-wide (`tracing` only, see `[[constitution]]` II/IV).
+> The `[mcp.discovery]` config block (`pruning_enabled`/`top_k_tools`/`cache_size`/`collision_mode`)
+> is unverified and likely stale given the cache design mismatch above.
 
 Semantic tool discovery, per-message pruning cache, collision detection, tool filtering.
 
@@ -217,12 +229,12 @@ collision_mode = "disambiguate"  # or "error", "first"
 
 - [[008-1-lifecycle]] — Tool discovery runs after server startup
 - [[008-3-security]] — Pruning cache prevents tool injection via descriptions
-- [[006-tools]] — Pruned tool subset sent to ToolExecutor
-- [[003-llm-providers]] — Embedding provider used for semantic filtering
+- [[006-tools/spec]] — Pruned tool subset sent to ToolExecutor
+- [[003-llm-providers/spec]] — Embedding provider used for semantic filtering
 
 ## See Also
 
 - [[008-mcp/spec]] — Parent
 - [[008-1-lifecycle]] — Server initialization
 - [[008-3-security]] — Injection defense during pruning
-- [[006-tools]] — Tool execution after pruning
+- [[006-tools/spec]] — Tool execution after pruning

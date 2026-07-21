@@ -39,10 +39,10 @@ related:
 
 | File | Contents |
 |---|---|
-| `crates/zeph-memory/src/memcot/mod.rs` | Module root; `MemCotRecall` entry point |
-| `crates/zeph-memory/src/memcot/accumulator.rs` | `SemanticStateAccumulator` — per-turn state tracking |
-| `crates/zeph-memory/src/memcot/zoom.rs` | `zoom_in()` and `zoom_out()` retrieval views |
-| `crates/zeph-memory/src/memcot/config.rs` | `MemCotConfig` TOML bindings |
+| `crates/zeph-core/src/agent/memcot/mod.rs` | Module root; `MemCotRecall` entry point |
+| `crates/zeph-core/src/agent/memcot/accumulator.rs` | `SemanticStateAccumulator` — per-turn state tracking |
+| `crates/zeph-core/src/agent/memcot/metrics.rs` | MemCoT metrics |
+| `crates/zeph-memory/src/recall_view.rs` | `zoom_in()` and `zoom_out()` retrieval views (no separate `zoom.rs`/`config.rs`) |
 
 ---
 

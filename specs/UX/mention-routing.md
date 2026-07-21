@@ -11,10 +11,10 @@ tags:
 created: 2026-04-24
 status: research
 related:
-  - "[[028-hooks/spec.md]]"
-  - "[[014-a2a/spec.md]]"
-  - "[[013-acp/spec.md]]"
-  - "[[011-tui/spec.md]]"
+  - "[[028-hooks/spec]]"
+  - "[[014-a2a/spec]]"
+  - "[[013-acp/spec]]"
+  - "[[011-tui/spec]]"
 ---
 
 # @agent Mention Routing — Research Spec (#3327)

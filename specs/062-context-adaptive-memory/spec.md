@@ -13,10 +13,10 @@ tags:
 created: 2026-05-28
 status: approved
 related:
-  - "[[022-zeph-context]]"
-  - "[[004-memory]]"
-  - "[[009-orchestration]]"
-  - "[[044-zeph-common]]"
+  - "[[021-zeph-context/spec]]"
+  - "[[004-memory/spec]]"
+  - "[[009-orchestration/spec]]"
+  - "[[043-zeph-common/spec]]"
 issues:
   - "#4016"
   - "#4017"

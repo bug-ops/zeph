@@ -30,7 +30,7 @@ related:
 ### Internal
 | File | Contents |
 |---|---|
-| `crates/zeph-tui/src/app.rs` | `TuiApp`, panel layout, event loop |
+| `crates/zeph-tui/src/app/` | `TuiApp`, panel layout, event loop |
 | `crates/zeph-tui/src/channel.rs` | `TuiChannel`, `Channel` trait impl |
 | `crates/zeph-tui/src/metrics.rs` | `MetricsCollector`, watch channel |
 | `crates/zeph-tui/src/layout.rs` | Panel split logic |

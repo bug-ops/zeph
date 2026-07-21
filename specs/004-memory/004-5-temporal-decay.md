@@ -38,6 +38,10 @@ Human memory doesn't retain all information equally. The Ebbinghaus forgetting c
 - Forget critical facts (flagged `importance=critical`) regardless of age
 - Reset access timestamp on passive reads (only on agent-triggered recall)
 - Use raw age as decay metric (always apply Ebbinghaus curve)
+- Physically `DELETE FROM messages` — SleepGate's "forget" sets `deleted_at`, it does not
+  remove rows; this is consistent with [[001-system-invariants/spec#6. Memory Pipeline Contract]]
+  ("messages are never deleted"), which currently documents only `compacted_at` — `deleted_at` is
+  a second, separate soft-state column and should be treated as equally binding
 
 ## Ebbinghaus Forgetting Curve
 
@@ -154,14 +158,12 @@ impl SleepGate {
             (self.retention_threshold, self.max_forget_per_run),
         ).await?;
         
-        let mut forgotten = 0;
-        for item_id in candidates {
-            // Soft delete: mark for eventual purge
-            memory.db.soft_delete_message(&item_id).await?;
-            forgotten += 1;
-        }
-        
-        log::info!("SleepGate: forgot {} low-retention items", forgotten);
+        let ids: Vec<_> = candidates.into_iter().map(|item_id| item_id).collect();
+        // Soft delete: sets `deleted_at` (not `compacted_at`); rows are never DELETEd
+        // (see `soft_delete_messages`, `crates/zeph-memory/src/store/messages/mod.rs`).
+        let forgotten = memory.db.soft_delete_messages(&ids).await?;
+
+        tracing::info!(forgotten, "SleepGate: forgot low-retention items");
         Ok(forgotten)
     }
 }
@@ -194,7 +196,7 @@ max_forget_per_run = 100
 - [[004-1-architecture]] — retention scores used during compaction ranking
 - [[004-2-compaction]] — SleepGate invoked as part of compaction cycle
 - [[004-3-admission-control]] — recency factor in A-MAC importance scoring
-- [[017-index]] — AST-indexed code snippets decay over time without access
+- [[017-index/spec]] — AST-indexed code snippets decay over time without access
 
 ## See Also
 

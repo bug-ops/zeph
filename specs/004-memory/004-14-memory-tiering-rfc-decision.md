@@ -108,11 +108,11 @@ Zeph's memory subsystem already implements:
 | | Async consolidation daemon | Yes — HeLa-Mem consolidation pass exists | Exact algorithm differs | *Subsumed* — HeLa-Mem covers the pattern |
 | | PPO-based weight adaptation | No — no RL loop in retrieval path | RL infrastructure missing | *Partial gap* — defer to future cycle (P4 research) |
 | **BudgetMem** | Per-query budget-tier routing | Partial — routing exists but not cost-aware | Cost model missing | *Adopt* — layer cost-aware router onto existing tiers |
-| | Low/Mid/High tier selection | Yes — [[024-complexity-triage-routing]] implements complexity-based dispatch | Same as complexity routing | *Subsumed* — reuse existing routing layer |
+| | Low/Mid/High tier selection | Yes — [[023-complexity-triage-routing/spec]] implements complexity-based dispatch | Same as complexity routing | *Subsumed* — reuse existing routing layer |
 | **Multi-Layer** | Working/episodic/semantic separation | Yes — SQLite working/episodic; Qdrant semantic | Explicit retrieval gating missing | *Adopt* — formalize tier-aware recall gating in SemanticMemory |
 | | Adaptive retrieval gating | Partial — MemMachine depth is configurable | Policy-based adaptive gating is new | *Partial gap* — layer adaptive gating logic |
 | **LCM** | Immutable message log | Yes — SQLite messages table is immutable | Complete match | *Subsumed* — log already exists |
-| | Derived active context | Yes — [[021-zeph-context]] compaction state machine | Complete match | *Subsumed* — compaction strategy is active context |
+| | Derived active context | Yes — [[021-zeph-context/spec]] compaction state machine | Complete match | *Subsumed* — compaction strategy is active context |
 | **MemRouter** | Learned write-side admission | No — A-MAC is rule-based; no learned gate | Neural classifier missing | *Partial gap* — extend A-MAC with optional learned gate (P3) |
 | | Embedding-based routing | Yes — MMR and SYNAPSE use embeddings | Same capability | *Subsumed* — already applies embeddings |
 
@@ -127,7 +127,7 @@ Zeph's memory subsystem already implements:
 2. **Three additive improvements** are valuable and feasible:
    - Formalize tier-aware retrieval gating (Multi-Layer §3)
    - Add frequency signal to A-MAC (MEMTIER §3.2)
-   - Layer cost-aware routing onto triage router (BudgetMem + [[024-complexity-triage-routing]])
+   - Layer cost-aware routing onto triage router (BudgetMem + [[023-complexity-triage-routing/spec]])
 
 3. **RL adaptation (MEMTIER PPO)** is deferred — infrastructure cost is high for a P4 feature; HeLa-Mem consolidation addresses most of the value
 
@@ -135,7 +135,7 @@ Zeph's memory subsystem already implements:
 
 ### Non-Adopted Papers
 
-- **LCM**: Fully subsumed by existing [[021-zeph-context]] and message immutability invariant
+- **LCM**: Fully subsumed by existing [[021-zeph-context/spec]] and message immutability invariant
 - **MEMTIER's PPO loop**: Deferred pending RL infrastructure (P4 research track)
 - **MemRouter's neural gate**: Deferred to P3 pending labeled dataset for training
 
@@ -183,15 +183,15 @@ When a query of complexity C arrives:
     THEN search all three tiers, aggregate by relevance
 ```
 
-Complexity classification already exists in [[024-complexity-triage-routing]]; apply same classification to memory tiers.
+Complexity classification already exists in [[023-complexity-triage-routing/spec]]; apply same classification to memory tiers.
 
 **Rationale**: Multi-Layer Framework showed +4pp improvement by avoiding full semantic search for simple queries, reducing token cost.
 
 ### 5.3 Triage Router Extension: Cost-Aware Tier Selection
 
-**File**: `specs/024-complexity-triage-routing/spec.md`
+**File**: `specs/023-complexity-triage-routing/spec.md`
 
-Extend [[024-complexity-triage-routing]] to include memory tier cost model:
+Extend [[023-complexity-triage-routing/spec]] to include memory tier cost model:
 
 ```toml
 [memory.tier_routing]
@@ -235,7 +235,7 @@ This maps BudgetMem's Low/Mid/High routing onto Zeph's existing complexity triag
 
 3. **Phase 3 (P4)**: RL weight adaptation (defer)
    - Requires reward signal infrastructure
-   - Blocked on [[042-experiments]] completing experiment framework
+   - Blocked on [[041-experiments/spec]] completing experiment framework
 
 ---
 
@@ -265,5 +265,5 @@ This maps BudgetMem's Low/Mid/High routing onto Zeph's existing complexity triag
 - [[004-memory/spec]] — Parent spec
 - [[004-3-admission-control]] — A-MAC (to be extended)
 - [[004-10-memory-memmachine-retrieval]] — Retrieval depth (complements tier gating)
-- [[024-complexity-triage-routing]] — Complexity-based routing (to be extended)
-- [[021-zeph-context]] — Context budget (orthogonal; no changes needed)
+- [[023-complexity-triage-routing/spec]] — Complexity-based routing (to be extended)
+- [[021-zeph-context/spec]] — Context budget (orthogonal; no changes needed)

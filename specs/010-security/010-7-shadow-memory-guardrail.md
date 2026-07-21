@@ -359,8 +359,8 @@ pub struct SafeHarborConfig {
 
 1. **`zeph-sanitizer`** — `ShadowMemory` component (`crates/zeph-sanitizer/src/shadow_memory.rs`):
    - `ShadowMemory::new()` — initialize at session start (VecDeque-backed turn history)
-   - `ShadowMemory::record_turn()` — log `ShadowEvent` after tool execution
-   - `ShadowMemory::cumulative_score()` — read current risk score
+   - `ShadowMemory::record()` — log `ShadowEvent` after tool execution
+   - `ShadowMemory::goal_drift_score()` — read current risk score
    - Stored in-memory (no persistence), evicted at session end
    - Goal drift detection: `jaccard_distance` on tool-name sets, permission escalation pattern, deviation ratio
    - `GoalDriftResult` carries score, flags, and the triggering event summary
@@ -795,8 +795,8 @@ Before implementation PR:
 - [ ] Pre-commit checks pass:
   ```bash
   cargo +nightly fmt --check
-  cargo clippy --workspace --all-targets --all-features -- -D warnings
-  cargo nextest run --workspace --all-features --lib --bins
+  cargo clippy --profile ci --workspace --all-targets --features "desktop,ide,server,chat,pdf,scheduler,testing" -- -D warnings
+  cargo nextest run --config-file .github/nextest.toml --workspace --features "desktop,ide,server,chat,pdf,scheduler" --lib --bins
   ```
 - [ ] Live test completed: 10-turn goal hijacking scenario passes
 - [ ] CHANGELOG.md updated with feature description

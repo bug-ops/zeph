@@ -844,6 +844,7 @@ pub struct DbConfig {
 }
 ```
 
+```rust
 /// Strip password from a database URL for safe logging.
 ///
 /// **Amendment 1 [2026-03-28]**: Applied to all log output, error messages,
@@ -1199,6 +1200,14 @@ postgres = ["zeph-db/postgres"]
 - "Adds a dependency hop" -- Minimal impact; sqlx is already a transitive dependency.
 
 ### Layer Assignment
+
+> [!note] Superseded by the current constitution
+> This subsection is the original RFC proposal and is historical. The constitution has since
+> introduced sub-tiers within Layer 0 (0a/0b/0c); `zeph-db` is currently classified as **Layer 0b**
+> ("depends on L0a only": `zeph-common`, `zeph-commands`) per [[constitution#I. Architecture]], not
+> a bare "Layer 0" with no `zeph-*` deps — `crates/zeph-db/Cargo.toml` depends on `zeph-common`.
+> The "constitution should be amended" suggestion below was resolved by that 0a/0b/0c split rather
+> than by treating `zeph-db` as same-layer-exempt.
 
 `zeph-db` is **Layer 0** (no zeph-* dependencies). Updated layering:
 

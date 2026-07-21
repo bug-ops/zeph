@@ -39,7 +39,7 @@ related:
 | `crates/zeph-mcp/src/elicitation.rs` | Elicitation request routing |
 | `crates/zeph-core/src/channel.rs` | `ElicitationRequest`, `ElicitationResponse` types |
 | `crates/zeph-channels/src/cli.rs` | CLI elicitation handling (interactive prompt) |
-| `crates/zeph-channels/src/tui_channel.rs` | TUI elicitation (status modal) |
+| `crates/zeph-tui/src/channel.rs` | TUI elicitation (status modal) |
 | `crates/zeph-channels/src/telegram.rs` | Telegram elicitation (message + timeout) |
 | `crates/zeph-channels/src/json_cli.rs` | JSON mode elicitation (`elicitation` event) |
 

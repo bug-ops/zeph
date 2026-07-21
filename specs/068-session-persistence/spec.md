@@ -11,13 +11,13 @@ tags:
 created: 2026-06-13
 status: draft
 related:
-  - "[[064-durable-execution]]"
-  - "[[013-acp]]"
-  - "[[039-vault]]"
-  - "[[002-agent-loop]]"
-  - "[[044-zeph-common]]"
-  - "[[022-zeph-context]]"
-  - "[[032-database-abstraction]]"
+  - "[[064-durable-execution/spec]]"
+  - "[[013-acp/spec]]"
+  - "[[038-vault/spec]]"
+  - "[[002-agent-loop/spec]]"
+  - "[[043-zeph-common/spec]]"
+  - "[[021-zeph-context/spec]]"
+  - "[[031-database-abstraction/spec]]"
   - "[[007-channels/spec]]"
   - "[[011-tui/spec]]"
 issues:

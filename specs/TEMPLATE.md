@@ -1,6 +1,8 @@
 # Spec Template
 
-Use this template when creating new specifications in `.local/specs/NNN-feature-name/spec.md`.
+Use this template when creating new specifications in `/specs/NNN-feature-name/spec.md`. Per
+`CLAUDE.md`, this project's specs are permanent and live at the repository-root `/specs/`, not the
+sdd skill's default `.local/specs/` scratch location.
 
 ---
 
@@ -17,7 +19,7 @@ tags:
   - [domain: core|llm|memory|skills|tools|channels|tui|mcp|security|orchestration|protocols|config|database|benchmarking]
   - [optional: cross-cutting|infra|contract|experimental]
 created: [YYYY-MM-DD]
-status: [draft|approved|deprecated]
+status: [draft|approved|implemented|complete|deprecated|research]
 related:
   - "[[MOC-specs]]"
   - "[[001-system-invariants/spec]]"

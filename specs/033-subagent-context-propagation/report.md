@@ -69,7 +69,7 @@ When `subagent_type` is not specified, Claude Code uses a **fork path** that:
 
 ### Architecture overview
 
-Zeph spawns subagents via `SubAgentManager::spawn()` in `crates/zeph-subagent/src/manager.rs`.
+Zeph spawns subagents via `SubAgentManager::spawn()` in `crates/zeph-subagent/src/manager/mod.rs`.
 The entry point from the agent loop is `handle_agent_command()` in
 `crates/zeph-core/src/agent/mod.rs:4505`.
 
@@ -158,7 +158,7 @@ analyzed. The only context is the raw `task_prompt` string. Complex delegation t
 ("review what we discussed and write tests") fail silently.
 
 **Affected files**:
-- `crates/zeph-subagent/src/manager.rs:962` — `initial_messages: vec![]`
+- `crates/zeph-subagent/src/manager/mod.rs:962` — `initial_messages: vec![]`
 - `crates/zeph-core/src/agent/mod.rs:4530-4535` — spawn call site
 
 ---
@@ -384,8 +384,8 @@ parallel subtasks.
 
 | File | Change |
 |---|---|
-| `crates/zeph-subagent/src/manager.rs` | Add `parent_context`, `parent_cancel` to `spawn()` and `AgentLoopArgs` |
+| `crates/zeph-subagent/src/manager/mod.rs` | Add `parent_context`, `parent_cancel` to `spawn()` and `AgentLoopArgs` |
 | `crates/zeph-core/src/agent/mod.rs:4530` | Pass `self.context.messages` slice and cancel token to spawn |
 | `crates/zeph-subagent/src/def.rs` | Add `model` inheritance enum |
 | `crates/zeph-config/src/subagent.rs` | Add `max_depth` config field |
-| `crates/zeph-subagent/src/manager.rs:946` | Use `parent_cancel.child_token()` |
+| `crates/zeph-subagent/src/manager/mod.rs:946` | Use `parent_cancel.child_token()` |

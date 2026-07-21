@@ -20,6 +20,15 @@ related:
 
 # Spec: Secret Vault & Credential Resolution
 
+> [!danger] Stale content — 2026-07 audit
+> This file's code samples and type names do not match the real implementation and were not
+> corrected in this pass (rewrite, not a text fix): it uses `serde_yaml` (banned project-wide, see
+> `[[constitution]]` II — use `serde_norway`), `log::info!`/`log::warn!` (banned, `tracing` only),
+> invented types `VaultBackend`/`AgeVault` (real trait is `VaultProvider`,
+> `crates/zeph-vault/src/lib.rs`), and lists `age`/`kms`/`custom` backends (only `age`/`env` exist,
+> per the correct listing in `[[010-security/spec]]` and `[[038-vault/spec]]`). **Treat
+> [[038-vault/spec]] as authoritative for vault behavior**, not this file.
+
 Age-encrypted secret storage, credential resolution, ZEPH_* environment key mapping, vault access control.
 
 ## Overview
@@ -204,7 +213,7 @@ fallback_env = false               # don't read from env vars as fallback
 
 ## Integration Points
 
-- [[003-llm-providers]] — All providers resolve API keys from vault
+- [[003-llm-providers/spec]] — All providers resolve API keys from vault
 - [[010-2-injection-defense]] — Vault keys never logged or leaked
 - [[010-4-audit]] — Vault access logged for compliance
 

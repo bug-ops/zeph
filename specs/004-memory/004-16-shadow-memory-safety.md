@@ -26,7 +26,7 @@ related:
 > Implements a parallel shadow memory stream that accumulates safety-critical
 > signals across an agent's full execution trajectory, enabling detection and
 > blocking of multi-turn attacks that evade per-turn controls.
-> Resolves GitHub issue [#3695](https://github.com/rabax/zeph/issues/3695).
+> Resolves GitHub issue [#3695](https://github.com/bug-ops/zeph/issues/3695).
 
 ## Sources
 
@@ -329,9 +329,22 @@ AND no tool call is blocked by shadow memory
 
 ## 11. Implementation Notes
 
+> [!warning] Corrected — 2026-07 audit
+> The bullet below previously claimed `TrajectoryRiskAccumulator` was renamed to `ShadowSentinel`
+> during implementation. This is incorrect: both structs exist and coexist as **separate**
+> components. `TrajectoryRiskAccumulator` (`crates/zeph-memory/src/shadow/mod.rs`, doc comment
+> literally reads "Per-session trajectory risk accumulator (MAGE spec 004-16)") is this spec's
+> actual, unrenamed implementation — wired into `zeph-core` via `agent/builder.rs` and
+> `agent/state/security.rs`. `ShadowSentinel` (`crates/zeph-core/src/agent/shadow_sentinel.rs`) is
+> a distinct, additional defense-in-depth feature (an LLM pre-execution safety probe) that belongs
+> to spec [[050-security-capability-governance/spec|050]] Phase 2, not to this spec's MAGE
+> accumulator. Do not conflate the two when reading the acceptance criteria in §1–10 above — they
+> refer to `TrajectoryRiskAccumulator`, which is correctly named as specced.
+
 - New module: `crates/zeph-core/src/agent/shadow_sentinel.rs` — owns `ShadowSentinel`,
-  `SentinelEvent`, and `ShadowProbeExecutor`. The core struct is `ShadowSentinel` (not
-  `TrajectoryRiskAccumulator` as originally specced — name changed during implementation).
+  `SentinelEvent`, and `ShadowProbeExecutor`. This is the separate Phase-2 probe described in the
+  callout above, not a rename of `TrajectoryRiskAccumulator` (which lives in
+  `crates/zeph-memory/src/shadow/mod.rs` and is wired into `zeph-core` independently).
 - `ShadowSentinel` is wired into the agent loop (commit #4443: `wire ShadowMemory into agent loop`)
 - `SentinelEvent` is the per-turn audit event type in `zeph-core`; `ShadowEvent` in
   `zeph-sanitizer` is a separate, parallel type for sanitizer-layer events.

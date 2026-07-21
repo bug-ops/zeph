@@ -16,6 +16,20 @@ related:
 
 # Specs Architecture: Dependency Graph
 
+> [!warning] Coverage gap — 2026-07 audit
+> This dependency graph and its layer tables only cover specs 001–034. Specs 035–081 (background
+> task supervisor, sanitizer, experiments, `zeph-commands`, `zeph-common`, subagent lifecycle,
+> interop gaps, MARCH, CLI modes, SLM metrics, agent decomposition, security capability governance,
+> gonka, speculation engine, agent feedback, cocoon, the six AutoSkill specs, context-adaptive
+> memory, worktree, durable execution, plugins, deep-link, knowledge ingest, session persistence,
+> threat model, runtime thinking controls, multimodal MCP, orchestration ensemble-merge/HITL/node
+> control, and more) were added after this graph was last drawn and are entirely absent from it.
+> Redrawing the graph correctly requires re-deriving dependency edges for ~47 additional specs,
+> which risks getting relationships wrong without deep per-subsystem review — flagged here as a
+> follow-up recommendation (a dedicated `/sdd` session) rather than attempted in this corrective
+> pass. Until then, treat this document as accurate only for specs 001–034 and use
+> [[MOC-specs]] / [[README]] for the complete current index.
+
 ## Dependency Graph (Mermaid)
 
 ```mermaid

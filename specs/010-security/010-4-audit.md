@@ -2,7 +2,6 @@
 aliases:
   - Audit Trail
   - Security Logging
-  - AgentRFC Protocol Audit
   - Cross-Tool Injection Correlation
   - Env-Var Scrubbing
 tags:
@@ -20,6 +19,18 @@ related:
 ---
 
 # Spec: Audit Trail & Security Logging
+
+> [!danger] Stale content — 2026-07 audit
+> The `AuditEntry`/`AuditEventType`/`AuditStatus`/`AuditLogger` schema below is fictional — the real
+> `AuditEntry` (`crates/zeph-tools/src/audit.rs`) is tool-execution-centric (`tool`, `command`,
+> `result`, `duration_ms`, `error_category`, `caller_id`, `correlation_id`, `vigil_risk`, ...), not
+> the generic `id`/`agent_id`/`event_type`/`resource`/`action`/`status` shape shown here. See
+> [[010-5-egress-logging]] for the accurate, current `AuditEntry`/`AuditLogger` description. The
+> "Cross-Tool Injection Correlation" section (`InjectionCorrelator`, time-windowed accumulation)
+> directly **contradicts** [[010-security/spec]]'s authoritative `CrossToolCorrelator`, which states
+> cross-turn signal accumulation is NEVER performed and is cleared every turn — do not implement
+> against this section without reconciling that contradiction first. Not corrected in this pass
+> (needs a mechanism-level rewrite, not a text fix).
 
 AgentRFC protocol audit, cross-tool injection correlation, environment variable scrubbing, compliance logging.
 
@@ -357,7 +368,7 @@ sample_rate = 1.0               # log all events; set < 1.0 to sample
 
 ## Integration Points
 
-- [[006-tools]] — Tool execution audited here
+- [[006-tools/spec]] — Tool execution audited here
 - [[010-1-vault]] — Vault accesses audited
 - [[010-2-injection-defense]] — IPI detections audited
 - [[010-3-authorization]] — Authorization checks audited

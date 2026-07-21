@@ -17,11 +17,21 @@ related:
   - "[[010-1-vault]]"
   - "[[010-2-injection-defense]]"
   - "[[010-4-audit]]"
-  - "[[006-tools]]"
+  - "[[006-tools/spec]]"
   - "[[008-3-security]]"
 ---
 
 # Spec: Authorization & Capability-Based Access Control
+
+> [!danger] Stale content — 2026-07 audit
+> `AuthPolicy`, `ShellSandbox`, `SsrfValidator` below are fictional — zero matches in the codebase —
+> and were not corrected in this pass (rewrite, not a text fix). The code samples also chain
+> `.unwrap()` on `Regex::new(...)`, which directly violates
+> [[001-system-invariants/spec#11. Error Handling Contract]] ("NEVER use `panic!()`... no `unwrap()`
+> in production paths") — do not copy that pattern. Real mechanisms live in the shell blocklist
+> (`crates/zeph-tools/src/filter/security.rs` and the shell executor's `PermissionPolicy` gate) and
+> the SSRF `validate_url` path referenced correctly in [[010-security/spec]] and
+> [[010-5-egress-logging]] — treat those as authoritative over this file.
 
 Permission policy enforcement, shell sandbox blocklist, SSRF protection, tool authorization.
 
@@ -253,13 +263,13 @@ allow_list = ["api.example.com", "internal.trusted.service"]
 
 ## Integration Points
 
-- [[006-tools]] — Tool execution calls authorization check
+- [[006-tools/spec]] — Tool execution calls authorization check
 - [[008-3-security]] — OAP authorization for MCP tools
 - [[010-4-audit]] — Authorization failures logged
 
 ## See Also
 
 - [[010-security/spec]] — Parent
-- [[006-tools]] — ToolExecutor enforces authorization
+- [[006-tools/spec]] — ToolExecutor enforces authorization
 - [[008-3-security]] — OAP authorization for MCP
 - [[010-4-audit]] — Audit trail of authorization checks

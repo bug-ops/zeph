@@ -47,7 +47,7 @@ related:
 
 **Benchmark**: +14pp on LongMemEval; works with any agent architecture
 
-**Map to Zeph**: Complements context budget strategy ([[021-zeph-context]]); mostly a storage optimization, not a skill evolution mechanism.
+**Map to Zeph**: Complements context budget strategy ([[021-zeph-context/spec]]); mostly a storage optimization, not a skill evolution mechanism.
 
 ### 1.3 EvolveMem (arXiv:2605.13941)
 
@@ -60,7 +60,7 @@ related:
 
 **Benchmark**: +7pp on long-session consistency (72+ hours)
 
-**Map to Zeph**: Maps onto existing [[024-complexity-triage-routing]] parameters; adds feedback loop.
+**Map to Zeph**: Maps onto existing [[023-complexity-triage-routing/spec]] parameters; adds feedback loop.
 
 ### 1.4 SAGE: Self-Evolving Agentic Graph-Memory Engine (arXiv:2605.12061)
 
@@ -74,7 +74,7 @@ related:
 
 **Benchmark**: +19% on LoCoMo (compared to static MAGMA)
 
-**Map to Zeph**: CRITICAL: Name collision with existing SAGE RL in [[015-self-learning]] (cross-session reward model for skills). This proposal is SAGE-GraphMem; existing is SAGE-RL. Coexistence requires namespace disambiguation.
+**Map to Zeph**: CRITICAL: Name collision with existing SAGE RL in [[015-self-learning/spec]] (cross-session reward model for skills). This proposal is SAGE-GraphMem; existing is SAGE-RL. Coexistence requires namespace disambiguation.
 
 ### 1.5 NanoResearch (arXiv:2605.10813)
 
@@ -110,13 +110,13 @@ Zeph's skill + memory + learning ecosystem already implements:
 
 | Component | Current Implementation | Spec |
 |-----------|------------------------|------|
-| **Cross-Session Reward** | SAGE RL: measure skill success across sessions via feedback detection | [[015-self-learning]] |
-| **Feedback Detection** | FeedbackDetector (regex) + JudgeDetector (LLM): implicit correction signals | [[054-agent-feedback]] |
-| **Skill Evolution** | ARISE trace improvement + STEM pattern migration; Wilson score reranking | [[015-self-learning]] |
+| **Cross-Session Reward** | SAGE RL: measure skill success across sessions via feedback detection | [[015-self-learning/spec]] |
+| **Feedback Detection** | FeedbackDetector (regex) + JudgeDetector (LLM): implicit correction signals | [[054-agent-feedback/spec]] |
+| **Skill Evolution** | ARISE trace improvement + STEM pattern migration; Wilson score reranking | [[015-self-learning/spec]] |
 | **Memory Consolidation** | HeLa-Mem: periodic identification of dense clusters + consolidation daemon | [[004-11-memory-hela-mem]] |
 | **Provenance Tracking** | APEX-MEM edges store episode_id, confidence, temporal metadata | [[004-7-memory-apex-magma]] |
 | **Belief Staging** | BeliefMem: pre-commitment evidence accumulation via Noisy-OR | [[004-7-memory-apex-magma]] §16 |
-| **Parameter Tuning** | [[024-complexity-triage-routing]]: complexity-aware dispatch (static config) | [[024-complexity-triage-routing]] |
+| **Parameter Tuning** | [[023-complexity-triage-routing/spec]]: complexity-aware dispatch (static config) | [[023-complexity-triage-routing/spec]] |
 
 ---
 
@@ -131,11 +131,11 @@ Zeph's skill + memory + learning ecosystem already implements:
 | | Online summarization via deltas | Partial — compaction exists; delta-based summarization is new | Summarization strategy differs | **Subsumed** (not skill-related) |
 | **EvolveMem** | Self-tuning retrieval parameters | No — complexity routing is static config | Adaptive tuning missing | **Partial Gap** |
 | | Per-session parameter drift detection | No — no feedback loop in routing layer | Drift detection missing | **Partial Gap** |
-| | Online personalization | Partial — [[024-complexity-triage-routing]] has per-provider config but no feedback loop | Feedback loop missing | **Adopt** (layer feedback) |
+| | Online personalization | Partial — [[023-complexity-triage-routing/spec]] has per-provider config but no feedback loop | Feedback loop missing | **Adopt** (layer feedback) |
 | **SAGE (Graph-Mem)** | Entity merger via embedding + LLM | Partial — entity extraction exists; automated merger is new | Automated coreference missing | **Partial Gap** |
 | | Edge pruning via weight decay | Yes — HeLa-Mem maintains edge weights | Same mechanism | **Subsumed** |
 | | Attention-weighted spreading activation | Yes — SYNAPSE uses weighted edges | Same mechanism | **Subsumed** |
-| | SAGE-RL cross-session reward for graph | No — but existing SAGE RL in [[015-self-learning]] (skills) is similar concept | **NAME CONFLICT** — see §4 |
+| | SAGE-RL cross-session reward for graph | No — but existing SAGE RL in [[015-self-learning/spec]] (skills) is similar concept | **NAME CONFLICT** — see §4 |
 | **NanoResearch** | Tri-level coevolution (skills↔memory↔policy) | No — layers evolve independently | Feedback loop missing | **Research Gap** |
 | | Closed-loop backpropagation to all three layers | No — feedback terminates at skill layer | Multi-layer feedback missing | **Research Gap** |
 | | Per-session micro-evolution | Partial — skill improvement happens; memory + policy tuning is missing | Partial implementation | **Partial Gap** |
@@ -147,11 +147,11 @@ Zeph's skill + memory + learning ecosystem already implements:
 
 ## 4. Namespace Conflict: SAGE RL vs. SAGE-GraphMem
 
-**Issue**: [[015-self-learning]] spec already defines "SAGE RL" as the cross-session reward model for **skills** (arXiv:2405.12345 style). The research paper #4057 proposes "SAGE" for **graph-memory** evolution.
+**Issue**: [[015-self-learning/spec]] spec already defines "SAGE RL" as the cross-session reward model for **skills** (arXiv:2405.12345 style). The research paper #4057 proposes "SAGE" for **graph-memory** evolution.
 
 **Resolution**:
 - Rename arXiv:2605.12061 implementation module to `SAGE-GraphMem` (or `SageGraph` in code) to avoid symbol collision
-- Keep [[015-self-learning]] SAGE RL unchanged
+- Keep [[015-self-learning/spec]] SAGE RL unchanged
 - Document both in memory spec and self-learning spec with explicit cross-references
 
 **Namespace mapping**:
@@ -177,19 +177,19 @@ pub struct SageRL { ... }  // existing, unchanged
    - +12% implicit knowledge gain is valuable
 
 2. **EvolveMem is adoptable** (P2)
-   - Feedback loop on routing parameters maps onto existing [[024-complexity-triage-routing]]
+   - Feedback loop on routing parameters maps onto existing [[023-complexity-triage-routing/spec]]
    - Success/failure signals already tracked via FeedbackDetector
    - Low implementation cost; +7pp on long-session consistency
 
 3. **MemQ is deferred to P3** (research track)
    - Requires value function learning (Q-learning) infrastructure
    - High complexity; value signal attribution is non-trivial
-   - Reserve for next learning cycle after [[042-experiments]] completes
+   - Reserve for next learning cycle after [[041-experiments/spec]] completes
 
 4. **SAGE-GraphMem is deferred to P4** (architecture review needed)
    - Requires cross-layer optimization (skills + graph memory simultaneously)
    - Interacts with existing SAGE RL naming; architectural scope needs larger review
-   - Recommend as input to agent decomposition effort ([[050-agent-decomposition]])
+   - Recommend as input to agent decomposition effort ([[049-agent-decomposition/spec]])
 
 5. **NanoResearch, δ-mem are deferred**
    - NanoResearch is a full-system redesign; belongs in next major architecture cycle
@@ -239,7 +239,7 @@ Configuration:
 
 ### 6.2 Complexity Routing Extension: Feedback-Driven Parameter Tuning
 
-**File**: `specs/024-complexity-triage-routing/spec.md` (new §3.3)
+**File**: `specs/023-complexity-triage-routing/spec.md` (new §3.3)
 
 Add subsection "Adaptive Routing: Online Parameter Drift Detection":
 
@@ -299,7 +299,7 @@ Promotion to skills goes through existing [[005-skills/spec]] registry; no new s
 
 ### P3: MemQ Value Learning
 
-When [[042-experiments]] provides experiment framework:
+When [[041-experiments/spec]] provides experiment framework:
 - Track `(memory_fact_id, retrieval_context) → outcome` tuples
 - Compute Q-values via temporal difference learning
 - Promote facts with Q > threshold to skills
@@ -308,10 +308,10 @@ When [[042-experiments]] provides experiment framework:
 
 ### P4: SAGE-GraphMem (Rename + Integrate)
 
-After agent decomposition review ([[050-agent-decomposition]]):
+After agent decomposition review ([[049-agent-decomposition/spec]]):
 - Integrate SAGE-GraphMem as graph-layer evolution (separate from SAGE-RL in skills)
 - Explicit namespace: `zeph_memory::graph::sage` vs. `zeph_skills::sage`
-- Cross-reference both in [[015-self-learning]] and this spec
+- Cross-reference both in [[015-self-learning/spec]] and this spec
 
 ### P4: δ-mem Differential Representation
 
@@ -347,7 +347,7 @@ As part of context budget optimization:
    - Log anomalies and escalations to metrics
 
 3. **Phase 3 (P3)**: MemQ research track
-   - Awaits [[042-experiments]] framework completion
+   - Awaits [[041-experiments/spec]] framework completion
    - Design value function learning over provenance DAGs
    - Implement Q-value tracking and promotion policy
 
@@ -374,5 +374,5 @@ As part of context budget optimization:
 - [[004-11-memory-hela-mem]] — HeLa-Mem (to be extended with Cognifold)
 - [[005-skills/spec]] — Skills layer (promotion destination)
 - [[015-self-learning/spec]] — SAGE RL and cross-session reward (namespace clarification needed)
-- [[024-complexity-triage-routing]] — Triage router (to be extended with feedback loop)
-- [[054-agent-feedback]] — Feedback detection (signals for routing escalation)
+- [[023-complexity-triage-routing/spec]] — Triage router (to be extended with feedback loop)
+- [[054-agent-feedback/spec]] — Feedback detection (signals for routing escalation)

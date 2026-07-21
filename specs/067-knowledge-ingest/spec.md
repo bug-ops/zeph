@@ -18,8 +18,8 @@ related:
   - "[[004-memory/004-9-memory-write-gate]]"
   - "[[004-memory/004-6-graph-memory]]"
   - "[[012-graph-memory/spec]]"
-  - "[[018-index/spec]]"
-  - "[[041-sanitizer/spec]]"
+  - "[[017-index/spec]]"
+  - "[[040-sanitizer/spec]]"
   - "[[056-autoskill-trace-extraction/spec]]"
   - "[[constitution]]"
 ---
@@ -79,7 +79,7 @@ verbatim-no-PII-redaction write path.
 - `[[004-memory/004-9-memory-write-gate]]` — MemReader write-quality gate; project evidence that
   *write pollution collapses recall faster than scoring drift*. **This spec MUST honor that gate, not bypass it.**
 - `[[004-memory/004-3-admission-control|A-MAC Admission Control]]` — admission control (INV §14).
-- `[[018-index/spec]]` — code RAG; the boundary this spec must not cross.
+- `[[017-index/spec]]` — code RAG; the boundary this spec must not cross.
 - `[[056-autoskill-trace-extraction/spec]]` — precedent for background extraction from session history
   with a per-session idempotency table (`skill_trace_sessions`) and `*_provider` config.
 
@@ -600,9 +600,8 @@ Checklist:
 - [[004-memory/004-9-memory-write-gate]] — write-quality gate that ingest MUST honor
 - [[004-memory/004-6-graph-memory]] — MAGMA edges, SYNAPSE, A-MEM weights
 - [[012-graph-memory/spec]] — entity graph, BFS recall, community detection
-- [[018-index/spec]] — code RAG boundary (code never enters the graph)
-- [[041-sanitizer/spec]] — PII / exfiltration validators for the write path
+- [[017-index/spec]] — code RAG boundary (code never enters the graph)
+- [[040-sanitizer/spec]] — PII / exfiltration validators for the write path
 - [[056-autoskill-trace-extraction/spec]] — precedent: background extraction from session history + idempotency table
 - [[001-system-invariants/spec]] — system contracts (INV-1 dependency direction, write-pollution)
 - [[constitution]] — project-wide non-negotiable rules
-```

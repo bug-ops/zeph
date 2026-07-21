@@ -176,7 +176,7 @@ Embedding status displayed in:
 - [[004-2-compaction]] — regenerate embeddings after compaction applied
 - [[004-3-admission-control]] — embeddings used for relevance scoring
 - [[004-5-temporal-decay]] — temporal decay scores may adjust embedding weight
-- [[zeph-memory/spec]] — parent system orchestrator
+- [[004-memory/spec]] — parent system orchestrator
 
 ---
 

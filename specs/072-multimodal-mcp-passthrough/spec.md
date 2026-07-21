@@ -17,8 +17,8 @@ related:
   - "[[008-1-lifecycle]]"
   - "[[008-3-security]]"
   - "[[010-2-injection-defense]]"
-  - "[[024-multi-model-design]]"
-  - "[[040-content-sanitizer]]"
+  - "[[024-multi-model-design/spec]]"
+  - "[[040-sanitizer/spec]]"
   - "[[069-threat-model/spec]]"
   - "[[068-session-persistence/spec]]"
   - "[[MOC-specs]]"
@@ -512,7 +512,7 @@ additional non-blocking hardening item, folded into this spec as C5/AC-15:**
 - [[001-system-invariants/spec]] — Invariant #4 (Ask First: new `MessagePart` variant, engaged for the Audio deferral), #5 (`ToolExecutor`/`ToolOutput` contract), #12 (mandatory integration points)
 - [[008-3-security]] — MCP elicitation/injection defense this spec's threat model extends
 - [[010-2-injection-defense]] — Text-sanitization pipeline the text placeholder continues to flow through unchanged
-- [[040-content-sanitizer]] — `ContentSanitizer`/quarantine flow `MediaSanitizer` sits alongside
+- [[040-sanitizer/spec]] — `ContentSanitizer`/quarantine flow `MediaSanitizer` sits alongside
 - [[069-threat-model/spec]] — MATRA asset/attack-tree model; this spec should add an MCP-media asset/attack-tree entry as a follow-up
 - [[068-session-persistence/spec]] — `SessionSink`/durable JSONL log this spec's C1 strip point must precede
 - `plan.md` — phased implementation plan

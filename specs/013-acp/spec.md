@@ -35,6 +35,17 @@ related:
 | 1.7 | 2026-07-01 | developer | Fixed #5379: `zeph acp model-config show` now loads the resolved config and marks the active `[acp.model_config].default_temperature_preset` in its output, instead of only printing the static preset table. Resolved #5373: `session/fork` and `session/resume` now inherit `model`/`temperature_preset`/`thinking_enabled`/`auto_approve_level` from the source session (live in-memory state, falling back to a persisted close-time snapshot, falling back to configured defaults) instead of always resetting to defaults — new `acp_sessions` columns via migration `105_acp_session_config`; see "Fork/Resume Config Inheritance" below. |
 | 1.8 | 2026-07-17 | developer | Renovate `rust-minor-patch` bundle bumped core `1.0.1`→`1.2.0`, schema `=1.1.0`→`=1.4.0`. Core `1.1.0` stabilized `$/cancel_request` unconditionally and dropped its `unstable_cancel_request` forward — `unstable-cancel-request` is now a local-only opt-in gate (Cargo feature unchanged, but no longer maps to an upstream feature); `unstable-boolean-config` tombstoned the same way after schema `1.1.0` made `SessionConfigOptionValue::Boolean` unconditional. Schema `1.4.0` renamed `SetProviderRequest`/`DisableProviderRequest`/`ProviderInfo`'s `id: String` field to `provider_id: ProviderId` (`Arc<str>` newtype) — updated all `providers.rs` call sites and tests. No handler/transport/builder-chain logic changed otherwise. |
 
+> [!warning] Body narrative lags the 1.8 changelog entry — 2026-07 audit
+> Only the top summary (line 22) and the changelog table above were updated for the 1.8 bump.
+> Roughly 15 places in the body below (Protocol Version section, `/agent.json` discussion, Feature
+> Flags table notes, "Breaking Changes Resolution" section, Future/v2 Tracking, "Version Upgrade
+> Note", Addendum) still assert the document's *current* state as `agent-client-protocol 1.0.1` /
+> schema `=1.1.0` — confirmed current values from `Cargo.toml` are `1.2.0` / `=1.4.0`. Sections that
+> narrate the **historical** 0.14.0→1.0.1 transition (e.g. "Breaking Changes Resolution (SDK 0.14.0
+> → 1.0.1)") are correctly historical and should stay as written; sections that state facts as
+> presently true using the `1.0.1`/`=1.1.0` version numbers need updating to `1.2.0`/`=1.4.0`. This
+> needs a full pass distinguishing the two cases, not corrected in this audit.
+
 ---
 
 ## Sources
