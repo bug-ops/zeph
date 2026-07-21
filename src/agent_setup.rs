@@ -3419,9 +3419,13 @@ mod tests {
         )
         .await;
 
+        // `echo` (not `cat`) — the risk-chain classifier tags `SensitiveRead` purely from the
+        // `/etc/passwd` substring in the command text (`classify()` in risk_chain.rs), so the
+        // path need not actually exist; `cat` would fail on Windows runners where `/etc/passwd`
+        // is absent, turning this into a portability failure unrelated to risk-chain blocking.
         let first = tool_setup
             .executor
-            .execute_tool_call(&agent_setup_bash_call("cat /etc/passwd"))
+            .execute_tool_call(&agent_setup_bash_call("echo /etc/passwd"))
             .await;
         assert!(
             first.is_ok(),

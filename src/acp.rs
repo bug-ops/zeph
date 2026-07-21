@@ -4278,8 +4278,12 @@ mod tests {
         let (session_a, _queue_a) = build_acp_session_shell_composite(vec![PathBuf::from("/")]);
         let (session_b, queue_b) = build_acp_session_shell_composite(vec![PathBuf::from("/")]);
 
+        // `echo` (not `cat`) — the risk-chain classifier tags `SensitiveRead` purely from the
+        // `/etc/passwd` substring in the command text (`classify()` in risk_chain.rs), so the
+        // path need not actually exist; `cat` would fail on Windows runners where `/etc/passwd`
+        // is absent, turning this into a portability failure unrelated to risk-chain blocking.
         let a_read = session_a
-            .execute_tool_call(&acp_bash_call("cat /etc/passwd"))
+            .execute_tool_call(&acp_bash_call("echo /etc/passwd"))
             .await;
         assert!(
             a_read.is_ok(),
@@ -5377,6 +5381,12 @@ mod tests {
     /// helper `spawn_acp_agent`'s no-`conversation_id` hydration branch calls — and asserts the
     /// client is notified via `SessionStatusNotifier` synchronously, i.e. without any
     /// `session/prompt` drain (`try_recv`, not `recv().await` behind a drain loop).
+    ///
+    /// Unix-only: `SessionEventLog::open_exclusive`'s advisory lock is `flock(2)`-backed and is
+    /// a documented no-op on non-Unix targets (`AdvisoryLock`, zeph-session's `log.rs`), so a
+    /// second `open_exclusive` on non-Unix never contends — matching zeph-session's own
+    /// `#[cfg(unix)]`-gated contention tests for the same primitive.
+    #[cfg(unix)]
     #[tokio::test]
     async fn already_locked_session_log_notifies_client_proactively_without_prompt() {
         let tmp = TempDir::new().unwrap();

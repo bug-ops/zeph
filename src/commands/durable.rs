@@ -1409,9 +1409,13 @@ mod tests {
     fn durable_db_is_filename_namespaced_sibling_of_sqlite_path() {
         let mut config = Config::default();
         config.memory.sqlite_path = "/data/zeph/zeph.db".to_owned();
+        // Built via the same `Path::join` the production code uses rather than a hardcoded
+        // forward-slash literal — `Path::join` inserts the platform's native separator, so a
+        // literal `"/data/zeph/zeph.db.durable.db"` mismatches on Windows (`\` vs `/`).
+        let expected = Path::new("/data/zeph").join("zeph.db.durable.db");
         assert_eq!(
             resolve_durable_db_url(&config),
-            "/data/zeph/zeph.db.durable.db"
+            expected.to_string_lossy().into_owned()
         );
     }
 

@@ -60,6 +60,14 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest]
         partition: ["1/8", "2/8", "3/8", "4/8", "5/8", "6/8", "7/8", "8/8"]
+    # macOS/Windows default per-test thread stacks are smaller than Linux's, so
+    # Config-heavy async test frames that build more than one Agent/ServeAgentDeps
+    # in the same frame (e.g. build_agent_factory_gates_trust_state_independently_per_session,
+    # build_combined_deps_wires_policy_gate_through_to_session_agent) can overflow the
+    # default stack here even though they pass in Linux's non-instrumented `test` job
+    # (same root cause as the coverage job's fix in ci.yml, run 29873938646).
+    env:
+      RUST_MIN_STACK: "33554432"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
