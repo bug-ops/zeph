@@ -16,7 +16,7 @@ startup.
 
 - `sink` — [`ChannelSink`] minimal async I/O trait; replaces the `C: Channel` generic in handlers
 - `context` — [`CommandContext`] non-generic dispatch context with trait-object fields
-- `traits` — sub-trait definitions for subsystem access (`AgentAccess`, `DebugAccess`, etc.)
+- `traits` — 15 per-domain subsystem-access sub-traits (`MemoryAccess`, `GraphAccess`, `ModelAccess`, `SkillAccess`, `PolicyAccess`, `SchedulerAccess`, `LspAccess`, `SessionControlAccess`, `McpAccess`, `OrchestrationAccess`, `SubagentAccess`, `IntegrationAccess`, `TrackingAccess`, `WorktreeAccess`, `MiscAccess`); `AgentAccess` is an empty marker supertrait over all 15 (blanket-impl'd) so `dyn AgentAccess` call sites are unchanged
 - `handlers` — concrete handler implementations (session, debug, skill, mcp, plan, …)
 - `commands` — static `COMMANDS` metadata table used by `/help`
 

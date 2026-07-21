@@ -256,6 +256,35 @@ strip_orphaned_tool_results(messages: &mut Vec<Message>)
 
 ---
 
+## Focus/Compaction Summary Sanitization (SEC-CC-03)
+
+LLM-generated compaction summaries (`complete_focus_tool`, `handle_compress_context` backing
+the `compress_context`/`request_compaction` tools) are appended to the pinned Knowledge block,
+which is re-inserted immediately after the system prompt on every subsequent turn. Because the
+summary can transitively carry content from compressed tool/web output, it must be sanitized
+(`WebScrape`/`ExternalUntrusted` trust level) before the append — otherwise an injection
+surviving compaction reaches the model unfiltered on every turn thereafter. `handle_compress_context`
+lacked this sanitizer call until #6585; both sinks now share the same sanitize-before-append
+step and have regression coverage (#6562, #6572).
+
+Separately, `build_compression_prompt` truncates each message to 500 chars before handing it to
+the compression LLM. Untrusted tool-result content is already spotlight-wrapped
+(`<tool-output>`/`<external-data>`) at write time by `sanitize_tool_output`; blind truncation
+could sever a trailing wrapper's closing tag, leaving an opened-but-never-closed spotlight block
+in the compaction prompt. `repair_truncated_spotlight_wrapper` re-closes a severed wrapper by
+open/close tag count, checked independently per wrapper kind since one message can bundle
+multiple concatenated wrappers from a multi-tool-call turn (#6584, fixed in #6613).
+
+### Key Invariants
+
+- Every sink that appends an LLM-generated summary to the pinned Knowledge block MUST sanitize
+  it first — `complete_focus_tool` and `handle_compress_context` both go through the same
+  `WebScrape`/`ExternalUntrusted` sanitizer call
+- NEVER let a truncated compaction-prompt message leave a spotlight wrapper
+  (`<tool-output>`/`<external-data>`) open without its matching closing tag
+
+---
+
 ## Goal Lifecycle (#3567)
 
 The agent tracks a per-session *goal state* that reflects whether the current user

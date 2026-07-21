@@ -60,6 +60,16 @@ Both fields are updated in `record_cost_and_cache` → `record_successful_task` 
 - A turn that errors before `record_cost_and_cache` is called is NOT counted as successful.
 - Per-provider CPS is not tracked; only the global daily counter is maintained.
 
+## Default Daily Cost Cap (#6469)
+
+`CostConfig::max_daily_cents` — the daily cap enforced by the same `CostTracker`
+(`crates/zeph-core/src/cost.rs`) this spec's CPS metric is computed from — now defaults to
+`2500` ($25.00/day), changed from `0` (unlimited). A fresh install previously shipped with no
+built-in defense against unbounded LLM spend. `0` remains a valid explicit override meaning
+unlimited; existing configs with an explicit `max_daily_cents` value (including an explicit
+`0`) are preserved — migration step 101 only appends an advisory comment, it never rewrites an
+active value.
+
 ## SLM Provider Configuration
 
 Add to `[[llm.providers]]` in config when Ollama is available locally:
@@ -88,3 +98,4 @@ Reference this provider via `planner_provider = "slm-medium"` in `[orchestration
 - #2192 — SLMs are the Future of Agentic AI
 - #2165 — Unified routing+cascading framework
 - #2185 — Candle-backed lightweight classifiers
+- #6469 — Enable runaway tool-call rate limiting and daily cost cap by default

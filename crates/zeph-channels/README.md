@@ -24,7 +24,7 @@ Implements I/O channel adapters that connect the agent to different frontends. S
 | `discord` | Discord adapter (optional feature) |
 | `slack` | Slack adapter (optional feature); audio file detection and download with Bearer auth |
 | `any` | `AnyChannel` — enum dispatch over all channels |
-| `markdown` | Markdown rendering helpers |
+| `markdown` | `markdown_to_telegram` renders CommonMark to Telegram `MarkdownV2` (Bot API 10.1 rich text); multi-line blockquotes prefix every line with `>`, nested quotes flatten to a single level (MarkdownV2 has no nested-quote grammar), and long quotes render as Bot API 10.1 expandable (collapsed-by-default) blockquotes at or above `expandable_blockquote_min_lines` |
 
 **Re-exports:** `AnyChannel`, `CliChannel`, `JsonCliChannel`
 
@@ -38,6 +38,7 @@ Key fields in the `[telegram]` config section:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `stream_interval_ms` | u64 | `3000` | Minimum interval between streaming message edits (minimum 500 ms) |
+| `expandable_blockquote_min_lines` | u32 | `10` | Blockquotes with at least this many lines render as Bot API 10.1 expandable (collapsed-by-default) quotes; `0` disables the expandable form |
 | `guest_mode` | bool | `false` | Enable Bot API 10.0 Guest Mode — surfaces guest messages via a local proxy |
 | `bot_to_bot` | bool | `false` | Enable Bot-to-Bot communication via `setManagedBotAccessSettings` |
 | `allowed_bots` | `Vec<String>` | `[]` | Telegram user IDs of bots allowed to interact with this agent |
@@ -45,11 +46,12 @@ Key fields in the `[telegram]` config section:
 
 ```toml
 [telegram]
-stream_interval_ms  = 3000
-guest_mode          = false
-bot_to_bot          = false
-allowed_bots        = []
-max_bot_chain_depth = 3
+stream_interval_ms              = 3000
+expandable_blockquote_min_lines = 10
+guest_mode                      = false
+bot_to_bot                      = false
+allowed_bots                    = []
+max_bot_chain_depth             = 3
 ```
 
 > [!NOTE]

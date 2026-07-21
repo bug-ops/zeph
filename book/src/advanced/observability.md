@@ -87,6 +87,31 @@ CPS resets daily at UTC midnight alongside the cost budget. Use it to track whet
 
 **In code:** access via `MetricsSnapshot.cost_cps_cents` and `MetricsSnapshot.cost_successful_tasks`.
 
+### Per-Message Usage Records
+
+Every LLM call that contributes to cost tracking is durably recorded in the `usage_records` table, indexed by message ID. This provides a detailed audit trail of per-message token counts, latency, and cost — useful for understanding what drove total spend.
+
+**Accessing usage data:**
+
+- **CLI**: `zeph usage <message_id>` shows token counts and cost for a specific conversation message
+- **SQL query**: 
+  ```sql
+  SELECT message_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, 
+         cost_cents, latency_ms, ttft_ms FROM usage_records 
+  WHERE created_at > datetime('now', '-1 day') 
+  ORDER BY cost_cents DESC;
+  ```
+
+Each row records:
+- **input_tokens, output_tokens, cache_read_tokens, cache_write_tokens** — token count breakdown
+- **cost_cents** — total cost in cents, calculated using the same pricing formula as the daily aggregate
+- **latency_ms** — total round-trip time (including retries and backoff)
+- **ttft_ms** — time-to-first-token (true value on streaming paths, time-to-first-byte proxy on non-streaming)
+- **tokens_per_sec** — throughput (output_tokens / latency_ms * 1000)
+- **message_id** — links to conversation message (NULL for background work: planner, aggregator, verifier)
+
+Usage rows are written inline-awaited alongside cost tracking — no separate toggle or config needed. They honor the same `[cost] enabled` gate: when cost tracking is off, usage records are not written.
+
 ## TaskSupervisor Metrics
 
 Zeph uses a `TaskSupervisor` to manage background tasks (embedding, memory consolidation, file watching, etc.). Task metrics provide CPU and wall-time measurement for performance debugging.

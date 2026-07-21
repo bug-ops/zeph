@@ -261,6 +261,55 @@ embed_timeout_secs = 5   # per-embed timeout; 0 = disabled
 This is separate from `context.fidelity.max_embed_input_tokens` (which limits input size) —
 `embed_timeout_secs` limits wall-clock duration of the embed call itself.
 
+## Vector Search Limit Clamp (`MAX_SEARCH_LIMIT`, #6553/#6616/#6623)
+
+`zeph_memory::MAX_SEARCH_LIMIT = 100` bounds every caller-supplied `limit`/`top_k` search
+parameter reaching Qdrant, closing an oversized-result-set DoS: an unbounded `limit` (e.g. a
+misconfigured `memory.retrieval.depth` or a caller passing `usize::MAX`) would otherwise make
+`zeph-memory` allocate/deserialize an arbitrarily large Qdrant result set in one call. There is
+deliberately no config knob to raise this ceiling.
+
+The enforcement point evolved across three PRs on the same invariant — only the final
+(current) state below reflects live behavior:
+
+1. **#6553/PR #6615** (`e0af1f70c`, breaking commit shared with A2A — see
+   [[014-a2a/spec]]) added the clamp only at the wrapper layer: `EmbeddingStore::search`/
+   `search_collection`, `EmbeddingRegistry::search_raw`, `ReasoningMemory::retrieve_by_embedding`.
+   A caller reaching a `VectorStore` implementor directly (e.g. `zeph-index`'s `CodeStore::search`
+   or a generic `RetrievalStep<P, V: VectorStore>` pipeline step) bypassed these wrappers entirely.
+2. **#6622** (closes #6616) added a `clamp_search_limit` call at the top of `search()` in each of
+   the three production implementors (`QdrantOps`, `DbVectorStore`, `InMemoryVectorStore`) —
+   but this relied on every implementor remembering to call the helper by convention.
+3. **#6627** (closes #6623, current state) converts `VectorStore::search` into a **template
+   method**: it is now trait-provided, clamps `limit` to `[1, MAX_SEARCH_LIMIT]` unconditionally,
+   and delegates to a new required `search_clamped()` method that implementors supply instead of
+   `search()` itself. This closes the gap where a 4th implementor (a test mock) had silently
+   skipped the by-convention clamp in #6622 — the bound is now structurally reached by every
+   call path regardless of implementor.
+
+A one-shot `tracing::warn!` fires the first time a requested limit is actually reduced (each
+clamping site warns independently, at most once per process).
+
+### Key Invariants
+
+- `limit`/`top_k` reaching Qdrant is always in `[1, MAX_SEARCH_LIMIT]`, regardless of call path —
+  enforced structurally by `VectorStore::search`'s template method, not by per-implementor convention
+- Implementors of `VectorStore` MUST implement `search_clamped`, NEVER override `search` — overriding
+  `search` bypasses the clamp entirely
+- `search_clamped` MUST NOT re-clamp `limit` — it is guaranteed already within bounds by `search`
+- NEVER add a config field to raise `MAX_SEARCH_LIMIT` — this reopens the oversized-result-set DoS
+  the constant exists to close; a config-driven candidate pool larger than 100 is silently truncated
+  (with a one-shot warning), by design
+
+### Related: Qdrant Endpoint Hardening Warning
+
+Same PR (#6553/#6615) added a non-fatal `tracing::warn!` in `Config::validate` when
+`memory.qdrant_url` points at a non-loopback host without TLS (`https://`) or an API key
+(`memory.qdrant_api_key`) configured — memory content would otherwise travel in plaintext with
+no server authentication. Loopback targets (`localhost`, `127.0.0.1`, `::1`) are exempt. This is
+a warning, not a hard validation failure, since a remote Qdrant reachable only over an
+already-trusted internal network is a legitimate deployment.
+
 ## Benna-Fusi Multi-Timescale SYNAPSE Edges (#3709, #3710, #3994)
 
 ### Fast/Slow Synaptic Variables (#3709)
@@ -317,6 +366,26 @@ deep_reasoning_query_conditioned = false   # opt-in
 - `confidence_fast` and `confidence_slow` are updated on every reassertion — NEVER skip the update for legacy insert paths
 - Migration 096 is append-only — existing rows get `NULL` fast/slow until first reassertion; read code handles `NULL` gracefully
 - `deep_reasoning_query_conditioned = true` must be fail-open — if `recall_graph_hela` errors, fall back to static-weight path
+
+### `GraphConfig::retrieval_strategy` Wired to the Live Recall Path (#6597, BREAKING)
+
+`retrieval_strategy` (`[memory.graph]`, values `synapse`/`bfs`/`astar`/`watercircles`/
+`beam_search`/`hybrid`) was parsed, validated, and documented, but **not consulted** by the
+live graph-recall path used by every real entry point (CLI/ACP/daemon/serve) — that path
+(`SemanticMemoryBackend::recall_graph_facts`) only switched on `spreading_activation.enabled`
+(SYNAPSE vs. plain BFS). The correct 6-way dispatch existed only in
+`zeph-agent-context::helpers`, which had zero production callers. #6597 ports the dispatch into
+the live path (`fetch_graph_facts` in `zeph-context` → `recall_graph_facts` in
+`zeph-agent-context`) and removes the dead duplicate chain. Full strategy details, the variant
+table, and the WaterCircles ring-hop fix live in [[012-graph-memory/spec]]; see that spec's
+"Graph Retrieval Strategy Dispatch" section.
+
+**BREAKING**: deployments on the default config (`spreading_activation.enabled = false`,
+`retrieval_strategy` unset) now get SYNAPSE spreading-activation recall instead of the
+previous — unintentional — plain-BFS fallback, since `retrieval_strategy`'s documented default
+(`synapse`) now actually takes effect. Set `retrieval_strategy = "bfs"` under `[memory.graph]`
+to keep the prior BFS-only behavior; benchmark before upgrading if graph-recall latency/cost
+is a concern.
 
 ---
 

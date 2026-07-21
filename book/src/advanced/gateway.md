@@ -33,7 +33,7 @@ Add the `[gateway]` section to `config/default.toml`:
 enabled = true
 bind = "127.0.0.1"
 port = 8090
-# auth_token = "secret"  # optional, from vault ZEPH_GATEWAY_TOKEN
+auth_token = "secret"     # required; set from vault via ZEPH_GATEWAY_TOKEN
 rate_limit = 120          # max requests/minute per IP (0 = unlimited)
 max_body_size = 1048576   # 1 MB
 ```
@@ -42,13 +42,36 @@ Set `bind = "0.0.0.0"` to accept connections from all interfaces. The gateway lo
 
 ### Authentication
 
-When `auth_token` is set (or resolved from vault via `ZEPH_GATEWAY_TOKEN`), all requests to `/webhook` must include a bearer token:
+**`auth_token` is required.** The gateway fails to start if `auth_token` is missing or blank, protecting against unauthenticated webhook injection.
+
+All requests to `/webhook` must include a bearer token:
 
 ```
 Authorization: Bearer <token>
 ```
 
 Token comparison uses constant-time hashing (blake3 + `subtle`) to prevent timing attacks. The `/health` endpoint is always unauthenticated.
+
+To set the token:
+
+**Option 1: Store in age vault** (recommended):
+```bash
+zeph vault set ZEPH_GATEWAY_TOKEN "your-secret-token"
+```
+
+**Option 2: Environment variable** (dev only):
+```bash
+export ZEPH_GATEWAY_TOKEN="your-secret-token"
+zeph --daemon
+```
+
+**Option 3: Direct config** (not recommended):
+```toml
+[gateway]
+auth_token = "your-secret-token"  # prefer vault
+```
+
+The `--init` wizard now explicitly prompts for the gateway token and instructs you to store it in the vault.
 
 ## Endpoints
 

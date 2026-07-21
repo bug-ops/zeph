@@ -49,6 +49,7 @@ eight layers, each addressing different threat vectors:
 | 9 | `IpiFilter` | Unwired | Weighted-pattern Indirect Prompt Injection scorer for web-scraped content |
 | 10 | `NliSanitizer` | Wired | SONAR NLI entailment-based injection layer; can be attached via builder |
 | 11 | `SecretMaskRegistry` | Wired | Vault-secret placeholder masking at the LLM boundary |
+| — | `secret_shape::scrub_secret_shapes` | Wired | Shape-based (not registered-value) secret masking — catches secrets a subagent fabricates/echoes (#6593) |
 | 12 | `ShadowMemory` | Wired | Cross-turn goal-drift detector; complements Layer 8's single-batch analysis |
 
 ---
@@ -243,6 +244,16 @@ impl QuarantinedSummarizer {
 (`quarantine_summarizer_timeout_secs`, default 30s). Timeout returns `SummarizedFacts::empty()`
 rather than propagating an error — the agent continues without the extracted facts (commit #4526).
 
+**Fail strategy on extraction error (#6511)**: `QuarantineConfig.fail_strategy`
+(`GuardrailFailStrategy`, default `Closed`) governs what happens when `extract_facts` itself
+errors (distinct from the timeout case above, which already yields empty facts). All three
+call sites now check `error_should_block()`: under the default `Closed` strategy, the
+pre-quarantine sanitized content is **not** used as a fallback — a blocked placeholder
+(`QUARANTINE_BLOCKED_PLACEHOLDER`) is substituted instead, since quarantine-flagged content is
+by definition the highest-risk content the agent handles and falling back to baseline-only
+sanitization on LLM error would let it reach the LLM context anyway. Operators may opt into
+`Open` (fail-open, pre-1.0 explicit choice) via config.
+
 ```rust
 ```
 
@@ -294,6 +305,21 @@ Example: If the agent's response contains:
 ```
 
 The guard detects the unexpected external URL and logs a risk.
+
+### 8.1 URL-Matching Hardening (#6507, #6518, #6523)
+
+Detection covers scheme case-insensitively (`HTTPS://`, mixed-case), scheme-relative
+destinations (`//evil.com/...`, treated as external — a renderer follows these identically to
+an explicit `https://`), and CommonMark/HTML5-valid markdown/HTML image variants beyond the
+original literal syntax (leading whitespace or angle-bracket-wrapped destinations, unquoted
+HTML `img src`). The tool-URL flagging path (`URL_EXTRACT_RE`/`flagged_urls`, distinct from
+`scan_output`'s image-URL detection) normalizes both scheme and scheme-relative forms to a
+canonical shape before set-membership comparison, so the same origin captured in either
+textual form still matches.
+
+**Key invariant**: scheme matching in all exfiltration-guard URL detection is
+case-insensitive and treats a scheme-relative (`//host/...`) URL as equivalent to an explicit
+`https://` — NEVER anchor detection on a literal-case, scheme-required pattern.
 
 ---
 
@@ -500,6 +526,47 @@ provider = ""   # [[llm.providers]] name; empty = primary provider fallback
 - `UNICODE_BYPASS_RE` MUST cover `\p{Cf}` (all Unicode Format characters) — point-by-point additions are insufficient; use the Unicode category
 - U+2060 (WORD JOINER) is in `\p{Cf}` but MUST also be listed explicitly for documentation clarity
 - `CausalIpiConfig.provider` MUST resolve via the named provider registry — NEVER hardcode a provider
+
+---
+
+## Generic Secret-Shape Masking (#6593)
+
+`SecretMaskRegistry` only masks literal secret *values* explicitly registered at runtime
+(actual vault-loaded secrets) — a secret-shaped string a subagent invents, fabricates, or
+echoes in its own generated text (e.g. an `sk-`-prefixed API key it hallucinates) is invisible
+to it. `zeph_sanitizer::secret_shape::scrub_secret_shapes` closes this gap by pattern-matching
+known secret *shapes* (API-key prefixes from `zeph_common::secrets`, `Authorization: Bearer`
+headers, standalone JWTs) regardless of registration. Wired into the sub-agent live-transcript
+forward pipeline and the background sub-agent completion notice; `zeph-core::redact::redact_secrets`
+delegates to the same function rather than duplicating the regex logic.
+
+### Key Invariants
+
+- Shape-based masking is a **complement** to `SecretMaskRegistry`, not a replacement — exact
+  registered-value masking still runs; shape-based masking additionally catches unregistered,
+  agent-fabricated or agent-echoed secret-shaped strings
+- Any operator-visible surface that displays raw or lightly-processed sub-agent output
+  (transcript forwarding, completion notices) MUST pass through shape-based masking, not only
+  `SecretMaskRegistry`
+
+## JSON Recursion Depth Guard (#6551, #6554, #6594, #6595, #6605)
+
+Recursive JSON traversal helpers that walk arbitrarily-nested tool-call/tool-output values
+(`ExfiltrationGuard`'s `collect_strings` in `exfiltration.rs`, and sibling scanners in
+`zeph-tools`'s `verifier.rs`) previously recursed on the native call stack with no depth
+limit — adversarially deep, nested JSON (e.g. from a prompt-injected tool result or LLM
+output) could exhaust the stack and abort the process (CWE-674, uncatchable by
+`Result`/`catch_unwind`). Each now takes an explicit `depth: usize` parameter bounded by a
+module-level `MAX_JSON_DEPTH = 256`; at the bound, further descent is skipped (content past
+the bound is simply not scanned) and a `tracing::warn!` is logged.
+
+### Key Invariants
+
+- Every recursive JSON-value walker in the sanitization/verification path MUST bound descent
+  depth (`MAX_JSON_DEPTH` or equivalent) — never recurse unboundedly on parsed tool
+  input/output
+- At the depth bound, degrade gracefully (stop scanning further, log a warning) — never panic
+  or crash; the bound limits nesting *depth*, not element count/width
 
 ---
 

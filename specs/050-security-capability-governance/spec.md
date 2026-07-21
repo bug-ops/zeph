@@ -349,8 +349,19 @@ pub enum RiskSignal {
     /// A configured high-risk tool-pair transition occurred within K turns.
     /// E.g. `web_scrape` → `write` to a system path. (C7-d transition)
     ToolPairTransition,
+    /// `RiskChainAccumulator` (`zeph-tools`) confirmed an `exfil_read_then_send` multi-step
+    /// chain (signal code 10). Weighted alongside `VigilFlagged(High)` — both are
+    /// high-confidence signals, not heuristics (#6602).
+    ExfilReadThenSend,
+    /// `RiskChainAccumulator` (`zeph-tools`) confirmed a `cred_then_egress` multi-step chain
+    /// (signal code 11). Weighted alongside `ExfiltrationRedaction`/`ToolPairTransition` (#6602).
+    CredThenEgress,
 }
 ```
+
+`RiskSignal::from_code` maps codes `10`/`11` (previously unmapped, falling through to the
+lowest-confidence `VigilFlagged(Low)` fallback) to these two variants — see
+[[010-security/spec#RiskChainAccumulator (#4246, #3887)]] for the accumulator that emits them.
 
 `NovelTool` (Phase-1 candidate in v1 of this spec) is **dropped from Phase
 1** because of conflict with legitimate first-time MCP server use. It is
@@ -372,6 +383,8 @@ Phase 2 when persistent per-installation novelty tracking is available.
 | `weight(HighCallRate)` | 1.5 | Fires at most once per 3-turn window. |
 | `weight(UnusualReadVolume)` | 1.5 | Fires at most once per `window_turns`. |
 | `weight(ToolPairTransition)` | 2.0 | Fires only on configured anti-patterns; cardinality is operator-bounded. |
+| `weight(ExfilReadThenSend)` | 2.5 | Confirmed `RiskChainAccumulator` multi-step chain, not a heuristic; matches `VigilFlagged(High)` (#6602). |
+| `weight(CredThenEgress)` | 2.0 | Confirmed `RiskChainAccumulator` chain; matches `ExfiltrationRedaction`/`ToolPairTransition` (#6602). |
 | `decay_per_turn` | 0.85 | Half-life ≈ 4.3 turns; balances slow-burn detection vs. recovery. |
 | `window_turns` | 8 | Twice the half-life; bounds memory. |
 | `elevated_at` | 2.0 | One PolicyDeny + one PiiRedaction crosses it. |

@@ -1,11 +1,10 @@
 ---
 source: crates/zeph-tui/src/widgets/splash.rs
-assertion_line: 255
 expression: output
 ---
                                                             
                            ≈ zeph                           
                        think further.                       
-                           v0.22.2                          
+                           v0.22.3                          
                                                             
            / commands  @ files  ? keys  Tab panels

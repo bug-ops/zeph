@@ -10,7 +10,7 @@
   [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main&label=CI)](https://github.com/bug-ops/zeph/actions)
   [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
   [![MSRV](https://img.shields.io/badge/MSRV-1.97-blue)](https://www.rust-lang.org)
-  [![Tests](https://img.shields.io/badge/tests-14890-brightgreen)](https://github.com/bug-ops/zeph/actions)
+  [![Tests](https://img.shields.io/badge/tests-15347-brightgreen)](https://github.com/bug-ops/zeph/actions)
   [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](LICENSE)
 </div>
 
@@ -195,6 +195,7 @@ Secrets live in an [age-encrypted](https://github.com/FiloSottile/age) vault, ne
 - **SSRF defense (5 layers)** — HTTPS-only, pre-DNS blocklist, post-DNS IP validation, pinned-address client (blocks DNS-rebinding), and redirect-chain re-validation (max 3 hops).
 - **ShadowSentinel** — an optional LLM probe evaluates risky tool calls *before* execution, with every verdict written to an audit table.
 - **Exfiltration guard** — blocks tracking-pixel image links and suspicious URLs in tool output, and suppresses injection-flagged memory writes.
+- **Safe-by-default limits** — a fresh install ships with the per-category tool rate limiter (`[security.rate_limit]`) and a daily LLM cost cap (`[cost].max_daily_cents`, default $25/day) already enabled, so a runaway agent loop can't hammer a tool category or burn unbounded API spend. Local-only Ollama/Candle usage costs `0` and never trips the cap; any config that sets these keys explicitly keeps its own values.
 - **Tamper-evident, downgrade-resistant history** — sub-agent transcripts and session event logs are keyed-BLAKE3 hash-chained (vault-keyed `ZEPH_HISTORY_KEY`), so an edited, reordered, or partially-stripped entry is detected and fails closed before it's replayed as trusted prior context; a tampered session can be inspected read-only via `zeph sessions resume <id> --print --allow-unverified`. A per-file vault anchor (`[integrity] anchor = "vault"`, the default) additionally closes the whole-file-strip downgrade a chain alone can't catch — a file-write-only attacker cannot forge or delete a vault entry. Durable execution journals use a separate authenticated high-water-mark, vault-sealable via `zeph durable seal-integrity` to close the equivalent whole-row-delete lever. `zeph sessions verify` / `zeph doctor` report status.
 
 See the [security model](https://bug-ops.github.io/zeph/reference/security.html).

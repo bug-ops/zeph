@@ -215,6 +215,8 @@ Report findings as a structured list with severity (critical/warning/info).
 | `hooks.PreToolUse` | HookMatcher[] | `[]` | Hooks fired before tool execution (see [Hooks](#hooks)) |
 | `hooks.PostToolUse` | HookMatcher[] | `[]` | Hooks fired after tool execution (see [Hooks](#hooks)) |
 
+> **Breaking Change (v0.22.3):** Sub-agent frontmatter files with a misspelled key in the `tools:` or `permissions:` sections (e.g., `pemission_mode:`, `alow:`) now fail to load with a parse error instead of silently falling back to defaults. This is intentional to catch configuration errors early. Review and fix any typos in existing sub-agent definitions — keys are case-sensitive.
+
 If neither `tools.allow` nor `tools.deny` is specified, the sub-agent inherits all tools from the main agent.
 
 Matched skill bodies are capped by `[skills] subagent_skill_token_budget` (default `12000` tokens, config-wide, not per-agent) — applies only when `skills.include` is empty; an explicit, hand-curated `include` list is never capped — see [Skill Filtering](#skill-filtering) below.
@@ -285,6 +287,62 @@ Summarize the provided content in three bullet points.
 ```
 
 The default is `20`. Set a lower value for narrow, well-defined tasks.
+
+### `delegation_mode` — Autonomous Spawning Control
+
+`delegation_mode` controls whether the main agent can autonomously spawn this sub-agent via the orchestration scheduler, or whether spawns must be initiated by direct user action.
+
+Three modes are available:
+
+| Mode | Description |
+|------|-------------|
+| `proactive` (default) | The orchestration scheduler can autonomously spawn this agent. This is the default and preserves the subsystem's prior behavior. |
+| `explicit_request_only` | The agent can only be spawned via direct user action: `/agent spawn`, `/agent resume`, `/subagent spawn`. The orchestration scheduler cannot autonomously spawn it. Useful for channels where prompt injection is a risk (Telegram, Discord, webhooks). |
+| `disabled` | No spawn path is available (read-only operations like `/agent list` still work). Set `enabled: false` in config to disable all sub-agents globally. |
+
+Example:
+
+```yaml
+---
+name: code-reviewer
+description: Reviews code for correctness and style
+delegation_mode: explicit_request_only  # only spawn via /agent spawn, not via scheduler
+---
+
+You are a code reviewer...
+```
+
+Override in `config.toml`:
+
+```toml
+[agents]
+delegation_mode = "explicit_request_only"  # applies to all agents without explicit override
+```
+
+Or via CLI:
+
+```bash
+zeph --delegation-mode explicit_request_only
+```
+
+### Token-Level Transcript Streaming
+
+Sub-agents can stream response text and thinking output as token-level deltas within a turn, rather than waiting for the turn to complete. This provides faster, more interactive feedback.
+
+**Requirements:**
+- Provider must support streaming with tools (currently Claude)
+- Configured via the existing `forward_transcript` setting (no new config needed)
+
+When enabled, each token appears in real-time:
+
+```
+Sub-agent 'analyzer' thinking…
+Looking at the file…
+I can see the issue…
+The bug is on line 42…
+```
+
+Deltas are ephemeral and display-only (dropped under backpressure, just like turn-end summaries). The final accumulated response remains the sole source of truth for the next turn's LLM context. Providers without native streaming support fall back to full per-turn text at completion, with zero behavior change.
 
 ### Definition Locations
 

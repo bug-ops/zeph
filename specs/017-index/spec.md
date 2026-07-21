@@ -141,6 +141,20 @@ crates/zeph-core/src/agent/mod.rs
 - Size bounded by `max_repo_map_tokens` config
 - Generated on demand, not pre-computed
 
+## Recursion Depth Guard (#6551, #6595)
+
+`chunk_children` (AST descent in `chunker.rs`) recursed on the native call stack with no depth
+limit, letting an adversarially deep source file (e.g. thousands of nested brackets placed in a
+watched/indexed project directory) exhaust the stack and abort the process (CWE-674, uncatchable
+by `Result`/`catch_unwind`). It now takes an explicit `depth: usize` parameter bounded by
+`MAX_CHUNK_DEPTH = 512`; at the bound, the oversized subtree is emitted as a single leaf chunk
+instead of recursing further, and a `tracing::warn!` is logged.
+
+### Key Invariants
+
+- `chunk_children` MUST bound AST descent depth (`MAX_CHUNK_DEPTH`) — never recurse unboundedly on parsed source
+- At the depth bound, degrade gracefully (emit the remaining subtree as one leaf chunk) — never panic or crash
+
 ## Key Invariants
 
 - Indexing always runs in background — never block agent loop

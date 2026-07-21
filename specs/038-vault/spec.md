@@ -374,9 +374,52 @@ cargo run --features full -- vault set ZEPH_OPENAI_API_KEY sk-proj-...
 # List all keys (without values)
 cargo run --features full -- vault list
 
-# Generate a new age keypair
-cargo run --features full -- vault init-age
+# Generate a new age keypair and empty vault (refuses to overwrite an existing one; see §9.2)
+cargo run --features full -- vault init
+# cargo run --features full -- vault init --force   # overwrite an existing vault
 ```
+
+### 9.1 Vault Location Overrides (`--vault`, `--vault-key`, `--vault-path`)
+
+Every vault-touching CLI path resolves the vault location with a single precedence: **CLI flag
+> `ZEPH_VAULT_KEY`/`ZEPH_VAULT_PATH` env var > default vault directory**, via
+`crate::bootstrap::parse_vault_args` (and its thin wrapper `crate::bootstrap::resolve_vault_paths`,
+which falls back to `default_vault_dir()` gracefully rather than failing the caller).
+
+This precedence was the intended contract from `zeph doctor` and agent startup's inception, but
+several vault-key consumers bypassed it by hardcoding `default_vault_dir()` directly. As of #6610
+(2026-07-20), the following gap-closure fixes made the guarantee uniformly true across the binary:
+- `zeph vault init` (#6499) — previously ignored the overrides entirely, always targeting the
+  default directory
+- `zeph vault {get,set,list,rm,init}` env var resolution (#6522) — previously honored only the CLI
+  flag, not `ZEPH_VAULT_KEY`/`ZEPH_VAULT_PATH`
+- `zeph durable`'s key-material loaders (`load_write_cipher`, `load_write_hmac_key`,
+  `load_write_hwm_key`, `load_integrity_seal`), `rotate-key`, and the history-chain integrity
+  bootstrap (`configure_history_integrity`) (#6590) — previously hardcoded `default_vault_dir()`,
+  so `zeph doctor`'s `integrity.anchor` check could report `OK` against an override vault while
+  the real runtime writer silently read the default vault instead. Also fixed: `zeph serve`'s
+  non-foreground detach re-exec, which previously dropped `--vault-key`/`--vault-path` entirely
+  for the long-running daemon child process
+- registry token resolution for `zeph skill`/`zeph plugin` `search`/`get` (#6610) — previously
+  hardcoded `default_vault_dir()` for the age backend, so registry auth could resolve against a
+  different vault than the rest of the command
+
+Every vault-touching code path in the binary — init, subcommands, registry token resolution, and
+durable key-material resolution — now resolves the vault location identically. A future call site
+that reads vault key material without going through `bootstrap::resolve_vault_paths`/
+`parse_vault_args` reopens this defect class.
+
+### 9.2 Overwrite Guard on `vault init`
+
+`zeph vault init` refuses to overwrite an existing vault (a `vault-key.txt` or `secrets.age`
+already present at the resolved target) unless `--force` is passed (#6499). This closed a
+data-loss incident where `init` unconditionally regenerated a fresh, empty keypair over a live
+vault holding real secrets, silently destroying them with no recovery path.
+`AgeVaultProvider::init_vault_at(key_path, vault_path, force)` is the guarded primitive;
+`init_vault(dir)` (the pre-existing ~20 internal call sites) is a thin `force: false` wrapper, so
+every caller gets the guard by default with no signature changes required at those call sites. A
+`--force` overwrite prints an explicit "Overwriting existing vault at ..." notice, distinct from
+the normal first-time "Vault initialized:" success message.
 
 ---
 
@@ -389,6 +432,10 @@ cargo run --features full -- vault init-age
 - All secret memory is zeroized on drop — no plaintext leaks
 - Vault failures are fatal at startup (missing key → error, not fallback)
 - Age vault key file is created with `0600` permissions on Unix
+- `--vault-key`/`--vault-path` CLI overrides (and `ZEPH_VAULT_KEY`/`ZEPH_VAULT_PATH` env vars)
+  resolve identically across every vault-touching path: init, subcommands, registry token
+  resolution, and durable key-material loading (§9.1)
+- `zeph vault init` never silently overwrites an existing vault — requires `--force` (§9.2)
 
 ### Ask First
 - Using `backend = "env"` in a persistent config (should be `age` or explicit CI handling)

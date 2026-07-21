@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+## [0.22.3] - 2026-07-22
 ### Removed
 
 - `zeph-core`: removed the `#[cfg(test)]`-only legacy sequential-dispatch harness in
@@ -17298,7 +17300,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 
 [0.16.0]: https://github.com/bug-ops/zeph/compare/v0.15.3...v0.16.0
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.22.2...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.22.3...HEAD
+[0.22.3]: https://github.com/bug-ops/zeph/compare/v0.22.2...v0.22.3
 [0.22.2]: https://github.com/bug-ops/zeph/compare/v0.22.1...v0.22.2
 [0.22.1]: https://github.com/bug-ops/zeph/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/bug-ops/zeph/compare/v0.21.4...v0.22.0

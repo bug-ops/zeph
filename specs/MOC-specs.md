@@ -168,6 +168,12 @@ status: moc
 ### Transcript Integrity
 - [[081-transcript-integrity/spec|Transcript Integrity]] — tamper-evident persisted history (competitive-parity finding vs. Claude Code 2.1.205): keyed-BLAKE3 hash-chain over sub-agent transcript and session event log JSONL (new `ZEPH_HISTORY_KEY` vault root secret), detecting in-place edits, reordering, partial chain-strip, and key-epoch tampering, all fail-closed; durable journal uses a separate authenticated per-execution high-water-mark instead of a chain (positional chains are incompatible with `checkpoint_fold` compaction), default-on whenever `ZEPH_DURABLE_KEY` is provisioned, with its own key-rotation window riding the AEAD cipher's `key_id`/`previous_key_id` lifecycle (#6460); the whole-file/whole-execution downgrade-to-legacy strip gap is closed via a vault-anchor mechanism (GitHub #6449, #6461); GitHub #6360 [implemented]
 
+### Per-Message Usage/Cost Tracking
+- [[082-per-message-usage-cost-tracking/spec|Per-Message Usage/Cost Tracking]] — new `usage_records` table (migration 115, both dialects) additive to `CostTracker`'s daily aggregate; every `CostTracker`-feeding site (turn loop, planner + aggregator, ensemble members) writes a paired row via `CostTracker::price_of`, inline-awaited, no new `tokio::spawn` site; `ttft_ms` true time-to-first-token on the speculative-decoding streaming path or a TTFB proxy otherwise; Goose per-message usage-stats parity gap; GitHub #6549 [implemented]
+
+### Memory Write Consent Gate
+- [[083-memory-write-consent-gate/spec|Memory Write Consent Gate]] — write-time consent gate ("MemGhost") for untrusted memory writes: provenance tagging, confirm/disclose thresholds, and audit logging gating what untrusted-origin content may be committed to memory, distinct from `004-9`'s MemReader quality scorer; closes cross-turn/cross-tier/reload TOCTOU bypasses and write-time provenance/audit gating gaps; GitHub #6544
+
 ---
 
 ## System-Wide Features
@@ -283,6 +289,8 @@ status: moc
 | 079 | [[079-plugins/spec\|Plugin Management]] | specify | approved |
 | 080 | [[080-cross-thread-store-dynamic-handoff/spec\|Cross-Thread Store & Dynamic Handoff]] | specify | approved |
 | 081 | [[081-transcript-integrity/spec\|Transcript Integrity]] | specify | implemented |
+| 082 | [[082-per-message-usage-cost-tracking/spec\|Per-Message Usage/Cost Tracking]] | specify | implemented |
+| 083 | [[083-memory-write-consent-gate/spec\|Memory Write Consent Gate]] | specify | implemented |
 
 ---
 

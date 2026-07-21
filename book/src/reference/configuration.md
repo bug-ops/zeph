@@ -487,6 +487,13 @@ edge_history_limit = 100               # Max historical edge versions per source
 # contradiction_risk_threshold = 0.7           # Graph edge conflict risk (default: 0.7)
 # Fail-open contract: embed/LLM/graph errors yield neutral defaults. Requires graph memory for contradiction scoring.
 
+[memory.consent_gate]
+# Write-time memory consent gate — requires confirmation for untrusted tool outputs before saving
+enabled = false                    # Enable consent gate for memory writes (default: false)
+confirm_threshold = "external_untrusted"  # Trust level triggering confirmation: "trusted", "local_untrusted", "external_untrusted" (default: "external_untrusted")
+disclose_threshold = "local_untrusted"    # Trust level triggering a disclosure note: "trusted", "local_untrusted", "external_untrusted" (default: "local_untrusted")
+audit_all = true                   # Log all memory writes to audit trail (default: true)
+
 [session]
 # Durable, replayable event log per conversation-session — see "Session Persistence and Resume"
 # in the mdBook guide (advanced/session-persistence.md).
@@ -759,6 +766,7 @@ enabled = false                    # Enable native worktree isolation for backgr
 [agents]
 enabled = false            # Enable sub-agent system (default: false)
 max_concurrent = 1         # Max concurrent sub-agents (default: 1)
+delegation_mode = "proactive"  # Autonomous spawn control: "proactive" (default), "explicit_request_only", or "disabled"
 extra_dirs = []            # Additional directories to scan for agent definitions
 # default_memory_scope = "project"  # Default memory scope for agents without explicit `memory` field
                                     # Valid: "user", "project", "local". Omit to disable.
@@ -811,7 +819,7 @@ verify_timeout_secs = 120                # Timeout for post-task completeness ve
 enabled = false
 bind = "127.0.0.1"
 port = 8090
-# auth_token = "secret"     # Bearer token for gateway auth (from vault ZEPH_GATEWAY_TOKEN); warn logged at startup if unset
+auth_token = "secret"       # Required: Bearer token for gateway auth (from vault ZEPH_GATEWAY_TOKEN); gateway fails to start if missing
 rate_limit = 120
 max_body_size = 1048576     # 1 MiB
 

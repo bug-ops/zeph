@@ -328,6 +328,42 @@ A shared `StreamingBuffer` abstraction was extracted from channel-specific code.
 and Slack adapters now use the shared buffer for streaming chunk accumulation. Stub
 `elicit()` methods were added to Discord and Slack channels for future elicitation support.
 
+### Fail-Closed Allowlist Gate — Discord/Slack Parity (#6502, #6472, #6498)
+
+`TelegramChannel::start()` already refused to start with an empty allowed-users list.
+Discord (`allowed_user_ids`/`allowed_role_ids`) and Slack (`allowed_user_ids`) had no
+equivalent check: `DiscordChannel::new` and `SlackChannel::new`/`new_with_supervisor`
+started successfully with an empty allowlist and silently accepted messages from any
+sender — a fail-open default. Slack's recv-time filter in `slack/events.rs` (the actual
+per-message enforcement point, since `SlackChannel::recv`/`try_recv` do not re-check the
+allowlist) was a separate hand-rolled fail-open check with the same gap.
+
+A new `zeph_channels::auth` module centralizes both responsibilities so a future channel
+adapter cannot silently diverge from the fail-closed policy:
+
+- `require_configured_allowlist` — the **startup gate**, called before any listener is
+  spawned or network call made; refuses to start when every relevant allowlist is empty
+- `is_identity_allowed` / `all_lists_empty` — the **per-message check**, reused by every
+  adapter's `is_authorized` path and by `ConfirmLoop::confirm_accepts`
+
+An empty list is treated as "unrestricted" only inside the per-message check, which is
+safe *only* because the startup gate guarantees the list is never actually empty at call
+time in a correctly constructed adapter — the two must not be used independently.
+
+The `--init` wizard's Discord and Slack steps now prompt for an allowlist, mirroring
+Telegram's existing prompt, so a freshly initialized config is startable under the new
+fail-closed check.
+
+#### Key Invariants
+
+- Discord and Slack MUST refuse to start (fail closed) when their identity allowlist(s)
+  are entirely empty — mirroring Telegram's pre-existing policy; NEVER silently run open
+- Telegram, Discord, and Slack MUST share one authorization primitive
+  (`zeph_channels::auth`) for both the startup gate and the per-message check — no adapter
+  may hand-roll its own allowlist check
+- Breaking-but-safe: existing Discord/Slack configs with an empty allowlist fail to start
+  until an allowlist is configured; there is no opt-out config field
+
 ### Discord API 429 Rate-Limit Retry (#4746)
 
 `DiscordChannel` now handles HTTP 429 responses from the Discord API by reading the
@@ -339,3 +375,25 @@ HTTP 429 responses were propagated as `ChannelError::Send` and the message was d
 - On HTTP 429, the channel MUST wait `Retry-After` seconds before retrying — never drop the message
 - If `Retry-After` is absent or unparseable, fall back to a fixed 1-second delay
 - Retry applies to `send()` and `send_chunk()` only — `send_typing()` is non-critical and may be dropped on 429
+
+### Retry-After Clamp (#6516, #6496)
+
+`crates/zeph-channels/src/common/http_retry.rs`'s `send_with_retry` is the shared 429-retry
+dispatch path used by Discord, Slack, and Telegram alike. `f64::min` only guards against `NaN`,
+not negative values, so a malicious or misbehaving upstream 429 response with a negative or
+non-finite (`NaN`/`±inf`) `Retry-After` header or JSON body value reached
+`Duration::from_secs_f64` unclamped — which panics on such inputs, crashing the shared dispatch
+path for all three channels.
+
+`valid_retry_secs()` filters out non-finite and negative values from both the header and body
+sources, before the existing header → body → 1 s-default fallback and `MAX_RETRY_SECS` clamp —
+treating a hostile/malformed value exactly like an absent or unparseable one.
+
+#### Key Invariants
+
+- A `Retry-After` value (header or JSON body) MUST be validated finite and non-negative before
+  reaching `Duration::from_secs_f64` — an unclamped hostile value panics the shared dispatch path
+- A negative, `NaN`, or infinite `Retry-After` value MUST be treated the same as an absent or
+  unparseable one — fall through to the next source, then the 1 s default
+- This validation applies uniformly to Discord, Slack, and Telegram, since all three share
+  `send_with_retry`

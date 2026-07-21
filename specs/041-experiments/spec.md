@@ -418,7 +418,29 @@ parallel_evals = 3   # max concurrent subject model calls in Phase 1 and Phase 2
 
 ---
 
-## 12. See Also
+## 12. `ParameterRange` Deserialization Validation (#6606)
+
+`ParameterRange` (used by the hyperparameter search space, `zeph-experiments::search_space`)
+enforces its invariants — `min < max` (both finite), `min <= default <= max`, and `step`
+finite and positive when `Some` — in `ParameterRange::new`. A derived `Deserialize`
+previously populated the private fields directly, bypassing `new()`: a config-supplied
+out-of-order range (e.g. `min > max`) deserialized successfully and only panicked later, in
+`clamp()`, via `f64::clamp`'s `min <= max` precondition.
+
+Deserialization now routes through a private `RawParameterRange` shadow struct via
+`#[serde(try_from = "RawParameterRange")]`, so every deserialized `ParameterRange` — from
+TOML config or any other source — passes through the same validation as programmatic
+construction. `SearchSpace::is_valid`, a dead validation-bypass guard with zero production
+callers, was removed as superseded.
+
+### Key Invariants
+
+- Every `ParameterRange` construction path, including deserialization, MUST validate through `ParameterRange::new`'s invariants — NEVER derive `Deserialize` directly on `ParameterRange`
+- An invalid range MUST fail at deserialization time (config/search-space load) — NEVER panic later at `clamp()`/`quantize()` call time
+
+---
+
+## 13. See Also
 
 - [[MOC-specs]] — all specifications
 - [[029-feature-flags/spec]] — compile-time feature flags

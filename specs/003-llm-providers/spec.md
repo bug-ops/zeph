@@ -90,7 +90,7 @@ AnyProvider { Ollama, Claude, OpenAi, Gemini, Candle (feature "candle"),
 |---|---|---|
 | Claude | `claude.rs` | Anthropic API, prompt caching (4 breakpoints), thinking blocks |
 | OpenAI | `openai.rs` | OpenAI API + compatible endpoints |
-| Ollama | `ollama.rs` | Local via `ollama-rs`, streaming |
+| Ollama | `ollama.rs` | Local via `ollama-rs`, streaming; HTTP-status + transport-level retry (#6531) |
 | Compatible | `compatible.rs` | OpenAI-compatible HTTP (LM Studio, vLLM, etc.); also used for GonkaGate Phase 1 |
 | Candle | `candle.rs` | Local inference via HuggingFace candle (feature-gated) |
 | Gemini | `gemini.rs` | Google Gemini API |
@@ -167,6 +167,47 @@ default = true
 
 Subsystems reference a provider by name via a `*_provider` field. When the field is absent, the subsystem falls back to the default provider. See `.local/specs/024-multi-model-design/spec.md` for the full per-subsystem mapping.
 
+## Ollama Retry: HTTP-Status and Transport-Level (#6531, #6491)
+
+Unlike Claude/OpenAI/Gemini, `OllamaProvider::chat`/`chat_stream`/`chat_with_tools` originally
+sent every request through `ollama-rs` with no retry — `ollama-rs` discards the HTTP status
+code on non-2xx responses, so a single 429/503 or transient connection failure failed the whole
+turn immediately. `ollama.rs` now posts chat requests directly via a dedicated `reqwest` client
+(`ollama-rs`'s internal client is a different major `reqwest` version and not interchangeable
+with `retry::send_with_retry`), reusing `ChatMessageRequest`/`ChatMessageResponse` only for
+(de)serialization shape.
+
+Two independent retry layers:
+
+- **HTTP-status retry**: `retry::send_with_retry` (the same helper Claude/OpenAI/Gemini use)
+  retries on real HTTP 429/503, honoring `Retry-After`. Max 3 attempts, matching the other
+  backends' `MAX_RETRIES`.
+- **Transport-level retry**: `send_with_transport_retry`, layered underneath, retries transient
+  transport failures — request timeout, or a connection reset mid-request (`is_request()`
+  without `is_connect()`) — that fail before a `reqwest::Response` exists to inspect, so they
+  never reach `send_with_retry`'s status check. Same exponential backoff schedule as
+  `send_with_retry`.
+
+Connect-phase failures (`is_connect()`, e.g. no Ollama server running) are deliberately NOT
+retried — they are far more likely to be permanent misconfiguration than a transient blip, and
+`RouterProvider`'s fallback-exhaustion diagnostics depend on this failing fast.
+
+The streaming NDJSON parser introduced alongside this change buffers raw bytes across chunk
+boundaries and decodes only once a complete line is assembled, rather than decoding each chunk
+independently — decoding per-chunk can silently drop a chunk that splits a multi-byte UTF-8
+character.
+
+### Key Invariants
+
+- Ollama chat/streaming requests MUST retry on real HTTP 429/503 via `send_with_retry` — same
+  retry semantics as Claude/OpenAI/Gemini
+- Transport-level failures (timeout, mid-request connection reset) MUST be retried by
+  `send_with_transport_retry` before status-level retry ever sees a response
+- Connect-phase failures (e.g. server unreachable) MUST NOT be retried — fail fast to preserve
+  `RouterProvider` fallback diagnostics
+- The NDJSON stream parser MUST buffer across chunk boundaries and decode complete lines only —
+  NEVER decode a chunk in isolation (risks silently dropping a split multi-byte character)
+
 ## BetaHeaderRejected Retry (Claude)
 
 When a Claude request fails with `LlmError::BetaHeaderRejected`, the provider automatically
@@ -180,6 +221,35 @@ paths: `chat_with_tools_stream`, `chat_typed`, and `chat_with_tools` (extended i
 - Retry is Claude-specific — NEVER apply `BetaHeaderRejected` retry logic to other providers
 - The retried request uses identical parameters except the beta header is omitted
 - Retry happens at most once per request — no retry loop
+
+## Tool-Call ID Uniqueness (OpenAI/Compatible) (#6506, #6501)
+
+`convert_messages_structured` (OpenAI provider; also used by `CompatibleProvider`, which
+delegates message conversion to it) runs a `dedupe_tool_call_ids` pass at the end of
+conversion. Some OpenAI-compatible backends derive their `tool_call.id` counter relative to
+their own perceived context window; after Focus-based context compaction shrinks what Zeph
+sends, the backend's counter can reset and re-mint an id that collides with one still present
+earlier in the still-serialized history. A colliding `tool_calls[].id` is rejected outright by
+the backend (`tool_calls[].id must be unique within the request`), stalling the turn.
+
+`dedupe_tool_call_ids` walks the outgoing request in order, rewrites any repeated
+`tool_calls[].id` to a freshly-minted unique id, and keeps the paired `tool`-role message's
+`tool_call_id` in sync (FIFO pairing per original id, so multiple collisions on the same
+original id resolve to the correct occurrence).
+
+### Key Invariants
+
+- Every `tool_calls[].id` in a single outgoing request MUST be unique before serialization —
+  this is a hard wire-format requirement of the OpenAI-compatible API, not an optional
+  cleanliness pass
+- Ids that never collide MUST be left untouched — only colliding ids are rewritten
+- Rewriting a `tool_calls[].id` MUST update the paired `tool`-role message's `tool_call_id` to
+  match — an unpaired rewrite corrupts call/response matching
+- Dedup applies to both `openai` and `compatible` provider types, since `CompatibleProvider`
+  delegates message conversion to `OpenAiProvider`
+- Zeph does not mint `tool_call.id` values itself — it replays whatever the upstream model
+  returned as history; the fix is defensive rewriting on the outbound path, not a change to id
+  generation
 
 ## o-Series Models (OpenAI)
 

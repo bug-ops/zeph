@@ -8,7 +8,7 @@ tags:
   - protocol
   - acp
 created: 2026-04-08
-updated: 2026-07-17
+updated: 2026-07-21
 status: approved
 related:
   - "[[MOC-specs]]"
@@ -34,6 +34,7 @@ related:
 | 1.6 | 2026-07-01 | developer | Review fix pass on #5361/#5362: (S-C1) `default_temperature_preset` is now primed into the effective `provider_override` at session creation (`do_new_session`/`do_load_session`/`do_fork_session`/`do_resume_session`), not just advertised in the IDE dropdown; (S-C2) the `$/cancel_request` watcher select is now `biased` with prompt completion checked first, and `drain_agent_events` drains a stale `cancel_signal` permit before its main loop, so a cancellation resolving at/after prompt completion can no longer leak into the next, unrelated prompt (also hardens the pre-existing `session/cancel` no-active-prompt race — `cancel_before_prompt_returns_cancelled` renamed to `cancel_before_prompt_is_a_no_op` to reflect the corrected semantics). Documented fork/resume reset behavior for `temperature_preset` (#5373 tracking issue filed); filed #5374 for the untested `resume_session` store-backed path. |
 | 1.7 | 2026-07-01 | developer | Fixed #5379: `zeph acp model-config show` now loads the resolved config and marks the active `[acp.model_config].default_temperature_preset` in its output, instead of only printing the static preset table. Resolved #5373: `session/fork` and `session/resume` now inherit `model`/`temperature_preset`/`thinking_enabled`/`auto_approve_level` from the source session (live in-memory state, falling back to a persisted close-time snapshot, falling back to configured defaults) instead of always resetting to defaults — new `acp_sessions` columns via migration `105_acp_session_config`; see "Fork/Resume Config Inheritance" below. |
 | 1.8 | 2026-07-17 | developer | Renovate `rust-minor-patch` bundle bumped core `1.0.1`→`1.2.0`, schema `=1.1.0`→`=1.4.0`. Core `1.1.0` stabilized `$/cancel_request` unconditionally and dropped its `unstable_cancel_request` forward — `unstable-cancel-request` is now a local-only opt-in gate (Cargo feature unchanged, but no longer maps to an upstream feature); `unstable-boolean-config` tombstoned the same way after schema `1.1.0` made `SessionConfigOptionValue::Boolean` unconditional. Schema `1.4.0` renamed `SetProviderRequest`/`DisableProviderRequest`/`ProviderInfo`'s `id: String` field to `provider_id: ProviderId` (`Arc<str>` newtype) — updated all `providers.rs` call sites and tests. No handler/transport/builder-chain logic changed otherwise. |
+| 1.9 | 2026-07-21 | developer | Mechanical decomposition (#6624): `ZephAcpAgentState`'s god-object `agent/mod.rs` (4424 lines, six unrelated responsibilities) split into eight sibling files under `crates/zeph-acp/src/agent/`. No public API or behavior change. See "Implementation Structure" below. |
 
 > [!warning] Body narrative lags the 1.8 changelog entry — 2026-07 audit
 > Only the top summary (line 22) and the changelog table above were updated for the 1.8 bump.
@@ -98,6 +99,33 @@ AcpSessionManager
 - Session fork: create a new session branching from an existing session at a given turn
 - Session resume: reconnect to an existing session by ID
 
+## Implementation Structure (`agent/` module decomposition, #6624)
+
+`ZephAcpAgentState` (the ACP session coordinator struct) had accumulated six unrelated
+responsibilities spanning ~2955 lines of impl blocks inside a 4424-line `agent/mod.rs`:
+builder wiring, idle-session reaping, LSP diagnostics, session lifecycle, slash-command/model
+dispatch, and MCP extension handling. This increased merge-conflict surface on every ACP
+feature PR and made it hard to reason about which methods were safe to test in isolation.
+
+Each cluster was extracted into a sibling file under `crates/zeph-acp/src/agent/`, following
+the existing `providers.rs`/`usage.rs` precedent (file-local `impl ZephAcpAgentState` blocks):
+
+| Module | Responsibility |
+|---|---|
+| `builder.rs` | Dependency wiring / construction |
+| `reaper.rs` | Idle-session reaping |
+| `lsp_events.rs` | LSP diagnostics forwarding |
+| `mcp_ext.rs` | MCP extension-method handling |
+| `model.rs` | Model switching / model_config dispatch |
+| `slash.rs` | Slash-command dispatch |
+| `turn.rs` | Turn/prompt execution |
+| `session.rs` | Session lifecycle (new/load/fork/resume/close) |
+
+`mod.rs` shrank from 4424 to 1408 lines, retaining the struct definition, type aliases, and
+thin protocol dispatch methods. Mechanical extraction only: all 25 fields stay on the
+coordinator struct, no behavior change, no signature changes beyond the necessary
+private-to-`pub(crate)` visibility bumps required for cross-file calls within the crate.
+
 ### Agent Spawner Contract (1.0.1)
 
 Agent sessions use the `Agent.builder()` / `run_agent()` pattern. Session state is `Arc`-wrapped.
@@ -129,6 +157,35 @@ AcpPermissionGate (TOML-backed, SQLite-persisted)
 - Patterns: `git = "allow"`, `rm = "deny"` — applied to binary names
 - Async request queue: async lookup with oneshot reply channels — agent blocked until user answers
 - Tool call lifecycle: `proposed → approved/denied → persisted → executed → result`
+
+### Shell Interpreter Permission Cache Identity (#6511, #6485)
+
+For ordinary binaries, the "Allow always"/"Reject always" cache key is the extracted
+binary name (`build_permission_title` in `crates/zeph-acp/src/terminal.rs`), preserving
+per-binary granularity. For shell interpreters (`SHELL_INTERPRETERS`: `bash`, `sh`, `zsh`,
+`fish`, `dash`) the binary name alone does not determine what the command does — `bash -c
+<script>` can run arbitrary code, and shell-stdin writes are equivalent to typing more
+commands. Keying the cache on the interpreter name alone let one approved `bash -c` script
+silently authorize every future invocation of that interpreter regardless of content,
+including the args-form (`command` + structured `args`) variant and case-variant
+interpreter names.
+
+The cache key for shell interpreters now embeds a BLAKE3 digest of the effective
+payload — the full command line, or (for the args-form) `command` joined with `args` via
+a `\u{1}` separator (`effective_bash_payload`), or the stdin bytes for `bash_stdin` writes.
+"Allow always" is therefore scoped to the exact command/payload: repeating the identical
+command still short-circuits the prompt, but any different command triggers a fresh IDE
+prompt.
+
+#### Key Invariants
+
+- A shell-interpreter "Allow always" grant MUST NOT extend to a different command/payload
+  through the same interpreter — the cache identity binds to a digest of the payload, not
+  the interpreter name alone
+- This applies uniformly to both the inline-command and args-form (`command` + `args`)
+  invocation styles, and to `bash_stdin` writes
+- Breaking change: persisted shell-interpreter permission cache entries from before this
+  fix are silently ignored and re-prompted
 
 ## Protocol Messages
 

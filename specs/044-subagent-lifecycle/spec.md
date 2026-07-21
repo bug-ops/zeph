@@ -97,11 +97,15 @@ SO THAT secrets are not exposed beyond the subagent's session lifetime.
 **Acceptance criteria:**
 
 ```
-GIVEN a Grant with kind=VaultSecret and a TTL of 300s
+GIVEN a Grant with kind=Secret(key) and a TTL of 300s
 WHEN the grant expires (TTL elapses)
 THEN subsequent calls to grants.check() return Err for that grant
 AND memory is zeroized when the grant is dropped
 ```
+
+`GrantKind::Tool(tool_name)` grants are TTL-tracked identically but are a separate,
+narrower mechanism — see Section 17 for its distinct default-permit, time-box-only
+enforcement semantics, which differ from `Secret`'s fail-closed check.
 
 ### US-004: Tool Policy Enforcement
 
@@ -215,7 +219,7 @@ AND memory content exceeding the token budget is truncated, not omitted entirely
 | `SpawnContext` | Parent-derived spawn state | `parent_messages`, `parent_cancel`, `parent_provider_name`, `spawn_depth`, `mcp_tool_names`, `max_trust_level`, `inherited_tool_allowlist` |
 | `PermissionGrants` | TTL-bounded permission registry | Map of `GrantKind` → expiry timestamp |
 | `Grant` | Single permission grant | `kind: GrantKind`, `ttl_secs`, expiry instant |
-| `GrantKind` | Type of permission | Variants: `VaultSecret`, `Tool` |
+| `GrantKind` | Type of permission | Variants: `Secret(String)` (vault key), `Tool(String)` (tool name, #6625) |
 | `FilteredToolExecutor` | Tool executor with policy gate | Wraps real executor; enforces `ToolPolicy` and denylist; tool ID comparison is case-insensitive and strips argument suffixes via `normalize_tool_id` |
 | `MemoryAwareExecutor` | Sandbox-bypass executor for `memory: user` subagents | Wraps inner executor; retries `SandboxViolation` file-tool calls against a `FileExecutor` scoped to `~/.zeph/agent-memory/<name>/`; path canonicalization delegated to `FileExecutor` to prevent traversal (#3771) |
 | `PlanModeExecutor` | Executor for plan mode | Wraps real executor; disables write operations |
@@ -456,12 +460,39 @@ arrives:
 - Default `false`; enabling it changes only what is forwarded, never the underlying turn loop's
   control flow or result.
 
+### Token-Level Intra-Turn Streaming (issue #6456)
+
+Superseding the once-per-turn-only limitation above: when the active provider's native
+streaming-with-tools path is available (`AnyProvider::chat_with_tools_stream`, driven from
+`agent_loop.rs`), text/thinking chunks are forwarded as partial deltas *within* a turn rather
+than only once the turn completes. Non-streaming backends, or a streaming attempt that fails,
+keep the prior once-per-turn forwarding unchanged — both delivery modes share the same
+`ForwardSender::send_text`/`send_thinking` API and are tail-dropped identically under
+backpressure. A caller must never send both the streamed deltas and the final whole-turn text
+for the same turn (that would double-forward the same content).
+
+**Split-pattern masking gap and its fix**: sanitizing each streamed delta in isolation let a
+secret or PII pattern split across two delta boundaries evade both fragments' individual checks.
+The forwarding drain now holds back the trailing `SANITIZE_HOLDBACK_BYTES` (256) bytes of each
+pending `Text`/`Thinking` buffer — rounded down to the nearest UTF-8 char boundary — before
+sanitizing and releasing the safe prefix; the full remaining buffer is flushed with zero
+holdback immediately before an explicit `Terminal` chunk or the hard-abort backstop, so buffered
+content is only ever delayed, never silently dropped. A secret/PII pattern whose split halves
+are separated by more than 256 bytes of other already-flushed content remains a residual,
+practically-unreachable limitation of any bounded-window approach.
+
+**Design contract — deltas are ephemeral, display-only**: no consumer (TUI ring buffer, `--bare`
+sink, or any future sink) may reconstruct the subagent's conversational state from concatenated
+forwarded chunks, let alone feed it back into the parent's LLM context. The loop's own
+accumulated response text (returned from `run_agent_loop` and pushed into `messages`) is
+assembled independently of whether any given delta was actually forwarded; only the guaranteed
+terminal chunk marks the point at which a consumer may treat the run as having reached a
+terminal state.
+
 ### Known Limitation
 
-Token-level intra-turn streaming (sub-turn granularity) is deferred to a follow-up — forwarding
-happens once per completed LLM response, not per token. Combining `--bare` with `--json`
-interleaves two different JSON schemas on stdout — unsupported for now; use `--bare` without
-`--json` for scripted-pipeline forwarding.
+Combining `--bare` with `--json` interleaves two different JSON schemas on stdout — unsupported
+for now; use `--bare` without `--json` for scripted-pipeline forwarding.
 
 ---
 
@@ -547,7 +578,146 @@ so it remains permitted under `explicit_request_only` and `proactive`).
 
 ---
 
-## 16. See Also
+## 16. Secret-Leak, Trust-Cap, and Transcript-Finalize Wiring (#6503: issues #6492, #6493, #6494)
+
+Three trust-boundary gaps in the grant/spawn/transcript machinery, each closed by wiring
+already-existing enforcement code to an actual call site — the enforcement logic itself
+predated this fix in every case; only the connection was missing.
+
+### 1. Secret-leak on tool echo (#6492)
+
+A granted vault secret echoed back verbatim by a tool (e.g. `shell: echo $SOME_VAULT_KEY`)
+could previously reach the transcript, the next turn's LLM context, and the debug dump
+unmasked. `SubAgentManager::deliver_secret` now registers the delivered value into the shared
+`SecretMaskRegistry` (the same registry instance already used for the parent's outbound-LLM
+masking and the forward-transcript drain's `SanitizeLayers`, Section 14) at delivery time, not
+only on eventual read. The subagent loop's `handle_tool_step` masks every tool-result `content`
+against this registry (`would_mask` pre-check, then `mask`) immediately before it is pushed
+into `messages` — the single chokepoint feeding the transcript, the following turn's LLM
+context, and the debug dump. Contingent on `secret_masking.enabled` (default `true`; the
+registry is `None` when disabled) and on the secret being at least `MIN_SECRET_LEN` (8) bytes.
+
+### 2. Trust-cap wiring (#6493)
+
+Section 12's `apply_constraint_propagation` clamps `SpawnContext::max_trust_level` correctly,
+but `build_spawn_context` — the only production call site constructing a top-level
+`SpawnContext` — left the field `None` unconditionally, so the clamp had nothing to clamp
+against and a spawned sub-agent's trust was never actually capped despite the enforcement
+machinery existing. `build_spawn_context` now sets `max_trust_level` from a new
+`parent_effective_trust_level()`, which folds `min_trust` across the trust levels of every
+currently-active skill this turn (yielding `Trusted` when no skill is active) — mirroring
+exactly the fold `apply_skill_trust_and_gating` applies to the parent's own tool gate, so the
+cap handed to a spawned sub-agent is always consistent with what the parent itself enforces on
+its own turn. Because `build_spawn_context` is the single top-level construction site, every
+spawn path reached through it (foreground, background, `/agent resume`) is covered.
+
+### 3. Finalize-skip on turn error (#6494)
+
+`run_agent_loop`'s transcript anchor `finalize()` call (issue #6449) was reached only on the
+loop's normal-completion or explicit-`break` exit paths — a `run_turn` error propagated via an
+early `?`-return skipped it entirely, leaving that transcript chained-but-unanchored and
+reopening the whole-strip downgrade issues #6449/#6461 had closed. A `run_turn` error is now
+captured into a `pending_error` local and the loop `break`s instead of early-returning;
+`finalize()` then runs unconditionally on every loop-exit path (including the LLM-error path),
+and the captured error is only re-raised to the caller after `finalize()` has run.
+`publish_completed_status` is skipped whenever `pending_error.is_some()`, since
+`call_provider_with_status` already published the terminal `Failed` status (and its matching
+forwarded terminal chunk, Section 14) before returning the error — publishing `Completed`
+afterward would overwrite that status and double-forward a terminal chunk.
+
+### Key Invariants
+
+- A delivered secret MUST be registered into the shared mask registry before it can reach any
+  tool-result content — masking a registry that was never populated with the secret it is
+  supposed to catch is equivalent to no masking at all.
+- `max_trust_level` MUST be populated from the parent's own current effective trust at every
+  top-level spawn call site — an unpopulated (`None`) field makes Section 12's clamp a no-op,
+  not an error, so this is a silent-bypass class of gap distinct from a panic or rejected spawn.
+- Transcript `finalize()` MUST run on every `run_agent_loop` exit path, including an LLM/tool
+  error — skipping it on any path reopens the anchor-chain downgrade #6449/#6461 closed.
+
+---
+
+## 17. Tool Grant TTL Enforcement Before Dispatch (issue #6625)
+
+### Problem
+
+`GrantKind::Tool` grants were TTL-tracked in `PermissionGrants` identically to
+`GrantKind::Secret` grants (Section 3, US-003), but prior to this fix no production call site
+ever checked a `Tool` grant before dispatching the corresponding tool call — the type implied
+enforcement that did not exist. A `Tool` grant could expire or be revoked with no observable
+effect on subsequent dispatch.
+
+### Mechanism
+
+`PermissionGrants` is now shared via `Arc<Mutex<_>>` between `SubAgentHandle` and the spawned
+agent-loop task. This differs from how `Secret` grants are delivered (per-key over a channel):
+`Tool` grants need live shared state instead, since `revoke_all()` must be visible to the loop
+immediately, without a delivery round-trip. `PermissionGrants::check_tool_grant(tool_name)`
+returns a `ToolGrantCheck` (`NoGrant` / `Active` / `Expired`) and is enforced as the *first*
+check in `handle_tool_step` — before any hook fires or the executor runs. A loop-local
+`active_tool_grants_seen` set distinguishes "revoked" from "never granted" after
+`sweep_expired()` evicts a stale entry — without it, a rejected dispatch would silently permit
+the very next call for the same tool, since the evicted grant would then read as `NoGrant`.
+
+### Confirmed Semantics — default-permit, time-box only, NOT an allow-list
+
+- Absence of any `Tool` grant for a given tool name always permits the call — this is the
+  universal state for every production caller today, since none yet creates `GrantKind::Tool`
+  grants, so this fix causes no observable behavior change until a caller starts issuing them.
+- A grant existing for one tool name never restricts any other tool name, even for the same
+  sub-agent — there is no implicit "some grants exist, so everything else is denied" mode.
+- Matching is exact tool-name string equality only — no prefix/glob support for tool families
+  (e.g. an MCP server-scoped grant does not cover sub-tool names under that server).
+
+### Key Invariants
+
+- `check_tool_grant` MUST run before any hook fires or the executor runs — enforcing after
+  either would let a revoked/expired grant's side effects occur regardless of the check result.
+- `Tool` grants MUST NEVER be reinterpreted as an allow-list — `NoGrant` always means
+  "unrestricted by this mechanism," never "denied." Extending this into allow-list semantics
+  requires a deliberate, separately-specified design change, not an incidental generalization.
+- A grant evicted by `sweep_expired()` MUST still read as `Expired` (fail-closed) rather than
+  `NoGrant` (fail-open) on the same tool for the remainder of the run — the loop-local
+  `active_tool_grants_seen` set is what makes this distinction possible.
+
+---
+
+## 18. Strict Nested Frontmatter Parsing (issue #6626) — BREAKING CHANGE
+
+### Problem
+
+`RawSubAgentDef` carries `#[serde(deny_unknown_fields)]`, but serde does not propagate that
+attribute into nested struct types — `RawToolPolicy` (the `tools:` section) and
+`RawPermissions` (the `permissions:` section) each need their own independent
+`deny_unknown_fields` declaration. Without it, a typo inside either nested section (e.g.
+`pemission_mode:`, `alow:`) was silently ignored by serde's normal unknown-field handling and
+the section fell back to its fail-safe default, instead of the definition failing to load —
+masking a misconfigured sub-agent definition as a silently-permissive default.
+
+### Mechanism
+
+Both `RawToolPolicy` and `RawPermissions` now carry `#[serde(deny_unknown_fields)]`. Every
+field on both structs already carries an explicit `#[serde(default = ...)]`, so this addition
+only rejects genuinely unknown keys (typos) — it has no effect on omission of optional fields,
+so existing valid frontmatter that omits optional keys continues to parse unchanged.
+
+**BREAKING CHANGE**: `SubAgentDef::parse()` now returns `Err(SubAgentError::Parse)` for any
+sub-agent frontmatter file with a misspelled or otherwise unrecognized key inside its nested
+`tools:` or `permissions:` section — previously such a file loaded successfully with that
+field's section silently reset to its default.
+
+### Key Invariants
+
+- `#[serde(deny_unknown_fields)]` on a parent struct does NOT extend to nested struct types —
+  each nested struct requiring strict rejection must declare the attribute independently.
+- Strict rejection must never conflict with optional-field omission — adding
+  `deny_unknown_fields` to a struct without first ensuring every field has an explicit default
+  would reject currently-valid frontmatter that merely omits an optional key.
+
+---
+
+## 19. See Also
 
 - [[constitution]] — project principles
 - [[002-agent-loop/spec]] — parent agent loop that uses `SubAgentManager`

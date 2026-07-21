@@ -573,14 +573,25 @@ call risk signals.
 
 ### Integration
 
-`RiskChainAccumulator` is reset at `begin_turn()` via `SecurityState` and accumulates signals
-from `ShellExecutor` and `NetworkEgress` risk classifications during the tool loop. Signals
-are pushed to `RiskSignalQueue`. When a complete chain is detected, a `SecurityEvent::RiskChain`
-is emitted before the offending tool is executed.
+`RiskChainAccumulator::advance_turn()` (#6602) is called at `begin_turn()` via `SecurityState`
+and accumulates signals from `ShellExecutor` and `NetworkEgress` risk classifications during the
+tool loop. Signals are pushed to `RiskSignalQueue`. When a complete chain is detected, a
+`SecurityEvent::RiskChain` is emitted before the offending tool is executed. `advance_turn()`
+does NOT fully clear state — it prunes only calls older than a bounded window
+(`CROSS_TURN_WINDOW_TURNS`, 3 turns) and recomputes the cumulative score from what remains, so a
+chain deliberately split across turns (sensitive read in turn N, network egress in turn N+1) is
+still caught. Each detection pushes its signal code once (deduped while the same chain stays
+live) to avoid flooding `TrajectorySentinel` with duplicates from one logical attack.
 
 ### Key Invariants
 
-- `RiskChainAccumulator` MUST be reset at the start of every turn — accumulated chains never span across turns
+- `RiskChainAccumulator` is scoped to one agent **session** (constructed once per
+  session/connection, never shared across concurrent sessions via a common `Arc`) — a
+  per-connection-shared instance lets one session's turn boundary wipe or cross-contaminate
+  another session's chain state
+- `advance_turn()` prunes calls older than the bounded cross-turn window — it never fully
+  resets state, so a chain split across turns within the window is still detected; a call
+  that ages out of the window no longer contributes to a later detection
 - A `RiskChain` event blocks the triggering tool call — not just logs it
 - NEVER accumulate signals from subagent tool calls into the parent session's chain accumulator
 

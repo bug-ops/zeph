@@ -106,6 +106,14 @@ Config migration step 50 adds these fields. Both live under `[[mcp.servers]]`.
 
 - `ToolRefreshEvent` channel is bounded to 16 slots (commit #4488) — prevents unbounded memory growth in high-churn registries
 - Cancellation token plumbed through retry loop (commit #4609) — shutdown is clean even during retry wait
+- **Breaking change (#6614)**: `McpClient::connect` no longer takes two adjacent positional
+  `bool`s (`suppress_stderr`, `env_isolation`) — it takes `StderrPolicy` (`Forward`/`Suppress`)
+  and `EnvPolicy` (`InheritAll`/`Isolated`) enums instead, so a future call-site edit can no
+  longer silently swap the two and flip security-relevant behavior (full parent-env
+  inheritance) without a compiler error. `connect_url`/`connect_url_with_headers`/
+  `connect_url_oauth` now take `McpTrustLevel` directly instead of a pre-collapsed
+  `trusted: bool`. No runtime behavior change — call sites in `manager/retry.rs` and
+  `manager/connect.rs` convert at the boundary.
 
 ## See Also
 

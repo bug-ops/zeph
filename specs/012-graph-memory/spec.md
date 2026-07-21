@@ -335,6 +335,102 @@ link_weight_decay_interval_secs = 86400
 
 ---
 
+## Graph Retrieval Strategy Dispatch (`GraphConfig::retrieval_strategy`, #6597, BREAKING)
+
+### Overview
+
+`[memory.graph] retrieval_strategy` selects which recall algorithm the live graph-recall path
+uses. Six variants, dispatched from `SemanticMemoryBackend::recall_graph_facts`
+(`crates/zeph-agent-context/src/memory_backend.rs`) to the matching `SemanticMemory` method:
+
+| `retrieval_strategy` value | `SemanticMemory` method | Description |
+|---|---|---|
+| `synapse` (default) | `recall_graph_activated` | SYNAPSE spreading activation — see above |
+| `bfs` | `recall_graph` | Hop-limited BFS (pre-SYNAPSE behavior) |
+| `astar` | `recall_graph_astar` | A* shortest-path via petgraph — see PRISM below |
+| `watercircles` | `recall_graph_watercircles` | Concentric ring BFS — see below |
+| `beam_search` | `recall_graph_beam` | Beam search, top-K candidates per hop (`beam_search.beam_width`) |
+| `hybrid` | classifies the query first via `classify_graph_strategy`, then dispatches to the matching method above | Dynamic per-query strategy selection |
+
+`spreading_activation.enabled = true` force-overrides the resolved strategy to `synapse`
+regardless of `retrieval_strategy`'s configured value.
+
+### Before #6597: Dead-on-Arrival Config Field
+
+`retrieval_strategy` was parsed, validated, and documented in `zeph-config`, but the live
+recall path used by every real entry point (CLI/ACP/daemon/serve) never read it — it only
+switched on the `spreading_activation.enabled` boolean (SYNAPSE vs. plain BFS). The correct
+6-way dispatch logic existed in `zeph-agent-context::helpers`, but that module had zero
+production callers — a "wired in isolation, never connected" defect. #6597 ports the dispatch
+into the live path (`zeph-context`'s `fetch_graph_facts` → `zeph-agent-context`'s
+`SemanticMemoryBackend::recall_graph_facts`) and removes the now-fully-dead duplicate chain
+from `zeph-agent-context::helpers`.
+
+`ZoomIn`/`ZoomOut` `recall_view` enrichment (source-message provenance, 1-hop neighbor
+expansion) — previously implemented only inside `SemanticMemory::recall_graph_view` — is
+preserved across all 6 strategies via a shared `SemanticMemory::enrich_recall_view` post-dispatch
+pass, run after whichever concrete method produced the base fact set.
+
+### Config
+
+```toml
+[memory.graph]
+retrieval_strategy = "synapse"   # synapse | bfs | astar | watercircles | beam_search | hybrid
+
+[memory.graph.beam_search]
+beam_width = 10
+
+[memory.graph.watercircles]
+ring_limit = 0   # 0 = auto (recall_limit / max_hops)
+```
+
+### Key Invariants
+
+- `spreading_activation.enabled = true` always overrides `retrieval_strategy` to `synapse` — never let a configured `bfs`/`astar`/etc. silently win over an explicitly enabled spreading-activation config
+- `enrich_recall_view` (ZoomIn/ZoomOut) MUST run after every strategy's base recall, not just BFS's — `memcot_config.recall_view` must keep working regardless of `retrieval_strategy`
+- `hybrid` classifies once per `recall_graph_facts` call, then dispatches — never re-classifies per candidate
+
+### BREAKING CHANGE (#6597)
+
+Deployments running the default graph-memory config (`spreading_activation.enabled = false`,
+`retrieval_strategy` left unset) now use SYNAPSE spreading-activation recall
+(`recall_graph_activated`) instead of the previous, unintentional plain-BFS fallback
+(`recall_graph`) — before this fix, `retrieval_strategy` was never read at all, and the live
+path fell back to BFS purely because `spreading_activation`'s own params were only built when
+`enabled = true`. Set `retrieval_strategy = "bfs"` under `[memory.graph]` to keep the prior
+BFS-only behavior. Spreading activation is more expensive per-recall than plain BFS —
+deployments sensitive to graph-recall latency/cost should benchmark before upgrading or pin
+`retrieval_strategy = "bfs"`.
+
+---
+
+## WaterCircles: Concentric Ring BFS. `crates/zeph-memory/src/graph/retrieval_watercircles.rs`.
+
+### Overview
+
+`graph_recall_watercircles` (`retrieval_strategy = "watercircles"`) buckets BFS-discovered
+edges into concentric rings by hop distance from the seed entities, returning results ring by
+ring up to `max_hops`. `[memory.graph.watercircles] ring_limit` caps facts returned per ring
+(`0` = auto: `recall_limit / max_hops`).
+
+### Ring-Hop Distance Fix (#6600)
+
+`hop_dist` for an edge must be the edge's **farther** endpoint from the seed — i.e.
+`max(source_depth, target_depth)` — not simply "prefer source, fall back to target". BFS
+discovers an edge regardless of traversal direction, so an edge's source-node depth is almost
+always present in the depth map but one ring shallower than the edge's true ring. Before
+this fix, `hop_dist` preferred source depth whenever present, so the `dist != hop` ring filter
+never matched for any typical seed-outward graph — every edge was silently dropped regardless
+of `ring_limit`, for any `ring_limit`.
+
+### Key Invariants
+
+- `hop_dist = max(source_depth, target_depth)` — NEVER prefer one endpoint's depth over the
+  other; a "prefer source, fallback to target" rule misclassifies the ring for edges discovered
+  in the opposite BFS orientation and silently drops them from every ring's results
+
+---
+
 ## PRISM: Query-Sensitive A* Edge Costing (#4079, #4360)
 
 Opt-in traversal enhancement that weights BFS graph recall by cosine similarity between the

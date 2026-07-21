@@ -82,6 +82,9 @@ You are a research assistant. Use web_scrape to gather information.
 Always cite your sources.
 ```
 
+> [!IMPORTANT]
+> The top-level frontmatter and its nested `tools:` and `permissions:` sections all reject unknown keys. A misspelled key (e.g. `pemission_mode:`, `alow:`) fails the definition load instead of silently falling back to defaults, so security-relevant `permission_mode`/`worktree` typos surface immediately.
+
 ## Zero-trust grants
 
 Sub-agents receive only what is explicitly granted:
@@ -97,6 +100,8 @@ let grants = PermissionGrants::builder()
 ```
 
 **Important:** Tools not in the grant list are inaccessible to the sub-agent even if they are globally available. Use `tools.except` in the definition to additionally deny specific tools from an inherited grant set.
+
+Both `GrantKind::Tool` and `GrantKind::Secret` grants carry TTL and revocation state. `handle_tool_step` re-checks `PermissionGrants::check_tool_grant` immediately before every tool dispatch, so an expired or revoked tool grant is rejected with an actionable error at call time — grants are shared between `SubAgentManager` and the spawned agent-loop task via `Arc<Mutex<..>>`.
 
 ## Context propagation
 

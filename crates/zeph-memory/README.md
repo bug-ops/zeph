@@ -370,6 +370,7 @@ enabled = true
 max_hops = 2
 recall_limit = 10
 extraction_timeout_secs = 15
+retrieval_strategy = "synapse"      # synapse (default) | bfs | astar | water_circles | beam_search | hybrid
 use_embedding_resolution = true     # semantic entity dedup via Qdrant (default: false)
 entity_similarity_threshold = 0.85  # auto-merge threshold
 entity_ambiguous_threshold = 0.70   # LLM disambiguation threshold
@@ -387,7 +388,15 @@ timeout_ms = 500                    # Activation timeout to prevent runaway trav
 
 [memory.graph]
 recall_timeout_ms = 1000            # Timeout for the full graph recall call (default: 1000)
+
+[memory.graph.beam_search]
+beam_width = 10                     # top candidates kept per hop when retrieval_strategy = "beam_search"
+
+[memory.graph.watercircles]
+ring_limit = 0                      # facts per ring when retrieval_strategy = "water_circles" (0 = auto: limit / max_hops)
 ```
+
+`retrieval_strategy` selects which recall algorithm the live graph-recall path invokes: `synapse` (default; SYNAPSE spreading activation), `bfs` (hop-weighted traversal), `astar` (A* shortest path), `water_circles` (concentric ring-hop expansion, tuned by `[memory.graph.watercircles] ring_limit`), `beam_search` (top-K per hop, tuned by `[memory.graph.beam_search] beam_width`), or `hybrid` (an LLM classifier picks a strategy per query). Setting `[memory.graph.spreading_activation] enabled = true` force-overrides the strategy to `synapse`. `ZoomIn`/`ZoomOut` `recall_view` enrichment is preserved across all six strategies.
 
 ## BeliefMem probabilistic edges
 
@@ -457,6 +466,15 @@ Tags messages with a category derived from the active skill or tool context. The
 ## TiMem temporal-hierarchical memory tree
 
 Organises memories as leaf nodes and periodically consolidates similar clusters into parent summaries via a background sweep. Context assembly traverses the tree for complex queries, mixing leaf-level detail with higher-level summaries. Configure via `[memory.tree]`.
+
+## Per-message usage and cost tracking
+
+The `usage_records` table (migration 115, SQLite and PostgreSQL) durably records token counts, cost, latency, TTFT/TTFB, and tokens-per-second for every LLM call that feeds `CostTracker::record_usage`, joined to the conversational message that produced it. Writes follow the existing `[cost] enabled` gate and are inline-awaited on the same call sites that update `CostTracker` — no new background tasks and no new config surface (additive telemetry).
+
+- `UsageRecord` / `UsageSource` — the per-call record type and its origin classification.
+- `SqliteStore::record_usage_row` — persist one row.
+- `SqliteStore::message_usage` / `conversation_usage` — query usage for a single message or a whole conversation.
+- `SqliteStore::usage_cost_since` — aggregate cost over a time window.
 
 ## Features
 

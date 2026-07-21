@@ -104,6 +104,13 @@ vault-referenced, since these are public keys). Env override: `ZEPH_A2A_CARD_TRU
 Setting `card_trust_policy = "require"` while the `card-signing` feature is not compiled in
 **fails config load** (`Config::validate`) rather than silently downgrading to `ignore`.
 
+Since #6553/PR #6615 (`e0af1f70c`), resolving to the default `ignore` policy emits a
+`tracing::warn!` at TUI-remote discovery time (`src/tui_remote.rs`), plus a visible in-chat
+system message queued before any other TUI event (default logging alone is not a reliable
+signal in `--tui` mode — the stderr layer is suppressed there) — a non-fatal, visibility-only
+change: peer `AgentCard`s are still accepted without signature/origin verification under
+`ignore`, the same as before.
+
 ## JSON-RPC 2.0 Protocol
 
 ```
@@ -179,6 +186,13 @@ flags: `require_tls` and `ssrf_protection`. `SecurityPolicy::hardened()` enables
 so a call site can never silently inherit a permissive client by omission (issue #6553).
 `A2aClient::new_insecure` is the explicit opt-in to `SecurityPolicy::permissive()` for
 local/dev callers that want the previous default-constructor behavior.
+
+> [!warning] BREAKING CHANGE (#6553/PR #6615, `e0af1f70c`)
+> `A2aClient::new` changed signature from `new(client)` (permissive by default) to
+> `new(client, security)` — the `SecurityPolicy` argument is now mandatory, not optional via
+> `.with_security(...)`. Existing callers of `A2aClient::new(client)` must migrate to either
+> `A2aClient::new(client, SecurityPolicy::hardened())` (recommended for production) or
+> `A2aClient::new_insecure(client)` (explicit opt-in, equivalent to the old default).
 
 ### SSRF invariant: validated address == connected address
 

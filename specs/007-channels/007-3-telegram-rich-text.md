@@ -10,7 +10,7 @@ tags:
   - telegram
   - bot-api-10
 created: 2026-07-20
-status: draft
+status: implemented
 related:
   - "[[007-channels/spec]]"
   - "[[007-channels/007-1-telegram-guest-mode]]"
@@ -30,6 +30,11 @@ related:
 > as Phase 1 MVP, defines the phased roadmap for the new formatting surface (Phase 2:
 > spoiler/underline/custom-emoji via markup), and defers structured `sendRichMessage`
 > blocks to a separate epic (Phase 3). Closes #6541.
+>
+> **Phase 1 MVP landed** in commit `fdd887fbf` (#6604): guest-mode escaping fix, per-line
+> multi-line/nested blockquote flattening, `expandable_blockquote_min_lines` config
+> (wired into `--init`/`--migrate-config`), all matching this spec's FR-001..009. Phase 2/3
+> (§8) remain roadmap-only — not implemented.
 
 ## Sources
 
@@ -337,6 +342,12 @@ on BlockQuote end:
 > follow whatever incremental-emission pattern `TelegramRenderer`'s existing event walker uses
 > for other multi-event constructs (e.g. lists), as long as the per-line `>` prefix invariant
 > (FR-005) and the length-triggered expandable form (FR-006/FR-007) hold.
+
+**As implemented (#6604):** nested `BlockQuote` events are flattened to a single `>`-per-line
+level via a bounded mark stack, `MAX_BLOCKQUOTE_NESTING_DEPTH = 512` (same pattern as
+`MAX_CHUNK_DEPTH`, #6595) — input nesting past the cap does not grow tracked-mark memory
+unboundedly; only the outermost mark within the cap is recorded, and flattening still applies
+beyond it.
 
 ---
 

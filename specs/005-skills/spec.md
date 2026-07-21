@@ -270,6 +270,50 @@ emits a `DEBUG` log noting absent provenance.
 
 ---
 
+## Self-Learning Auto-Improved Skill Trust Cap (#6619, #6568)
+
+Self-learning paths that rewrite a skill's active body (not just newly-created skills, see
+"NL Skill Generation and GitHub Repo Mining" above) previously bypassed both the injection scan
+and trust demotion: `store_improved_version` wrote LLM-regenerated bodies straight to the live
+`SKILL.md` with no `scan_skill_body` call, and the new `"auto"`-sourced version silently
+inherited the parent skill's trust tier — including `Trusted`/`Verified` — instead of being
+demoted for machine-evolved content.
+
+A shared `scan_and_cap_for_activation` gate is now wired into all three points that can activate
+a skill version:
+
+- `store_improved_version` — the failure-driven self-learning path
+- `activate_version_and_write` — the choke point shared by `/skill activate`, `/skill approve`,
+  and `/skill reset`, run unconditionally regardless of the target version's `source`
+- `arise_store_version` — the ARISE success-trace-driven path
+
+The gate runs `scan_skill_body` and hard-blocks activation on a match (the version row is still
+saved for forensics; the previously-active body stays live), and caps the newly-activated
+version's trust at `Quarantined` via `min_trust` (or the parent's level, if already worse than
+Quarantined) before the live file write, failing closed (skipping activation) if the trust write
+itself errors.
+
+Retroactive re-scan of pre-existing auto versions and per-version (rather than per-skill-name)
+trust restoration on rollback are deferred follow-ups — trust is stored per skill name, not per
+version, so a demoted trust level is not automatically restored when rolling back to an
+earlier, previously-vetted version.
+
+### Key Invariants
+
+- Every code path that can activate a skill version (self-learning improvement, ARISE
+  trace-driven storage, or manual `/skill activate`/`approve`/`reset`) MUST run the same
+  injection scan as manually-created skills — single-path scanning is incomplete
+- An auto-improved or auto-generated version MUST NOT silently inherit the parent skill's trust
+  level — cap at `Quarantined` (or lower, if the parent is already below it) before the live
+  write
+- The trust cap MUST be written and confirmed BEFORE the live SKILL.md file is written — writing
+  the file first and the trust cap second would reopen the vulnerability this fix closes
+- A scan match MUST hard-block activation — the version row is saved for forensics but the live
+  body and file are never touched
+- NEVER activate a version when the trust-cap write itself fails — fail closed, not open
+
+---
+
 ## Skill Category System
 
 
@@ -447,6 +491,33 @@ Install-time filtering:
 5. Trust set to `Trusted` for `.bundled` skills, `Provisional` for all others
 
 At startup and on hot-reload, `build_registry()` assigns `Trusted` trust to all skills that carry a `.bundled` marker file. This initialization is unconditional — it does not wait for feedback accumulation.
+
+### Trust Snapshot Must Not Fail Open on Transient Load Failure (#6513, #6482)
+
+`Agent::build_skill_trust_map` distinguishes a genuine `load_all_skill_trust()` read error from
+a legitimate empty result via `SkillTrustMapLoad::{Fresh, LoadFailed}`. Previously both cases
+collapsed into the same empty `HashMap`, so a transient DB read failure (lock contention, disk
+I/O hiccup) made every active skill resolve to `SkillTrustLevel::Trusted` for the turn —
+including skills an operator had explicitly `Blocked` or left `Quarantined` — unblocking
+`QUARANTINE_DENIED` tools and skipping body sanitization.
+
+On `LoadFailed`, both call sites (`apply_skill_trust_and_gating` and `reload_skills`) reuse the
+previous turn's `trust_snapshot` instead of overwriting it with an empty map — a transient
+failure degrades to stale-but-real trust data, never to maximum trust. The one residual gap:
+on the very first turn ever, `trust_snapshot` still holds its construction-time empty value, so
+a load failure on that narrow bootstrap window still yields an empty map (no prior state
+exists to fall back to).
+
+#### Key Invariants
+
+- A genuine `load_all_skill_trust()` read error MUST be distinguishable from "no rows yet" —
+  NEVER collapse both into the same empty map
+- On a load failure, callers MUST reuse the previous turn's `trust_snapshot` — NEVER fail open
+  to `SkillTrustLevel::Trusted`
+- Memory being unconfigured (`None`) is a permanent, expected condition, not a load failure — it
+  legitimately yields an empty `Fresh` map
+- The first-turn bootstrap window (no prior snapshot exists) is an accepted residual gap, not a
+  regression — there is no "previous" state to protect before the first turn
 
 ### Key Invariants (Hub Install)
 

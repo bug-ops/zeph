@@ -16,6 +16,7 @@ related:
   - "[[001-system-invariants/spec]]"
   - "[[002-agent-loop/spec]]"
   - "[[030-tui-slash-autocomplete/spec]]"
+  - "[[049-agent-decomposition/spec]]"
 ---
 
 # Spec: Slash Command Registry (`zeph-commands`)
@@ -250,6 +251,51 @@ before calling `handler.handle()`.
 - `requires_auth = true` handlers MUST be rejected before the handler body runs — never inside the handler
 - Handlers in `Session` / `Configuration` / `Memory` / `Skills` / `Planning` categories default to `requires_auth = false`
 - The `NullSink` used in tests bypasses auth gating — tests must use a dedicated test context that sets `is_authenticated = true` where needed
+
+---
+
+## 13. `AgentAccess` God-Trait Split (#6543)
+
+`AgentAccess` — the trait `zeph-core`'s `Agent<C>` implements to expose itself to command
+handlers as a trait object — had grown to 53 async methods spanning 40+ unrelated command
+domains in a single trait, forcing every handler to depend on the entire surface and
+blocking targeted review or testing of a single domain (same defect class as
+[[049-agent-decomposition/spec]]'s god-object decomposition, applied here to the command
+access boundary instead of `Agent<C>`'s fields).
+
+`AgentAccess` itself and its 15 domain sub-traits are defined in `zeph-commands`
+(`src/traits/`, one file per sub-trait); `zeph-core` provides the concrete `impl` blocks on
+`Agent<C>`, split out of the former monolithic `agent_access_impl.rs` into per-domain
+`*_commands.rs` files under `crates/zeph-core/src/agent/` (e.g. `memory_commands.rs`,
+`model_commands.rs`, `worktree_commands.rs`).
+
+### Sub-Traits
+
+| Sub-trait | Domain |
+|-----------|--------|
+| `MemoryAccess` | Semantic memory read/write |
+| `GraphAccess` | Memory graph queries |
+| `ModelAccess` | LLM provider/model selection and routing |
+| `SkillAccess` | Skill registry, matching, hot-reload |
+| `PolicyAccess` | Tool/security policy state |
+| `SchedulerAccess` | Cron-based scheduled task management |
+| `LspAccess` | LSP client state (IDE/ACP) |
+| `SessionControlAccess` | Session lifecycle (resume, fork, exit) |
+| `McpAccess` | MCP server connections and tool registry |
+| `OrchestrationAccess` | Task orchestration / DAG execution |
+| `SubagentAccess` | Subagent spawning, grants, transcripts |
+| `IntegrationAccess` | External integrations (channels, webhooks) |
+| `TrackingAccess` | Cost/usage tracking |
+| `WorktreeAccess` | Git worktree lifecycle for subagents |
+| `MiscAccess` | Remaining cross-cutting operations that don't fit another domain |
+
+`AgentAccess` becomes an empty marker supertrait (`trait AgentAccess: MemoryAccess + ... + MiscAccess + Send {}`) with a blanket `impl<T> AgentAccess for T where T: ...`, so `dyn AgentAccess` and existing call sites are unaffected.
+
+### Key Invariants
+
+- Pure refactor — no behavior change; `Agent<C>`'s method bodies moved, not modified
+- New handler domains MUST add a method to the matching existing sub-trait, or a new sub-trait if none fits — NEVER grow `MiscAccess` or `AgentAccess` directly as a catch-all
+- `AgentAccess` stays an empty marker supertrait — NEVER add methods directly to it
 
 ---
 

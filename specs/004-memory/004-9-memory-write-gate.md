@@ -17,6 +17,7 @@ related:
   - "[[004-memory/spec]]"
   - "[[004-3-admission-control]]"
   - "[[024-multi-model-design/spec]]"
+  - "[[083-memory-write-consent-gate/spec]]"
 ---
 
 # Spec: MemReader Write Quality Gate
@@ -76,6 +77,10 @@ MVP; LLM-assisted scoring is opt-in via `quality_gate_provider`.
 - Retrospective cleanup of existing low-quality entries (handled by `#[forgetting]`)
 - Graph-edge admission (see `[[004-7-memory-apex-magma]]`)
 - Tool-output admission (always admitted; quality runs only on conversational writes)
+- Provenance/consent/trust gating of writes derived from untrusted content — this gate is a
+  **noise-control** mechanism (redundancy, reference completeness, contradiction), not a
+  security/consent filter (see NFR-011 below). That concern is a separate, composed gate:
+  see `[[083-memory-write-consent-gate/spec|MemGhost write-time consent gate]]`
 
 ---
 
@@ -328,4 +333,5 @@ AND the LLM timeout counter increments
 - [[004-3-admission-control]] — upstream A-MAC admission
 - [[004-7-memory-apex-magma]] — graph-side conflict handling (composes with `contradiction_risk`)
 - [[024-multi-model-design/spec]] — provider tier guidance
+- [[083-memory-write-consent-gate/spec]] — MemGhost write-time consent gate (orthogonal: security/consent, not quality)
 - [[MOC-specs]] — all specifications
