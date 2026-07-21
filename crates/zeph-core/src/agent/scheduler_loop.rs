@@ -2714,6 +2714,123 @@ mod tests {
         );
     }
 
+    fn spawn_wiring_test_tool_def(id: &str) -> zeph_tools::registry::ToolDef {
+        use zeph_tools::registry::{InvocationHint, ToolDef};
+        ToolDef {
+            id: id.to_owned().into(),
+            description: format!("{id} tool").into(),
+            schema: schemars::Schema::default(),
+            invocation: InvocationHint::ToolCall,
+            output_schema: None,
+            server_id: None,
+        }
+    }
+
+    /// Regression test for issue #6539: `composes_with_parent_floor_via_intersect_allowlists`
+    /// above only proves that `zeph_subagent::intersect_allowlists` and
+    /// `task_tool_allowlist_for_task` compose correctly in isolation — it never drives the
+    /// real `handle_scheduler_spawn_action` call site (`spawn_ctx.inherited_tool_allowlist =
+    /// self.intersect_task_tool_allowlist(...)`) that wires the parent-permission-derived
+    /// floor (`build_spawn_context`, #6527) together with the per-task planner-emitted
+    /// allowlist (#6526). This test spawns a real `InheritAll` sub-agent through
+    /// `run_scheduler_loop`'s actual `Spawn` action dispatch and asserts on the tool
+    /// definitions actually sent to the sub-agent's LLM (via `MockProvider::with_tool_recording`),
+    /// which reflect `apply_constraint_propagation` (`zeph-subagent/src/manager/spawn.rs`)
+    /// replacing `InheritAll` with the composed `SpawnContext::inherited_tool_allowlist`.
+    #[tokio::test]
+    async fn handle_scheduler_spawn_action_composes_parent_floor_and_task_allowlist() {
+        use crate::agent::agent_tests::*;
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_orchestration::{DagScheduler, GraphStatus, RuleBasedRouter, TaskGraph, TaskNode};
+        use zeph_subagent::{SubAgentDef, SubAgentManager};
+
+        // Parent-permission-derived floor (#6527): wholesale-deny "grep" so
+        // `build_spawn_context` narrows the parent's own tool universe {bash, read, write,
+        // grep} down to {bash, read, write}.
+        let mut rules = std::collections::HashMap::new();
+        rules.insert(
+            "grep".to_owned(),
+            vec![zeph_config::tools::PermissionRule {
+                pattern: "*".to_owned(),
+                action: zeph_config::tools::PermissionAction::Deny,
+            }],
+        );
+
+        // Per-task planner-emitted allowlist (#6526): {bash, write, grep} — "grep" is a
+        // valid tool name so it survives `task_tool_allowlist_for_task`'s universe filter,
+        // but must still be dropped once intersected against the parent floor above.
+        let mut graph = TaskGraph::new("goal");
+        let mut task = TaskNode::new(0, "t", "do a task");
+        task.tool_allowlist = Some(vec!["bash".into(), "write".into(), "grep".into()]);
+        graph.tasks.push(task);
+
+        let def =
+            SubAgentDef::parse("---\nname: worker\ndescription: A worker\n---\n\nDo things.\n")
+                .unwrap();
+
+        let config = zeph_config::OrchestrationConfig::default();
+        let mut scheduler = DagScheduler::new(
+            graph,
+            &config,
+            Box::new(RuleBasedRouter),
+            vec![def.clone()],
+            None,
+        )
+        .unwrap();
+
+        let (mock, recorded_tools) =
+            MockProvider::with_responses(vec!["done".into()]).with_tool_recording();
+        let provider = AnyProvider::Mock(mock);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools().with_definitions(vec![
+            spawn_wiring_test_tool_def("bash"),
+            spawn_wiring_test_tool_def("read"),
+            spawn_wiring_test_tool_def("write"),
+            spawn_wiring_test_tool_def("grep"),
+        ]);
+        let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
+        agent.services.orchestration.orchestration_config = config;
+        agent.runtime.config.permission_policy = zeph_tools::PermissionPolicy::new(rules)
+            .with_autonomy(zeph_config::tools::AutonomyLevel::Supervised);
+
+        let mut mgr = SubAgentManager::new(4);
+        mgr.definitions_mut().push(def);
+        agent.services.orchestration.subagent_manager = Some(mgr);
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            agent.run_scheduler_loop(&mut scheduler, 1, token),
+        )
+        .await
+        .expect("run_scheduler_loop must not hang")
+        .unwrap();
+        assert_eq!(status, GraphStatus::Completed);
+
+        // A plain-text first turn triggers `handle_no_tool_response`'s one-time nudge
+        // (zeph-subagent's `agent_loop.rs`), so the mock provider is called twice before
+        // the loop breaks — the composed tool set must be identical (computed once in
+        // `init_loop_state`, not re-derived per turn), so every recorded call is checked.
+        let calls = recorded_tools.lock().unwrap();
+        assert!(
+            !calls.is_empty(),
+            "sub-agent must call the LLM at least once"
+        );
+        for (i, call) in calls.iter().enumerate() {
+            let sent: std::collections::HashSet<&str> =
+                call.iter().map(|t| t.name.as_str()).collect();
+            assert_eq!(
+                sent,
+                std::collections::HashSet::from(["bash", "write"]),
+                "call #{i}: must be the TRUE intersection of the parent floor \
+                 {{bash,read,write}} and the task allowlist {{bash,write,grep}} — not a \
+                 union, and not an overwrite of one by the other; got: {sent:?}"
+            );
+        }
+    }
+
     /// Regression test for issue #6288: `collect_finished_subagents()` must be a no-op (not
     /// panic) when orchestration is not spawning any sub-agents this session, i.e.
     /// `subagent_manager` is `None`. `run_scheduler_loop` calls it unconditionally every tick

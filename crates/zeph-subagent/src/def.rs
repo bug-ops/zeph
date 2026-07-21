@@ -240,13 +240,13 @@ struct RawSubAgentDef {
     memory: Option<MemoryScope>,
 }
 
-// Note: `RawToolPolicy` and `RawPermissions` intentionally do not carry
-// `#[serde(deny_unknown_fields)]`. They are nested under `RawSubAgentDef` (which does have
-// `deny_unknown_fields`), but serde does not propagate that attribute into nested structs.
-// Adding it here would reject currently-valid frontmatter that omits optional fields via
-// serde's default mechanism. A follow-up issue should evaluate whether strict rejection of
-// unknown nested keys is desirable before adding it.
+// Note: `RawToolPolicy` and `RawPermissions` are nested under `RawSubAgentDef` (which also
+// carries `deny_unknown_fields`), but serde does not propagate that attribute into nested
+// structs — each struct must declare it independently. Both structs already mark every field
+// `#[serde(default = ...)]`, so `deny_unknown_fields` only rejects genuinely unknown keys
+// (e.g. typos) and does not affect omission of optional fields.
 #[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawToolPolicy {
     allow: Option<Vec<String>>,
     deny: Option<Vec<String>>,
@@ -257,6 +257,7 @@ struct RawToolPolicy {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawPermissions {
     #[serde(default)]
     secrets: Vec<String>,
@@ -1613,6 +1614,24 @@ mod tests {
     fn parse_yaml_unknown_top_level_field_is_error() {
         // deny_unknown_fields on RawSubAgentDef: typos like "permisions:" must be rejected.
         let content = "---\nname: a\ndescription: b\npermisions:\n  max_turns: 5\n---\n\nbody\n";
+        let err = SubAgentDef::parse(content).unwrap_err();
+        assert_matches!(err, SubAgentError::Parse { .. });
+    }
+
+    #[test]
+    fn parse_yaml_unknown_permissions_field_is_error() {
+        // deny_unknown_fields on RawPermissions (#6583): a typo like "pemission_mode:" inside
+        // the nested `permissions:` section must be rejected, not silently ignored.
+        let content = "---\nname: a\ndescription: b\npermissions:\n  pemission_mode: bypass_permissions\n---\n\nbody\n";
+        let err = SubAgentDef::parse(content).unwrap_err();
+        assert_matches!(err, SubAgentError::Parse { .. });
+    }
+
+    #[test]
+    fn parse_yaml_unknown_tools_field_is_error() {
+        // deny_unknown_fields on RawToolPolicy (#6583): a typo like "alow:" inside the nested
+        // `tools:` section must be rejected, not silently ignored.
+        let content = "---\nname: a\ndescription: b\ntools:\n  alow:\n    - shell\n---\n\nbody\n";
         let err = SubAgentDef::parse(content).unwrap_err();
         assert_matches!(err, SubAgentError::Parse { .. });
     }

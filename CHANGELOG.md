@@ -33,6 +33,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   been revoked (mirroring the existing `Secret`-path TTL re-check). A sub-agent with no
   `GrantKind::Tool` grants — the universal case today, since no caller creates one yet — sees no
   behavior change (issue #6567).
+- `zeph-subagent`: `tools:`/`permissions:` nested frontmatter sections in sub-agent
+  definitions now reject unknown keys instead of silently ignoring them. `RawSubAgentDef`
+  has carried `#[serde(deny_unknown_fields)]` since #1183, but serde does not propagate that
+  attribute into nested structs, so `RawToolPolicy` and `RawPermissions` still silently
+  swallowed typos (e.g. `pemission_mode:`, `alow:`) and fell back to defaults. Since
+  `permissions:` carries the security/isolation-relevant `permission_mode` and `worktree`
+  fields, this masked misconfiguration rather than an exploitable privilege escalation (all
+  defaults are already fail-safe) (issue #6583).
+  - **Breaking (pre-1.0)**: any sub-agent frontmatter file with a misspelled key inside its
+    `tools:` or `permissions:` section now fails to load instead of silently falling back to
+    defaults for that section.
 - `zeph-core`/`zeph-skills`: the failure-driven self-learning path (`store_improved_version`)
   wrote LLM-regenerated skill bodies straight to the live `SKILL.md` with no injection scan,
   and the new `"auto"`-sourced skill version silently inherited the parent skill's trust tier
