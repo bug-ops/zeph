@@ -149,21 +149,14 @@ impl VectorStore for InMemoryVectorStore {
         })
     }
 
-    fn search(
+    fn search_clamped(
         &self,
         collection: &str,
         vector: Vec<f32>,
         limit: u64,
         filter: Option<VectorFilter>,
     ) -> BoxFuture<'_, Result<Vec<ScoredVectorPoint>, VectorStoreError>> {
-        static CLAMP_WARNED: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
         let collection = collection.to_owned();
-        let limit = crate::vector_store::clamp_search_limit(
-            "VectorStore::search[InMemoryVectorStore]",
-            limit,
-            &CLAMP_WARNED,
-        );
         Box::pin(async move {
             let cols = self.collections.read();
             let col = cols.get(&collection).ok_or_else(|| {

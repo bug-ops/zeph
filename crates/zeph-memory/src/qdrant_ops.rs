@@ -553,21 +553,14 @@ impl crate::vector_store::VectorStore for QdrantOps {
         })
     }
 
-    fn search(
+    fn search_clamped(
         &self,
         collection: &str,
         vector: Vec<f32>,
         limit: u64,
         filter: Option<crate::VectorFilter>,
     ) -> BoxFuture<'_, Result<Vec<crate::ScoredVectorPoint>, crate::VectorStoreError>> {
-        static CLAMP_WARNED: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
         let collection = collection.to_owned();
-        let limit = crate::vector_store::clamp_search_limit(
-            "VectorStore::search[QdrantOps]",
-            limit,
-            &CLAMP_WARNED,
-        );
         Box::pin(async move {
             let qdrant_filter = filter.map(vector_filter_to_qdrant);
             let results = self

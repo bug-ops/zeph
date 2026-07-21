@@ -161,21 +161,14 @@ impl VectorStore for DbVectorStore {
         fut
     }
 
-    fn search(
+    fn search_clamped(
         &self,
         collection: &str,
         vector: Vec<f32>,
         limit: u64,
         filter: Option<VectorFilter>,
     ) -> BoxFuture<'_, Result<Vec<ScoredVectorPoint>, VectorStoreError>> {
-        static CLAMP_WARNED: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
         let collection = collection.to_owned();
-        let limit = crate::vector_store::clamp_search_limit(
-            "VectorStore::search[DbVectorStore]",
-            limit,
-            &CLAMP_WARNED,
-        );
         #[cfg(feature = "profiling")]
         let span = tracing::info_span!(
             "memory.vector_store",

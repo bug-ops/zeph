@@ -111,11 +111,12 @@ pub type ScrollWithIdsResult = Vec<(String, HashMap<String, String>)>;
 /// The wrapper methods in `embedding_store`, `embedding_registry`, and `reasoning` already
 /// clamp before forwarding to a [`VectorStore`] implementor (issue #6553), but any caller
 /// that reaches an implementor directly — e.g. `zeph-index`'s `CodeStore::search` or a
-/// generic `V: VectorStore` pipeline step — bypasses those wrappers entirely. Every
-/// [`VectorStore::search`] implementation in this crate calls this helper first, so the
-/// bound holds regardless of the call path. Clamping an already-clamped value is a no-op,
-/// so enforcing it at both the wrapper and the trait-impl layer is safe.
-pub(crate) fn clamp_search_limit(site: &'static str, limit: u64, warned: &AtomicBool) -> u64 {
+/// generic `V: VectorStore` pipeline step — bypasses those wrappers entirely. The
+/// trait-provided [`VectorStore::search`] calls this once before delegating to
+/// [`VectorStore::search_clamped`], so the bound holds regardless of the call path.
+/// Clamping an already-clamped value is a no-op, so enforcing it at both the wrapper and
+/// the trait layer is safe.
+fn clamp_search_limit(site: &'static str, limit: u64, warned: &AtomicBool) -> u64 {
     if let Ok(requested) = usize::try_from(limit) {
         crate::warn_if_search_limit_clamped(site, requested, warned);
     }
@@ -164,7 +165,31 @@ pub trait VectorStore: Send + Sync {
     ///
     /// Returns results in descending similarity order.  An optional [`VectorFilter`]
     /// restricts the search space to points matching the payload conditions.
+    ///
+    /// `limit` is clamped to `[1, MAX_SEARCH_LIMIT]` before delegating to
+    /// [`Self::search_clamped`] — this is the sole choke point where the clamp is
+    /// enforced, regardless of which implementor handles the call. Implementors MUST
+    /// implement [`Self::search_clamped`], not override this method; overriding
+    /// `search` bypasses the clamp.
     fn search(
+        &self,
+        collection: &str,
+        vector: Vec<f32>,
+        limit: u64,
+        filter: Option<VectorFilter>,
+    ) -> BoxFuture<'_, Result<Vec<ScoredVectorPoint>, VectorStoreError>> {
+        static CLAMP_WARNED: AtomicBool = AtomicBool::new(false);
+        let limit = clamp_search_limit("VectorStore::search", limit, &CLAMP_WARNED);
+        self.search_clamped(collection, vector, limit, filter)
+    }
+
+    /// Backend-specific search implementation invoked by [`Self::search`].
+    ///
+    /// Do not call directly — call [`Self::search`], which clamps `limit` before
+    /// delegating here. Implementors MUST NOT re-clamp `limit`; it is guaranteed to
+    /// already be within `[1, MAX_SEARCH_LIMIT]`. Never call `Self::search` from here —
+    /// it re-enters this method (infinite recursion).
+    fn search_clamped(
         &self,
         collection: &str,
         vector: Vec<f32>,
@@ -237,5 +262,123 @@ pub trait VectorStore: Send + Sync {
                 "get_points not implemented for this backend".into(),
             ))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Minimal [`VectorStore`] whose `search_clamped` records the `limit` it was given
+    /// instead of performing a real search, to prove the trait-provided `search` clamp
+    /// is structurally reached regardless of implementor.
+    struct RecordingStore {
+        last_limit: Arc<AtomicU64>,
+    }
+
+    impl VectorStore for RecordingStore {
+        fn ensure_collection(
+            &self,
+            _collection: &str,
+            _vector_size: u64,
+        ) -> BoxFuture<'_, Result<(), VectorStoreError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn collection_exists(
+            &self,
+            _collection: &str,
+        ) -> BoxFuture<'_, Result<bool, VectorStoreError>> {
+            Box::pin(async { Ok(true) })
+        }
+
+        fn delete_collection(
+            &self,
+            _collection: &str,
+        ) -> BoxFuture<'_, Result<(), VectorStoreError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn upsert(
+            &self,
+            _collection: &str,
+            _points: Vec<VectorPoint>,
+        ) -> BoxFuture<'_, Result<(), VectorStoreError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn search_clamped(
+            &self,
+            _collection: &str,
+            _vector: Vec<f32>,
+            limit: u64,
+            _filter: Option<VectorFilter>,
+        ) -> BoxFuture<'_, Result<Vec<ScoredVectorPoint>, VectorStoreError>> {
+            self.last_limit.store(limit, Ordering::SeqCst);
+            Box::pin(async { Ok(vec![]) })
+        }
+
+        fn delete_by_ids(
+            &self,
+            _collection: &str,
+            _ids: Vec<String>,
+        ) -> BoxFuture<'_, Result<(), VectorStoreError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn scroll_all(
+            &self,
+            _collection: &str,
+            _key_field: &str,
+        ) -> BoxFuture<'_, Result<ScrollResult, VectorStoreError>> {
+            Box::pin(async { Ok(ScrollResult::new()) })
+        }
+
+        fn scroll_all_with_point_ids(
+            &self,
+            _collection: &str,
+            _key_field: &str,
+        ) -> BoxFuture<'_, Result<ScrollWithIdsResult, VectorStoreError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn health_check(&self) -> BoxFuture<'_, Result<bool, VectorStoreError>> {
+            Box::pin(async { Ok(true) })
+        }
+    }
+
+    #[tokio::test]
+    async fn search_clamps_oversized_limit_before_delegating() {
+        let last_limit = Arc::new(AtomicU64::new(0));
+        let store = RecordingStore {
+            last_limit: last_limit.clone(),
+        };
+
+        store
+            .search("collection", vec![0.0], u64::MAX, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            last_limit.load(Ordering::SeqCst),
+            crate::MAX_SEARCH_LIMIT as u64
+        );
+    }
+
+    #[tokio::test]
+    async fn search_passes_small_limit_through_unclamped() {
+        let last_limit = Arc::new(AtomicU64::new(0));
+        let store = RecordingStore {
+            last_limit: last_limit.clone(),
+        };
+
+        store
+            .search("collection", vec![0.0], 5, None)
+            .await
+            .unwrap();
+
+        assert_eq!(last_limit.load(Ordering::SeqCst), 5);
     }
 }

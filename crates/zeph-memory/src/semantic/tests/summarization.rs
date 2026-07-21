@@ -49,7 +49,7 @@ impl VectorStore for FailingSearchStore {
         self.0.upsert(collection, points)
     }
 
-    fn search(
+    fn search_clamped(
         &self,
         _collection: &str,
         _vector: Vec<f32>,

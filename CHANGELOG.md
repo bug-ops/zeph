@@ -158,6 +158,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   methods now called across the new file boundaries — no behavior change, no field ownership
   change (all 25 fields stay on the coordinator struct), all existing tests pass unchanged
   (issue #6546).
+- `zeph-memory`: `VectorStore::search` is now a trait-provided template method that clamps
+  `limit` to `[1, MAX_SEARCH_LIMIT]` and delegates to a new required `search_clamped` method,
+  instead of every implementor calling the shared `clamp_search_limit` helper by convention.
+  The clamp is now structurally reached by every call path through `search` regardless of
+  implementor, rather than relying on each of `QdrantOps`, `DbVectorStore`, and
+  `InMemoryVectorStore` remembering to call the helper first (issue #6616 had already shown
+  one implementor — a test mock — skip the clamp). The public `search` signature and behavior
+  are unchanged for all ~10 external callers. Diagnostic-only behavior delta: the one-shot
+  clamp `warn!` now fires once per process instead of once per store type, and its log site
+  label lost the per-implementor suffix (e.g. `[QdrantOps]`), now reading plain
+  `"VectorStore::search"` (issue #6623).
 - `zeph-mcp`: **breaking** — `McpClient::connect` no longer takes two adjacent positional
   `bool` parameters (`suppress_stderr`, `env_isolation`); it now takes `StderrPolicy`
   (`Forward`/`Suppress`) and `EnvPolicy` (`InheritAll`/`Isolated`) instead. `McpClient::connect_url`,
