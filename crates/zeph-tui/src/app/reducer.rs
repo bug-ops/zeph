@@ -11,6 +11,7 @@
 use zeph_core::channel::ElicitationResponse;
 
 use super::action::{Action, CursorMove, ElicitationEdit, PaletteEdit, ScrollDir, VertDir};
+use super::state::CTRL_C_DOUBLE_PRESS_TICKS;
 use super::{App, ChatMessage, InputMode, MessageRole, Panel, format_security_report};
 use crate::command::TuiCommand;
 use crate::file_picker::FilePickerState;
@@ -172,7 +173,24 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             if let Some(ref signal) = app.cancel_signal {
                 signal.notify_waiters();
             }
+            // A busy-turn cancel is not a quit-window press — clear any stale window
+            // armed before the turn started so a later idle Ctrl+C reads as a fresh
+            // first press instead of an accidental second one (#6646 M1).
+            app.pending_quit_tick = None;
             vec![]
+        }
+        Action::RequestQuit => {
+            let now = app.anim_tick();
+            match app.pending_quit_tick {
+                Some(t0) if now.saturating_sub(t0) <= CTRL_C_DOUBLE_PRESS_TICKS => {
+                    app.pending_quit_tick = None;
+                    vec![Effect::Quit]
+                }
+                _ => {
+                    app.pending_quit_tick = Some(now);
+                    vec![]
+                }
+            }
         }
 
         // ── Input mode ──────────────────────────────────────────────────────────
@@ -880,7 +898,7 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
                 TuiCommand::DaemonDisconnect => {
                     app.push_system_message_pub(
                         "There is no live daemon connection to tear down in this mode.\n\
-                         If you started with `--connect <URL>`, quit the TUI (q / Ctrl+C) to disconnect."
+                         If you started with `--connect <URL>`, quit the TUI (q / press Ctrl+C twice) to disconnect."
                             .to_owned(),
                     );
                     return vec![];

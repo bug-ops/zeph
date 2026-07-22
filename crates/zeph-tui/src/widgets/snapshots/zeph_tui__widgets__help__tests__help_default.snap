@@ -6,6 +6,7 @@ expression: output
             │Key                 Action                            │            
             │Normal mode                                           │            
             │q                   quit                              │            
+            │Ctrl+C              interrupt agent turn / press twice│            
             │i                   enter insert mode                 │            
             │j / k               scroll down / up                  │            
             │PgDn / PgUp         page scroll down / up             │            
@@ -30,5 +31,4 @@ expression: output
             │h / l               switch tab (Providers/MCP/Agents) │            
             │j / k               move selection                    │            
             │Esc                 close panel focus                 │            
-            │Insert mode                                           │            
             ╰──────────────────────────────────────────────────────╯

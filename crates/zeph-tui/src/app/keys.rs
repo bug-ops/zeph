@@ -31,9 +31,14 @@ impl App {
     /// has no effect (e.g. an unrecognised key in a modal that ignores it).
     #[allow(clippy::too_many_lines)]
     fn decode_key(&self, key: KeyEvent) -> Option<Action> {
-        // Global: Ctrl-C always quits.
+        // Global: Ctrl-C cancels a busy agent turn immediately; when idle it arms a
+        // double-press quit window (see `Action::RequestQuit`, reducer.rs).
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            return Some(Action::Quit);
+            return Some(if self.is_agent_busy() {
+                Action::CancelAgent
+            } else {
+                Action::RequestQuit
+            });
         }
 
         // Help overlay: only '?' and Esc close it.
@@ -784,7 +789,6 @@ impl App {
             return Some(a);
         }
         match key.code {
-            KeyCode::Esc if self.is_agent_busy() => Some(Action::CancelAgent),
             KeyCode::Char('q') => Some(Action::Quit),
             KeyCode::Char('H') => Some(Action::Dispatch(TuiCommand::SessionBrowser)),
             KeyCode::Char('i') => Some(Action::EnterInsert),

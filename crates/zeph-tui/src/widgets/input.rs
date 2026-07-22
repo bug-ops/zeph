@@ -36,7 +36,7 @@ fn push_busy_tail<'a>(
         "·"
     };
     spans.push(Span::styled(format!("  {symbol}"), theme.highlight));
-    spans.push(Span::styled("  esc to interrupt", theme.system_message));
+    spans.push(Span::styled("  ctrl+c to interrupt", theme.system_message));
 }
 
 /// Mode hint shown on the separator row, accurate to what the keys actually do.
@@ -270,7 +270,7 @@ mod tests {
             render_input(&app, frame, area, true, 0, zeph_config::Motion::Minimal);
         });
         assert!(
-            output.contains("esc to interrupt"),
+            output.contains("ctrl+c to interrupt"),
             "spinner hint must appear when busy"
         );
     }
@@ -309,7 +309,7 @@ mod tests {
             render_input(&app, frame, area, true, 0, zeph_config::Motion::Minimal);
         });
         assert!(
-            output.contains("esc to interrupt"),
+            output.contains("ctrl+c to interrupt"),
             "spinner hint must appear on wide terminal"
         );
     }
@@ -387,7 +387,7 @@ mod tests {
             "prompt glyph must appear in Full+busy; got: {output:?}"
         );
         assert!(
-            output.contains("esc to interrupt"),
+            output.contains("ctrl+c to interrupt"),
             "interrupt hint must appear in Full+busy mode; got: {output:?}"
         );
     }
@@ -415,7 +415,7 @@ mod tests {
             render_input(&app, frame, area, true, 0, zeph_config::Motion::Off);
         });
         assert!(
-            output.contains("esc to interrupt"),
+            output.contains("ctrl+c to interrupt"),
             "interrupt hint must appear in Off mode; got: {output:?}"
         );
         assert!(

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::state::CTRL_C_DOUBLE_PRESS_TICKS;
 use super::*;
 use crate::event::{AgentEvent, AppEvent};
 use crate::session::MAX_TUI_MESSAGES;
@@ -26,11 +27,150 @@ fn initial_state() {
 }
 
 #[test]
-fn ctrl_c_quits() {
+fn ctrl_c_arms_quit_hint_but_does_not_quit() {
     let (mut app, _rx, _tx) = make_app();
     let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
     app.handle_event(AppEvent::Key(key));
+    assert!(!app.should_quit);
+    assert!(app.quit_hint_active());
+}
+
+#[test]
+fn ctrl_c_twice_within_window_quits() {
+    let (mut app, _rx, _tx) = make_app();
+    let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    app.handle_event(AppEvent::Key(key));
+    assert!(!app.should_quit);
+    app.advance_wave_tick();
+    app.handle_event(AppEvent::Key(key));
     assert!(app.should_quit);
+}
+
+#[test]
+fn ctrl_c_twice_after_window_expires_rearms_instead_of_quitting() {
+    let (mut app, _rx, _tx) = make_app();
+    let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    app.handle_event(AppEvent::Key(key));
+    for _ in 0..=CTRL_C_DOUBLE_PRESS_TICKS {
+        app.advance_wave_tick();
+    }
+    app.handle_event(AppEvent::Key(key));
+    assert!(!app.should_quit);
+    assert!(app.quit_hint_active());
+}
+
+#[test]
+fn quit_hint_auto_expires_after_window() {
+    let (mut app, _rx, _tx) = make_app();
+    let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    app.handle_event(AppEvent::Key(key));
+    assert!(app.quit_hint_active());
+    for _ in 0..=CTRL_C_DOUBLE_PRESS_TICKS {
+        app.advance_wave_tick();
+    }
+    assert!(!app.quit_hint_active());
+}
+
+#[tokio::test]
+async fn ctrl_c_cancels_immediately_when_agent_busy() {
+    let (mut app, _rx, _tx) = make_app();
+    let notify = Arc::new(Notify::new());
+    let notify_waiter = Arc::clone(&notify);
+    let handle = tokio::spawn(async move {
+        notify_waiter.notified().await;
+        true
+    });
+    tokio::task::yield_now().await;
+
+    app = app.with_cancel_signal(Arc::clone(&notify));
+    app.sessions.current_mut().status_label = Some("Thinking...".into());
+    assert!(app.is_agent_busy());
+
+    let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    app.handle_event(AppEvent::Key(key));
+    let result = tokio::time::timeout(std::time::Duration::from_millis(100), handle).await;
+    assert!(result.is_ok(), "notify should have been triggered");
+    assert!(!app.should_quit);
+    assert!(!app.quit_hint_active());
+}
+
+#[test]
+fn ctrl_c_second_press_exactly_at_window_boundary_quits() {
+    // now - t0 == CTRL_C_DOUBLE_PRESS_TICKS must still count as "within window" (`<=`).
+    let (mut app, _rx, _tx) = make_app();
+    let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    app.handle_event(AppEvent::Key(key));
+    for _ in 0..CTRL_C_DOUBLE_PRESS_TICKS {
+        app.advance_wave_tick();
+    }
+    app.handle_event(AppEvent::Key(key));
+    assert!(app.should_quit, "boundary tick delta must still quit");
+}
+
+#[test]
+fn quit_hint_active_at_exact_boundary_tick() {
+    let (mut app, _rx, _tx) = make_app();
+    let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    app.handle_event(AppEvent::Key(key));
+    for _ in 0..CTRL_C_DOUBLE_PRESS_TICKS {
+        app.advance_wave_tick();
+    }
+    assert!(
+        app.quit_hint_active(),
+        "hint must still be active exactly at the boundary tick"
+    );
+    app.advance_wave_tick();
+    assert!(
+        !app.quit_hint_active(),
+        "hint must expire one tick past the boundary"
+    );
+}
+
+#[tokio::test]
+async fn cancel_agent_clears_pending_quit_tick_preventing_accidental_quit_on_next_idle_press() {
+    // Regression for #6646 M1: arm the quit window, let the agent become busy and get
+    // cancelled via Ctrl+C, then a later idle Ctrl+C (still within the OLD window) must
+    // read as a fresh first press, not a stale second one.
+    let (mut app, _rx, _tx) = make_app();
+    let notify = Arc::new(Notify::new());
+    let notify_waiter = Arc::clone(&notify);
+    let handle = tokio::spawn(async move {
+        notify_waiter.notified().await;
+        true
+    });
+    tokio::task::yield_now().await;
+    app = app.with_cancel_signal(Arc::clone(&notify));
+
+    let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+
+    // 1. Idle Ctrl+C arms the window.
+    app.handle_event(AppEvent::Key(key));
+    assert!(app.quit_hint_active());
+
+    // 2. Agent becomes busy before a second press.
+    app.advance_wave_tick();
+    app.sessions.current_mut().status_label = Some("Thinking...".into());
+    assert!(app.is_agent_busy());
+
+    // 3. Ctrl+C while busy cancels the turn (not a quit-window press).
+    app.handle_event(AppEvent::Key(key));
+    let result = tokio::time::timeout(std::time::Duration::from_millis(100), handle).await;
+    assert!(result.is_ok(), "cancel signal should have fired");
+
+    // 4. Turn ends, agent idle again — still within the original window's tick range.
+    app.sessions.current_mut().status_label = None;
+    assert!(!app.is_agent_busy());
+
+    // 5. User's next Ctrl+C is intended as a FIRST press — must not quit.
+    app.handle_event(AppEvent::Key(key));
+    assert!(
+        !app.should_quit,
+        "stale pre-cancel window must not cause an unintended quit"
+    );
+    assert!(
+        app.quit_hint_active(),
+        "this press must be treated as a fresh arm, not a confirming second press"
+    );
 }
 
 #[test]
@@ -759,7 +899,10 @@ fn help_popup_does_not_block_ctrl_c() {
     app.show_help = true;
     let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
     app.handle_event(AppEvent::Key(key));
-    assert!(app.should_quit);
+    // Ctrl+C is still handled above the help modal (global override preserved) —
+    // it now arms the quit hint on first idle press instead of quitting immediately.
+    assert!(!app.should_quit);
+    assert!(app.quit_hint_active());
 }
 
 #[test]
@@ -773,7 +916,7 @@ fn question_mark_in_insert_mode_does_not_open_help() {
 }
 
 #[tokio::test]
-async fn esc_in_normal_mode_cancels_when_busy() {
+async fn esc_in_normal_mode_does_not_cancel_when_busy() {
     let (mut app, _rx, _tx) = make_app();
     let notify = Arc::new(Notify::new());
     let notify_waiter = Arc::clone(&notify);
@@ -781,7 +924,6 @@ async fn esc_in_normal_mode_cancels_when_busy() {
         notify_waiter.notified().await;
         true
     });
-    tokio::task::yield_now().await;
 
     app = app.with_cancel_signal(Arc::clone(&notify));
     app.sessions.current_mut().input_mode = InputMode::Normal;
@@ -790,8 +932,12 @@ async fn esc_in_normal_mode_cancels_when_busy() {
 
     let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
     app.handle_event(AppEvent::Key(key));
-    let result = tokio::time::timeout(std::time::Duration::from_millis(100), handle).await;
-    assert!(result.is_ok(), "notify should have been triggered");
+    // Esc must never cancel a turn anymore — Ctrl+C owns that role.
+    let result = tokio::time::timeout(std::time::Duration::from_millis(50), handle).await;
+    assert!(
+        result.is_err(),
+        "notify must NOT have been triggered by Esc"
+    );
 }
 
 #[test]

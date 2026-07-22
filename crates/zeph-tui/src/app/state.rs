@@ -27,6 +27,12 @@ use super::{
 /// TODO: wire to `config.tui.stall_threshold_secs` (deferred per #5096 v1 scope)
 const STALL_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Ticks within which a second idle `Ctrl+C` press confirms quit.
+///
+/// `~500ms` at the 100ms/tick `wave_tick` cadence. Shared between the reducer
+/// (arms/consumes the window) and the status widget (renders the hint).
+pub(crate) const CTRL_C_DOUBLE_PRESS_TICKS: u64 = 5;
+
 impl App {
     /// Create a new `App` with the given I/O channels.
     ///
@@ -107,6 +113,7 @@ impl App {
             collapsed_panels: [false; 4],
             motion: zeph_config::Motion::Full,
             wave_tick: 0,
+            pending_quit_tick: None,
             last_progress_at: Instant::now(),
             show_equalizer: true,
             delights: zeph_config::DelightsConfig::default(),
@@ -1226,6 +1233,19 @@ impl App {
     #[must_use]
     pub fn anim_tick(&self) -> u64 {
         self.wave_tick
+    }
+
+    /// True while a `Ctrl+C` quit window is armed and not yet expired.
+    ///
+    /// Always `false` while the agent is busy — the hint must vanish immediately
+    /// if a turn starts after the window was armed.
+    #[must_use]
+    pub(crate) fn quit_hint_active(&self) -> bool {
+        if self.is_agent_busy() {
+            return false;
+        }
+        self.pending_quit_tick
+            .is_some_and(|t0| self.anim_tick().saturating_sub(t0) <= CTRL_C_DOUBLE_PRESS_TICKS)
     }
 
     /// Begin an animated scroll to `target_offset` for the current session.

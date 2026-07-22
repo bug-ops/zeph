@@ -488,6 +488,10 @@ pub struct App {
     /// so that the wave renderer stays purely deterministic.
     pub(crate) wave_tick: u64,
 
+    /// `anim_tick` captured on the first idle `Ctrl+C` press, arming the double-press
+    /// quit window (see [`crate::App::quit_hint_active`]). `None` when no window is armed.
+    pub(crate) pending_quit_tick: Option<u64>,
+
     /// Timestamp of the last observed progress event (token chunk or status change).
     ///
     /// Initialized at the moment the agent transitions to busy, NOT at `App` construction

@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `zeph-tui`: unified `Ctrl+C` semantics in the TUI (issue #6646). `Ctrl+C` now cancels the
+  current agent turn immediately when the agent is busy (moved from `Esc`, which no longer
+  cancels anything in Normal mode). When idle, a single `Ctrl+C` no longer quits outright —
+  it arms a ~500ms double-press window and shows `Press Ctrl+C again to exit` in the status
+  bar; a second `Ctrl+C` within that window quits, a later press re-arms instead. `q` and
+  `/quit` are unaffected.
+
 ## [0.22.3] - 2026-07-22
 ### Fixed
 

@@ -100,6 +100,10 @@ pub(crate) enum Action {
     Quit,
     /// Cancel the current agent turn (Ctrl-C equivalent).
     CancelAgent,
+    /// First-stage quit request from `Ctrl+C` when the agent is idle.
+    ///
+    /// Arms a double-press window; a confirming press within it produces `Effect::Quit`.
+    RequestQuit,
 
     // ── Input mode ─────────────────────────────────────────────────────────────
     /// Transition the input box to Insert mode.

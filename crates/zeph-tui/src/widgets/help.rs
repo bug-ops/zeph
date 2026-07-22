@@ -9,9 +9,10 @@ use ratatui::widgets::{Block, BorderType, Borders, Cell, Clear, Row, Table};
 use crate::layout::centered_rect;
 use crate::theme::Theme;
 
-// 47 data rows + 1 header row + 2 border lines
-const POPUP_HEIGHT: u16 = 50;
+// 48 data rows + 1 header row + 2 border lines
+const POPUP_HEIGHT: u16 = 51;
 
+#[allow(clippy::too_many_lines)]
 pub fn render(frame: &mut Frame, area: Rect, theme: &Theme) {
     let popup = centered_rect(70, POPUP_HEIGHT, area);
     frame.render_widget(Clear, popup);
@@ -22,6 +23,10 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme) {
             Cell::from(""),
         ]),
         keybind_row("q", "quit"),
+        keybind_row(
+            "Ctrl+C",
+            "interrupt agent turn / press twice to exit when idle",
+        ),
         keybind_row("i", "enter insert mode"),
         keybind_row("j / k", "scroll down / up"),
         keybind_row("PgDn / PgUp", "page scroll down / up"),

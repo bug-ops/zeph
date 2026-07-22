@@ -318,6 +318,60 @@ multibyte UTF-8 input (Cyrillic, CJK characters). NEVER truncate at a byte bound
 
 ---
 
+## Ctrl+C Interrupt & Double-Press Quit Semantics (#6646)
+
+Unifies `Ctrl+C` in the TUI around the REPL pattern (Python/IPython): `Ctrl+C`
+interrupts the running operation immediately; a second `Ctrl+C` at an idle prompt
+exits. This replaces two accident-prone bindings — single-press `Ctrl+C` quitting
+outright, and `Esc` cancelling the in-flight agent turn.
+
+### Behavior
+
+| Context | Key | Behavior |
+|---|---|---|
+| Agent **busy** | `Ctrl+C` | Cancel the current turn immediately (`Action::CancelAgent`) — no double-press, no window |
+| Agent **idle**, 1st press | `Ctrl+C` | Do NOT quit; arm a quit window and show `Press Ctrl+C again to exit` in the status bar |
+| Agent **idle**, 2nd press ≤ window | `Ctrl+C` | Quit (`Effect::Quit`) |
+| Agent **idle**, press > window later | `Ctrl+C` | Fresh first press — re-arms window + hint, does not quit |
+| Normal mode | `Esc` | No-op (falls to `_ => None`) — no longer cancels the agent |
+| Insert mode | `Esc` | Unchanged — Insert→Normal toggle |
+| Normal mode | `q` / `/quit` / `TuiCommand::Quit` | Unchanged — immediate `Effect::Quit`; double-press applies to `Ctrl+C` only |
+
+### Time source (tick-based, not wall-clock)
+
+The double-press window is measured on the existing animation clock `App::anim_tick()`
+(alias of `wave_tick`, advanced once per 100 ms by the `tui_loop` heartbeat), the same
+monotonic tick that `ToastQueue::born_tick` and the splash shimmer already use for TTL.
+`CTRL_C_DOUBLE_PRESS_TICKS = 5` ≈ 500 ms at 100 ms/tick. This keeps unit tests
+deterministic (advance via `advance_wave_tick()` rather than sleeping) and puts no
+`Instant`/`SystemTime` on the key path. The threshold is quantized to ~100 ms — an
+accepted tradeoff, consistent with all other TUI animation timing.
+
+### State and dispatch
+
+- One top-level `App` field `pending_quit_tick: Option<u64>` (Ctrl+C is global, not
+  per-session); captured on the first idle press.
+- The global `Ctrl+C` check stays the FIRST branch of `decode_key` (above every modal),
+  branching on the pure `&self` read `is_agent_busy()`: busy → `Action::CancelAgent`,
+  idle → the new `Action::RequestQuit`. `decode_key` stays `&self`; window arming happens
+  only in `reduce` (INV-R1) and emits no effect for the first press (INV-R2).
+- Hint visibility is a pure function `quit_hint_active() = !is_agent_busy() &&
+  pending_quit_tick within window`. It auto-expires with no extra plumbing: the
+  `EventReader` `AppEvent::Tick` cadence marks the frame dirty (`event.rs`), so the status
+  bar repaints while idle and drops the hint once the window lapses. `pending_quit_tick` is
+  not reset on expiry — the delta check is self-correcting (like `ToastQueue`).
+
+### Key Invariants (Ctrl+C)
+
+- The global `Ctrl+C` branch MUST remain the first check in `decode_key` — modals NEVER swallow `Ctrl+C`; only single-vs-double semantics changed
+- Double-press timing MUST use `anim_tick()` — NEVER `Instant::now()`/`SystemTime::now()` on the key/decode path
+- Window arming MUST mutate state only in `reduce` (INV-R1); `RequestQuit` MUST perform no I/O (INV-R2, `tui-reducer/spec.md`)
+- Agent cancellation MUST stay immediate on a single `Ctrl+C` when busy — the double-press delay applies to quit ONLY, NEVER to cancel
+- The quit hint MUST be a transient status-bar segment derived purely from `(pending_quit_tick, anim_tick, is_agent_busy)` — NEVER a separate timer task
+- `Esc` retains ONLY its Insert→Normal role — it MUST NEVER cancel an agent turn
+
+---
+
 ## Key Invariants
 
 - Metrics updated every turn — not only when a specific event fires

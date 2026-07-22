@@ -281,6 +281,8 @@ fn build_segment_lists(
 
     if app.is_agent_busy() {
         push_busy_segment(&mut list, app, theme);
+    } else if app.quit_hint_active() {
+        push_quit_hint_segment(&mut list, theme);
     }
 
     push_plan_subagent_segments(&mut list, app, metrics, theme);
@@ -347,6 +349,16 @@ fn push_busy_segment(list: &mut SegmentList, app: &App, theme: &Theme) {
             ],
         );
     }
+}
+
+fn push_quit_hint_segment(list: &mut SegmentList, theme: &Theme) {
+    list.push(
+        Priority::Critical,
+        vec![
+            Span::styled(" · ", theme.system_message),
+            Span::styled("Press Ctrl+C again to exit", theme.error),
+        ],
+    );
 }
 
 fn push_plan_subagent_segments(
@@ -1284,6 +1296,61 @@ mod tests {
         assert!(
             BREEZE_FRAMES.iter().any(|f| output.contains(f)),
             "expected a breeze_frame() glyph in the busy segment; got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn quit_hint_segment_appears_when_window_armed_and_idle() {
+        use tokio::sync::mpsc;
+
+        use crate::app::App;
+        use crate::metrics::MetricsSnapshot;
+        use crate::test_utils::render_to_string;
+
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        let mut app = App::new(user_tx, agent_rx);
+        app.pending_quit_tick = Some(app.anim_tick());
+        assert!(app.quit_hint_active());
+
+        let metrics = MetricsSnapshot::default();
+        let output = render_to_string(200, 1, |frame, area| {
+            super::render(&app, &metrics, frame, area);
+        });
+
+        assert!(
+            output.contains("Press Ctrl+C again to exit"),
+            "quit hint must appear while the window is armed and the agent is idle; got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn quit_hint_segment_absent_when_agent_busy() {
+        use tokio::sync::mpsc;
+
+        use crate::app::App;
+        use crate::metrics::MetricsSnapshot;
+        use crate::test_utils::render_to_string;
+
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        let mut app = App::new(user_tx, agent_rx);
+        app.pending_quit_tick = Some(app.anim_tick());
+        app.sessions.current_mut().status_label = Some("Thinking...".to_owned());
+        assert!(app.is_agent_busy());
+        assert!(
+            !app.quit_hint_active(),
+            "quit_hint_active must be false while busy even with a window armed"
+        );
+
+        let metrics = MetricsSnapshot::default();
+        let output = render_to_string(200, 1, |frame, area| {
+            super::render(&app, &metrics, frame, area);
+        });
+
+        assert!(
+            !output.contains("Press Ctrl+C again to exit"),
+            "quit hint must never appear while the agent is busy; got: {output:?}"
         );
     }
 
