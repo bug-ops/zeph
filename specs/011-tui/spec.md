@@ -16,6 +16,7 @@ related:
   - "[[007-channels/spec]]"
   - "[[026-tui-subagent-management/spec]]"
   - "[[030-tui-slash-autocomplete/spec]]"
+  - "[[084-tui-mention-picker/spec]]"
   - "[[068-session-persistence/spec]]"
 ---
 
@@ -63,7 +64,8 @@ TuiApp
 | SubAgents | `a` | Interactive subagent sidebar with j/k navigation and transcript viewer |
 | Fleet | `f` | Read-only table of all agent sessions (active/completed/unknown); auto-refreshed by `AgentEvent::FleetSnapshot` (#3884) |
 | Task Registry | `/tasks` | Live table of all supervised tasks (see below) |
-| Status Bar | always | Current operation spinner + short status text |
+| Input Separator | (above input) | Input prompt, busy spinner + verb (when busy), interrupt hint (#6649) |
+| Status Bar | always | Stable session parameters, streaming tok/s + TTFT, transient critical hints |
 
 Tab cycling order includes SubAgents. See `026-tui-subagent-management/spec.md` for full SubAgents panel spec.
 
@@ -71,7 +73,18 @@ Tab cycling order includes SubAgents. See `026-tui-subagent-management/spec.md` 
 
 **Every background or implicit operation must show a visible spinner with a short status message.**
 
-Examples:
+The spinner and verb are rendered in the **input separator row** (above the input composer), appended after the row's existing idle elements:
+```
+you ▸ {mode hint} {~N tokens} [queue badges] ▸▸▹ {verb} · {interrupt-hint}
+```
+
+Where:
+- `you ▸` — prompt glyph; mode hint, `~N tokens` context estimate, and queue badges are the row's existing elements, unchanged
+- `▸▸▹` — animated breeze spinner (constant 3-cell width; rendered as a static `·` when motion is off)
+- `{verb}` — humanized present-continuous status (e.g., `searching · memory`), truncated before the hint under width pressure
+- `{interrupt-hint}` — interrupt instruction; its key/text is owned by #6646 (`esc to interrupt` today, `ctrl+c` once #6646 lands)
+
+Examples of `{verb}`:
 - `Searching memory…`
 - `Executing tool: shell`
 - `Connecting to MCP server…`
@@ -79,6 +92,8 @@ Examples:
 - `Loading skills…`
 
 Status messages: short, present continuous tense, no punctuation except `…`.
+
+**When idle** (no background operation), the separator row renders exactly as before this change: prompt glyph, mode hint, `~N tokens` estimate, and queue badges — no spinner, no verb, no interrupt hint. The bottom status bar no longer renders the busy spinner/verb segment in any state (#6649).
 
 ## TuiChannel Invariants
 

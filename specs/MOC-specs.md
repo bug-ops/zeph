@@ -174,6 +174,9 @@ status: moc
 ### Memory Write Consent Gate
 - [[083-memory-write-consent-gate/spec|Memory Write Consent Gate]] — write-time consent gate ("MemGhost") for untrusted memory writes: provenance tagging, confirm/disclose thresholds, and audit logging gating what untrusted-origin content may be committed to memory, distinct from `004-9`'s MemReader quality scorer; closes cross-turn/cross-tier/reload TOCTOU bypasses and write-time provenance/audit gating gaps; GitHub #6544
 
+### TUI Inline Mention Picker
+- [[084-tui-mention-picker/spec|TUI Inline Mention Picker]] — non-modal inline `@` popup for files/skills/agents replacing the modal file picker: word-start trigger (position 0 or after whitespace; mid-word `@` stays literal), typing never captured away from the input buffer, Space closes keeping the mention as prose, Tab/Enter accept + trailing space, Esc closes only the popup retaining Insert mode; category tabs All/Files/Skills/Agents switched with ←/→, nucleo fuzzy matching with match highlighting and N/M counter, per-category accept semantics (file: bare path, skill: plain name, agent: `@sigil` routed by existing dispatch), catalog delivery via dedicated startup/hot-reload event, race-free index build; GitHub #6647, #6648 [approved]
+
 ---
 
 ## System-Wide Features
@@ -291,6 +294,7 @@ status: moc
 | 081 | [[081-transcript-integrity/spec\|Transcript Integrity]] | specify | implemented |
 | 082 | [[082-per-message-usage-cost-tracking/spec\|Per-Message Usage/Cost Tracking]] | specify | implemented |
 | 083 | [[083-memory-write-consent-gate/spec\|Memory Write Consent Gate]] | specify | implemented |
+| 084 | [[084-tui-mention-picker/spec\|TUI Inline Mention Picker]] | specify | approved |
 
 ---
 

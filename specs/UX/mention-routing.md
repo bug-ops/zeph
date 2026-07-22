@@ -128,6 +128,18 @@ stabilisation). Label: `enhancement`, `P4`, `tui`, `a2a`.
 
 ---
 
+## 2026-07-22 Addendum: TUI Blocker Resolution
+
+The primary TUI-side blocker for agent mention routing was the lack of an inline `@` picker UI. This blocker is now **resolved** by spec [[084-tui-mention-picker/spec]], which delivers:
+
+1. **Inline non-modal `@` popup** — typed `@` mentions become discoverable and auto-completable in the TUI
+2. **Agent category** — agent definitions are now plumbed into the mention picker (via `SubAgentManager::definitions()`)
+3. **Mention sigil preservation** — accepted `@agent` mentions retain the sigil, allowing downstream slash-command dispatch to correctly route them
+
+The routing invariants in this spec (§ Key Invariants) remain binding and are inherited by spec 081. Full A2A-remote mention routing (agent discovery from remote A2A peers) remains deferred as P4 follow-up work.
+
+---
+
 ## Key Invariants (if implemented)
 
 If mention routing is implemented in a future PR, the following invariants apply:

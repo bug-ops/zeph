@@ -245,6 +245,19 @@ pub(crate) enum Action {
     FilePickerInput(PaletteEdit),
     FilePickerAccept,
 
+    // Note: The FilePicker* action set above is superseded by spec [[084-tui-mention-picker/spec]],
+    // which transforms `@` from a modal file picker into an inline non-modal popup supporting
+    // files/skills/agents. The FilePicker* variants (and Effect::StartFileIndex's modal-open path)
+    // are REMOVED when 084 is implemented, replaced by the MentionPicker* variants below.
+    // The reducer invariants (INV-R1/INV-R2) apply unchanged.
+
+    OpenMentionPicker,
+    CloseMentionPicker,
+    MentionPickerMove(VertDir),
+    MentionPickerTabChange(Direction),
+    MentionPickerInput(PaletteEdit),
+    MentionPickerAccept,
+
     SlashAutocompleteMove(VertDir),
     SlashAutocompleteInput(PaletteEdit),
     SlashAutocompleteAccept,

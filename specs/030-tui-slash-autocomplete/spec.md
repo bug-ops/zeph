@@ -160,7 +160,7 @@ THEN the dropdown is dismissed automatically
 | NFR-001 | Performance | Filter and re-render must complete within a single 16 ms frame; no async work is performed — all filtering is synchronous over the static registries |
 | NFR-002 | Correctness | Must not interfere with existing key bindings: Esc (→ Normal mode), Enter (→ submit), Up/Down (→ history navigation) are re-routed only while the dropdown is active |
 | NFR-003 | Correctness | Must not conflict with the existing Command Palette (`:` in Normal mode) — the two flows are mutually exclusive by construction (`command_palette` vs `slash_autocomplete` state fields) |
-| NFR-004 | Correctness | Must not conflict with the `@` file picker (`KeyCode::Char('@')` path in `handle_insert_key`) |
+| NFR-004 | Correctness | Must not conflict with the inline mention picker (`[[084-tui-mention-picker/spec]]`); both surfaces are non-modal overlays with distinct trigger rules (slash-autocomplete triggers on `/` at start of empty input; mention picker triggers on `@` at word-start) |
 | NFR-005 | Accessibility | The popup must be dismissible without accepting any suggestion at any point |
 | NFR-006 | Architecture | The autocomplete state must live in `App` as a dedicated field, not inside `CommandPaletteState` |
 | NFR-007 | Architecture | No new crate dependencies are permitted; ratatui `List` + `Clear` widgets (already used) are sufficient |
