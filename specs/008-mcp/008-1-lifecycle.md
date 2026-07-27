@@ -100,7 +100,7 @@ impl McpManager {
         server_id: &str,
         tool_name: &str,
         arguments: serde_json::Value,
-    ) -> Result<ToolResult>;
+    ) -> Result<CallToolResult, McpError>;
 }
 ```
 
@@ -159,44 +159,37 @@ Failed servers are marked `Error` in `ServerConnectOutcome` and their tools are 
 
 ## Graceful Shutdown
 
-Cleanup on agent termination (via `TaskSupervisor::shutdown_all`):
+Cleanup on agent termination — `McpManager` is dropped after the agent loop exits:
 
 ```rust
 impl McpManager {
-    /// Shutdown all servers gracefully.
-    pub async fn shutdown_all(&self, timeout: Duration) -> Result<()> {
-        for server in &self.servers {
-            // Cancel pending requests
-            // Send shutdown signal if server supports it
-            // Close stdio handles or HTTP connections
-            // Wait for graceful close or force-terminate
-        }
+    /// Shutdown all servers gracefully (by-value self, no timeout param).
+    /// 
+    /// Consumes the manager; servers are shut down as part of the Drop impl.
+    pub async fn shutdown_all(self) {
+        // Cancel pending requests for all servers
+        // Send shutdown signal if server supports it
+        // Close stdio handles or HTTP connections
+        // Wait for graceful close or force-terminate
     }
 }
 ```
 
-Timeout: configurable per agent (default 5s). If shutdown exceeds timeout, remaining servers are force-closed without waiting for pending requests.
+**Timeout behavior**: shutdown is not time-bounded in the public API. The agent loop exit triggers a shutdown cascade; slow servers do not block agent termination since the manager is dropped.
 
 ## Tool Registry Coordination
 
-`McpToolRegistry` (`crates/zeph-mcp/src/registry.rs`) indexes tools by server. When a server notifies `tools/list_changed`, the registry re-fetches and updates its index:
-
-```rust
-impl ToolListChangedHandler {
-    pub async fn on_tools_list_changed(&self, server_id: &str) -> Result<()> {
-        // 1. Fetch updated tools/list from server
-        // 2. Sanitize tool definitions
-        // 3. Update registry index
-        // 4. Fire MCP client callback if attached
-    }
-}
-```
+`McpToolRegistry` (`crates/zeph-mcp/src/registry.rs`) indexes tools by server. When a server sends the `tools/list_changed` notification, the manager re-fetches and updates the registry:
+- Fetch updated `tools/list` from the server
+- Sanitize tool definitions (scrub injection patterns)
+- Update the registry index
+- Invalidate any per-message tool pruning caches (since tool set changed)
 
 ## Transport Security
 
-- **Stdio**: inherited from parent environment (scrubbed of secrets); runs with same UID as agent
-- **HTTP**: URL resolved via `validate_url_ssrf()` — private IPs blocked unless allowlisted
-- **OAuth**: authorization endpoints validated via `validate_oauth_metadata_urls()` against SSRF blocklist
+- **Stdio**: inherited from parent environment (scrubbed of secrets via `env_blocklist`); runs with same UID as agent
+- **HTTP**: URL resolved via `validate_url()` (crates/zeph-tools/src/net.rs) — private IPs and non-HTTPS schemes blocked
+- **OAuth**: authorization endpoints validated against SSRF blocklist
 
 ## See Also
 
