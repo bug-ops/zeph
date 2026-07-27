@@ -47,6 +47,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bar; a second `Ctrl+C` within that window quits, a later press re-arms instead. `q` and
   `/quit` are unaffected.
 
+### Fixed
+
+- `zeph-acp`: fixed a deadlock on every permission-gated tool call (issue #6656). `handle_prompt`
+  awaited the entire agent turn inline inside the ACP SDK's `on_receive_request` callback, holding
+  the SDK's strictly serial dispatch loop for the whole turn; since that same loop demultiplexes
+  inbound RPC responses, the IDE's reply to a permission-gated tool call's
+  `session/request_permission` request could never route back while the loop was blocked on the
+  still-running turn, hanging the tool call indefinitely (fail-closed, not a permission bypass).
+  The turn is now spawned via `cx.spawn` instead of awaited inline, per the SDK's documented
+  ordering contract, freeing the dispatch loop to keep routing inbound messages — including the
+  permission reply — while the turn runs.
+
 ## [0.22.3] - 2026-07-22
 ### Fixed
 
