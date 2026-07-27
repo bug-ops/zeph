@@ -25,6 +25,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `specs/010-security` and `specs/008-mcp`: rewrote all seven sub-specs
+  (`010-1-vault`, `010-2-injection-defense`, `010-3-authorization`, `010-4-audit`,
+  `008-1-lifecycle`, `008-2-discovery`, `008-3-security`) to describe the actual
+  shipped implementation in `zeph-vault`, `zeph-sanitizer`, `zeph-tools`, and
+  `zeph-mcp` instead of invented type/API names flagged by the PR #6629 spec
+  audit (issues #6631, #6630). `010-4-audit`'s NEVER-rule contradiction was
+  resolved by clarifying that `CrossToolCorrelator` (within-turn, hard
+  `InjectionConfirmed` decisions) and `TrajectorySentinel` (advisory, decaying
+  cross-turn score) are independent mechanisms per the parent spec's scope
+  note; a genuinely unresolved gap around `TrajectoryRiskAccumulator` making
+  cross-turn hard-blocking decisions not covered by that carve-out is flagged
+  with an explicit `[!warning] Architectural gap` callout rather than papered
+  over. All `[!danger]` callouts added by PR #6629 are removed. Documentation-only,
+  no code changes.
 - `specs/031-database-abstraction`: split the 2958-line spec (issue #6632). Section 18
   ("Agent Identity in the Shared Data Model") — a fully self-contained multi-tenant
   data-isolation subsystem with no other cross-references in `/specs/` — was extracted
