@@ -19,268 +19,160 @@ related:
 
 # Spec: MCP Server Lifecycle
 
-> [!danger] Stale content — 2026-07 audit
-> The "Startup Auto-Retry with Exponential Backoff (#3578)" section and most of the pseudocode below
-> (`McpConnection`, `JsonRpcTransport`, `Waiter`, `log::warn!`/`log::info!` calls) do not match the
-> real implementation and were not corrected in this pass (rewrite, not a text fix). Real code:
-> `crates/zeph-mcp/src/manager/{mod.rs,builder.rs,connect.rs,server.rs,retry.rs}`. Real retry config
-> fields are `startup_retry_backoff_ms`/`tool_timeout_secs` (see `[[008-mcp/spec]]`), not
-> `startup_retry_base_delay_ms`/`startup_retry_max_delay_ms`/`startup_retry_backoff_factor`/
-> `max_startup_retries` as stated below. `log::*` macros are banned project-wide (`tracing` only,
-> see `[[constitution]]` II/IV) — do not copy the logging calls in this file's pseudocode.
-
 Server startup/shutdown, connection management, stdio environment isolation, graceful cleanup.
 
 ## Overview
 
-MCP servers are subprocess-based tool providers. Zeph manages their complete lifecycle: spawning with environment isolation, maintaining connections, detecting failures, and graceful shutdown.
+MCP servers are subprocess-based or HTTP tool providers. Zeph manages their complete lifecycle: spawning with environment isolation, maintaining connections, detecting failures, and graceful shutdown. The `McpManager` (`crates/zeph-mcp/src/manager/`) orchestrates multi-server lifecycle.
 
 ## Key Invariants
 
 **Always:**
-- Each MCP server runs in isolated subprocess with env vars scrubbed
-- Server startup failures logged with full context (stderr, exit code, timeout)
-- Connections are bidirectional: Zeph sends requests, servers send notifications
-- Server shutdown waits for pending requests (configurable timeout: default 5s)
+- Each stdio MCP server runs in isolated subprocess with `ZEPH_*` secrets scrubbed from environment
+- Server startup failures logged with stderr/exit code
+- Server connections are bidirectional: Zeph sends requests, servers send notifications (`tools/list_changed`, etc.)
+- Server shutdown waits for pending requests (timeout: configurable via `shutdown_timeout_secs`)
+- Env var scrubbing happens unconditionally before subprocess spawn
 
 **Never:**
-- Pass secrets (API keys, tokens) to MCP server environment
-- Leave zombie processes on exit (always await subprocess termination)
-- Assume server is healthy without heartbeat validation
+- Pass `ZEPH_*` secrets to MCP server environment — they are already scrubbed
+- Leave zombie processes on shutdown — always collect process status
+- Assume server is healthy without probing — initial `tools/list` serves as health check
+- Send requests to a server while it is shutting down
 
 ## Startup Sequence
 
 ```
-1. Resolve server config (name, command, env, stdio mode)
-2. Scrub environment: remove ZEPH_* secrets, keep only safe vars
-3. Spawn subprocess with stdio isolation
-4. Send initialize request, await response (timeout: 10s)
-5. Register tool registry, store connection metadata
-6. Mark server as "ready" in MCP client state
+1. Validate transport config (stdio command, HTTP URL, or OAuth credentials)
+2. Scrub environment: remove ZEPH_*, AWS_*, GITHUB_TOKEN, etc.
+3. Spawn subprocess (stdio) or establish HTTP connection (http/oauth)
+4. Send initialize request via rmcp crate, await response (timeout: 10s)
+5. Fetch tools/list via DefaultMcpProber for pre-connect injection scan
+6. Sanitize tool definitions (names, descriptions, input schemas)
+7. Register tools in `McpToolRegistry` with trust scores
+8. Mark server as "connected" in manager state
 ```
 
-Code sketch:
+API:
 
 ```rust
-async fn start_server(&self, config: &ServerConfig) -> Result<Connection> {
-    // 1. Sanitize environment
-    let env = self.scrub_secrets(&config.env);
+pub struct ServerEntry {
+    pub id: String,                          // Unique server ID
+    pub transport: McpTransport,             // Stdio/Http/OAuth variant
+    pub timeout: Duration,                   // Request timeout
+    pub trust_level: McpTrustLevel,         // Trusted/Untrusted/Sandboxed
+    pub tool_allowlist: Option<Vec<String>>, // Optional tool allowlist
+    pub allow_untrusted_without_allowlist: bool,  // Secure default: false
+    pub expected_tools: Vec<String>,        // Attestation list
+    pub roots: Vec<String>,                 // Root resources for file servers
+    pub tool_metadata: HashMap<String, ToolSecurityMeta>,  // Pre-defined tool metadata
+    pub elicitation_enabled: bool,          // Tool parameter probing
+    pub elicitation_timeout_secs: u64,      // Probing timeout
+    pub env_isolation: bool,                // Scrub env vars (default: true)
+    pub media_passthrough: bool,            // Allow media types in responses
+}
+
+pub enum McpTransport {
+    Stdio {
+        command: String,
+        args: Vec<String>,
+        env: HashMap<String, String>,
+    },
+    Http {
+        url: String,
+        headers: HashMap<String, String>,
+    },
+    OAuth {
+        auth_uri: String,
+        token_uri: String,
+        client_id: String,
+        client_secret: Secret,
+    },
+}
+
+impl McpManager {
+    /// Connect all configured servers in parallel.
+    pub async fn connect_all(&self) -> (Vec<McpTool>, Vec<ServerConnectOutcome>);
     
-    // 2. Spawn process
-    let mut child = Command::new(&config.command)
-        .env_clear()
-        .envs(&env)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("Failed to spawn MCP server")?;
-    
-    let stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    
-    // 3. Initialize protocol (exchange capabilities)
-    let conn = JsonRpcTransport::new(stdin, stdout);
-    let caps = conn.initialize(
-        &InitializeRequest {
-            protocol_version: "2024-11-05",
-            capabilities: /* client capabilities */,
-        },
-        Duration::from_secs(10),
-    ).await?;
-    
-    // 4. Store connection
-    let server_id = self.store_connection(config.name.clone(), conn).await?;
-    
-    Ok(server_id)
+    /// Call a tool on a specific server.
+    pub async fn call_tool(
+        &self,
+        server_id: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<ToolResult>;
 }
 ```
 
-## Connection Management
+## Connection Maintenance
 
-Maintain bidirectional messaging:
+`McpClient` (via rmcp crate) maintains bidirectional messaging:
 
-```rust
-pub struct McpConnection {
-    id: String,
-    name: String,
-    transport: JsonRpcTransport,
-    pending_requests: Arc<Mutex<HashMap<u64, Waiter>>>,
-    server_notifications: Arc<Mutex<VecDeque<Notification>>>,
-    health_check_interval: Duration,
-}
+- **Requests**: Zeph sends tool calls, resource reads, prompt queries
+- **Notifications**: Server sends `tools/list_changed`, `resources/list_changed`, etc.
+- **Responses**: Async correlation by request ID; timeout triggers error
+- **Errors**: JSON-RPC errors forwarded as `McpError`
 
-impl McpConnection {
-    async fn send_request(&self, method: &str, params: Value) -> Result<Value> {
-        let id = self.next_request_id();
-        let waiter = Waiter::new();
-        
-        self.pending_requests.lock().insert(id, waiter.clone());
-        self.transport.send_request(id, method, params).await?;
-        
-        // Wait for response with timeout
-        waiter.wait(Duration::from_secs(30)).await
-    }
-    
-    async fn handle_notification(&self, notif: Notification) {
-        // Server can send unsolicited notifications (e.g., resource changed)
-        self.server_notifications.lock().push_back(notif);
-    }
-}
+Config:
+```toml
+[[mcp.servers]]
+id = "filesystem"
+transport = { type = "stdio", command = "npx", args = ["-y", "@modelcontextprotocol/server-filesystem"] }
+timeout_secs = 30
+trust_level = "untrusted"
+tool_allowlist = ["read_file", "list_directory"]
 ```
 
 ## Failure Detection & Reconnection
 
-Monitor server health:
+Initial connection failures are logged with stderr; transient failures during tool calls trigger retry logic (via rmcp's error handling and `McpToolExecutor` retry). Long-lived servers are not actively health-checked (only re-validated if a notification arrives).
+
+Failed servers are marked `Error` in `ServerConnectOutcome` and their tools are unavailable for dispatch.
+
+## Graceful Shutdown
+
+Cleanup on agent termination (via `TaskSupervisor::shutdown_all`):
 
 ```rust
-async fn health_check_loop(&self, conn: &McpConnection) {
-    let mut interval = tokio::time::interval(
-        conn.health_check_interval
-    );
-    
-    loop {
-        interval.tick().await;
-        
-        match conn.send_request("ping", json!({})).await {
-            Ok(_) => {
-                conn.mark_healthy();
-            }
-            Err(e) => {
-                log::warn!("Server {} health check failed: {}", conn.name, e);
-                self.mark_unhealthy(&conn.id).await;
-                
-                // Trigger reconnect logic
-                self.attempt_reconnect(&conn.id).await;
-            }
+impl McpManager {
+    /// Shutdown all servers gracefully.
+    pub async fn shutdown_all(&self, timeout: Duration) -> Result<()> {
+        for server in &self.servers {
+            // Cancel pending requests
+            // Send shutdown signal if server supports it
+            // Close stdio handles or HTTP connections
+            // Wait for graceful close or force-terminate
         }
     }
 }
 ```
 
-## Graceful Shutdown
+Timeout: configurable per agent (default 5s). If shutdown exceeds timeout, remaining servers are force-closed without waiting for pending requests.
 
-Cleanup on agent termination:
+## Tool Registry Coordination
+
+`McpToolRegistry` (`crates/zeph-mcp/src/registry.rs`) indexes tools by server. When a server notifies `tools/list_changed`, the registry re-fetches and updates its index:
 
 ```rust
-async fn shutdown_server(&self, server_id: &str) -> Result<()> {
-    let conn = self.get_connection(server_id)?;
-    
-    // 1. Reject new requests
-    conn.mark_shutdown();
-    
-    // 2. Wait for pending requests (timeout: 5s)
-    let timeout = Duration::from_secs(5);
-    match timeout_at(
-        Instant::now() + timeout,
-        self.wait_pending_requests(server_id),
-    ).await {
-        Ok(Ok(())) => log::info!("Server {} graceful shutdown", server_id),
-        Ok(Err(e)) => log::warn!("Server {} shutdown error: {}", server_id, e),
-        Err(_) => log::warn!("Server {} shutdown timeout", server_id),
+impl ToolListChangedHandler {
+    pub async fn on_tools_list_changed(&self, server_id: &str) -> Result<()> {
+        // 1. Fetch updated tools/list from server
+        // 2. Sanitize tool definitions
+        // 3. Update registry index
+        // 4. Fire MCP client callback if attached
     }
-    
-    // 3. Terminate subprocess
-    self.kill_subprocess(server_id).await?;
-    
-    // 4. Remove from registry
-    self.remove_connection(server_id).await;
-    
-    Ok(())
 }
 ```
 
-## Startup Auto-Retry with Exponential Backoff (#3578)
+## Transport Security
 
-MCP server startup is unreliable in practice: a server process may crash before
-completing the `initialize` handshake, or a network MCP server may be temporarily
-unavailable at agent start time. Without retry, a single failed server blocks agent
-startup or silently reduces the tool catalog.
-
-### Retry Contract
-
-`McpManager::start_with_retry(config)` wraps `start_server()` in an exponential
-backoff loop:
-
-```
-attempt 1: immediate
-attempt 2: base_delay_ms (default 200 ms)
-attempt 3: base_delay_ms × backoff_factor (default 2.0)
-...
-attempt N: min(base_delay_ms × backoff_factor^(N-2), max_delay_ms)
-```
-
-On exhaustion (all `max_startup_retries` attempts failed):
-
-- **`critical = false` servers**: log `ERROR`, skip server, agent starts without it.
-  The missing server's tools are absent from the catalog until a `/mcp reconnect` command.
-- **`critical = true` servers**: return `Err(McpError::CriticalServerStartFailed)`,
-  aborting agent startup.
-
-### Jitter
-
-Each backoff delay is jittered by `±25%` (uniform random) to prevent thundering herds
-when multiple MCP servers restart simultaneously after a crash.
-
-### Tracing
-
-Each retry attempt emits a `tracing::warn!` with attempt number, server name, and
-error. The initial failure emits `tracing::info!` (not warn — first attempt failure is
-expected in slow-start environments).
-
-### Config
-
-```toml
-[[mcp.servers]]
-name = "local-tools"
-command = "python3 /path/to/server.py"
-stdio = "pipe"  # or "pty" for terminal emulation
-timeout_init_s = 10
-timeout_request_s = 30
-healthcheck_interval_s = 60
-critical = false                    # if true, startup failure aborts the agent
-max_startup_retries = 3             # total attempts (1 initial + N-1 retries); 0 = no retry
-startup_retry_base_delay_ms = 200   # base delay before first retry
-startup_retry_max_delay_ms = 5000   # cap on exponential backoff
-startup_retry_backoff_factor = 2.0  # multiplier applied per attempt
-
-# Environment scrubbing: keep only these vars
-allow_env_vars = ["PATH", "HOME", "RUST_LOG"]
-```
-
-### Key Invariants
-
-- Retry delay is bounded by `startup_retry_max_delay_ms` — backoff cannot grow unbounded
-- `critical = true` servers abort startup on first failure (no retry is attempted before aborting)
-  — override: set `max_startup_retries > 0` to retry even critical servers before aborting
-- NEVER silently swallow a critical server failure — `Err` must propagate to `McpManager::start_all`
-- Jitter is applied on retries only, not on the initial attempt
-- The TUI startup spinner shows per-server retry status when `max_startup_retries > 0`
-
-## Configuration (Legacy)
-
-```toml
-[[mcp.servers]]
-name = "local-tools"
-command = "python3 /path/to/server.py"
-stdio = "pipe"  # or "pty" for terminal emulation
-timeout_init_s = 10
-timeout_request_s = 30
-healthcheck_interval_s = 60
-
-# Environment scrubbing: keep only these vars
-allow_env_vars = ["PATH", "HOME", "RUST_LOG"]
-```
-
-## Integration Points
-
-- [[002-agent-loop/spec]] — MCP servers initialized during agent startup
-- [[008-2-discovery]] — Server capabilities discovered after initialization
-- [[008-3-security]] — Environment scrubbing occurs before spawn
-- [[010-security/spec]] — Subprocess isolation enforced here
+- **Stdio**: inherited from parent environment (scrubbed of secrets); runs with same UID as agent
+- **HTTP**: URL resolved via `validate_url_ssrf()` — private IPs blocked unless allowlisted
+- **OAuth**: authorization endpoints validated via `validate_oauth_metadata_urls()` against SSRF blocklist
 
 ## See Also
 
 - [[008-mcp/spec]] — Parent
-- [[008-2-discovery]] — Tool discovery after lifecycle setup
-- [[008-3-security]] — Security constraints on subprocess spawning
+- [[008-2-discovery]] — Tool discovery and semantic indexing
+- [[008-3-security]] — Tool sanitization and policy enforcement
+- [[010-3-authorization]] — SSRF protection

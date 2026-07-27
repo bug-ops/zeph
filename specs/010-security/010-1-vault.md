@@ -20,166 +20,133 @@ related:
 
 # Spec: Secret Vault & Credential Resolution
 
-> [!danger] Stale content — 2026-07 audit
-> This file's code samples and type names do not match the real implementation and were not
-> corrected in this pass (rewrite, not a text fix): it uses `serde_yaml` (banned project-wide, see
-> `[[constitution]]` II — use `serde_norway`), `log::info!`/`log::warn!` (banned, `tracing` only),
-> invented types `VaultBackend`/`AgeVault` (real trait is `VaultProvider`,
-> `crates/zeph-vault/src/lib.rs`), and lists `age`/`kms`/`custom` backends (only `age`/`env` exist,
-> per the correct listing in `[[010-security/spec]]` and `[[038-vault/spec]]`). **Treat
-> [[038-vault/spec]] as authoritative for vault behavior**, not this file.
-
 Age-encrypted secret storage, credential resolution, ZEPH_* environment key mapping, vault access control.
 
 ## Overview
 
-Zeph stores all secrets (API keys, tokens, passwords) in an encrypted age vault, not in environment variables or `.env` files. The vault is automatically decrypted at startup, and credentials are resolved on-demand by subsystems.
+Zeph stores all secrets (API keys, tokens, passwords) in an encrypted age vault, not in environment variables or `.env` files. The vault is automatically decrypted at startup, and credentials are resolved on-demand by subsystems using the pluggable `VaultProvider` trait.
+
+Two backends ship out of the box: `AgeVaultProvider` (recommended, age encryption) and `EnvVaultProvider` (development/testing, reads `ZEPH_SECRET_*` env vars).
 
 ## Key Invariants
 
 **Always:**
-- All API keys, tokens, and passwords stored in age vault only
-- Vault backend (age/kms/custom) configured once at startup
-- Credentials resolved via `vault.get("KEY_NAME")` at runtime, never from env vars
-- ZEPH_* environment variables automatically resolved from vault at startup
+- All API keys, tokens, and passwords stored in encrypted age vault (production) or env vars (testing only)
+- Vault backend configured once at startup via `VaultProvider` trait implementation
+- Credentials resolved via `vault.get_secret("KEY_NAME").await` at runtime, never from raw env vars
+- Secret values kept in `zeroize::Zeroizing` buffers — automatically zeroed on drop
+- Vault file permissions set to `0o600` (owner-read/write only) on Unix
 
 **Never:**
 - Store secrets in `.env`, config files, or command-line arguments
-- Pass API keys through shell pipelines or logs
+- Pass API keys through logging, error messages, or debug output
 - Hardcode credentials in source code
-- Use plaintext file backend in production
+- Use synchronous blocking I/O inside async contexts for vault access
 
-## Age Vault Structure
-
-YAML format for quick editing:
-
-```yaml
-# ~/.age/zeph.age (encrypted)
----
-# OpenAI
-openai_api_key: "sk-proj-..."
-openai_org_id: "org-..."
-
-# Anthropic
-claude_api_key: "sk-ant-..."
-
-# Local APIs
-ollama_api_base: "http://localhost:11434"
-
-# Database
-postgres_url: "postgresql://user:pass@host/db"
-
-# External Services
-telegram_bot_token: "123456:ABCdef..."
-github_token: "ghp_..."
-```
-
-Encrypted with user's age public key:
-
-```bash
-age --encrypt --recipient age1xxx... ~/.age/zeph.age.plaintext > ~/.age/zeph.age
-rm ~/.age/zeph.age.plaintext
-```
-
-## Vault Access Interface
+## Vault Provider Trait
 
 ```rust
-pub trait VaultBackend: Send + Sync {
-    async fn get(&self, key: &str) -> Result<String>;
-    async fn set(&self, key: &str, value: &str) -> Result<()>;
-    async fn list(&self) -> Result<Vec<String>>;
-    async fn delete(&self, key: &str) -> Result<()>;
-}
+pub trait VaultProvider: Send + Sync {
+    /// Retrieve a secret by key.
+    ///
+    /// Returns `Ok(None)` when the key does not exist.
+    /// Returns `Err(VaultError)` on backend failures (I/O, decryption, network).
+    fn get_secret(
+        &self,
+        key: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, VaultError>> + Send + '_>>;
 
-pub struct AgeVault {
-    // Decrypted in-memory map after startup
-    secrets: Arc<RwLock<HashMap<String, String>>>,
-    vault_path: PathBuf,
-    identity_path: PathBuf,
-}
-
-impl AgeVault {
-    async fn load(&mut self) -> Result<()> {
-        // 1. Read encrypted file
-        let encrypted = fs::read_to_string(&self.vault_path)?;
-        
-        // 2. Decrypt using age identity
-        let decrypted = age_decrypt(&encrypted, &self.identity_path)?;
-        
-        // 3. Parse YAML
-        let parsed: HashMap<String, String> = serde_yaml::from_str(&decrypted)?;
-        
-        // 4. Store in memory
-        *self.secrets.write().await = parsed;
-        
-        Ok(())
-    }
-    
-    async fn get(&self, key: &str) -> Result<String> {
-        self.secrets
-            .read()
-            .await
-            .get(key)
-            .cloned()
-            .ok_or_else(|| anyhow!("Secret '{}' not found in vault", key))
+    /// Return all known secret keys (optional).
+    ///
+    /// Default implementation returns an empty `Vec`.
+    fn list_keys(&self) -> Vec<String> {
+        Vec::new()
     }
 }
 ```
 
-## Startup Resolution
+## Age Backend
 
-At agent initialization, populate required ZEPH_* vars:
+**File layout:**
+```
+~/.config/zeph/
+├── vault-key.txt   # age identity (private key), mode 0600
+└── secrets.age     # age-encrypted JSON: {"KEY": "value", ...}
+```
 
+**API:**
 ```rust
-async fn resolve_vault_at_startup(vault: &AgeVault) -> Result<()> {
-    let required_keys = vec![
-        "openai_api_key",
-        "claude_api_key",
-        "ollama_api_base",
-    ];
+pub struct AgeVaultProvider { /* private */ }
+
+impl AgeVaultProvider {
+    /// Load vault from encrypted files.
+    pub fn new(key_path: &Path, vault_path: &Path) -> Result<Self, AgeVaultError>;
     
-    for key in required_keys {
-        if let Ok(value) = vault.get(key).await {
-            // Don't set env var; store in config instead
-            // ZEPH_OPENAI_API_KEY is resolved lazily from vault
-            log::info!("Resolved credential: {}", key);
-        } else {
-            log::warn!("Missing vault key: {}", key);
-        }
-    }
+    /// Initialize a new vault with a fresh age keypair.
+    pub fn init_vault(dir: &Path) -> Result<(), AgeVaultError>;
     
-    Ok(())
+    /// Synchronous getter for convenience (non-async).
+    pub fn get(&self, key: &str) -> Option<&str>;
+    
+    /// Set or update a secret (requires mutable access).
+    pub fn set_secret_mut(&mut self, key: String, value: String, is_new: bool) 
+        -> Result<(), AgeVaultError>;
+    
+    /// Remove a secret.
+    pub fn remove_secret_mut(&mut self, key: &str) -> bool;
+    
+    /// Save encrypted vault to disk (atomic write via `.tmp` suffix).
+    pub fn save(&self) -> Result<(), AgeVaultError>;
+    
+    /// Async variant that offloads I/O to a background thread.
+    pub async fn load_async(key_path: &Path, vault_path: &Path) 
+        -> Result<Self, AgeVaultError>;
+    
+    pub async fn save_async(&self) -> Result<(), AgeVaultError>;
+}
+
+impl VaultProvider for AgeVaultProvider { /* ... */ }
+```
+
+Secrets stored as JSON (not YAML) for forward compatibility:
+```json
+{
+  "ZEPH_CLAUDE_API_KEY": "sk-ant-...",
+  "ZEPH_OPENAI_API_KEY": "sk-proj-...",
+  "OLLAMA_API_BASE": "http://localhost:11434"
 }
 ```
 
-## Lazy Resolution in LLM Providers
+## Env Backend
 
-Providers request credentials on-demand:
+Development/testing backend that reads `ZEPH_SECRET_*` prefixed environment variables:
 
 ```rust
-pub struct ClaudeProvider {
-    vault: Arc<AgeVault>,
-}
+pub struct EnvVaultProvider;
 
-impl ClaudeProvider {
-    async fn get_api_key(&self) -> Result<String> {
-        self.vault.get("claude_api_key").await
+impl VaultProvider for EnvVaultProvider {
+    fn get_secret(&self, key: &str) -> Pin<Box<dyn Future<...>>> {
+        // Looks for environment variable with `ZEPH_SECRET_` prefix
+        // E.g., key "API_KEY" reads env var "ZEPH_SECRET_API_KEY"
     }
-    
-    async fn invoke(&self, req: &Request) -> Result<Response> {
-        let api_key = self.get_api_key().await?;
-        
-        // Make request with credential
-        let client = reqwest::Client::new();
-        client
-            .post("https://api.anthropic.com/v1/messages")
-            .bearer_auth(&api_key)
-            .json(req)
-            .send()
-            .await?
-            .json()
-            .await
-    }
+}
+```
+
+Used for testing and CI pipelines where file-based vaults are impractical.
+
+## Arc Wrapper
+
+`ArcAgeVaultProvider` wraps `Arc<RwLock<AgeVaultProvider>>` to allow sharing the vault as a trait object while still supporting mutable operations (e.g., OAuth credential persistence):
+
+```rust
+pub struct ArcAgeVaultProvider { /* ... */ }
+
+impl VaultProvider for ArcAgeVaultProvider { /* ... */ }
+
+// Mutable methods available via downcasting:
+impl ArcAgeVaultProvider {
+    pub fn set_secret_mut(&self, key: String, value: String, is_new: bool) 
+        -> Result<(), AgeVaultError>;
 }
 ```
 
@@ -192,10 +159,10 @@ Management interface:
 cargo run -- vault list
 
 # Get a secret (for external scripts)
-cargo run -- vault get openai_api_key
+cargo run -- vault get ZEPH_OPENAI_API_KEY
 
-# Set a secret (interactive prompt)
-cargo run -- vault set new_key_name
+# Initialize a new vault with fresh keypair
+cargo run -- vault init
 
 # Validate vault integrity
 cargo run -- vault check
@@ -205,9 +172,9 @@ cargo run -- vault check
 
 ```toml
 [vault]
-backend = "age"                    # or "kms", "custom"
-vault_path = "~/.age/zeph.age"
-identity_path = "~/.age/identity"
+backend = "age"                    # or "env"
+vault_path = "~/.config/zeph/secrets.age"
+identity_path = "~/.config/zeph/vault-key.txt"
 fallback_env = false               # don't read from env vars as fallback
 ```
 

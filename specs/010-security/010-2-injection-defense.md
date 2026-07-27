@@ -23,262 +23,203 @@ related:
 
 # Spec: Injection Defense & Content Isolation
 
-> [!danger] Stale content — 2026-07 audit
-> The `IpiDetector`/`PiiDetector`/`DeBERTaClassifier` code blocks below are fictional — none of
-> these type names exist in the codebase — and were not corrected in this pass (rewrite, not a text
-> fix). Real code: `crates/zeph-llm/src/classifier/` (`CandleClassifier`, `CandlePiiClassifier`) and
-> `crates/zeph-sanitizer/src/causal_ipi.rs` (`TurnCausalAnalyzer`). The "User Verification Gate"
-> section's direct `println!(...)` also contradicts [[001-system-invariants/spec#1. Channel Contract]]
-> ("the `Channel` trait is the only I/O boundary") — do not copy that pattern.
-
-Indirect Prompt Injection (IPI) defense, DeBERTa-backed detection, AlignSentinel confidence scoring, PII NER detection, content isolation.
+Indirect Prompt Injection (IPI) defense, regex-based detection, ML classifier soft signals, TurnCausalAnalyzer, PII NER detection, content spotlighting.
 
 ## Overview
 
-Zeph processes untrusted content from web scraping, MCP tool outputs, and user uploads. IPI attacks attempt to override agent behavior by embedding instructions in observed content. Zeph defends via multi-layer detection: regex, DeBERTa binary classifier, confidence scoring, and explicit user verification gates.
+Zeph processes untrusted content from web scraping, MCP tool outputs, A2A calls, and memory retrieval. IPI attacks attempt to override agent behavior by embedding instructions in observed content. Zeph defends via multi-layer detection: regex spotlighting with content source attribution, optional ML-backed classifiers, turn-level causal analysis for tool-chain anomalies, and PII NER redaction.
 
 ## Key Invariants
 
 **Always:**
-- All web-fetched content scanned for IPI patterns before returning to agent
-- MCP tool outputs validated before reaching context/LLM
-- Suspicious content flagged with confidence score; high scores require user verification
-- PII (SSN, credit card, email) detected via NER and redacted or blocked
+- All untrusted content (`WebScrape`, `MemoryRetrieval`, `A2A`, `McpToolResult`) wrapped in spotlighting delimiters and source attribution
+- External content injected at `ContentTrustLevel::ExternalUntrusted` or `LocalUntrusted` depending on source
+- Regex-based injection pattern detection runs unconditionally on external content (`flag_injection_patterns = true`)
+- PII entities truncated before ML model inference (max 4096 chars) to prevent OOM
+- Secrets masked via `SecretMaskRegistry` at LLM boundary to prevent leakage
 
 **Never:**
-- Trust content from web pages, emails, or tool outputs without scanning
-- Execute instructions found in observed content without explicit user approval
-- Log secrets or PII in debug dumps
-- Suppress IPI warnings when confidence is high
+- Run IPI ML classifiers on agent-generated content — only on external/tool-sourced content
+- Accumulate cross-turn injection signals for confirmation decisions — `CrossToolCorrelator` clears state at turn boundaries
+- Log or expose redacted PII values or secret shapes in debug output
+- Skip spotlight wrapping for untrusted content even if regex confidence is low
 
-## IPI Detection Layers
+## Content Sanitizer: Spotlighting & Injection Detection
 
-```
-Layer 1: Regex Patterns (Fast)
-├─ "ignore this instruction"
-├─ "prompt injection|jailbreak"
-├─ SYSTEM: embedded in content
-└─ Confidence: 0.95 (high)
-
-Layer 2: DeBERTa Binary Classifier (Slow)
-├─ Fine-tuned on IPI examples
-├─ Outputs confidence [0.0–1.0]
-└─ Run only if Layer 1 suspicious
-
-Layer 3: AlignSentinel Confidence Scoring
-├─ Combines regex + DeBERTa scores
-├─ Context-aware adjustments
-└─ > 0.8 = require user verification
-```
-
-Code:
+`ContentSanitizer` (`crates/zeph-sanitizer/src/sanitizer.rs`) wraps untrusted content with source attribution and scans for regex injection patterns:
 
 ```rust
-pub struct IpiDetector {
-    regex_patterns: Vec<(Regex, f32)>,     // (pattern, confidence)
-    deberta: Arc<DeBERTaClassifier>,
-    align_sentinel: Arc<AlignSentinel>,
+pub struct ContentSanitizer { /* ... */ }
+
+impl ContentSanitizer {
+    /// Sanitize external content: spot-light, truncate, flag injection patterns.
+    pub fn sanitize(
+        &self,
+        text: &str,
+        source: ContentSource,
+    ) -> SanitizedContent {
+        // 1. Apply content trust level based on source.kind
+        // 2. Truncate if > max_content_size
+        // 3. If external + untrusted: spotlight with <external-data>...</external-data>
+        // 4. Scan for regex injection patterns; populate injection_flags
+        // 5. Return wrapped content ready for LLM context
+    }
 }
 
-impl IpiDetector {
-    async fn scan_content(&self, text: &str) -> Result<ScanResult> {
-        // Layer 1: Regex (fast)
-        let mut max_regex_score = 0.0;
-        for (pattern, confidence) in &self.regex_patterns {
-            if pattern.is_match(text) {
-                max_regex_score = max_regex_score.max(*confidence);
-            }
-        }
-        
-        // Short-circuit if regex very confident
-        if max_regex_score > 0.9 {
-            return Ok(ScanResult {
-                is_injection: true,
-                confidence: max_regex_score,
-                detected_by: "regex",
-                content_preview: truncate(text, 100),
-            });
-        }
-        
-        // Layer 2: DeBERTa (expensive; only if regex moderately suspicious)
-        let deberta_score = if max_regex_score > 0.5 || text.len() > 500 {
-            self.deberta.classify(text).await?
-        } else {
-            0.0
-        };
-        
-        // Layer 3: AlignSentinel combines scores
-        let final_score = self.align_sentinel.combine_scores(
-            max_regex_score,
-            deberta_score,
-            text.len(),
-        );
-        
-        Ok(ScanResult {
-            is_injection: final_score > 0.75,
-            confidence: final_score,
-            detected_by: if deberta_score > max_regex_score {
-                "deberta"
-            } else {
-                "regex"
-            },
-            content_preview: truncate(text, 100),
-        })
+pub struct SanitizedContent {
+    pub body: String,                    // Spotlighted, truncated content
+    pub injection_flags: Vec<InjectionFlag>,  // Detected pattern names
+    pub was_truncated: bool,             // True if exceeded max size
+}
+```
+
+**Trust levels** (`ContentTrustLevel`):
+- `Trusted` — passes unchanged (system prompt, validated user input)
+- `LocalUntrusted` — tool results from local executors; wrapped in `<tool-output>` with NOTE header
+- `ExternalUntrusted` — web, MCP, A2A, memory; wrapped in `<external-data>` with IMPORTANT warning
+
+## Optional ML-Backed Soft Signals
+
+When feature `classifiers` is enabled and a backend is attached, `ContentSanitizer::classify_injection` provides DeBERTa-backed injection probability (advisory only):
+
+```rust
+impl ContentSanitizer {
+    /// Optional: classify content with ML classifier (requires backend).
+    pub async fn classify_injection(&self, text: &str) 
+        -> Result<InjectionVerdict> {
+        // DeBERTa model (via candle): returns continuous [0.0–1.0] probability
+        // Policy-blocked outputs are skipped; ML classification only on advisory path
     }
 }
 ```
+
+Config:
+```toml
+[security.ipi]
+enabled = false                    # Optional ML classification
+soft_signal_threshold = 0.5        # Escalate scores above this to AlignSentinel
+hard_threshold = 0.85              # Always block above this, regardless of AlignSentinel
+causal_analysis = false            # Enable turn-level anomaly detection
+```
+
+## Turn-Level Causal Analysis
+
+`TurnCausalAnalyzer` (`crates/zeph-sanitizer/src/causal_ipi.rs`) detects injection-induced tool-call pivots within a turn. If a tool result in turn N directly triggers an anomalous tool call in N+1, it is flagged:
+
+```rust
+pub struct TurnCausalAnalyzer { /* ... */ }
+
+impl TurnCausalAnalyzer {
+    /// Check whether this turn's tool calls show unusual patterns given prior results.
+    pub async fn analyze_causal_chain(
+        &self,
+        prior_result: &ToolResult,
+        current_call: &ToolCall,
+    ) -> Result<CausalAnomaly> { /* ... */ }
+}
+```
+
+This check runs **within the turn only** — state is cleared at turn boundaries per the parent spec's NEVER rule.
 
 ## PII Detection & Redaction
 
-Named Entity Recognition for sensitive data:
+`CandlePiiClassifier` (feature: `classifiers`) performs Named Entity Recognition (NER) on tool inputs/outputs when the feature is enabled:
 
 ```rust
-pub struct PiiDetector {
-    ner_model: Arc<NerClassifier>,  // Detects SSN, email, credit card, etc.
+impl ContentSanitizer {
+    /// Optional: detect PII via NER model (requires feature + backend).
+    pub async fn detect_pii(&self, text: &str) 
+        -> Result<Vec<PiiEntity>> {
+        // Truncate to pii_max_input_chars (default 4096) before model inference
+        // NER inference: returns PII entities (SSN, credit card, email, phone, etc.)
+        // Detected entities are redacted from final content
+    }
 }
 
-impl PiiDetector {
-    async fn detect_pii(&self, text: &str) -> Result<Vec<PiiEntity>> {
-        // NER inference
-        let entities = self.ner_model.extract_entities(text).await?;
-        
-        Ok(entities
-            .into_iter()
-            .filter(|e| matches!(
-                e.entity_type,
-                EntityType::SSN
-                    | EntityType::CreditCard
-                    | EntityType::Email
-                    | EntityType::PhoneNumber
-            ))
-            .collect())
-    }
-    
-    async fn redact_pii(&self, text: &str) -> Result<String> {
-        let entities = self.detect_pii(text).await?;
-        
-        let mut redacted = text.to_string();
-        for entity in entities.iter().rev() {
-            // Replace in reverse order to preserve offsets
-            let replacement = match entity.entity_type {
-                EntityType::SSN => "[REDACTED_SSN]",
-                EntityType::CreditCard => "[REDACTED_CC]",
-                EntityType::Email => "[REDACTED_EMAIL]",
-                EntityType::PhoneNumber => "[REDACTED_PHONE]",
-                _ => "[REDACTED]",
-            };
-            
-            redacted.replace_range(entity.start..entity.end, replacement);
-        }
-        
-        Ok(redacted)
+pub struct PiiFilter { 
+    regex_patterns: Vec<Regex>,  // Fallback: regex-based PII detection
+}
+
+impl PiiFilter {
+    pub fn scrub(&self, text: &str) -> String {
+        // Regex-based PII scrubbing (email, phone, SSN, credit card)
+        // Runs unconditionally; always precedes ML classification
     }
 }
 ```
 
-## Content Isolation Boundary
-
-Web-fetched and tool-output content lives in isolated context:
-
-```rust
-pub struct IsolatedContent {
-    // Content is NOT directly visible to LLM prompts
-    original: String,
-    scanned: bool,
-    ipi_confidence: f32,
-    pii_redacted: bool,
-    source: ContentSource,
-}
-
-impl IsolatedContent {
-    async fn release_to_agent(
-        &self,
-        detector: &IpiDetector,
-        pii_detector: &PiiDetector,
-    ) -> Result<String> {
-        if !self.scanned {
-            // Scan
-            let scan = detector.scan_content(&self.original).await?;
-            if scan.confidence > 0.75 {
-                return Err(anyhow!(
-                    "Content flagged as likely IPI (confidence: {:.0}%)",
-                    scan.confidence * 100.0
-                ));
-            }
-        }
-        
-        // Redact PII
-        let redacted = pii_detector.redact_pii(&self.original).await?;
-        
-        Ok(redacted)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum ContentSource {
-    WebFetch,
-    McpToolOutput,
-    UserUpload,
-    Email,
-}
-```
-
-## User Verification Gate
-
-High-confidence IPI blocks agent until user approves:
-
-```rust
-async fn handle_suspicious_content(
-    detector: &IpiDetector,
-    content: &str,
-) -> Result<String> {
-    let scan = detector.scan_content(content).await?;
-    
-    if scan.confidence > 0.75 {
-        // Block and ask user
-        println!(
-            "⚠️  Suspicious content detected (confidence: {:.0}%)",
-            scan.confidence * 100.0
-        );
-        println!("Preview: {}", scan.content_preview);
-        println!("Source: {:?}", scan.detected_by);
-        println!("Should I use this content?");
-        
-        let user_approval = /* await user input */;
-        if !user_approval {
-            return Err(anyhow!("User rejected suspicious content"));
-        }
-    }
-    
-    Ok(content.to_string())
-}
-```
-
-## Configuration
-
+Config:
 ```toml
-[security.injection_defense]
-enabled = true
-regex_patterns_enabled = true
-deberta_enabled = true
-confidence_threshold = 0.75      # require verification above this
-
-# PII Detection
-pii_detection_enabled = true
-sensitive_types = ["ssn", "credit_card", "email", "phone"]
-redact_mode = "mask"             # or "block"
+[security.pii]
+enabled = false                    # Optional NER-based detection
+threshold = 0.85                   # PII confidence threshold
+pii_max_input_chars = 4096         # Truncate before ML inference
+pii_allowlist = []                 # Regex patterns exempt from blocking
 ```
+
+## Secret Shape Masking
+
+`SecretMaskRegistry` (`crates/zeph-sanitizer/src/secret_mask.rs`) masks vault-secret placeholders at the LLM boundary to prevent leakage via side-channel analysis:
+
+```rust
+pub enum SecretCategory {
+    ApiKey,
+    AuthToken,
+    OAuthToken,
+    DatabaseUrl,
+    // ...
+}
+
+pub struct SecretMaskRegistry { /* ... */ }
+
+impl SecretMaskRegistry {
+    /// Mask all vault secret references in text before LLM inference.
+    pub fn mask_secrets(&self, text: &str) -> String {
+        // Replaces secret values with [MASKED_CATEGORY] placeholders
+        // Preserves schema/structure for debugging
+    }
+}
+```
+
+## Guardrail Filter (Optional Gating)
+
+`GuardrailFilter` provides an optional LLM-based pre-screener at the input boundary. When external content passes through, it is classified as SAFE/UNSAFE via Llama Guard classifier before being added to context:
+
+```rust
+pub struct GuardrailFilter { /* ... */ }
+
+impl GuardrailFilter {
+    /// Screen content via LLM guardrail classifier before adding to context.
+    pub async fn screen(&self, text: &str) 
+        -> Result<GuardrailVerdict> {
+        // Returns SAFE, UNSAFE, or UNKNOWN with confidence
+        // High-confidence UNSAFE blocks content from context
+    }
+}
+```
+
+Config:
+```toml
+[security.guardrails]
+enabled = false                    # Optional guardrail pre-screening
+model = "llama-guard-7b"
+threshold = 0.8                    # UNSAFE confidence threshold
+```
+
+## Quarantine & Dual-LLM Extraction
+
+`QuarantinedSummarizer` (`crates/zeph-sanitizer/src/quarantine.rs`) applies a Dual-LLM approach: one LLM processes untrusted content in isolation; a second LLM summarizes into trusted context. This prevents the agent from seeing potentially malicious instructions directly.
 
 ## Integration Points
 
-- [[008-mcp/spec]] — MCP tool outputs scanned before reaching agent
-- [[025-classifiers/spec]] — DeBERTa inference infrastructure
-- [[010-4-audit]] — IPI detection logged for compliance
-- WebFetch tool — Content scanned before returning
+- [[008-mcp/spec]] — MCP tool sanitization via `sanitize_tools()`
+- [[025-classifiers/spec]] — DeBERTa (IPI), Candle PII NER (optional classifiers feature)
+- [[010-4-audit]] — Audit signals (`AuditSignal`, `AuditSignalType`) ingested by `TrajectoryRiskAccumulator`
+- WebScrape tool — Content sanitized before returning
+- Context assembly — Spotlight wrapping applied per source trust level
 
 ## See Also
 
-- [[010-security/spec]] — Parent
-- [[010-1-vault]] — Prevent secret leakage from redaction
-- [[025-classifiers/spec]] — DeBERTa and NER models
-- [[010-4-audit]] — Audit log of IPI detections
+- [[010-security/spec]] — Parent; cross-turn NEVER rule for `CrossToolCorrelator`
+- [[010-1-vault]] — Prevent secret leakage via masking
+- [[025-classifiers/spec]] — Classifier infrastructure (DeBERTa, PII NER)
