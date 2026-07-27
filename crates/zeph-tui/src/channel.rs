@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 use zeph_core::channel::{
     Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse,
-    ToolOutputEvent, ToolStartEvent,
+    SkillCatalogItem, ToolOutputEvent, ToolStartEvent,
 };
 
 use crate::command::TuiCommand;
@@ -241,6 +243,19 @@ impl Channel for TuiChannel {
         let _ = self
             .agent_event_tx
             .try_send(AgentEvent::ContextEstimate(tokens));
+        Ok(())
+    }
+
+    #[cfg_attr(
+        feature = "profiling",
+        tracing::instrument(name = "tui.channel.send_skill_catalog", skip_all)
+    )]
+    async fn send_skill_catalog(&mut self, items: &[SkillCatalogItem]) -> Result<(), ChannelError> {
+        // Non-critical: refreshes the mention picker's Skills tab if one is open;
+        // startup/hot-reload emits arrive well before any user interaction.
+        let _ = self
+            .agent_event_tx
+            .try_send(AgentEvent::SkillCatalog(Arc::from(items.to_vec())));
         Ok(())
     }
 
@@ -614,6 +629,24 @@ mod tests {
         let msg = ch.try_recv().unwrap();
         assert_eq!(msg.text, "queued");
         assert!(ch.accumulated.is_empty());
+    }
+
+    #[tokio::test]
+    async fn send_skill_catalog_forwards_event() {
+        let (mut ch, _user_tx, mut agent_rx) = make_channel();
+        let items = vec![SkillCatalogItem {
+            name: "web_search".into(),
+            description: "Search the web".into(),
+        }];
+        ch.send_skill_catalog(&items).await.unwrap();
+        let evt = agent_rx.recv().await.unwrap();
+        match evt {
+            AgentEvent::SkillCatalog(got) => {
+                assert_eq!(got.len(), 1);
+                assert_eq!(got[0].name, "web_search");
+            }
+            other => panic!("expected SkillCatalog, got {other:?}"),
+        }
     }
 
     #[tokio::test]

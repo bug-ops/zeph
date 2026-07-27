@@ -16,6 +16,45 @@ use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
 use zeph_skills::registry::SkillRegistry;
 
 impl<C: Channel> Agent<C> {
+    /// Builds the current skill catalog (name + description) for
+    /// [`Channel::send_skill_catalog`], excluding blocked skills.
+    ///
+    /// Shared by the startup emit (`Agent::run`) and the hot-reload emit below so both
+    /// apply the same [`zeph_common::SkillTrustLevel::Blocked`] filter — reading
+    /// `registry.read().all_meta()` raw at only one of the two sites would let blocked
+    /// skills appear in the mention picker until the first hot-reload, then silently
+    /// vanish (M2).
+    pub(super) async fn skill_catalog_items(&mut self) -> Vec<crate::channel::SkillCatalogItem> {
+        let all_meta: Vec<zeph_skills::loader::SkillMeta> = self
+            .services
+            .skill
+            .registry
+            .read()
+            .all_meta()
+            .into_iter()
+            .cloned()
+            .collect();
+        let trust_map = match self.build_skill_trust_map().await {
+            crate::agent::trust_commands::SkillTrustMapLoad::Fresh(map) => map,
+            crate::agent::trust_commands::SkillTrustMapLoad::LoadFailed => {
+                self.services.skill.trust_snapshot.read().clone()
+            }
+        };
+        all_meta
+            .into_iter()
+            .filter(|m| {
+                !matches!(
+                    trust_map.get(&m.name),
+                    Some(snap) if snap.trust_level == zeph_common::SkillTrustLevel::Blocked
+                )
+            })
+            .map(|m| crate::channel::SkillCatalogItem {
+                name: m.name,
+                description: m.description,
+            })
+            .collect()
+    }
+
     /// Update trust DB records for all reloaded skills.
     async fn update_trust_for_reloaded_skills(
         &mut self,
@@ -286,6 +325,14 @@ impl<C: Channel> Agent<C> {
         // cached prompt-token count must be recomputed explicitly or it goes stale until the
         // next turn's `rebuild_system_prompt` overwrites it (#6413).
         self.recompute_prompt_tokens();
+
+        // Re-emit the catalog so an open TUI mention picker's Skills tab (spec 084 §6)
+        // picks up additions/removals/blocked-status changes on hot-reload, not just at
+        // startup.
+        let catalog_items = self.skill_catalog_items().await;
+        if let Err(e) = self.channel.send_skill_catalog(&catalog_items).await {
+            tracing::warn!("failed to re-emit skill catalog after reload: {e}");
+        }
 
         self.channel.send_status_best_effort("").await;
         tracing::info!(

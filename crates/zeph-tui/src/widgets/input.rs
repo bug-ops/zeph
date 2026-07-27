@@ -243,15 +243,34 @@ fn render_text_area(app: &App, frame: &mut Frame, text_area: Rect, busy: bool) {
     // Do not show cursor when paste indicator is active — the user interacts
     // with the indicator as a whole unit, not individual characters.
     if app.paste_state().is_none() && matches!(app.input_mode(), InputMode::Insert) {
-        let prefix: String = app.input().chars().take(app.cursor_position()).collect();
-        let last_line = prefix.rsplit('\n').next().unwrap_or(&prefix);
-        #[allow(clippy::cast_possible_truncation)]
-        let cursor_x = text_area.x + last_line.width() as u16;
-        let line_count = u16::try_from(prefix.matches('\n').count()).unwrap_or(u16::MAX);
-        #[allow(clippy::cast_possible_truncation)]
-        let cursor_y = text_area.y + line_count.saturating_sub(scroll);
+        let (cursor_x, cursor_y) = caret_xy(app, text_area, app.cursor_position());
         frame.set_cursor_position((cursor_x, cursor_y));
     }
+}
+
+/// Computes the on-screen `(x, y)` position of `char_index` within `text_area`.
+///
+/// Shared by the real terminal cursor (above) and the mention-picker popup anchor
+/// (`crate::widgets::mention_picker::render`) so the popup never disagrees with where
+/// the cursor is actually drawn (M3). Splits the buffer on `'\n'` only — the paragraph
+/// renders with `Wrap { trim: false }`, so on a visually-wrapped line the computed `x`
+/// can overshoot `text_area.width`; this is a pre-existing limitation shared identically
+/// by both call sites, not something this helper newly introduces.
+pub(crate) fn caret_xy(app: &App, text_area: Rect, char_index: usize) -> (u16, u16) {
+    let input = app.input();
+    let byte_idx = input
+        .char_indices()
+        .nth(char_index)
+        .map_or(input.len(), |(idx, _)| idx);
+    let prefix = &input[..byte_idx];
+    let last_line = prefix.rsplit('\n').next().unwrap_or(prefix);
+    #[allow(clippy::cast_possible_truncation)]
+    let cursor_x = text_area.x + last_line.width() as u16;
+    let visible_lines = text_area.height;
+    let cursor_line = u16::try_from(prefix.matches('\n').count()).unwrap_or(u16::MAX);
+    let scroll = cursor_line.saturating_sub(visible_lines.saturating_sub(1));
+    let cursor_y = text_area.y + cursor_line.saturating_sub(scroll);
+    (cursor_x, cursor_y)
 }
 
 pub fn render(

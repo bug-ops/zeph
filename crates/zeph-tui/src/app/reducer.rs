@@ -10,12 +10,14 @@
 
 use zeph_core::channel::ElicitationResponse;
 
-use super::action::{Action, CursorMove, ElicitationEdit, PaletteEdit, ScrollDir, VertDir};
+use super::action::{
+    Action, CursorMove, ElicitationEdit, HorizDir, PaletteEdit, ScrollDir, VertDir,
+};
 use super::state::CTRL_C_DOUBLE_PRESS_TICKS;
 use super::{App, ChatMessage, InputMode, MessageRole, Panel, format_security_report};
 use crate::command::TuiCommand;
-use crate::file_picker::FilePickerState;
 use crate::widgets::command_palette::CommandPaletteState;
+use crate::widgets::mention_picker::{MentionKind, MentionPickerState};
 use crate::widgets::slash_autocomplete::SlashAutocompleteState;
 
 const MAX_INPUT_HISTORY: usize = 500;
@@ -31,8 +33,11 @@ pub(crate) enum Effect {
     SendUserInput(String),
     /// Copy `text` to the system clipboard.
     CopyToClipboard(String),
-    /// Trigger the file indexer for the file picker.
-    StartFileIndex,
+    /// Kick off the background file-index build if needed. Unlike the old
+    /// `StartFileIndex`, this never opens the picker itself (FR-011/NFR-004) — the
+    /// mention picker already opened synchronously in `reduce_inner`'s `InsertChar`
+    /// arm, so no keystroke path ever depends on the index arriving.
+    EnsureFileIndex,
     /// Enable or disable mouse capture in the terminal backend.
     ///
     /// Stored in `pending_mouse_capture` and drained by the `tui_loop`
@@ -44,11 +49,105 @@ pub(crate) enum Effect {
 
 /// Apply `action` to `app` and return any side-effects to run.
 ///
-/// This is the single mutation point for keyboard and mouse paths (INV-R1).
-/// The function must not perform I/O, channel sends, or any blocking work
-/// (INV-R2). Callers must pass the returned effects to [`run_effects`].
-#[allow(clippy::too_many_lines)]
+/// This is the single mutation point for keyboard and mouse paths (INV-R1). The
+/// function must not perform I/O, channel sends, or any blocking work (INV-R2).
+/// Callers must pass the returned effects to [`run_effects`].
+///
+/// Thin wrapper around [`reduce_inner`] that reconciles the mention picker
+/// (`sync_mention_picker`) after every action except the small, fail-closed set of
+/// actions [`Action::preserves_mention_span`] proves cannot touch the input buffer,
+/// cursor, or active session. This is deliberately a denylist-shaped allowlist: a
+/// future `Action` variant nobody remembers to add here defaults to resyncing, which
+/// is always safe (`sync_mention_picker` is a no-op when no picker is open) — the
+/// alternative (an allowlist of "safe to skip" actions) was tried first and missed
+/// `Action::Dispatch` reaching `prefill_input`/`PrefillVerbatim` and session-switch,
+/// both of which mutate the buffer while looking like inert dispatch wrappers.
 pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
+    let inert = action.preserves_mention_span();
+    let effects = reduce_inner(app, action);
+    if !inert {
+        sync_mention_picker(app);
+    }
+    effects
+}
+
+/// Recomputes the mention query from the current buffer/cursor state and reconciles
+/// the popup: closes it if the `@query` span was invalidated by whatever `reduce_inner`
+/// just did (S1/S2), otherwise re-filters using the freshly derived query. First line
+/// is a fast return since this now runs on nearly every action.
+fn sync_mention_picker(app: &mut App) {
+    let Some(at_char_index) = app.mention_picker.as_ref().map(|p| p.at_char_index) else {
+        return;
+    };
+    let cursor = app.sessions.current().cursor_position;
+    let at_char = app.sessions.current().input.chars().nth(at_char_index);
+    if at_char != Some('@') || cursor <= at_char_index {
+        app.mention_picker = None;
+        return;
+    }
+    let query = mention_picker_query(app);
+    if query.chars().any(char::is_whitespace) {
+        app.mention_picker = None;
+        return;
+    }
+    if let Some(picker) = app.mention_picker.as_mut() {
+        picker.refilter(&query);
+    }
+}
+
+/// Derives the mention query — the text between the triggering `@` and the cursor —
+/// without maintaining a second copy of it in `MentionPickerState`. Uses char-iterator
+/// extraction throughout (never direct byte indexing) so a `cursor_position >
+/// char_count()` buffer (reachable via `prefill_input`'s pre-existing byte/char-index
+/// bug, `keys.rs`) cannot panic here (M10).
+pub(super) fn mention_picker_query(app: &App) -> String {
+    let Some(at_char_index) = app.mention_picker.as_ref().map(|p| p.at_char_index) else {
+        return String::new();
+    };
+    let cursor = app.sessions.current().cursor_position;
+    if cursor <= at_char_index {
+        return String::new();
+    }
+    app.sessions
+        .current()
+        .input
+        .chars()
+        .skip(at_char_index + 1)
+        .take(cursor - at_char_index - 1)
+        .collect()
+}
+
+/// Char index of the first whitespace at or after `from`, or the buffer's char count if
+/// none is found — the end of the "mention token" for [`Action::MentionPickerAccept`]
+/// (M4/M9). Uses the same `char::is_whitespace` definition as `is_mention_word_start`
+/// so both ends of the token agree on what a boundary is.
+fn mention_token_end(app: &App, from: usize) -> usize {
+    app.sessions
+        .current()
+        .input
+        .chars()
+        .enumerate()
+        .skip(from)
+        .find(|(_, c)| c.is_whitespace())
+        .map_or_else(|| app.char_count(), |(i, _)| i)
+}
+
+/// Word-start rule for opening the picker (FR-001/FR-002/FR-020): position 0, or the
+/// preceding char is whitespace.
+fn is_mention_word_start(app: &App, pos: usize) -> bool {
+    if pos == 0 {
+        return true;
+    }
+    app.sessions
+        .current()
+        .input
+        .chars()
+        .nth(pos - 1)
+        .is_some_and(char::is_whitespace)
+}
+
+#[allow(clippy::too_many_lines)]
+fn reduce_inner(app: &mut App, action: Action) -> Vec<Effect> {
     match action {
         // ── Scroll ─────────────────────────────────────────────────────────────
         Action::ScrollLines(delta) => {
@@ -211,6 +310,18 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             app.sessions.current_mut().cursor_position += 1;
             if c == '/' && was_empty && app.slash_autocomplete.is_none() {
                 app.slash_autocomplete = Some(SlashAutocompleteState::new());
+            }
+            // Word-start `@` opens the mention picker (FR-001/FR-002/FR-020); mid-word
+            // `@` (e.g. `user@example.com`) is always inserted as a literal character.
+            // A single active mention at a time, mirroring slash-autocomplete's exclusion.
+            if c == '@'
+                && app.mention_picker.is_none()
+                && app.slash_autocomplete.is_none()
+                && is_mention_word_start(app, pos)
+            {
+                let catalog = app.mention_catalog();
+                app.mention_picker = Some(MentionPickerState::new(pos, catalog));
+                return vec![Effect::EnsureFileIndex];
             }
             vec![]
         }
@@ -407,55 +518,76 @@ pub(crate) fn reduce(app: &mut App, action: Action) -> Vec<Effect> {
             vec![]
         }
 
-        // ── File picker ─────────────────────────────────────────────────────────
-        Action::OpenFilePicker => {
-            vec![Effect::StartFileIndex]
-        }
-        Action::CloseFilePicker => {
-            app.file_picker_state = None;
+        // ── Mention picker (#6647) ──────────────────────────────────────────────
+        Action::CloseMentionPicker => {
+            app.mention_picker = None;
             vec![]
         }
-        Action::FilePickerMove(dir) => {
-            if let Some(ref mut s) = app.file_picker_state {
-                match dir {
-                    VertDir::Up => s.move_selection(-1),
-                    VertDir::Down => s.move_selection(1),
-                }
+        Action::MentionPickerMove(dir) => {
+            if let Some(picker) = app.mention_picker.as_mut() {
+                picker.move_selection(match dir {
+                    VertDir::Up => -1,
+                    VertDir::Down => 1,
+                });
             }
             vec![]
         }
-        Action::FilePickerInput(edit) => {
-            match edit {
-                PaletteEdit::PushChar(c) => {
-                    if let Some(ref mut s) = app.file_picker_state {
-                        s.push_char(c);
-                    }
-                }
-                PaletteEdit::PopChar => {
-                    let dismissed = app.file_picker_state.as_mut().is_none_or(|s| !s.pop_char());
-                    if dismissed {
-                        app.file_picker_state = None;
-                    }
-                }
+        Action::MentionPickerTabChange(dir) => {
+            // Query is unaffected by a tab change — only which category it filters.
+            let query = mention_picker_query(app);
+            if let Some(picker) = app.mention_picker.as_mut() {
+                picker.active_tab = match dir {
+                    HorizDir::Left => picker.active_tab.prev(),
+                    HorizDir::Right => picker.active_tab.next(),
+                };
+                picker.refilter(&query);
             }
             vec![]
         }
-        Action::FilePickerAccept => {
-            let selected = app
-                .file_picker_state
-                .as_ref()
-                .and_then(FilePickerState::selected_path)
-                .map(str::to_owned);
-            app.file_picker_state = None;
-            if let Some(path_str) = selected {
-                let pos = app.sessions.current().cursor_position;
-                let byte_offset = app.byte_offset_of_char(pos);
-                app.sessions
-                    .current_mut()
-                    .input
-                    .insert_str(byte_offset, &path_str);
-                app.sessions.current_mut().cursor_position += path_str.chars().count();
+        Action::MentionPickerAccept => {
+            let Some(picker) = app.mention_picker.take() else {
+                return vec![];
+            };
+            let at_char_index = picker.at_char_index;
+            let cursor = app.sessions.current().cursor_position;
+            let char_count = app.char_count();
+            // Defensive guard (S1): an inverted range here would panic in
+            // `String::replace_range`. Reachable if the buffer shrank or the cursor
+            // moved left of `@` through some path `sync_mention_picker` didn't catch.
+            if at_char_index >= char_count || cursor <= at_char_index {
+                return vec![];
             }
+            let Some(entry) = picker.filtered.get(picker.selected) else {
+                return vec![];
+            };
+            // M4: accept replaces the whole mention *token* (through the next
+            // whitespace), not just up to the cursor — otherwise `"@foo"` with the
+            // cursor inside the word (e.g. after Alt+Left) would only replace `"@f"`
+            // and mangle the buffer to `"src/main.rs oo"`.
+            let token_end = mention_token_end(app, cursor).min(char_count);
+            let insertion = match entry.kind {
+                MentionKind::Agent => format!("@{}", entry.display),
+                MentionKind::File | MentionKind::Skill => entry.display.clone(),
+            };
+            let next_is_space = app
+                .sessions
+                .current()
+                .input
+                .chars()
+                .nth(token_end)
+                .is_some_and(char::is_whitespace);
+            let mut replacement = insertion;
+            if !next_is_space {
+                replacement.push(' ');
+            }
+            let start = app.byte_offset_of_char(at_char_index);
+            let end = app.byte_offset_of_char(token_end);
+            let inserted_chars = replacement.chars().count();
+            app.sessions
+                .current_mut()
+                .input
+                .replace_range(start..end, &replacement);
+            app.sessions.current_mut().cursor_position = at_char_index + inserted_chars;
             vec![]
         }
 
@@ -1058,8 +1190,8 @@ pub(crate) fn run_effects(app: &mut App, effects: Vec<Effect>) {
                 Ok(()) => app.push_system_message_pub("Copied to clipboard.".to_owned()),
                 Err(e) => app.push_system_message_pub(format!("Copy failed: {e}")),
             },
-            Effect::StartFileIndex => {
-                app.open_file_picker();
+            Effect::EnsureFileIndex => {
+                app.ensure_file_index();
             }
             Effect::SetMouseCapture(b) => {
                 app.pending_mouse_capture = Some(b);

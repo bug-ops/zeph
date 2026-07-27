@@ -25,7 +25,16 @@ impl App {
                 self.sessions.current_mut().render_cache.clear();
             }
             AppEvent::Agent(agent_event) => self.handle_agent_event(agent_event),
-            AppEvent::Paste(text) => self.handle_paste(&text),
+            // Routed through `reduce` (S1, spec 084) rather than calling `handle_paste`
+            // directly: this is behaviour-identical (the `InsertText` reducer arm just
+            // calls `handle_paste`) but gives paste the mention-picker resync for free —
+            // without it, pasting before the `@` shifts the buffer while `at_char_index`
+            // stays fixed, which can invert `MentionPickerAccept`'s replacement range.
+            AppEvent::Paste(text) => {
+                let effects =
+                    crate::app::reducer::reduce(self, crate::app::action::Action::InsertText(text));
+                crate::app::reducer::run_effects(self, effects);
+            }
             AppEvent::Mouse(m) => self.handle_mouse(m),
         }
     }
@@ -303,6 +312,17 @@ impl App {
             }
             AgentEvent::HistoryBackfill(entries) => {
                 self.backfill_history_display_only(&entries);
+            }
+            AgentEvent::SkillCatalog(items) => {
+                self.skill_catalog = Some(items);
+                if self.mention_picker.is_some() {
+                    let query = crate::app::reducer::mention_picker_query(self);
+                    let skills = self.skill_catalog.clone();
+                    if let Some(picker) = self.mention_picker.as_mut() {
+                        picker.catalog.skills = skills;
+                        picker.refilter(&query);
+                    }
+                }
             }
         }
     }

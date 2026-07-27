@@ -11,8 +11,8 @@
 //! that expands each trait method into a `match` over the active variant.
 
 use zeph_core::channel::{
-    Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse, StopHint,
-    ToolOutputEvent, ToolStartEvent,
+    Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse,
+    SkillCatalogItem, StopHint, ToolOutputEvent, ToolStartEvent,
 };
 
 use crate::cli::CliChannel;
@@ -146,6 +146,10 @@ impl Channel for AnyChannel {
 
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
         dispatch_channel!(self, send_status, text)
+    }
+
+    async fn send_skill_catalog(&mut self, items: &[SkillCatalogItem]) -> Result<(), ChannelError> {
+        dispatch_channel!(self, send_skill_catalog, items)
     }
 
     async fn send_queue_count(&mut self, count: usize) -> Result<(), ChannelError> {

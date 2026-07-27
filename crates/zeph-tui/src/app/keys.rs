@@ -5,10 +5,12 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub(super) const SCROLL_STEP_PAGE: usize = 10;
 
-use crate::app::action::{Action, CursorMove, ElicitationEdit, PaletteEdit, ScrollDir, VertDir};
+use crate::app::action::{
+    Action, CursorMove, ElicitationEdit, HorizDir, PaletteEdit, ScrollDir, VertDir,
+};
 use crate::app::reducer::{reduce, run_effects};
 use crate::command::TuiCommand;
-use crate::file_picker::{FileIndex, FilePickerState};
+use crate::file_picker::FileIndex;
 use crate::layout::truncate_to_width;
 
 use super::{
@@ -64,11 +66,6 @@ impl App {
             return Self::decode_palette_key(key);
         }
 
-        // File picker
-        if self.file_picker_state.is_some() {
-            return Self::decode_file_picker_key(key);
-        }
-
         // Transcript search (issue #6023): routed mode-agnostically at the top level
         // (unlike reverse-search, which is Insert-only) so Ctrl+F works whether it was
         // opened from Normal or Insert mode, and so the two overlays are mutually
@@ -119,18 +116,6 @@ impl App {
             KeyCode::Down => Some(Action::PaletteMove(VertDir::Down)),
             KeyCode::Backspace => Some(Action::PaletteInput(PaletteEdit::PopChar)),
             KeyCode::Char(c) => Some(Action::PaletteInput(PaletteEdit::PushChar(c))),
-            _ => None,
-        }
-    }
-
-    fn decode_file_picker_key(key: KeyEvent) -> Option<Action> {
-        match key.code {
-            KeyCode::Esc => Some(Action::CloseFilePicker),
-            KeyCode::Enter | KeyCode::Tab => Some(Action::FilePickerAccept),
-            KeyCode::Up => Some(Action::FilePickerMove(VertDir::Up)),
-            KeyCode::Down => Some(Action::FilePickerMove(VertDir::Down)),
-            KeyCode::Char(c) => Some(Action::FilePickerInput(PaletteEdit::PushChar(c))),
-            KeyCode::Backspace => Some(Action::FilePickerInput(PaletteEdit::PopChar)),
             _ => None,
         }
     }
@@ -389,8 +374,12 @@ impl App {
             return;
         }
         // Pure-UI overlays carry no response channel — safe to dismiss silently.
+        // mention_picker joins this block (not the resync predicate) because
+        // `input`/`cursor_position` are session-local while `mention_picker` is a
+        // global `App` field — a resync could otherwise re-derive a valid-looking span
+        // from the *other* session's buffer after the switch (S2).
         self.command_palette = None;
-        self.file_picker_state = None;
+        self.mention_picker = None;
         self.slash_autocomplete = None;
         let prev = self.sessions.active();
         match cmd {
@@ -919,6 +908,15 @@ impl App {
         if self.slash_autocomplete.is_some() {
             return Self::decode_slash_autocomplete_key(key);
         }
+        // Mention picker is an Insert-mode overlay, not a modal: only Esc/Tab/Enter/
+        // arrows are intercepted here (`None` for anything else), so Space, Backspace,
+        // Delete, Home/End, Alt+arrows and Ctrl+* all fall through to normal Insert
+        // decoding below and rely on `sync_mention_picker` to close/refilter as needed.
+        if self.mention_picker.is_some()
+            && let Some(a) = Self::decode_mention_picker_key(key)
+        {
+            return Some(a);
+        }
         if let Some(a) = Self::decode_insert_text_key(key) {
             return Some(a);
         }
@@ -1056,8 +1054,29 @@ impl App {
                     None
                 }
             }
-            KeyCode::Char('@') => Some(Action::OpenFilePicker),
             KeyCode::Char(c) => Some(Action::InsertChar(c)),
+            _ => None,
+        }
+    }
+
+    /// Key routing for the open mention-picker popup (NFR-005/invariant 4): `Esc`
+    /// closes without submitting, is checked before `decode_insert_text_key`'s
+    /// `Esc → EnterNormal` fallback so Insert mode is retained. `Tab`/`Enter` accept
+    /// (unlike slash-autocomplete, accepting a mention never auto-submits). Plain
+    /// `Left`/`Right` cycle tabs (FR-004/D2) rather than moving the cursor — but
+    /// `Alt+Left`/`Alt+Right` (word-boundary cursor movement) are deliberately
+    /// excluded here so they fall through to normal Insert-mode decoding, where
+    /// `sync_mention_picker` closes the popup if they exit the `@query` span.
+    /// Everything else returns `None` and falls through the same way.
+    fn decode_mention_picker_key(key: KeyEvent) -> Option<Action> {
+        let is_alt = key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Esc => Some(Action::CloseMentionPicker),
+            KeyCode::Tab | KeyCode::Enter => Some(Action::MentionPickerAccept),
+            KeyCode::Up => Some(Action::MentionPickerMove(VertDir::Up)),
+            KeyCode::Down => Some(Action::MentionPickerMove(VertDir::Down)),
+            KeyCode::Left if !is_alt => Some(Action::MentionPickerTabChange(HorizDir::Left)),
+            KeyCode::Right if !is_alt => Some(Action::MentionPickerTabChange(HorizDir::Right)),
             _ => None,
         }
     }
@@ -1171,39 +1190,42 @@ impl App {
         self.sessions.current_mut().cursor_position = self.char_count();
     }
 
-    pub(super) fn open_file_picker(&mut self) {
+    /// Kicks off the background file-index build if needed. Never opens the mention
+    /// picker itself (that already happened synchronously in the reducer's `InsertChar`
+    /// arm) — this is the race-free fix for FR-011/NFR-004: no keystroke path ever
+    /// depends on the index arriving.
+    pub(super) fn ensure_file_index(&mut self) {
         use std::sync::Arc;
 
         let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let needs_rebuild = self.file_index.as_ref().is_none_or(FileIndex::is_stale);
-        if needs_rebuild && self.pending_file_index.is_none() {
-            self.sessions.current_mut().status_label = Some("indexing files...".to_owned());
-            // Status change counts as progress so the wave animates (never reads Stalled).
-            self.last_progress_at = std::time::Instant::now();
-            let pending = if let Some(sup) = &self.task_supervisor {
-                let handle = sup.spawn_blocking(Arc::from("tui.file_index.build"), move || {
-                    FileIndex::build(&root)
-                });
-                super::PendingFileIndex::Supervised(handle)
-            } else {
-                // EXEMPT: supervisor not wired (test environments); bare spawn is acceptable here
-                // because the oneshot receiver is stored in pending_file_index and polled every tick.
-                let (tx, rx) = oneshot::channel();
-                tokio::task::spawn_blocking(move || {
-                    let _ = tx.send(FileIndex::build(&root));
-                });
-                super::PendingFileIndex::Bare(rx)
-            };
-            self.pending_file_index = Some(pending);
+        if !needs_rebuild || self.pending_file_index.is_some() {
             return;
         }
-        if let Some(idx) = &self.file_index {
-            self.file_picker_state = Some(FilePickerState::new(idx));
-        }
+        self.sessions.current_mut().status_label = Some("indexing files...".to_owned());
+        // Status change counts as progress so the wave animates (never reads Stalled).
+        self.last_progress_at = std::time::Instant::now();
+        let pending = if let Some(sup) = &self.task_supervisor {
+            let handle = sup.spawn_blocking(Arc::from("tui.file_index.build"), move || {
+                FileIndex::build(&root)
+            });
+            super::PendingFileIndex::Supervised(handle)
+        } else {
+            // EXEMPT: supervisor not wired (test environments); bare spawn is acceptable here
+            // because the oneshot receiver is stored in pending_file_index and polled every tick.
+            let (tx, rx) = oneshot::channel();
+            tokio::task::spawn_blocking(move || {
+                let _ = tx.send(FileIndex::build(&root));
+            });
+            super::PendingFileIndex::Bare(rx)
+        };
+        self.pending_file_index = Some(pending);
     }
 
-    /// Checks if the background file index build has completed and, if so,
-    /// installs the result and opens the picker.
+    /// Checks if the background file index build has completed and, if so, installs
+    /// the result and refreshes an open mention picker's Files category (FR-011/
+    /// NFR-004) — seamless transition, no input loss even if the popup opened before
+    /// the index was ready.
     pub fn poll_pending_file_index(&mut self) {
         let Some(pending) = self.pending_file_index.take() else {
             return;
@@ -1228,10 +1250,16 @@ impl App {
         };
         match poll_result {
             Some(Ok(idx)) => {
-                let picker = FilePickerState::new(&idx);
+                let files_arc = idx.paths_arc();
                 self.file_index = Some(idx);
-                self.file_picker_state = Some(picker);
                 self.sessions.current_mut().status_label = None;
+                if self.mention_picker.is_some() {
+                    let query = crate::app::reducer::mention_picker_query(self);
+                    if let Some(picker) = self.mention_picker.as_mut() {
+                        picker.catalog.files = Some(files_arc);
+                        picker.refilter(&query);
+                    }
+                }
             }
             Some(Err(())) | None => {
                 self.sessions.current_mut().status_label = None;

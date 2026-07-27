@@ -113,6 +113,13 @@ impl<C: zeph_core::channel::Channel> zeph_core::channel::Channel for GatewayChan
         self.inner.send_status(text).await
     }
 
+    async fn send_skill_catalog(
+        &mut self,
+        items: &[zeph_core::channel::SkillCatalogItem],
+    ) -> Result<(), zeph_core::channel::ChannelError> {
+        self.inner.send_skill_catalog(items).await
+    }
+
     async fn send_thinking_chunk(
         &mut self,
         chunk: &str,

@@ -16,8 +16,8 @@ use zeph_common::TaskSupervisor;
 use crate::execution_mode::ExecutionMode;
 #[cfg(feature = "tui")]
 use zeph_core::channel::{
-    Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse, StopHint,
-    ToolOutputEvent, ToolStartEvent,
+    Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse,
+    SkillCatalogItem, StopHint, ToolOutputEvent, ToolStartEvent,
 };
 use zeph_core::config::Config;
 use zeph_core::json_event_sink::JsonEventSink;
@@ -91,6 +91,9 @@ impl Channel for AppChannel {
     }
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
         dispatch_app_channel!(self, send_status, text)
+    }
+    async fn send_skill_catalog(&mut self, items: &[SkillCatalogItem]) -> Result<(), ChannelError> {
+        dispatch_app_channel!(self, send_skill_catalog, items)
     }
     async fn send_queue_count(&mut self, count: usize) -> Result<(), ChannelError> {
         dispatch_app_channel!(self, send_queue_count, count)
@@ -369,6 +372,8 @@ mod tests {
         ch.send_typing().await.unwrap();
         // 8. send_status
         ch.send_status("working").await.unwrap();
+        // 8b. send_skill_catalog
+        ch.send_skill_catalog(&[]).await.unwrap();
         // 9. send_thinking_chunk
         ch.send_thinking_chunk("...").await.unwrap();
         // 10. send_queue_count
@@ -500,6 +505,45 @@ mod tests {
         match event {
             AgentEvent::ContextEstimate(tokens) => assert_eq!(tokens, 4096),
             other => panic!("expected AgentEvent::ContextEstimate, got {other:?}"),
+        }
+    }
+
+    /// Regression test for the mention-picker Skills tab (spec 084 S3): the
+    /// `app_channel_forwards_all_channel_methods` checklist above only ever
+    /// constructs `AppChannel::Standard(AnyChannel::Cli(..))`, whose `CliChannel`
+    /// has no `send_skill_catalog` override — that call silently resolves to the
+    /// trait's no-op default regardless of whether `AppChannel`'s own forwarding
+    /// arm exists, so that test cannot detect the arm being deleted. This test
+    /// exercises the `AppChannel::Tui` variant directly and asserts the catalog
+    /// actually reaches `TuiChannel`'s `AgentEvent` channel.
+    #[tokio::test]
+    async fn app_channel_forwards_send_skill_catalog_to_real_implementation() {
+        use zeph_core::channel::SkillCatalogItem;
+        use zeph_tui::{AgentEvent, TuiChannel};
+
+        let (_user_tx, user_rx) = tokio::sync::mpsc::channel(1);
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel(4);
+        let mut ch = AppChannel::Tui(TuiChannel::new(user_rx, agent_tx));
+
+        let items = vec![SkillCatalogItem {
+            name: "web_search".to_owned(),
+            description: "Search the web".to_owned(),
+        }];
+        ch.send_skill_catalog(&items).await.unwrap();
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), agent_rx.recv())
+            .await
+            .expect(
+                "send_skill_catalog() must forward an AgentEvent instead of no-op'ing \
+                 (timed out waiting for it)",
+            )
+            .expect("agent_tx channel closed unexpectedly");
+        match event {
+            AgentEvent::SkillCatalog(got) => {
+                assert_eq!(got.len(), 1);
+                assert_eq!(got[0].name, "web_search");
+            }
+            other => panic!("expected AgentEvent::SkillCatalog, got {other:?}"),
         }
     }
 }

@@ -95,8 +95,8 @@ impl App {
         widgets::input::render(self, frame, layout.input, busy, spinner_idx, motion);
         widgets::status::render(self, &self.metrics, frame, layout.status);
 
-        if let Some(state) = &self.file_picker_state {
-            widgets::file_picker::render(state, frame, layout.input, &self.theme);
+        if let Some(state) = &self.mention_picker {
+            widgets::mention_picker::render(self, state, frame, layout.input, &self.theme);
         }
 
         if let Some(state) = &self.slash_autocomplete {

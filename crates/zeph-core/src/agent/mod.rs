@@ -428,6 +428,18 @@ impl<C: Channel> Agent<C> {
         self.load_and_cache_session_digest().await;
         self.maybe_send_resume_recap().await;
 
+        // Emit the initial skill catalog once at startup (spec 084 §6, issue #6648) so a
+        // TUI mention picker opened before the first hot-reload still sees real skill
+        // names/descriptions instead of an indefinite "loading skills…" placeholder.
+        let initial_skill_catalog = self.skill_catalog_items().await;
+        if let Err(e) = self
+            .channel
+            .send_skill_catalog(&initial_skill_catalog)
+            .await
+        {
+            tracing::warn!("failed to emit initial skill catalog: {e}");
+        }
+
         // AutoSkill A6: start periodic heuristic promotion task at session startup so it runs
         // even when the main loop exits early due to an error (spec 061). The function guards
         // against double-spawn via a heuristic_promotion_handle.is_some() check.

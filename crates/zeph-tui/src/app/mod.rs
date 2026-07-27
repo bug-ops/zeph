@@ -13,11 +13,12 @@ use zeph_common::task_supervisor::{BlockingHandle, TaskSupervisor};
 
 use crate::command::TuiCommand;
 use crate::event::AgentEvent;
-use crate::file_picker::{FileIndex, FilePickerState};
+use crate::file_picker::FileIndex;
 use crate::hyperlink::HyperlinkSpan;
 use crate::metrics::MetricsSnapshot;
 use crate::session::SessionRegistry;
 use crate::widgets::command_palette::CommandPaletteState;
+use crate::widgets::mention_picker::MentionPickerState;
 use crate::widgets::slash_autocomplete::SlashAutocompleteState;
 use crate::widgets::tool_view::ToolDensity;
 
@@ -398,7 +399,12 @@ pub struct App {
     elicitation_state: Option<ElicitationState>,
     command_palette: Option<CommandPaletteState>,
     command_tx: Option<mpsc::Sender<TuiCommand>>,
-    file_picker_state: Option<FilePickerState>,
+    pub(crate) mention_picker: Option<MentionPickerState>,
+    /// Full skill catalog (name + description) delivered once at startup and
+    /// re-emitted on hot-reload (`AgentEvent::SkillCatalog`, spec 084 §6/D1). `None`
+    /// until the first emit arrives — distinguishes "still loading" from "loaded and
+    /// genuinely empty" for the mention picker's Skills tab (FR-011/FR-019).
+    pub(crate) skill_catalog: Option<Arc<[zeph_core::channel::SkillCatalogItem]>>,
     file_index: Option<FileIndex>,
     slash_autocomplete: Option<SlashAutocompleteState>,
     reverse_search: Option<crate::widgets::reverse_search::ReverseSearchState>,

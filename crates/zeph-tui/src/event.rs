@@ -293,6 +293,10 @@ pub enum AgentEvent {
     /// `input_history`/up-arrow recall (INV-SP-6, AC-20) — never routed through
     /// `App::load_history`, which also feeds `input_history`.
     HistoryBackfill(Vec<zeph_commands::TranscriptEntry>),
+    /// Full skill catalog (name + description), emitted once at agent startup and
+    /// re-emitted on skill hot-reload (spec 084 §6, issue #6648). Stored into
+    /// `App::skill_catalog` and used to refresh an open mention picker's Skills tab.
+    SkillCatalog(Arc<[zeph_core::channel::SkillCatalogItem]>),
 }
 
 /// Blocking event pump that forwards terminal events to the async [`AppEvent`] channel.

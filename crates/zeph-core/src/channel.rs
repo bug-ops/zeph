@@ -212,6 +212,33 @@ pub struct ChannelMessage {
     pub owner_key: Option<String>,
 }
 
+/// One entry in the skill catalog delivered to channels via
+/// [`Channel::send_skill_catalog`] (spec 084 §6, issue #6648).
+///
+/// Carries just enough to populate a discovery UI (e.g. the TUI's inline `@` mention
+/// picker Skills tab) — name plus a human-readable description — without pulling in
+/// `zeph-skills`' full `SkillMeta` (which also carries filesystem paths, trust
+/// metadata, and resource lists that channels have no business seeing).
+///
+/// # Examples
+///
+/// ```
+/// use zeph_core::channel::SkillCatalogItem;
+///
+/// let item = SkillCatalogItem {
+///     name: "web_search".to_owned(),
+///     description: "Search the web for current information".to_owned(),
+/// };
+/// assert_eq!(item.name, "web_search");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillCatalogItem {
+    /// Skill name, as registered in `SKILL.md` frontmatter.
+    pub name: String,
+    /// Human-readable description from the skill's frontmatter.
+    pub description: String,
+}
+
 /// Upper bound on [`Channel::send_status_best_effort`]. Status sends are a UX nicety, not a
 /// value the agent turn depends on, so a slow or rate-limited channel (see issue #6094 — Discord
 /// and Slack's 429 retry loop can otherwise take minutes) must never stall the turn loop past
@@ -328,6 +355,21 @@ pub trait Channel: Send {
     fn send_status(
         &mut self,
         _text: &str,
+    ) -> impl Future<Output = Result<(), ChannelError>> + Send {
+        async { Ok(()) }
+    }
+
+    /// Send the full skill catalog (name + description), delivered once at agent
+    /// startup and re-emitted on skill hot-reload (spec 084 §6, issue #6648). No-op by
+    /// default — most channels have no discovery UI to populate. `TuiChannel` overrides
+    /// this to feed the inline `@` mention picker's Skills tab.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn send_skill_catalog(
+        &mut self,
+        _items: &[SkillCatalogItem],
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         async { Ok(()) }
     }

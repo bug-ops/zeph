@@ -133,7 +133,7 @@ stabilisation). Label: `enhancement`, `P4`, `tui`, `a2a`.
 The primary TUI-side blocker for agent mention routing was the lack of an inline `@` picker UI. This blocker is now **resolved** by spec [[084-tui-mention-picker/spec]], which delivers:
 
 1. **Inline non-modal `@` popup** — typed `@` mentions become discoverable and auto-completable in the TUI
-2. **Agent category** — agent definitions are now plumbed into the mention picker (via `SubAgentManager::definitions()`)
+2. **Agent category** — agent definitions are now plumbed into the mention picker's Agents tab, reading directly from the existing `MetricsSnapshot::agent_definitions: Arc<[AgentDefSummary]>` (already populated from loaded `.zeph/agents/*.md` definitions and refreshed every render frame) — no new plumbing was needed for this category (spec 084 §6 D1)
 3. **Mention sigil preservation** — accepted `@agent` mentions retain the sigil, allowing downstream slash-command dispatch to correctly route them
 
 The routing invariants in this spec (§ Key Invariants) remain binding and are inherited by spec 081. Full A2A-remote mention routing (agent discovery from remote A2A peers) remains deferred as P4 follow-up work.

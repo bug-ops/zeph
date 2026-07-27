@@ -1754,15 +1754,16 @@ mod command_palette_tests {
     }
 }
 
-mod file_picker_tests {
+mod mention_picker_tests {
     use std::fs;
+    use std::sync::Arc;
 
     use super::*;
     use crate::file_picker::FileIndex;
+    use crate::widgets::mention_picker::{MentionCatalog, MentionPickerState, MentionTab};
 
     fn make_app_with_index() -> (App, mpsc::Receiver<String>, mpsc::Sender<AgentEvent>) {
-        let (app, rx, tx) = make_app();
-        (app, rx, tx)
+        make_app()
     }
 
     fn build_temp_index(files: &[&str]) -> (FileIndex, tempfile::TempDir) {
@@ -1778,253 +1779,610 @@ mod file_picker_tests {
         (idx, dir)
     }
 
-    fn open_picker_with_index(app: &mut App, idx: &FileIndex) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().to_owned();
-        drop(dir.keep());
-        app.file_index = Some(FileIndex::build(&path));
-        // Replace with our controlled index
-        app.file_picker_state = Some(crate::file_picker::FilePickerState::new(idx));
+    fn catalog_with_files(files: &[&str]) -> MentionCatalog {
+        MentionCatalog {
+            files: Some(Arc::new(files.iter().map(|s| (*s).to_owned()).collect())),
+            skills: Some(Arc::from(Vec::new())),
+            agents: Arc::from(Vec::new()),
+        }
     }
 
-    #[test]
-    fn at_sign_opens_picker_and_does_not_insert_into_input() {
-        let (mut app, _rx, _tx) = make_app_with_index();
-        // Pre-populate a fresh index so open_file_picker can open the picker immediately
-        // without spawning a background build (which requires a Tokio runtime).
-        let (idx, _dir) = build_temp_index(&["a.rs"]);
+    /// Opens the picker through the real key-decode path (not a direct field
+    /// assignment) so every test exercises the same production code the user does.
+    fn open_picker_via_key(app: &mut App, files: &[&str]) {
+        let (idx, _dir) = build_temp_index(files);
         app.file_index = Some(idx);
         app.sessions.current_mut().input_mode = InputMode::Insert;
         let key = KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
-        assert!(
-            !app.sessions.current_mut().input.contains('@'),
-            "@ should not be in input after opening picker"
-        );
-        assert!(
-            app.file_picker_state.is_some(),
-            "file_picker_state should be Some after @"
-        );
+        // The catalog installed by `Effect::EnsureFileIndex` only arrives via
+        // `poll_pending_file_index`; install it synchronously here for tests that
+        // don't specifically exercise the "still loading" path.
+        if let Some(picker) = app.mention_picker.as_mut() {
+            picker.catalog = catalog_with_files(files);
+            picker.refilter("");
+        }
     }
 
     #[test]
-    fn esc_dismisses_picker() {
+    fn at_sign_inserts_char_and_opens_mention_picker() {
         let (mut app, _rx, _tx) = make_app_with_index();
-        let (idx, _dir) = build_temp_index(&["a.rs", "b.rs"]);
-        open_picker_with_index(&mut app, &idx);
-        assert!(app.file_picker_state.is_some());
+        open_picker_via_key(&mut app, &["a.rs"]);
+        assert!(
+            app.sessions.current_mut().input.contains('@'),
+            "@ must be inserted into the input (FR-001)"
+        );
+        assert!(app.mention_picker.is_some());
+    }
+
+    #[test]
+    fn at_sign_mid_word_does_not_open_mention_picker() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "user".to_owned();
+        app.sessions.current_mut().cursor_position = 4;
+
+        let key = KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key));
+
+        assert_eq!(app.sessions.current().input, "user@");
+        assert!(app.mention_picker.is_none());
+    }
+
+    #[test]
+    fn at_sign_after_whitespace_opens_picker() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        // Pre-populate the file index so `Effect::EnsureFileIndex` does not spawn a
+        // background build, which requires a Tokio runtime this plain #[test] lacks.
+        let (idx, _dir) = build_temp_index(&["a.rs"]);
+        app.file_index = Some(idx);
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "hello ".to_owned();
+        app.sessions.current_mut().cursor_position = 6;
+
+        let key = KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key));
+
+        assert!(app.mention_picker.is_some());
+    }
+
+    #[test]
+    fn double_at_sign_second_is_appended_to_query_not_a_new_picker() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        open_picker_via_key(&mut app, &["a.rs"]);
+
+        let key = KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key));
+
+        assert!(app.mention_picker.is_some());
+        assert_eq!(app.sessions.current().input, "@@");
+    }
+
+    #[test]
+    fn esc_closes_picker_retains_insert_mode_and_input() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        open_picker_via_key(&mut app, &["a.rs", "b.rs"]);
+        assert!(app.mention_picker.is_some());
+        let input_before = app.sessions.current().input.clone();
 
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
-        assert!(app.file_picker_state.is_none());
-        assert!(app.sessions.current_mut().input.is_empty());
-    }
 
-    #[test]
-    fn enter_inserts_selected_path_and_closes_picker() {
-        let (mut app, _rx, _tx) = make_app_with_index();
-        let (idx, _dir) = build_temp_index(&["src/main.rs"]);
-        open_picker_with_index(&mut app, &idx);
-
-        let selected = app
-            .file_picker_state
-            .as_ref()
-            .unwrap()
-            .selected_path()
-            .map(ToOwned::to_owned)
-            .unwrap();
-
-        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key));
-
-        assert!(app.file_picker_state.is_none());
-        assert!(
-            app.sessions.current_mut().input.contains(&selected),
-            "input should contain selected path"
+        assert!(app.mention_picker.is_none());
+        assert_eq!(
+            app.sessions.current().input_mode,
+            InputMode::Insert,
+            "Esc must not fall through to Normal mode (invariant 4)"
         );
         assert_eq!(
-            app.sessions.current_mut().cursor_position,
-            selected.chars().count()
+            app.sessions.current().input,
+            input_before,
+            "Esc must not modify the input"
         );
     }
 
     #[test]
-    fn tab_inserts_selected_path_and_closes_picker() {
+    fn tab_accepts_file_entry_bare_path_plus_trailing_space() {
         let (mut app, _rx, _tx) = make_app_with_index();
-        let (idx, _dir) = build_temp_index(&["README.md"]);
-        open_picker_with_index(&mut app, &idx);
-
-        let selected = app
-            .file_picker_state
-            .as_ref()
-            .unwrap()
-            .selected_path()
-            .map(ToOwned::to_owned)
-            .unwrap();
+        open_picker_via_key(&mut app, &["src/main.rs"]);
 
         let key = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
 
-        assert!(app.file_picker_state.is_none());
-        assert!(app.sessions.current_mut().input.contains(&selected));
+        assert!(app.mention_picker.is_none());
+        assert_eq!(app.sessions.current().input, "src/main.rs ");
+    }
+
+    #[test]
+    fn enter_accepts_skill_entry_plain_name_plus_trailing_space() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        open_picker_via_key(&mut app, &["irrelevant.rs"]);
+        {
+            let picker = app.mention_picker.as_mut().unwrap();
+            picker.catalog = MentionCatalog {
+                files: Some(Arc::new(Vec::new())),
+                skills: Some(Arc::from(vec![zeph_core::channel::SkillCatalogItem {
+                    name: "web_search".to_owned(),
+                    description: "desc".to_owned(),
+                }])),
+                agents: Arc::from(Vec::new()),
+            };
+            picker.active_tab = MentionTab::Skills;
+            picker.refilter("");
+        }
+
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key));
+
+        assert!(app.mention_picker.is_none());
+        assert_eq!(app.sessions.current().input, "web_search ");
+    }
+
+    #[test]
+    fn accept_agent_entry_retains_at_sigil() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        open_picker_via_key(&mut app, &["irrelevant.rs"]);
+        {
+            let picker = app.mention_picker.as_mut().unwrap();
+            picker.catalog = MentionCatalog {
+                files: Some(Arc::new(Vec::new())),
+                skills: Some(Arc::from(Vec::new())),
+                agents: Arc::from(vec![zeph_core::metrics::AgentDefSummary {
+                    name: "my_agent".to_owned(),
+                    description: "desc".to_owned(),
+                    ..Default::default()
+                }]),
+            };
+            picker.active_tab = MentionTab::Agents;
+            picker.refilter("");
+        }
+
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_event(AppEvent::Key(key));
+
+        assert_eq!(app.sessions.current().input, "@my_agent ");
     }
 
     #[test]
     fn enter_with_no_matches_closes_picker_without_modifying_input() {
         let (mut app, _rx, _tx) = make_app_with_index();
-        let (idx, _dir) = build_temp_index(&["a.rs"]);
-        open_picker_with_index(&mut app, &idx);
-
-        let state = app.file_picker_state.as_mut().unwrap();
-        state.update_query("xyznotfound");
-
-        assert!(app.file_picker_state.as_ref().unwrap().matches().is_empty());
+        open_picker_via_key(&mut app, &["a.rs"]);
+        for c in "xyznotfound".chars() {
+            app.handle_event(AppEvent::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        }
+        assert!(app.mention_picker.as_ref().unwrap().filtered.is_empty());
 
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
 
-        assert!(app.file_picker_state.is_none());
-        assert!(
-            app.sessions.current_mut().input.is_empty(),
-            "input must be unchanged"
-        );
-    }
-
-    #[test]
-    fn down_key_advances_selection() {
-        let (mut app, _rx, _tx) = make_app_with_index();
-        let (idx, _dir) = build_temp_index(&["a.rs", "b.rs", "c.rs"]);
-        open_picker_with_index(&mut app, &idx);
-
-        assert_eq!(app.file_picker_state.as_ref().unwrap().selected, 0);
-
-        let key = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key));
-        assert_eq!(app.file_picker_state.as_ref().unwrap().selected, 1);
-    }
-
-    #[test]
-    fn up_key_wraps_selection_to_last() {
-        let (mut app, _rx, _tx) = make_app_with_index();
-        let (idx, _dir) = build_temp_index(&["a.rs", "b.rs", "c.rs"]);
-        open_picker_with_index(&mut app, &idx);
-
-        let key = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key));
-        let state = app.file_picker_state.as_ref().unwrap();
-        assert_eq!(state.selected, state.matches().len() - 1);
-    }
-
-    #[test]
-    fn typing_filters_matches() {
-        let (mut app, _rx, _tx) = make_app_with_index();
-        let (idx, _dir) = build_temp_index(&["src/main.rs", "src/lib.rs"]);
-        open_picker_with_index(&mut app, &idx);
-
-        let initial_count = app.file_picker_state.as_ref().unwrap().matches().len();
-
-        let key = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key));
-
-        let filtered_count = app.file_picker_state.as_ref().unwrap().matches().len();
-        assert!(filtered_count <= initial_count);
-        assert_eq!(app.file_picker_state.as_ref().unwrap().query, "m");
-    }
-
-    #[test]
-    fn backspace_with_nonempty_query_removes_char() {
-        let (mut app, _rx, _tx) = make_app_with_index();
-        let (idx, _dir) = build_temp_index(&["a.rs"]);
-        open_picker_with_index(&mut app, &idx);
-
-        app.file_picker_state.as_mut().unwrap().update_query("ma");
-
-        let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key));
-
-        assert!(app.file_picker_state.is_some());
-        assert_eq!(app.file_picker_state.as_ref().unwrap().query, "m");
-    }
-
-    #[test]
-    fn backspace_on_empty_query_dismisses_picker() {
-        let (mut app, _rx, _tx) = make_app_with_index();
-        let (idx, _dir) = build_temp_index(&["a.rs"]);
-        open_picker_with_index(&mut app, &idx);
-
-        assert!(app.file_picker_state.as_ref().unwrap().query.is_empty());
-
-        let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key));
-
-        assert!(app.file_picker_state.is_none());
-    }
-
-    #[test]
-    fn picker_blocks_other_keys() {
-        let (mut app, _rx, _tx) = make_app_with_index();
-        let (idx, _dir) = build_temp_index(&["a.rs"]);
-        open_picker_with_index(&mut app, &idx);
-
-        app.sessions.current_mut().input = "hello".into();
-        app.sessions.current_mut().cursor_position = 5;
-        let key = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
-        app.handle_event(AppEvent::Key(key));
+        assert!(app.mention_picker.is_none());
         assert_eq!(
-            app.sessions.current_mut().input,
-            "hello",
-            "input should be unchanged while picker is open"
+            app.sessions.current().input,
+            "@xyznotfound",
+            "no entry to accept — the typed query stays in the buffer unchanged"
         );
     }
 
     #[test]
-    fn enter_inserts_at_cursor_mid_input() {
+    fn up_down_move_selection_with_wrap() {
         let (mut app, _rx, _tx) = make_app_with_index();
-        let (idx, _dir) = build_temp_index(&["src/lib.rs"]);
-        open_picker_with_index(&mut app, &idx);
+        open_picker_via_key(&mut app, &["a.rs", "b.rs", "c.rs"]);
+        {
+            let picker = app.mention_picker.as_mut().unwrap();
+            picker.active_tab = MentionTab::Files;
+            picker.refilter("");
+        }
+        assert_eq!(app.mention_picker.as_ref().unwrap().selected, 0);
 
-        app.sessions.current_mut().input = "ab".into();
-        app.sessions.current_mut().cursor_position = 1;
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(
+            app.mention_picker.as_ref().unwrap().selected,
+            2,
+            "Up on the first entry must wrap to the last (AC-005)"
+        );
 
-        let selected = app
-            .file_picker_state
-            .as_ref()
-            .unwrap()
-            .selected_path()
-            .map(ToOwned::to_owned)
-            .unwrap();
-
-        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        app.handle_event(AppEvent::Key(key));
-
-        assert!(app.sessions.current_mut().input.contains(&selected));
-        assert!(app.sessions.current_mut().input.starts_with('a'));
-        assert!(app.sessions.current_mut().input.ends_with('b'));
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.mention_picker.as_ref().unwrap().selected, 0);
     }
+
+    #[test]
+    fn left_right_cycle_tabs_without_moving_cursor() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        open_picker_via_key(&mut app, &["a.rs"]);
+        let cursor_before = app.sessions.current().cursor_position;
+        assert_eq!(
+            app.mention_picker.as_ref().unwrap().active_tab,
+            MentionTab::All
+        );
+
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(
+            app.mention_picker.as_ref().unwrap().active_tab,
+            MentionTab::Files
+        );
+        assert_eq!(app.sessions.current().cursor_position, cursor_before);
+
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Left,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(
+            app.mention_picker.as_ref().unwrap().active_tab,
+            MentionTab::All
+        );
+        assert_eq!(app.sessions.current().cursor_position, cursor_before);
+    }
+
+    #[test]
+    fn typing_filters_matches_across_categories() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        open_picker_via_key(&mut app, &["src/main.rs", "src/lib.rs"]);
+        let initial_count = app.mention_picker.as_ref().unwrap().filtered.len();
+
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('m'),
+            KeyModifiers::NONE,
+        )));
+
+        let filtered_count = app.mention_picker.as_ref().unwrap().filtered.len();
+        assert!(filtered_count <= initial_count);
+        assert_eq!(app.sessions.current().input, "@m");
+    }
+
+    #[test]
+    fn backspace_with_nonempty_query_keeps_picker_open_and_refilters() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        open_picker_via_key(&mut app, &["a.rs"]);
+        for c in "ma".chars() {
+            app.handle_event(AppEvent::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        }
+        assert_eq!(app.sessions.current().input, "@ma");
+
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Backspace,
+            KeyModifiers::NONE,
+        )));
+
+        assert!(app.mention_picker.is_some());
+        assert_eq!(app.sessions.current().input, "@m");
+    }
+
+    #[test]
+    fn backspace_over_at_sign_closes_picker() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        open_picker_via_key(&mut app, &["a.rs"]);
+        assert_eq!(app.sessions.current().input, "@");
+
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Backspace,
+            KeyModifiers::NONE,
+        )));
+
+        assert!(app.mention_picker.is_none());
+        assert_eq!(app.sessions.current().input, "");
+    }
+
+    #[test]
+    fn space_closes_picker_and_inserts_as_plain_prose() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        open_picker_via_key(&mut app, &["a.rs"]);
+        for c in "file".chars() {
+            app.handle_event(AppEvent::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        }
+        assert_eq!(app.sessions.current().input, "@file");
+        assert!(app.mention_picker.is_some());
+
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char(' '),
+            KeyModifiers::NONE,
+        )));
+
+        assert!(app.mention_picker.is_none());
+        assert_eq!(app.sessions.current().input, "@file ");
+    }
+
+    #[test]
+    fn home_key_exits_span_and_closes_picker() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        open_picker_via_key(&mut app, &["a.rs"]);
+        for c in "foo".chars() {
+            app.handle_event(AppEvent::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        }
+        assert!(app.mention_picker.is_some());
+
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Home,
+            KeyModifiers::NONE,
+        )));
+
+        assert!(app.mention_picker.is_none());
+    }
+
+    #[test]
+    fn end_key_crossing_trailing_text_closes_picker() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        open_picker_via_key(&mut app, &["a.rs"]);
+        for c in "foo".chars() {
+            app.handle_event(AppEvent::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        }
+        assert!(app.mention_picker.is_some());
+        app.sessions.current_mut().input.push_str(" bar");
+        app.sessions.current_mut().cursor_position = 3;
+
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::End,
+            KeyModifiers::NONE,
+        )));
+
+        assert!(
+            app.mention_picker.is_none(),
+            "End crossing into ` bar` must close the picker"
+        );
+    }
+
+    #[test]
+    fn alt_left_past_at_sign_closes_picker_but_not_at_the_boundary() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        let (idx, _dir) = build_temp_index(&["a.rs"]);
+        app.file_index = Some(idx);
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "hello ".to_owned();
+        app.sessions.current_mut().cursor_position = 6;
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('@'),
+            KeyModifiers::NONE,
+        )));
+        for c in "foo".chars() {
+            app.handle_event(AppEvent::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        }
+        assert_eq!(app.sessions.current().input, "hello @foo");
+        assert!(app.mention_picker.is_some());
+
+        let alt_left = KeyEvent::new(KeyCode::Left, KeyModifiers::ALT);
+        app.handle_event(AppEvent::Key(alt_left));
+        assert!(
+            app.mention_picker.is_some(),
+            "cursor landing right after @ is still within the span (M4 boundary case)"
+        );
+
+        app.handle_event(AppEvent::Key(alt_left));
+        assert!(
+            app.mention_picker.is_none(),
+            "moving left past @ into the previous word must close the picker"
+        );
+    }
+
+    #[test]
+    fn ctrl_u_clears_input_and_closes_picker() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        open_picker_via_key(&mut app, &["a.rs"]);
+        assert!(app.mention_picker.is_some());
+
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+        )));
+
+        assert_eq!(app.sessions.current().input, "");
+        assert!(app.mention_picker.is_none());
+    }
+
+    #[test]
+    fn picker_opens_with_files_none_and_reports_ensure_file_index_effect() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+
+        let effects =
+            crate::app::reducer::reduce(&mut app, crate::app::action::Action::InsertChar('@'));
+
+        assert!(matches!(
+            effects.as_slice(),
+            [crate::app::reducer::Effect::EnsureFileIndex]
+        ));
+        let picker = app
+            .mention_picker
+            .as_ref()
+            .expect("picker opens synchronously");
+        assert!(
+            picker.catalog.files.is_none(),
+            "files category starts in loading state (AC-012/NFR-004)"
+        );
+    }
+
+    // ── S1 regression: paste must route through `reduce`, not `handle_paste` directly ──
+
+    #[test]
+    fn paste_containing_whitespace_closes_picker() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        open_picker_via_key(&mut app, &["a.rs"]);
+        for c in "fi".chars() {
+            app.handle_event(AppEvent::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        }
+        assert_eq!(app.sessions.current().input, "@fi");
+        assert!(app.mention_picker.is_some());
+
+        app.handle_event(AppEvent::Paste("le extra".to_owned()));
+
+        assert_eq!(app.sessions.current().input, "@file extra");
+        assert!(
+            app.mention_picker.is_none(),
+            "S1: paste must route through reduce so the span-whitespace check runs"
+        );
+    }
+
+    #[test]
+    fn accept_with_shrunk_buffer_does_not_panic_and_closes_cleanly() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        open_picker_via_key(&mut app, &["a.rs"]);
+        for c in "fi".chars() {
+            app.handle_event(AppEvent::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        }
+        // Simulate the buffer shrinking out from under a stale at_char_index — the
+        // defensive guard in `MentionPickerAccept` must not panic (S1 belt-and-braces).
+        app.sessions.current_mut().input.clear();
+        app.sessions.current_mut().cursor_position = 0;
+
+        let effects =
+            crate::app::reducer::reduce(&mut app, crate::app::action::Action::MentionPickerAccept);
+
+        assert!(effects.is_empty());
+        assert!(app.mention_picker.is_none());
+    }
+
+    // ── S2 regression: Dispatch/session-switch must close a stale picker ───────────────
+
+    #[test]
+    fn dispatch_prefill_verbatim_closes_stale_picker() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        open_picker_via_key(&mut app, &["a.rs"]);
+        assert!(app.mention_picker.is_some());
+
+        let effects = crate::app::reducer::reduce(
+            &mut app,
+            crate::app::action::Action::Dispatch(TuiCommand::PrefillVerbatim(
+                "/new text".to_owned(),
+            )),
+        );
+
+        assert!(effects.is_empty());
+        assert!(
+            app.mention_picker.is_none(),
+            "S2: Dispatch reaching PrefillVerbatim must resync and close the stale picker"
+        );
+        assert_eq!(app.sessions.current().input, "/new text");
+    }
+
+    #[test]
+    fn session_switch_closes_mention_picker_structurally() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        open_picker_via_key(&mut app, &["a.rs"]);
+        assert!(app.mention_picker.is_some());
+
+        app.execute_command(TuiCommand::SessionSwitchNext);
+
+        assert!(app.mention_picker.is_none());
+    }
+
+    // ── M4: token-bounded accept ─────────────────────────────────────────────────────
+
+    #[test]
+    fn m4_accept_replaces_whole_token_when_cursor_is_inside_it() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        open_picker_via_key(&mut app, &["a.rs"]);
+        for c in "foo".chars() {
+            app.handle_event(AppEvent::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+        }
+        assert_eq!(app.sessions.current().input, "@foo");
+        // Cursor lands right after `@` (reachable via Alt+Left/Ctrl+A/mouse) — the query
+        // there is empty, but accept must still replace the *whole* mention word.
+        app.sessions.current_mut().cursor_position = 1;
+        {
+            let picker = app.mention_picker.as_mut().unwrap();
+            picker.catalog = catalog_with_files(&["src/main.rs"]);
+            picker.refilter("");
+        }
+
+        let effects =
+            crate::app::reducer::reduce(&mut app, crate::app::action::Action::MentionPickerAccept);
+
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().input, "src/main.rs ");
+    }
+
+    #[test]
+    fn m4_accept_token_end_at_existing_space_suppresses_double_space() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        let catalog = catalog_with_files(&["src/main.rs"]);
+        app.sessions.current_mut().input = "@foo bar".to_owned();
+        app.sessions.current_mut().cursor_position = 4; // right after "foo", before the space
+        app.mention_picker = Some(MentionPickerState::new(0, catalog));
+
+        let effects =
+            crate::app::reducer::reduce(&mut app, crate::app::action::Action::MentionPickerAccept);
+
+        assert!(effects.is_empty());
+        assert_eq!(
+            app.sessions.current().input,
+            "src/main.rs bar",
+            "token_end lands on the existing space; exactly one space must separate"
+        );
+    }
+
+    #[test]
+    fn m4_accept_replaces_mid_query_mention_leaving_surrounding_prose() {
+        let (mut app, _rx, _tx) = make_app_with_index();
+        let catalog = catalog_with_files(&["src/main.rs"]);
+        app.sessions.current_mut().input = "hello @file".to_owned();
+        app.sessions.current_mut().cursor_position = 11;
+        app.mention_picker = Some(MentionPickerState::new(6, catalog));
+
+        let effects =
+            crate::app::reducer::reduce(&mut app, crate::app::action::Action::MentionPickerAccept);
+
+        assert!(effects.is_empty());
+        assert_eq!(app.sessions.current().input, "hello src/main.rs ");
+    }
+
+    // ── File-index polling: no-input-loss race (FR-011/NFR-004) ─────────────────────
 
     #[tokio::test]
-    async fn poll_pending_file_index_installs_index_and_opens_picker() {
+    async fn poll_pending_file_index_installs_index_and_refreshes_open_picker() {
         let (user_tx, _user_rx) = tokio::sync::mpsc::channel(1);
         let (_agent_tx, agent_rx) = tokio::sync::mpsc::channel(1);
         let mut app = App::new(user_tx, agent_rx);
+        app.sessions.current_mut().input_mode = InputMode::Insert;
+        app.sessions.current_mut().input = "@".to_owned();
+        app.sessions.current_mut().cursor_position = 1;
+        app.mention_picker = Some(MentionPickerState::new(0, MentionCatalog::default()));
+        assert!(app.mention_picker.as_ref().unwrap().catalog.files.is_none());
 
-        // Simulate: status is set, pending_file_index is Some (already resolved)
         let (tx, rx) = tokio::sync::oneshot::channel();
         let (idx, _dir) = build_temp_index(&["foo.rs"]);
         let _ = tx.send(idx);
         app.pending_file_index = Some(PendingFileIndex::Bare(rx));
         app.sessions.current_mut().status_label = Some("indexing files...".to_owned());
 
-        // Give the oneshot a moment to be ready (it already is since we sent before assigning)
         tokio::task::yield_now().await;
 
         app.poll_pending_file_index();
 
         assert!(app.file_index.is_some(), "file_index should be installed");
-        assert!(
-            app.file_picker_state.is_some(),
-            "picker should open after index ready"
-        );
         assert!(
             app.sessions.current_mut().status_label.is_none(),
             "status should be cleared after index ready"
@@ -2032,6 +2390,10 @@ mod file_picker_tests {
         assert!(
             app.pending_file_index.is_none(),
             "pending handle should be consumed"
+        );
+        assert!(
+            app.mention_picker.as_ref().unwrap().catalog.files.is_some(),
+            "an open picker's Files category must refresh once the index arrives"
         );
     }
 
@@ -2041,11 +2403,10 @@ mod file_picker_tests {
         let (_agent_tx, agent_rx) = tokio::sync::mpsc::channel(1);
         let mut app = App::new(user_tx, agent_rx);
 
-        // No pending handle — should be a no-op
         app.poll_pending_file_index();
 
         assert!(app.file_index.is_none());
-        assert!(app.file_picker_state.is_none());
+        assert!(app.mention_picker.is_none());
     }
 
     #[tokio::test]
@@ -2055,7 +2416,6 @@ mod file_picker_tests {
         let mut app = App::new(user_tx, agent_rx);
 
         let (tx, rx) = tokio::sync::oneshot::channel::<crate::file_picker::FileIndex>();
-        // Drop sender without sending — simulates spawn_blocking panic
         drop(tx);
         app.pending_file_index = Some(PendingFileIndex::Bare(rx));
         app.sessions.current_mut().status_label = Some("indexing files...".to_owned());
@@ -2666,7 +3026,7 @@ mod slash_autocomplete_tests {
     }
 
     #[test]
-    fn at_char_while_autocomplete_open_does_not_open_file_picker() {
+    fn at_char_while_autocomplete_open_does_not_open_mention_picker() {
         let (mut app, _rx, _tx) = make_app();
         app.sessions.current_mut().input_mode = InputMode::Insert;
         app.slash_autocomplete =
@@ -2676,7 +3036,7 @@ mod slash_autocomplete_tests {
 
         let key = KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
-        assert!(app.file_picker_state.is_none());
+        assert!(app.mention_picker.is_none());
     }
 
     #[test]

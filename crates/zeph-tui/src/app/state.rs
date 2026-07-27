@@ -12,6 +12,7 @@ use zeph_common::task_supervisor::TaskSupervisor;
 
 use crate::command::TuiCommand;
 use crate::event::AgentEvent;
+use crate::file_picker::FileIndex;
 use crate::hyperlink::HyperlinkSpan;
 use crate::metrics::MetricsSnapshot;
 use crate::session::SessionRegistry;
@@ -77,7 +78,8 @@ impl App {
             elicitation_state: None,
             command_palette: None,
             command_tx: None,
-            file_picker_state: None,
+            mention_picker: None,
+            skill_catalog: None,
             file_index: None,
             slash_autocomplete: None,
             reverse_search: None,
@@ -1527,6 +1529,19 @@ impl App {
             blocks.push(buf);
         }
         blocks
+    }
+
+    /// Builds the current [`crate::widgets::mention_picker::MentionCatalog`] snapshot:
+    /// files from the (possibly not-yet-built) file index, skills from the last
+    /// `AgentEvent::SkillCatalog` emit, and agents straight from
+    /// `MetricsSnapshot::agent_definitions` (D1 — no new plumbing needed for agents,
+    /// spec 084 §6). Every field is an `Arc` clone — O(1), no per-open allocation.
+    pub(crate) fn mention_catalog(&self) -> crate::widgets::mention_picker::MentionCatalog {
+        crate::widgets::mention_picker::MentionCatalog {
+            files: self.file_index.as_ref().map(FileIndex::paths_arc),
+            skills: self.skill_catalog.clone(),
+            agents: self.metrics.agent_definitions.clone(),
+        }
     }
 }
 

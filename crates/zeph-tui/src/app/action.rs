@@ -22,6 +22,14 @@ pub(crate) enum VertDir {
     Down,
 }
 
+/// Horizontal tab-cycling direction for the mention picker (FR-004).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum HorizDir {
+    Left,
+    Right,
+}
+
 /// Sub-edits for the command-palette text field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -147,17 +155,19 @@ pub(crate) enum Action {
     /// Accept the currently selected palette entry.
     PaletteAccept,
 
-    // ── File picker ────────────────────────────────────────────────────────────
-    /// Open the file picker.
-    OpenFilePicker,
-    /// Close the file picker without selecting.
-    CloseFilePicker,
-    /// Move the file picker selection.
-    FilePickerMove(VertDir),
-    /// Type in the file picker filter field.
-    FilePickerInput(PaletteEdit),
-    /// Accept the currently selected file.
-    FilePickerAccept,
+    // ── Mention picker (#6647) ──────────────────────────────────────────────────
+    // No `OpenMentionPicker`/`MentionPickerInput` — opening is a side effect of
+    // `InsertChar('@')`, and typing continues to flow through the existing
+    // `InsertChar`/`Delete*`/`MoveCursor` arms (the query is derived from the buffer,
+    // never mirrored into a second string; see `reducer::mention_picker_query`).
+    /// Close the mention picker without accepting.
+    CloseMentionPicker,
+    /// Move the mention picker selection within the active tab.
+    MentionPickerMove(VertDir),
+    /// Cycle the active category tab (FR-004).
+    MentionPickerTabChange(HorizDir),
+    /// Accept the currently selected entry (Tab or Enter).
+    MentionPickerAccept,
 
     // ── Slash autocomplete ─────────────────────────────────────────────────────
     /// Move the autocomplete selection.
@@ -235,6 +245,50 @@ pub(crate) enum Action {
     /// Pass-through for commands that live outside the reducer
     /// (agent commands, slash commands forwarded to the channel).
     Dispatch(TuiCommand),
+}
+
+impl Action {
+    /// Returns `true` only for actions that provably cannot mutate the input buffer,
+    /// the cursor position, or the active session — i.e. actions the mention-picker
+    /// resync (`reducer::sync_mention_picker`) can safely skip.
+    ///
+    /// This is a **fail-closed denylist**, not an allowlist of "buffer-touching"
+    /// actions: everything not listed here defaults to `false` (resync runs), so a
+    /// future `Action` variant added by someone unaware of the mention picker is safe
+    /// by construction. An allowlist shape was tried first and missed `Dispatch`
+    /// (reaches `prefill_input`/`TuiCommand::PrefillVerbatim`, both buffer-mutating)
+    /// and session switch (`mention_picker` is a global `App` field that must not
+    /// survive into a different session's buffer) — see spec 084 R1 S1/S2.
+    #[must_use]
+    pub(crate) fn preserves_mention_span(&self) -> bool {
+        matches!(
+            self,
+            Self::ScrollLines(_)
+                | Self::ScrollPage(_)
+                | Self::ScrollToTop
+                | Self::ScrollToBottom
+                | Self::ToggleToolExpanded
+                | Self::CycleToolDensity
+                | Self::ToggleSidePanels
+                | Self::ToggleHelp
+                | Self::SetHelp(_)
+                | Self::CyclePanelFocus
+                | Self::SetActivePanel(_)
+                | Self::TogglePanelCollapse(_)
+                | Self::ToggleTaskPanel
+                | Self::TogglePlanView
+                | Self::SetViewTarget(_)
+                | Self::SettingsTabNext
+                | Self::SettingsTabPrev
+                | Self::SettingsSelectMove(_)
+                | Self::SetMouse(_)
+                | Self::CopyLastAssistant
+                | Self::CopyLastCodeBlock(_)
+                | Self::CloseMentionPicker
+                | Self::MentionPickerMove(_)
+                | Self::MentionPickerTabChange(_)
+        )
+    }
 }
 
 /// Cursor movement kinds for [`Action::MoveCursor`].

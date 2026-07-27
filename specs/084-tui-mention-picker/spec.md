@@ -56,7 +56,10 @@ agent mentions with `@` sigil preserved).
 
 - Multi-line skill/agent descriptions in the popup
 - Force-opening remote agent registries (A2A peer lookup) — only local definitions
-- Cursor-movement shortcuts inside the popup (use Up/Down only)
+- **Amended**: cursor-movement shortcuts inside the popup beyond Up/Down (selection) and
+  Left/Right (tab cycling, FR-004/D2) — Left/Right were originally scoped out here but
+  are a `must` requirement per FR-004; both are implemented. Genuinely out of scope:
+  any additional in-popup cursor gesture beyond those two pairs
 - Changing the existing file index TTL (30s) or MAX_RESULTS (10)
 
 ---
@@ -92,7 +95,8 @@ GIVEN the mention picker popup is visible
 WHEN the user presses Left/Right arrow
 THEN the active tab changes
 AND the list re-filters to show only entries from that category
-AND the All tab shows mixed results ranked by fuzzy match score
+AND the All tab shows mixed results — ranked by fuzzy match score when a query is typed,
+  or round-robined across non-empty categories when the query is empty (see FR-018 amendment)
 ```
 
 ### US-003: Complete a mention and continue typing
@@ -106,7 +110,8 @@ SO THAT it is inserted into the input and I can continue typing
 ```
 GIVEN the mention picker is visible with a selection
 WHEN the user presses Tab or Enter
-THEN the `@query` text is replaced with the chosen entry
+THEN the whole mention token (`@` through the next whitespace, not just the text up to
+  the cursor — see M4 in "Accepting a Selection") is replaced with the chosen entry
 AND a trailing space is inserted (unless already present)
 AND the popup closes
 AND the cursor is positioned after the space, ready to continue typing
@@ -164,11 +169,11 @@ THEN a message "no results" appears and the popup remains open
 | FR-003 | WHEN the popup is visible every keystroke appends/deletes from the input buffer (not captured away); the popup reflects the buffer text after the `@` in real time | must |
 | FR-004 | WHEN the user presses Left/Right while the popup is visible THE SYSTEM SHALL cycle through tabs (All → Files → Skills → Agents → All) | must |
 | FR-005 | WHEN the user presses Up/Down while the popup is visible THE SYSTEM SHALL move the selection highlight within the current tab, wrapping at boundaries | must |
-| FR-006 | WHEN Tab or Enter is pressed on a selected entry THE SYSTEM SHALL replace the typed query with the selected entry plus one trailing space; the popup closes | must |
+| FR-006 | **(Amended, M4)** WHEN Tab or Enter is pressed on a selected entry THE SYSTEM SHALL replace the whole mention *token* (not just the typed query up to the cursor — see "Accepting a Selection") with the selected entry, appending one trailing space unless the next character is already whitespace; the popup closes | must |
 | FR-007 | WHEN Space is pressed while the popup is visible THE SYSTEM SHALL close the popup; the Space is inserted at the cursor position as an ordinary character and the `@query` text stays in the buffer as plain prose | must |
 | FR-008 | WHEN Esc is pressed THE SYSTEM SHALL close only the popup, retain Insert mode, keep the input buffer intact | must |
 | FR-009 | WHEN Backspace is pressed and the `@` is deleted THE SYSTEM SHALL close the popup automatically | must |
-| FR-010 | WHEN cursor movement (arrow keys outside Up/Down for selection) leaves the `@query` span THE SYSTEM SHALL close the popup | must |
+| FR-010 | **(Amended, D2)** WHEN cursor-mutating input other than Up/Down (selection) or Left/Right (tab cycling, FR-004) leaves the `@query` span — i.e. Home/End, Alt+Left/Alt+Right, Ctrl+A/Ctrl+E, or a mouse click — THE SYSTEM SHALL close the popup. Plain Left/Right never move the cursor while the popup is open, so they cannot trigger this rule. A cursor landing exactly one position after `@` (empty query, not yet past `@`) is still inside the span and does not close the popup by itself (see "Cursor Movement") | must |
 | FR-011 | WHEN the file index is (re)building (first build or stale-TTL rebuild) THE SYSTEM SHALL show an "indexing files…" placeholder row in the Files tab with no input loss race | must |
 | FR-012 | WHEN the mention picker renders THE SYSTEM SHALL use nucleo fuzzy matching for all three categories | must |
 | FR-013 | THE SYSTEM SHALL render match-character highlighting (nucleo indices) on all results | must |
@@ -176,7 +181,7 @@ THEN a message "no results" appears and the popup remains open
 | FR-015 | WHEN a File entry is accepted THE SYSTEM SHALL insert the bare repo-relative path WITHOUT a file:// prefix or quotes | must |
 | FR-016 | WHEN a Skill entry is accepted THE SYSTEM SHALL insert the skill name as plain text (no `/skill` prefix, no forced activation) | must |
 | FR-017 | WHEN an Agent entry is accepted THE SYSTEM SHALL insert the agent name with the `@` sigil (e.g., `@my_agent`) | must |
-| FR-018 | WHEN the All tab is active THE SYSTEM SHALL rank results by fuzzy match score across all categories, with per-row type indicators | must |
+| FR-018 | **(Amended)** WHEN the All tab is active with a non-empty typed query THE SYSTEM SHALL rank results by fuzzy match score across all categories, with per-row type indicators. WHEN the query is empty, results are instead round-robined across non-empty categories (not score-ranked — an empty query scores every candidate equally, so score-ranking would let files, the largest category, crowd out Skills/Agents entirely; see "Empty-Query All-Tab Ordering", #6651 tracks further refinement) | must |
 | FR-019 | WHEN a Skills or Agents category is empty THE SYSTEM SHALL show a dimmed placeholder row; the All tab shall omit that category entirely | must |
 | FR-020 | THE SYSTEM SHALL apply the word-start trigger rule consistently: the popup opens ONLY when `@` is at position 0 or preceded by whitespace | must |
 
@@ -227,22 +232,32 @@ The "query" is the text between the `@` character and the cursor, not including 
 - Input: `"hello @search"`, cursor at end → query = `"search"`
 - Input: `"@foo bar"`, cursor after `@foo` → query = `"foo"` (space ends the span)
 
-Cursor movement that leaves this span (e.g., moving left past the `@`, or moving to another word) closes the popup.
+Cursor movement that leaves this span (e.g., moving left past the `@`, or moving to another word) closes the popup — via Home/End, Alt+Left/Alt+Right, Ctrl+A/Ctrl+E, or a mouse click; plain Left/Right do not move the cursor at all while the popup is open (they cycle tabs instead, FR-004/D2) and so cannot trigger this rule. See §7 "Cursor Movement" for the full, amended rule including the post-`@` boundary case.
 
 ---
 
 ## 6. Data Model
 
-### Mention Picker State
+### Mention Picker State (as implemented — corrects the original draft below)
+
+> **Amended (post-implementation).** The original draft stored `query: String` alongside
+> `all_entries: MentionEntries`. The approved architecture (2026-07-27 R1) deliberately
+> does **not** mirror the query into a second field: `at_char_index` (the char index of
+> the triggering `@`) is the only position stored, and the query is always the buffer
+> slice `input[at_char_index+1..cursor_position]`, re-derived by the reducer
+> (`reducer::mention_picker_query`) after every action. This avoids the parallel-string
+> bug class visible in `SlashAutocomplete*PushChar/PopChar`. Catalogs are also
+> heterogeneous (`MentionCatalog`, not a single `MentionEntries`) since Files/Skills are
+> `Option` (loading vs. loaded-empty) while Agents is not (see Data Sources below).
 
 ```rust
 struct MentionPickerState {
-    query: String,                              // text after `@` and before cursor
-    selected: usize,                            // current selection index in filtered list
-    filtered: Vec<MentionEntry>,               // filtered results for active tab
+    at_char_index: usize,                      // char index of the triggering `@`; query is derived, never stored
     active_tab: MentionTab,                    // All | Files | Skills | Agents
-    scroll_offset: usize,                      // for scrolling when >MAX_VISIBLE results
-    all_entries: MentionEntries,               // cached: Files + Skills + Agents
+    selected: usize,                            // current selection index in filtered list
+    filtered: Vec<MentionEntry>,               // filtered results for active tab (≤ MAX_RESULTS)
+    catalog: MentionCatalog,                    // Files/Skills/Agents sources
+    matcher: Matcher,                           // nucleo matcher, reused across refilters
 }
 
 enum MentionTab {
@@ -253,22 +268,22 @@ enum MentionTab {
 }
 
 struct MentionEntry {
-    entry_type: MentionEntryType,
+    kind: MentionKind,
     display: String,                           // e.g., "src/main.rs", "web_search", "my_agent"
     description: Option<String>,               // e.g., skill description, agent description (dimmed in popup)
-    match_indices: Vec<usize>,                // nucleo match positions for highlighting
+    indices: Vec<u32>,                         // nucleo match char indices, sorted+deduped, for highlighting
 }
 
-enum MentionEntryType {
+enum MentionKind {
     File,
     Skill,
     Agent,
 }
 
-struct MentionEntries {
-    files: Vec<MentionEntry>,
-    skills: Vec<MentionEntry>,
-    agents: Vec<MentionEntry>,
+struct MentionCatalog {
+    files: Option<Arc<Vec<String>>>,           // None = index still building; Some(empty) = loaded, no files
+    skills: Option<Arc<[SkillCatalogItem]>>,   // None = catalog not yet delivered; Some(empty) = loaded, no skills
+    agents: Arc<[AgentDefSummary]>,            // always populated from MetricsSnapshot (D1) — never "loading"
 }
 ```
 
@@ -285,11 +300,13 @@ Initialization: `None` (popup is closed). When `@` opens it at word-start, a new
 
 | Category | Source | API / Method |
 |----------|--------|------|
-| **Files** | File index (existing `FileIndex` in `zeph-tui`) | `FileIndex::build()` (TTL 30s, supervised task), `FileIndex::search(query)` |
-| **Skills** | Skill registry | `SkillRegistry::all_meta()` from `crates/zeph-skills/src/registry.rs:330` → yields `SkillMeta { name, description, … }` |
-| **Agents** | Sub-agent definitions | `SubAgentManager::definitions()` or `SubAgentDef::load_all()` from `crates/zeph-subagent/src/def.rs:635` → yields `SubAgentDef { name, description, … }` |
+| **Files** | File index (existing `FileIndex` in `zeph-tui`) | `FileIndex::build()` (TTL 30s, supervised task), `FileIndex::paths_arc()` |
+| **Skills** | Skill registry, via a new event | `Channel::send_skill_catalog(&[SkillCatalogItem])` → `AgentEvent::SkillCatalog`, built from `SkillRegistry::all_meta()` (`crates/zeph-skills/src/registry.rs:330`), filtered to exclude `SkillTrustLevel::Blocked` |
+| **Agents** | `MetricsSnapshot::agent_definitions` (D1 — no new plumbing) | `App.metrics.agent_definitions: Arc<[AgentDefSummary]>`, already populated and refreshed every render frame |
 
-> **Data plumbing decision (fixed): catalog delivery via a dedicated event.** The TUI currently receives only runtime-active names via `MetricsSnapshot`. Full skill/agent catalogs (name + description) are delivered over the existing agent-event channel as a dedicated catalog event emitted once at startup and re-emitted on registry hot-reload — NOT embedded into the per-tick `MetricsSnapshot` (avoids bloating every metrics frame with static catalog data).
+> **Data plumbing decision (amended, D1 — 2026-07-27 architecture review): Agents need no new plumbing.** The original text below asserted "the TUI currently receives only runtime-active names via `MetricsSnapshot`" — false for agents: `MetricsSnapshot::agent_definitions: Arc<[AgentDefSummary]>` already carries name + description for every `.zeph/agents/*.md` definition, is already in `App.metrics`, and is already consumed by the Settings view's Agents tab. It is an `Arc<[…]>` refreshed once per render frame (`poll_metrics`), so cloning it per picker-open is a refcount bump, not a reallocation — the "avoids bloating every metrics frame" rationale below does not apply to it. It is also re-derived on config reload, whereas a startup-only catalog event would go stale there. **Skills genuinely have no equivalent path** (`MetricsSnapshot` carries only `active_skills: Vec<String>` names, no descriptions, and hot-reload never refreshes even that) — the dedicated-event decision below stands for Skills only.
+>
+> **Skills catalog delivery via a dedicated event.** Full skill catalogs (name + description) are delivered over the existing agent-event channel as a dedicated catalog event (`Channel::send_skill_catalog` / `AgentEvent::SkillCatalog`) emitted once at agent startup and re-emitted on skill hot-reload — NOT embedded into the per-tick `MetricsSnapshot` (avoids bloating every metrics frame with static catalog data). `Channel::send_skill_catalog` must be explicitly forwarded by every `impl Channel` wrapper (`AnyChannel`, `GatewayChannel`, and — the easiest one to miss — `AppChannel`, the binary's actual TUI-mode dispatcher) or the trait's no-op default silently wins and the Skills tab stays empty in the real binary while `TuiChannel`-level unit tests still pass.
 >
 > **Rationale**: `zeph-tui` has no dependency on `zeph-skills` (verified in `crates/zeph-tui/Cargo.toml`); event-based delivery keeps it that way and reuses the channel the TUI already consumes. Rejected alternative: direct supervised load in `zeph-tui` mirroring `FileIndex::build()` — would require adding a `zeph-skills` dependency and duplicate catalog-loading logic that `zeph-core` already performs at bootstrap.
 
@@ -299,25 +316,34 @@ Initialization: `None` (popup is closed). When `@` opens it at word-start, a new
 
 ### Opening the Popup
 
-When the word-start trigger is satisfied:
+**Amended (matches the approved R1 naming deviation, §6/§9 above — no `Action::OpenMentionPicker` exists).**
+When the word-start trigger is satisfied, inside the existing `Action::InsertChar('@')` reducer arm:
 
-1. An `Action::OpenMentionPicker` is routed through the reducer
-2. `MentionPickerState::new()` is created with:
-   - `query = ""`
-   - `filtered = all_entries` (All tab, no filter)
-   - `selected = 0`
-   - `active_tab = MentionTab::All`
-3. The first keystroke after `@` appends to `query` and re-filters
+1. The `@` is inserted into the input buffer (as any other character would be)
+2. `MentionPickerState::new(at_char_index, app.mention_catalog())` is created, where
+   `at_char_index` is the char index of the just-inserted `@`; no `query` field is
+   stored (see §6) — the query starts implicitly empty since `cursor_position ==
+   at_char_index + 1`
+3. `refilter("")` runs immediately, populating `filtered` via round-robin (§3 FR-018 amendment)
+4. Further keystrokes flow through the ordinary `InsertChar`/`Delete*` reducer arms;
+   each is followed by `sync_mention_picker`, which re-derives the query from the
+   buffer and re-filters (see §6) — there is no separate "append to query" step
 
 ### Typing & Filtering
 
+**Amended** — no `scroll_offset` field exists; `MAX_RESULTS = 10` caps `filtered` at a
+size that always fits the popup's fixed height, so ratatui's `ListState` selection alone
+keeps `selected` visible with no separate scroll bookkeeping.
+
 On every character typed (while the popup is open):
 
-1. The character is appended to `query` and to the input buffer simultaneously
-2. The `filtered` list is re-computed using `nucleo_matcher::Matcher` across the active tab
-3. `selected` resets to 0 (or stays at 0 if already there)
-4. `scroll_offset` is adjusted if needed to keep `selected` in view
-5. The popup re-renders with highlighted match indices and result count
+1. The character is inserted into the input buffer via the ordinary `InsertChar`
+   reducer arm (never a separate `query` field — see §6)
+2. `sync_mention_picker` re-derives the query from the buffer and calls
+   `refilter(&query)`, which re-computes `filtered` for the active tab using
+   `nucleo_matcher::Matcher`
+3. `selected` resets to 0 inside `refilter`
+4. The popup re-renders with highlighted match indices and result count
 
 ### Tab Cycling (Left/Right)
 
@@ -329,12 +355,25 @@ On every character typed (while the popup is open):
 
 - Up/Down arrows move `selected` within the current `filtered` list
 - Wraps at boundaries (down on last → wraps to 0; up on 0 → wraps to last)
-- `scroll_offset` adjusts to keep selection visible
+- **Amended**: no separate `scroll_offset` bookkeeping — `filtered` is always ≤
+  `MAX_RESULTS` (10), so every row fits the popup and `ListState::select` alone
+  drives ratatui's highlight
 
 ### Accepting a Selection (Tab or Enter)
 
-1. The `@query` text is replaced with the selected entry **including the `@` sigil** (for agents) or as plain text (for files/skills)
-2. A trailing space is inserted (for chaining)
+1. **(Amended, M4 — 2026-07-27 architecture review)** The replacement range is the whole
+   **mention token** — `[at_char_index .. token_end]`, where `token_end` is the first
+   whitespace char at or after the cursor (or end of buffer) — not just `[at_char_index ..
+   cursor_position]`. The token is replaced with the selected entry **including the `@`
+   sigil** (for agents) or as plain text (for files/skills). This matters when the cursor
+   sits *inside* the mention word (reachable via Alt+Left, Ctrl+A, or a mouse click) —
+   e.g. `"@foo"` with the cursor after `@f` still replaces the whole `"@foo"`, not just
+   `"@f"`, which would otherwise mangle the buffer to `"src/main.rs oo"`. The *query* used
+   for filtering is unaffected by this and remains `[at_char_index+1 .. cursor_position]`
+   exactly as defined above — only the accept-time replacement range is token-bounded.
+2. A trailing space is inserted (for chaining) unless the character immediately after
+   `token_end` is already whitespace (avoids a double space, e.g. `"@foo bar"` accepting
+   to `"src/main.rs bar"`, not `"src/main.rs  bar"`)
 3. The popup closes: `mention_picker = None`
 4. For Tab: the cursor is positioned after the space; Insert mode continues
 5. For Enter: same insertion + behavior as Tab (unlike slash-autocomplete, Enter does NOT auto-submit when accepting a mention)
@@ -374,9 +413,23 @@ Example:
 
 ### Cursor Movement
 
-If the user presses arrow keys (Left/Right/Home/End) and the cursor moves **outside the `@query` span**, the popup closes.
+**Amended (D2 — 2026-07-27 architecture review): supersedes the original text below.**
+Plain `Left`/`Right` are claimed by Tab Cycling (FR-004) while the popup is open — they
+never move the cursor and never close the popup by themselves. Span-exit closure instead
+applies to **`Home`/`End`, `Alt+Left`/`Alt+Right` (word-boundary movement), `Ctrl+A`/
+`Ctrl+E`, and mouse clicks** — any cursor mutation that lands outside `[at_char_index+1 ..
+cursor_position]`'s valid span (i.e. at or before `at_char_index`, or past a whitespace
+character) closes the popup. Note the boundary case: a cursor landing exactly one position
+after `@` (e.g. after a single `Alt+Left` from the end of `"@foo"`) is *still inside* the
+span (empty query, not yet past `@`) and does **not** close the popup by itself — a second
+`Alt+Left` (or equivalent) that moves further left, past the `@`, does close it. This is
+the same state Accepting a Selection's M4 amendment discusses for the *accept* semantics
+at that same boundary — see above.
 
-- Example: `"@file"`, cursor at end, user presses Left twice → cursor now before `fil`, popup closes
+- Superseded example (was: "`Left` twice closes the popup") — no longer applicable, since
+  plain `Left`/`Right` cycle tabs instead. Use `Alt+Left` for the word-boundary-exit case:
+  `"@foo"`, cursor at end, `Alt+Left` once → cursor after `@` (still inside span, popup
+  stays open); `Alt+Left` again → cursor moves into whatever precedes `@`, popup closes.
 
 ### File Index Building (Race-Free)
 
@@ -384,7 +437,7 @@ The file index build runs as a supervised task (see spec-039 / `TaskSupervisor`)
 
 - **Before index is ready**: The popup opens immediately with an "indexing files…" placeholder row in the Files tab
 - **No input loss**: Keystrokes are never lost; they append to `query` and continue filtering (even if only one placeholder row is shown until the index arrives)
-- **Seamless transition**: Once `FileIndex::search()` returns real results, the filtered list updates on the next keystroke
+- **Seamless transition (amended)**: `FileIndex::search` does not exist in the shipped code — `PickerMatch`/`FilePickerState` (and their `search`/`update_query` methods) were deleted as dead code, superseded by `MentionPickerState::refilter`. Once the background build resolves, `App::poll_pending_file_index` installs `FileIndex::paths_arc()` into `MentionCatalog.files` and calls `refilter` immediately — no need to wait for the next keystroke
 
 ---
 
@@ -393,9 +446,9 @@ The file index build runs as a supervised task (see spec-039 / `TaskSupervisor`)
 | Scenario | Expected Behavior |
 |----------|-------------------|
 | User types `@@` (two `@` symbols) | First `@` opens picker; second `@` is appended to `query` and searched (query = "@") |
-| Cursor in middle of `@query` (e.g., `@file`, cursor after `@fi`) | Up/Down/Left/Right at this position closes popup (cursor leaving span); typed chars are inserted mid-query |
+| Cursor in middle of `@query` (e.g., `@file`, cursor after `@fi`) | **Amended (M4/D2)**: Up/Down move selection (do not affect the cursor); Left/Right cycle tabs (do not affect the cursor); the popup stays **open** in this position — it does not close merely because the cursor is inside the token. Accepting here (Tab/Enter) replaces the *whole* mention token (`@file`, not just `@fi`), per the M4 amendment to "Accepting a Selection" above. Typed chars are inserted mid-query and the popup re-filters normally |
 | Terminal is very narrow (<30 cols) | Popup clips gracefully (ratatui `Rect` clamping); no panic |
-| File index build takes >30s (timeout) | FileIndex::search fails; Files tab shows placeholder "index unavailable" or empty |
+| File index build takes >30s (timeout) | **Amended**: there is no explicit build timeout and no "index unavailable" placeholder in the shipped code. While `MentionCatalog.files` is `None` (build not yet complete) the Files tab shows "indexing files…"; once loaded, an empty result set shows "no files found" |
 | Skills category empty, All tab open | All tab shows only files + agents; Skills section is omitted |
 | User accepts an unknown agent name (e.g., `@nonexistent`) | Mention is inserted as `@nonexistent`; it flows to the LLM or slash-command dispatch (see spec-044 dispatch behavior) — never an error in the picker |
 | Match highlighting on multi-byte UTF-8 | Use nucleo indices directly; no byte-boundary truncation issues |
@@ -408,11 +461,13 @@ The file index build runs as a supervised task (see spec-039 / `TaskSupervisor`)
 
 ```
 crates/zeph-tui/src/widgets/mention_picker.rs
-  — MentionPickerState struct
-  — MentionEntry, MentionTab enums
-  — open() / refilter() / move_up() / move_down() / accept() methods
-  — render(state, frame, area) function with tabs, highlight, result counter
-  — nucleo integration for fuzzy matching
+  — MentionPickerState, MentionCatalog, MentionEntry structs; MentionTab, MentionKind enums
+  — **Amended**: `MentionPickerState::new()` / `refilter()` / `move_selection(delta: i32)`
+    methods; accept and close are reducer-side (`Action::MentionPickerAccept`/
+    `CloseMentionPicker` in `app/reducer.rs`), not widget methods — matches the
+    reducer-purity invariant (§11 inv. 8)
+  — render(app, state, frame, input_area, theme) function with tabs, highlight, result counter
+  — nucleo integration for fuzzy matching (two-phase: score-only, then materialize top MAX_RESULTS)
 ```
 
 ### Modified Files
@@ -420,9 +475,15 @@ crates/zeph-tui/src/widgets/mention_picker.rs
 ```
 crates/zeph-tui/src/app/
   — add field: mention_picker: Option<MentionPickerState>
-  — add Action variants: OpenMentionPicker, MentionPickerMove(VertDir),
-    MentionPickerInput(PaletteEdit), MentionPickerTabChange(Direction),
-    MentionPickerAccept, CloseMentionPicker
+  — **Amended (approved naming deviation, R1)**: no `OpenMentionPicker`/`MentionPickerInput`
+    variants — opening is a side effect of the existing `Action::InsertChar('@')` arm
+    (mirroring how `/` opens slash-autocomplete), and all text edits continue to flow
+    through the existing `InsertChar`/`Delete*`/`MoveCursor` arms rather than a
+    parallel input action. Adding those two variants would require duplicating buffer
+    mutation and reintroduce the parallel-string bug class this design deliberately
+    avoids (see the amended §6 Mention Picker State note). Action variants actually
+    added: `CloseMentionPicker`, `MentionPickerMove(VertDir)`,
+    `MentionPickerTabChange(HorizDir)`, `MentionPickerAccept`
   — modify the Insert-mode Char('@') branch: insert the char, check word-start, open picker
   — the modal file picker path is REPLACED entirely: `file_picker_state`, `decode_file_picker_key`,
     and the FilePicker* Action variants are removed together with their modal key takeover
@@ -439,7 +500,9 @@ crates/zeph-tui/src/widgets/mod.rs
 
 ### Reused Without Modification
 
-- `crates/zeph-tui/src/file_picker.rs` — FileIndex infrastructure (search, TTL)
+- `crates/zeph-tui/src/file_picker.rs` — FileIndex infrastructure (`build()`/`paths_arc()`,
+  TTL); `FileIndex::search`/`PickerMatch` did not survive — see the amended note in §7
+  "File Index Building"
 - `crates/zeph-tui/src/command.rs` — styling, layout utilities
 - `zeph-skills` SkillRegistry and `zeph-subagent` SubAgentDef (read-only)
 - ratatui List, Clear, Paragraph widgets
@@ -458,7 +521,7 @@ crates/zeph-tui/src/widgets/mod.rs
 |----|-----------|--------------|
 | AC-001 | Typing `@` at start of empty input opens the picker | Unit test: verify `mention_picker.is_some()` after Char('@') on empty input |
 | AC-002 | Typing `@` mid-word does NOT open picker | Unit test: input = "user", type '@', assert `mention_picker.is_none()` and input = "user@" |
-| AC-003 | Tab cycles through All → Files → Skills → Agents → All | Unit test: verify active_tab sequence |
+| AC-003 | **Amended (M7)**: `Left`/`Right` cycle through All → Files → Skills → Agents → All (not `Tab`, which is bound to Accept per FR-006/US-003) | Unit test: verify active_tab sequence after `Left`/`Right` key events |
 | AC-004 | Filtering works with nucleo matching | Unit test: query "fil" matches "src/file.rs", "*.filters", etc. |
 | AC-005 | Up/Down wraps at boundaries | Unit test |
 | AC-006 | Tab on a file entry inserts path + space | Unit test: entry = File("src/main.rs"), accept → input has "src/main.rs " |

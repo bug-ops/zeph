@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `zeph-tui`: inline, non-modal `@` mention picker (issues #6647, #6648), replacing the
+  old modal file picker. Typing `@` at word-start inserts the character and opens a popup
+  with `All | Files | Skills | Agents` category tabs (Left/Right to cycle, Up/Down to
+  select, Tab/Enter to accept without submitting, Esc to dismiss without touching the
+  buffer). Typing never gets captured away — every keystroke lands in the input buffer,
+  and the popup only reflects/filters it. Accepting a File inserts the bare repo-relative
+  path, a Skill inserts the plain name, and an Agent retains the `@` sigil for
+  slash-command dispatch. The Files category reuses the existing background-built file
+  index; Skills are delivered via a new `Channel::send_skill_catalog` event emitted at
+  agent startup and on skill hot-reload; Agents read directly from already-available
+  runtime metrics.
+- `zeph-core`: new `Channel::send_skill_catalog` method (default no-op) and
+  `AgentEvent::SkillCatalog`, forwarded by `AnyChannel`, `GatewayChannel`, and
+  `AppChannel`, overridden by `TuiChannel` to feed the mention picker's Skills tab.
+
 ### Changed
 
 - `zeph-tui`: moved the busy spinner and humanized activity verb from the bottom status
