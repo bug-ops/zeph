@@ -43,88 +43,88 @@ MCP servers expose hundreds of tools across multiple categories. Zeph discovers 
 
 ## Tool Registration & Collision Detection
 
-At server startup, fetch and register tools via `tools/list`:
+At server startup, fetch and register tools via `tools/list` and scan for name collisions:
 
 ```rust
 pub struct ToolCollision {
-    pub name: String,               // Tool name
-    pub servers: Vec<String>,       // Server IDs that define it
+    pub sanitized_id: String,       // Collision identifier
+    pub server_a: String,            // First server ID
+    pub qualified_a: String,         // Qualified name: "server_a:tool_name"
+    pub trust_a: McpTrustLevel,      // Trust level of first server
+    pub server_b: String,            // Second server ID
+    pub qualified_b: String,         // Qualified name: "server_b:tool_name"
+    pub trust_b: McpTrustLevel,      // Trust level of second server
 }
 
-impl McpManager {
-    /// Register tools from a server; detect collisions.
-    pub async fn register_tools(&self, server_id: &str) -> Result<Vec<ToolCollision>> {
-        let tools = /* fetch via tools/list */;
-        
-        let collisions = detect_collisions::<std::collections::hash_map::RandomState>(
-            self.tool_registry.all_tools(),
-            &tools,
-        );
-        
-        if !collisions.is_empty() {
-            tracing::warn!("Tool collisions detected: {:?}", collisions);
-        }
-        
-        self.tool_registry.add_tools(&tools);
-        Ok(collisions)
-    }
-}
-
-/// Detect tool name collisions.
+/// Detect tool name collisions across all registered tools.
+///
+/// The `trust_map` provides trust levels for each server (missing servers default to `Untrusted`).
 pub fn detect_collisions<S: BuildHasher>(
-    existing: &[McpTool],
-    new_tools: &[McpTool],
+    tools: &[McpTool],
+    trust_map: &HashMap<String, McpTrustLevel, S>,
 ) -> Vec<ToolCollision> {
-    // Returns list of name collisions across existing + new tools
+    // Scan all tools for matching sanitized IDs
+    // Report each collision with both servers' trust levels
+    // Used to assess risk of ambiguous tool dispatch
 }
 ```
 
 Collision handling:
-- Collisions are logged but do NOT block registration
+- Collisions are logged at registration but do NOT block tool loading
 - Disambiguation happens at tool invocation time via server prefix (e.g., `filesystem:read_file` vs `http:read_file`)
-- Attestation (if `expected_tools` list provided) detects unexpected schema drifts
+- Both `trust_a` and `trust_b` are recorded to assess data-flow risk via policy enforcement
 
 ## Per-Message Tool Pruning Cache
 
-`PruningCache` (`crates/zeph-mcp/src/pruning.rs`) selects relevant tools per LLM turn:
+`PruningCache` (`crates/zeph-mcp/src/pruning.rs`) caches LLM-selected relevant tools per turn:
 
 ```rust
-pub struct PruningCache { /* ... */ }
-
-pub struct PruningParams {
-    pub message_content_hash: u64,       // Hash of LLM message context
-    pub tool_list_hash: u64,             // Hash of available tools
-    pub strategy: ToolDiscoveryStrategy, // LLM-based or semantic
+pub struct PruningCache {
+    // Fields are private; external interface is only new(), reset(), get(), insert()
 }
 
-impl PruningCache {
-    /// Get relevant tools for this turn (LLM-selected).
-    pub async fn get_tools_for_turn(
-        &mut self,
-        params: &PruningParams,
-        all_tools: &[McpTool],
-    ) -> Result<Vec<McpTool>> {
-        // Single-slot cache: if (message_hash, tool_list_hash) matches cached entry, return cached tools
-        // Otherwise: call LLM to select relevant tools, cache result, return
-        
-        // Cache invocation: ask LLM "which of these tools are relevant to the user's query?"
-        // Reduces token overhead: full schema of ~100 tools down to ~10 relevant ones
-    }
+pub struct PruningParams {
+    /// Maximum number of MCP tools to include after pruning
+    pub max_tools: usize,
+    /// Minimum number of tools below which pruning is skipped (use all)
+    pub min_tools_to_prune: usize,
+    /// Tool names that are always included regardless of relevance ranking
+    pub always_include: Vec<String>,
+}
+
+/// Prune tools using LLM-based ranking (single-slot cache).
+/// 
+/// Call signature varies by discovery strategy; for LLM pruning:
+pub async fn prune_tools_cached(
+    cache: &mut PruningCache,
+    all_tools: &[McpTool],
+    task_context: &str,
+    params: &PruningParams,
+    provider: &dyn LlmProvider,
+) -> Result<Vec<McpTool>> {
+    // Single-slot cache: check (message_hash, tool_list_hash) key
+    // On miss: call LLM "which of these tools are relevant to: {task_context}?"
+    // Reduces token overhead: ~100 tools down to ~10 relevant ones
 }
 ```
 
 Cache semantics:
 - **Single-slot**: only one `(message_hash, tool_list_hash)` pair cached at a time
-- **Keyed on message+tools**: if either message content or tool catalog changes, cache miss
-- **Populated via LLM**: `ToolDiscoveryStrategy::Llm` calls an LLM to rank tools by relevance
-- **Cleared on server reconnection**: tool list hash changes, cache invalidates automatically
+- **Keyed on content+catalog**: if either changes, cache invalidates
+- **LLM-populated**: invokes a model-provider to rank tools by relevance
+- **Always-include pinned**: `always_include` tool names bypass relevance filtering
 
-Config:
+**Configuration**:
 ```toml
-[mcp]
-pruning_enabled = true              # Enable per-message tool pruning
-pruning_strategy = "llm"             # Or "semantic" (embedding-based)
-max_tools_per_turn = 10              # Max tools returned by pruning
+[mcp.pruning]
+enabled = false                # Enable per-message tool pruning (default: false)
+max_tools = 15                 # Max tools returned after pruning
+min_tools_to_prune = 20        # Skip pruning if fewer than this many available
+# always_include = ["critical_tool"]  # Tools always present
+
+[mcp.tool_discovery]
+strategy = "none"              # "none" (default, no pruning), "llm" (LLM ranking), "embedding" (semantic)
+pruning_provider = ""          # LLM provider for pruning (empty = use default)
 ```
 
 ## Semantic Tool Indexing (Optional)
@@ -133,65 +133,88 @@ max_tools_per_turn = 10              # Max tools returned by pruning
 
 ```rust
 pub enum ToolDiscoveryStrategy {
-    Llm,        // Ask LLM which tools are relevant (default)
-    Semantic,   // Use cosine similarity on embeddings
+    /// No pruning; all tools provided to the LLM
+    None,
+    /// Ask LLM which tools are relevant (via pruning_provider)
+    Llm,
+    /// Embedding-based semantic ranking (requires embedding model)
+    Embedding,
 }
 
-pub struct SemanticToolIndex { /* ... */ }
+pub struct SemanticToolIndex { /* fields private */ }
 
 impl SemanticToolIndex {
-    /// Rank tools by semantic similarity to a query.
-    pub fn search_tools(
+    /// Build an embedding-based tool index.
+    pub async fn build<F>(
+        tools: &[McpTool],
+        embed_fn: F,
+    ) -> Result<Self, SemanticIndexError>
+    where
+        F: Fn(&str) -> Pin<Box<dyn Future<Output = Result<Embedding>>>> + Send,
+    {
+        // Compute and cache embeddings for all tool descriptions
+    }
+
+    /// Select relevant tools by semantic similarity to a query embedding.
+    pub fn select(
         &self,
-        query: &str,
-        all_tools: &[McpTool],
-    ) -> Result<Vec<(McpTool, f32)>> {
-        // Compute embedding for query
-        // Compute cosine similarity with each tool's embedding
-        // Return sorted by relevance score
+        query_embedding: &Embedding,
+        top_k: usize,
+        min_similarity: f32,
+        always_include: &[String],  // Tool names always included
+    ) -> Vec<McpTool> {
+        // Rank by cosine similarity; return top-k + always_include
     }
 }
 ```
 
-Embeddings are computed once per tool at startup and cached in memory. No external index required.
+**Embeddings** are computed once at startup and cached in memory. Query embedding is computed on-demand from the task context.
 
 ## Tool Attestation
 
 When `expected_tools` list is declared in server config, the registry validates against schema drift:
 
 ```rust
-pub struct AttestationResult {
-    pub missing: Vec<String>,        // Tools in expected_tools not found
-    pub unexpected: Vec<String>,     // Tools found but not in expected_tools
-    pub schema_changed: Vec<String>, // Tools present but schema differs
+pub type ToolFingerprint = String;  // Blake3 hex digest
+
+#[non_exhaustive]
+pub enum AttestationResult {
+    /// All actual tools match the operator-declared expected set.
+    Verified {
+        fingerprints: HashMap<String, ToolFingerprint>,
+    },
+    /// Server returned tools not in `expected_tools`.
+    Unexpected {
+        unexpected_tools: Vec<String>,
+        fingerprints: HashMap<String, ToolFingerprint>,
+    },
+    /// No `expected_tools` declared — attestation skipped.
+    Unconfigured,
 }
 
-pub async fn attest_tools(
-    server_id: &str,
-    expected: &[String],
-    actual: &[McpTool],
-) -> Result<AttestationResult> {
-    // Compare tool set and schemas; report mismatches
+/// Attestation at tool registration time (sync, no Result).
+pub fn attest_tools(
+    tools: &[McpTool],
+    expected_tools: &[String],
+    previous_fingerprints: Option<&HashMap<String, ToolFingerprint>>,
+) -> AttestationResult {
+    // Compare actual tool set against expected_tools
+    // Compute fingerprints; detect schema drift from previous session
+}
+
+/// Compute Blake3 fingerprint of a tool's schema (name + description + input_schema)
+pub fn fingerprint_tool(tool: &McpTool) -> ToolFingerprint {
+    // Returns hex digest string
 }
 ```
 
-Attestation warnings are logged but do NOT block tool usage. This helps detect when a server's tool catalog unexpectedly changes between deployments.
+**Attestation outcomes**:
+- **Verified**: all actual tools in expected set; fingerprints match previous → no warnings
+- **Unexpected**: actual tools not in expected set → warning logged (tool still usable)
+- **Unconfigured**: no expected_tools declared → attestation skipped
+- **Schema drift**: fingerprints differ from previous session → warning logged
 
-## Tool Fingerprinting
-
-`ToolFingerprint` computes a content hash for tool definitions to enable change detection:
-
-```rust
-pub struct ToolFingerprint {
-    pub name: String,
-    pub schema_hash: u64,            // Hash of input_schema JSON
-    pub description_hash: u64,       // Hash of description text
-}
-
-pub fn compute_fingerprint(tool: &McpTool) -> ToolFingerprint { /* ... */ }
-```
-
-Used by attestation and trust scoring to detect parameter/description drift.
+Attestation does NOT block tool loading; it aids operators in detecting catalog changes between deployments.
 
 ## Tool Sanitization
 

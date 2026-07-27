@@ -53,126 +53,145 @@ MCP servers are untrusted code running in subprocesses or remote HTTP services. 
 
 ## Tool Sanitization Pipeline
 
-`sanitize_tools()` (`crates/zeph-mcp/src/sanitize.rs`) scrubs injection patterns from tool definitions at registration:
+`sanitize_tools()` (`crates/zeph-mcp/src/sanitize.rs`) mutates tool definitions in-place, scrubbing injection patterns:
 
 ```rust
 pub struct SanitizeResult {
-    pub tools: Vec<McpTool>,                // Cleaned tool definitions
-    pub injection_count: usize,             // Patterns found + removed
-    pub flagged_parameters: Vec<(String, String)>,  // (path, pattern) tuples
+    /// Number of individual fields (description, schema strings) replaced with "[sanitized]"
+    pub injection_count: usize,
+    /// Names of tools that had at least one injected field
+    pub flagged_tools: Vec<String>,
+    /// (tool_name, pattern_name) pairs for audit and logging
+    pub flagged_patterns: Vec<(String, String)>,
 }
 
+/// Sanitize tool definitions in-place: scrub injection patterns from descriptions/schemas.
+/// 
+/// Modifies `tools` directly; does not wrap or return them (sync, no Result).
 pub fn sanitize_tools(
-    tools: &[McpTool],
-    config: &ContentIsolationConfig,
+    tools: &mut [McpTool],
+    server_id: &str,
+    max_description_bytes: usize,
 ) -> SanitizeResult {
-    // 1. Scan tool.name, tool.description for regex injection patterns
-    // 2. Scan tool.input_schema.properties[*].description for injection patterns
-    // 3. Replace matched patterns with [sanitized]
-    // 4. Record flagged parameters for metadata
-    // 5. Return cleaned tools + metadata
+    // 1. Scan tool.name for injection patterns
+    // 2. Scan tool.description; truncate/replace matched patterns
+    // 3. Recursively scan tool.input_schema.properties[*].description
+    // 4. Truncate schemas exceeding max_description_bytes (threat: decompression bomb)
+    // 5. Record all flagged fields for audit
+    // 6. Return metadata; tools are mutated in place
 }
 ```
 
-Patterns scanned:
+**Patterns scanned**:
 - Prompt injection: "ignore this instruction", "pretend you are", "SYSTEM:", etc.
 - SQL injection: `SELECT`, `DROP`, `; --`, etc.
 - Shell injection: `$(...)`, `` `...` ``, `; rm -rf`, etc.
 
-If a tool's description is flagged, it is sanitized but **not removed**. The tool remains callable; only the suspicious description text is replaced.
+**Sanitization behavior**: matched patterns are replaced with `[sanitized]`. Tools with flagged descriptions remain callable; only the suspicious text is replaced. Trust score is updated based on `injection_count`.
 
 ## Pre-Connect Probing
 
-`DefaultMcpProber` (`crates/zeph-mcp/src/prober.rs`) scans resources and prompts before tools/list:
+Before loading tools via `tools/list`, `DefaultMcpProber::probe()` scans `resources/list` and `prompts/list` for pre-connection risk assessment:
 
 ```rust
-pub struct DefaultMcpProber { /* ... */ }
-
 pub struct ProbeResult {
-    pub injection_patterns_found: usize,
-    pub resource_count: usize,
-    pub prompt_count: usize,
+    /// Trust score delta from probing (negative = risk detected)
+    pub score_delta: f64,
+    /// Probing summary (injection pattern count, resources/prompts found)
+    pub summary: String,
+    /// If true, server failed probing and is marked dangerous
+    pub block: bool,
 }
 
 impl DefaultMcpProber {
-    /// Scan resources/list and prompts/list for injection patterns.
-    pub async fn probe_server(&self, conn: &McpClient) -> Result<ProbeResult> {
+    /// Scan resources and prompts for injection patterns; update trust scoring.
+    /// 
+    /// No Result wrapper — probing is advisory. Always returns ProbeResult.
+    pub async fn probe(
+        &self,
+        server_id: &str,
+        client: &McpClient,
+    ) -> ProbeResult {
         // Fetches resources/list, prompts/list (if available)
         // Scans descriptions for injection patterns
-        // Updates server trust score
+        // Computes score delta; returns risk assessment
     }
 }
 ```
 
-Probing is non-blocking: results update the trust score but do NOT block tools/list fetch.
+**Probing semantics**: always runs before `tools/list`, even for trusted servers. Results are logged but do NOT block connection. Trust score is adjusted based on pattern counts detected.
 
 ## Trust Score System
 
-`ServerTrustScore` (`crates/zeph-mcp/src/trust_score.rs`) tracks per-server risk with exponential decay:
+`ServerTrustScore` (`crates/zeph-mcp/src/trust_score.rs`) tracks per-server cumulative risk with asymmetric decay:
 
 ```rust
 pub struct ServerTrustScore {
-    pub current_score: f32,                 // [0.0, 1.0] (1.0 = fully trusted)
-    pub last_decay_timestamp: i64,
-    pub history: VecDeque<(f32, i64)>,     // (score, timestamp) snapshots
+    pub server_id: String,          // Unique server identifier
+    pub score: f64,                 // [0.0, 1.0]; 0.5 = neutral (initial)
+    pub success_count: u64,         // Successful tool executions
+    pub failure_count: u64,         // Failed or injection-detected calls
+    pub updated_at_secs: u64,       // Timestamp of last update
 }
 
 impl ServerTrustScore {
-    /// Report an incident (e.g., injection pattern found); decrease score.
-    pub fn report_incident(&mut self, severity: f32) {
-        self.current_score *= (1.0 - severity);  // Multiplicative decay
-    }
+    /// Record a successful tool execution; boost score.
+    pub fn record_success(&mut self);
     
-    /// Apply time-based recovery: score drifts back toward 1.0 slowly.
-    pub fn apply_decay(&mut self, now: i64) {
-        let elapsed_secs = (now - self.last_decay_timestamp) as f32;
-        let recovery_rate = 0.001;  // per second
-        self.current_score = (self.current_score + recovery_rate * elapsed_secs).min(1.0);
-    }
+    /// Record a failure or injection detection; penalize score.
+    pub fn record_failure(&mut self);
 }
 ```
 
-Score factors:
-- **Probing failures**: -0.2 (injection patterns in resources/prompts)
-- **Sanitization hits**: -0.1 (injection patterns in tool descriptions)
-- **Embedding anomalies**: -0.15 (unexpected tool-call sequence)
-- **Time decay**: +0.001 per second (gradual recovery)
+**Score updates**:
+- **Success**: `+0.02` per call (capped at 1.0)
+- **Injection penalty**: `-0.25` per injection pattern detected
+- **Failure penalty**: `-0.10` per call failure
+- **Exponential decay**: scores **above** 0.5 decay toward 0.5 at ~0.01/day; **below or at** 0.5 stay put (asymmetric: no recovery from decay alone)
+
+**Semantics**: score below 0.5 indicates the server is untrusted and requires explicit `tool_allowlist` to expose tools. An attacker cannot regain trust by going quiet (decay doesn't raise scores below neutral).
 
 ## Data-Flow Policy Enforcement
 
-`check_data_flow()` restricts sensitive tools based on trust level:
+`check_data_flow()` restricts sensitive tools based on trust level — sensitivity levels are ordered `None < Low < Medium < High`:
 
 ```rust
-pub enum DataSensitivity {
-    Public,          // Available to all trust levels
-    Internal,        // `Untrusted` can use only with allowlist
-    Confidential,    // `Sandboxed` cannot use
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum DataFlowViolation {
+    #[error(
+        "tool '{tool_name}' (sensitivity={sensitivity:?}) on server '{server_id}' \
+         (trust={trust:?}) violates data-flow policy"
+    )]
+    SensitivityTrustMismatch {
+        server_id: String,
+        tool_name: ToolName,
+        sensitivity: DataSensitivity,
+        trust: McpTrustLevel,
+    },
 }
 
-pub struct DataFlowViolation {
-    pub tool: String,
-    pub server: String,
-    pub trust_level: McpTrustLevel,
-    pub reason: String,
-}
-
+/// Check data-flow policy: tool sensitivity must not exceed server trust.
+/// 
+/// Sensitivity is read from `tool.security_meta.data_sensitivity`.
 pub fn check_data_flow(
     tool: &McpTool,
     server_trust: McpTrustLevel,
-    tool_metadata: &ToolSecurityMeta,
 ) -> Result<(), DataFlowViolation> {
-    match (server_trust, tool_metadata.sensitivity) {
-        (McpTrustLevel::Sandboxed, DataSensitivity::Confidential) => {
-            return Err(DataFlowViolation { /* ... */ });
-        }
-        (McpTrustLevel::Untrusted, DataSensitivity::Confidential)
-            if !in_allowlist => {
-            return Err(DataFlowViolation { /* ... */ });
-        }
-        _ => Ok(()),
-    }
+    let sensitivity = tool.security_meta.data_sensitivity;
+    
+    // Examples of violations:
+    // - High-sensitivity tool on Sandboxed server → block
+    // - High-sensitivity tool on Untrusted server → block
+    // - Medium-sensitivity tool on Sandboxed server → block
+    
+    // Allowed:
+    // - Any tool on Trusted server
+    // - Low-sensitivity tool on Untrusted/Sandboxed
 }
 ```
+
+**Policy enforcement**: high-sensitivity tools (e.g., credential management, user deletion) require `Trusted` servers; medium-sensitivity requires `Trusted` or `Untrusted`; low/none are available everywhere.
 
 ## Output Validation: Injection Scanning
 
@@ -208,34 +227,46 @@ impl McpToolExecutor {
 
 ## Output Validation: Embedding Anomaly Detection
 
-`EmbeddingAnomalyGuard` (`crates/zeph-mcp/src/embedding_guard.rs`) detects unexpected tool-call sequences:
+`EmbeddingAnomalyGuard` (`crates/zeph-mcp/src/embedding_guard.rs`) detects anomalous per-(server,tool) output patterns asynchronously via centroid drift:
 
 ```rust
-pub struct EmbeddingAnomalyGuard { /* ... */ }
-
-pub enum EmbeddingGuardEvent {
-    Benign,
-    Suspicious { score: f32, reason: String },
-    Anomalous { score: f32 },
+pub struct EmbeddingGuardEvent {
+    pub server_id: String,
+    pub tool_name: ToolName,
+    pub result: EmbeddingGuardResult,
 }
 
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub enum EmbeddingGuardResult {
+    /// Output is within the expected distribution for this (server,tool) pair
+    Normal { distance: f64 },
+    /// Output is anomalous — possible injection or unexpected content
+    Anomalous { distance: f64, threshold: f64 },
+    /// Cold-start: insufficient clean samples; regex fallback used instead
+    RegexFallback { injection_detected: bool },
+}
+
+pub struct EmbeddingAnomalyGuard { /* ... */ }
+
 impl EmbeddingAnomalyGuard {
-    /// Check if this tool call is anomalous given prior results.
-    pub async fn analyze_call(
+    /// Asynchronous fire-and-forget check of tool output for anomalies.
+    /// 
+    /// Results are sent to a channel; no return value.
+    pub fn check_async(
         &self,
-        prior_result: &str,
-        requested_tool: &str,
-        tool_description: &str,
-    ) -> Result<EmbeddingGuardEvent> {
-        // Embed prior result and tool description
-        // Compute cosine similarity
-        // If similarity is unexpectedly low, flag as anomalous
-        // Update trust score
+        server_id: &str,
+        tool_name: ToolName,
+        tool_output: &str,
+    ) {
+        // Background task: embed output
+        // Compute distance from running centroid of this (server,tool)'s historical outputs
+        // Send EmbeddingGuardEvent to the result channel
     }
 }
 ```
 
-Example: If a file-read tool's output (e.g., PDF contents) triggers a request for `delete_account` tool, the embedding distance between the result and that tool is large → flagged as anomalous.
+**Semantics**: the guard tracks per-(server,tool) centroid of **that tool's own** historical outputs, not cross-tool pattern matching. Anomalies (outputs far from the tool's historical pattern) trigger trust-score penalties.
 
 ## Allowlist & Fail-Closed Semantics
 
