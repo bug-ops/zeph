@@ -93,14 +93,7 @@ impl ContentSanitizer {
 }
 ```
 
-Config:
-```toml
-[security.ipi]
-enabled = false                    # Optional ML classification
-soft_signal_threshold = 0.5        # Escalate scores above this to AlignSentinel
-hard_threshold = 0.85              # Always block above this, regardless of AlignSentinel
-causal_analysis = false            # Enable turn-level anomaly detection
-```
+**Note**: IPI detection is part of the `[security.content_isolation]` configuration and controlled via the `flag_injection_patterns` flag. There is no separate `[security.ipi]` section; injection detection runs unconditionally on external content.
 
 ## Turn-Level Causal Analysis
 
@@ -150,11 +143,14 @@ impl PiiFilter {
 
 Config:
 ```toml
-[security.pii]
-enabled = false                    # Optional NER-based detection
-threshold = 0.85                   # PII confidence threshold
-pii_max_input_chars = 4096         # Truncate before ML inference
-pii_allowlist = []                 # Regex patterns exempt from blocking
+[security.pii_filter]
+enabled = true                     # Master switch for PII redaction (default: true)
+filter_email = true                # Scrub email addresses
+filter_phone = true                # Scrub US phone numbers
+filter_ssn = true                  # Scrub US Social Security Numbers
+filter_credit_card = true          # Scrub credit card numbers
+filter_names = false               # Scrub personal names via heuristic (opt-in, default: false)
+# custom_patterns = []             # Custom regex patterns on top of built-ins
 ```
 
 ## Secret Shape Masking
@@ -200,10 +196,15 @@ impl GuardrailFilter {
 
 Config:
 ```toml
-[security.guardrails]
-enabled = false                    # Optional guardrail pre-screening
-model = "llama-guard-7b"
-threshold = 0.8                    # UNSAFE confidence threshold
+[security.guardrail]
+enabled = false                    # Enable LLM-based guardrail classifier (default: false)
+# provider = "ollama"              # LLM provider for guardrail calls
+# model = "llama-guard-3:1b"       # Model to use for classification
+timeout_ms = 500                   # Timeout for each guardrail call (milliseconds)
+action = "block"                   # Action on flagged content: "block" or "warn"
+fail_strategy = "closed"           # On timeout/LLM error: "open" (allow) or "closed" (block)
+scan_tool_output = false           # Scan tool outputs before context (default: false)
+max_input_chars = 4096             # Max chars sent to guard model (default: 4096)
 ```
 
 ## Quarantine & Dual-LLM Extraction

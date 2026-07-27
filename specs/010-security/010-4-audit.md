@@ -47,23 +47,42 @@ Tool executor logs every call to an `AuditEntry`:
 
 ```rust
 pub struct AuditEntry {
-    pub tool: String,                // Tool name
-    pub command: String,             // Sanitized command/args
-    pub result: String,              // Sanitized output preview (first N chars)
-    pub duration_ms: u64,            // Execution time
-    pub error_category: Option<String>,  // Error type if failed
-    pub caller_id: String,           // Agent/skill that invoked
-    pub correlation_id: String,      // Trace ID for related events
-    pub timestamp: i64,              // Unix seconds
-    pub vigil_risk: Option<f32>,     // Vigil gate risk score (if calculated)
+    pub timestamp: String,           // Unix timestamp (seconds) when invocation started
+    pub tool: ToolName,              // Tool identifier (e.g., "shell", "web_scrape")
+    pub command: String,             // Human-readable command or URL being invoked
+    pub result: AuditResult,         // Outcome of the invocation (success/failure)
+    pub duration_ms: u64,            // Wall-clock duration in milliseconds
+    pub error_category: Option<String>,  // Fine-grained error category label (if failed)
+    pub error_domain: Option<String>,    // High-level error domain for recovery
+    pub error_phase: Option<String>,     // Invocation phase where error occurred
+    pub claim_source: Option<ClaimSource>,  // Provenance of tool result
+    pub mcp_server_id: Option<String>,  // MCP server ID (if routed through McpToolExecutor)
+    pub injection_flagged: bool,     // Tool output flagged by regex injection detection
+    pub embedding_anomalous: bool,   // Tool output flagged by embedding guard anomaly
+    pub cross_boundary_mcp_to_acp: bool,  // Tool result crossed MCP-to-ACP trust boundary
+    pub adversarial_policy_decision: Option<String>,  // Adversarial policy decision
+    pub exit_code: Option<i32>,      // Process exit code for shell executions
+    pub truncated: bool,             // Whether output was truncated before storage
+    pub caller_id: Option<String>,   // Caller identity that initiated this call
+    pub policy_match: Option<String>,    // Policy rule trace that matched
+    pub correlation_id: Option<String>,  // Correlation ID shared with associated EgressEvent
+    pub vigil_risk: Option<VigilRiskLevel>,  // VIGIL risk level when gate flagged output
 }
 ```
 
 Sanitization before logging:
-- Input/output truncated to max 500 chars
+- Input/output truncated before storage if oversized
 - Known secret keys redacted: `api_key`, `token`, `password`, `secret`, `auth`, `key`
 - Vault-resolved secrets never logged
-- PII scrubbed via regex (SSN, credit card, email patterns)
+- PII scrubbed via `[security.pii_filter]` regex patterns (SSN, credit card, email)
+
+**Configuration** (`[tools.audit]`):
+```toml
+[tools.audit]
+enabled = true                     # Enable audit logging (default: true)
+destination = "stdout"             # Log destination: "stdout", "stderr", or file path
+# tool_risk_summary = false        # Log per-tool risk summary at startup (default: false)
+```
 
 ## Authorization Audit
 
@@ -161,39 +180,25 @@ impl TrajectoryRiskAccumulator {
 
 **Status**: Not explicitly addressed in parent spec's NEVER rule. Whether this system's cross-turn, hard-blocking behavior is intended carve-out (like `TrajectorySentinel`) or an overlooked violation remains unresolved.
 
-## Audit Log Storage
+## Audit Log Storage & Serialization
 
-Immutable persistence via `zeph-db`:
+Immutable persistence via `AuditLogger` (`crates/zeph-tools/src/audit.rs:110`), which serializes entries as flat JSON objects (newline-terminated JSONL format):
 
 ```rust
-pub struct AuditLogger { /* ... */ }
+pub struct AuditLogger { /* destination: AuditDestination */ }
 
 impl AuditLogger {
-    /// Append an entry to the immutable audit log.
-    pub async fn log(&self, entry: AuditEntry) -> Result<()>;
-    
-    /// Query by correlation ID across related events.
-    pub async fn query_by_correlation(&self, correlation_id: &str) 
-        -> Result<Vec<AuditEntry>>;
+    /// Log a single audit entry asynchronously.
+    pub async fn log(&self, entry: &AuditEntry);
 }
 ```
 
-Backend options:
-- **SQLite** (default): `audit.db` with append-only table
-- **JSONL**: `audit.jsonl` (one entry per line, never edited)
+**Destination types** (`AuditDestination`):
+- **Stdout** (default): entries written to standard output, one JSON line per entry
+- **Stderr**: entries written to standard error
+- **File**: entries written to a file path (created with `0o600` permissions on Unix)
 
-File created with `0o600` permissions (owner-read/write only on Unix).
-
-## Configuration
-
-```toml
-[security.audit]
-enabled = true
-backend = "sqlite"              # "sqlite" or "jsonl"
-path = ".local/audit.db"
-retention_days = 90             # Optional: archival threshold
-log_level = "info"              # "debug", "info", "warn"
-```
+All entries are serialized as compact JSON objects (newline-terminated JSONL). Optional fields are omitted to keep entries compact.
 
 ## Vault Access Logging
 
