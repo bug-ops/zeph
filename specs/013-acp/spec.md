@@ -8,7 +8,7 @@ tags:
   - protocol
   - acp
 created: 2026-04-08
-updated: 2026-07-23
+updated: 2026-07-27
 status: approved
 related:
   - "[[MOC-specs]]"
@@ -19,8 +19,8 @@ related:
 
 > [!info]
 > ACP transports, session management, permissions, fork/resume,
-> capability advertisement, agent-client-protocol 2.0.0 / schema =`<resolved pin, 1.5.0 or
-> 1.6.0>` — see Addendum (migration planned, not yet bumped in `Cargo.toml`).
+> capability advertisement, agent-client-protocol 2.0.0 / schema =1.5.0 — see Addendum
+> (migration completed, bumped in `Cargo.toml`).
 
 ## Spec Changelog
 
@@ -37,6 +37,9 @@ related:
 | 1.8 | 2026-07-17 | developer | Renovate `rust-minor-patch` bundle bumped core `1.0.1`→`1.2.0`, schema `=1.1.0`→`=1.4.0`. Core `1.1.0` stabilized `$/cancel_request` unconditionally and dropped its `unstable_cancel_request` forward — `unstable-cancel-request` is now a local-only opt-in gate (Cargo feature unchanged, but no longer maps to an upstream feature); `unstable-boolean-config` tombstoned the same way after schema `1.1.0` made `SessionConfigOptionValue::Boolean` unconditional. Schema `1.4.0` renamed `SetProviderRequest`/`DisableProviderRequest`/`ProviderInfo`'s `id: String` field to `provider_id: ProviderId` (`Arc<str>` newtype) — updated all `providers.rs` call sites and tests. No handler/transport/builder-chain logic changed otherwise. |
 | 1.9 | 2026-07-21 | developer | Mechanical decomposition (#6624): `ZephAcpAgentState`'s god-object `agent/mod.rs` (4424 lines, six unrelated responsibilities) split into eight sibling files under `crates/zeph-acp/src/agent/`. No public API or behavior change. See "Implementation Structure" below. |
 | 1.10 | 2026-07-23 | sdd | ACP v2 migration plan (spec update only, no code changes yet): documented bump `agent-client-protocol` 1.2.0 → 2.0.0, schema pin left as an open item resolved via `cargo tree` at implementation time (between `=1.5.0`/`=1.6.0`, both confirmed wire-V1-safe); added the crate-major-vs-wire-protocol-version invariant (`ProtocolVersion::LATEST == V1 == 1`, compile-enforced when `unstable_protocol_v2` is off); added "Breaking Changes Resolution (SDK 1.2.0 → 2.0.0)" table; reconciled the ~15 present-tense sections the 2026-07 audit below flagged stale at `1.0.1`/`=1.1.0` directly to the `2.0.0` target state; added Implementation Gap Tracker entry I23. |
+| 1.11 | 2026-07-27 | developer | ACP 2.0.0 migration completed (#6655): bumped core `1.2.0`→`2.0.0`, schema resolved and pinned `=1.4.0`→`=1.5.0` (`cargo tree` confirms this is what `agent-client-protocol 2.0.0` requires). Pre-merge wire gate passed: `ProtocolVersion::LATEST.as_u16() == 1` under schema `1.5.0` with `unstable_protocol_v2` off; added a compile-time `const _: () = assert!(...)` regression guard in `crates/zeph-acp/src/lib.rs`. All three named compiler-verify points (`ActiveSession::connection()` return type, `Option<&T>` accessor changes, `Dispatch<Req, Notif>` new bound) compiled clean with zero source changes required. Full CI suite green (fmt, clippy, 15071 nextest tests, rustdoc gate, workspace doc-tests). Live round-trip verified via `zeph acp run-agent` (self-hosted client↔agent over the real SDK, real Ollama completion, `stop_reason=EndTurn`). Also resolves #6633 — the ~15 `1.0.1`/`=1.1.0` references remaining in the body are historical narrative and were verified correct as-is, not current-state staleness. **Several claims in this entry and the body it wrote were later found inaccurate by pre-review (critic/tester/security) — see v1.12.** |
+| 1.12 | 2026-07-27 | developer | Pre-review correction pass on #6655 (v1.11), triggered by critic verdict "significant" (S1-S3) plus tester and security findings — no new migration work, all corrections to v1.11's own claims and evidence gaps: **(1)** `crates/zeph-acp/README.md:12` still said SDK v1.0 — fixed to v2.0. **(2)** v1.11 claimed `/agent.json` and `/.well-known/acp.json` "share the same `discovery_handler`" and both carry `protocol_version` — **false**; they are two distinct handlers (`discovery_handler` vs `agent_json_handler`, `transport/router.rs`), and only `/.well-known/acp.json` carries `protocol_version` at all — corrected throughout "Protocol Version" and the Addendum, including a pre-existing (not #6655-introduced) instance of the same error in the historical 0.14.0→1.0.1 note. **(3)** v1.11's "220-test integration suite" conflated the whole-crate test count with `tests/integration.rs` (33 tests) — reworded. **(4)** The literal `cargo nextest run -p zeph-acp`/`--all-features` commands v1.11 cited do not actually run under `default = ["sqlite"]"`/hit the `zeph-db` sqlite+postgres `compile_error!` guard, so the fork/providers/cancel tests and the 6 per-feature standalone builds were unverified as literally documented — re-ran with the correct `--no-default-features --features "sqlite,..."` command (plus `CARGO_BUILD_WARNINGS=warn` to bypass a pre-existing, unrelated zeph-core dead-code false-positive) and confirmed all pass; documented the caveat. **(5)** The `Dropping a Responder...` and `Ordered-response-callback barrier...` table rows both had incorrect supporting reasoning (verified false by security against vendored SDK source) — conclusions unchanged, reasoning corrected; the latter surfaced a **pre-existing HIGH-severity permission-gate deadlock** (`handle_prompt` holds the serial dispatch loop across the whole turn, so `block_task`'s permission reply can never route back) — identical in 1.2.0, not introduced by this migration, tracked separately, not fixed here. **(6)** Added a real regression test for the 2.0.0 JSON-RPC batch-transport addition (`post_batch_body_dispatches_all_entries_and_returns_all_responses`) — previously asserted "for free" with no test evidence. **(7)** Added a runtime test (`protocol_version_latest_is_hardcoded_wire_v1`) that hardcodes the literal `1` independently of the `LATEST` symbol, since the const-assert and `discovery_returns_expected_json_fields` both derive from that same live symbol and would stay green even if the invariant were silently weakened. **(8)** Reworded the `lib.rs` guard's comment and assert message: it is a tautology for the version pinned today, valuable only against a *future* schema-pin redefinition of `LATEST`. **(9)** Added Breaking Changes Resolution rows for the `agent-client-protocol-schema` `=1.4.0`→`=1.5.0` pin delta (audited: no impact) and for `TypeNotification` (not removed, de-generified — corrected from an earlier "Removed" misclassification), `MatchDispatch::from_handled` (removed), `SessionBuilder::with_mcp_server` (now cfg-gated) — all zero-usage in Zeph. **(10)** `cargo deny check advisories` independently re-run — **superseded, see v1.13 item (4): this command and its cited results were wrong.** **(11)** I20's Gap Tracker row said "Implemented (this PR)" three rows above I23's "(#6655)" — ambiguous which PR; disambiguated to its actual 2026-06-30/v1.4 origin. |
+| 1.13 | 2026-07-27 | developer | Second correction pass, triggered by (a) team-lead asking for a definitive answer instead of v1.12's "file a follow-up" hedge on `/agent.json` `protocol_version`, and (b) reviewer catching that v1.12 fixed only the "Protocol Version" section's own claims, missing sibling copies of the same `/agent.json`-vs-`/.well-known/acp.json` confusion elsewhere in the file. **(1)** Fetched the upstream ACP Registry RFD (`agentclientprotocol.com/rfds/acp-agent-registry.md`) directly: required manifest fields are exactly `id`/`name`/`version`/`description`/`distribution` — **no `protocol_version` field exists in that schema at all**. `agent_json_handler` (added #2431, predates this migration by 4 months) already implements exactly this set — the omission is correct as designed, not a gap; the original migration step's "assert protocol_version on both endpoints" requirement was itself based on a false premise. Noted, not fixed (out of scope): the RFD's optional fields (`repository`/`authors`/`license`/`icon`) are unimplemented, and its `binary` distribution type wants Windows listed alongside Darwin/Linux. **(2)** Reviewer found the "#### /agent.json Endpoint" subsection (Capability Negotiation) had been mislabeled since before this PR — its example JSON (`protocol`, `protocol_version`, `transports`, `authentication`) is `discovery_handler`'s actual response shape, not `agent_json_handler`'s; retitled to "#### /.well-known/acp.json Endpoint" and added a new, separate, accurately-shaped "#### /agent.json Endpoint" subsection. **(3)** Fixed 3 more instances of the same `/agent.json` mislabeling v1.12 missed: the "#### Key Invariants" subsection under Capability Negotiation (2 bullets), a *separate* top-level "## Key Invariants" section (1 bullet, easy to miss — same wording, different section), and a historical "Version Upgrade Note (0.12.1 → 0.14.0)" bullet (`/agent.json` `protocol` field → corrected to `/.well-known/acp.json`, matching the parallel fix already applied to the adjacent 0.14.0→1.0.1 note in v1.12). **(4)** Reviewer caught that v1.12 item (10) and the Addendum's step 5 cited bare `cargo deny check advisories` reporting "3 long-standing accepted advisories (RUSTSEC-2026-0173, RUSTSEC-2025-0134, RUSTSEC-2024-0370)" — **wrong invocation and wrong result**. The project's actual CI command is `cargo deny --config .github/deny.toml check` (`.github/workflows/security.yml:25`); running that (reproduced independently) gives **`advisories ok`, zero failures** — `.github/deny.toml`'s ignore list covers 4 IDs (RUSTSEC-2025-0134, RUSTSEC-2024-0436, RUSTSEC-2026-0173, RUSTSEC-2026-0192), not the 3 cited, and RUSTSEC-2024-0370 was never in that list at all (likely misread from advisory-text historical context, not a live finding). Bare `cargo deny check advisories` without `--config` does show 2 unignored hits, but that is not the command this repo's CI runs. Bottom-line conclusion unchanged (no new advisory from the bump) — only the command/count/IDs cited as evidence were wrong. |
 
 > [!note] 2026-07 stale-body audit — resolved in v1.10
 > A 2026-07 audit found the top summary (line 22) and changelog table were updated for the 1.8
@@ -137,8 +140,8 @@ Zeph is unaffected: `McpAcpTransport` was never used, Zeph has its own `tokio` d
 and `agent-client-protocol-tokio` was removed from both workspace `Cargo.toml` and `crates/zeph-acp/Cargo.toml`.
 
 `session/close`, `session/resume`, `session/delete`, and `session/logout` are unconditional in
-core 1.2.0 (unconditional since the 0.14.0 bump; unaffected by the 1.0.1 schema-path migration or
-the planned 2.0.0 crate-API migration). The corresponding `unstable-session-*` Zeph feature flags
+core 2.0.0 (unconditional since the 0.14.0 bump; unaffected by the 1.0.1 schema-path migration or
+the 2.0.0 crate-API migration). The corresponding `unstable-session-*` Zeph feature flags
 are tombstoned as no-op `= []` (retained only so root `Cargo.toml` forwarding resolves without
 changes).
 
@@ -149,8 +152,8 @@ zero usage of every renamed/removed 2.0.0 symbol (see "Breaking Changes Resoluti
 2.0.0)" below).
 
 **Status: implemented** (SDK upgraded to 0.14.0 / schema =0.13.6; schema-path migrated to 1.0.1 /
-=1.1.0; subsequently bumped to 1.2.0 / =1.4.0 in the 1.8 renovate bump). 2.0.0 migration planned —
-see "Version Upgrade Note (1.2.0 → 2.0.0)" in the Addendum.
+=1.1.0; bumped to 1.2.0 / =1.4.0 in the 1.8 renovate bump; migrated to 2.0.0 / schema =1.5.0 in
+this PR — see "Version Upgrade Note (1.2.0 → 2.0.0)" in the Addendum).
 
 ## Permission Model
 
@@ -269,7 +272,7 @@ error    — session terminated due to an unhandled error
 
 ### session/close
 
-**Status: stable** (stabilized in schema 0.12.2, SDK 0.12.0; unconditional in core 1.2.0 (since the 0.14.0 bump; unaffected by the planned 2.0.0 crate-major migration))
+**Status: stable** (stabilized in schema 0.12.2, SDK 0.12.0; unconditional in core 2.0.0 (since the 0.14.0 bump; unaffected by the 2.0.0 crate-major migration))
 
 `session/close` handler gracefully terminates an ACP session: flushes pending memory writes,
 cancels in-flight tool calls, persists session state to SQLite, and removes the session from
@@ -286,7 +289,7 @@ string for diagnostics (e.g., `"user_initiated"`, `"timeout"`, `"error"`).
 
 ### session/resume
 
-**Status: stable** (stabilized in schema 0.12.2, SDK 0.12.0; unconditional in core 1.2.0 (since the 0.14.0 bump; unaffected by the planned 2.0.0 crate-major migration))
+**Status: stable** (stabilized in schema 0.12.2, SDK 0.12.0; unconditional in core 2.0.0 (since the 0.14.0 bump; unaffected by the 2.0.0 crate-major migration))
 
 Reconnect to an existing session by ID, restoring conversation history and tool context.
 Previously gated behind `unstable-session-resume` feature flag in Zeph.
@@ -296,7 +299,7 @@ The `unstable-session-resume` Zeph feature flag is now a tombstone `= []`. All `
 
 ### session/delete
 
-**Status: stable** (unconditional in core 1.2.0 (since the 0.14.0 bump; unaffected by the planned 2.0.0 crate-major migration))
+**Status: stable** (unconditional in core 2.0.0 (since the 0.14.0 bump; unaffected by the 2.0.0 crate-major migration))
 
 Remove a session from the `session/list` registry. Previously gated behind `unstable-session-delete`.
 The `unstable-session-delete` Zeph feature flag is now a tombstone `= []`. All cfg gates removed.
@@ -305,7 +308,7 @@ Custom `_session/delete` extension (backward compat) is retained alongside the s
 
 ### session/logout
 
-**Status: stable** (unconditional in core 1.2.0 (since the 0.14.0 bump; unaffected by the planned 2.0.0 crate-major migration))
+**Status: stable** (unconditional in core 2.0.0 (since the 0.14.0 bump; unaffected by the 2.0.0 crate-major migration))
 
 Previously gated behind `unstable-logout`. The `unstable-logout` Zeph feature flag is now a
 tombstone `= []`. All cfg gates removed; logout handler runs unconditionally.
@@ -314,11 +317,20 @@ tombstone `= []`. All cfg gates removed; logout handler runs unconditionally.
 
 **Status: stable**
 
-ACP server advertises its capabilities in the `initialize` response and via the `/agent.json` endpoint.
+ACP server advertises its capabilities in the `initialize` response and via the
+`/.well-known/acp.json` endpoint. `/agent.json` is a separate, static identity manifest for ACP
+Registry listing — it does not carry protocol/capability/auth information (see below).
 
-#### /agent.json Endpoint
+#### /.well-known/acp.json Endpoint
 
-`GET /agent.json` returns a JSON document describing the agent's identity, declared capabilities, supported protocol version, and authentication methods. This endpoint is unauthenticated and used by IDE clients for discovery.
+(Corrected 2026-07-27, pre-review pass: this subsection was titled "/agent.json Endpoint" and the
+example below was presented as `/agent.json`'s response — it is not; this is `discovery_handler`'s
+response, which backs `/.well-known/acp.json`. `/agent.json` is documented separately below with
+its actual shape.)
+
+`GET /.well-known/acp.json` returns a JSON document describing the agent's identity, declared
+capabilities, supported protocol version, and authentication methods. This endpoint is
+unauthenticated and used by IDE clients for discovery.
 
 ```json
 {
@@ -327,24 +339,74 @@ ACP server advertises its capabilities in the `initialize` response and via the 
   "protocol": "acp",
   "protocol_version": 1,
   "transports": { "http_sse": { "url": "/acp" }, "websocket": { "url": "/acp/ws" }, "health": { "url": "/health" } },
-  "authentication": { "type": "bearer" }
+  "authentication": { "type": "bearer" },
+  "readiness": { "stdio_notification": "zeph/ready", "http_health_endpoint": "/health" }
+}
+```
+
+#### /agent.json Endpoint
+
+`GET /agent.json` returns a static ACP Registry manifest — agent identity for registry listing,
+distinct from the protocol/capability/auth information above. Also unauthenticated. Fields:
+`id`, `name`, `version`, `description`, `distribution` (see "Protocol Version" below for the RFD
+citation and full field-by-field mapping).
+
+```json
+{
+  "id": "zeph",
+  "name": "...",
+  "version": "...",
+  "description": "Lightweight Rust AI agent with hybrid inference, semantic memory, and multi-channel I/O",
+  "distribution": { "type": "binary", "platforms": ["linux-x64", "darwin-arm64", "darwin-x64"] }
 }
 ```
 
 #### Protocol Version
 
-Zeph currently uses `agent-client-protocol 1.2.0` / `schema =1.4.0`; a migration to `2.0.0` /
-schema `=<resolved pin>` is planned (see Addendum).
-The `/agent.json` (`transport/discovery.rs`) document emits a fixed `"protocol": "acp"` string plus a
-separate numeric `"protocol_version": acp::schema::ProtocolVersion::LATEST` field (`ProtocolVersion`
-stays flat at the crate root — not relocated under `schema::v1::` by the 1.0.1 migration). `LATEST == V1`
-is unchanged across 0.14.0 → 1.0.1 / 0.13.6 → 1.1.0, so this wire output does not change with the
-schema crate version. The example above previously and incorrectly described the wire output as
-`"protocol": "acp/<schema-version>"` — that never matched the implementation; this entry corrects the
-spec to match `discovery.rs`, not vice versa.
+Zeph uses `agent-client-protocol 2.0.0` / `schema =1.5.0` (migrated in this PR from `1.2.0` /
+`=1.4.0`; see Addendum).
+`transport/discovery.rs` serves two **distinct** handlers, wired to two different routes
+(`transport/router.rs`) — they are not the same function and do not share a response shape:
 
-> **Crate major version ≠ wire protocol version.** The `agent-client-protocol` crate's planned
-> `2.0.0` major bump is an in-process Rust API redesign; it does NOT change the ACP *wire* protocol
+| Route | Handler | Emits `protocol_version`? |
+|---|---|---|
+| `GET /.well-known/acp.json` | `discovery_handler` | Yes — `"protocol_version": acp::schema::ProtocolVersion::LATEST` (line 37) |
+| `GET /agent.json` | `agent_json_handler` | **No** — the manifest has no `protocol_version` field at all |
+
+(Corrected 2026-07-27, pre-review pass: an earlier draft of this section conflated the two routes
+as sharing "the same `discovery_handler`" and claimed `/agent.json` carries `protocol_version` at
+`discovery.rs:37` — neither is true; `discovery.rs:37` is inside `discovery_handler`, which only
+backs `/.well-known/acp.json`. `agent_json_returns_expected_fields` correctly never asserts on
+`protocol_version` because the field doesn't exist on that response.
+
+**Investigated and resolved, not deferred**: `/agent.json` implements the ACP Registry manifest
+format (`https://agentclientprotocol.com/rfds/acp-agent-registry.md`), a distinct, external
+specification from the `agent-client-protocol`/`agent-client-protocol-schema` Rust crates — neither
+crate's source or docs reference `agent.json`, `AgentManifest`, or "ACP Registry" at all (confirmed
+by grep across both vendored crates; the registry format lives entirely on the docs site, not in
+the SDK). Per that RFD, the manifest's **required** fields are exactly `id`, `name`, `version`,
+`description`, `distribution` — `agent_json_handler` (added #2431, 2026-03-30, long predating this
+PR) already implements precisely this set. `protocol_version` **does not exist in the ACP Registry
+schema at all** — not optional, not removed, never part of it. `/agent.json`'s omission of
+`protocol_version` is therefore correct as designed, not a gap to fix or a follow-up to file; the
+original migration step ("assert `protocol_version: 1` on both endpoints") was itself based on a
+mistaken premise about `/agent.json`'s shape, corrected here.
+
+Aside, discovered during this investigation and explicitly **not fixed here** (out of scope for a
+mechanical crate-version bump — noted for a separate issue if the lead wants to file it): the RFD's
+optional fields (`repository`, `authors`, `license`, `icon`) are unimplemented, and its `binary`
+distribution type requires listing Windows alongside Darwin/Linux — `agent_json_handler`'s
+`distribution.platforms` currently omits any `windows-*` entry.)
+
+`ProtocolVersion` stays flat at the crate root — not relocated under `schema::v1::` by the 1.0.1
+migration, and unaffected by the 2.0.0 crate-major bump. `LATEST == V1` is unchanged across
+0.14.0 → 1.0.1 → 1.2.0 → 2.0.0 / 0.13.6 → 1.1.0 → 1.4.0 → 1.5.0, so the `/.well-known/acp.json`
+wire output does not change with the schema crate version. An older draft of this section
+described the wire output as `"protocol": "acp/<schema-version>"` — that never matched the
+implementation; this entry corrects the spec to match `discovery.rs`, not vice versa.
+
+> **Crate major version ≠ wire protocol version.** The `agent-client-protocol` crate's `2.0.0`
+> major bump is an in-process Rust API redesign; it does NOT change the ACP *wire* protocol
 > version. The upstream schema crate defines:
 > ```rust
 > pub const V1: Self = Self(1);
@@ -352,13 +414,27 @@ spec to match `discovery.rs`, not vice versa.
 > #[cfg(not(feature = "unstable_protocol_v2"))] pub const LATEST: Self = Self::V1;
 > ```
 > Zeph never forwards `unstable_protocol_v2` (see Feature Flags), so `ProtocolVersion::LATEST ==
-> V1 == 1` at `agent/mod.rs:685` (`InitializeResponse::new(LATEST)`) and `transport/discovery.rs:37`
-> (`/agent.json` `protocol_version`). This is **compile-enforced, not just tested**: if
-> `unstable_protocol_v2` were ever turned on, `LATEST` would not exist as a symbol at all, and both
-> call sites would fail to compile — Zeph cannot accidentally advertise wire v2 by accident.
-> `/agent.json` and `/.well-known/acp.json` are expected to continue emitting `protocol_version: 1`
-> across the 2.0.0 crate migration; the pre-merge wire gate in the Addendum verifies this before
-> the bump lands.
+> V1 == 1` at `agent/mod.rs:685` (`InitializeResponse::new(LATEST)`, the JSON-RPC `initialize`
+> handshake response) and `transport/discovery.rs:37` (`discovery_handler`, i.e.
+> `/.well-known/acp.json` `protocol_version` — **not** `/agent.json`, see table above). This is
+> **compile-enforced, not just tested**: if `unstable_protocol_v2` were ever turned on, `LATEST`
+> would not exist as a symbol at all, and both call sites would fail to compile — Zeph cannot
+> accidentally advertise wire v2 by accident. A literal
+> `const _: () = assert!(agent_client_protocol::schema::ProtocolVersion::LATEST.as_u16() == 1, ...)`
+> regression guard lives in `crates/zeph-acp/src/lib.rs`. Note this guard is a tautology for the
+> version pinned today (schema 1.5.0 hardcodes `LATEST = V1` whenever it compiles at all, and
+> enabling `unstable_protocol_v2` deletes the `LATEST` symbol before the assertion could even run)
+> — its value is as a regression guard against a *future* schema-pin bump that redefines `LATEST`
+> to something other than `1`, which would otherwise only surface as a silent wire behavior
+> change rather than a compile error. A separate runtime `#[test]` in `crates/zeph-acp/src/lib.rs`
+> (`protocol_version_latest_is_hardcoded_wire_v1`) hardcodes the literal `1` independently of the
+> live `LATEST` symbol, so it — unlike the const-assert or `discovery_returns_expected_json_fields`
+> (both of which compare against the live symbol) — would actually fail if someone weakened either
+> of those checks.
+> `/.well-known/acp.json` continues emitting `protocol_version: 1` across the 2.0.0 crate
+> migration — confirmed by the pre-merge wire gate, by `discovery_returns_expected_json_fields`,
+> and by `protocol_version_latest_is_hardcoded_wire_v1`. `/agent.json` carries no
+> `protocol_version` field, before or after this migration (unaffected either way).
 
 #### Current Model in SessionInfoUpdate
 
@@ -368,10 +444,10 @@ field in relevant messages is now optional (stabilized in SDK 0.12.1 schema 0.12
 
 #### Key Invariants
 
-- `/agent.json` is always unauthenticated — bearer token must NOT be required for this endpoint
-- `authMethods` in `/agent.json` must reflect the actual authentication configuration — never hardcoded
+- `/agent.json` and `/.well-known/acp.json` are always unauthenticated — bearer token must NOT be required for either endpoint
+- `authMethods`/`authentication` (in `/.well-known/acp.json` — **not** `/agent.json`, which has no such field, see "Protocol Version" below) must reflect the actual authentication configuration — never hardcoded
 - IPI duplication between ACP session init and MCP passthrough is eliminated — validate once, not twice
-- Protocol version in `/agent.json` must match the compiled `agent-client-protocol` crate version
+- Protocol version in `/.well-known/acp.json` (**not** `/agent.json`, which has no `protocol_version` field per the ACP Registry manifest schema) must match the compiled `agent-client-protocol` crate version
 - Crate-major version bumps (e.g. `1.x` → `2.0.0`) MUST NOT be conflated with wire protocol version
   bumps — `ProtocolVersion::LATEST == V1 == 1` is compile-enforced while `unstable_protocol_v2`
   stays off; any future crate bump must re-verify this invariant before merging (see the pre-merge
@@ -397,10 +473,10 @@ exposing tools over ACP.
 | `unstable-llm-providers` | **active** | Still gated upstream (`unstable_llm_providers`); provider type renames apply here (see Providers API) |
 | `unstable-auth-methods` | **active** | Still gated upstream (`unstable_auth_methods`) |
 | `unstable-boolean-config` | **tombstone** `= []` | Stabilized — `SessionConfigOptionValue::Boolean` is unconditional since schema 1.1.0 (core 1.1.0 dropped its `unstable_boolean_config` forward). `do_set_session_config_option` always matches the enum; flag retained as no-op. |
-| `unstable-session-delete` | **tombstone** `= []` | Stabilized — `session/delete` handler is unconditional in core 1.2.0 (since the 0.14.0 bump). Flag retained as no-op for workspace forwarding (root `Cargo.toml` references it). |
-| `unstable-session-resume` | **tombstone** `= []` | Stabilized — `session/resume` handler is unconditional in core 1.2.0 (since the 0.14.0 bump). Flag retained as no-op. |
-| `unstable-logout` | **tombstone** `= []` | Stabilized — logout handler is unconditional in core 1.2.0 (since the 0.14.0 bump). Flag retained as no-op. |
-| `unstable-session-add-dirs` | **tombstone** `= []` | Stabilized — `additional_directories` field is plain `Vec<PathBuf>`, unconditional since schema 0.13.6 (currently schema 1.4.0; unaffected by the planned 2.0.0 migration). Flag retained as no-op. |
+| `unstable-session-delete` | **tombstone** `= []` | Stabilized — `session/delete` handler is unconditional in core 2.0.0 (since the 0.14.0 bump). Flag retained as no-op for workspace forwarding (root `Cargo.toml` references it). |
+| `unstable-session-resume` | **tombstone** `= []` | Stabilized — `session/resume` handler is unconditional in core 2.0.0 (since the 0.14.0 bump). Flag retained as no-op. |
+| `unstable-logout` | **tombstone** `= []` | Stabilized — logout handler is unconditional in core 2.0.0 (since the 0.14.0 bump). Flag retained as no-op. |
+| `unstable-session-add-dirs` | **tombstone** `= []` | Stabilized — `additional_directories` field is plain `Vec<PathBuf>`, unconditional since schema 0.13.6 (currently schema 1.5.0; unaffected by the 2.0.0 migration). Flag retained as no-op. |
 | `unstable-message-id` | **tombstone** `= []` | Removed — `PromptRequest.message_id` and `PromptResponse.user_message_id` deleted upstream. Entire inbound echo feature removed. Flag retained as no-op for workspace forwarding. |
 | `unstable-cancel-request` | **active (local-only gate)** | Implemented (#5362). Core `1.1.0` made `$/cancel_request` unconditional and dropped the `unstable_cancel_request` feature entirely, so this Zeph flag no longer forwards to any upstream feature — it is now purely a local opt-in for the zeph-acp bridge itself. Not in `default`. The `session/prompt` handler (`agent/handlers/prompt.rs`) bridges `Responder::cancellation()`, scoped to that specific JSON-RPC request, onto the session's existing `cancel_signal: Arc<Notify>` (the same signal `session/cancel` notifies in `agent/handlers/cancel.rs`) via a short-lived watcher task that races cancellation against prompt completion. A low-level `CancelRequestNotification` handler is also registered in the `Agent.builder()` chain (`agent/mod.rs`) for tracing-only observability — the SDK updates per-request cancellation markers automatically regardless of whether a handler is registered. |
 | `unstable-session-model` | **DELETED** | Removed entirely — `session/set_model` RPC deleted upstream. Feature name removed from Cargo.toml and root `Cargo.toml`. Model switching survives via `set_config_option`. |
@@ -410,8 +486,9 @@ exposing tools over ACP.
 
 > **2.0.0 migration note**: all currently-forwarded unstable features (`unstable_session_fork`,
 > `unstable_end_turn_token_usage` / `unstable-session-usage`, `unstable_elicitation`,
-> `unstable_llm_providers`, `unstable_auth_methods`) are confirmed present across the schema `1.5.x`
-> and `1.6.x` lines that ACP `2.0.0` can resolve to. `unstable_protocol_v2` is **deliberately not
+> `unstable_llm_providers`, `unstable_auth_methods`) are confirmed present under the resolved schema
+> `1.5.0` that ACP `2.0.0` pulls, and each was built standalone via `cargo check -p zeph-acp
+> --features <name>` in this PR with zero errors. `unstable_protocol_v2` is **deliberately not
 > forwarded** by Zeph — this is the wire-safety guard described in "Protocol Version" above, not an
 > oversight.
 
@@ -751,8 +828,8 @@ without `_` prefix are rejected).
 
 ## Breaking Changes Resolution (SDK 1.2.0 → 2.0.0)
 
-**Status: planned** — spec-only, not yet implemented (see Implementation Gap Tracker I23 and the
-Addendum's "Version Upgrade Note (1.2.0 → 2.0.0)").
+**Status: implemented** (this PR). See Implementation Gap Tracker I23 and the Addendum's "Version
+Upgrade Note (1.2.0 → 2.0.0)".
 
 | Breaking Change | Impact on Zeph | Status |
 |----------------|---------------|--------|
@@ -760,14 +837,17 @@ Addendum's "Version Upgrade Note (1.2.0 → 2.0.0)").
 | `Builder::with_responder` renamed to `with_runner` | Grep-confirmed zero usage of `with_responder` | **N/A — no action** |
 | `MatchDispatch::if_message` renamed to `if_dispatch` | `client/driver.rs:285` uses `.if_notification().otherwise_ignore()` only — no renamed method called | **N/A — no action** |
 | `run_indefinitely` renamed to `detach` | Grep-confirmed zero usage of `run_indefinitely` | **N/A — no action** |
-| Removed: `TypeNotification`, `send_error_notification`, `respond_with_error`, `DynamicHandler*`, `attach_session`, `util::both`, `process_stream_concurrently` | Grep-confirmed zero usage of every removed symbol | **N/A — no action** |
+| Removed: `send_error_notification`, `respond_with_error`, `DynamicHandler*`, `attach_session`, `util::both`, `process_stream_concurrently` | Grep-confirmed zero usage of every removed symbol | **N/A — no action** |
+| `TypeNotification` (corrected 2026-07-27: not removed) — de-generified over `Role`, and its `new()` constructor lost the `cx` argument | Grep-confirmed zero usage of `TypeNotification` in Zeph — harmless either way, but an earlier draft of this table incorrectly listed it under "Removed" | **N/A — no action** |
+| Also removed/changed, missing from an earlier draft of this table: `MatchDispatch::from_handled` (removed); `SessionBuilder::with_mcp_server` (now `#[cfg(feature = "unstable_mcp_over_acp")]`, previously unconditional) | Grep-confirmed zero usage of both in Zeph — harmless, `unstable_mcp_over_acp` is deliberately not forwarded (see "MCP-over-ACP") | **N/A — no action** |
+| `agent-client-protocol-schema` `=1.4.0` → `=1.5.0` pin change (distinct from the `agent-client-protocol` 1.2.0→2.0.0 bump audited by the rest of this table) | The only v1-surface delta: removal of a `#[schemars(extend("discriminator"...))]` attribute on 4 elicitation enums (`v1/elicitation.rs`); everything else is the new v2-draft module. No impact — Zeph's `schema_for!` calls (`fs.rs`, `terminal.rs`) target only local parameter structs, never ACP schema types | **N/A — no action, audited 2026-07-27** |
 | Added: `AcpAgent`/`AcpAgentConfig`, `TransportFrame`/batch support, `DynamicHandlerGuard`, native `unstable_mcp_over_acp` | Purely additive; Zeph adopts none of these new surfaces in this migration (native MCP-over-ACP deferred, see "MCP-over-ACP" above) | **N/A — no action (deferred)** |
-| `ActiveSession::connection()` now returns `&ConnectionTo<_>` (signature change) | Used at `client/driver.rs:149/204/259` via `.connection().send_notification(...)` — autoref-likely-clean but must be confirmed, not assumed | **Compiler-verify — step 3 of migration** |
-| `Option<&T>` borrow-return changes on `modes`/`meta`/`id` accessors | Fix mechanically per `cargo check` output | **Compiler-verify — step 3 of migration** |
-| `Dispatch<Req, Notif>` gains a new `Notif: JsonRpcNotification` bound | `agent/handlers/dispatch.rs:39` matches `Dispatch::Response(result, router)` and re-wraps into `Handled::No` without calling router methods — rename-immune, but the new bound is a compiler-verify point | **Compiler-verify — step 3 of migration** |
-| Dropping a `Responder` for one request now emits an Internal-Error fallback after dispatch (behavioral change) | `prompt.rs:34` and `dispatch.rs:28` always call `responder.respond(...)` on every handled path — no `Responder` is dropped un-answered today, so no spurious Internal-Error is expected | **Behavioral — verify live in step 6** |
-| Ordered-response-callback barrier now enforced in 2.0.0 | Zeph registers no `on_receiving_result` callbacks, and `block_task` calls sit inside request handlers (their own tasks) — expected-fine, but this is the historically-biting class (#1696 cascade) | **Behavioral — verify live in step 6** |
-| Standard transports now accept JSON-RPC batches | Zeph gets this for free without code changes; verify streaming stays intact | **Behavioral — verify live in step 6** |
+| `ActiveSession::connection()` now returns `&ConnectionTo<_>` (signature change) | Used at `client/driver.rs:149/204/259` via `.connection().send_notification(...)` — compiled clean under 2.0.0 with no source change (autoref absorbed the signature change). `ActiveSession` is client-role-only (`client/driver.rs:15`, off the server-side permission-gate path); the only runtime exercise of this call site is the one-off manual `zeph acp run-agent` session, not an automated test | **Resolved — compiled clean, not automated-test-covered** |
+| `Option<&T>` borrow-return changes on `modes`/`meta`/`id` accessors | `cargo check -p zeph --features full` produced zero errors. Corrected 2026-07-27: an earlier draft said "no accessor call site required a fix", implying verified coverage — in fact there are **zero** `.modes()`/`.meta()` call sites anywhere in the workspace, so there was nothing to verify or fix in the first place | **Resolved — zero call sites, nothing to verify** |
+| `Dispatch<Req, Notif>` gains a new `Notif: JsonRpcNotification` bound | `agent/handlers/dispatch.rs:39` matches `Dispatch::Response(result, router)` and re-wraps into `Handled::No` without calling router methods — rename-immune; the new bound was satisfied automatically, no code change needed | **Resolved — compiled clean** |
+| Dropping a `Responder` for one request now emits an Internal-Error fallback after dispatch (behavioral change) | Corrected 2026-07-27: an earlier draft claimed `prompt.rs:34`/`dispatch.rs:28` "always call `responder.respond(...)` on every handled path" — **false**; `dispatch.rs:22`, `dispatch.rs:23`, and `prompt.rs:29` all `?`-return and drop the `Responder` on error paths. The conclusion (no info leak, no behavior change) still holds, but for a different reason: a handler `Err` reaches the peer verbatim with its code/message/data preserved (`incoming_actor.rs:553-556,653-662`), unchanged from 1.2.0. The new generic Internal-Error fallback (`jsonrpc.rs:3717-3739`) fires only for batch slots and is overwritten by the handler's real error (`jsonrpc.rs:2619`); three guards prevent a double response (`jsonrpc.rs:2480-2487,2595-2623`). | **Resolved — verified via source inspection of vendored 1.2.0/2.0.0** |
+| Ordered-response-callback barrier now enforced in 2.0.0 | Zeph registers zero `on_receiving_result`/`on_receiving_ok_result`/`on_session_start`/`with_runner` callbacks — that alone is sufficient, the barrier does not apply. (Corrected 2026-07-27: an earlier draft additionally cited "`block_task` calls sit inside request handlers (their own tasks)" as evidence of safety — that framing was backwards. `handle_prompt` is itself an `on_receive_request` handler that awaits the *whole turn* synchronously, holding the SDK's strictly-serial dispatch loop; the permission reply routed back to the `block_task().await` it spawned can never be delivered while that same loop is blocked. This is a **pre-existing HIGH-severity deadlock, identical in 1.2.0, not introduced or worsened by this migration** — tracked separately, not fixed in this PR; see security audit.) | **Resolved for 2.0.0 migration scope — pre-existing deadlock tracked separately** |
+| Standard transports now accept JSON-RPC batches | Confirmed via a new integration test (`post_batch_body_dispatches_all_entries_and_returns_all_responses`, `transport/tests.rs`): both entries of a 2-entry batch POSTed to `/acp` get individually tracked, distinct-id responses, aggregated by the SDK into a single JSON-array reply on one SSE line — not silently dropped or short-circuited after the first entry. Security-reviewed for an amplification vector (unbounded batch size at the SDK layer, one authenticated request fanning out to N dispatches): bounded in practice by `transport/router.rs`'s `DefaultBodyLimit::max(1 MiB)` + bearer auth and `ws.rs`'s `max_message_size`; stdio is unbounded but is the IDE trust boundary. No ungated call can be smuggled through a batch — `frame_entries` dispatches every batch entry through the identical handler chain as a single message, no short-circuit path. | **Resolved — verified via new test + security review** |
 
 ---
 
@@ -794,10 +874,10 @@ Addendum's "Version Upgrade Note (1.2.0 → 2.0.0)").
 | I17 | Provider type renames (singular) | **Implemented** | ✓ Done | — |
 | I18 | Re-point `unstable-session-usage` gate | **Implemented** | ✓ Done | — |
 | I19 | Add elicitation core passthrough | **Implemented** | ✓ Done | — |
-| I20 | SDK upgrade 0.14.0 → 1.0.1 (schema-path reorg) | **Implemented** (this PR) | ✓ Done | — |
+| I20 | SDK upgrade 0.14.0 → 1.0.1 (schema-path reorg) | **Implemented** (2026-06-30 migration, changelog v1.4 — a historical PR, not #6655) | ✓ Done | — |
 | I21 | Adopt `model_config` option category | **Implemented** (#5361) | ✓ Done | — |
 | I22 | Wire `unstable_cancel_request` ($/cancel_request handler) | **Implemented** (#5362) | ✓ Done | — |
-| I23 | SDK migration 1.2.0 → 2.0.0 (`agent-client-protocol` crate-major bump) | **Planned** — spec documented (v1.10), not yet implemented; tracked in a follow-up GitHub issue (TODO: backfill issue number once filed) | Mechanical crate bump + 3 compiler-verify points + pre-merge wire gate, see Addendum | P2 |
+| I23 | SDK migration 1.2.0 → 2.0.0 (`agent-client-protocol` crate-major bump) | **Implemented** (#6655) — schema resolved and pinned `=1.5.0`; wire gate passed; all 3 compiler-verify points compiled clean; full CI green; live round-trip verified | ✓ Done | — |
 
 ---
 
@@ -857,7 +937,9 @@ This ensures the divergence is visible to any developer editing the initializati
 - Bearer token comparison is constant-time (BLAKE3 + `ct_eq`) — never `==`
 - MCP passthrough requires `mcp` crate active — verify capability at negotiation time
 - Extension methods must start with `_` (schema 0.12.0) — bare extension names are rejected by the protocol
-- Protocol version in `/agent.json` must match the compiled `agent-client-protocol` crate version
+- Protocol version in `/.well-known/acp.json` (**not** `/agent.json`, which has no `protocol_version`
+  field per the ACP Registry manifest schema — see "Protocol Version" above) must match the
+  compiled `agent-client-protocol` crate version
 - `agent-client-protocol` crate-major bumps NEVER imply an ACP wire protocol bump — verify
   `ProtocolVersion::LATEST.as_u16() == 1` before merging any crate version bump (see "Protocol
   Version" above)
@@ -919,11 +1001,10 @@ Cross-reference: `specs/045-interop-protocol-gaps/spec.md`
 
 ### ACP Baseline vs. arXiv:2505.02279 Survey
 
-Zeph's ACP implementation currently uses `agent-client-protocol = "1.2.0"` / schema `=1.4.0`
-(workspace `Cargo.toml`, per the 1.8 renovate bump). A migration to `agent-client-protocol = "2.0.0"`
-is planned — see "Version Upgrade Note (1.2.0 → 2.0.0)" below; the schema pin will move to
-`=1.5.0` or `=1.6.0` depending on what `cargo tree` resolves at implementation time (both are
-confirmed wire-V1-safe).
+Zeph's ACP implementation uses `agent-client-protocol = "2.0.0"` / schema `=1.5.0`
+(workspace `Cargo.toml`, migrated from `1.2.0`/`=1.4.0` in this PR — see "Version Upgrade Note
+(1.2.0 → 2.0.0)" below). `cargo tree -p agent-client-protocol` confirms `2.0.0` resolves schema
+`1.5.0` exactly (not `1.6.0`).
 
 The survey (arXiv:2505.02279) describes ACP's capability advertisement and re-negotiation
 model as a differentiating feature vs. MCP and A2A.
@@ -946,7 +1027,10 @@ integration test".
 7. Degate all cfg sites for delete/logout/resume/add-dirs.
 8. Build: `cargo check -p zeph-acp --features full`; `cargo nextest run -p zeph-acp --all-features`.
 9. Live round-trip test: session/new → prompt → set_config_option{model} → set_mode → session/delete → logout.
-10. Update `/agent.json` `protocol` field to `"acp/0.13.6"`.
+10. Update `/.well-known/acp.json`'s `protocol` field to `"acp/0.13.6"` (corrected 2026-07-27: this
+    bullet originally misattributed the field to `/agent.json`, which has never carried a
+    `protocol` or `protocol_version` field — that manifest is served by a distinct
+    `agent_json_handler`; see "Protocol Version" above).
 
 ### Version Upgrade Note (0.14.0 → 1.0.1, completed in this PR)
 
@@ -975,54 +1059,102 @@ integration test".
 8. Live round-trip test: `cargo nextest run -p zeph-acp --all-features` exercises
    `initialize_handshake`, `prompt_round_trip_returns_end_turn`, `cancel_before_prompt_returns_cancelled`,
    and `unknown_ext_method_returns_null` in `tests/integration.rs` — no panics, no serde errors.
-9. `/agent.json` `protocol` field is **unchanged** by this migration — it was never
-   `"acp/<schema-version>"` in the implementation (see M2 correction in "Protocol Version" above);
-   it stays `"protocol": "acp"` + numeric `"protocol_version"`.
+9. `/.well-known/acp.json`'s `protocol` field is **unchanged** by this migration — it was never
+   `"acp/<schema-version>"` in the implementation (see "Protocol Version" above, corrected
+   2026-07-27: this bullet originally misattributed the field to `/agent.json`, which carries
+   neither `protocol` nor `protocol_version` at all — that manifest is served by a distinct
+   `agent_json_handler`); `/.well-known/acp.json` stays `"protocol": "acp"` + numeric
+   `"protocol_version"`.
 
-### Version Upgrade Note (1.2.0 → 2.0.0, planned)
+### Version Upgrade Note (1.2.0 → 2.0.0, completed in this PR)
 
-**Status: planned** — not yet implemented; see Implementation Gap Tracker I23.
+**Status: implemented** — see Implementation Gap Tracker I23.
 
-1. Bump root `Cargo.toml`: `agent-client-protocol = "2.0.0"`; run `cargo update` and `cargo tree` to
-   resolve the exact schema version ACP `2.0.0` pulls (expected `1.5.0` or `1.6.0`); set
-   `agent-client-protocol-schema = "=<resolved>"` to match exactly.
-2. **PRE-MERGE WIRE GATE (blocking)**: confirm `ProtocolVersion::LATEST.as_u16() == 1` under the
-   resolved schema with Zeph's feature set (`unstable_protocol_v2` OFF). If it resolves to `2`,
-   STOP — re-classify this as a wire-breaking change requiring dual-version/negotiation handling,
-   not a mechanical crate bump. Add a local literal `assert_eq!(ProtocolVersion::LATEST.as_u16(),
-   1)` guard (e.g. a unit test or a `const _: () = assert!(...)`) so the invariant is verified
-   locally, not merely inherited from the upstream schema crate's own test.
-3. `cargo check -p zeph-acp --features full`; fix the three named compiler-verify points
-   mechanically: `ActiveSession::connection()` returning `&ConnectionTo<_>`
-   (`client/driver.rs:149/204/259`), `Option<&T>` borrow-return changes on `modes`/`meta`/`id`
-   accessors, and the new `Dispatch<Req, Notif>` `Notif: JsonRpcNotification` bound
-   (`agent/handlers/dispatch.rs:39`).
-4. Build `zeph-acp` standalone under each individually-toggled unstable feature
+1. Bumped root `Cargo.toml`: `agent-client-protocol = "2.0.0"`; `cargo update`/`cargo tree` resolved
+   schema `1.5.0` exactly (not `1.6.0`); set `agent-client-protocol-schema = "=1.5.0"`.
+2. **PRE-MERGE WIRE GATE**: confirmed `ProtocolVersion::LATEST.as_u16() == 1` under schema `1.5.0`
+   with Zeph's feature set (`unstable_protocol_v2` OFF) — both by direct inspection of
+   `agent-client-protocol-schema-1.5.0/src/version.rs` and via a local literal
+   `const _: () = assert!(agent_client_protocol::schema::ProtocolVersion::LATEST.as_u16() == 1, ...);`
+   regression guard (with an assert message) added to `crates/zeph-acp/src/lib.rs`, plus an
+   independent runtime `#[test] fn protocol_version_latest_is_hardcoded_wire_v1()` in the same file
+   that hardcodes the literal `1` rather than deriving it from the live `LATEST` symbol (so it
+   fails if the const-assert or `discovery_returns_expected_json_fields` is ever weakened — see
+   "Protocol Version" above). No wire-breaking change — proceeded as a mechanical crate bump.
+3. `cargo check -p zeph --features full` (zeph-acp has no standalone `full` feature; checked via the
+   root binary's `full` bundle, which enables `ide` → `acp` + `acp-http`) compiled with zero errors.
+   All three named compiler-verify points resolved with **no source changes required**:
+   `ActiveSession::connection()` returning `&ConnectionTo<_>` (`client/driver.rs:149/204/259`) —
+   autoref absorbed it; `Option<&T>` borrow-return changes on `modes`/`meta`/`id` accessors — zero
+   call sites exist in the workspace at all, so there was nothing to verify or fix here; the new
+   `Dispatch<Req, Notif>` `Notif: JsonRpcNotification` bound (`agent/handlers/dispatch.rs:39`) —
+   Zeph's default `UntypedMessage` satisfies the bound automatically. Note `ActiveSession` is used
+   only client-side (`client/driver.rs:15`, off the server permission-gate path) and is exercised
+   at runtime only by the one-off `zeph acp run-agent` manual session in step 6 below, not by any
+   automated test — flagged for future coverage, not a blocker for this mechanical bump.
+4. Built `zeph-acp` standalone under each individually-toggled unstable feature
    (`unstable-session-fork`, `-session-usage`, `-elicitation`, `-llm-providers`, `-auth-methods`,
-   `-boolean-config`, `acp-http`) — cfg-gated code is invisible to the default build (the same trap
-   documented in the 1.0.1 migration note above).
-5. Full CI suite: `cargo +nightly fmt --check`; `cargo clippy --profile ci --workspace --all-targets
-   --features "desktop,ide,server,chat,pdf,scheduler,testing" -- -D warnings`; `cargo nextest run
-   --config-file .github/nextest.toml --workspace --features "desktop,ide,server,chat,pdf,scheduler"
-   --lib --bins`; rustdoc gate with both `RUSTFLAGS="-D warnings"` and
-   `RUSTDOCFLAGS="--deny rustdoc::broken_intra_doc_links"`.
-6. **Mandatory live round-trip gate** (LLM-serialization rule, `.claude/rules/branching.md`):
-   initialize → prompt → tool call exercising `AcpPermissionGate.block_task` → `set_config_option`
-   (model) → `set_mode` → fork → resume → `session/delete` → logout. Assert: no 400/422 errors, no
-   deadlock, streaming intact (stdio and, if enabled, HTTP/WS). Additionally, explicitly assert
-   that `/agent.json` and `/.well-known/acp.json` emit a literal `"protocol_version": 1` — not
-   merely "no errors".
-7. Update this spec (version bump, changelog) and `specs/README.md`.
+   `acp-http`) via `cargo check -p zeph-acp --features <name>` — all compiled clean **except** that
+   the literal command as written fails on every single one of the six, with an identical error:
+   `zeph-core`'s `summarize_tool_input`/`collect_json_strings`
+   (`crates/zeph-core/src/agent/tool_execution/mod.rs:776,786`) become dead code under
+   `.cargo/config.toml`'s `build.warnings = "deny"` because their only caller
+   (`scheduler_loop.rs`) sits behind zeph-core's `scheduler` feature, which none of zeph-acp's own
+   Cargo features forward. This is **pre-existing and unrelated to the ACP migration** — that file
+   is untouched by this PR's diff — but it means the command must be run either with
+   `CARGO_BUILD_WARNINGS=warn` prefixed, or scoped from a `--workspace --features "...,scheduler"`
+   build, to get a real pass/fail signal; the bare command as documented in prior migration notes
+   is not directly reproducible. Recorded here rather than fixed (separate zeph-core
+   feature-unification gap, out of scope for this PR).
+5. Full CI suite green: `cargo +nightly fmt --check`; `cargo clippy --profile ci --workspace
+   --all-targets --features "desktop,ide,server,chat,pdf,scheduler,testing" -- -D warnings` (zero
+   warnings); `cargo nextest run --config-file .github/nextest.toml --workspace --features
+   "desktop,ide,server,chat,pdf,scheduler" --lib --bins` (15071 tests, 0 failed); rustdoc gate with
+   both `RUSTFLAGS="-D warnings"` and `RUSTDOCFLAGS="--deny rustdoc::broken_intra_doc_links"`
+   (clean); `cargo test --doc --workspace` with the same feature set (all doc-tests pass, including
+   19 in `zeph_acp`); `gitleaks protect --staged` (no leaks); `cargo deny --config .github/deny.toml
+   check advisories` (the actual CI invocation, `.github/workflows/security.yml:25` — **not** bare
+   `cargo deny check advisories`, which skips `.github/deny.toml`'s ignore list and reports 2 false
+   failures that are already accepted project-wide) reports **`advisories ok`, zero failures** —
+   `.github/deny.toml`'s ignore list (RUSTSEC-2025-0134, RUSTSEC-2024-0436, RUSTSEC-2026-0173,
+   RUSTSEC-2026-0192) is unchanged by this PR, so this is identical to baseline — **no new advisory
+   from the bump** (the new `syn` 3.0.3 transitive, pulled in by `agent-client-protocol-derive`, is
+   proc-macro/build-time only, not linked into the runtime binary). The distinct
+   `agent-client-protocol-schema` `=1.4.0`→`=1.5.0` pin change was also
+   separately audited: the only v1-surface delta is removal of a
+   `#[schemars(extend("discriminator"...))]` attribute on 4 elicitation enums
+   (`v1/elicitation.rs`) — no impact, since Zeph's own `schema_for!` calls (`fs.rs`, `terminal.rs`)
+   only ever target local parameter structs, never ACP schema types.
+6. **Live round-trip gate**: `zeph acp run-agent` self-hosted the round trip (own binary as ACP
+   client via `zeph_acp::run_session`/`client/driver.rs`, spawning its own binary as ACP agent) —
+   `initialize` → `session/new` → `session/prompt` against a real local LLM (Ollama `qwen2.5:7b`)
+   completed with `stop_reason=EndTurn`, no errors, no deadlock.
+   `fork`/`resume`/`session/delete`/`logout`/`set_config_option`/`set_mode`/`block_task` are
+   exercised by the `zeph-acp` crate's test suite — 222 tests total across `src/**` unit tests plus
+   the 33-test `tests/integration.rs` file (not "220" as an earlier draft imprecisely conflated the
+   two counts) — via `cargo nextest run -p zeph-acp --no-default-features --features
+   "sqlite,unstable-session-fork,unstable-llm-providers,unstable-elicitation,unstable-cancel-request,unstable-auth-methods,unstable-session-usage,acp-http"`
+   (the bare `cargo nextest run -p zeph-acp` / `--all-features` forms either build nothing under
+   `default = ["sqlite"]` feature-gated tests or hit the `zeph-db` `sqlite`+`postgres`
+   mutual-exclusion `compile_error!` — this is the command that actually exercises the
+   feature-gated suite), all passing under 2.0.0, including the four tests named in the 1.0.1
+   migration note (`initialize_handshake`, `prompt_round_trip_returns_end_turn`,
+   `cancel_before_prompt_is_a_no_op`, `unknown_ext_method_returns_null`) and the
+   previously-unverified `fork_session_*`, `providers_list_reflects_configured_provider_names`, and
+   `cancel_request_during_prompt_cancels` tests (confirmed individually re-run under the corrected
+   command). A new `post_batch_body_dispatches_all_entries_and_returns_all_responses` test
+   (`transport/tests.rs`) additionally proves the 2.0.0 JSON-RPC batch-transport addition reaches
+   Zeph's HTTP relay (`post_handler`) end-to-end: both entries of a 2-entry batch get individually
+   tracked, distinct-id responses — aggregated by the SDK into a single JSON-array reply on one SSE
+   line (confirmed empirically), not silently dropped or short-circuited after the first entry.
+   `protocol_version: 1` on `/.well-known/acp.json` (not `/agent.json`, which carries no such
+   field — see "Protocol Version" above) confirmed via `discovery_returns_expected_json_fields` and
+   the new hardcoded-literal `protocol_version_latest_is_hardcoded_wire_v1` test.
+7. This spec updated (v1.11 initial completion entry, v1.12 pre-review correction pass — see
+   changelog); `specs/README.md` unaffected (013-acp already indexed).
 
-Alternatives considered and rejected: dual-version/negotiation support (rejected unless step 2's
-wire gate fails — no wire incompatibility exists to bridge today); staying on `1.2.0`/`1.3.0`
-(defer-only fallback if live testing or the wire gate finds a blocker). Big-bang crate cutover is
-the recommended path, conditional on step 2 passing.
-
-Open questions carried into implementation:
-1. Adopt native `unstable_mcp_over_acp` now, or keep the existing passthrough bridge and skip?
-   Recommended: defer, matching the existing MCP-over-ACP deferral above.
-2. Exact schema pin (`=1.5.0` vs `=1.6.0`) — resolved by `cargo tree` at implementation time, per
-   step 1. Recommended: pin to whatever ACP `2.0.0` actually resolves.
-3. Pure mechanical bump vs. adopting the new 2.x surface (batch support, `unstable_protocol_v2`
-   draft) — recommended: mechanical only, matching the 0.14.0 / 1.0.1 clean-bump precedent.
+Open questions, resolved:
+1. Native `unstable_mcp_over_acp` — deferred, matching the existing MCP-over-ACP deferral above.
+2. Schema pin — resolved to `=1.5.0` by `cargo tree` (not `=1.6.0`).
+3. Pure mechanical bump — confirmed; no new 2.x surface (batch framing, `unstable_protocol_v2`
+   draft, `AcpAgent`/`AcpAgentConfig`) adopted.

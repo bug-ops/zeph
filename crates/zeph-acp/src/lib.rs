@@ -105,6 +105,34 @@ pub use agent::SendAgentSpawner;
 #[cfg(feature = "acp-http")]
 pub use transport::{AcpHttpState, acp_router};
 
+// Crate-major-version bumps of `agent-client-protocol` must never silently change the ACP
+// *wire* protocol version Zeph advertises. With `unstable_protocol_v2` off (never forwarded by
+// Zeph — see the `agent-client-protocol-schema` feature list), `LATEST` is hardcoded to `V1` by
+// the pinned schema crate, so this assertion is a tautology for the version pinned today; its
+// value is as a regression guard against a *future* schema-pin bump that redefines `LATEST` to
+// something other than `1` — that failure mode would otherwise only surface as a silent wire
+// behavior change, not a compile error.
+const _: () = assert!(
+    agent_client_protocol::schema::ProtocolVersion::LATEST.as_u16() == 1,
+    "ACP wire protocol version must stay pinned at 1 across agent-client-protocol crate bumps"
+);
+
 /// Wire protocol type for an LLM provider, used to populate [`AcpServerConfig::provider_names`].
 #[cfg(feature = "unstable-llm-providers")]
 pub use agent_client_protocol_schema::v1::LlmProtocol;
+
+#[cfg(test)]
+mod tests {
+    // Deliberately hardcodes the literal `1` rather than deriving it from `ProtocolVersion::LATEST`
+    // (unlike the `const _` guard above and `discovery_returns_expected_json_fields`, which both
+    // compare against the live symbol and would therefore stay green even if `LATEST` were
+    // silently redefined). This is the one check in the suite that fails if someone weakens the
+    // wire-version invariant itself.
+    #[test]
+    fn protocol_version_latest_is_hardcoded_wire_v1() {
+        assert_eq!(
+            agent_client_protocol::schema::ProtocolVersion::LATEST.as_u16(),
+            1
+        );
+    }
+}

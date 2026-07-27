@@ -16,6 +16,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   interrupt hint, and a minimum-width slice for the verb all outrank the row's idle
   elements (mode hint, token estimate, queue badges) for space, which are what gets
   dropped first under width pressure.
+- `zeph-acp`: migrated `agent-client-protocol` `1.2.0` → `2.0.0`, schema `=1.4.0` → `=1.5.0`
+  (issue #6655). Mechanical crate-major bump — no wire protocol change (`ProtocolVersion::LATEST`
+  stays `V1` == `1` under the pinned schema; a compile-time regression guard in
+  `crates/zeph-acp/src/lib.rs` catches a *future* schema-pin bump that redefines `LATEST`, plus an
+  independent runtime test hardcodes the literal `1` so the invariant can't be silently weakened);
+  no handler, transport, or builder-chain logic changed. See `specs/013-acp/spec.md` v1.11–v1.12
+  for the full breaking-change resolution table and live-test evidence.
 - `zeph-tui`: unified `Ctrl+C` semantics in the TUI (issue #6646). `Ctrl+C` now cancels the
   current agent turn immediately when the agent is busy (moved from `Esc`, which no longer
   cancels anything in Normal mode). When idle, a single `Ctrl+C` no longer quits outright —

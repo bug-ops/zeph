@@ -18,8 +18,8 @@ publish = true
 
 [workspace.dependencies]
 age = { version = "0.12.1", default-features = false }
-agent-client-protocol = "1.2.0"
-agent-client-protocol-schema = "=1.4.0"
+agent-client-protocol = "2.0.0"
+agent-client-protocol-schema = "=1.5.0"
 anyhow = "1.0.103"
 arboard = "3.6.1"
 arc-swap = "1.9.2"
