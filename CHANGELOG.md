@@ -71,6 +71,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.22.3] - 2026-07-22
 ### Fixed
 
+- `specs/004-memory`: `004-16-memory-type-aware-retrieval.md` and `004-16-shadow-memory-safety.md`
+  both claimed the `004-16` slot (issue #6636, found during the spec audit in #6629). Renamed
+  shadow-memory-safety to `004-19` and synced all 26 rustdoc citation sites across `crates/`
+  (MAGE/`TrajectoryRiskAccumulator`/shadow-memory citations moved to `004-19`; MemGuard/
+  type-aware-retrieval citations stay at `004-16`), plus the Obsidian wikilinks in
+  `004-memory/spec.md` and the cross-directory reference in
+  `083-memory-write-consent-gate/spec.md`. Also added an authoritative statement in
+  `specs/004-memory/spec.md` resolving which of three coexisting edge-strengthening mechanisms
+  (A-MEM `retrieval_count` boost, Benna-Fusi dual-rate `confidence_fast`/`confidence_slow`,
+  HeLa-Mem Hebbian `weight`) governs real graph traversal today, grounded in file:line
+  citations against `crates/zeph-memory/src/graph/` (issue #6635).
 - `.github/workflows/ci-non-linux.yml`: the sharded macOS/Windows `Test` jobs intermittently
   crashed with `fatal runtime error: stack overflow, aborting` on
   `serve::agent_factory::tests::build_agent_factory_gates_trust_state_independently_per_session`
