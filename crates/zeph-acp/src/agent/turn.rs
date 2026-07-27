@@ -206,14 +206,66 @@ async fn resolve_resource_link(
 
 /// Return value of [`ZephAcpAgentState::drain_agent_events`].
 ///
-/// Bundles cancelled flag, stop hint, recycled receiver, and per-turn usage totals.
+/// Bundles cancelled flag, stop hint, and per-turn usage totals. The receiver itself is
+/// borrowed (not consumed) by `drain_agent_events`, so it has no place in this result —
+/// see [`PromptChannelGuard`], which owns it for the lifetime of the prompt turn.
 /// The `turn_usage` field is only present when `unstable-session-usage` is enabled.
 struct DrainResult {
     cancelled: bool,
     stop_hint: Option<StopHint>,
-    rx: tokio::sync::mpsc::Receiver<LoopbackEvent>,
     #[cfg(feature = "unstable-session-usage")]
     turn_usage: TurnUsage,
+}
+
+/// RAII guard owning a session's in-flight prompt receiver.
+///
+/// [`ZephAcpAgentState::acquire_prompt_channels`] takes `entry.output_rx` out to mark a
+/// prompt as "in progress"; this guard holds the receiver for the entire lifetime of
+/// [`ZephAcpAgentState::do_prompt`] and writes it back into `entry.output_rx` when dropped —
+/// on normal return, on any early return (e.g. an `input_tx.send` failure), or if the
+/// enclosing task is aborted while suspended mid-turn. The receiver is only ever lent out
+/// by mutable reference (see [`Self::rx_mut`]), never moved out of the guard while it is
+/// live, so it stays reachable from `Drop` no matter where execution is interrupted —
+/// without this, any exit path that skips an explicit restore permanently wedges the
+/// session (#6661). There is deliberately no explicit "restore now" method: the guard
+/// always holds a valid receiver from construction until it is dropped, so `Drop` is the
+/// single place that writes it back.
+#[must_use = "dropping this immediately clears the session's prompt-in-progress state"]
+struct PromptChannelGuard<'a> {
+    state: &'a ZephAcpAgentState,
+    session_id: acp::schema::v1::SessionId,
+    rx: mpsc::Receiver<LoopbackEvent>,
+}
+
+impl<'a> PromptChannelGuard<'a> {
+    fn new(
+        state: &'a ZephAcpAgentState,
+        session_id: acp::schema::v1::SessionId,
+        rx: mpsc::Receiver<LoopbackEvent>,
+    ) -> Self {
+        Self {
+            state,
+            session_id,
+            rx,
+        }
+    }
+
+    /// Mutable access to the held receiver for the duration of the drain loop.
+    fn rx_mut(&mut self) -> &mut mpsc::Receiver<LoopbackEvent> {
+        &mut self.rx
+    }
+}
+
+impl Drop for PromptChannelGuard<'_> {
+    fn drop(&mut self) {
+        // Swap in a throwaway closed channel so the real receiver can be moved out of
+        // `&mut self` and handed back to the session.
+        let (_, dummy_rx) = mpsc::channel(1);
+        let rx = std::mem::replace(&mut self.rx, dummy_rx);
+        if let Some(entry) = self.state.sessions.lock().get(&self.session_id) {
+            *entry.output_rx.lock() = Some(rx);
+        }
+    }
 }
 
 impl ZephAcpAgentState {
@@ -274,6 +326,7 @@ impl ZephAcpAgentState {
         }
 
         let (input_tx, output_rx) = self.acquire_prompt_channels(&args.session_id)?;
+        let mut channel_guard = PromptChannelGuard::new(self, args.session_id.clone(), output_rx);
 
         // Advisory injection scan: detect patterns and log, but do NOT modify the
         // prompt text. Operator-typed prompts are direct user input and must not be
@@ -312,15 +365,16 @@ impl ZephAcpAgentState {
             .map(|e| Arc::clone(&e.cancel_signal));
 
         // Block until the agent finishes this turn (signals via Flush or channel close).
+        // `channel_guard` still owns the receiver here (only lent out by `&mut`), so if this
+        // task is aborted while suspended inside `drain_agent_events`, the guard's `Drop`
+        // restores it — the session is never left permanently wedged.
         let drain = self
-            .drain_agent_events(&args.session_id, output_rx, cancel_signal)
+            .drain_agent_events(&args.session_id, channel_guard.rx_mut(), cancel_signal)
             .await;
 
-        // Return the receiver so future prompt() calls on this session can proceed.
-        if let Some(entry) = self.sessions.lock().get(&args.session_id) {
-            *entry.output_rx.lock() = Some(drain.rx);
-        }
-
+        // `channel_guard` is dropped when it falls out of scope at the end of this function
+        // (nothing below here awaits), writing the receiver back into `entry.output_rx` so
+        // future prompt() calls on this session can proceed.
         let stop_reason = compute_stop_reason(drain.cancelled, drain.stop_hint);
 
         // Generate session title after first successful agent response (fire-and-forget).
@@ -443,16 +497,16 @@ impl ZephAcpAgentState {
     }
 
     /// Drain events from `rx` until `Flush` or channel close, forwarding each as an ACP
-    /// notification. Returns a [`DrainResult`] with cancelled flag, stop hint, recycled
-    /// receiver, and per-turn token totals for `PromptResponse.usage`.
+    /// notification. Returns a [`DrainResult`] with cancelled flag, stop hint, and per-turn
+    /// token totals for `PromptResponse.usage`. `rx` is borrowed rather than consumed, so
+    /// the caller's [`PromptChannelGuard`] retains ownership across this call.
     #[allow(clippy::too_many_lines)] // dispatcher with multiple cfg-gated feature branches
     async fn drain_agent_events(
         &self,
         session_id: &acp::schema::v1::SessionId,
-        output_rx: tokio::sync::mpsc::Receiver<LoopbackEvent>,
+        rx: &mut mpsc::Receiver<LoopbackEvent>,
         cancel_signal: Option<std::sync::Arc<tokio::sync::Notify>>,
     ) -> DrainResult {
-        let mut rx = output_rx;
         let mut cancelled = false;
         let mut stop_hint: Option<StopHint> = None;
         // Per-turn token totals for PromptResponse.usage (separate from session accumulator).
@@ -579,7 +633,6 @@ impl ZephAcpAgentState {
         DrainResult {
             cancelled,
             stop_hint,
-            rx,
             #[cfg(feature = "unstable-session-usage")]
             turn_usage,
         }
@@ -636,5 +689,173 @@ mod prompt_injection_detection_tests {
             result.body, clean,
             "clean prompt must be returned unmodified"
         );
+    }
+}
+
+/// Regression tests for #6661: no exit path out of `do_prompt` (error return, or the
+/// enclosing task being aborted mid-turn) may permanently wedge a session's `output_rx`.
+#[cfg(test)]
+mod output_rx_leak_regression_tests {
+    use std::sync::Arc;
+
+    use parking_lot::RwLock;
+    use zeph_core::channel::{Channel as _, LoopbackChannel};
+    use zeph_llm::any::AnyProvider;
+
+    use super::super::{AgentSpawner, SessionConfigSeed, ZephAcpAgent};
+    use super::*;
+
+    /// Registers a fresh session on `agent` and returns its id plus the agent-loop side
+    /// `LoopbackChannel`. Keeping the returned channel alive keeps `input_tx.send` and the
+    /// drain loop's `rx.recv()` both viable; dropping it immediately simulates the
+    /// agent-loop task having gone away.
+    fn register_test_session(
+        agent: &ZephAcpAgent,
+        id: &str,
+    ) -> (acp::schema::v1::SessionId, LoopbackChannel) {
+        let session_id = acp::schema::v1::SessionId::new(id.to_owned());
+        let (channel, handle) = LoopbackChannel::pair(4);
+        let provider_override = Arc::new(RwLock::new(None::<AnyProvider>));
+        let (notify_tx, notify_rx) = mpsc::channel(256);
+        let entry = ZephAcpAgent::make_session_entry(
+            handle,
+            "claude:opus".to_owned(),
+            std::path::PathBuf::from("."),
+            None,
+            provider_override,
+            SessionConfigSeed {
+                thinking_enabled: false,
+                auto_approve_level: "manual".to_owned(),
+                temperature_preset: zeph_config::AcpTemperaturePreset::Balanced,
+            },
+            notify_tx,
+            notify_rx,
+        );
+        agent.sessions.lock().insert(session_id.clone(), entry);
+        (session_id, channel)
+    }
+
+    fn text_prompt_request(
+        session_id: acp::schema::v1::SessionId,
+        text: &str,
+    ) -> acp::schema::v1::PromptRequest {
+        acp::schema::v1::PromptRequest::new(
+            session_id,
+            vec![acp::schema::v1::ContentBlock::Text(
+                acp::schema::v1::TextContent::new(text.to_owned()),
+            )],
+        )
+    }
+
+    /// An `input_tx.send` failure (agent-loop side dropped) must restore `output_rx`
+    /// so the very next prompt on the same session succeeds instead of hitting
+    /// "prompt already in progress" forever.
+    #[tokio::test]
+    async fn input_tx_send_failure_does_not_wedge_session() {
+        let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
+        let agent = ZephAcpAgent::new(spawner, 4, 1800, None);
+        let (session_id, channel) = register_test_session(&agent, "wedge-test-session");
+        // Drop the agent-loop side immediately so `input_tx.send` fails inside `do_prompt`
+        // with "agent channel closed".
+        drop(channel);
+
+        let err = agent
+            .do_prompt(text_prompt_request(session_id.clone(), "hello"))
+            .await
+            .expect_err("input_tx.send must fail since input_rx was dropped");
+        // Pin down *why* it failed, not just that it failed — otherwise this test would
+        // pass vacuously if `do_prompt` started erroring for an unrelated reason before
+        // `acquire_prompt_channels` even ran, silently stopping being a #6661 regression
+        // test while staying green.
+        assert_eq!(
+            err.data.as_ref().and_then(serde_json::Value::as_str),
+            Some("agent channel closed"),
+            "expected the input_tx.send failure, got: {err}"
+        );
+
+        // Before the #6661 fix, `output_rx` stayed `None` forever after this early
+        // return, so every subsequent prompt failed with "prompt already in progress".
+        let reacquired = agent.acquire_prompt_channels(&session_id);
+        assert!(
+            reacquired.is_ok(),
+            "output_rx must be restored after do_prompt's early return: {:?}",
+            reacquired.err()
+        );
+    }
+
+    /// The harder case: the enclosing task is aborted while suspended *inside*
+    /// `drain_agent_events`'s `rx.recv()` (no `Flush`/close ever arrives). Before the
+    /// #6661 fix `drain_agent_events` consumed `output_rx` by value, so an abort here
+    /// dropped the receiver entirely instead of restoring it — permanently wedging the
+    /// session. The `PromptChannelGuard`'s `Drop` must restore it regardless.
+    #[tokio::test]
+    async fn abort_mid_drain_does_not_wedge_session() {
+        let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
+        let agent = Arc::new(ZephAcpAgent::new(spawner, 4, 1800, None));
+        let (session_id, _channel) = register_test_session(&agent, "abort-mid-drain-session");
+        // `_channel` (holding the only `output_tx`) stays alive for the whole test, so
+        // `drain_agent_events`'s `rx.recv()` stays pending forever instead of returning
+        // `None` — the receiver is never sent to nor closed until we drop it at the end.
+
+        let agent_for_task = Arc::clone(&agent);
+        let request = text_prompt_request(session_id.clone(), "hello");
+        let task = tokio::spawn(async move { agent_for_task.do_prompt(request).await });
+
+        // `input_tx.send` resolves immediately (buffer has room, receiver alive), and
+        // nothing else awaits before the drain loop's `rx.recv()`, so a few scheduler
+        // yields are enough to park the task there deterministically (no sleep/timing).
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+
+        task.abort();
+        let result = task.await;
+        assert!(
+            result.is_err(),
+            "task must have been aborted, not completed"
+        );
+        assert!(
+            result.unwrap_err().is_cancelled(),
+            "task must have been cancelled, not panicked"
+        );
+
+        let reacquired = agent.acquire_prompt_channels(&session_id);
+        assert!(
+            reacquired.is_ok(),
+            "output_rx must be restored after do_prompt is aborted mid-drain: {:?}",
+            reacquired.err()
+        );
+    }
+
+    /// Two back-to-back successful prompts on the same session must both complete —
+    /// confirms that routing the restore through `PromptChannelGuard`'s `Drop` (rather
+    /// than an explicit restore call) still hands the receiver back in time for the next
+    /// `acquire_prompt_channels` call, with no regression on the happy path.
+    #[tokio::test]
+    async fn two_consecutive_prompts_succeed_without_wedging_session() {
+        let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
+        let agent = ZephAcpAgent::new(spawner, 4, 1800, None);
+        let (session_id, mut channel) = register_test_session(&agent, "two-prompts-session");
+
+        // Minimal stand-in "agent loop": answers every received prompt with an immediate
+        // `Flush`, so `drain_agent_events` completes normally instead of hanging.
+        tokio::spawn(async move {
+            while matches!(channel.recv().await, Ok(Some(_))) {
+                if channel.flush_chunks().await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        for attempt in 0..2 {
+            let result = agent
+                .do_prompt(text_prompt_request(session_id.clone(), "hello"))
+                .await;
+            assert!(
+                result.is_ok(),
+                "prompt {attempt} should succeed: {:?}",
+                result.err()
+            );
+        }
     }
 }

@@ -89,6 +89,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The turn is now spawned via `cx.spawn` instead of awaited inline, per the SDK's documented
   ordering contract, freeing the dispatch loop to keep routing inbound messages — including the
   permission reply — while the turn runs.
+- `zeph-acp`: fixed `do_prompt` permanently wedging a session with "prompt already in progress"
+  after an `input_tx.send` failure, or after the turn's task is aborted while suspended inside
+  `drain_agent_events` (issue #6661, made observable by #6656 spawning the turn instead of
+  awaiting it inline). `output_rx` was only ever restored on the happy success path; any early
+  return, or the enclosing task being dropped mid-drain, left it `None` forever, so every
+  subsequent `session/prompt` call on that session failed even though no prompt was actually in
+  flight. A `PromptChannelGuard` now owns the receiver for the entire `do_prompt` call and
+  restores it into the session on `Drop`, covering every exit path; `drain_agent_events` borrows
+  the receiver instead of consuming it so the guard never loses ownership across the drain loop's
+  await points.
 
 ## [0.22.3] - 2026-07-22
 ### Fixed
