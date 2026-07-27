@@ -529,7 +529,7 @@ pub enum ToolError {
         reason: String,
     },
 
-    /// Tool call blocked by the MAGE `TrajectoryRiskAccumulator` (spec 004-16).
+    /// Tool call blocked by the MAGE `TrajectoryRiskAccumulator` (spec 004-19).
     ///
     /// Cumulative session risk exceeded `risk_threshold`. The agent loop receives the
     /// score and the top contributing signals so it can explain the denial to the user.

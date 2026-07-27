@@ -461,7 +461,7 @@ pub(crate) struct SecurityState {
     /// `None` by default. When `Some`, `begin_turn()` calls `reset()` to clear per-turn state.
     /// The same `Arc` must be passed to `ShellExecutor::with_risk_chain` at build time.
     pub(crate) risk_chain_accumulator: Option<std::sync::Arc<zeph_tools::RiskChainAccumulator>>,
-    /// MAGE trajectory risk accumulator (spec 004-16).
+    /// MAGE trajectory risk accumulator (spec 004-19).
     ///
     /// Per-session in-memory accumulator that ingests sanitizer audit signals with exponential
     /// temporal decay and gates tool execution when cumulative risk exceeds `risk_threshold`.

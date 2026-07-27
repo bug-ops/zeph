@@ -21,9 +21,9 @@ use crate::channel::{Channel, StopHint, ToolStartEvent};
 ///
 /// Returns `Some(TierLoopData)` synthesizing `ToolError::TrajectoryRiskExceeded` for every
 /// call in the batch — bypassing `run_tier_execution_loop` entirely — when the hard-block
-/// tier (`mage_blocked`, spec 004-16 FR-005) fired. Returns `None` when it did not, so the
+/// tier (`mage_blocked`, spec 004-19 FR-005) fired. Returns `None` when it did not, so the
 /// caller runs the normal tier execution loop (this also covers the soft-escalation tier,
-/// spec 004-16 FR-006, which gates on a single batch-level confirmation but then falls
+/// spec 004-19 FR-006, which gates on a single batch-level confirmation but then falls
 /// through to the normal tier loop — see `Agent::confirm_mage_escalation` — so that
 /// `check_trust`/`PermissionPolicy`/shadow-probe still apply per call; critic finding F1
 /// caught an earlier version of this function that bypassed those gates for escalation too).
@@ -734,10 +734,10 @@ impl<C: Channel> Agent<C> {
         // Inject active skill secrets before tool execution.
         self.inject_active_skill_env();
 
-        // MAGE trajectory risk gate (spec 004-16 FR-004, FR-005).
+        // MAGE trajectory risk gate (spec 004-19 FR-004, FR-005).
         // Extracted to keep prepare_tool_dispatch under the line limit.
         let mage_blocked = self.check_mage_block();
-        // Soft-escalation tier (spec 004-16 FR-006): only meaningful when the hard block
+        // Soft-escalation tier (spec 004-19 FR-006): only meaningful when the hard block
         // above did not already fire — the two threshold ranges never overlap, but the
         // guard keeps this call site independent of that invariant.
         let mage_escalate = mage_blocked.is_none() && self.check_mage_escalation();

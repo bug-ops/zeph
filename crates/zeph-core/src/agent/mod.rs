@@ -1031,7 +1031,7 @@ impl<C: Channel> Agent<C> {
         self.runtime.lifecycle.turn_tool_calls = 0;
 
         // Spec 050 §2: drain pending risk signals from executor layers before advancing.
-        // Also advance MAGE accumulator (spec 004-16 FR-009) and ingest mapped signals.
+        // Also advance MAGE accumulator (spec 004-19 FR-009) and ingest mapped signals.
         {
             use crate::agent::trajectory::{RiskSignal, VigilRiskLevel};
             use zeph_memory::shadow::{AuditSignalType as MageSignal, Severity as MageSev};
@@ -1043,14 +1043,14 @@ impl<C: Channel> Agent<C> {
             for code in pending {
                 let signal = RiskSignal::from_code(code);
                 self.services.security.trajectory.record(signal);
-                // Map RiskSignal to MAGE AuditSignalType + Severity (spec 004-16 FR-002, FR-007).
+                // Map RiskSignal to MAGE AuditSignalType + Severity (spec 004-19 FR-002, FR-007).
                 // Matching on the already-decoded `RiskSignal` (rather than the raw `code`)
                 // keeps this in sync with `RiskSignal::from_code`, the single source of truth
-                // for the code-to-meaning table. Only the four spec-004-16 signal classes have a
+                // for the code-to-meaning table. Only the four spec-004-19 signal classes have a
                 // MAGE equivalent; the remaining RiskSignal variants (OutOfScope, PiiRedaction,
                 // ToolFailure, HighCallRate, UnusualReadVolume, ToolPairTransition,
                 // ExfilReadThenSend, CredThenEgress, and VigilFlagged(Low)) are trajectory-only
-                // and intentionally not surfaced to MAGE (spec 004-16's four classes are a fixed
+                // and intentionally not surfaced to MAGE (spec 004-19's four classes are a fixed
                 // set; widening MAGE's mapping is a separate, spec-governed change, not part of
                 // #6561/F2's scope, which only fixes these two signals' TrajectorySentinel
                 // weight).

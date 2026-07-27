@@ -245,7 +245,7 @@ Wired through `AgentSessionConfig` (all four agent entry points: CLI/TUI, ACP, A
 - [[constitution]] — project principles
 - [[004-memory/spec]] — memory system parent index
 - [[004-9-memory-write-gate]] — MemReader write quality gate (orthogonal, noise-control)
-- [[004-16-shadow-memory-safety]] — MAGE shadow memory (orthogonal, trajectory-level attack defense)
+- [[004-19-shadow-memory-safety]] — MAGE shadow memory (orthogonal, trajectory-level attack defense)
 - [[039-background-task-supervisor/spec]] — non-blocking contract this gate's background path follows
 - [[001-system-invariants/spec]] — system-wide non-negotiable rules
 - [[MOC-specs]] — all specifications

@@ -333,7 +333,7 @@ AND no tool call is blocked by shadow memory
 > The bullet below previously claimed `TrajectoryRiskAccumulator` was renamed to `ShadowSentinel`
 > during implementation. This is incorrect: both structs exist and coexist as **separate**
 > components. `TrajectoryRiskAccumulator` (`crates/zeph-memory/src/shadow/mod.rs`, doc comment
-> literally reads "Per-session trajectory risk accumulator (MAGE spec 004-16)") is this spec's
+> literally reads "Per-session trajectory risk accumulator (MAGE spec 004-19)") is this spec's
 > actual, unrenamed implementation — wired into `zeph-core` via `agent/builder.rs` and
 > `agent/state/security.rs`. `ShadowSentinel` (`crates/zeph-core/src/agent/shadow_sentinel.rs`) is
 > a distinct, additional defense-in-depth feature (an LLM pre-execution safety probe) that belongs

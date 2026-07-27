@@ -4,7 +4,7 @@
 //! Tests for #6272: `Agent::begin_turn` maps drained `RiskSignal`s to MAGE
 //! `(AuditSignalType, Severity)` pairs by matching on the already-decoded `RiskSignal` enum
 //! rather than re-deriving the mapping from the raw `u8` signal code. These tests pin the
-//! resulting mapping table (spec 004-16 FR-002/FR-007) so a future refactor of either
+//! resulting mapping table (spec 004-19 FR-002/FR-007) so a future refactor of either
 //! `RiskSignal::from_code` or the MAGE match arm cannot silently desync the two.
 
 use zeph_config::TrajectoryRiskAccumulatorConfig;
@@ -45,7 +45,7 @@ fn drain_one_code(agent: &mut Agent<MockChannel>, code: u8) {
 
 /// Codes 1, 2, 6, 7 (`PolicyDeny`, `ExfiltrationRedaction`, `VigilFlagged(Medium)`,
 /// `VigilFlagged(High)`) are the only `RiskSignal` variants with a MAGE equivalent
-/// (spec 004-16 FR-002). Each must ingest into `mage_accumulator` with the exact
+/// (spec 004-19 FR-002). Each must ingest into `mage_accumulator` with the exact
 /// `AuditSignalType`/`Severity` pair documented at the match site in `begin_turn`.
 #[test]
 fn begin_turn_maps_known_risk_codes_to_mage_signals() {
@@ -88,7 +88,7 @@ fn begin_turn_maps_known_risk_codes_to_mage_signals() {
 #[test]
 fn begin_turn_no_mage_signal_for_trajectory_only_codes() {
     // 10/11 (ExfilReadThenSend/CredThenEgress, #6561/F2) are trajectory-only too — MAGE's
-    // mapping stays at the fixed spec 004-16 four-class set; widening it is out of scope.
+    // mapping stays at the fixed spec 004-19 four-class set; widening it is out of scope.
     for code in [3u8, 4, 5, 10, 11, 99] {
         let mut agent = make_agent_with_mage();
         drain_one_code(&mut agent, code);

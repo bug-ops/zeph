@@ -64,12 +64,12 @@ struct ToolDispatchContext {
     /// (`is_cacheable`) and the cache-store gate later in `apply_tier_results`, so the tier
     /// loop never re-scans the registry per call or per tier (#5733 follow-up, M1).
     mcp_tool_ids: std::collections::HashSet<String>,
-    /// MAGE trajectory risk gate (spec 004-16 FR-005).
+    /// MAGE trajectory risk gate (spec 004-19 FR-005).
     ///
     /// When `Some((score, top_signals))`, all tool calls in this batch are blocked with
     /// `ToolError::TrajectoryRiskExceeded`. Set when `mage_accumulator.is_blocked()` at dispatch time.
     mage_blocked: Option<(f64, Vec<String>)>,
-    /// MAGE trajectory risk soft-escalation gate (spec 004-16 FR-006).
+    /// MAGE trajectory risk soft-escalation gate (spec 004-19 FR-006).
     ///
     /// When `true`, the batch requires a single up-front human confirmation
     /// (`Agent::confirm_mage_escalation`) before the normal tier execution loop runs — approval

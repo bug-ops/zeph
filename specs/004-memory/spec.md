@@ -16,7 +16,7 @@ related:
   - "[[001-system-invariants/spec#6. Memory Pipeline Contract]]"
   - "[[002-agent-loop/spec]]"
   - "[[004-6-graph-memory]]"
-  - "[[004-16-shadow-memory-safety]]"
+  - "[[004-19-shadow-memory-safety]]"
   - "[[004-17-implicit-conflict-detection]]"
   - "[[004-18-five-signal-retrieval]]"
   - "[[012-graph-memory/spec]]"
@@ -54,7 +54,7 @@ specific areas, refer to the child specs below.
 
 See also §"Sub-Specifications" below for [[004-10-memory-memmachine-retrieval]], [[004-11-memory-hela-mem]],
 [[004-12-memory-reasoning-bank]], [[004-14-memory-tiering-rfc-decision]],
-[[004-15-memory-skill-coevolution-rfc-decision]], [[004-16-shadow-memory-safety]],
+[[004-15-memory-skill-coevolution-rfc-decision]], [[004-19-shadow-memory-safety]],
 [[004-17-implicit-conflict-detection]], and [[004-18-five-signal-retrieval]].
 
 ---
@@ -243,7 +243,7 @@ When disabled, the prior `recall_semantic` path is used unchanged.
 | [[004-12-memory-reasoning-bank]] | ReasoningBank distilled strategy memory, self-judge pipeline |
 | [[004-14-memory-tiering-rfc-decision]] | RFC #4217 decision: memory tiering architecture analysis |
 | [[004-15-memory-skill-coevolution-rfc-decision]] | RFC #4218 decision: memory–skill coevolution analysis |
-| [[004-16-shadow-memory-safety]] | Shadow Memory Safety — trajectory-level attack defense (MAGE, issue #3695) |
+| [[004-19-shadow-memory-safety]] | Shadow Memory Safety — trajectory-level attack defense (MAGE, issue #3695) |
 | [[004-17-implicit-conflict-detection]] | Implicit Conflict Detection — STALE/CUPMem fuzzy predicate matching and propagation-aware SYNAPSE recall (issue #3702) |
 | [[004-18-five-signal-retrieval]] | Five-Signal Retrieval — access frequency, causal distance, novelty signals + async consolidation daemon (MemTier, issue #3703) |
 
@@ -386,6 +386,66 @@ previous — unintentional — plain-BFS fallback, since `retrieval_strategy`'s 
 (`synapse`) now actually takes effect. Set `retrieval_strategy = "bfs"` under `[memory.graph]`
 to keep the prior BFS-only behavior; benchmark before upgrading if graph-recall latency/cost
 is a concern.
+
+---
+
+## Edge-Strengthening Mechanisms: Authoritative Statement
+
+Three independent but coexisting mechanisms strengthen edges on repeated access:
+
+### 1. A-MEM's `retrieval_count` Boost (PRIMARY, UNIVERSAL)
+
+**Authority**: This is the fundamental edge-strength evolution mechanism governing graph recall in all traversal paths (main BFS, SYNAPSE spreading activation, and HL-F5).
+
+**Implementation** (`crates/zeph-memory/src/graph/types.rs`):
+- Each edge tracks an integer `retrieval_count` (line 139) incremented on every recall traversal
+- The `evolved_weight()` function (lines 399–406) applies: `confidence * min(1.0, 1.0 + 0.2 * ln(1 + retrieval_count))`
+- On `count=0`: returns raw confidence (identity)
+- On `count=10`: ~1.48x boost
+- This formula is documented in [[004-6-graph-memory|spec 004-6]], §1 ("A-MEM link weights"), lines 88–92
+
+**Used in**:
+- Main `graph_recall()` path: `composite_score()` (lines 432–434) calls `evolved_weight(edge.retrieval_count, edge.confidence)` (`crates/zeph-memory/src/graph/types.rs`)
+- SYNAPSE `graph_recall_activated()` path: spreads activation using a blended confidence passed to `evolved_weight()` (`crates/zeph-memory/src/graph/activation.rs`, line 617)
+
+**Increment mechanism**: `apply_hebbian_increment()` in the graph store fire-and-forget loop after each recall (`crates/zeph-memory/src/graph/retrieval.rs`, lines 152 and 467).
+
+### 2. Benna-Fusi Dual-Timescale Model (SECONDARY, LAYERED)
+
+**Authority**: This is a secondary confidence-blending mechanism used *only* in SYNAPSE spreading activation. It does **not** replace A-MEM; instead, it provides the base confidence value that A-MEM then boosts.
+
+**Implementation** (`crates/zeph-memory/src/graph/types.rs`, lines 157–166):
+- Each edge tracks two synaptic variables: `confidence_fast` (high plasticity) and `confidence_slow` (high retention)
+- Both update on every reassertion: `fast' = fast + η_f * (c - fast)` and `slow' = slow + η_s * (fast' - slow)`
+- Documented in this spec's "Benna-Fusi Multi-Timescale SYNAPSE Edges" section and [[004-6-graph-memory]], §2 ("SYNAPSE two-timescale learning")
+
+**Used in**:
+- SYNAPSE spreading activation *only*: `graph_recall_activated()` blends the two variables (`crates/zeph-memory/src/graph/activation.rs`, lines 615–616): `blended = α * confidence_fast + (1 − α) * confidence_slow`
+- This blended value is immediately passed to `evolved_weight(edge.retrieval_count, blended)`, so A-MEM boost is applied to the Benna-Fusi blend, not the raw edge confidence
+- **NOT used in the main `graph_recall()` BFS path**, which uses `edge.confidence` directly
+
+### 3. HeLa-Mem Hebbian `weight` Field (SEPARATE, HL-F5 ONLY)
+
+**Authority**: This is a **separate mechanism** for HL-F5 spreading activation only. It does **not** influence main graph recall or SYNAPSE spreading activation scoring.
+
+**Implementation** (`crates/zeph-memory/src/graph/types.rs`, lines 151–156):
+- Each edge tracks a Hebbian reinforcement weight: `weight` (starts at 1.0)
+- Incremented by `apply_hebbian_increment()` on every HL-F5 traversal (marked as "HL-F1" in [[004-11-memory-hela-mem]], #3344)
+
+**Used in**:
+- HL-F5 BFS path-weight propagation *only*: `path_weight = parent_pw * edge.weight` (`crates/zeph-memory/src/graph/activation.rs`, line 317)
+- The path weight is then multiplied by entity embedding cosine similarity to produce the HL-F5 fact score: `score = path_weight × max(cosine(query, entity), 0.0)` (activation.rs, HL-F5 section)
+- **NOT used** in A-MEM or SYNAPSE mechanisms; does not influence main `composite_score()` or SYNAPSE activation propagation
+
+### Summary
+
+| Mechanism | Field | Used in | Boost Formula | Authority |
+|-----------|-------|---------|---------------|-----------|
+| A-MEM | `retrieval_count` + `confidence` | Main BFS, SYNAPSE | `c * min(1.0, 1.0 + 0.2*ln(1+count))` | **Primary, universal** |
+| Benna-Fusi | `confidence_fast` / `confidence_slow` | SYNAPSE only | Blended as `α*fast + (1-α)*slow`, then passed to A-MEM | Secondary, layered |
+| HeLa-Mem | `weight` | HL-F5 spreading only | Multiplicative path propagation | Separate, HL-F5 isolated |
+
+**Key Invariant**: A-MEM is the only edge-strengthening mechanism that operates universally across all graph recall strategies. Benna-Fusi and HeLa-Mem are add-ons specialized to their respective recall strategies (SYNAPSE and HL-F5).
 
 ---
 

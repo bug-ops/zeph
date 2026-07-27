@@ -4,7 +4,7 @@
 //! MAGE trajectory-risk confirmation and escalation gates.
 //!
 //! Covers the human-in-the-loop confirmation phase (`ConfirmationRequired` tool errors) and
-//! the MAGE trajectory risk hard-block/soft-escalation gates (spec 004-16 FR-004–FR-006).
+//! the MAGE trajectory risk hard-block/soft-escalation gates (spec 004-19 FR-004–FR-006).
 //! Split out of `tier_loop.rs` — see that module for the orchestration entry point that calls
 //! into these gates.
 
@@ -14,7 +14,7 @@ use crate::agent::Agent;
 use crate::channel::Channel;
 
 impl<C: Channel> Agent<C> {
-    /// Single batch-level human confirmation for the MAGE soft-escalation tier (spec 004-16
+    /// Single batch-level human confirmation for the MAGE soft-escalation tier (spec 004-19
     /// FR-006).
     ///
     /// Returns `Ok(true)` if the user declined — the tombstone and `[Cancelled]` notice are
@@ -112,7 +112,7 @@ impl<C: Channel> Agent<C> {
         Ok(false)
     }
 
-    /// Check MAGE trajectory risk gate (spec 004-16 FR-004, FR-005).
+    /// Check MAGE trajectory risk gate (spec 004-19 FR-004, FR-005).
     ///
     /// Returns `Some((score, top_signals))` when the accumulator is blocked. Emits a security
     /// event, increments `pre_execution_blocks`, and calls `record_block()` on the accumulator.
@@ -144,7 +144,7 @@ impl<C: Channel> Agent<C> {
         Some((score, top))
     }
 
-    /// Check MAGE trajectory risk soft-escalation gate (spec 004-16 FR-006).
+    /// Check MAGE trajectory risk soft-escalation gate (spec 004-19 FR-006).
     ///
     /// Returns `true` when the accumulator's risk is in `[escalation_threshold,
     /// risk_threshold)`. Emits a security event, increments `pre_execution_warnings`, and

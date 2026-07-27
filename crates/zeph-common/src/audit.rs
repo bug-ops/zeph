@@ -9,7 +9,7 @@
 
 /// Signal type emitted by a sanitizer subsystem.
 ///
-/// Variants correspond to the four signal classes defined in spec 004-16, FR-007.
+/// Variants correspond to the four signal classes defined in spec 004-19, FR-007.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum AuditSignalType {

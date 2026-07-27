@@ -204,7 +204,7 @@ impl Default for TreeConfig {
     }
 }
 
-// ── TrajectoryRiskAccumulator config (spec 004-16) ─────────────────────────────
+// ── TrajectoryRiskAccumulator config (spec 004-19) ─────────────────────────────
 
 fn validate_tra_nonneg_weight<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
@@ -337,7 +337,7 @@ impl Default for TrajectorySeverityMultipliers {
     }
 }
 
-/// Configuration for the MAGE trajectory risk accumulator (spec 004-16).
+/// Configuration for the MAGE trajectory risk accumulator (spec 004-19).
 ///
 /// Controls how per-turn safety signals accumulate into a session-level risk score
 /// and when tool execution is blocked or escalated.
@@ -410,7 +410,7 @@ impl TrajectoryRiskAccumulatorConfig {
     /// `[escalation_threshold, risk_threshold)` band becomes empty) — the hard block
     /// (`is_blocked`) still works, so this is a degraded-but-safe misconfiguration, not a
     /// security gap; validation exists to surface it instead of leaving it silent (critic
-    /// finding F4, spec 004-16).
+    /// finding F4, spec 004-19).
     ///
     /// # Errors
     ///

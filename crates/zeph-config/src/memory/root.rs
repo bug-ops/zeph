@@ -482,7 +482,7 @@ pub struct MemoryConfig {
     /// key facts, and promotes them to the semantic tier in `zeph_key_facts`.
     #[serde(default)]
     pub episodic_consolidation: EpisodicConsolidationConfig,
-    /// MAGE shadow memory trajectory risk accumulator (spec 004-16).
+    /// MAGE shadow memory trajectory risk accumulator (spec 004-19).
     ///
     /// Maintains a per-session rolling risk score fed by sanitizer audit signals.
     /// When `shadow_memory.enabled = true`, tool execution is gated if cumulative

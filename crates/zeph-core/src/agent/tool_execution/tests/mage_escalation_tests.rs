@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Tests for the MAGE trajectory-risk soft-escalation gate (spec 004-16 FR-006, #5956).
+//! Tests for the MAGE trajectory-risk soft-escalation gate (spec 004-19 FR-006, #5956).
 //!
 //! `TrajectoryRiskAccumulator::should_escalate()`/`record_escalation()` existed but were never
 //! queried by the agent loop before this fix. These tests exercise the wiring added to

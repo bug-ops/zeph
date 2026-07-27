@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! MAGE shadow memory stream — trajectory-level risk accumulation (spec 004-16).
+//! MAGE shadow memory stream — trajectory-level risk accumulation (spec 004-19).
 //!
 //! [`TrajectoryRiskAccumulator`] maintains a per-session rolling risk score by ingesting
 //! [`AuditSignalType`] events from `zeph-sanitizer`. The score decays exponentially between
@@ -60,7 +60,7 @@ pub struct SignalEvent {
     pub raw_score: f64,
 }
 
-/// Per-session trajectory risk accumulator (MAGE spec 004-16).
+/// Per-session trajectory risk accumulator (MAGE spec 004-19).
 ///
 /// Maintains a rolling `trajectory_risk` score in `[0.0, 1.0]` that accumulates safety
 /// signals with exponential temporal decay. Designed to detect multi-turn attacks that
