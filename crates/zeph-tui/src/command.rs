@@ -1062,60 +1062,30 @@ fn build_extra_commands() -> Vec<CommandEntry> {
     cmds
 }
 
-/// Returns `true` if `a` and `b` should be treated as the same character for
-/// fuzzy matching purposes.
+/// Replaces `:` and `-` with a plain space.
 ///
 /// Command ids use `:` or `-` as word separators (e.g. `session:new`,
 /// `app:theme-list`) while users naturally type a space in their place (e.g.
-/// "session new", "theme list"), so all three are treated as interchangeable
-/// separators — otherwise the literal space in the query never matches
-/// anything in the id and the whole match fails.
-fn fuzzy_chars_equivalent(a: char, b: char) -> bool {
-    a == b || (matches!(a, ' ' | ':' | '-') && matches!(b, ' ' | ':' | '-'))
-}
-
-/// Compute a fuzzy match score between `query` and `target`.
-///
-/// Matches characters of `query` in order within `target`, penalising gaps
-/// between consecutive matches. Higher scores indicate better matches.
-/// Space, `:`, and `-` are treated as equivalent separators (see
-/// [`fuzzy_chars_equivalent`]).
-///
-/// Returns `None` if `target` does not contain all characters of `query`.
-fn fuzzy_score(query: &str, target: &str) -> Option<isize> {
-    if query.is_empty() {
-        return Some(0);
-    }
-    let target_lower: Vec<char> = target.to_lowercase().chars().collect();
-    let query_chars: Vec<char> = query.to_lowercase().chars().collect();
-
-    let mut qi = 0usize;
-    let mut last_match = 0usize;
-    let mut gaps = 0isize;
-
-    for (ti, &tc) in target_lower.iter().enumerate() {
-        if qi < query_chars.len() && fuzzy_chars_equivalent(tc, query_chars[qi]) {
-            if qi > 0 {
-                gaps += ti.cast_signed() - last_match.cast_signed() - 1;
-            }
-            last_match = ti;
-            qi += 1;
-        }
-    }
-
-    if qi == query_chars.len() {
-        // Higher is better: more matched chars, fewer gaps
-        Some(query_chars.len().cast_signed() * 10 - gaps)
-    } else {
-        None
-    }
+/// "session new", "theme list"). Normalizing both the query and the matched
+/// text through this function before handing them to `nucleo_matcher` makes
+/// the three separators interchangeable on either side — otherwise a query
+/// character that doesn't literally occur in the target (e.g. a `:` typed
+/// against a `-`-separated id) fails the whole atom.
+fn normalize_separators(s: &str) -> String {
+    s.chars()
+        .map(|c| if matches!(c, ':' | '-') { ' ' } else { c })
+        .collect()
 }
 
 /// Filter and rank all registered commands by fuzzy match against `query`.
 ///
 /// Merges the core, daemon, and extra registries, scores each entry against
-/// both its `id` and `label`, and returns the results sorted by descending
-/// score. An empty query returns all commands in registration order.
+/// both its `id` and `label` via `nucleo_matcher` (`crate::fuzzy` — the same
+/// engine and case/normalization settings as the `@` mention picker, but
+/// with `prefer_prefix` enabled since this is short-string autocompletion,
+/// not substring search over file paths), and returns the results sorted by
+/// descending score. An empty query returns all commands in registration
+/// order.
 ///
 /// # Examples
 ///
@@ -1137,6 +1107,8 @@ fn fuzzy_score(query: &str, target: &str) -> Option<isize> {
 /// ```
 #[must_use]
 pub fn filter_commands(query: &str) -> Vec<&'static CommandEntry> {
+    use nucleo_matcher::Utf32Str;
+
     let mut all: Vec<&'static CommandEntry> = command_registry().iter().collect();
     all.extend(daemon_command_registry());
     all.extend(extra_command_registry());
@@ -1146,24 +1118,25 @@ pub fn filter_commands(query: &str) -> Vec<&'static CommandEntry> {
         return all;
     }
 
-    // Trim and collapse runs of whitespace so a stray leading/trailing/doubled
-    // space (e.g. "session  new", "session new ") doesn't desync the query's
-    // separator count from the target's and cause the match to fail outright.
-    let normalized_query = query.split_whitespace().collect::<Vec<_>>().join(" ");
-    let query = normalized_query.as_str();
+    let normalized_query = normalize_separators(query);
+    let pattern = crate::fuzzy::pattern(&normalized_query);
+    // `prefer_prefix: true` — the user is expected to type the whole id/label
+    // here (a short autocompletion target), unlike the `@` mention picker's
+    // arbitrary substring search over file paths (see `crate::fuzzy`).
+    let mut matcher = crate::fuzzy::matcher(true);
 
-    let mut scored: Vec<(&'static CommandEntry, isize)> = all
+    let mut scored: Vec<(&'static CommandEntry, u32)> = all
         .into_iter()
         .filter_map(|e| {
-            let id_score = fuzzy_score(query, e.id);
-            let label_score = fuzzy_score(query, e.label);
-            let best = match (id_score, label_score) {
-                (Some(a), Some(b)) => Some(a.max(b)),
-                (Some(a), None) => Some(a),
-                (None, Some(b)) => Some(b),
-                (None, None) => None,
-            };
-            best.map(|s| (e, s))
+            let id_norm = normalize_separators(e.id);
+            let label_norm = normalize_separators(e.label);
+            let mut buf = Vec::new();
+            let id_score = pattern.score(Utf32Str::new(&id_norm, &mut buf), &mut matcher);
+            let mut buf = Vec::new();
+            let label_score = pattern.score(Utf32Str::new(&label_norm, &mut buf), &mut matcher);
+            // `Option<u32>: Ord` already orders `None < Some(_)` and compares inner
+            // values, so `.max()` is exactly the "best of either match, or neither" logic.
+            id_score.max(label_score).map(|s| (e, s))
         })
         .collect();
 
@@ -1279,6 +1252,39 @@ mod tests {
                 "skill:list should rank at least as high as mcp:list for 'sl'"
             );
         }
+    }
+
+    // Ranking pins for the nucleo_matcher unification (#6650): lock in the
+    // current top-ranked result for representative queries so a future
+    // `nucleo-matcher` version bump or registry change is a deliberate,
+    // reviewed change rather than a silent ranking drift.
+
+    #[test]
+    fn ranking_pin_mem_st() {
+        let results = filter_commands("mem st");
+        assert_eq!(results.first().map(|e| e.id), Some("memory:stats"));
+    }
+
+    #[test]
+    fn ranking_pin_agents_list() {
+        let results = filter_commands("agents-list");
+        assert_eq!(results.first().map(|e| e.id), Some("agent:list"));
+    }
+
+    #[test]
+    fn ranking_pin_sess() {
+        // With `Config::DEFAULT` (no haystack-length normalization), "sess"
+        // was a genuine score tie between "session:new"'s id and "fleet"'s
+        // label ("Fleet: show agent sessions"), broken by declaration order
+        // in "fleet"'s favor — a systematic regression versus the old
+        // scorer for the entire `session*` prefix family, not a one-off
+        // (critic finding S3). `prefer_prefix: true` (`crate::fuzzy`, this
+        // surface only — see its doc comment) breaks the tie correctly:
+        // "session:new" 122 vs "fleet" 114.
+        let results = filter_commands("sess");
+        assert_eq!(results.first().map(|e| e.id), Some("session:new"));
+        assert!(results.iter().any(|e| e.id == "session:history"));
+        assert!(results.iter().any(|e| e.id == "fleet"));
     }
 
     #[test]

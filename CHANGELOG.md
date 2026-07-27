@@ -34,6 +34,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rationale (Section 3) was consolidated to one canonical statement. Sections 19-20
   (amendment log, implementation state) are unchanged. Documentation-only, no code
   changes.
+- `zeph-tui`: the `@` mention picker's empty-query Files results are now ordered by
+  recency instead of alphabetically (issue #6651): files with uncommitted changes first
+  (most recently modified first), then the remaining tracked files by mtime descending.
+  Computed by `FileIndex::build` alongside the existing background file walk (`git status
+  --porcelain=v1 -z --untracked-files=all --no-optional-locks`, piggybacked on the same
+  `spawn_blocking` pass and bounded by a 3s subprocess timeout), so it adds no new spinner
+  or unbounded blocking call. `git status` paths are stripped of the repo-top-level prefix
+  (via `git rev-parse --show-prefix`) before matching against the walk root, so the boost
+  still applies when the TUI is launched from a repo subdirectory. Non-git directories, or
+  any `git` failure/timeout, degrade silently to plain mtime ordering. A typed query is
+  unaffected — it is still fully ranked by fuzzy score, and now uses a stable sort so a
+  score tie falls back to the recency order instead of being scrambled.
+- `zeph-tui`: unified the `/` slash autocomplete and `@` file picker onto the same
+  `nucleo_matcher` fuzzy-matching engine (issue #6650), removing the hand-rolled
+  `fuzzy_score`/`fuzzy_chars_equivalent` scorer from `command.rs`. The `:`/`-`/space
+  separator-equivalence behavior slash autocomplete depended on (#5790) is preserved by
+  normalizing both the query and the matched id/label through the same separator-to-space
+  substitution before scoring. Shared `Pattern`/`Matcher` construction now lives in a new
+  `crate::fuzzy` module; the two surfaces share case/normalization settings but the command
+  palette additionally enables `Config::prefer_prefix` (nucleo's recommended setting for
+  "user types the entire match" autocompletion), fixing a ranking regression where short
+  labels elsewhere in the registry could outrank an exact-prefix command id on a tie.
 - `zeph-tui`: moved the busy spinner and humanized activity verb from the bottom status
   bar to the input separator row, next to the existing interrupt hint (issue #6649). The
   variable-width verb (`thinking`, `compacting · context`, …) no longer shifts the status

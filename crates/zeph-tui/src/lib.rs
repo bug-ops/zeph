@@ -45,6 +45,7 @@ pub(crate) mod delights;
 pub mod error;
 pub mod event;
 pub mod file_picker;
+pub(crate) mod fuzzy;
 pub mod highlight;
 pub mod hyperlink;
 pub mod layout;

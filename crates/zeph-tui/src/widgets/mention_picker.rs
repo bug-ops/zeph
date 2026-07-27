@@ -20,8 +20,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
 
-use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
-use nucleo_matcher::{Config, Matcher, Utf32Str};
+use nucleo_matcher::{Matcher, Utf32Str};
 
 use zeph_core::channel::SkillCatalogItem;
 use zeph_core::metrics::AgentDefSummary;
@@ -127,7 +126,9 @@ impl MentionPickerState {
             selected: 0,
             filtered: Vec::new(),
             catalog,
-            matcher: Matcher::new(Config::DEFAULT),
+            // `prefer_prefix: false` — arbitrary substring search over file/skill/
+            // agent names, not "user is typing the entire match" (see `crate::fuzzy`).
+            matcher: crate::fuzzy::matcher(false),
         };
         state.refilter("");
         state
@@ -161,8 +162,10 @@ impl MentionPickerState {
 
     /// Empty-query path: round-robins across non-empty categories on the `All` tab so
     /// files (up to 50 000 candidates) never crowd out skills/agents before either gets a
-    /// slot (#6651 tracks refinement for the *typed*-query case, which is score-ranked and
-    /// therefore not round-robined). Single-category tabs just take the first `MAX_RESULTS`.
+    /// slot. Single-category tabs just take the first `MAX_RESULTS`, which for the Files
+    /// category means the first `MAX_RESULTS` of `catalog.files` — recency-ordered
+    /// (uncommitted changes, then mtime descending) by `crate::file_picker::FileIndex::build`,
+    /// not alphabetical (#6651). Skills/Agents keep their catalog (alphabetical) order.
     fn round_robin(candidates: Vec<Candidate<'_>>, tab: MentionTab) -> Vec<MentionEntry> {
         if tab != MentionTab::All {
             return candidates
@@ -213,12 +216,7 @@ impl MentionPickerState {
         query: &str,
         matcher: &mut Matcher,
     ) -> Vec<MentionEntry> {
-        let pattern = Pattern::new(
-            query,
-            CaseMatching::Smart,
-            Normalization::Smart,
-            AtomKind::Fuzzy,
-        );
+        let pattern = crate::fuzzy::pattern(query);
         let mut scored: Vec<(u32, Candidate<'_>)> = candidates
             .into_iter()
             .filter_map(|c| {
@@ -227,7 +225,11 @@ impl MentionPickerState {
                 pattern.score(haystack, matcher).map(|score| (score, c))
             })
             .collect();
-        scored.sort_unstable_by_key(|(score, _)| std::cmp::Reverse(*score));
+        // Stable sort (not `sort_unstable_by_key`): `candidates` arrives in
+        // `FileIndex`'s recency order (#6651), so on a score tie this
+        // preserves "most recently touched first" instead of scrambling it
+        // (critic finding S4).
+        scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
         scored.truncate(MAX_RESULTS);
 
         scored
@@ -568,6 +570,49 @@ mod tests {
         let mut state = MentionPickerState::new(0, cat);
         state.refilter("");
         assert!(state.filtered.iter().all(|e| e.kind == MentionKind::File));
+    }
+
+    #[test]
+    fn empty_query_files_tab_preserves_catalog_order() {
+        // Recency ordering is computed upstream by `crate::file_picker::FileIndex::build`
+        // (#6651); this widget must not re-sort — it just takes the catalog's head.
+        let cat = catalog(&["z_recent.rs", "a_old.rs", "m_mid.rs"], &[], &[]);
+        let mut state = MentionPickerState::new(0, cat);
+        state.active_tab = MentionTab::Files;
+        state.refilter("");
+        let names: Vec<&str> = state.filtered.iter().map(|e| e.display.as_str()).collect();
+        assert_eq!(names, vec!["z_recent.rs", "a_old.rs", "m_mid.rs"]);
+    }
+
+    #[test]
+    fn typed_query_score_tie_preserves_catalog_recency_order() {
+        // Critic finding S4: on the typed-query path, candidates already arrive in
+        // `catalog.files`'s recency order (#6651). A single-char query matching an
+        // identically-positioned character in same-shaped names (single letter + ".rs")
+        // ties in fuzzy score for all three — `scored()` uses a *stable* `sort_by_key`
+        // (not `sort_unstable_by_key`) so the tie falls back to that recency order
+        // instead of being scrambled.
+        //
+        // NOTE (testing-round finding): this test does not actually discriminate
+        // `sort_by_key` from `sort_unstable_by_key` on the current toolchain — Rust's
+        // unstable pdqsort-based sort special-cases a fully-tied input (as constructed
+        // here) and happens to leave it in original order too, so reverting to
+        // `sort_unstable_by_key` would not turn this test red. A black-box test that
+        // reliably forces a *reordering* difference between stable and unstable sort
+        // isn't practical without depending on unspecified sort-implementation
+        // internals across toolchain versions. Kept as documentation of the intended
+        // behavior (and a regression guard against unrelated logic bugs in `scored()`),
+        // not as a guard on the specific stable-vs-unstable sort choice.
+        let cat = catalog(&["c.rs", "a.rs", "b.rs"], &[], &[]);
+        let mut state = MentionPickerState::new(0, cat);
+        state.active_tab = MentionTab::Files;
+        state.refilter(".");
+        let names: Vec<&str> = state.filtered.iter().map(|e| e.display.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["c.rs", "a.rs", "b.rs"],
+            "tied scores must preserve catalog order, not be reshuffled"
+        );
     }
 
     #[test]

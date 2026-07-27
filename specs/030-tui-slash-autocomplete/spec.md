@@ -45,8 +45,9 @@ accepts the highlighted suggestion; Esc dismisses.
   (e.g., `/graph facts <entity-name>`)
 - Autocomplete in Normal mode (`:` opens the full Command Palette, which is separate)
 - Autocomplete in Telegram or CLI channels
-- Fuzzy-search engine replacement — the existing `filter_commands` function in
-  `crates/zeph-tui/src/command.rs` is reused as-is
+- Fuzzy-search engine replacement — `filter_commands` in `crates/zeph-tui/src/command.rs`
+  is reused as-is (its signature and behavior, not its internal implementation, which was
+  later unified onto `nucleo_matcher` by #6650 to match the `@` mention picker's engine)
 
 ---
 
@@ -430,7 +431,8 @@ None. All design decisions are resolved in this spec.
 
 ## 13. References
 
-- `crates/zeph-tui/src/command.rs` — `CommandEntry`, `filter_commands`, `fuzzy_score`
+- `crates/zeph-tui/src/command.rs` — `CommandEntry`, `filter_commands` (uses
+  `nucleo_matcher` since #6650; no longer the hand-rolled `fuzzy_score`)
 - `crates/zeph-tui/src/widgets/command_palette.rs` — `CommandPaletteState` pattern to follow
 - `crates/zeph-tui/src/app/` — `handle_insert_key`, `handle_palette_key`, modal routing
 - `.local/specs/011-tui/spec.md` — TUI architecture, Spinner Rule
