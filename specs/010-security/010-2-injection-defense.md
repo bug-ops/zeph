@@ -67,6 +67,7 @@ impl ContentSanitizer {
 }
 
 pub struct SanitizedContent {
+    pub source: ContentSource,           // Source of the content (web, tool, MCP, etc.)
     pub body: String,                    // Spotlighted, truncated content
     pub injection_flags: Vec<InjectionFlag>,  // Detected pattern names
     pub was_truncated: bool,             // True if exceeded max size
@@ -97,22 +98,23 @@ impl ContentSanitizer {
 
 ## Turn-Level Causal Analysis
 
-`TurnCausalAnalyzer` (`crates/zeph-sanitizer/src/causal_ipi.rs`) detects injection-induced tool-call pivots within a turn. If a tool result in turn N directly triggers an anomalous tool call in N+1, it is flagged:
+`TurnCausalAnalyzer` (`crates/zeph-sanitizer/src/causal_ipi.rs`) detects anomalous patterns in tool-call sequences within a turn:
 
 ```rust
 pub struct TurnCausalAnalyzer { /* ... */ }
 
 impl TurnCausalAnalyzer {
-    /// Check whether this turn's tool calls show unusual patterns given prior results.
-    pub async fn analyze_causal_chain(
-        &self,
-        prior_result: &ToolResult,
-        current_call: &ToolCall,
-    ) -> Result<CausalAnomaly> { /* ... */ }
+    /// Analyze whether a pair of (prior_context, current_context) shows causal anomalies.
+    /// 
+    /// Synchronous local computation (no LLM call). Returns a value with .is_flagged / .deviation_score fields.
+    pub fn analyze(&self, pre: &str, post: &str) -> CausalAnalysiResult {
+        // Local embedding-based comparison of prior context vs current context
+        // Returns anomaly score if deviation is high
+    }
 }
 ```
 
-This check runs **within the turn only** — state is cleared at turn boundaries per the parent spec's NEVER rule.
+This check runs **within the turn only** — state is cleared at turn boundaries per the parent spec's NEVER rule. A separate async LLM-backed method exists for probe generation but isn't what's described here.
 
 ## PII Detection & Redaction
 
@@ -134,7 +136,11 @@ pub struct PiiFilter {
 }
 
 impl PiiFilter {
-    pub fn scrub(&self, text: &str) -> String {
+    /// Regex-based PII scrubbing (email, phone, SSN, credit card).
+    /// 
+    /// Returns a `Cow<'a, str>` — if no patterns matched, returns a borrow of the original;
+    /// if patterns matched, returns an owned String with scrubbed content.
+    pub fn scrub<'a>(&self, text: &'a str) -> Cow<'a, str> {
         // Regex-based PII scrubbing (email, phone, SSN, credit card)
         // Runs unconditionally; always precedes ML classification
     }
@@ -160,18 +166,19 @@ filter_names = false               # Scrub personal names via heuristic (opt-in,
 ```rust
 pub enum SecretCategory {
     ApiKey,
-    AuthToken,
-    OAuthToken,
-    DatabaseUrl,
-    // ...
+    Token,
+    Password,
+    Certificate,
+    Webhook,
+    Generic,
 }
 
 pub struct SecretMaskRegistry { /* ... */ }
 
 impl SecretMaskRegistry {
     /// Mask all vault secret references in text before LLM inference.
-    pub fn mask_secrets(&self, text: &str) -> String {
-        // Replaces secret values with [MASKED_CATEGORY] placeholders
+    pub fn mask(&self, text: &str) -> String {
+        // Replaces secret values with [MASKED_<category>] placeholders
         // Preserves schema/structure for debugging
     }
 }
