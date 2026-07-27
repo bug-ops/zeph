@@ -75,58 +75,54 @@ pub struct PolicyContext {
 ```
 
 **Rule matching** (all conditions are AND'd):
-- `tools`: glob pattern over tool name
-- `paths`: glob patterns over extracted path parameters (e.g., `file` argument)
-- `env_required`: environment variables that must be present
-- `trust_threshold`: minimum trust level required (`Trusted` > `Neutral` > `Untrusted`)
-- `args_regex`: regex over individual string parameter values
+- `effect`: `"allow"` or `"deny"`
+- `tool`: glob pattern matching tool name (e.g., `"read_*"`, `"rm"`)
+- `paths`: glob patterns matched against path-like parameters; rule fires if ANY matches
+- `env`: environment variable names that must ALL be present for rule to apply
+- `trust_level`: minimum required trust level (`Trusted` > `Neutral` > `Untrusted`)
+- `args_match`: regex matched against individual string parameter values
+- `capabilities`: named capabilities associated with this rule (for auditing/metadata)
 
 **Semantics**: deny rules are evaluated first; matching deny → `Deny`. If no deny matches, evaluate allow rules; matching allow → `Allow`. If no rule matches, use `default_effect` (typically `Deny`).
 
-Config:
+**Config example**:
 ```toml
 [[tools.policy]]
 effect = "deny"
-tools = "rm *"                   # Glob pattern
-reason = "Data destruction blocked"
+tool = "rm"                      # Glob pattern
+# Blocks all rm invocations (handled specially by shell blocklist anyway)
 
 [[tools.policy]]
 effect = "allow"
-tools = "read_file"
+tool = "read_file"
 paths = ["/home/*/documents/*"]  # Glob patterns on paths
-trust_threshold = "trusted"
+trust_level = "trusted"          # Only for trusted skill callers
 ```
 
 ## Shell Sandbox Blocklist
 
-`ShellExecutor` enforces an unconditional blocklist of dangerous patterns before spawning shell commands:
+`ShellExecutor` enforces an unconditional blocklist before spawning shell commands. The blocklist runs **before** PermissionPolicy evaluation:
 
-```rust
-pub struct ShellExecutor { /* ... */ }
-
-impl ShellExecutor {
-    /// Execute a shell command with blocklist checks.
-    ///
-    /// Blocklist validation runs unconditionally, before PermissionPolicy checks.
-    pub async fn execute(&self, cmd: &str, ...) -> Result<String> {
-        // 1. Check command against blocklist
-        self.find_blocked_command(cmd)?;  // Panics if blocked pattern found
-        
-        // 2. Then evaluate PermissionPolicy (if configured)
-        // 3. Scrub credential env vars from subprocess environment
-        // 4. Spawn process
-    }
-}
+**Hardcoded blocklist** (`crates/zeph-tools/src/shell/mod.rs`):
+```
+sudo, mkfs, dd if=, curl, wget, nc, ncat, netcat, shutdown, reboot, halt
 ```
 
-**Blocked patterns** (`crates/zeph-tools/src/filter/security.rs`):
-- Process substitution: `$(...)`, `` `...` ``
-- Here-strings: `<<<`
-- Destructive: `rm -rf`, `dd if=`, `mkfs`
-- Fork bombs: `:(){ :|: }`
-- Privilege escalation: `sudo`, `/etc/sudoers`, `su -`
+Any invocation containing one of these patterns (case-sensitive, as a substring or token) is blocked unconditionally.
 
-Bypass attempts via arguments are also caught — passing a blocked pattern as an argument value is detected and blocked.
+**Special handling for `rm`**:
+- `rm -rf` is **allowed** only when all three conditions are met:
+  - Operating on relative paths (e.g., `rm -rf ./tempdir`)
+  - NOT on `.git/worktrees`, root, or `$HOME`
+  - NOT on absolute paths
+- Example: `rm -rf /` is blocked; `rm -rf ./temp` is allowed (subject to policy checks)
+
+**Limitations** (documented in code):
+- Bypass via indirect invocation: `bash -c "rm ..."` — the `-c` argument is not scanned for blocked patterns
+- Bypass via variable indirection: `cmd=rm; $cmd file` — the shell variable is not expanded for scanning
+- The blocklist is a **first-pass defense**, not comprehensive; it mitigates common attacks but does not prevent all privilege escalation attempts
+
+Blocklist validation is unconditional; all other shell commands then pass through `PolicyEnforcer` for fine-grained access control.
 
 ## SSRF Protection
 
@@ -135,35 +131,40 @@ Bypass attempts via arguments are also caught — passing a blocked pattern as a
 ```rust
 /// Validate a URL for SSRF attacks.
 ///
-/// Blocks: localhost, link-local (169.254.x), private ranges (10.x, 172.16-31.x, 192.168.x),
-/// IPv6 loopback/private (::1, fc00::/7, fe80::/10).
-pub fn validate_url_ssrf(url: &str) -> Result<(), SsrfError>;
+/// Blocks all private IP ranges, localhost, link-local, and non-HTTPS schemes:
+/// - IPv4: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8, 0.0.0.0, 255.255.255.255
+/// - IPv6: ::1, fc00::/7, fe80::/10
+/// - Schemes: only `https://` allowed; `http://`, `file://`, `ftp://`, `data://`, `javascript://` blocked
+pub fn validate_url(raw: &str) -> Result<Url, ToolError>;
 ```
 
-**Redirect chains**: each redirect target in the chain is also validated — a redirect to a private IP is caught and fails.
+**Redirect handling**: each redirect target is validated independently — a redirect chain where any hop points to a private IP fails at that hop.
 
 **Applied to**:
-- `WebScrapeExecutor` — all HTTP fetches
-- `zeph-gateway` HTTP webhook receiver — incoming URLs validated
-- `zeph-a2a` client — remote agent URLs validated
-- MCP OAuth — OAuth metadata endpoint URLs validated via `validate_oauth_metadata_urls()`
+- `WebScrapeExecutor` (`scrape` tool) — validates URLs before fetching; validates each redirect target
+- Redirect chains: all hops must pass validation; a 302 to `http://localhost/` is caught and fails
 
-Allowlist capability exists (via config `ssrf_allowlist`), but defaults to deny-all private IPs; allowlist is opt-in and explicit.
+**Allowlist**: no allowlist exists for SSRF validation; the deny-all private-IP policy is not configurable.
 
 ## Credential Environment Variable Scrubbing
 
-`ShellExecutor` and MCP stdio server spawning scrub credential env vars from the subprocess environment:
+`ShellExecutor` filters environment variables via a configurable `env_blocklist` before spawning subprocess commands:
 
 ```rust
-impl ShellExecutor {
-    async fn scrub_environment(&self, env: &mut HashMap<String, String>) {
-        // Blocklist: AWS_*, GITHUB_*, ZEPH_*, OPENAI_API_KEY, etc.
-        // Remove from subprocess environment to prevent getenv() leakage
-    }
+pub struct ShellExecutor {
+    env_blocklist: Vec<String>,  // Env var names to strip from subprocess (prefix match)
 }
 ```
 
-Blocklist is unconditional and cannot be disabled per-command. MCP stdio servers inherit the same scrubbed environment.
+The blocklist is applied inline during command construction:
+1. User provides extra env vars (e.g., API keys for a script)
+2. ShellExecutor constructs subprocess env by filtering the parent's env + extra vars
+3. Any env var matching a prefix in `env_blocklist` is stripped
+
+**Default blocklist** (from config `[tools.shell].env_blocklist`):
+- Typically includes: `ZEPH_*`, `AWS_*`, `GITHUB_*`, `OPENAI_*`, `ANTHROPIC_*`, etc.
+
+Blocklist filtering is unconditional and applied at subprocess spawn time, not at config time. MCP stdio servers inherit the same env filtering policy.
 
 ## Integration Points
 
