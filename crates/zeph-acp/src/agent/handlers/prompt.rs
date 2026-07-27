@@ -11,6 +11,14 @@ use crate::agent::ZephAcpAgentState;
 
 /// Handle an ACP `prompt` request.
 ///
+/// `do_prompt` runs a whole agent turn, which for permission-gated tool calls awaits the IDE's
+/// reply to a `session/request_permission` request routed back through this same connection's
+/// dispatch loop. Per the SDK's ordering contract (`agent_client_protocol::concepts::ordering`),
+/// `on_receive_request` callbacks hold that loop until they return — awaiting `do_prompt` inline
+/// here would deadlock the turn against its own permission response. `cx.spawn` escapes the loop
+/// so it stays free to route the permission reply (and any other inbound traffic) while the turn
+/// runs; the response is sent from inside the spawned task once the turn completes (#6656).
+///
 /// When the `unstable-cancel-request` feature is enabled, this bridges the real ACP
 /// `$/cancel_request` protocol notification (scoped to this specific JSON-RPC request via
 /// [`acp::Responder::cancellation`]) onto the session's existing `cancel_signal: Arc<Notify>` —
@@ -19,19 +27,36 @@ use crate::agent::ZephAcpAgentState;
 pub(crate) async fn handle_prompt(
     req: acp::schema::v1::PromptRequest,
     responder: acp::Responder<acp::schema::v1::PromptResponse>,
-    #[cfg_attr(not(feature = "unstable-cancel-request"), allow(unused_variables))]
     cx: acp::ConnectionTo<acp::Client>,
     state: Arc<ZephAcpAgentState>,
 ) -> acp::Result<()> {
     #[cfg(feature = "unstable-cancel-request")]
-    let cancel_request_bridge = spawn_cancel_request_bridge(&req, &responder, &cx, &state);
+    let bridge_cx = cx.clone();
 
-    let resp = state.do_prompt(req).await?;
+    cx.spawn(async move {
+        #[cfg(feature = "unstable-cancel-request")]
+        let cancel_request_bridge =
+            spawn_cancel_request_bridge(&req, &responder, &bridge_cx, &state);
 
-    #[cfg(feature = "unstable-cancel-request")]
-    drop(cancel_request_bridge);
+        let result = state.do_prompt(req).await;
 
-    responder.respond(resp)
+        #[cfg(feature = "unstable-cancel-request")]
+        drop(cancel_request_bridge);
+
+        // Infallible by construction: a `respond`/`respond_with_error` failure means the
+        // connection is already going away (e.g. the client disconnected mid-turn), not a
+        // problem with this prompt — log and swallow instead of returning `Err`, since per
+        // `ConnectionTo::spawn`'s contract, an `Err` returned from this future would tear down
+        // the *entire* connection over what is otherwise a benign, unrelated disconnect.
+        let send_result = match result {
+            Ok(resp) => responder.respond(resp),
+            Err(e) => responder.respond_with_error(e),
+        };
+        if let Err(e) = send_result {
+            tracing::debug!(error = %e, "failed to send session/prompt response");
+        }
+        Ok(())
+    })
 }
 
 /// Spawn a watcher that notifies `entry.cancel_signal` if the IDE sends `$/cancel_request` for

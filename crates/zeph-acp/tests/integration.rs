@@ -67,6 +67,37 @@ fn text_chunks_spawner(chunks: Vec<&'static str>) -> AgentSpawner {
     })
 }
 
+/// Spawner that requests tool-call permission via `AcpContext::permission_gate` before
+/// completing the turn — reproduces the `session/request_permission` round-trip that
+/// deadlocked before #6656 was fixed: the server's request-dispatch loop was blocked
+/// awaiting `do_prompt` inline, so it could never route the client's permission reply
+/// back to the pending `check_permission` future.
+///
+/// The gate's decision is forwarded on `decision_tx` so tests can assert on it directly
+/// without depending on `PromptResponse` carrying assembled chunk text.
+fn permission_gated_spawner(decision_tx: tokio::sync::mpsc::UnboundedSender<bool>) -> AgentSpawner {
+    Arc::new(move |mut channel, ctx, session| {
+        let decision_tx = decision_tx.clone();
+        Box::pin(async move {
+            let _ = channel.recv().await;
+            let gate = ctx
+                .expect("AcpContext must be present")
+                .permission_gate
+                .expect("permission gate must be present");
+            let tool_call = acp::schema::v1::ToolCallUpdate::new(
+                "tc-perm-1".to_owned(),
+                acp::schema::v1::ToolCallUpdateFields::new().title("shell_execute".to_owned()),
+            );
+            let allowed = gate
+                .check_permission(session.session_id, tool_call)
+                .await
+                .unwrap_or(false);
+            let _ = decision_tx.send(allowed);
+            let _ = channel.flush_chunks().await;
+        })
+    })
+}
+
 /// Minimal server config for tests.
 fn test_config(name: &str) -> AcpServerConfig {
     AcpServerConfig {
@@ -2330,6 +2361,190 @@ async fn fork_session_cross_owner_fails() {
                     );
                 }
             }
+        })
+        .await;
+}
+
+/// #6656 regression: a permission-gated tool call must not deadlock the `session/prompt`
+/// round-trip. Before the fix, `handle_prompt` awaited `do_prompt` inline inside the ACP SDK's
+/// serial request-dispatch loop; the same loop demultiplexes the client's reply to the
+/// `session/request_permission` request sent by `AcpPermissionGate::check_permission`, so the
+/// loop deadlocked on itself. Wrapped in a timeout so a regression fails this test fast instead
+/// of hanging the suite.
+#[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
+async fn permission_gated_prompt_round_trip_does_not_deadlock() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            let (decision_tx, mut decision_rx) = tokio::sync::mpsc::unbounded_channel::<bool>();
+            let server_fut = serve_connection(
+                permission_gated_spawner(decision_tx),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
+            let client_fut = acp::Client
+                .builder()
+                .on_receive_request(
+                    async |_req: acp::schema::v1::RequestPermissionRequest,
+                           responder: acp::Responder<
+                        acp::schema::v1::RequestPermissionResponse,
+                    >,
+                           _cx| {
+                        responder.respond(acp::schema::v1::RequestPermissionResponse::new(
+                            acp::schema::v1::RequestPermissionOutcome::Selected(
+                                acp::schema::v1::SelectedPermissionOutcome::new("allow_once"),
+                            ),
+                        ))
+                    },
+                    acp::on_receive_request!(),
+                )
+                .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                    cx.send_request(acp::schema::v1::InitializeRequest::new(
+                        acp::schema::ProtocolVersion::LATEST,
+                    ))
+                    .block_task()
+                    .await?;
+
+                    let session_id = cx
+                        .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                        .block_task()
+                        .await?
+                        .session_id;
+
+                    let content = vec![acp::schema::v1::ContentBlock::Text(
+                        acp::schema::v1::TextContent::new("run a gated tool"),
+                    )];
+                    let resp = cx
+                        .send_request(acp::schema::v1::PromptRequest::new(session_id, content))
+                        .block_task()
+                        .await?;
+
+                    assert_eq!(
+                        resp.stop_reason,
+                        acp::schema::v1::StopReason::EndTurn,
+                        "expected EndTurn, got {:?}",
+                        resp.stop_reason,
+                    );
+                    Ok(())
+                });
+
+            let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                tokio::select! {
+                    res = server_fut => panic!("server exited before client: {res:?}"),
+                    result = client_fut => result,
+                }
+            })
+            .await;
+
+            let result = outcome.expect(
+                "permission-gated prompt round-trip timed out — likely a #6656 deadlock regression",
+            );
+            assert!(result.is_ok(), "prompt round-trip failed: {result:?}");
+
+            let decision = decision_rx
+                .recv()
+                .await
+                .expect("spawner must report a permission decision");
+            assert!(
+                decision,
+                "IDE selected allow_once, expected the gate to allow"
+            );
+        })
+        .await;
+}
+
+/// #6656 regression, denial path: same round-trip as
+/// `permission_gated_prompt_round_trip_does_not_deadlock`, but the IDE rejects the tool call.
+/// Confirms fail-closed behavior still completes correctly through the new `cx.spawn`-based
+/// dispatch path instead of also deadlocking.
+#[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
+async fn permission_gated_prompt_denial_does_not_deadlock() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            let (decision_tx, mut decision_rx) = tokio::sync::mpsc::unbounded_channel::<bool>();
+            let server_fut = serve_connection(
+                permission_gated_spawner(decision_tx),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
+            let client_fut = acp::Client
+                .builder()
+                .on_receive_request(
+                    async |_req: acp::schema::v1::RequestPermissionRequest,
+                           responder: acp::Responder<
+                        acp::schema::v1::RequestPermissionResponse,
+                    >,
+                           _cx| {
+                        responder.respond(acp::schema::v1::RequestPermissionResponse::new(
+                            acp::schema::v1::RequestPermissionOutcome::Selected(
+                                acp::schema::v1::SelectedPermissionOutcome::new("reject_once"),
+                            ),
+                        ))
+                    },
+                    acp::on_receive_request!(),
+                )
+                .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                    cx.send_request(acp::schema::v1::InitializeRequest::new(
+                        acp::schema::ProtocolVersion::LATEST,
+                    ))
+                    .block_task()
+                    .await?;
+
+                    let session_id = cx
+                        .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                        .block_task()
+                        .await?
+                        .session_id;
+
+                    let content = vec![acp::schema::v1::ContentBlock::Text(
+                        acp::schema::v1::TextContent::new("run a gated tool"),
+                    )];
+                    let resp = cx
+                        .send_request(acp::schema::v1::PromptRequest::new(session_id, content))
+                        .block_task()
+                        .await?;
+
+                    assert_eq!(
+                        resp.stop_reason,
+                        acp::schema::v1::StopReason::EndTurn,
+                        "expected EndTurn, got {:?}",
+                        resp.stop_reason,
+                    );
+                    Ok(())
+                });
+
+            let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                tokio::select! {
+                    res = server_fut => panic!("server exited before client: {res:?}"),
+                    result = client_fut => result,
+                }
+            })
+            .await;
+
+            let result = outcome.expect(
+                "permission-gated prompt round-trip timed out — likely a #6656 deadlock regression",
+            );
+            assert!(result.is_ok(), "prompt round-trip failed: {result:?}");
+
+            let decision = decision_rx
+                .recv()
+                .await
+                .expect("spawner must report a permission decision");
+            assert!(
+                !decision,
+                "IDE selected reject_once, expected the gate to deny"
+            );
         })
         .await;
 }
