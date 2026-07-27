@@ -113,15 +113,43 @@ impl McpManager {
 - **Responses**: Async correlation by request ID; timeout triggers error
 - **Errors**: JSON-RPC errors forwarded as `McpError`
 
-Config:
+**Configuration example** (`[[mcp.servers]]`):
+
+For a Stdio transport (subprocess):
 ```toml
 [[mcp.servers]]
 id = "filesystem"
-transport = { type = "stdio", command = "npx", args = ["-y", "@modelcontextprotocol/server-filesystem"] }
-timeout_secs = 30
-trust_level = "untrusted"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem"]
+# env = { CUSTOM_VAR = "value" }  # Optional: env vars for the subprocess
+timeout = 30                       # Timeout in seconds for requests
+trust_level = "untrusted"          # "trusted", "untrusted", or "sandboxed"
 tool_allowlist = ["read_file", "list_directory"]
 ```
+
+For HTTP transport (remote service):
+```toml
+[[mcp.servers]]
+id = "remote-api"
+url = "http://localhost:8000/mcp"
+headers = { Authorization = "Bearer ${VAULT_API_TOKEN}" }  # Supports vault refs
+timeout = 60
+trust_level = "untrusted"
+```
+
+**Field reference:**
+- `id`: Unique server identifier
+- `command` (Stdio): executable to spawn
+- `args` (Stdio): command-line arguments
+- `url` (HTTP): remote server URL
+- `env` (Stdio): environment variables (supports `${VAULT_KEY}` references)
+- `headers` (HTTP): static HTTP headers
+- `timeout`: request timeout in seconds
+- `trust_level`: `"trusted"` | `"untrusted"` | `"sandboxed"`
+- `tool_allowlist`: optional array of tool names to expose
+- `expected_tools`: optional array for attestation/schema-drift detection
+- `media_passthrough`: enable image attachment (default: false)
+- `env_isolation`: isolate subprocess environment (default: false)
 
 ## Failure Detection & Reconnection
 

@@ -172,11 +172,24 @@ cargo run -- vault check
 
 ```toml
 [vault]
-backend = "age"                    # or "env"
-vault_path = "~/.config/zeph/secrets.age"
-identity_path = "~/.config/zeph/vault-key.txt"
-fallback_env = false               # don't read from env vars as fallback
+backend = "age"  # "age" (default, recommended), "env" (dev/testing only), or "keyring" (OS keyring)
 ```
+
+**Vault file path resolution** (for `Age` backend):
+
+Vault files are stored with hardcoded names in a platform-specific config directory, resolved in order:
+1. `$XDG_CONFIG_HOME/zeph` (Linux/BSD)
+2. `$APPDATA\zeph` (Windows)
+3. `$HOME/.config/zeph` (macOS and fallback)
+
+Files within the resolved directory:
+- `vault-key.txt` — age private key (created with `0o600` permissions on Unix)
+- `secrets.age` — age-encrypted JSON of secrets
+
+**Backend variants:**
+- `age` — Recommended for production. Encrypted age vault with private key.
+- `env` — Development/testing only. Reads `ZEPH_SECRET_*` environment variables (explicitly set by the user or via `.env` in testing).
+- `keyring` — OS-native keyring (macOS Keychain, Windows Credential Manager, Linux Secret Service).
 
 ## Integration Points
 
