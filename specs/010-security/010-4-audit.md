@@ -84,36 +84,13 @@ destination = "stdout"             # Log destination: "stdout", "stderr", or fil
 # tool_risk_summary = false        # Log per-tool risk summary at startup (default: false)
 ```
 
-## Authorization Audit
+## Authorization & Shell Execution Details
 
-`PolicyEnforcer` violations logged immediately:
+Authorization denials and shell execution details are captured within the unified `AuditEntry` structure:
+- **Authorization**: `AuditEntry.policy_match` contains the matched policy rule; `AuditEntry.adversarial_policy_decision` records the decision (`allow`/`deny:<reason>`/`error:<message>`)
+- **Shell execution**: `AuditEntry.command` is the sanitized shell command; `AuditEntry.exit_code` is the process exit code; `AuditEntry.duration_ms` is wall-clock execution time
 
-```rust
-pub struct AuthViolationEntry {
-    pub skill: String,              // Skill or agent ID
-    pub tool: String,               // Tool name
-    pub rule_matched: String,       // Policy rule that denied
-    pub reason: String,             // Human-readable reason
-    pub timestamp: i64,
-}
-```
-
-## Shell Execution Audit
-
-`ShellExecutor` logs all subprocess invocations:
-
-```rust
-pub struct ShellAuditEntry {
-    pub command: String,            // Sanitized command
-    pub exit_code: i32,             // Process exit code
-    pub stderr_preview: String,     // Stderr (first N chars)
-    pub duration_ms: u64,
-    pub caller_id: String,
-    pub timestamp: i64,
-}
-```
-
-The command is sanitized: `sudo`, passwords, and secret env vars redacted.
+All command text is sanitized before logging: `sudo`, passwords, and secret env vars are redacted from the `command` field.
 
 ## IPI Detection Audit
 
@@ -142,25 +119,9 @@ pub struct AuditSignal {
 > [!warning] Architectural gap
 > `TrajectoryRiskAccumulator` maintains a **per-session, cross-turn risk score with exponential decay** and makes **hard-blocking tool-execution decisions** when risk exceeds a threshold. This appears to violate or at least is not addressed by the parent spec's NEVER rule, which forbids cross-turn accumulation "for injection-confirmation decisions." The spec carves out an exception for `TrajectorySentinel` (advisory-only, reversible decay), but does not discuss `TrajectoryRiskAccumulator` at all. Whether this system should be governed by the NEVER rule or falls outside its scope (because its decisions are general safety-gating, not injection-confirmation) is an open architectural question that needs resolution.
 
-## Turn Boundary Isolation
+## Turn Boundary Isolation & Signal Accumulation
 
-Two distinct signal-processing systems operate at different scopes:
-
-**`CrossToolCorrelator`** — detects injection patterns **within a single turn**:
-
-```rust
-pub struct CrossToolCorrelator {
-    // Stateful: tracks per-tool injection detections within current turn
-}
-
-impl CrossToolCorrelator {
-    pub fn ingest_detection(&mut self, signal: &AuditSignal) -> Option<InjectionConfirmed>;
-    
-    pub fn clear_on_turn_boundary(&mut self);  // Called at every turn start
-}
-```
-
-**Key constraint** (from parent spec): state is cleared at turn boundaries. Multiple injection signals within turn N can trigger `InjectionConfirmed`, but signals never carry into turn N+1. This prevents a single noisy turn from poisoning all subsequent turns.
+One signal-processing system operates at the session scope:
 
 **`TrajectoryRiskAccumulator`** — accumulates signals **per-session, across turn boundaries** with exponential decay:
 
