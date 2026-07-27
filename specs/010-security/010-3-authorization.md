@@ -34,7 +34,7 @@ Zeph's authorization layer enforces what operations the agent is allowed to perf
 **Always:**
 - All tool execution checked against `PolicyEnforcer` deny/allow rules before execution
 - Shell commands checked against the blocklist unconditionally — **before** `PermissionPolicy` evaluation
-- HTTP requests validated via `validate_url_ssrf()` — private IP ranges blocked by default
+- HTTP requests validated via `validate_url()` — private IP ranges blocked by default
 - Authorization failures logged to audit trail with full context
 
 **Never:**
@@ -126,7 +126,7 @@ Blocklist validation is unconditional; all other shell commands then pass throug
 
 ## SSRF Protection
 
-`validate_url_ssrf()` (`crates/zeph-gateway/src/transport/ssrf.rs`, etc.) blocks requests to private IP ranges and loopback addresses:
+`validate_url()` (`crates/zeph-tools/src/net.rs`) blocks requests to private IP ranges and loopback addresses:
 
 ```rust
 /// Validate a URL for SSRF attacks.
@@ -172,7 +172,7 @@ Blocklist filtering is unconditional and applied at subprocess spawn time, not a
 - [[006-tools/spec]] — tool registry + authorization binding
 - [[010-4-audit]] — authorization violations logged to audit trail
 - Web executor — SSRF validation on all HTTP requests
-- Gateway — OAuth flows validated via `validate_oauth_metadata_urls()`
+- MCP OAuth — OAuth flows validated via `validate_oauth_metadata_urls()`
 
 ## See Also
 

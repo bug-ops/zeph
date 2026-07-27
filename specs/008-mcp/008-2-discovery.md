@@ -80,7 +80,7 @@ Collision handling:
 
 ```rust
 pub struct PruningCache {
-    // Fields are private; external interface is only new(), reset(), get(), insert()
+    // Fields are private; external interface is only new() and reset()
 }
 
 pub struct PruningParams {
@@ -95,13 +95,13 @@ pub struct PruningParams {
 /// Prune tools using LLM-based ranking (single-slot cache).
 /// 
 /// Call signature varies by discovery strategy; for LLM pruning:
-pub async fn prune_tools_cached(
+pub async fn prune_tools_cached<P: LlmProvider>(
     cache: &mut PruningCache,
     all_tools: &[McpTool],
     task_context: &str,
     params: &PruningParams,
-    provider: &dyn LlmProvider,
-) -> Result<Vec<McpTool>> {
+    provider: &P,
+) -> Result<Vec<McpTool>, PruningError> {
     // Single-slot cache: check (message_hash, tool_list_hash) key
     // On miss: call LLM "which of these tools are relevant to: {task_context}?"
     // Reduces token overhead: ~100 tools down to ~10 relevant ones
@@ -119,12 +119,15 @@ Cache semantics:
 [mcp.pruning]
 enabled = false                # Enable per-message tool pruning (default: false)
 max_tools = 15                 # Max tools returned after pruning
-min_tools_to_prune = 20        # Skip pruning if fewer than this many available
+min_tools_to_prune = 10        # Skip pruning if fewer than this many available
+pruning_provider = ""          # LLM provider for pruning (empty = use default)
 # always_include = ["critical_tool"]  # Tools always present
 
 [mcp.tool_discovery]
 strategy = "none"              # "none" (default, no pruning), "llm" (LLM ranking), "embedding" (semantic)
-pruning_provider = ""          # LLM provider for pruning (empty = use default)
+top_k = 10                     # Number of top tools to include per query (embedding strategy only)
+min_similarity = 0.2           # Minimum cosine similarity threshold (embedding strategy only)
+embedding_provider = ""        # LLM provider for embeddings (empty = use default)
 ```
 
 ## Semantic Tool Indexing (Optional)
@@ -147,10 +150,10 @@ impl SemanticToolIndex {
     /// Build an embedding-based tool index.
     pub async fn build<F>(
         tools: &[McpTool],
-        embed_fn: F,
+        embed_fn: &F,
     ) -> Result<Self, SemanticIndexError>
     where
-        F: Fn(&str) -> Pin<Box<dyn Future<Output = Result<Embedding>>>> + Send,
+        F: Fn(&str) -> zeph_llm::provider::EmbedFuture + Send + Sync,
     {
         // Compute and cache embeddings for all tool descriptions
     }
@@ -158,7 +161,7 @@ impl SemanticToolIndex {
     /// Select relevant tools by semantic similarity to a query embedding.
     pub fn select(
         &self,
-        query_embedding: &Embedding,
+        query_embedding: &[f32],
         top_k: usize,
         min_similarity: f32,
         always_include: &[String],  // Tool names always included

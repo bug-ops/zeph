@@ -180,50 +180,63 @@ pub fn check_data_flow(
 ) -> Result<(), DataFlowViolation> {
     let sensitivity = tool.security_meta.data_sensitivity;
     
-    // Examples of violations:
+    // Examples of violations (errors):
     // - High-sensitivity tool on Sandboxed server → block
     // - High-sensitivity tool on Untrusted server → block
-    // - Medium-sensitivity tool on Sandboxed server → block
     
-    // Allowed:
+    // Allowed (no error):
     // - Any tool on Trusted server
+    // - Medium-sensitivity tool on Untrusted/Sandboxed (Sandboxed logs WARN)
     // - Low-sensitivity tool on Untrusted/Sandboxed
 }
 ```
 
-**Policy enforcement**: high-sensitivity tools (e.g., credential management, user deletion) require `Trusted` servers; medium-sensitivity requires `Trusted` or `Untrusted`; low/none are available everywhere.
+**Policy enforcement**: high-sensitivity tools (e.g., credential management, user deletion) require `Trusted` servers only; medium-sensitivity requires `Trusted` or `Untrusted` (Sandboxed is allowed with warning); low/none are available everywhere.
 
 ## Output Validation: Injection Scanning
 
-All tool responses pass through `ContentSanitizer` (see [[010-2-injection-defense]]) for injection detection:
+Tool output sanitization is a cross-cutting concern at the agent loop layer (`crates/zeph-core/src/agent/tool_execution/sanitize.rs`), not per-executor. All tool outputs — MCP, web scrape, memory retrieval, and native — flow through a unified sanitization pipeline:
 
 ```rust
-impl McpToolExecutor {
-    async fn execute_tool(&self, tool: &McpTool, args: Value) -> Result<Value> {
-        // ... execute tool ...
-        let raw_response = /* result from server */;
-        
-        // Sanitize output
-        let source = ContentSource::new(ContentSourceKind::McpToolResult)
-            .with_trust_level(ContentTrustLevel::LocalUntrusted);
-        
-        let sanitized = self.sanitizer.sanitize(
-            &raw_response.to_string(),
-            source,
-        );
-        
-        // Check injection flags
-        if !sanitized.injection_flags.is_empty() {
-            tracing::warn!(
-                "Injection patterns in tool output: {:?}",
-                sanitized.injection_flags
-            );
-        }
-        
-        Ok(sanitized.body)
+/// Sanitize tool output body before inserting into LLM message history.
+pub(super) async fn sanitize_tool_output(
+    &mut self,
+    body: &str,
+    tool_name: &str,
+) -> (
+    String,                                    // Sanitized body
+    bool,                                      // Injection detected flag
+    ContentSourceKind,                         // Source classification
+    zeph_sanitizer::ContentTrustLevel,        // Trust level
+) {
+    // Classify output source: MCP response, web scrape, memory retrieval, or generic tool result
+    let source = build_tool_output_source(tool_name);
+    
+    // MCP responses are identified by tool_name containing ':' (server:tool format)
+    // and tagged as ContentSourceKind::McpResponse
+    
+    // Injection detection via regex spotlighting and optional ML classifiers
+    let sanitized = self.sanitizer.sanitize(&body, source);
+    
+    (sanitized.body, !sanitized.injection_flags.is_empty(), source.kind, source.trust_level)
+}
+
+/// Route tool outputs to their correct source classification.
+fn build_tool_output_source(tool_name: &str) -> ContentSource {
+    if tool_name.contains(':') || tool_name == "mcp" {
+        // MCP responses identified by server:tool naming convention
+        ContentSource::new(ContentSourceKind::McpResponse).with_identifier(tool_name)
+    } else if tool_name.starts_with("web") {
+        ContentSource::new(ContentSourceKind::WebScrape).with_identifier(tool_name)
+    } else if tool_name == "memory_search" {
+        ContentSource::new(ContentSourceKind::MemoryRetrieval).with_identifier(tool_name)
+    } else {
+        ContentSource::new(ContentSourceKind::ToolResult).with_identifier(tool_name)
     }
 }
 ```
+
+**Flow**: `McpToolExecutor::execute_tool()` returns raw output → agent loop classifies via `build_tool_output_source()` → sanitization applies injection detection and trust wrapping via `sanitize_tool_output()` → clean body enters LLM context.
 
 ## Output Validation: Embedding Anomaly Detection
 

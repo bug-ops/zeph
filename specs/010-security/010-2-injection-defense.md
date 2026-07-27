@@ -104,11 +104,11 @@ impl ContentSanitizer {
 pub struct TurnCausalAnalyzer { /* ... */ }
 
 impl TurnCausalAnalyzer {
-    /// Analyze whether a pair of (prior_context, current_context) shows causal anomalies.
+    /// Analyze whether a pair of (prior_response, current_response) shows causal anomalies.
     /// 
     /// Synchronous local computation (no LLM call). Returns a value with .is_flagged / .deviation_score fields.
-    pub fn analyze(&self, pre: &str, post: &str) -> CausalAnalysiResult {
-        // Local embedding-based comparison of prior context vs current context
+    pub fn analyze(&self, pre_response: &str, post_response: &str) -> CausalAnalysis {
+        // Local embedding-based comparison of prior response vs current response
         // Returns anomaly score if deviation is high
     }
 }
