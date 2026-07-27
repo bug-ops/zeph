@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-tui`: moved the busy spinner and humanized activity verb from the bottom status
+  bar to the input separator row, next to the existing interrupt hint (issue #6649). The
+  variable-width verb (`thinking`, `compacting · context`, …) no longer shifts the status
+  bar's trailing segments (skills, tokens, api, cost, …) horizontally on every status
+  change, and the spinner is no longer duplicated between the two rows. The spinner,
+  interrupt hint, and a minimum-width slice for the verb all outrank the row's idle
+  elements (mode hint, token estimate, queue badges) for space, which are what gets
+  dropped first under width pressure.
 - `zeph-tui`: unified `Ctrl+C` semantics in the TUI (issue #6646). `Ctrl+C` now cancels the
   current agent turn immediately when the agent is busy (moved from `Esc`, which no longer
   cancels anything in Normal mode). When idle, a single `Ctrl+C` no longer quits outright —

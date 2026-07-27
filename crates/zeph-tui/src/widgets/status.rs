@@ -15,8 +15,6 @@ use crate::app::{App, InputMode};
 use crate::layout::truncate_to_width;
 use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
-use crate::widgets::spinner::breeze_frame;
-use crate::widgets::status_verbs::humanize;
 
 /// Priority level for a status bar segment.
 ///
@@ -26,7 +24,6 @@ use crate::widgets::status_verbs::humanize;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Priority {
     Critical = 1,
-    High = 2,
     Medium = 3,
     Low = 4,
 }
@@ -279,9 +276,7 @@ fn build_segment_lists(
 
     push_mode_chip(&mut list, mode, theme);
 
-    if app.is_agent_busy() {
-        push_busy_segment(&mut list, app, theme);
-    } else if app.quit_hint_active() {
+    if app.quit_hint_active() {
         push_quit_hint_segment(&mut list, theme);
     }
 
@@ -319,36 +314,6 @@ fn push_mode_chip(list: &mut SegmentList, mode: InputMode, theme: &Theme) {
             Style::default().fg(surface_bg).bg(chip_bg),
         )],
     );
-}
-
-fn push_busy_segment(list: &mut SegmentList, app: &App, theme: &Theme) {
-    let phrase = humanize(app.status_label().unwrap_or("thinking"));
-    let verb = if phrase.detail.is_empty() {
-        phrase.verb
-    } else {
-        format!("{} · {}", phrase.verb, phrase.detail)
-    };
-    if app.motion == zeph_config::Motion::Off {
-        list.push(
-            Priority::High,
-            vec![
-                Span::styled(" · ", theme.system_message),
-                Span::styled("·", theme.system_message),
-                Span::styled(format!(" {verb}"), theme.system_message),
-            ],
-        );
-    } else {
-        let idx = usize::try_from(app.throbber_state().index().rem_euclid(6)).unwrap_or(0);
-        let spinner_char = breeze_frame(idx as u64, app.is_ascii_only());
-        list.push(
-            Priority::High,
-            vec![
-                Span::styled(" · ", theme.system_message),
-                Span::styled(spinner_char, theme.highlight),
-                Span::styled(format!(" {verb}"), theme.system_message),
-            ],
-        );
-    }
 }
 
 fn push_quit_hint_segment(list: &mut SegmentList, theme: &Theme) {
@@ -710,7 +675,7 @@ mod tests {
     }
 
     #[test]
-    fn segment_list_drops_low_before_high() {
+    fn segment_list_drops_low_before_medium() {
         let theme = Theme::default();
         let mut list = SegmentList::new();
         // Critical: 10 chars
@@ -718,9 +683,9 @@ mod tests {
             Priority::Critical,
             vec![Span::styled("0123456789", theme.status_bar)],
         );
-        // High: 10 chars
+        // Medium: 10 chars
         list.push(
-            Priority::High,
+            Priority::Medium,
             vec![Span::styled("ABCDEFGHIJ", theme.status_bar)],
         );
         // Low: 10 chars — should be dropped first
@@ -728,11 +693,11 @@ mod tests {
             Priority::Low,
             vec![Span::styled("xxxxxxxxxx", theme.status_bar)],
         );
-        // max_width = 20: Critical + High fit (20 chars), Low is dropped
+        // max_width = 20: Critical + Medium fit (20 chars), Low is dropped
         let spans = list.layout(20);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("0123456789"), "Critical must survive");
-        assert!(text.contains("ABCDEFGHIJ"), "High must survive");
+        assert!(text.contains("ABCDEFGHIJ"), "Medium must survive");
         assert!(!text.contains("xxxxxxxxxx"), "Low must be dropped");
     }
 
@@ -1151,7 +1116,10 @@ mod tests {
     }
 
     #[test]
-    fn motion_off_shows_static_busy_not_braille() {
+    fn motion_off_status_bar_omits_busy_verb() {
+        // The busy verb (spinner + humanized activity text) moved to the input
+        // separator row (#6649) — the status bar must not render it under any motion
+        // setting, including `Off`.
         use tokio::sync::mpsc;
 
         use crate::app::App;
@@ -1177,8 +1145,8 @@ mod tests {
             "motion=Off must not show braille spinner; got: {output:?}"
         );
         assert!(
-            output.contains("thinking"),
-            "motion=Off must still show verb; got: {output:?}"
+            !output.contains("thinking"),
+            "status bar must no longer show the busy verb; got: {output:?}"
         );
     }
 
@@ -1216,7 +1184,10 @@ mod tests {
     }
 
     #[test]
-    fn busy_segment_humanizes_label_with_detail() {
+    fn status_bar_omits_busy_verb_regardless_of_label() {
+        // The busy verb (spinner + humanized activity text) moved to the input
+        // separator row (#6649) — the status bar must never render it, whether the
+        // raw label is recognized by `humanize()` or passes through verbatim.
         use tokio::sync::mpsc;
 
         use crate::app::App;
@@ -1234,17 +1205,13 @@ mod tests {
         });
 
         assert!(
-            output.contains("loading · skills"),
-            "raw label must be humanized to 'loading · skills'; got: {output:?}"
-        );
-        assert!(
-            !output.contains("Loading skills"),
-            "raw internal label must not leak into the rendered status bar; got: {output:?}"
+            !output.contains("loading") && !output.contains("Loading skills"),
+            "busy verb must not appear in the status bar; got: {output:?}"
         );
     }
 
     #[test]
-    fn busy_segment_unrecognized_label_passes_through() {
+    fn status_bar_omits_unrecognized_busy_label() {
         use tokio::sync::mpsc;
 
         use crate::app::App;
@@ -1262,13 +1229,79 @@ mod tests {
         });
 
         assert!(
-            output.contains("Some unknown operation"),
-            "humanize() fallback must pass through unrecognized labels verbatim; got: {output:?}"
+            !output.contains("Some unknown operation"),
+            "busy label must not leak into the status bar; got: {output:?}"
         );
     }
 
     #[test]
-    fn busy_segment_uses_breeze_spinner_not_braille() {
+    fn status_bar_segment_positions_stable_across_verb_length_changes() {
+        // Regression test for #6649: the busy verb's variable width used to shift every
+        // segment to its right. Now that the verb lives only in the input separator,
+        // a short label and a long label must render the trailing segments at the same
+        // column in the status bar.
+        use tokio::sync::mpsc;
+
+        use crate::app::App;
+        use crate::metrics::MetricsSnapshot;
+        use crate::test_utils::render_to_string;
+
+        let metrics = MetricsSnapshot {
+            active_skills: vec!["web".into()],
+            total_skills: 3,
+            ..MetricsSnapshot::default()
+        };
+
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        let mut app_short = App::new(user_tx, agent_rx);
+        app_short.sessions.current_mut().status_label = Some("thinking".to_owned());
+        assert!(
+            app_short.is_agent_busy(),
+            "test setup must actually exercise the busy path"
+        );
+        let output_short = render_to_string(120, 1, |frame, area| {
+            super::render(&app_short, &metrics, frame, area);
+        });
+
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        let mut app_long = App::new(user_tx, agent_rx);
+        app_long.sessions.current_mut().status_label =
+            Some("compacting context in the background".to_owned());
+        assert!(
+            app_long.is_agent_busy(),
+            "test setup must actually exercise the busy path"
+        );
+        let output_long = render_to_string(120, 1, |frame, area| {
+            super::render(&app_long, &metrics, frame, area);
+        });
+
+        let pos_short = output_short
+            .find("skills")
+            .expect("skills segment must be present");
+        let pos_long = output_long
+            .find("skills")
+            .expect("skills segment must be present");
+        assert_eq!(
+            pos_short, pos_long,
+            "skills segment must not shift when the busy label length changes; \
+             short={output_short:?} long={output_long:?}"
+        );
+        // Compare everything from the skills segment onward, not just its start column,
+        // so a shift in a later segment (tokens, api, cost, …) would also be caught.
+        assert_eq!(
+            &output_short[pos_short..],
+            &output_long[pos_long..],
+            "no segment from `skills` onward may differ when only the busy label \
+             length changes; short={output_short:?} long={output_long:?}"
+        );
+    }
+
+    #[test]
+    fn status_bar_omits_spinner_glyph_when_busy() {
+        // The spinner also moved to the input separator row (#6649) — the status bar
+        // must not render any spinner glyph, braille or breeze, while busy.
         use tokio::sync::mpsc;
 
         use crate::app::App;
@@ -1291,11 +1324,11 @@ mod tests {
             .any(|c| ('\u{2800}'..='\u{28FF}').contains(&c));
         assert!(
             !contains_braille,
-            "the old hardcoded braille spinner must be gone; got: {output:?}"
+            "the old hardcoded braille spinner must stay gone; got: {output:?}"
         );
         assert!(
-            BREEZE_FRAMES.iter().any(|f| output.contains(f)),
-            "expected a breeze_frame() glyph in the busy segment; got: {output:?}"
+            !BREEZE_FRAMES.iter().any(|f| output.contains(f)),
+            "breeze spinner must not appear in the status bar; got: {output:?}"
         );
     }
 
@@ -1355,7 +1388,7 @@ mod tests {
     }
 
     #[test]
-    fn busy_segment_ascii_fallback_uses_ascii_breeze_frames() {
+    fn status_bar_omits_spinner_glyph_ascii_fallback() {
         use tokio::sync::mpsc;
 
         use crate::app::App;
@@ -1377,12 +1410,12 @@ mod tests {
         });
 
         assert!(
-            BREEZE_ASCII.iter().any(|f| output.contains(f)),
-            "expected an ASCII breeze_frame() glyph when unicode is unavailable; got: {output:?}"
+            !BREEZE_ASCII.iter().any(|f| output.contains(f)),
+            "ASCII breeze glyph must not appear in the status bar; got: {output:?}"
         );
         assert!(
             !BREEZE_FRAMES.iter().any(|f| output.contains(f)),
-            "Unicode breeze glyphs must not appear in ASCII fallback mode; got: {output:?}"
+            "Unicode breeze glyphs must not appear in the status bar; got: {output:?}"
         );
     }
 }
