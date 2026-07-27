@@ -177,6 +177,9 @@ status: moc
 ### TUI Inline Mention Picker
 - [[084-tui-mention-picker/spec|TUI Inline Mention Picker]] — non-modal inline `@` popup for files/skills/agents replacing the modal file picker: word-start trigger (position 0 or after whitespace; mid-word `@` stays literal), typing never captured away from the input buffer, Space closes keeping the mention as prose, Tab/Enter accept + trailing space, Esc closes only the popup retaining Insert mode; category tabs All/Files/Skills/Agents switched with ←/→, nucleo fuzzy matching with match highlighting and N/M counter, per-category accept semantics (file: bare path, skill: plain name, agent: `@sigil` routed by existing dispatch), catalog delivery via dedicated startup/hot-reload event, race-free index build; GitHub #6647, #6648 [approved]
 
+### Agent Identity in the Shared Data Model
+- [[085-agent-identity-data-isolation/spec|Agent Identity Data Isolation]] — multi-agent database isolation ([[031-database-abstraction/spec]]): `agent_id` resolution order (config or hostname-derived), IsolationMode (Isolated/Shared per subsystem), per-table defaults (conversations/messages isolated, graph/skills/cache shared by default), schema changes (migration 050 for SQLite/PostgreSQL with composite indexes + source_agent_id provenance tracking), AgentScope query layer pre-binding agent identity and isolation mode, configuration design (IsolationMode enum, per-subsystem SharedSubsystem overrides), concurrent migration safety (PostgreSQL advisory locks), impact on existing SQLite deployments (transparent 'default' agent), risks & mitigations (query verbosity, index coverage, data leakage, cross-agent operations, ID collisions, migration ordering), key invariants; extracted from [[031-database-abstraction/spec]] Section 18 [2026-07-27, #6632]
+
 ---
 
 ## System-Wide Features
@@ -295,6 +298,7 @@ status: moc
 | 082 | [[082-per-message-usage-cost-tracking/spec\|Per-Message Usage/Cost Tracking]] | specify | implemented |
 | 083 | [[083-memory-write-consent-gate/spec\|Memory Write Consent Gate]] | specify | implemented |
 | 084 | [[084-tui-mention-picker/spec\|TUI Inline Mention Picker]] | specify | approved |
+| 085 | [[085-agent-identity-data-isolation/spec\|Agent Identity Data Isolation]] | specify | approved |
 
 ---
 

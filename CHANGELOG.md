@@ -25,6 +25,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `specs/031-database-abstraction`: split the 2958-line spec (issue #6632). Section 18
+  ("Agent Identity in the Shared Data Model") — a fully self-contained multi-tenant
+  data-isolation subsystem with no other cross-references in `/specs/` — was extracted
+  into its own `specs/085-agent-identity-data-isolation/spec.md` and registered in
+  `specs/README.md` and `specs/MOC-specs.md`, with a cross-reference left in `031`'s
+  spec at the old Section 18 location. Sections 1-17's restated feature-flag design
+  rationale (Section 3) was consolidated to one canonical statement. Sections 19-20
+  (amendment log, implementation state) are unchanged. Documentation-only, no code
+  changes.
 - `zeph-tui`: moved the busy spinner and humanized activity verb from the bottom status
   bar to the input separator row, next to the existing interrupt hint (issue #6649). The
   variable-width verb (`thinking`, `compacting · context`, …) no longer shifts the status
