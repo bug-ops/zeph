@@ -8,6 +8,7 @@
 //! Not suitable for production — use [`crate::qdrant_ops::QdrantOps`] instead.
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 
 use parking_lot::RwLock;
 
@@ -147,6 +148,11 @@ impl VectorStore for InMemoryVectorStore {
             }
             Ok(())
         })
+    }
+
+    fn search_clamp_diagnostics(&self) -> (&'static str, &'static AtomicBool) {
+        static CLAMP_WARNED: AtomicBool = AtomicBool::new(false);
+        ("InMemoryVectorStore::search", &CLAMP_WARNED)
     }
 
     fn search_clamped(

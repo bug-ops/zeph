@@ -1175,6 +1175,35 @@ pub(crate) async fn set_permissions(_path: &Path, _mode: u32) -> Result<(), Sess
     Ok(())
 }
 
+/// RAII guard that resets [`HISTORY_INTEGRITY`] and [`ANCHOR_STORE`] to `None` on drop
+/// (issue #6686).
+///
+/// Both are process-wide statics reconfigured per-test; a manual reset call at the end of a
+/// test body is skipped by a panic or early return, leaking a foreign key ring / anchor store
+/// into whichever test runs next in the same process — including tests in `fork.rs` and
+/// `replay.rs` that never call [`configure_history_integrity`]/[`configure_anchor_store`]
+/// themselves but still open a [`SessionEventLog`]. Every test across this crate that
+/// configures either static, or that opens a [`SessionEventLog`] while one could be configured,
+/// must both construct this guard and carry `#[serial_test::serial(session_history_integrity)]`
+/// so no two such tests run concurrently.
+#[cfg(test)]
+pub(crate) struct IntegrityConfigGuard(());
+
+#[cfg(test)]
+impl IntegrityConfigGuard {
+    pub(crate) fn new() -> Self {
+        Self(())
+    }
+}
+
+#[cfg(test)]
+impl Drop for IntegrityConfigGuard {
+    fn drop(&mut self) {
+        configure_history_integrity(None);
+        configure_anchor_store(None);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::future::Future;
@@ -1183,6 +1212,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_append_and_read_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let log = SessionEventLog::open(dir.path()).await.unwrap();
@@ -1209,6 +1239,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_reopen_resumes_seq() {
         let dir = tempfile::tempdir().unwrap();
         {
@@ -1235,6 +1266,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_torn_write_truncation() {
         let dir = tempfile::tempdir().unwrap();
         let path;
@@ -1276,6 +1308,7 @@ mod tests {
     /// writer's data out from under it. Only `open_exclusive()` may repair.
     #[cfg(unix)]
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_open_does_not_physically_truncate_torn_tail() {
         let dir = tempfile::tempdir().unwrap();
         let path;
@@ -1325,6 +1358,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_torn_write_truncation_various_offsets() {
         for cut_from_end in [1usize, 3, 10, 20] {
             let dir = tempfile::tempdir().unwrap();
@@ -1357,6 +1391,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_empty_log_read_all() {
         let dir = tempfile::tempdir().unwrap();
         let log = SessionEventLog::open(dir.path()).await.unwrap();
@@ -1366,6 +1401,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_file_permissions_are_0600() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
@@ -1379,6 +1415,7 @@ mod tests {
     /// shape a pre-fix concurrent-append race could produce: seq 7 written physically before
     /// seq 6.
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_max_seq_survives_out_of_order_physical_lines() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(EVENTS_FILE_NAME);
@@ -1426,6 +1463,7 @@ mod tests {
     /// Before the fix the lock file was permanently empty.
     #[cfg(unix)]
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_open_exclusive_writes_own_pid_into_lock_file() {
         let dir = tempfile::tempdir().unwrap();
         let _log = SessionEventLog::open_exclusive(dir.path()).await.unwrap();
@@ -1444,6 +1482,7 @@ mod tests {
     /// process — a genuinely alive PID is exactly what `pid_alive` must report.
     #[cfg(unix)]
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_open_exclusive_rejects_second_writer() {
         let dir = tempfile::tempdir().unwrap();
         let _first = SessionEventLog::open_exclusive(dir.path()).await.unwrap();
@@ -1459,6 +1498,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_open_exclusive_allows_reacquire_after_drop() {
         let dir = tempfile::tempdir().unwrap();
         {
@@ -1470,6 +1510,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_open_is_not_blocked_by_open_exclusive() {
         let dir = tempfile::tempdir().unwrap();
         let _writer = SessionEventLog::open_exclusive(dir.path()).await.unwrap();
@@ -1483,6 +1524,7 @@ mod tests {
     /// was assigned via `fetch_add` before acquiring the writer lock, so a task could win a
     /// low seq but lose the race for the lock, landing its line after a higher-seq task's line.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_concurrent_append_preserves_seq_order() {
         const N: u64 = 100;
 
@@ -1531,6 +1573,7 @@ mod tests {
     /// [`REPLAY_CHUNK_SIZE`] raw envelopes at once, and the concatenation of all chunks must
     /// exactly reproduce what `read_events` (the whole-file `Vec` path) returns, in order.
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_read_chunked_bounds_memory_and_matches_whole_file_read() {
         const N: u64 = 733; // comfortably > REPLAY_CHUNK_SIZE, not an exact multiple of it
 
@@ -1598,7 +1641,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn chained_log_roundtrip() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 20)));
         let dir = tempfile::tempdir().unwrap();
         let log = SessionEventLog::open(dir.path()).await.unwrap();
@@ -1632,12 +1677,12 @@ mod tests {
         let log = SessionEventLog::open(dir.path()).await.unwrap();
         let events = log.read_all().await.unwrap();
         assert_eq!(events.len(), 2);
-
-        configure_history_integrity(None);
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn tamper_in_place_edit_is_detected() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 21)));
         let dir = tempfile::tempdir().unwrap();
         let log = SessionEventLog::open(dir.path()).await.unwrap();
@@ -1674,12 +1719,12 @@ mod tests {
 
         let result = SessionEventLog::open(dir.path()).await;
         assert!(matches!(result, Err(SessionError::Integrity(ref m)) if m.contains("TAMPER")));
-
-        configure_history_integrity(None);
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn legacy_log_is_auto_trusted_once_when_integrity_configured_later() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(None);
         let dir = tempfile::tempdir().unwrap();
         let log = SessionEventLog::open(dir.path()).await.unwrap();
@@ -1726,12 +1771,12 @@ mod tests {
             warned_count_before,
             "a second read of the same path must not add a second warned-set entry"
         );
-
-        configure_history_integrity(None);
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn partial_strip_of_chain_field_is_detected_as_tamper() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 23)));
         let dir = tempfile::tempdir().unwrap();
         let log = SessionEventLog::open(dir.path()).await.unwrap();
@@ -1770,12 +1815,12 @@ mod tests {
         assert!(
             matches!(result, Err(SessionError::Integrity(ref m)) if m.contains("partial strip"))
         );
-
-        configure_history_integrity(None);
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn key_unavailable_on_chained_log_fails_closed_not_legacy() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 24)));
         let dir = tempfile::tempdir().unwrap();
         let log = SessionEventLog::open(dir.path()).await.unwrap();
@@ -1797,7 +1842,9 @@ mod tests {
     /// `open_exclusive_allow_unverified`, and the bypass must persist across `read_all` calls
     /// on the same handle, not just the initial open.
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn allow_unverified_bypasses_tamper_detection_for_the_whole_handle() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 40)));
         let dir = tempfile::tempdir().unwrap();
         let log = SessionEventLog::open(dir.path()).await.unwrap();
@@ -1838,12 +1885,12 @@ mod tests {
             .unwrap();
         let events = log.read_all().await.unwrap();
         assert_eq!(events.len(), 2);
-
-        configure_history_integrity(None);
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn rotated_key_epoch_verifies_as_rekeyed_not_tampered() {
+        let _guard = IntegrityConfigGuard::new();
         let old_key_byte = 25u8;
         configure_history_integrity(Some(test_ring(0, old_key_byte)));
         let dir = tempfile::tempdir().unwrap();
@@ -1868,8 +1915,6 @@ mod tests {
         let log = SessionEventLog::open(dir.path()).await.unwrap();
         let events = log.read_all().await.unwrap();
         assert_eq!(events.len(), 1);
-
-        configure_history_integrity(None);
     }
 
     /// S1 regression: a mid-file (non-trailing) malformed line must never be silently
@@ -1877,6 +1922,7 @@ mod tests {
     /// error instead. This is a correctness bug independent of chaining (it corrupts crash
     /// recovery itself), reproduced here without configuring any key ring.
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn internal_malformed_line_is_never_treated_as_torn_tail() {
         configure_history_integrity(None);
         let dir = tempfile::tempdir().unwrap();
@@ -1927,8 +1973,10 @@ mod tests {
     /// S2 regression: concurrent `append` calls must never desynchronize on-disk physical order
     /// from chain-link order.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[serial_test::serial(session_history_integrity)]
     async fn concurrent_append_preserves_chain_order() {
         const N: u64 = 60;
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 26)));
         let dir = tempfile::tempdir().unwrap();
         let log = std::sync::Arc::new(SessionEventLog::open(dir.path()).await.unwrap());
@@ -1957,14 +2005,14 @@ mod tests {
         let log = SessionEventLog::open(dir.path()).await.unwrap();
         let events = log.read_all().await.unwrap();
         assert_eq!(events.len(), usize::try_from(N).unwrap());
-
-        configure_history_integrity(None);
     }
 
     /// Chunked reads (used by replay) must verify the chain identically to the whole-file read.
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn chunked_read_verifies_chain_and_matches_whole_file_read() {
         const N: u64 = 250; // > REPLAY_CHUNK_SIZE, exercises the chunk-boundary epoch resolution
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 27)));
         let dir = tempfile::tempdir().unwrap();
         let log = SessionEventLog::open(dir.path()).await.unwrap();
@@ -1992,15 +2040,15 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(chunked.len(), whole.len());
-
-        configure_history_integrity(None);
     }
 
     /// Chunked reads must also detect tamper, not just the whole-file read — a tampered event
     /// deep enough to land in a later chunk must abort before ever reaching `on_chunk`.
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn chunked_read_detects_tamper_in_a_later_chunk() {
         const N: u64 = 150;
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 28)));
         let dir = tempfile::tempdir().unwrap();
         let log = SessionEventLog::open(dir.path()).await.unwrap();
@@ -2044,8 +2092,6 @@ mod tests {
             }
             Err(other) => panic!("expected Integrity error, got {other:?}"),
         }
-
-        configure_history_integrity(None);
     }
 
     // --- Vault-anchor downgrade-resistance tests (issue #6449) ---
@@ -2109,7 +2155,9 @@ mod tests {
     /// FINDING B regression: a session log chained before any anchor store existed must still
     /// open normally once one comes online — an absent anchor is never a tamper signature.
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn pre_anchor_chained_log_still_opens_with_anchor_store_online() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 40)));
         let dir = tempfile::tempdir().unwrap();
         let log = SessionEventLog::open(dir.path()).await.unwrap();
@@ -2133,13 +2181,12 @@ mod tests {
             1,
             "absent anchor must never brick a legacy-chained log"
         );
-
-        configure_anchor_store(None);
-        configure_history_integrity(None);
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn whole_strip_of_anchored_session_is_tamper() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 41)));
         let store: Arc<dyn AnchorStore> = Arc::new(MockAnchorStore::default());
         configure_anchor_store(Some(Arc::clone(&store)));
@@ -2189,13 +2236,12 @@ mod tests {
             }
             other => panic!("expected Integrity TAMPER error, got {}", other.is_ok()),
         }
-
-        configure_anchor_store(None);
-        configure_history_integrity(None);
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn truncation_below_anchored_session_count_is_tamper() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 42)));
         let store: Arc<dyn AnchorStore> = Arc::new(MockAnchorStore::default());
         configure_anchor_store(Some(Arc::clone(&store)));
@@ -2235,15 +2281,14 @@ mod tests {
             }
             other => panic!("expected Integrity TAMPER error, got {}", other.is_ok()),
         }
-
-        configure_anchor_store(None);
-        configure_history_integrity(None);
     }
 
     /// Legitimate post-close growth (on-disk count > anchor.count, prefix matches) must open OK
     /// — the anchor is a prefix commitment, not an exact-count requirement, for sessions.
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn growth_after_anchor_with_matching_prefix_is_ok() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 43)));
         let store: Arc<dyn AnchorStore> = Arc::new(MockAnchorStore::default());
         configure_anchor_store(Some(Arc::clone(&store)));
@@ -2280,13 +2325,12 @@ mod tests {
             2,
             "post-anchor growth with a matching prefix must open OK"
         );
-
-        configure_anchor_store(None);
-        configure_history_integrity(None);
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn finalize_is_noop_without_anchor_store_or_without_chaining() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 44)));
         let dir = tempfile::tempdir().unwrap();
         let log = SessionEventLog::open(dir.path()).await.unwrap();
@@ -2322,7 +2366,5 @@ mod tests {
                 .is_none(),
             "no anchor should be written for an unchained handle"
         );
-
-        configure_anchor_store(None);
     }
 }

@@ -348,6 +348,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_fork_copies_events() {
         let store = SessionStore::new(make_pool().await);
         let data_dir = tempfile::tempdir().unwrap();
@@ -372,7 +373,9 @@ mod tests {
     /// (also chain-verified) — either one must reject a tampered parent before any event is
     /// copied into the child log.
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_fork_rejects_a_tampered_parent_chain() {
+        let _guard = crate::log::IntegrityConfigGuard::new();
         let ring = Arc::new(zeph_common::hash_chain::ChainKeyRing::new(
             0,
             zeph_common::hash_chain::ChainKey::new([77u8; 32]),
@@ -410,11 +413,10 @@ mod tests {
             !child_dir.join("events.jsonl").exists(),
             "a rejected fork must not leave behind a partially-written child log"
         );
-
-        crate::log::configure_history_integrity(None);
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_fork_provenance_metadata() {
         let store = SessionStore::new(make_pool().await);
         let data_dir = tempfile::tempdir().unwrap();
@@ -433,6 +435,7 @@ mod tests {
     /// row's `owner_key` column end-to-end (through `record_fork`), not just at the
     /// `SessionStore::record_fork` unit level.
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn fork_propagates_owner_to_child_row() {
         let pool = make_pool().await;
         let store = SessionStore::new(pool.clone());
@@ -461,6 +464,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_fork_appends_forkpoint_to_parent() {
         let store = SessionStore::new(make_pool().await);
         let data_dir = tempfile::tempdir().unwrap();
@@ -480,6 +484,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_fork_rejects_seq_beyond_source() {
         let store = SessionStore::new(make_pool().await);
         let data_dir = tempfile::tempdir().unwrap();
@@ -492,6 +497,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_fork_rejects_unknown_source() {
         let store = SessionStore::new(make_pool().await);
         let data_dir = tempfile::tempdir().unwrap();
@@ -503,6 +509,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_fork_none_copies_everything() {
         let store = SessionStore::new(make_pool().await);
         let data_dir = tempfile::tempdir().unwrap();
@@ -518,6 +525,7 @@ mod tests {
     /// Regression test for #5982 (spec §7.2 step 6): a blob referenced by a copied
     /// `UserMessage.image_refs` must be hard-linked into the child's `blobs/` directory.
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_fork_copies_referenced_blobs() {
         let store = SessionStore::new(make_pool().await);
         let data_dir = tempfile::tempdir().unwrap();
@@ -559,6 +567,7 @@ mod tests {
     /// the fork — it is logged and skipped, since the event-log copy (the fork's primary
     /// content) already succeeded.
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_fork_skips_missing_blob_without_failing() {
         let store = SessionStore::new(make_pool().await);
         let data_dir = tempfile::tempdir().unwrap();
@@ -592,6 +601,7 @@ mod tests {
     /// create an empty `blobs/` directory in the child (keeps the eager-copy path a no-op for
     /// the common, image-free case).
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_fork_without_image_refs_creates_no_blobs_dir() {
         let store = SessionStore::new(make_pool().await);
         let data_dir = tempfile::tempdir().unwrap();
@@ -610,6 +620,7 @@ mod tests {
     /// joined (which would let the parent-side `hard_link` read an arbitrary file, or the
     /// child-side path escape `blobs/`).
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_fork_rejects_path_traversal_in_image_refs() {
         let store = SessionStore::new(make_pool().await);
         let data_dir = tempfile::tempdir().unwrap();
@@ -644,6 +655,7 @@ mod tests {
     /// also be rejected — `PathBuf::join` with an absolute path silently discards the base
     /// directory entirely, which is the most severe form of this traversal.
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_fork_rejects_absolute_path_in_image_refs() {
         let store = SessionStore::new(make_pool().await);
         let data_dir = tempfile::tempdir().unwrap();
@@ -674,6 +686,7 @@ mod tests {
     /// copied range must not trigger the cross-device copy fallback on the second occurrence —
     /// the hash list is deduped before any `hard_link` is attempted.
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_fork_dedups_duplicate_blob_hash() {
         let store = SessionStore::new(make_pool().await);
         let data_dir = tempfile::tempdir().unwrap();
@@ -728,6 +741,7 @@ mod tests {
     /// destination that is already a hard link to the source truncates the shared inode to 0
     /// bytes, corrupting every link to it — including the parent's original blob.
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_copy_referenced_blobs_retry_does_not_truncate_shared_blob() {
         let data_dir = tempfile::tempdir().unwrap();
         let src_dir = data_dir.path().join("parent");
@@ -785,6 +799,7 @@ mod tests {
     /// same `0o700` permission the crate already enforces on the sibling session directory.
     #[cfg(unix)]
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_fork_sets_0700_on_child_blobs_dir() {
         use std::os::unix::fs::PermissionsExt;
 

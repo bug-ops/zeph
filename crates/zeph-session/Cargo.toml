@@ -43,6 +43,7 @@ testcontainers = { workspace = true, features = ["watchdog"], optional = true }
 testcontainers = { workspace = true, optional = true }
 
 [dev-dependencies]
+serial_test.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 zeph-llm = { workspace = true, features = ["testing"] }

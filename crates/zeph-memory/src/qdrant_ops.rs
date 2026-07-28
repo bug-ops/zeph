@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use crate::vector_store::BoxFuture;
@@ -492,6 +493,11 @@ impl QdrantOps {
 }
 
 impl crate::vector_store::VectorStore for QdrantOps {
+    fn search_clamp_diagnostics(&self) -> (&'static str, &'static AtomicBool) {
+        static CLAMP_WARNED: AtomicBool = AtomicBool::new(false);
+        ("QdrantOps::search", &CLAMP_WARNED)
+    }
+
     fn ensure_collection(
         &self,
         collection: &str,

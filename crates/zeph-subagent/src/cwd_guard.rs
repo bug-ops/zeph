@@ -99,6 +99,53 @@ impl Drop for CwdRestoreGuard {
 /// Convenience type alias for the shared mutex used as the process-level cwd lock.
 pub type CwdLock = Arc<Mutex<()>>;
 
+/// Test-only RAII cwd save/restore guard (issue #6686).
+///
+/// `std::env::current_dir`/`set_current_dir` are process-wide, not per-thread, so every test
+/// across the crate that changes the cwd (here, `memory.rs`, `manager/tests.rs`) must both
+/// restore it even on panic *and* run mutually exclusively with every other such test — pair
+/// this guard with `#[serial_test::serial]` (this crate's default, unnamed group, shared with
+/// this module's own tests above) on every test that constructs one.
+#[cfg(test)]
+pub(crate) struct TestCwdGuard {
+    prev: PathBuf,
+}
+
+#[cfg(test)]
+impl TestCwdGuard {
+    /// Saves the current cwd and switches to `dir`.
+    pub(crate) fn enter(dir: &std::path::Path) -> Self {
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+        Self { prev }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestCwdGuard {
+    fn drop(&mut self) {
+        if let Err(e) = std::env::set_current_dir(&self.prev) {
+            // A failed restore here corrupts the cwd for every subsequent test until the next
+            // `TestCwdGuard::enter` overwrites it — surfacing as a confusing `unwrap()` panic
+            // inside *that* unrelated test's `enter` rather than here, at the actual cause
+            // (issue #6686 review). Panic loudly, unless already unwinding (e.g. this test's
+            // own assertion just failed) — a second panic during unwind would abort the whole
+            // process instead of just failing this one test.
+            if std::thread::panicking() {
+                eprintln!(
+                    "TestCwdGuard: failed to restore cwd to {} during unwind: {e}",
+                    self.prev.display()
+                );
+            } else {
+                panic!(
+                    "TestCwdGuard: failed to restore cwd to {}: {e}",
+                    self.prev.display()
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

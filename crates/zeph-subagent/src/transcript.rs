@@ -968,6 +968,31 @@ fn epoch_to_parts(epoch: u64) -> (u32, u32, u32, u32, u32, u32) {
     )
 }
 
+/// RAII guard that resets [`HISTORY_INTEGRITY`] and [`ANCHOR_STORE`] to `None` on drop
+/// (issue #6686). See `zeph_session::log::IntegrityConfigGuard`'s identical doc for the full
+/// rationale — this mirrors it exactly. Every test in this crate that configures either
+/// static, or that constructs a [`TranscriptWriter`]/[`TranscriptReader`] while one could be
+/// configured (e.g. `manager::tests::run_agent_loop_finalizes_transcript_anchor_on_llm_error_exit_path`),
+/// must both construct this guard and carry
+/// `#[serial_test::serial(subagent_transcript_integrity)]`.
+#[cfg(test)]
+pub(crate) struct IntegrityConfigGuard(());
+
+#[cfg(test)]
+impl IntegrityConfigGuard {
+    pub(crate) fn new() -> Self {
+        Self(())
+    }
+}
+
+#[cfg(test)]
+impl Drop for IntegrityConfigGuard {
+    fn drop(&mut self) {
+        configure_history_integrity(None);
+        configure_anchor_store(None);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
@@ -999,6 +1024,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     async fn writer_reader_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.jsonl");
@@ -1021,6 +1047,7 @@ mod tests {
     /// current-turn-only vision input (spec-072 §4, C1), mirroring the strip already enforced
     /// for `Agent::persist_message`'s `SQLite`/Qdrant/durable-JSONL writers.
     #[tokio::test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     async fn append_strips_image_parts() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.jsonl");
@@ -1063,6 +1090,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     async fn append_preserves_non_image_parts() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.jsonl");
@@ -1090,6 +1118,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     async fn append_empty_parts_unchanged() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.jsonl");
@@ -1109,6 +1138,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn load_missing_file_no_meta_returns_empty() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ghost.jsonl");
@@ -1117,6 +1147,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn load_missing_file_with_meta_returns_error() {
         let dir = tempfile::tempdir().unwrap();
         let meta_path = dir.path().join("ghost.meta.json");
@@ -1127,6 +1158,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn load_skips_malformed_lines() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mixed.jsonl");
@@ -1147,6 +1179,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn load_strict_fails_on_first_malformed_line() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mixed.jsonl");
@@ -1174,6 +1207,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn load_strict_succeeds_on_intact_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("clean.jsonl");
@@ -1193,6 +1227,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn load_strict_missing_file_no_meta_returns_empty() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ghost.jsonl");
@@ -1201,6 +1236,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn meta_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let meta = test_meta("abc-123");
@@ -1211,6 +1247,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn meta_not_found_returns_not_found_error() {
         let dir = tempfile::tempdir().unwrap();
         let err = TranscriptReader::load_meta(dir.path(), "ghost").unwrap_err();
@@ -1218,6 +1255,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn find_by_prefix_exact() {
         let dir = tempfile::tempdir().unwrap();
         let meta = test_meta("abcdef01-0000-0000-0000-000000000000");
@@ -1230,6 +1268,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn find_by_prefix_short_prefix() {
         let dir = tempfile::tempdir().unwrap();
         let meta = test_meta("deadbeef-0000-0000-0000-000000000000");
@@ -1240,6 +1279,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn find_by_prefix_not_found() {
         let dir = tempfile::tempdir().unwrap();
         let err = TranscriptReader::find_by_prefix(dir.path(), "xxxxxxxx").unwrap_err();
@@ -1247,6 +1287,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn find_by_prefix_ambiguous() {
         let dir = tempfile::tempdir().unwrap();
         TranscriptWriter::write_meta(dir.path(), "aabb0001-x", &test_meta("aabb0001-x")).unwrap();
@@ -1256,6 +1297,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn sweep_old_transcripts_removes_oldest() {
         let dir = tempfile::tempdir().unwrap();
 
@@ -1280,6 +1322,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn sweep_with_zero_max_does_nothing() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.jsonl"), b"").unwrap();
@@ -1288,6 +1331,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn sweep_below_max_does_nothing() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.jsonl"), b"").unwrap();
@@ -1296,6 +1340,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn utc_now_format() {
         let ts = utc_now();
         // Basic format check: 2026-03-05T00:18:16Z
@@ -1305,6 +1350,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn load_empty_file_returns_empty() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("empty.jsonl");
@@ -1314,6 +1360,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn load_meta_invalid_json_returns_transcript_error() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("bad.meta.json"), b"not json at all {{{{").unwrap();
@@ -1322,6 +1369,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn sweep_removes_companion_meta() {
         let dir = tempfile::tempdir().unwrap();
         // Create 4 JSONL files each with a companion meta sidecar.
@@ -1345,6 +1393,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn data_loss_guard_uses_stem_based_meta_path() {
         // path.with_extension("meta.json") on "abc.jsonl" should yield "abc.meta.json"
         // which matches write_meta's format!("{agent_id}.meta.json") when agent_id == stem.
@@ -1358,6 +1407,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     fn meta_roundtrip_preserves_mcp_tool_names() {
         let dir = tempfile::tempdir().unwrap();
         let agent_id = "abc-123";
@@ -1382,7 +1432,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     async fn chained_writer_reader_roundtrip() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 1)));
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("abc.jsonl");
@@ -1408,12 +1460,12 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].content, "hello");
         assert_eq!(messages[1].content, "world");
-
-        configure_history_integrity(None);
     }
 
     #[tokio::test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     async fn tamper_in_place_edit_is_detected() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 2)));
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("abc.jsonl");
@@ -1443,12 +1495,12 @@ mod tests {
         // that otherwise differ only on JSON-syntax leniency.
         let err = TranscriptReader::load_strict(&path).unwrap_err();
         assert_matches!(err, SubAgentError::Integrity(_));
-
-        configure_history_integrity(None);
     }
 
     #[tokio::test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     async fn legacy_file_is_auto_trusted_once_when_integrity_configured_later() {
+        let _guard = IntegrityConfigGuard::new();
         // Written with integrity disabled (the pre-feature/legacy shape).
         configure_history_integrity(None);
         let dir = tempfile::tempdir().unwrap();
@@ -1488,12 +1540,12 @@ mod tests {
             warned_count_before,
             "a second read of the same path must not add a second warned-set entry"
         );
-
-        configure_history_integrity(None);
     }
 
     #[tokio::test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     async fn partial_strip_of_chain_field_is_detected_as_tamper() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 4)));
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("abc.jsonl");
@@ -1521,12 +1573,12 @@ mod tests {
 
         let err = TranscriptReader::load(&path).unwrap_err();
         assert_matches!(err, SubAgentError::Integrity(ref m) if m.contains("partial strip"));
-
-        configure_history_integrity(None);
     }
 
     #[tokio::test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     async fn key_unavailable_on_chained_file_fails_closed_not_legacy() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 5)));
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("abc.jsonl");
@@ -1544,7 +1596,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     async fn rotated_key_epoch_verifies_as_rekeyed_not_tampered() {
+        let _guard = IntegrityConfigGuard::new();
         let old_key_byte = 6u8;
         configure_history_integrity(Some(test_ring(0, old_key_byte)));
         let dir = tempfile::tempdir().unwrap();
@@ -1571,12 +1625,12 @@ mod tests {
             1,
             "a legitimately re-keyed file must still verify"
         );
-
-        configure_history_integrity(None);
     }
 
     #[tokio::test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     async fn writer_reopen_seeds_chain_from_existing_tail() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 7)));
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("abc.jsonl");
@@ -1600,16 +1654,16 @@ mod tests {
         // The full file, spanning both writer instances, must verify as one continuous chain.
         let messages = TranscriptReader::load(&path).unwrap();
         assert_eq!(messages.len(), 2);
-
-        configure_history_integrity(None);
     }
 
     /// S2 regression: concurrent `append` calls via a cloned writer must never desynchronize
     /// on-disk physical order from chain-link order. Mirrors
     /// `zeph_session::log::tests::test_concurrent_append_preserves_seq_order`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    #[serial_test::serial(subagent_transcript_integrity)]
     async fn concurrent_append_preserves_chain_order() {
         const N: u32 = 50;
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 8)));
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("abc.jsonl");
@@ -1632,8 +1686,6 @@ mod tests {
         // definite Mismatch tamper verdict even though nothing was actually tampered with.
         let messages = TranscriptReader::load(&path).unwrap();
         assert_eq!(messages.len(), usize::try_from(N).unwrap());
-
-        configure_history_integrity(None);
     }
 
     // --- Vault-anchor downgrade-resistance tests (issue #6449) ---
@@ -1710,7 +1762,9 @@ mod tests {
     /// anchor store configured when it was written) must still open normally when an anchor
     /// store comes online later — an absent anchor is never a tamper signature.
     #[tokio::test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     async fn pre_anchor_chained_file_still_opens_with_anchor_store_online() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 20)));
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("abc.jsonl");
@@ -1731,15 +1785,14 @@ mod tests {
             1,
             "absent anchor must never brick a legacy-chained file"
         );
-
-        configure_anchor_store(None);
-        configure_history_integrity(None);
     }
 
     /// Acceptance criterion 1/3: whole-strip of an anchored transcript is TAMPER, and so is
     /// truncation below the anchored count.
     #[tokio::test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     async fn whole_strip_of_anchored_transcript_is_tamper() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 21)));
         let store: Arc<dyn AnchorStore> = Arc::new(MockAnchorStore::default());
         configure_anchor_store(Some(Arc::clone(&store)));
@@ -1778,13 +1831,12 @@ mod tests {
 
         let err = TranscriptReader::load(&path).unwrap_err();
         assert_matches!(err, SubAgentError::Integrity(ref m) if m.contains("TAMPER") && m.contains("vault anchor"));
-
-        configure_anchor_store(None);
-        configure_history_integrity(None);
     }
 
     #[tokio::test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     async fn truncation_below_anchored_count_is_tamper() {
+        let _guard = IntegrityConfigGuard::new();
         configure_history_integrity(Some(test_ring(0, 22)));
         let store: Arc<dyn AnchorStore> = Arc::new(MockAnchorStore::default());
         configure_anchor_store(Some(Arc::clone(&store)));
@@ -1810,13 +1862,12 @@ mod tests {
 
         let err = TranscriptReader::load(&path).unwrap_err();
         assert_matches!(err, SubAgentError::Integrity(ref m) if m.contains("TAMPER") && m.contains("truncated"));
-
-        configure_anchor_store(None);
-        configure_history_integrity(None);
     }
 
     #[tokio::test]
+    #[serial_test::serial(subagent_transcript_integrity)]
     async fn finalize_is_noop_without_anchor_store_or_without_chaining() {
+        let _guard = IntegrityConfigGuard::new();
         // No anchor store configured: finalize must succeed as a no-op.
         configure_history_integrity(Some(test_ring(0, 23)));
         let dir = tempfile::tempdir().unwrap();
@@ -1847,7 +1898,5 @@ mod tests {
                 .is_none(),
             "no anchor should be written for an unchained writer"
         );
-
-        configure_anchor_store(None);
     }
 }

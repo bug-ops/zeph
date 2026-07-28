@@ -178,10 +178,36 @@ pub trait VectorStore: Send + Sync {
         limit: u64,
         filter: Option<VectorFilter>,
     ) -> BoxFuture<'_, Result<Vec<ScoredVectorPoint>, VectorStoreError>> {
-        static CLAMP_WARNED: AtomicBool = AtomicBool::new(false);
-        let limit = clamp_search_limit("VectorStore::search", limit, &CLAMP_WARNED);
+        let (site, warned) = self.search_clamp_diagnostics();
+        let limit = clamp_search_limit(site, limit, warned);
         self.search_clamped(collection, vector, limit, filter)
     }
+
+    /// Per-implementor diagnostic label and "already warned" flag backing [`Self::search`]'s
+    /// one-shot clamp warning.
+    ///
+    /// [`Self::search`] is one shared default-method body invoked identically for every
+    /// implementor, so a `static` declared directly inside it would be a single item shared
+    /// by *all* implementors — Rust does not duplicate function-local statics per
+    /// monomorphization, and a default method reached through `dyn VectorStore` compiles to
+    /// one shared body regardless of the concrete backend behind it. For the same reason, a
+    /// generic helper like `std::any::type_name::<Self>()` called from within that one shared
+    /// body cannot distinguish implementors either. Each implementor must therefore supply its
+    /// own label and flag here — a distinct `&'static str` identifying the concrete type (so an
+    /// operator can tell which backend logged the warning) and a reference to a local
+    /// `static AtomicBool` initialized to `false` — mirroring the per-call-site static already
+    /// used by `EmbeddingStore::search`, `EmbeddingRegistry::search_raw`, and
+    /// `ReasoningMemory::search` (see module docs).
+    ///
+    /// The flag this returns is per-*implementor-type*, not per-instance: every `Self` value
+    /// shares the one `static` declared in this method's body. This crate's own test suite
+    /// currently has exactly one `logs_contain(...)`-asserting clamp test per implementor type,
+    /// which is why that is safe today — a *second* such test against the same concrete type
+    /// would silently race on this same flag (the identical #6686 hazard this method exists to
+    /// prevent, just reintroduced one level up). If you add another oversized-limit clamp test
+    /// for a type that already has one, give the existing test's assertion double duty instead
+    /// of adding a second one.
+    fn search_clamp_diagnostics(&self) -> (&'static str, &'static AtomicBool);
 
     /// Backend-specific search implementation invoked by [`Self::search`].
     ///
@@ -307,6 +333,11 @@ mod tests {
             _points: Vec<VectorPoint>,
         ) -> BoxFuture<'_, Result<(), VectorStoreError>> {
             Box::pin(async { Ok(()) })
+        }
+
+        fn search_clamp_diagnostics(&self) -> (&'static str, &'static AtomicBool) {
+            static CLAMP_WARNED: AtomicBool = AtomicBool::new(false);
+            ("RecordingStore::search", &CLAMP_WARNED)
         }
 
         fn search_clamped(

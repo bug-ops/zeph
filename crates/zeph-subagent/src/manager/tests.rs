@@ -210,7 +210,16 @@ async fn collect_unknown_task_id_returns_not_found() {
 /// read against that path must succeed after `collect()` has removed the handle — proving
 /// grounding reads (`build_tool_trace_for_task` in `zeph-core`) do not silently degrade to
 /// `None` merely because the orchestration dispatch path has already reaped the handle.
+///
+/// Joins `subagent_transcript_integrity` (issue #6686): `mgr.spawn` creates a real
+/// `TranscriptWriter`, which captures the process-global `HISTORY_INTEGRITY` ring at
+/// construction, and `load_strict` below re-reads the (possibly since-reset) global at call
+/// time — the one other test in this group that installs a real ring
+/// (`run_agent_loop_finalizes_transcript_anchor_on_llm_error_exit_path`) could otherwise chain
+/// this test's transcript with a foreign ring that is gone by the time `load_strict` runs,
+/// hard-failing `verify_and_extract_messages`.
 #[tokio::test]
+#[serial_test::serial(subagent_transcript_integrity)]
 async fn transcript_path_for_stable_across_collect_and_readable_after() {
     let tmp = tempfile::tempdir().unwrap();
     let config = SubAgentConfig {
@@ -2121,8 +2130,7 @@ fn def_name_for_resume_not_found_returns_error() {
 #[serial]
 async fn spawn_with_memory_scope_project_creates_directory() {
     let tmp = tempfile::tempdir().unwrap();
-    let orig_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(tmp.path()).unwrap();
+    let _cwd = crate::cwd_guard::TestCwdGuard::enter(tmp.path());
 
     let def = SubAgentDef::parse(indoc! {"
         ---
@@ -2163,16 +2171,13 @@ async fn spawn_with_memory_scope_project_creates_directory() {
         mem_dir.exists(),
         "memory directory should be created at spawn"
     );
-
-    std::env::set_current_dir(orig_dir).unwrap();
 }
 
 #[tokio::test]
 #[serial]
 async fn spawn_with_config_default_memory_scope_applies_when_def_has_none() {
     let tmp = tempfile::tempdir().unwrap();
-    let orig_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(tmp.path()).unwrap();
+    let _cwd = crate::cwd_guard::TestCwdGuard::enter(tmp.path());
 
     let def = SubAgentDef::parse(indoc! {"
         ---
@@ -2217,16 +2222,13 @@ async fn spawn_with_config_default_memory_scope_applies_when_def_has_none() {
         mem_dir.exists(),
         "config default memory scope should create directory"
     );
-
-    std::env::set_current_dir(orig_dir).unwrap();
 }
 
 #[tokio::test]
 #[serial]
 async fn spawn_with_memory_blocked_by_disallowed_tools_skips_memory() {
     let tmp = tempfile::tempdir().unwrap();
-    let orig_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(tmp.path()).unwrap();
+    let _cwd = crate::cwd_guard::TestCwdGuard::enter(tmp.path());
 
     let def = SubAgentDef::parse(indoc! {"
         ---
@@ -2272,16 +2274,13 @@ async fn spawn_with_memory_blocked_by_disallowed_tools_skips_memory() {
         !mem_dir.exists(),
         "memory directory should not be created when tools are blocked"
     );
-
-    std::env::set_current_dir(orig_dir).unwrap();
 }
 
 #[tokio::test]
 #[serial]
 async fn spawn_without_memory_scope_no_directory_created() {
     let tmp = tempfile::tempdir().unwrap();
-    let orig_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(tmp.path()).unwrap();
+    let _cwd = crate::cwd_guard::TestCwdGuard::enter(tmp.path());
 
     let def = SubAgentDef::parse(indoc! {"
         ---
@@ -2317,16 +2316,13 @@ async fn spawn_without_memory_scope_no_directory_created() {
         !mem_dir.exists(),
         "no agent-memory directory should be created without memory scope"
     );
-
-    std::env::set_current_dir(orig_dir).unwrap();
 }
 
 #[tokio::test]
 #[serial]
 async fn build_prompt_injects_memory_block_after_behavioral_prompt() {
     let tmp = tempfile::tempdir().unwrap();
-    let orig_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(tmp.path()).unwrap();
+    let _cwd = crate::cwd_guard::TestCwdGuard::enter(tmp.path());
 
     // Create memory directory and MEMORY.md.
     let mem_dir = tmp
@@ -2366,16 +2362,13 @@ async fn build_prompt_injects_memory_block_after_behavioral_prompt() {
         prompt.contains("key: value"),
         "MEMORY.md content must be injected"
     );
-
-    std::env::set_current_dir(orig_dir).unwrap();
 }
 
 #[tokio::test]
 #[serial]
 async fn build_prompt_auto_enables_read_write_edit_for_allowlist() {
     let tmp = tempfile::tempdir().unwrap();
-    let orig_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(tmp.path()).unwrap();
+    let _cwd = crate::cwd_guard::TestCwdGuard::enter(tmp.path());
 
     let mut def = SubAgentDef::parse(indoc! {"
         ---
@@ -2411,16 +2404,13 @@ async fn build_prompt_auto_enables_read_write_edit_for_allowlist() {
                 && list.contains(&"edit".to_owned())),
         "read/write/edit must be auto-enabled in AllowList when memory is set"
     );
-
-    std::env::set_current_dir(orig_dir).unwrap();
 }
 
 #[tokio::test]
 #[serial]
 async fn spawn_with_explicit_def_memory_overrides_config_default() {
     let tmp = tempfile::tempdir().unwrap();
-    let orig_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(tmp.path()).unwrap();
+    let _cwd = crate::cwd_guard::TestCwdGuard::enter(tmp.path());
 
     // Agent explicitly sets memory: local, config sets default: project.
     // The explicit local should win.
@@ -2475,16 +2465,13 @@ async fn spawn_with_explicit_def_memory_overrides_config_default() {
         !project_dir.exists(),
         "project memory dir must NOT be created"
     );
-
-    std::env::set_current_dir(orig_dir).unwrap();
 }
 
 #[tokio::test]
 #[serial]
 async fn spawn_memory_blocked_by_deny_list_policy() {
     let tmp = tempfile::tempdir().unwrap();
-    let orig_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(tmp.path()).unwrap();
+    let _cwd = crate::cwd_guard::TestCwdGuard::enter(tmp.path());
 
     // tools.deny: [Read, Write, Edit] — DenyList policy blocking all file tools.
     let def = SubAgentDef::parse(indoc! {"
@@ -2531,8 +2518,6 @@ async fn spawn_memory_blocked_by_deny_list_policy() {
         !mem_dir.exists(),
         "memory dir must not be created when DenyList blocks all file tools"
     );
-
-    std::env::set_current_dir(orig_dir).unwrap();
 }
 
 // ── regression tests for #1467: sub-agent tools passed to LLM ────────────
@@ -2838,13 +2823,15 @@ impl zeph_common::anchor::AnchorStore for MockAnchorStoreForLoopTest {
 }
 
 #[tokio::test]
+#[serial_test::serial(subagent_transcript_integrity)]
 async fn run_agent_loop_finalizes_transcript_anchor_on_llm_error_exit_path() {
     // Regression test for #6494: an LLM-call error/timeout must still finalize (anchor) the
     // transcript before `run_agent_loop` returns `Err` — otherwise the transcript is left
     // chained-but-unanchored, reopening the whole-strip downgrade #6449/#6461 closed for any
     // turn that ends on an LLM error. `configure_history_integrity`/`configure_anchor_store`
-    // mutate process-global state; safe here because `cargo nextest` runs each test in its own
-    // process (see `transcript.rs`'s own anchor tests for the same convention).
+    // mutate process-global state shared with every other test in `transcript.rs`'s own
+    // `subagent_transcript_integrity` serial group (issue #6686).
+    let _guard = crate::transcript::IntegrityConfigGuard::new();
     crate::transcript::configure_history_integrity(Some(std::sync::Arc::new(
         zeph_common::hash_chain::ChainKeyRing::new(
             0,
@@ -2911,16 +2898,24 @@ async fn run_agent_loop_finalizes_transcript_anchor_on_llm_error_exit_path() {
         "expected the LLM-call timeout to still propagate as an error"
     );
 
-    assert_eq!(
-        store.map.lock().unwrap().len(),
-        1,
+    // Check for this test's own anchor key rather than the map's total size: `ANCHOR_STORE`
+    // is a process-global shared with every other test's `run_agent_loop` invocation in this
+    // binary (including ordinary spawn tests that never configure anchoring themselves — they
+    // just see `anchor_store() == None` and no-op), so under plain `cargo test`'s thread-per-test
+    // model a concurrently running spawn test can legitimately finalize its own (differently
+    // keyed) transcript into this same store while it's installed here. That is expected
+    // ambient noise, not a defect — only the presence of *this* test's own key proves finalize()
+    // ran (issue #6686).
+    let expected_key = zeph_common::anchor::anchor_key(
+        zeph_common::anchor::AnchorSubsystem::SubagentTranscript,
+        b"abc",
+    );
+    assert!(
+        store.map.lock().unwrap().contains_key(&expected_key),
         "finalize() must have persisted a vault anchor even though the loop exited via the \
          LLM-error path — a missing entry means finalize was skipped, reopening the \
          whole-strip downgrade #6449/#6461 closed"
     );
-
-    crate::transcript::configure_anchor_store(None);
-    crate::transcript::configure_history_integrity(None);
 }
 
 // ── idle-timeout progress heartbeat (#6245) ──────────────────────────────
@@ -3209,12 +3204,12 @@ async fn run_agent_loop_executes_native_tool_call() {
 // --- Fix #2582 tests ---
 
 #[tokio::test]
+#[serial]
 async fn build_system_prompt_injects_working_directory() {
     use tempfile::TempDir;
 
     let tmp = TempDir::new().unwrap();
-    let orig = std::env::current_dir().unwrap();
-    std::env::set_current_dir(tmp.path()).unwrap();
+    let _cwd = crate::cwd_guard::TestCwdGuard::enter(tmp.path());
 
     let mut def = SubAgentDef::parse(indoc! {"
         ---
@@ -3226,7 +3221,6 @@ async fn build_system_prompt_injects_working_directory() {
     .unwrap();
 
     let prompt = build_system_prompt_with_memory(&mut def, None, &SpawnContext::default()).await;
-    std::env::set_current_dir(orig).unwrap();
 
     assert!(
         prompt.contains("Working directory:"),

@@ -8,6 +8,7 @@
 //! running Qdrant instance.  Not optimised for large collections.
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 #[allow(unused_imports)]
 use zeph_db::sql;
 
@@ -159,6 +160,11 @@ impl VectorStore for DbVectorStore {
         return Box::pin(tracing::Instrument::instrument(fut, span));
         #[cfg(not(feature = "profiling"))]
         fut
+    }
+
+    fn search_clamp_diagnostics(&self) -> (&'static str, &'static AtomicBool) {
+        static CLAMP_WARNED: AtomicBool = AtomicBool::new(false);
+        ("DbVectorStore::search", &CLAMP_WARNED)
     }
 
     fn search_clamped(

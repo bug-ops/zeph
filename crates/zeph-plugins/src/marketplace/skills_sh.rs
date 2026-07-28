@@ -101,6 +101,11 @@ pub struct SkillsShClient {
     base_url: String,
     token: Option<Secret>,
     client: reqwest::Client,
+    /// Parent directory for [`Self::fetch`]'s extraction tempdir. `None` (the production
+    /// default) uses the process temp dir via `tempfile::tempdir()`. Overridable only in
+    /// tests via [`Self::with_tmp_root_for_test`], so a test can force tempdir creation to
+    /// fail without mutating the process-wide `TMPDIR` env var (issue #6686).
+    tmp_root: Option<std::path::PathBuf>,
 }
 
 impl SkillsShClient {
@@ -154,7 +159,19 @@ impl SkillsShClient {
             base_url,
             token,
             client,
+            tmp_root: None,
         }
+    }
+
+    /// Force [`Self::fetch`] to create its extraction tempdir under `dir` instead of the
+    /// process temp dir. Test-only seam (issue #6686) so a test can point at a non-directory
+    /// path to make `tempdir_in` fail deterministically, without mutating the process-wide
+    /// `TMPDIR` env var and racing every other test that calls `tempfile::tempdir()`.
+    #[cfg(test)]
+    #[must_use]
+    fn with_tmp_root_for_test(mut self, dir: std::path::PathBuf) -> Self {
+        self.tmp_root = Some(dir);
+        self
     }
 
     /// Reject `base_url` schemes other than `http`/`https` (SSRF hardening — review fix #6).
@@ -330,7 +347,10 @@ impl RegistryClient for SkillsShClient {
                     ));
                 }
 
-                let tmp = tempfile::tempdir()?;
+                let tmp = match &self.tmp_root {
+                    Some(root) => tempfile::Builder::new().tempdir_in(root)?,
+                    None => tempfile::tempdir()?,
+                };
                 let (has_plugin_manifest, install_dir) = materialize_package(tmp.path(), &files)?;
 
                 Ok(PackageArchive {
@@ -675,22 +695,14 @@ mod tests {
             .mount(&server)
             .await;
 
-        // Force tempdir() itself to fail by pointing TMPDIR at a path that doesn't exist and
-        // cannot be created (a file, not a directory, as the parent).
+        // Force tempdir_in() itself to fail by pointing the client's tempdir parent at a
+        // regular file rather than a directory — injected directly into this client instance
+        // (issue #6686), not via the process-wide TMPDIR env var, so no other concurrently
+        // running test racing on `tempfile::tempdir()` is affected.
         let bogus_parent = tempfile::NamedTempFile::new().unwrap();
-        // SAFETY-equivalent: std::env::set_var is unsafe in edition 2024; safe here because
-        // nextest runs each test in its own process (full env isolation from other tests), and
-        // the mutation is restored before this test function returns.
-        #[allow(unsafe_code)]
-        unsafe {
-            std::env::set_var("TMPDIR", bogus_parent.path());
-        }
-        let client = client_for(&server, None);
+        let client =
+            client_for(&server, None).with_tmp_root_for_test(bogus_parent.path().to_path_buf());
         let result = client.fetch("acme/x").await;
-        #[allow(unsafe_code)]
-        unsafe {
-            std::env::remove_var("TMPDIR");
-        }
 
         let err = result.unwrap_err();
         assert!(matches!(err, RegistryError::Io(_)));

@@ -5390,8 +5390,13 @@ mod tests {
     /// a documented no-op on non-Unix targets (`AdvisoryLock`, zeph-session's `log.rs`), so a
     /// second `open_exclusive` on non-Unix never contends — matching zeph-session's own
     /// `#[cfg(unix)]`-gated contention tests for the same primitive.
+    ///
+    /// Joins `zeph_bin_history_integrity` (issue #6686): opens a real `SessionEventLog`, which
+    /// reads the process-global `HISTORY_INTEGRITY` this binary's `src/runner.rs` tests share —
+    /// `main.rs` compiles every test module reachable from it into one test process.
     #[cfg(unix)]
     #[tokio::test]
+    #[serial_test::serial(zeph_bin_history_integrity)]
     async fn already_locked_session_log_notifies_client_proactively_without_prompt() {
         let tmp = TempDir::new().unwrap();
         let session_path = tmp.path().join("already-locked-session");

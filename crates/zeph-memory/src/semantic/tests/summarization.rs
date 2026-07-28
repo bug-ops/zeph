@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 
 use zeph_llm::any::AnyProvider;
 use zeph_llm::mock::MockProvider;
@@ -25,6 +25,11 @@ use super::test_semantic_memory;
 struct FailingSearchStore(DbVectorStore);
 
 impl VectorStore for FailingSearchStore {
+    fn search_clamp_diagnostics(&self) -> (&'static str, &'static AtomicBool) {
+        static CLAMP_WARNED: AtomicBool = AtomicBool::new(false);
+        ("FailingSearchStore::search", &CLAMP_WARNED)
+    }
+
     fn ensure_collection(
         &self,
         collection: &str,

@@ -201,6 +201,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the gap that #6693 left open. Two sites sharing the same `std::process::exit` pattern
   (`Notify::Test`, `UrlScheme::Status`) plus 5 `deep-link`-feature-gated sites inside
   `handle_url_open` were intentionally left out of scope; tracked as a follow-up.
+- `zeph-memory`, `zeph-plugins`, `zeph-session`, `zeph-subagent`: fixed 4 independent
+  shared-process-state test-isolation hazards that made `cargo insta test`/plain `cargo test`
+  flaky under thread-parallel execution while passing under `cargo nextest`'s one-process-per-test
+  model (issue #6686). All are test-only defects — no production races.
+  - `zeph-memory`: `VectorStore::search`'s one-shot clamp-warning flag was a `static` declared
+    inside the shared default trait method body, so it was a single instance shared by every
+    implementor's tests regardless of dynamic dispatch. Replaced with a required
+    `search_clamp_diagnostics()` trait method so each implementor (`InMemoryVectorStore`,
+    `DbVectorStore`, `QdrantOps`, and the test-only mocks) gets its own flag *and* its own
+    diagnostic label (e.g. `"QdrantOps::search"`), matching the existing per-call-site static
+    pattern in `embedding_store.rs`/`embedding_registry.rs`/`reasoning.rs` and letting an
+    operator tell which backend logged the warning (review round: the first pass gave every
+    implementor the identical `"VectorStore::search"` label).
+  - `zeph-plugins`: a `skills_sh.rs` test mutated the process-wide `TMPDIR` env var to force a
+    tempdir-creation failure, racing every other test's `tempfile::tempdir()` call. Replaced
+    with a test-only `tmp_root` field injected directly into `SkillsShClient`, eliminating the
+    global env mutation entirely.
+  - `zeph-session`, `zeph-subagent`: `log.rs`/`transcript.rs`'s process-global
+    `HISTORY_INTEGRITY`/`ANCHOR_STORE` statics were reconfigured per-test with no
+    synchronization and a manual (panic-unsafe) reset at the end of each test body. Added an
+    `IntegrityConfigGuard` RAII type (resets both statics on drop, surviving panics) and
+    `#[serial_test::serial(...)]` on every test in `zeph-session`'s `log.rs`/`fork.rs`/
+    `replay.rs` and `zeph-subagent`'s `transcript.rs` that configures either static or opens a
+    `SessionEventLog`/`TranscriptWriter` while one could be configured — collateral damage
+    extended to tests that never touch the statics directly. Also fixed a secondary
+    poisoning-cascade defect in `zeph-subagent`: a panic during the primary race could leave a
+    `std::sync::Mutex`-backed mock anchor store poisoned for the rest of the process, cascading
+    `PoisonError` into unrelated tests; the Drop-guard fix resolves this as a side effect.
+    Review round: closed the same hazard's remaining direction in
+    `zeph-subagent::manager::tests` — the one test installing a real key ring could chain
+    another concurrently-spawned test's transcript, which would then hard-fail its own
+    `load_strict` chain verification once the guard reset the ring; joined the same serial
+    group instead of the (infeasible, since the relevant items are only `pub(super)`) option of
+    moving it to a separate integration-test binary. Also found and fixed the identical hazard,
+    self-contained within its own process, in the `zeph` binary crate's own test suite
+    (`src/runner.rs`'s `configure_history_integrity` test plus the `SessionEventLog`-opening
+    tests it shares a test binary with in `src/runner.rs`/`src/acp.rs`, in scope via the issue's
+    own `--bins` acceptance criterion) — new `zeph_bin_history_integrity` serial group and
+    `HistoryIntegrityTestGuard`.
+  - `zeph-subagent`: `memory.rs`'s `resolve_memory_dir`/`ensure_memory_dir` and 9 tests across
+    `memory.rs`/`manager/tests.rs` read or mutated the process-wide CWD
+    (`std::env::current_dir`/`set_current_dir`) with inconsistent or missing synchronization —
+    3 tests were missing the crate's existing (unnamed) `#[serial]` group entirely. Closed the
+    gap and added a test-only `cwd_guard::TestCwdGuard` RAII save/restore helper for panic-safety,
+    used by all CWD-mutating tests in the crate. Review round: a failed cwd restore in the
+    guard's `Drop` now panics loudly at the actual cause (unless already unwinding), instead of
+    surfacing later as a confusing `unwrap()` panic inside an unrelated subsequent test.
+  - Note: `zeph-session --lib`'s plain `cargo test` run time increased (~10-20s for 83 tests,
+    since ~2/3 are now serialized) as a direct consequence of this fix — `cargo nextest` (CI) is
+    unaffected; only `cargo insta test`, the harness this issue is about, pays it.
+
 - `.claude/rules/continuous-improvement.md`: fixed the "Local Trace Analysis" jq recipes, which
   matched zero events against every real local trace file (issue #6676). `tracing-chrome` 0.7.2
   writes a bare top-level JSON array (not `{"traceEvents": [...]}`) and never emits `ph:"X"`

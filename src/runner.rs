@@ -4677,6 +4677,33 @@ mod deep_link_tests {
     }
 }
 
+/// RAII guard that resets `zeph_subagent::transcript::HISTORY_INTEGRITY` and
+/// `zeph_session::log::HISTORY_INTEGRITY` to `None` on drop (issue #6686).
+///
+/// This binary crate compiles every `#[cfg(test)]` module reachable from `main.rs` (including
+/// `src/acp.rs`) into one test binary/process, so the one test here that installs a real key
+/// ring via [`configure_history_integrity`] shares that process-wide state with every other
+/// test that opens a `SessionEventLog` — not just the tests in this file. Pair this guard with
+/// `#[serial_test::serial(zeph_bin_history_integrity)]` on every such test, mirroring
+/// `zeph_session::log::IntegrityConfigGuard` / `zeph_subagent::transcript::IntegrityConfigGuard`.
+#[cfg(test)]
+pub(crate) struct HistoryIntegrityTestGuard(());
+
+#[cfg(test)]
+impl HistoryIntegrityTestGuard {
+    pub(crate) fn new() -> Self {
+        Self(())
+    }
+}
+
+#[cfg(test)]
+impl Drop for HistoryIntegrityTestGuard {
+    fn drop(&mut self) {
+        zeph_subagent::transcript::configure_history_integrity(None);
+        zeph_session::log::configure_history_integrity(None);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4686,11 +4713,15 @@ mod tests {
     //
     // `configure_history_integrity` mutates process-global state (via
     // `zeph_subagent::transcript::configure_history_integrity`/
-    // `zeph_session::log::configure_history_integrity`), so this relies on cargo nextest's
-    // one-process-per-test model for isolation, the same precondition
-    // `crates/zeph-subagent/src/transcript.rs`'s own hash-chain tests document and depend on.
+    // `zeph_session::log::configure_history_integrity`) shared by every test in this binary's
+    // single test process, including `src/acp.rs`'s `SessionEventLog` tests — not just this
+    // file's own (issue #6686). `#[serial_test::serial(zeph_bin_history_integrity)]` plus
+    // `HistoryIntegrityTestGuard` keep this test mutually exclusive with, and always cleaned up
+    // before, every other test in the group.
     #[tokio::test]
+    #[serial_test::serial(zeph_bin_history_integrity)]
     async fn configure_history_integrity_resolves_key_from_explicit_path_not_default_vault_dir() {
+        let _guard = HistoryIntegrityTestGuard::new();
         let vault_dir = tempfile::tempdir().unwrap();
         zeph_core::vault::AgeVaultProvider::init_vault(vault_dir.path()).unwrap();
         let key_path = vault_dir.path().join("vault-key.txt");
@@ -4728,8 +4759,6 @@ mod tests {
         drop(writer);
 
         let raw = std::fs::read_to_string(&transcript_path).unwrap();
-        zeph_subagent::transcript::configure_history_integrity(None);
-        zeph_session::log::configure_history_integrity(None);
 
         assert!(
             raw.contains("\"chain\":"),
@@ -5798,7 +5827,12 @@ mod tests {
 
     /// New conversation with no linked session: `init_session_sink` must create and link a
     /// fresh session and fall back to a bare log open — there is nothing to hydrate yet.
+    ///
+    /// Joins `zeph_bin_history_integrity` (issue #6686): opens a `SessionEventLog`, which reads
+    /// the process-global `HISTORY_INTEGRITY` this binary's one integrity-configuring test
+    /// installs.
     #[tokio::test]
+    #[serial_test::serial(zeph_bin_history_integrity)]
     async fn init_session_sink_creates_and_links_new_session() {
         let memory = make_runner_test_memory().await;
         let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -5831,6 +5865,7 @@ mod tests {
     /// the same hydration pipeline as explicit resume, ACP, and `zeph serve` — not silently fall
     /// back to the `SQLite`-only `messages` projection just because a session already existed.
     #[tokio::test]
+    #[serial_test::serial(zeph_bin_history_integrity)]
     async fn init_session_sink_hydrates_existing_linked_session() {
         let memory = make_runner_test_memory().await;
         let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -5873,6 +5908,7 @@ mod tests {
     /// would still succeed at minting a row, making the failure observable via the row count
     /// below rather than merely via the returned sink.
     #[tokio::test]
+    #[serial_test::serial(zeph_bin_history_integrity)]
     async fn init_session_sink_returns_none_on_store_query_error() {
         let memory = make_runner_test_memory().await;
         let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -5926,6 +5962,7 @@ mod tests {
     /// — the same guarantee the pre-#5451 inline resume path always gave, now reachable directly
     /// without driving `run()` end-to-end.
     #[tokio::test]
+    #[serial_test::serial(zeph_bin_history_integrity)]
     async fn resume_session_sink_fallback_returns_some_when_open_succeeds() {
         let dir = tempfile::tempdir().unwrap();
         let session_path = dir.path().join("session-abc");
@@ -5942,6 +5979,7 @@ mod tests {
     /// #5456 regression: when the bare open also fails (e.g. the session directory cannot be
     /// created), the helper must return `None` rather than panicking or fabricating a sink.
     #[tokio::test]
+    #[serial_test::serial(zeph_bin_history_integrity)]
     async fn resume_session_sink_fallback_returns_none_when_open_fails() {
         let dir = tempfile::tempdir().unwrap();
         // A regular file where a directory component is expected: `create_dir_all` inside
@@ -5966,6 +6004,7 @@ mod tests {
     /// same directory (not a mocked error), exercising the actual `hydrate_and_condense` ->
     /// `hydrate_from_event_log` -> `open_exclusive` call chain.
     #[tokio::test]
+    #[serial_test::serial(zeph_bin_history_integrity)]
     async fn init_session_sink_bails_when_hydration_hits_already_locked() {
         let memory = make_runner_test_memory().await;
         let cid = memory.sqlite().create_conversation().await.unwrap();
@@ -6004,6 +6043,7 @@ mod tests {
     /// `SessionEventLog::open_exclusive` on the same directory must make
     /// `resume_session_sink_fallback` fail fast with `Err`, not silently return `None`.
     #[tokio::test]
+    #[serial_test::serial(zeph_bin_history_integrity)]
     async fn resume_session_sink_fallback_bails_when_already_locked() {
         let dir = tempfile::tempdir().unwrap();
         let session_path = dir.path().join("session-abc");

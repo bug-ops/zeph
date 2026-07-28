@@ -310,6 +310,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_replay_empty_session() {
         let dir = tempfile::tempdir().unwrap();
         let state = ReplayEngine::replay(dir.path(), None).await.unwrap();
@@ -318,6 +319,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_replay_basic_turn() {
         let dir = tempfile::tempdir().unwrap();
         let log = SessionEventLog::open(dir.path()).await.unwrap();
@@ -366,6 +368,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(session_history_integrity)]
     fn test_replay_tool_roundtrip() {
         let events = vec![
             envelope(
@@ -417,6 +420,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(session_history_integrity)]
     fn test_replay_tool_result_batch_merges_into_one_user_message() {
         // Multiple ToolResult events from the same tool-call batch (tier_loop.rs's
         // process_tool_result_batch persists one Role::User message per batch, holding one
@@ -468,6 +472,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(session_history_integrity)]
     fn test_replay_tool_result_never_merges_into_plain_user_message() {
         // A genuine SessionEvent::UserMessage (folds to empty `parts`) must never be treated as
         // an open tool-result batch, even if a ToolResult event immediately follows it.
@@ -497,6 +502,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(session_history_integrity)]
     fn test_replay_condensation_folds() {
         let summary = AnchoredSummary {
             session_intent: "test".to_owned(),
@@ -550,6 +556,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(session_history_integrity)]
     fn test_replay_stop_at_seq() {
         let events = vec![
             envelope(
@@ -750,6 +757,7 @@ mod tests {
     /// produce output equivalent to the old whole-file-`Vec` + `fold` path on a large synthetic
     /// log spanning several hundred events and every `SessionEvent` variant `fold_step` handles.
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_replay_streaming_matches_vec_based_fold_on_large_log() {
         const N_TURNS: u64 = 250; // produces well over 100 events (> one REPLAY_CHUNK_SIZE)
 
@@ -786,6 +794,7 @@ mod tests {
     /// `read_events_chunked` only fires once, at EOF, so it must still catch a torn line that
     /// falls beyond the last full chunk boundary.
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_replay_torn_tail_across_chunk_boundary() {
         const N_TURNS: u64 = 250; // produces well over one REPLAY_CHUNK_SIZE (100) of events
 
@@ -836,6 +845,7 @@ mod tests {
     /// chunk still being accumulated, right at a chunk-flush point, or just past one, and the
     /// chunked path must still stop the fold at the exact same seq the whole-file path does.
     #[tokio::test]
+    #[serial_test::serial(session_history_integrity)]
     async fn test_replay_up_to_matches_fold_at_chunk_boundaries() {
         const N_TURNS: u64 = 250; // produces well over 200 events
 

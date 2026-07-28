@@ -283,17 +283,27 @@ mod tests {
     #![allow(clippy::format_collect)]
     use std::assert_matches;
 
+    use serial_test::serial;
+
     use super::*;
 
     // ── resolve_memory_dir ────────────────────────────────────────────────────
+    //
+    // `Project`/`Local` scope reads the real process CWD (`std::env::current_dir`), which is
+    // process-wide, not per-thread — every test below that reaches that code path, whether or
+    // not it mutates the CWD itself, must share the crate's single (default, unnamed) `#[serial]`
+    // group with `ensure_*` below and `cwd_guard.rs`'s tests, or it can observe a directory a
+    // concurrent test has just deleted (issue #6686).
 
     #[test]
+    #[serial]
     fn resolve_project_scope_returns_correct_path() {
         let dir = resolve_memory_dir(MemoryScope::Project, "my-agent").unwrap();
         assert!(dir.ends_with(".zeph/agent-memory/my-agent"));
     }
 
     #[test]
+    #[serial]
     fn resolve_local_scope_returns_correct_path() {
         let dir = resolve_memory_dir(MemoryScope::Local, "my-agent").unwrap();
         assert!(dir.ends_with(".zeph/agent-memory-local/my-agent"));
@@ -334,11 +344,13 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn resolve_accepts_single_char_name() {
         resolve_memory_dir(MemoryScope::Project, "a").unwrap();
     }
 
     #[test]
+    #[serial]
     fn resolve_accepts_64_char_name() {
         let name = "a".repeat(64);
         resolve_memory_dir(MemoryScope::Project, &name).unwrap();
@@ -368,25 +380,23 @@ mod tests {
     // ── ensure_memory_dir ────────────────────────────────────────────────────
 
     #[tokio::test]
+    #[serial]
     async fn ensure_creates_directory_for_project_scope() {
         let tmp = tempfile::tempdir().unwrap();
-        let orig_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
+        let _cwd = crate::cwd_guard::TestCwdGuard::enter(tmp.path());
 
         let result = ensure_memory_dir(MemoryScope::Project, "test-agent")
             .await
             .unwrap();
         assert!(result.exists());
         assert!(result.ends_with(".zeph/agent-memory/test-agent"));
-
-        std::env::set_current_dir(orig_dir).unwrap();
     }
 
     #[tokio::test]
+    #[serial]
     async fn ensure_idempotent_when_directory_exists() {
         let tmp = tempfile::tempdir().unwrap();
-        let orig_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
+        let _cwd = crate::cwd_guard::TestCwdGuard::enter(tmp.path());
 
         let dir1 = ensure_memory_dir(MemoryScope::Project, "idempotent-agent")
             .await
@@ -395,8 +405,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(dir1, dir2);
-
-        std::env::set_current_dir(orig_dir).unwrap();
     }
 
     // ── load_memory_content ───────────────────────────────────────────────────
