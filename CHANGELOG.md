@@ -195,6 +195,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   session — every event still queued at that point is provably an orphan from a prior turn —
   closing the whole inter-turn window instead of one snapshot; `Drop`'s drain remains as a cheap
   early filter.
+- `zeph-core`: fixed 3 flaky timing-based test assertions (issue #6679) that inferred
+  concurrency or non-blocking behavior from fixed wall-clock thresholds, which could
+  spuriously fail under CI load. `after_tool_hooks_run_concurrently_across_tier_indices`
+  now asserts a structural max-in-flight high-water mark (an atomic counter around
+  in-process `RuntimeLayer::after_tool` calls) instead of comparing elapsed time against
+  `N * per-task-delay`. `pre_tool_use_hooks_fire_concurrently_across_tier_indices` (subprocess-
+  based `PreToolUse` hooks, `#[cfg(unix)]`) uses a two-phase rendezvous barrier instead: every
+  hook invocation must individually observe all `N` markers present before creating a witness
+  file, which serial dispatch can never satisfy — this replaced an earlier marker-file-poller
+  draft that still raced a fixed sleep against subprocess-start spread (caught in review).
+  `dump_request_smoke_returns_promptly_and_write_still_lands` is replaced by
+  `dump_request_returns_before_blocking_write_completes`, which uses a test-only
+  `TestWriteGate` channel handshake (with a 30s bound so a regression to an inline write path
+  fails with a clear panic instead of hanging the CI shard) to prove `dump_request` returns
+  before its `spawn_blocking` write completes, with no timing race window at all.
 
 ## [0.22.3] - 2026-07-22
 ### Fixed

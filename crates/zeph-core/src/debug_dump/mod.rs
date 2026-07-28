@@ -28,6 +28,11 @@ pub struct DebugDumper {
     counter: Arc<AtomicU32>,
     format: DumpFormat,
     include_raw_images: bool,
+    /// Test-only synchronization gate for [`Self::write`]'s blocking-pool task (#6679). Lets
+    /// tests prove "returns before the write completes" structurally via a channel handshake
+    /// instead of racing a wall-clock budget against real disk I/O.
+    #[cfg(test)]
+    test_write_gate: Option<Arc<TestWriteGate>>,
 }
 
 pub struct RequestDebugDump<'a> {
@@ -60,6 +65,8 @@ impl DebugDumper {
             counter: Arc::new(AtomicU32::new(0)),
             format,
             include_raw_images: false,
+            #[cfg(test)]
+            test_write_gate: None,
         })
     }
 
@@ -112,6 +119,8 @@ impl DebugDumper {
     fn write(&self, filename: &str, content: &[u8]) {
         let path = self.dir.join(filename);
         let content = content.to_vec();
+        #[cfg(test)]
+        let gate = self.test_write_gate.clone();
         // Ask-First exception to rust-code.md's Await Discipline rule #2 ("fire-and-forget
         // tasks MUST be tracked, never drop a JoinHandle"): this handle is deliberately
         // dropped, untracked. Rationale: this is a debug-only diagnostic path (opt-in,
@@ -123,6 +132,10 @@ impl DebugDumper {
         // for this fix. Recorded here per the exception clause in
         // .claude/rules/continuous-improvement.md rather than left as a silent deviation.
         tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some(gate) = gate {
+                gate.block_until_released();
+            }
             if let Err(e) = zeph_common::fs_secure::atomic_write_private(&path, &content) {
                 tracing::warn!(path = %path.display(), error = %e, "debug dump write failed");
             }
@@ -1069,6 +1082,43 @@ fn part_to_block(part: &MessagePart, is_assistant: bool) -> Option<serde_json::V
     }
 }
 
+/// Test-only synchronization gate for [`DebugDumper::write`]'s blocking-pool task. Proves the
+/// "`dump_request` returns before its write completes" property structurally via a channel
+/// handshake (#6679) instead of racing a wall-clock budget against real disk I/O: the write
+/// task signals `started_tx` once dispatched, then blocks until the test releases it.
+///
+/// Single-release only: `block_until_released` calls `recv_timeout` exactly once per gated
+/// `write()` call. A second gated write in the same test (e.g. `dump_response`/
+/// `dump_tool_output` sharing this gate) would find `release_rx` already drained and park until
+/// the 30s timeout below, panicking rather than proceeding — construct a fresh `TestWriteGate`
+/// per gated write rather than reusing one across multiple writes.
+#[cfg(test)]
+struct TestWriteGate {
+    started_tx: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    release_rx: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+#[cfg(test)]
+impl TestWriteGate {
+    fn block_until_released(&self) {
+        if let Some(tx) = self.started_tx.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
+        // Bounded: a genuine regression to an inline (non-`spawn_blocking`) write path would
+        // otherwise call this on the test's own execution thread and block it forever (#6679
+        // review S2), hanging the CI shard up to the job-level timeout instead of failing
+        // cleanly. `recv_timeout` turns that into an explicit panic.
+        self.release_rx
+            .lock()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect(
+                "TestWriteGate not released within 30s — possible regression to an inline \
+                 (non-spawn_blocking) write path",
+            );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1495,22 +1545,30 @@ mod tests {
         );
     }
 
-    /// Smoke test for #6029: `dump_request` returns promptly and the write still lands
-    /// afterward. NOT a strict regression guard — a revert to a synchronous single-file write
-    /// would typically also complete in 1-3ms on a tmpfs-backed tempdir and would still pass
-    /// the 50ms budget below. The write path isn't injectable/mockable here, so a tighter
-    /// assertion (e.g. proving the write is dispatched to a *different* thread than the
-    /// caller) isn't practical without adding test-only instrumentation to `DebugDumper`. Keep
-    /// this as a coarse sanity check plus the file-existence check below, not proof of
-    /// non-blocking behavior.
+    /// Structural replacement (#6679) for the former wall-clock-budget smoke test: proves
+    /// `dump_request` returns to the caller strictly before its `spawn_blocking` write task can
+    /// possibly complete, using a [`TestWriteGate`] channel handshake instead of racing a
+    /// millisecond threshold against real disk I/O. The write task is parked on the gate the
+    /// instant it is dispatched, so checking `request_path.exists()` right after `dump_request`
+    /// returns has no race window: it can only be `false` at that point.
     #[tokio::test]
-    async fn dump_request_smoke_returns_promptly_and_write_still_lands() {
+    async fn dump_request_returns_before_blocking_write_completes() {
         let dir = tempdir().unwrap();
-        let dumper = DebugDumper::new(dir.path(), DumpFormat::Json).unwrap();
+        let mut dumper = DebugDumper::new(dir.path(), DumpFormat::Json).unwrap();
+        let dump_dir = dumper.dir().to_path_buf();
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        dumper.test_write_gate = Some(Arc::new(TestWriteGate {
+            started_tx: std::sync::Mutex::new(Some(started_tx)),
+            release_rx: std::sync::Mutex::new(release_rx),
+        }));
+
         let messages = sample_messages();
         let tools = sample_tools();
 
-        let start = std::time::Instant::now();
+        // `dump_request` is a plain synchronous fn; reaching this point already proves it did
+        // not block on the gated write below.
         let _ = dumper.dump_request(&RequestDebugDump {
             model_name: "test-model",
             messages: &messages,
@@ -1518,14 +1576,26 @@ mod tests {
             provider_request: serde_json::json!({ "model": "test-model", "max_tokens": 1024 }),
             memcot_state: None,
         });
-        // Coarse budget only (see doc comment above) — not a strict non-blocking proof.
+
+        // Confirm the write was actually dispatched to the blocking pool. The timeout here is
+        // only a deadlock guard against a genuine regression — not the property under test.
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("write task never reached the gate: spawn_blocking dispatch regressed");
+
+        // The write task is parked on the gate, so the file cannot exist yet — proves the
+        // caller-visible return happened strictly before the write, with no timing race.
+        let request_path = dump_dir.join("0000-request.json");
         assert!(
-            start.elapsed() < std::time::Duration::from_millis(50),
-            "dump_request must return without waiting on the blocking write"
+            !request_path.exists(),
+            "write must still be gated: file must not exist before release"
         );
 
-        // The write still completes shortly afterward (fire-and-forget, not dropped).
-        let _ = read_request_dump(dir.path()).await;
+        // Release the gate and confirm the write still lands afterward (fire-and-forget, not
+        // dropped).
+        release_tx.send(()).unwrap();
+        let payload = read_request_dump(dir.path()).await;
+        assert_eq!(payload["model"], "test-model");
     }
 
     // --- Image redaction (#6306) ---
