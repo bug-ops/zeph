@@ -148,6 +148,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-channels`: `MAX_RETRY_SECS` (the upper bound `send_with_retry` clamps a `Retry-After`
+  delay to) had no compile-time invariant guard (issue #6517). #6516 (closing #6496) filtered
+  the *parsed* `Retry-After` values so a negative/non-finite header or body field could no
+  longer reach `Duration::from_secs_f64`, but nothing stopped `MAX_RETRY_SECS` itself from
+  being edited into a negative, non-finite, or overflow-inducing constant, which
+  `delay_secs.min(MAX_RETRY_SECS)` would silently let through the same panic path — and the
+  existing `max_retry_secs_clamps` test only asserts clamp *behavior*, not the constant's
+  validity. Added a `const _: () = assert!(...)` in `crates/zeph-channels/src/common/http_retry.rs`
+  bounding `MAX_RETRY_SECS` to `[0.0, 3600.0]` and finite, with an explanatory message, so any
+  future edit violating the invariant fails the build instead of silently reintroducing the
+  panic — including the idiomatic-but-unsafe "disable the cap" edit of setting it to `f64::MAX`,
+  which passes a finite/non-negative-only check but still overflows `Duration::from_secs_f64`.
+
 - `src/tracing_init.rs`: `log_guard` (the `WorkerGuard` for the rolling file appender) had the
   same SIGTERM-flush gap as `chrome_guard` before #6683/#6692 fixed it (issue #6693) — a `SIGTERM`
   killed the process before Rust's normal `Drop` glue ran, discarding whatever log lines were

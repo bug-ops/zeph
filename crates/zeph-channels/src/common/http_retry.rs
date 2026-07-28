@@ -17,6 +17,23 @@ const MAX_RETRY_SECS: f64 = 60.0;
 /// Maximum number of retry attempts before giving up and surfacing the error.
 const MAX_RETRIES: u32 = 3;
 
+/// Guards against `MAX_RETRY_SECS` ever being edited into a negative,
+/// non-finite, or overflow-inducing value: `delay_secs.min(MAX_RETRY_SECS)`
+/// would silently let such a value flow into [`Duration::from_secs_f64`],
+/// which panics on all three cases (negative/NaN, ±infinity, and magnitudes
+/// beyond `Duration::MAX`) — the same panic fixed for parsed `Retry-After`
+/// values by [`valid_retry_secs`]. The 3600.0 (one hour) ceiling bounds how
+/// large a single backoff step can grow if `MAX_RETRY_SECS` is ever edited;
+/// the cumulative worst case across all retries (`MAX_RETRIES *
+/// MAX_RETRY_SECS`) is documented in the `# Timing` section of
+/// [`send_with_retry`] for whatever value is configured.
+const _: () = assert!(
+    MAX_RETRY_SECS.is_finite() && MAX_RETRY_SECS >= 0.0 && MAX_RETRY_SECS <= 3600.0,
+    "MAX_RETRY_SECS must be finite, non-negative, and at most 3600.0 (1 hour): \
+     out-of-range values reach Duration::from_secs_f64, which panics on negative, \
+     non-finite, or overflowing input"
+);
+
 /// Body shape used by rate-limit responses that carry `retry_after` as JSON.
 #[derive(Deserialize, Default)]
 struct RateLimitBody {
