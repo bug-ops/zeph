@@ -97,7 +97,9 @@ pub fn migrate_tui_delights(toml_src: &str) -> Result<MigrationResult, MigrateEr
 ///
 /// # Errors
 ///
-/// Returns `MigrateError::TomlParse` if the input is not valid TOML; infallible otherwise.
+/// Never returns `Err`; the `Result` is required by the `Migration` trait signature this
+/// function backs (`MigrateTuiMouse`, registered in `MIGRATIONS`). This is pure string/regex
+/// text manipulation with no TOML parsing step, so there is no failure mode to report.
 pub fn migrate_tui_mouse(toml_src: &str) -> Result<MigrationResult, MigrateError> {
     if !section_header_present(toml_src, "tui") {
         return Ok(MigrationResult {
@@ -137,6 +139,74 @@ pub fn migrate_tui_mouse(toml_src: &str) -> Result<MigrationResult, MigrateError
 
     let insert =
         "# mouse = false  # opt-in mouse capture: wheel scrolls, clicks focus panels (#5103)\n";
+    let output = TUI_HEADER_RE
+        .replacen(src, 1, |caps: &regex::Captures| {
+            format!("{}{insert}", &caps[0])
+        })
+        .into_owned();
+
+    let changed = output != toml_src;
+    let changed_count = usize::from(changed);
+    Ok(MigrationResult {
+        output,
+        changed_count,
+        sections_changed: if changed {
+            vec!["tui".to_owned()]
+        } else {
+            Vec::new()
+        },
+    })
+}
+
+/// Step 106 — add `panel_sizing = "auto"` advisory comment under `[tui]` (#6675).
+///
+/// `auto` is already the field's `#[default]`, so an absent key behaves identically —
+/// this is a documentation-only advisory, mirroring [`migrate_tui_mouse`].
+///
+/// # Errors
+///
+/// Never returns `Err`; the `Result` is required by the `Migration` trait signature this
+/// function backs (`MigrateTuiPanelSizing`, registered in `MIGRATIONS`). This is pure
+/// string/regex text manipulation with no TOML parsing step, so there is no failure mode to
+/// report.
+pub fn migrate_tui_panel_sizing(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if !section_header_present(toml_src, "tui") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let already_present = toml_src.lines().any(|l| {
+        let t = l.trim().trim_start_matches('#').trim();
+        t.starts_with("panel_sizing")
+    });
+    if already_present {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let owned;
+    let src = if toml_src.ends_with('\n') {
+        toml_src
+    } else {
+        owned = format!("{toml_src}\n");
+        &owned
+    };
+
+    if !TUI_HEADER_RE.is_match(src) {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let insert = "# panel_sizing = \"auto\"  # \"auto\" sizes panels from content, \"even\" splits equally (#6675)\n";
     let output = TUI_HEADER_RE
         .replacen(src, 1, |caps: &regex::Captures| {
             format!("{}{insert}", &caps[0])
@@ -1197,6 +1267,44 @@ mod rate_limit_advisory_tests {
     fn migrate_rate_limit_advisory_noop_when_active_section_present() {
         let base = "[security.rate_limit]\nenabled = false\n";
         let result = migrate_rate_limit_advisory(base).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, base);
+    }
+}
+
+#[cfg(test)]
+mod tui_panel_sizing_tests {
+    use super::*;
+
+    #[test]
+    fn migrate_tui_panel_sizing_adds_advisory_comment() {
+        let base = "[tui]\nmouse = false\n";
+        let result = migrate_tui_panel_sizing(base).unwrap();
+        assert_eq!(result.changed_count, 1);
+        assert!(result.output.contains("# panel_sizing = \"auto\""));
+    }
+
+    #[test]
+    fn migrate_tui_panel_sizing_idempotent() {
+        let base = "[tui]\nmouse = false\n";
+        let first = migrate_tui_panel_sizing(base).unwrap();
+        let second = migrate_tui_panel_sizing(&first.output).unwrap();
+        assert_eq!(second.changed_count, 0);
+        assert_eq!(second.output, first.output);
+    }
+
+    #[test]
+    fn migrate_tui_panel_sizing_noop_when_key_already_present() {
+        let base = "[tui]\npanel_sizing = \"even\"\n";
+        let result = migrate_tui_panel_sizing(base).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, base);
+    }
+
+    #[test]
+    fn migrate_tui_panel_sizing_noop_when_no_tui_section() {
+        let base = "[agent]\nname = \"zeph\"\n";
+        let result = migrate_tui_panel_sizing(base).unwrap();
         assert_eq!(result.changed_count, 0);
         assert_eq!(result.output, base);
     }

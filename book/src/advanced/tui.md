@@ -101,6 +101,7 @@ Note: Enabling this increases network traffic between parent and sub-agents. Onl
 | `Ctrl+F` | Open transcript search (case-insensitive substring search across message content and tool names) |
 | `Tab` | Cycle side panel focus (includes SubAgents panel) |
 | `a` | Focus the SubAgents panel |
+| `Alt+1` / `Alt+2` / `Alt+3` / `Alt+4` | Toggle collapse for Skills / Memory / Resources / SubAgents (works in Normal and Insert mode) |
 
 ### Insert Mode
 
@@ -545,6 +546,32 @@ The TUI adapts to terminal width:
 |-------|--------|
 | >= 80 cols | Full layout: chat (70%) + side panels (30%) |
 | < 80 cols | Side panels hidden, chat takes full width |
+
+### Side Panel Sizing
+
+Within the side column, the four panels (Skills, Memory, Resources, SubAgents) are sized
+from their own content rather than split into equal shares — a sparse panel doesn't waste
+space, and a busy one isn't silently clipped. Each panel's exact row count is computed fresh
+every frame from what it's about to render, and every panel signals truncation the same way:
+if its content doesn't fit the rows it was granted, the last visible row becomes a muted
+`+N more` indicator instead of clipping silently.
+
+A panel collapsed with `Alt+1`..`Alt+4` (see [Keybindings](#keybindings)) still gets exactly
+one summary row regardless of content — collapsing is unaffected by this change. Leftover
+space beyond what all panels need is left blank at the bottom of the column; it can't be
+donated to the chat pane, which is a horizontal sibling that already spans the full height.
+
+Set `[tui] panel_sizing` in `config.toml` to control the strategy:
+
+```toml
+[tui]
+panel_sizing = "auto"  # default: size each panel from its content
+# panel_sizing = "even"  # pre-content-sizing behavior: split the column equally
+```
+
+Toggle at runtime with `/panel_sizing [auto|even]` (bare `/panel_sizing` toggles between the
+two) or the `app:panel-sizing` command palette entry. The runtime toggle is not persisted
+back to `config.toml`.
 
 ## Live Metrics
 

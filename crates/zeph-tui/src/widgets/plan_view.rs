@@ -101,6 +101,44 @@ fn build_task_row(task: &crate::metrics::TaskSnapshotRow, tick: u8, ascii: bool)
     ])
 }
 
+/// Build the per-task table rows for an active, non-stale plan snapshot.
+///
+/// Shared by [`render`] and [`desired_height`] so the row *count* measurement can never
+/// drift from what `render` actually builds — `tick`/`ascii` only affect a spinner glyph,
+/// never the number of rows, so [`desired_height`] calls this with fixed placeholder values.
+fn build_rows(
+    snapshot: &crate::metrics::TaskGraphSnapshot,
+    tick: u8,
+    ascii: bool,
+) -> Vec<Row<'static>> {
+    snapshot
+        .tasks
+        .iter()
+        .map(|task| build_task_row(task, tick, ascii))
+        .collect()
+}
+
+/// Number of rows the plan view needs: `2` for the idle placeholder (header + hint line),
+/// or `2 + tasks.len()` when an active, non-stale plan snapshot is present (header + table
+/// column header + one row per task).
+///
+/// Pure function of `metrics` — never of the allocated `Rect` — so [`desired_height`] and
+/// [`render`] can never disagree about how many rows this panel needs.
+#[must_use]
+pub fn desired_height(metrics: &MetricsSnapshot) -> u16 {
+    let Some(ref snapshot) = metrics.orchestration_graph else {
+        return 2;
+    };
+    if snapshot.is_stale() {
+        return 2;
+    }
+    // tick/ascii are irrelevant to row count; build_rows is the same function render() uses
+    // so a future change to which tasks get a row (e.g. filtering) can't silently desync
+    // measurement from what's actually drawn.
+    let rows = u16::try_from(build_rows(snapshot, 0, false).len()).unwrap_or(u16::MAX);
+    2u16.saturating_add(rows)
+}
+
 /// Render the plan view widget in the given area.
 ///
 /// When `metrics.orchestration_graph` is `None`, renders a placeholder paragraph.
@@ -186,11 +224,31 @@ pub fn render(
         Cell::from("ms").style(Style::default().fg(Color::DarkGray)),
     ]);
 
-    let rows: Vec<Row<'_>> = snapshot
-        .tasks
-        .iter()
-        .map(|task| build_task_row(task, tick, ascii))
-        .collect();
+    let mut rows = build_rows(snapshot, tick, ascii);
+
+    // The `Table` widget's own column header consumes 1 row of `splits[1]`; the rest is
+    // where `rows` render. `Table` silently drops rows beyond that budget with no visual
+    // cue, so — matching `widgets::panel::render_lines`'s overflow convention (#6675 M2) —
+    // truncate ourselves and replace the last visible row with a `+N more` indicator.
+    let capacity = usize::from(splits[1].height.saturating_sub(1));
+    if rows.len() > capacity {
+        let hidden = rows.len() - capacity + 1;
+        rows.truncate(capacity);
+        if let Some(last) = rows.last_mut() {
+            *last = Row::new([
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(format!("+{hidden} more")).style(
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+            ]);
+        }
+    }
 
     let table = Table::new(rows, widths)
         .header(col_header)
@@ -259,6 +317,91 @@ mod tests {
             .iter()
             .map(|c| c.symbol().to_owned())
             .collect::<String>()
+    }
+
+    #[test]
+    fn desired_height_placeholder_is_two() {
+        let metrics = MetricsSnapshot::default();
+        assert_eq!(desired_height(&metrics), 2);
+    }
+
+    #[test]
+    fn desired_height_matches_header_plus_column_header_plus_task_count() {
+        let metrics = MetricsSnapshot {
+            orchestration_graph: Some(make_snapshot(
+                "running",
+                vec![("Task Alpha", "pending"), ("Task Beta", "running")],
+            )),
+            ..MetricsSnapshot::default()
+        };
+        assert_eq!(desired_height(&metrics), 4);
+    }
+
+    #[test]
+    fn desired_height_stale_snapshot_is_placeholder_height() {
+        let mut metrics = MetricsSnapshot::default();
+        let mut snap = make_snapshot("completed", vec![("Task", "completed")]);
+        snap.completed_at = Some(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(31))
+                .unwrap(),
+        );
+        metrics.orchestration_graph = Some(snap);
+        assert_eq!(desired_height(&metrics), 2);
+    }
+
+    #[test]
+    fn desired_height_matches_actual_row_count_render_builds() {
+        // #6675 M1: desired_height must derive from the same build_rows() render() uses,
+        // not an independently-maintained count.
+        let metrics = MetricsSnapshot {
+            orchestration_graph: Some(make_snapshot(
+                "running",
+                vec![("A", "pending"), ("B", "running"), ("C", "completed")],
+            )),
+            ..MetricsSnapshot::default()
+        };
+        let Some(ref snapshot) = metrics.orchestration_graph else {
+            unreachable!()
+        };
+        let actual_rows = super::build_rows(snapshot, 0, false).len();
+        assert_eq!(
+            desired_height(&metrics),
+            2 + u16::try_from(actual_rows).unwrap()
+        );
+    }
+
+    #[test]
+    fn render_shows_overflow_indicator_when_tasks_exceed_area() {
+        // #6675 M2: plan_view's Table must not silently clip rows under pressure.
+        let metrics = MetricsSnapshot {
+            orchestration_graph: Some(make_snapshot(
+                "running",
+                vec![
+                    ("Task One", "pending"),
+                    ("Task Two", "running"),
+                    ("Task Three", "completed"),
+                    ("Task Four", "pending"),
+                    ("Task Five", "pending"),
+                ],
+            )),
+            ..MetricsSnapshot::default()
+        };
+        // Outer header (1) + table column header (1) + only 2 data rows worth of space.
+        let output = crate::test_utils::render_to_string(80, 4, |frame, area| {
+            render(
+                &metrics,
+                frame,
+                area,
+                0,
+                false,
+                &crate::theme::Theme::default(),
+            );
+        });
+        assert!(
+            output.contains("more"),
+            "overflowing task list must show an indicator, got:\n{output}"
+        );
     }
 
     #[test]

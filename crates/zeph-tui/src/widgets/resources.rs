@@ -14,19 +14,20 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use std::fmt::Write as _;
 
-use ratatui::widgets::{Block, Borders, Paragraph};
-
 use crate::layout::truncate_to_width;
 use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
+use crate::widgets::panel;
 
-/// Render the resources panel into `area`.
+/// Build the resources panel's content lines.
 ///
 /// Layout (spec §4): section title · tokens · api · route, with optional
 /// cache, MCP, background-shell, turn-latency, and classifier-latency lines
-/// when non-zero.
-pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
-    let mut lines: Vec<Line<'_>> = vec![Line::from(Span::styled(
+/// when non-zero. Pure function of `metrics` and `theme` — never of the allocated `Rect` —
+/// so [`desired_height`] and [`render`] can never disagree about how many rows this panel
+/// needs.
+pub(crate) fn lines(metrics: &MetricsSnapshot, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled(
         "resources",
         theme.system_message.add_modifier(Modifier::BOLD),
     ))];
@@ -40,8 +41,18 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &
     append_turn_latency_section(&mut lines, metrics);
     append_classifier_latency_line(&mut lines, metrics);
 
-    let resources = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
-    frame.render_widget(resources, area);
+    lines
+}
+
+/// Number of rows the resources panel needs to show all of `metrics` without truncation.
+#[must_use]
+pub fn desired_height(metrics: &MetricsSnapshot, theme: &Theme) -> u16 {
+    u16::try_from(lines(metrics, theme).len()).unwrap_or(u16::MAX)
+}
+
+/// Render the resources panel into `area`.
+pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
+    panel::render_lines(frame, area, lines(metrics, theme), theme);
 }
 
 /// `tokens  Nk` (with reasoning suffix when non-zero).
@@ -431,6 +442,79 @@ mod tests {
         assert!(
             output.contains("R:"),
             "must show reasoning label; got: {output:?}"
+        );
+    }
+
+    // ── desired_height / render parity (#6675 tester gap 2) ─────────────────────
+
+    #[test]
+    fn desired_height_matches_actual_rendered_row_count() {
+        use crate::test_utils::count_non_blank_rows;
+        use zeph_core::metrics::{ClassifierMetricsSnapshot, TaskMetricsSnapshot, TurnTimings};
+
+        let metrics = MetricsSnapshot {
+            provider_name: "claude".into(),
+            model_name: "opus-4".into(),
+            embedding_model: "nomic-embed-text".into(),
+            total_tokens: 12_500,
+            reasoning_tokens: 500,
+            api_calls: 5,
+            last_llm_latency_ms: 250,
+            cache_creation_tokens: 1000,
+            cache_read_tokens: 500,
+            mcp_server_count: 2,
+            mcp_connected_count: 2,
+            mcp_tool_count: 14,
+            timing_sample_count: 3,
+            last_turn_timings: TurnTimings {
+                prepare_context_ms: 12,
+                llm_chat_ms: 340,
+                tool_exec_ms: 58,
+                persist_message_ms: 4,
+            },
+            classifier: ClassifierMetricsSnapshot {
+                injection: TaskMetricsSnapshot {
+                    call_count: 4,
+                    p50_ms: Some(7),
+                    p95_ms: Some(15),
+                },
+                pii: TaskMetricsSnapshot::default(),
+                feedback: TaskMetricsSnapshot::default(),
+            },
+            ..MetricsSnapshot::default()
+        };
+        let expected = super::desired_height(&metrics, &theme());
+
+        let output = render_to_string(80, 30, |frame, area| {
+            super::render(&metrics, frame, area, &theme());
+        });
+        assert_eq!(
+            u16::try_from(count_non_blank_rows(&output)).unwrap(),
+            expected,
+            "desired_height must match the actual non-blank rendered row count, got:\n{output}"
+        );
+    }
+
+    // ── overflow indicator via render() (#6675 tester gap 3) ────────────────────
+
+    #[test]
+    fn render_shows_overflow_indicator_when_area_too_small() {
+        let metrics = MetricsSnapshot {
+            provider_name: "claude".into(),
+            model_name: "opus-4".into(),
+            total_tokens: 12_500,
+            api_calls: 5,
+            mcp_server_count: 2,
+            mcp_connected_count: 2,
+            mcp_tool_count: 14,
+            ..MetricsSnapshot::default()
+        };
+        let output = render_to_string(50, 2, |frame, area| {
+            super::render(&metrics, frame, area, &theme());
+        });
+        assert!(
+            output.contains("more"),
+            "must show overflow indicator when granted area is smaller than content, got:\n{output}"
         );
     }
 }

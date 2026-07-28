@@ -14,14 +14,17 @@ use crate::command::TuiCommand;
 use crate::event::AgentEvent;
 use crate::file_picker::FileIndex;
 use crate::hyperlink::HyperlinkSpan;
+use crate::layout::{PanelDemand, PanelSizing};
 use crate::metrics::MetricsSnapshot;
 use crate::session::SessionRegistry;
 use crate::types::PasteState;
+use crate::widgets::subagents::SubAgentSlotMode;
 use crate::widgets::tool_view::ToolDensity;
+use crate::widgets::{compaction_badge, memory, plan_view, resources, security, skills, subagents};
 
 use super::{
-    AgentViewTarget, App, ChatMessage, InputMode, MAX_VISIBLE_INPUT_LINES, MessageRole, Panel,
-    RenderCache, SubAgentSidebarState, TranscriptCache, is_tool_use_only, parse_tool_output,
+    AgentViewTarget, App, ChatMessage, EQ_PANEL_H, InputMode, MAX_VISIBLE_INPUT_LINES, MessageRole,
+    Panel, RenderCache, SubAgentSidebarState, TranscriptCache, is_tool_use_only, parse_tool_output,
 };
 
 /// No-progress duration after which the wave transitions to `Stalled`.
@@ -118,6 +121,7 @@ impl App {
             pending_quit_tick: None,
             last_progress_at: Instant::now(),
             show_equalizer: true,
+            panel_sizing: zeph_config::PanelSizingMode::default(),
             delights: zeph_config::DelightsConfig::default(),
             stream_rate: crate::delights::StreamRate::new(),
             toasts: crate::delights::ToastQueue::new(),
@@ -1075,11 +1079,20 @@ impl App {
         self.collapsed_panels
     }
 
-    /// Compute the effective collapse mask used for layout and rendering.
+    /// Compute the effective collapse mask used for rendering (which content each slot
+    /// shows, not how many rows it gets — sizing is a crate-internal concern).
     ///
-    /// Index 3 (`SubAgents` slot) is forced expanded when any overlay currently
-    /// owns that slot — Fleet, Durable, Tasks, plan view, or security events.
-    /// Indices 0–2 pass through the raw `collapsed_panels` value unchanged.
+    /// A slot's user-set `collapsed_panels` pin means "show the single summary row"
+    /// regardless of content; unpinned (`false`) means "auto, content-sized" — the slot
+    /// renders its real widget and is sized from that widget's own `desired_height`
+    /// (pre-#6675 this meant "equal share" via `Fill(1)`; the mask's own pin/auto
+    /// semantics are unchanged).
+    ///
+    /// Index 3 (`SubAgents` slot) is forced expanded (`false`) whenever an overlay currently
+    /// owns that slot — Fleet, Durable, Settings, Tasks — or the base layer itself is
+    /// showing something other than the plain idle list (interactive focus, plan view,
+    /// security events). Indices 0–2 pass through the raw `collapsed_panels` value
+    /// unchanged.
     ///
     /// # Examples
     ///
@@ -1097,21 +1110,144 @@ impl App {
     #[must_use]
     pub fn effective_collapsed(&self) -> [bool; 4] {
         let mut eff = self.collapsed_panels;
-        // Force-expand slot 3 whenever an overlay is rendering into the subagents rect.
-        let slot3_has_overlay = matches!(
-            self.active_panel,
-            Panel::SubAgents | Panel::Fleet | Panel::Durable | Panel::Settings
-        ) || self.show_task_panel
-            || self
-                .metrics
-                .orchestration_graph
-                .as_ref()
-                .is_some_and(|s| !s.is_stale() && !self.sessions.current().plan_view_active)
-            || self.has_recent_security_events();
-        if slot3_has_overlay {
+        let slot3_forced_expand =
+            self.subagent_slot_mode() != SubAgentSlotMode::List || self.subagents_overlay_active();
+        if slot3_forced_expand {
             eff[3] = false;
         }
         eff
+    }
+
+    /// Determine which base-layer view the `SubAgents` slot renders this frame.
+    ///
+    /// Single source of truth for the `SubAgents` slot's content: consumed by both
+    /// [`Self::panel_demands`] (sizing) and `render_subagents_slot` (rendering) so the two
+    /// decisions can never disagree (#6675) — previously this priority chain was re-derived
+    /// independently in each place.
+    #[must_use]
+    pub(crate) fn subagent_slot_mode(&self) -> SubAgentSlotMode {
+        if self.active_panel == Panel::SubAgents {
+            SubAgentSlotMode::Interactive
+        } else if self.has_active_plan() {
+            SubAgentSlotMode::PlanView
+        } else if self.has_recent_security_events() {
+            SubAgentSlotMode::Security
+        } else {
+            SubAgentSlotMode::List
+        }
+    }
+
+    /// `true` when a non-stale orchestration plan is active and not dismissed by the user.
+    fn has_active_plan(&self) -> bool {
+        self.metrics
+            .orchestration_graph
+            .as_ref()
+            .is_some_and(|s| !s.is_stale())
+            && !self.sessions.current().plan_view_active
+    }
+
+    /// `true` when Fleet, Durable, Settings, or the Tasks panel currently overlays the
+    /// `SubAgents` slot, independent of `subagent_slot_mode`'s base-layer choice.
+    fn subagents_overlay_active(&self) -> bool {
+        matches!(
+            self.active_panel,
+            Panel::Fleet | Panel::Durable | Panel::Settings
+        ) || self.show_task_panel
+    }
+
+    /// Build this frame's per-slot sizing demand for the side-panel column (#6675).
+    ///
+    /// Composes each widget's pure `desired_height` with the chrome `draw_side_panel` layers
+    /// on top of it (focused-panel header row, resources' `context_gauge` + compaction badge,
+    /// the subagents equalizer) so [`crate::layout::AppLayout::compute`] never under-allocates
+    /// a slot that then clips its own header. A `collapsed_panels` pin overrides content
+    /// sizing entirely via [`PanelDemand::Collapsed`].
+    #[must_use]
+    pub(crate) fn panel_demands(&self) -> PanelSizing {
+        let effective = self.effective_collapsed();
+
+        // `even` escape hatch (#6675): reproduce the pre-#6675 equal-share split by giving
+        // every unpinned slot a `Greedy` demand instead of measuring its content.
+        if self.panel_sizing == zeph_config::PanelSizingMode::Even {
+            let demands = effective.map(|collapsed| {
+                if collapsed {
+                    PanelDemand::Collapsed
+                } else {
+                    PanelDemand::Greedy
+                }
+            });
+            return PanelSizing {
+                demands,
+                focus: None,
+            };
+        }
+
+        let focused_chrome = |panel: Panel| -> u16 { u16::from(self.active_panel == panel) };
+
+        let skills = if effective[0] {
+            PanelDemand::Collapsed
+        } else {
+            let rows = skills::desired_height(&self.metrics, &self.theme)
+                .saturating_add(focused_chrome(Panel::Skills));
+            PanelDemand::Rows(rows)
+        };
+
+        let memory = if effective[1] {
+            PanelDemand::Collapsed
+        } else {
+            let rows = memory::desired_height(&self.metrics, &self.theme)
+                .saturating_add(focused_chrome(Panel::Memory));
+            PanelDemand::Rows(rows)
+        };
+
+        let resources = if effective[2] {
+            PanelDemand::Collapsed
+        } else {
+            // +1 for context_gauge (always shown) + compaction_badge's own 0/1 rule.
+            let rows = resources::desired_height(&self.metrics, &self.theme)
+                .saturating_add(1)
+                .saturating_add(compaction_badge::desired_height(&self.metrics))
+                .saturating_add(focused_chrome(Panel::Resources));
+            PanelDemand::Rows(rows)
+        };
+
+        let subagents = if effective[3] {
+            PanelDemand::Collapsed
+        } else {
+            let mode = self.subagent_slot_mode();
+            if self.subagents_overlay_active() || mode == SubAgentSlotMode::Interactive {
+                PanelDemand::Greedy
+            } else {
+                let mut rows = match mode {
+                    SubAgentSlotMode::PlanView => plan_view::desired_height(&self.metrics),
+                    SubAgentSlotMode::Security => {
+                        security::desired_height(&self.metrics, &self.theme)
+                    }
+                    SubAgentSlotMode::List | SubAgentSlotMode::Interactive => {
+                        subagents::desired_height(&self.metrics, &self.theme)
+                    }
+                };
+                if self.show_equalizer && (self.is_agent_busy() || self.background_inflight() > 0) {
+                    rows = rows.saturating_add(EQ_PANEL_H);
+                }
+                PanelDemand::Rows(rows)
+            }
+        };
+
+        let focus = match self.active_panel {
+            Panel::Skills => Some(0),
+            Panel::Memory => Some(1),
+            Panel::Resources => Some(2),
+            Panel::SubAgents | Panel::Fleet | Panel::Durable | Panel::Settings | Panel::Tasks => {
+                Some(3)
+            }
+            Panel::Chat => None,
+        };
+
+        PanelSizing {
+            demands: [skills, memory, resources, subagents],
+            focus,
+        }
     }
 
     /// Returns the number of rows in the settings view's currently active tab
@@ -1441,6 +1577,42 @@ impl App {
         self
     }
 
+    /// Set the side-panel sizing strategy at startup (#6675).
+    ///
+    /// Called from the builder chain in `tui_bridge` with `config.tui.panel_sizing`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use tokio::sync::mpsc;
+    /// use zeph_config::PanelSizingMode;
+    /// use zeph_tui::App;
+    ///
+    /// let (tx, _) = mpsc::channel(1);
+    /// let (_, rx) = mpsc::channel(1);
+    /// let app = App::new(tx, rx).with_panel_sizing(PanelSizingMode::Even);
+    /// assert_eq!(app.panel_sizing(), PanelSizingMode::Even);
+    /// ```
+    #[must_use]
+    pub fn with_panel_sizing(mut self, mode: zeph_config::PanelSizingMode) -> Self {
+        self.panel_sizing = mode;
+        self
+    }
+
+    /// Return the current side-panel sizing strategy.
+    #[must_use]
+    pub fn panel_sizing(&self) -> zeph_config::PanelSizingMode {
+        self.panel_sizing
+    }
+
+    /// Toggle between `auto` and `even` side-panel sizing at runtime.
+    pub(crate) fn toggle_panel_sizing(&mut self) {
+        self.panel_sizing = match self.panel_sizing {
+            zeph_config::PanelSizingMode::Auto => zeph_config::PanelSizingMode::Even,
+            zeph_config::PanelSizingMode::Even => zeph_config::PanelSizingMode::Auto,
+        };
+    }
+
     /// Return `true` when opt-in mouse capture is currently active.
     ///
     /// # Examples
@@ -1550,6 +1722,8 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{App, Panel};
+    use crate::app::EQ_PANEL_H;
+    use crate::layout::PanelDemand;
 
     fn make_app() -> App {
         let (user_tx, _) = mpsc::channel(1);
@@ -1888,5 +2062,116 @@ mod tests {
             "backfill must never push into input_history — that would pollute up-arrow \
              recall with transcript text instead of genuinely-typed prior input (AC-20)"
         );
+    }
+
+    // ── panel_demands() chrome accounting (#6675 tester gap 1) ──────────────────
+
+    fn rows_of(demand: PanelDemand) -> u16 {
+        match demand {
+            PanelDemand::Rows(n) => n,
+            other => panic!("expected PanelDemand::Rows, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn panel_demands_focused_skills_slot_adds_one_chrome_row() {
+        let mut app = make_app();
+        let unfocused = rows_of(app.panel_demands().demands[0]);
+        app.active_panel = Panel::Skills;
+        let focused = rows_of(app.panel_demands().demands[0]);
+        assert_eq!(
+            focused,
+            unfocused + 1,
+            "focused skills slot must get exactly +1 chrome row for its section header"
+        );
+    }
+
+    #[test]
+    fn panel_demands_focused_memory_slot_adds_one_chrome_row() {
+        let mut app = make_app();
+        let unfocused = rows_of(app.panel_demands().demands[1]);
+        app.active_panel = Panel::Memory;
+        let focused = rows_of(app.panel_demands().demands[1]);
+        assert_eq!(focused, unfocused + 1);
+    }
+
+    #[test]
+    fn panel_demands_resources_adds_context_gauge_row() {
+        let app = make_app();
+        let resources_rows = rows_of(app.panel_demands().demands[2]);
+        let widget_only = crate::widgets::resources::desired_height(&app.metrics, &app.theme);
+        // +1 for context_gauge (always shown); no compaction has occurred yet, so
+        // compaction_badge contributes 0.
+        assert_eq!(resources_rows, widget_only + 1);
+    }
+
+    #[test]
+    fn panel_demands_resources_adds_compaction_badge_row_when_present() {
+        let mut app = make_app();
+        app.metrics.compaction_last_at_ms = 1;
+        let resources_rows = rows_of(app.panel_demands().demands[2]);
+        let widget_only = crate::widgets::resources::desired_height(&app.metrics, &app.theme);
+        assert_eq!(
+            resources_rows,
+            widget_only + 2,
+            "+1 context_gauge, +1 compaction_badge once a compaction has occurred"
+        );
+    }
+
+    #[test]
+    fn panel_demands_focused_resources_adds_header_on_top_of_gauge_rows() {
+        let mut app = make_app();
+        let unfocused = rows_of(app.panel_demands().demands[2]);
+        app.active_panel = Panel::Resources;
+        let focused = rows_of(app.panel_demands().demands[2]);
+        assert_eq!(focused, unfocused + 1);
+    }
+
+    #[test]
+    fn panel_demands_subagents_adds_equalizer_rows_while_busy() {
+        let mut app = make_app();
+        app.show_equalizer = true;
+        let idle = rows_of(app.panel_demands().demands[3]);
+        app.sessions.current_mut().status_label = Some("thinking...".to_owned());
+        let busy = rows_of(app.panel_demands().demands[3]);
+        assert_eq!(
+            busy,
+            idle + EQ_PANEL_H,
+            "equalizer must add exactly EQ_PANEL_H rows to the subagents demand while the \
+             agent is busy"
+        );
+    }
+
+    #[test]
+    fn panel_demands_subagents_no_equalizer_rows_when_show_equalizer_disabled() {
+        let mut app = make_app();
+        app.show_equalizer = false;
+        let idle = rows_of(app.panel_demands().demands[3]);
+        app.sessions.current_mut().status_label = Some("thinking...".to_owned());
+        let busy = rows_of(app.panel_demands().demands[3]);
+        assert_eq!(busy, idle, "no equalizer rows when the user has hidden it");
+    }
+
+    #[test]
+    fn panel_demands_collapsed_slot_ignores_content_and_chrome() {
+        let mut app = make_app();
+        app.toggle_panel_collapse(0);
+        assert_eq!(app.panel_demands().demands[0], PanelDemand::Collapsed);
+    }
+
+    #[test]
+    fn panel_demands_even_mode_forces_all_unpinned_slots_greedy() {
+        let mut app = make_app();
+        app.panel_sizing = zeph_config::PanelSizingMode::Even;
+        app.toggle_panel_collapse(1);
+        let demands = app.panel_demands();
+        assert_eq!(demands.demands[0], PanelDemand::Greedy);
+        assert_eq!(
+            demands.demands[1],
+            PanelDemand::Collapsed,
+            "pins still honored in even mode"
+        );
+        assert_eq!(demands.demands[2], PanelDemand::Greedy);
+        assert_eq!(demands.demands[3], PanelDemand::Greedy);
     }
 }

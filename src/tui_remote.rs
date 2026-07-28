@@ -412,6 +412,7 @@ pub(crate) async fn run_tui_remote(
     };
     let mut tui_app = App::new(user_tx, agent_rx)
         .with_tool_density(config.tui.tool_density)
+        .with_panel_sizing(config.tui.panel_sizing)
         .with_theme(tui_theme)
         .with_theme_name(tui_theme_name)
         .with_effective_color_mode(tui_color_mode)

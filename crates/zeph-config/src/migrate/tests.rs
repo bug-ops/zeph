@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        106,
-        "MIGRATIONS registry must contain all 106 sequential steps"
+        107,
+        "MIGRATIONS registry must contain all 107 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -2124,7 +2124,26 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 106);
+    assert_eq!(MIGRATIONS.len(), 107);
+}
+
+/// Mirrors the SC-003 wire-X-into-registry check below for `MigrateTuiPanelSizing` (#6675):
+/// a function that exists but is never pushed into `MIGRATIONS` would pass its own isolated
+/// unit tests in `migrate/features.rs` while doing nothing for a real `--migrate-config` run.
+#[test]
+fn full_registry_adds_panel_sizing_advisory_to_legacy_tui_config() {
+    let legacy = "[tui]\nmouse = false\n";
+    let mut current = legacy.to_owned();
+    for m in MIGRATIONS.iter() {
+        current = m
+            .apply(&current)
+            .expect("registry migration must not fail")
+            .output;
+    }
+    assert!(
+        current.contains("# panel_sizing = \"auto\""),
+        "MIGRATIONS must add the panel_sizing advisory comment, got: {current}"
+    );
 }
 
 /// SC-003 (issue #6545): the isolated `migrate_agents_max_spawns_per_session` tests in
@@ -2307,6 +2326,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_telegram_expandable_blockquote_config",
         "migrate_agents_max_spawns_per_session",
         "migrate_shell_risk_chain_window_turns",
+        "migrate_tui_panel_sizing",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);

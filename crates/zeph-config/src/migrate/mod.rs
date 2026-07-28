@@ -32,7 +32,7 @@ pub use features::{
     migrate_orchestration_persistence, migrate_orchestration_whole_plan_verifier_timeout,
     migrate_rate_limit_advisory, migrate_skill_trust_require_check, migrate_skills_registry,
     migrate_telegram_expandable_blockquote_config, migrate_tui_delights, migrate_tui_mouse,
-    migrate_tui_theme_config, migrate_tui_theme_defaults,
+    migrate_tui_panel_sizing, migrate_tui_theme_config, migrate_tui_theme_defaults,
 };
 pub use infra::*;
 pub use integrity::migrate_integrity_config;
@@ -640,9 +640,9 @@ use steps::{
     MigrateSkillsRegistry, MigrateSttToProvider, MigrateSupervisorConfig,
     MigrateTelegramExpandableBlockquoteConfig, MigrateTelemetryConfig,
     MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse,
-    MigrateTuiThemeConfig, MigrateTuiThemeDefaults, MigrateUtilityHighGainTools,
-    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
-    MigrateWorktreeQuotaFields,
+    MigrateTuiPanelSizing, MigrateTuiThemeConfig, MigrateTuiThemeDefaults,
+    MigrateUtilityHighGainTools, MigrateVigilConfig, MigrateWorktreeConfig,
+    MigrateWorktreeGitTimeout, MigrateWorktreeQuotaFields,
 };
 
 /// Ordered registry of all sequential migration steps (steps 1–99).
@@ -867,6 +867,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 106 — add risk_chain_window_turns advisory comment to [tools.shell]
             // for RiskChainAccumulator's cross-turn multi-step chain detection (#6603)
             Box::new(MigrateShellRiskChainWindowTurns),
+            // Step 107 — add panel_sizing = "auto" advisory comment under [tui] (#6675)
+            Box::new(MigrateTuiPanelSizing),
         ]
     });
 

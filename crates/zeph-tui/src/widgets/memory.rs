@@ -5,10 +5,10 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::metrics::{MetricsSnapshot, ProbeCategory, ProbeVerdict};
 use crate::theme::Theme;
+use crate::widgets::panel;
 
 fn cat_label(cat: ProbeCategory) -> &'static str {
     match cat {
@@ -20,7 +20,7 @@ fn cat_label(cat: ProbeCategory) -> &'static str {
     }
 }
 
-fn render_probe_last_line<'a>(metrics: &'a MetricsSnapshot, lines: &mut Vec<Line<'a>>) {
+fn render_probe_last_line(metrics: &MetricsSnapshot, lines: &mut Vec<Line<'static>>) {
     let Some(verdict) = &metrics.last_probe_verdict else {
         return;
     };
@@ -78,7 +78,11 @@ fn render_probe_last_line<'a>(metrics: &'a MetricsSnapshot, lines: &mut Vec<Line
     }
 }
 
-pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
+/// Build the memory panel's content lines.
+///
+/// Pure function of `metrics` and `theme` — never of the allocated `Rect` — so
+/// [`desired_height`] and [`render`] can never disagree about how many rows this panel needs.
+pub(crate) fn lines(metrics: &MetricsSnapshot, theme: &Theme) -> Vec<Line<'static>> {
     let mut mem_lines = vec![Line::from(Span::styled(
         "memory",
         theme.system_message.add_modifier(Modifier::BOLD),
@@ -164,8 +168,17 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &
             metrics.guidelines_version, metrics.guidelines_updated_at,
         )));
     }
-    let memory = Paragraph::new(mem_lines).block(Block::default().borders(Borders::NONE));
-    frame.render_widget(memory, area);
+    mem_lines
+}
+
+/// Number of rows the memory panel needs to show all of `metrics` without truncation.
+#[must_use]
+pub fn desired_height(metrics: &MetricsSnapshot, theme: &Theme) -> u16 {
+    u16::try_from(lines(metrics, theme).len()).unwrap_or(u16::MAX)
+}
+
+pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
+    panel::render_lines(frame, area, lines(metrics, theme), theme);
 }
 
 #[cfg(test)]
@@ -306,5 +319,63 @@ mod tests {
             super::render(&metrics, frame, area, &theme);
         });
         assert_snapshot!(output);
+    }
+
+    // ── desired_height / render parity (#6675 tester gap 2) ─────────────────────
+
+    #[test]
+    fn desired_height_matches_actual_rendered_row_count() {
+        use crate::test_utils::count_non_blank_rows;
+
+        let metrics = MetricsSnapshot {
+            sqlite_message_count: 42,
+            qdrant_available: true,
+            vector_backend: "qdrant".into(),
+            embeddings_generated: 10,
+            compaction_probe_passes: 5,
+            last_probe_verdict: Some(ProbeVerdict::Pass),
+            last_probe_score: Some(0.9),
+            semantic_fact_count: 3,
+            guidelines_version: 2,
+            guidelines_updated_at: "2026-01-01T00:00:00.000Z".into(),
+            ..MetricsSnapshot::default()
+        };
+        let theme = crate::theme::Theme::default();
+        let expected = super::desired_height(&metrics, &theme);
+
+        // Oversized area: nothing should truncate, so every measured line renders its own row.
+        let output = render_to_string(80, 30, |frame, area| {
+            super::render(&metrics, frame, area, &theme);
+        });
+        assert_eq!(
+            u16::try_from(count_non_blank_rows(&output)).unwrap(),
+            expected,
+            "desired_height must match the actual non-blank rendered row count, got:\n{output}"
+        );
+    }
+
+    // ── overflow indicator via render() (#6675 tester gap 3) ────────────────────
+
+    #[test]
+    fn render_shows_overflow_indicator_when_area_too_small() {
+        let metrics = MetricsSnapshot {
+            sqlite_message_count: 42,
+            qdrant_available: true,
+            vector_backend: "qdrant".into(),
+            embeddings_generated: 10,
+            semantic_fact_count: 3,
+            guidelines_version: 2,
+            guidelines_updated_at: "2026-01-01T00:00:00.000Z".into(),
+            ..MetricsSnapshot::default()
+        };
+        let theme = crate::theme::Theme::default();
+        // desired_height for this fixture is comfortably more than 2 rows.
+        let output = render_to_string(50, 2, |frame, area| {
+            super::render(&metrics, frame, area, &theme);
+        });
+        assert!(
+            output.contains("more"),
+            "must show overflow indicator when granted area is smaller than content, got:\n{output}"
+        );
     }
 }

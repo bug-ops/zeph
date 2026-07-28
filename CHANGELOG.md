@@ -16,6 +16,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   risk score (see `zeph_tools::risk_chain` module docs for the full rationale and the accepted,
   bounded residual-evasion risk). Added `--init` wizard support and `--migrate-config` support
   (step 106).
+- `zeph-tui`: content-driven side-panel sizing (issue #6675). The four side-panel slots
+  (Skills, Memory, Resources, SubAgents) are now sized from their own content each frame via
+  a new integer max-min fair water-filling allocator (`layout::fit_panel_heights`) instead of
+  a flat equal-share `Fill(1)` split — a sparse panel no longer wastes space and a busy one
+  is no longer silently clipped. `AppLayout::compute` takes a new `PanelSizing` (per-slot
+  `PanelDemand::{Collapsed, Rows(u16), Greedy}`) in place of the old `[bool; 4]` collapse
+  mask; `App::panel_demands()` builds it each frame from each widget's new pure
+  `desired_height` plus the chrome (focused-panel header, resources' gauge/compaction badge,
+  the subagents equalizer). All four measured panels route their rendering through a new
+  shared `widgets::panel::render_lines`, which truncates to the granted height and replaces
+  the last visible row with a muted `+N more` indicator on overflow. New `[tui] panel_sizing`
+  config key (`"auto"` default, `"even"` approximates the pre-#6675 equal-share split — same
+  total per slot, remainder placement may differ from the old cassowary-based split),
+  runtime-togglable via `/panel_sizing [auto|even]` or the `app:panel-sizing` command palette
+  entry; `--init` prompts for it and `--migrate-config` adds an advisory comment for existing
+  configs (step 107).
 
 - `zeph-tui`: inline, non-modal `@` mention picker (issues #6647, #6648), replacing the
   old modal file picker. Typing `@` at word-start inserts the character and opens a popup

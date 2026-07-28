@@ -14,6 +14,7 @@ pub mod help;
 pub mod input;
 pub mod memory;
 pub mod mention_picker;
+pub mod panel;
 pub mod plan_view;
 pub mod resources;
 pub mod reverse_search;

@@ -29,6 +29,10 @@ use crate::types::PasteState;
 
 const MAX_VISIBLE_INPUT_LINES: u16 = 3;
 
+/// Height of the equalizer slot carved from the bottom of the subagents panel while the
+/// agent is busy or background work is inflight (see `App::draw` and `App::panel_demands`).
+pub(crate) const EQ_PANEL_H: u16 = 4;
+
 /// Tracks an in-flight background file-index build.
 ///
 /// When a [`TaskSupervisor`] is wired into the `App`, the build is routed through it
@@ -509,6 +513,13 @@ pub struct App {
     /// Toggled via [`crate::command::TuiCommand::ToggleEqualizer`].
     /// Defaults to `true`. Ignored when `Motion` is not `Full`.
     pub(crate) show_equalizer: bool,
+
+    /// Side-panel vertical sizing strategy (#6675).
+    ///
+    /// Sourced from `[tui] panel_sizing` in config; runtime-switchable via
+    /// [`crate::command::TuiCommand::TogglePanelSizing`]. See
+    /// [`crate::App::panel_demands`] for how this is consumed.
+    pub(crate) panel_sizing: zeph_config::PanelSizingMode,
 
     // --- Micro-delights (#5104) ---
     /// Individual feature toggles sourced from `[tui.delights]` in config.

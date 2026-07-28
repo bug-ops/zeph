@@ -12,9 +12,29 @@ use zeph_subagent::{ModelSpec, SubAgentDef, ToolPolicy, is_valid_agent_name};
 use crate::layout::truncate_to_width;
 use crate::metrics::{MetricsSnapshot, SubAgentMetrics};
 use crate::theme::Theme;
+use crate::widgets::panel;
 use crate::widgets::spinner::breeze_frame;
 
 // ── Runtime sub-agent monitor ─────────────────────────────────────────────────
+
+/// Which base-layer view the `SubAgents` slot renders this frame.
+///
+/// Chosen once per frame by `App::subagent_slot_mode` and consumed by both sizing
+/// (`App::panel_demands`) and rendering (`App::render_subagents_slot`) so the two decisions
+/// can never disagree (#6675) — this mirrors the same priority chain that used to be
+/// re-derived independently in `render_subagents_slot` and `App::effective_collapsed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubAgentSlotMode {
+    /// User is focused on the `SubAgents` panel (`a` key): interactive sidebar, optionally with
+    /// a live forwarded transcript. Sized `Greedy` — the live transcript wraps.
+    Interactive,
+    /// DAG/orchestration plan view is active and not dismissed.
+    PlanView,
+    /// Recent security events summary.
+    Security,
+    /// Idle default: plain sub-agents list.
+    List,
+}
 
 fn state_color(state: &str) -> Color {
     match state {
@@ -32,6 +52,10 @@ fn build_agent_list_item<'a>(
     selected: bool,
     ascii: bool,
 ) -> ListItem<'a> {
+    ListItem::new(build_agent_line(sa, tick, selected, ascii))
+}
+
+fn build_agent_line(sa: &SubAgentMetrics, tick: u8, selected: bool, ascii: bool) -> Line<'static> {
     let color = state_color(&sa.state);
     let is_working = matches!(sa.state.as_str(), "working" | "submitted");
     let spinner = if is_working {
@@ -56,7 +80,7 @@ fn build_agent_list_item<'a>(
         Style::default()
     };
 
-    let line = Line::from(vec![
+    Line::from(vec![
         Span::styled(format!(" {spinner} "), Style::default().fg(color)),
         Span::styled(
             format!("{}{}{}", sa.name, bg_marker, perm_badge),
@@ -70,52 +94,52 @@ fn build_agent_list_item<'a>(
             format!(" {}/{}  {}s", sa.turns_used, sa.max_turns, sa.elapsed_secs),
             base_style,
         ),
-    ]);
-    ListItem::new(line)
+    ])
+}
+
+/// Build the plain (non-interactive) sub-agents list's content lines: a header plus one row
+/// per sub-agent, or a two-line placeholder when there are none.
+///
+/// Pure function of `metrics` and `theme` — never of the allocated `Rect` — so
+/// [`desired_height`] and [`render`] can never disagree about how many rows this view needs.
+pub(crate) fn lines(metrics: &MetricsSnapshot, theme: &Theme) -> Vec<Line<'static>> {
+    if metrics.sub_agents.is_empty() {
+        return vec![
+            Line::from(Span::styled(
+                "agents · none",
+                theme.system_message.add_modifier(Modifier::BOLD),
+            )),
+            Line::from("  No sub-agents. Use /agent spawn <name> to create one."),
+        ];
+    }
+
+    let mut out = vec![Line::from(Span::styled(
+        format!("agents · {}", metrics.sub_agents.len()),
+        theme.system_message.add_modifier(Modifier::BOLD),
+    ))];
+    // Non-interactive view uses tick=0 (no animation); ascii flag is irrelevant when idle,
+    // but kept for consistency if a working agent appears in the static view.
+    out.extend(
+        metrics
+            .sub_agents
+            .iter()
+            .map(|sa| build_agent_line(sa, 0, false, false)),
+    );
+    out
+}
+
+/// Number of rows the plain sub-agents list needs to show all of `metrics` without truncation.
+#[must_use]
+pub fn desired_height(metrics: &MetricsSnapshot, theme: &Theme) -> u16 {
+    u16::try_from(lines(metrics, theme).len()).unwrap_or(u16::MAX)
 }
 
 /// Non-interactive render (used when `SubAgents` panel is not focused).
 pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
-    use ratatui::text::Span;
-
     if area.height == 0 || area.width == 0 {
         return;
     }
-
-    if metrics.sub_agents.is_empty() {
-        let header = Line::from(Span::styled(
-            "agents · none",
-            theme.system_message.add_modifier(Modifier::BOLD),
-        ));
-        let body = Paragraph::new(vec![
-            header,
-            Line::from("  No sub-agents. Use /agent spawn <name> to create one."),
-        ]);
-        frame.render_widget(body, area);
-        return;
-    }
-
-    // Non-interactive view uses tick=0 (no animation); ascii flag is irrelevant when idle,
-    // but kept for consistency if a working agent appears in the static view.
-    let items: Vec<ListItem<'_>> = metrics
-        .sub_agents
-        .iter()
-        .map(|sa| build_agent_list_item(sa, 0, false, false))
-        .collect();
-
-    let header = Line::from(Span::styled(
-        format!("agents · {}", metrics.sub_agents.len()),
-        theme.system_message.add_modifier(Modifier::BOLD),
-    ));
-
-    // Render header, then the list below it.
-    if area.height <= 1 {
-        frame.render_widget(Paragraph::new(vec![header]), area);
-        return;
-    }
-    let splits = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
-    frame.render_widget(Paragraph::new(vec![header]), splits[0]);
-    frame.render_widget(List::new(items), splits[1]);
+    panel::render_lines(frame, area, lines(metrics, theme), theme);
 }
 
 /// Interactive render: shows selection highlight and spinner animation.
@@ -1159,6 +1183,81 @@ mod tests {
         });
         assert!(output.contains("[plan]"));
         assert!(output.contains("[bypass!]"));
+    }
+
+    // ── desired_height / lines parity (#6675) ──────────────────────────────────
+
+    #[test]
+    fn desired_height_two_when_empty() {
+        let metrics = MetricsSnapshot::default();
+        let theme = crate::theme::Theme::default();
+        assert_eq!(desired_height(&metrics, &theme), 2);
+    }
+
+    #[test]
+    fn desired_height_matches_header_plus_agent_count() {
+        let metrics = MetricsSnapshot {
+            sub_agents: vec![
+                SubAgentMetrics {
+                    id: "a".into(),
+                    name: "one".into(),
+                    state: "working".into(),
+                    turns_used: 1,
+                    max_turns: 5,
+                    background: false,
+                    elapsed_secs: 1,
+                    permission_mode: String::new(),
+                    transcript_dir: None,
+                    live_transcript: Vec::new(),
+                },
+                SubAgentMetrics {
+                    id: "b".into(),
+                    name: "two".into(),
+                    state: "completed".into(),
+                    turns_used: 2,
+                    max_turns: 5,
+                    background: false,
+                    elapsed_secs: 2,
+                    permission_mode: String::new(),
+                    transcript_dir: None,
+                    live_transcript: Vec::new(),
+                },
+            ],
+            ..MetricsSnapshot::default()
+        };
+        let theme = crate::theme::Theme::default();
+        assert_eq!(desired_height(&metrics, &theme), 3);
+        assert_eq!(lines(&metrics, &theme).len(), 3);
+    }
+
+    #[test]
+    fn render_shows_overflow_indicator_when_area_too_small() {
+        let metrics = MetricsSnapshot {
+            sub_agents: (0..5)
+                .map(|i| SubAgentMetrics {
+                    id: format!("agent-{i}"),
+                    name: format!("agent-{i}"),
+                    state: "working".into(),
+                    turns_used: 1,
+                    max_turns: 5,
+                    background: false,
+                    elapsed_secs: 1,
+                    permission_mode: String::new(),
+                    transcript_dir: None,
+                    live_transcript: Vec::new(),
+                })
+                .collect(),
+            ..MetricsSnapshot::default()
+        };
+        let theme = crate::theme::Theme::default();
+        // 6 lines (header + 5 agents) into a 2-row area.
+        let output = render_to_string(60, 2, |frame, area| {
+            super::render(&metrics, frame, area, &theme);
+        });
+        assert!(
+            output.contains("more"),
+            "must show overflow indicator when granted area is smaller than content, got:\n{output}"
+        );
     }
 
     // ── Live transcript panel tests (issue #6359, FR-005) ─────────────────────

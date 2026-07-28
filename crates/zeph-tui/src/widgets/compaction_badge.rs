@@ -17,6 +17,16 @@ use ratatui::widgets::Paragraph;
 use crate::metrics::MetricsSnapshot;
 use crate::theme::Theme;
 
+/// Number of rows the compaction badge needs: `0` when no compaction has occurred this
+/// session (`compaction_last_at_ms == 0`), `1` otherwise.
+///
+/// Pure function of `metrics` — never of the allocated `Rect` — matching [`render`]'s own
+/// hidden-when-no-compaction rule so the two can never disagree.
+#[must_use]
+pub fn desired_height(metrics: &MetricsSnapshot) -> u16 {
+    u16::from(metrics.compaction_last_at_ms != 0)
+}
+
 /// Render the compaction badge into `area`.
 ///
 /// Shows `compaction  {before}k→{after}k (-{saved}k)  {elapsed}` on a single line.
@@ -109,5 +119,20 @@ mod tests {
         // compaction_last_at_ms == 0 → at_ms == 0 → early-return in render.
         let m = MetricsSnapshot::default();
         assert_eq!(m.compaction_last_at_ms, 0);
+    }
+
+    #[test]
+    fn desired_height_zero_when_no_compaction() {
+        let m = MetricsSnapshot::default();
+        assert_eq!(desired_height(&m), 0);
+    }
+
+    #[test]
+    fn desired_height_one_when_compaction_occurred() {
+        let m = MetricsSnapshot {
+            compaction_last_at_ms: 1,
+            ..MetricsSnapshot::default()
+        };
+        assert_eq!(desired_height(&m), 1);
     }
 }

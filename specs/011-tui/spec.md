@@ -69,6 +69,98 @@ TuiApp
 
 Tab cycling order includes SubAgents. See `026-tui-subagent-management/spec.md` for full SubAgents panel spec.
 
+## Side Panel Sizing (#6675)
+
+The four side-panel slots (Skills, Memory, Resources, SubAgents) are sized from their own
+content each frame rather than split into equal shares, so a sparse panel doesn't waste space
+and a busy one isn't silently clipped.
+
+**Types** (`crates/zeph-tui/src/layout.rs`):
+- `PanelDemand` — `Collapsed` (user-pinned to one summary row), `Rows(u16)` (wants exactly
+  that many rows), or `Greedy` (wants every row it can get). `Default` is `Greedy`, so four
+  `Greedy` demands give every slot the same *total* height the pre-#6675 equal-`Fill(1)`
+  split did, and `Collapsed` reproduces the old `Length(1)` collapse behavior exactly. The
+  new allocator's remainder placement is top-down, not identical to ratatui's cassowary
+  solver (which spreads remainder toward the middle slots) — e.g. for `available=5` the old
+  split gives `[1,2,1,1]`, the new one gives `[2,1,1,1]`; totals match, per-slot layout does
+  not. See `fit_panel_heights`'s remainder rule below.
+- `PanelSizing` — `demands: [PanelDemand; 4]` plus an optional `focus: Option<usize>` slot
+  index that receives rounding remainders first under space pressure.
+- `AppLayout::compute(area, show_side_panels, input_height, panels: PanelSizing)` resolves
+  `panels` into concrete row counts via `fit_panel_heights` and builds each side-column `Rect`
+  via direct y-offset arithmetic (not a second `Layout::split` — per-frame-varying `Length`
+  constraints are the worst case for ratatui's internal layout cache).
+
+**Allocator** (`fit_panel_heights`): integer max-min fair water-filling, not the ratatui
+`Constraint`/cassowary solver (which gives no priority-ordered shrink and unpredictable
+over-constrained behavior). Guarantees, upheld for any input including `Rows(u16::MAX)` via
+`u32` intermediates:
+- `sum(granted) <= available`
+- `granted[i] <= demand[i]` for `Rows(n)` — a slot is never given more than it asked for
+- `granted[i] >= 1` for every slot whose demand allows it (i.e. `demand != Rows(0)`) once
+  `available >= 4` — the floor row is an identity row / mouse hit target / collapse affordance
+- monotone non-decreasing in `available` and in each slot's own demand
+- never panics
+
+When `available < 4` there's no room for a floor row per slot: rows are handed out top-down,
+skipping zero-demand slots, until either budget is exhausted. Surplus beyond total demand is
+left as a trailing blank at the bottom of the column — donating it to chat is not
+geometrically possible, since chat is a horizontal sibling that already spans the full band
+height.
+
+**Measurement — widget-local, never `Rect`-dependent.** Each measured widget exposes a pure
+`desired_height(metrics, ...) -> u16` built from the same line-list the widget renders
+(`skills`, `memory`, `resources`, the plain SubAgents list, `security`, `plan_view`), so
+sizing and rendering can never disagree. `compaction_badge::desired_height` returns `0` when
+`compaction_last_at_ms == 0` (no unconditional blank row for an absent badge). A widget's
+`desired_height` **must never** be a function of the `Rect` it will be granted — that would
+create a layout feedback loop that oscillates frame to frame.
+
+`App::panel_demands()` (`crates/zeph-tui/src/app/state.rs`) composes each widget's
+`desired_height` with the chrome `draw_side_panel` layers on top: +1 row when the slot is
+focused (section header), +2 rows for the resources slot (`context_gauge` always, plus
+`compaction_badge`'s own 0/1 rule), and +`EQ_PANEL_H` for the subagents slot while the
+equalizer is showing. A `collapsed_panels` pin overrides content sizing entirely via
+`PanelDemand::Collapsed`.
+
+**Greedy vs measured classification**:
+- Measured (finite, non-wrapping line lists): skills, memory, resources, the plain (idle)
+  subagents list, the security summary, the plan view.
+- Greedy (overlays / wrapped / scrollable): Fleet, Durable, Settings, the task registry, and
+  the focused-interactive SubAgents view (its live-transcript tail wraps).
+
+`App::subagent_slot_mode()` is the single source of truth for which base-layer view the
+SubAgents slot shows this frame (`SubAgentSlotMode::{Interactive, PlanView, Security, List}`)
+— it is computed once per frame and consumed by both `panel_demands` (sizing) and
+`render_subagents_slot` (rendering), so the two decisions can never disagree. Overlay
+activity (Fleet/Durable/Settings/Tasks) is tracked separately and, together with
+`Interactive` mode, forces `PanelDemand::Greedy`.
+
+**Overflow indicator.** `widgets::panel::render_lines(frame, area, lines, theme)` is the
+shared render primitive for all four measured panels: it renders `area.height - 1` lines
+as-is and, when `lines.len() > area.height`, replaces the **last visible row** with a muted
+`+N more` (`N` = total lines not shown, including the one the indicator's own row replaced —
+not just the truncated tail). One implementation, one snapshot-tested behavior, instead of
+four independent truncation strategies. The skills panel's inner skills/MCP split
+(`split_two_sections`) applies the same "give the other section a floor row so it can show
+its own indicator" principle rather than letting one section's demand starve the other to
+zero height.
+
+**`[tui] panel_sizing`** (`zeph_config::PanelSizingMode`, default `auto`): `even` is an
+escape hatch that **approximates** the pre-#6675 equal-share split by giving every unpinned
+slot a `Greedy` demand instead of measuring content — it reproduces the same *total* split
+(see the `PanelDemand::Default` note above for why per-slot remainder placement can differ
+from the old cassowary-based `Fill(1)`), and it does **not** revert unrelated bug fixes this
+PR made unconditionally, e.g. the resources slot's `compaction_badge` row still sizes to
+`compaction_badge::desired_height` (0 or 1) rather than the old unconditional `Length(1)` —
+that row-height fix applies in both `auto` and `even` mode. Runtime-togglable via
+`/panel_sizing [auto|even]` or the command palette; not persisted back to config.
+
+**Collapse mask reframing.** `collapsed_panels`/`toggle_panel_collapse` remain the user-pin
+mechanism unchanged at the API level. `effective_collapsed()` still decides *which content* a
+slot renders (single summary row vs. real widget); unpinned (`false`) now means "auto,
+content-sized" instead of "equal share" — sizing itself is `panel_demands()`'s job.
+
 ## Spinner Rule (NON-NEGOTIABLE)
 
 **Every background or implicit operation must show a visible spinner with a short status message.**

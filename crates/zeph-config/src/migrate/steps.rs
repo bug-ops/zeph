@@ -79,7 +79,9 @@
 //! step 100 adds a commented `[integrity]` advisory block for vault-anchor
 //! downgrade-resistance (issue #6449); step 101 adds a commented `[security.rate_limit]`
 //! advisory block — purely documentary, the tool rate limiter already defaults to enabled
-//! at the struct-default level (issue #6469).
+//! at the struct-default level (issue #6469); step 106 adds a commented
+//! `panel_sizing = "auto"` advisory under `[tui]` — purely documentary, `auto` is already
+//! the field's struct default (issue #6675).
 //!
 //! Each struct is a zero-size type that delegates to the corresponding free function in
 //! `super`. They exist solely to satisfy the object-safe [`super::Migration`] trait so the
@@ -127,9 +129,9 @@ use super::{
     migrate_stt_to_provider, migrate_supervisor_config,
     migrate_telegram_expandable_blockquote_config, migrate_telemetry_config,
     migrate_tools_compression_config, migrate_trace_metadata, migrate_tui_delights,
-    migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults,
-    migrate_utility_high_gain_tools, migrate_vigil_config, migrate_worktree_config,
-    migrate_worktree_git_timeout, migrate_worktree_quota_fields,
+    migrate_tui_mouse, migrate_tui_panel_sizing, migrate_tui_theme_config,
+    migrate_tui_theme_defaults, migrate_utility_high_gain_tools, migrate_vigil_config,
+    migrate_worktree_config, migrate_worktree_git_timeout, migrate_worktree_quota_fields,
 };
 
 // ── Wrapper structs for all 73 sequential migration steps ───────────────────────────────────────
@@ -1357,6 +1359,8 @@ impl Migration for MigrateAgentsMaxSpawnsPerSession {
     }
 }
 
+/// Step 106 — add `risk_chain_window_turns` advisory comment to `[tools.shell]` for
+/// `RiskChainAccumulator`'s cross-turn multi-step chain detection (issue #6603).
 pub(super) struct MigrateShellRiskChainWindowTurns;
 impl Migration for MigrateShellRiskChainWindowTurns {
     fn name(&self) -> &'static str {
@@ -1365,5 +1369,17 @@ impl Migration for MigrateShellRiskChainWindowTurns {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_shell_risk_chain_window_turns(toml_src)
+    }
+}
+
+/// Step 107 — add `panel_sizing = "auto"` advisory comment under `[tui]` (issue #6675).
+pub(super) struct MigrateTuiPanelSizing;
+impl Migration for MigrateTuiPanelSizing {
+    fn name(&self) -> &'static str {
+        "migrate_tui_panel_sizing"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_tui_panel_sizing(toml_src)
     }
 }

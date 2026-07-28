@@ -161,6 +161,11 @@ pub enum TuiCommand {
     ToggleMouse,
     /// Toggle the compact equalizer widget in the busy separator row.
     ToggleEqualizer,
+    // Side-panel sizing (#6675)
+    /// Set the side-panel sizing strategy at runtime (`/panel_sizing auto|even`).
+    SetPanelSizing(zeph_config::PanelSizingMode),
+    /// Toggle between `auto` and `even` side-panel sizing.
+    TogglePanelSizing,
     // SubAgent sidebar navigation (used by decode_normal_key → Action::Dispatch)
     /// Move the subagent list selection down by one.
     SubagentSidebarDown,
@@ -436,6 +441,13 @@ fn build_app_commands() -> Vec<CommandEntry> {
             category: "app",
             shortcut: None,
             command: TuiCommand::ToggleEqualizer,
+        },
+        CommandEntry {
+            id: "app:panel-sizing",
+            label: "Toggle side-panel sizing (auto: content-sized / even: equal share)",
+            category: "app",
+            shortcut: None,
+            command: TuiCommand::TogglePanelSizing,
         },
     ]
 }
@@ -1151,8 +1163,8 @@ mod tests {
     #[test]
     fn registry_has_correct_count() {
         // +1 view:latency (#6059); +2 settings + search:transcript (#6024/#6023);
-        // +1 integrity:status (#6449)
-        assert_eq!(command_registry().len(), 31);
+        // +1 integrity:status (#6449); +1 app:panel-sizing (#6675)
+        assert_eq!(command_registry().len(), 32);
     }
 
     #[test]

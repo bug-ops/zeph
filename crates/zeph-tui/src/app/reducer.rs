@@ -920,6 +920,24 @@ fn reduce_inner(app: &mut App, action: Action) -> Vec<Effect> {
                     app.show_equalizer = !app.show_equalizer;
                     return vec![];
                 }
+                TuiCommand::SetPanelSizing(mode) => {
+                    app.panel_sizing = *mode;
+                    let label = match mode {
+                        zeph_config::PanelSizingMode::Auto => "auto (content-sized)",
+                        zeph_config::PanelSizingMode::Even => "even (equal share)",
+                    };
+                    app.push_system_message_pub(format!("Panel sizing set to: {label}"));
+                    return vec![];
+                }
+                TuiCommand::TogglePanelSizing => {
+                    app.toggle_panel_sizing();
+                    let label = match app.panel_sizing {
+                        zeph_config::PanelSizingMode::Auto => "auto (content-sized)",
+                        zeph_config::PanelSizingMode::Even => "even (equal share)",
+                    };
+                    app.push_system_message_pub(format!("Panel sizing set to: {label}"));
+                    return vec![];
+                }
 
                 // ── Group A — pure state mutations ──────────────────────────────
                 TuiCommand::NewSession => {
@@ -2250,7 +2268,7 @@ mod tests {
             area,
             app.show_side_panels(),
             app.desired_input_height(),
-            app.effective_collapsed(),
+            app.panel_demands(),
         ));
         (app, rx)
     }

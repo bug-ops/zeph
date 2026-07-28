@@ -2,31 +2,29 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListItem, Paragraph};
 
 use crate::metrics::{MetricsSnapshot, SecurityEventCategory};
 use crate::theme::Theme;
+use crate::widgets::panel;
 
-pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
+/// Build the security panel's content lines: a header, then either "No security events." or
+/// the full metric list plus recent-event entries.
+///
+/// Pure function of `metrics` and `theme` — never of the allocated `Rect` — so
+/// [`desired_height`] and [`render`] can never disagree about how many rows this panel needs.
+pub(crate) fn lines(metrics: &MetricsSnapshot, theme: &Theme) -> Vec<Line<'static>> {
     let event_count = metrics.security_events.len();
     let header_text = format!(
         "security · {event_count} event{}",
         if event_count == 1 { "" } else { "s" }
     );
-    let header = Line::from(Span::styled(
+    let mut out = vec![Line::from(Span::styled(
         header_text,
         theme.system_message.add_modifier(Modifier::BOLD),
-    ));
-    let splits = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
-    frame.render_widget(Paragraph::new(header), splits[0]);
-
-    let inner = splits[1];
-    if inner.height == 0 {
-        return;
-    }
+    ))];
 
     let all_zero = metrics.sanitizer_runs == 0
         && metrics.sanitizer_injection_flags == 0
@@ -43,9 +41,11 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &
         && metrics.security_events.is_empty();
 
     if all_zero {
-        let msg = Paragraph::new("No security events.").style(theme.system_message);
-        frame.render_widget(msg, inner);
-        return;
+        out.push(Line::from(Span::styled(
+            "No security events.",
+            theme.system_message,
+        )));
+        return out;
     }
 
     let base = theme.system_message;
@@ -54,43 +54,52 @@ pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &
         .add_modifier(Modifier::BOLD);
     let block_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
 
-    let mut items = build_metric_items(metrics, base, flag_style, block_style);
-    append_event_items(metrics, &mut items, base, flag_style, block_style);
-
-    let list = List::new(items);
-    frame.render_widget(list, inner);
+    out.extend(build_metric_items(metrics, base, flag_style, block_style));
+    append_event_items(metrics, &mut out, base, flag_style, block_style);
+    out
 }
 
-/// Build a `ListItem` with a plain styled label and value, using `base` style for both.
+/// Number of rows the security panel needs to show all of `metrics` without truncation.
+#[must_use]
+pub fn desired_height(metrics: &MetricsSnapshot, theme: &Theme) -> u16 {
+    u16::try_from(lines(metrics, theme).len()).unwrap_or(u16::MAX)
+}
+
+pub fn render(metrics: &MetricsSnapshot, frame: &mut Frame, area: Rect, theme: &Theme) {
+    panel::render_lines(frame, area, lines(metrics, theme), theme);
+}
+
+/// Build a plain styled label+value line, using `base` style for both.
 fn plain_metric_item(
     label: &'static str,
     value: impl std::fmt::Display,
     base: Style,
-) -> ListItem<'static> {
-    ListItem::new(Line::from(Span::styled(format!("{label}{value}"), base)))
+) -> Line<'static> {
+    Line::from(Span::styled(format!("{label}{value}"), base))
 }
 
-/// Build a `ListItem` whose value span switches to `alert_style` when the value is non-zero.
-fn styled_counter_item<'a>(
+/// Build a label+value line whose value span switches to `alert_style` when the value is
+/// non-zero.
+fn styled_counter_item(
     label: &'static str,
     value: u64,
     base: Style,
     alert_style: Style,
-) -> ListItem<'a> {
-    ListItem::new(Line::from(vec![
+) -> Line<'static> {
+    Line::from(vec![
         Span::styled(label, base),
         Span::styled(
             value.to_string(),
             if value > 0 { alert_style } else { base },
         ),
-    ]))
+    ])
 }
 
-fn build_sanitizer_items<'a>(
+fn build_sanitizer_items(
     metrics: &MetricsSnapshot,
     base: Style,
     flag_style: Style,
-) -> Vec<ListItem<'a>> {
+) -> Vec<Line<'static>> {
     vec![
         plain_metric_item("Sanitizer runs:    ", metrics.sanitizer_runs, base),
         styled_counter_item(
@@ -105,11 +114,11 @@ fn build_sanitizer_items<'a>(
     ]
 }
 
-fn build_exfiltration_items<'a>(
+fn build_exfiltration_items(
     metrics: &MetricsSnapshot,
     base: Style,
     block_style: Style,
-) -> Vec<ListItem<'a>> {
+) -> Vec<Line<'static>> {
     vec![
         styled_counter_item(
             "Exfil images:      ",
@@ -131,12 +140,12 @@ fn build_exfiltration_items<'a>(
     ]
 }
 
-fn build_pre_execution_items<'a>(
+fn build_pre_execution_items(
     metrics: &MetricsSnapshot,
     base: Style,
     flag_style: Style,
     block_style: Style,
-) -> Vec<ListItem<'a>> {
+) -> Vec<Line<'static>> {
     vec![
         styled_counter_item(
             "Verify blocks:     ",
@@ -153,12 +162,12 @@ fn build_pre_execution_items<'a>(
     ]
 }
 
-fn build_egress_items<'a>(
+fn build_egress_items(
     metrics: &MetricsSnapshot,
     base: Style,
     flag_style: Style,
     block_style: Style,
-) -> Vec<ListItem<'a>> {
+) -> Vec<Line<'static>> {
     vec![
         plain_metric_item("Egress requests:   ", metrics.egress_requests_total, base),
         styled_counter_item(
@@ -176,12 +185,12 @@ fn build_egress_items<'a>(
     ]
 }
 
-fn build_metric_items<'a>(
+fn build_metric_items(
     metrics: &MetricsSnapshot,
     base: Style,
     flag_style: Style,
     block_style: Style,
-) -> Vec<ListItem<'a>> {
+) -> Vec<Line<'static>> {
     let mut items = build_sanitizer_items(metrics, base, flag_style);
     items.extend(build_exfiltration_items(metrics, base, block_style));
     items.extend(build_pre_execution_items(
@@ -194,9 +203,9 @@ fn build_metric_items<'a>(
     items
 }
 
-fn append_event_items<'a>(
-    metrics: &'a MetricsSnapshot,
-    items: &mut Vec<ListItem<'a>>,
+fn append_event_items(
+    metrics: &MetricsSnapshot,
+    items: &mut Vec<Line<'static>>,
     base: Style,
     flag_style: Style,
     block_style: Style,
@@ -204,12 +213,12 @@ fn append_event_items<'a>(
     if metrics.security_events.is_empty() {
         return;
     }
-    items.push(ListItem::new(Line::from(Span::styled(
+    items.push(Line::from(Span::styled(
         "Recent events:",
         Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::UNDERLINED),
-    ))));
+    )));
 
     // Show last 5 events (most recent last).
     let start = metrics.security_events.len().saturating_sub(5);
@@ -236,15 +245,15 @@ fn append_event_items<'a>(
             _ => ("[unkn] ", Style::default().fg(Color::DarkGray)),
         };
         let hm = format_hm(ev.timestamp);
-        items.push(ListItem::new(Line::from(vec![
+        items.push(Line::from(vec![
             Span::styled(format!("{hm} "), Style::default().fg(Color::DarkGray)),
             Span::styled(cat_str, cat_style),
             Span::styled(format!(" {}", ev.source), base),
-        ])));
-        items.push(ListItem::new(Line::from(Span::styled(
+        ]));
+        items.push(Line::from(Span::styled(
             format!("  {}", ev.detail),
             Style::default().fg(Color::DarkGray),
-        ))));
+        )));
     }
 }
 
@@ -388,5 +397,56 @@ mod tests {
             let theme = crate::theme::Theme::default();
             render(&metrics, frame, area, &theme);
         });
+    }
+
+    // ── desired_height / render parity (#6675 tester gap 2) ─────────────────────
+
+    #[test]
+    fn desired_height_matches_actual_rendered_row_count() {
+        use crate::test_utils::count_non_blank_rows;
+
+        let mut events = VecDeque::new();
+        events.push_back(SecurityEvent::new(
+            SecurityEventCategory::InjectionFlag,
+            "web_scrape",
+            "Detected pattern: ignore previous",
+        ));
+        let metrics = MetricsSnapshot {
+            sanitizer_runs: 10,
+            sanitizer_injection_flags: 1,
+            security_events: events,
+            ..MetricsSnapshot::default()
+        };
+        let theme = crate::theme::Theme::default();
+        let expected = desired_height(&metrics, &theme);
+
+        let output = render_to_string(80, 40, |frame, area| {
+            render(&metrics, frame, area, &theme);
+        });
+        assert_eq!(
+            u16::try_from(count_non_blank_rows(&output)).unwrap(),
+            expected,
+            "desired_height must match the actual non-blank rendered row count, got:\n{output}"
+        );
+    }
+
+    // ── overflow indicator via render() (#6675 tester gap 3) ────────────────────
+
+    #[test]
+    fn render_shows_overflow_indicator_when_area_too_small() {
+        let metrics = MetricsSnapshot {
+            sanitizer_runs: 10,
+            sanitizer_injection_flags: 1,
+            ..MetricsSnapshot::default()
+        };
+        let theme = crate::theme::Theme::default();
+        // The always-present 13 metric rows + header comfortably exceed 2 rows.
+        let output = render_to_string(50, 2, |frame, area| {
+            render(&metrics, frame, area, &theme);
+        });
+        assert!(
+            output.contains("more"),
+            "must show overflow indicator when granted area is smaller than content, got:\n{output}"
+        );
     }
 }

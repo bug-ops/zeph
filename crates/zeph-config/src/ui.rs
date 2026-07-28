@@ -543,6 +543,30 @@ pub struct TuiConfig {
     /// the TUI. Text selection via Shift+drag still works. Default: `false`.
     #[serde(default)]
     pub mouse: bool,
+    /// Side-panel vertical sizing strategy (#6675).
+    ///
+    /// `auto` (default) sizes each unpinned side panel from its own content; `even`
+    /// approximates the pre-#6675 behavior of splitting the column equally regardless of
+    /// content (same total per slot; exact per-slot remainder placement can differ from the
+    /// old cassowary-based split — see `zeph_tui::layout::PanelDemand`'s docs). Runtime-
+    /// togglable via `/panel_sizing [auto|even]`.
+    #[serde(default)]
+    pub panel_sizing: PanelSizingMode,
+}
+
+/// Side-panel vertical sizing strategy (see [`TuiConfig::panel_sizing`], #6675).
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PanelSizingMode {
+    /// Size each unpinned side panel from its own content (`desired_height`), via a
+    /// max-min fair water-filling allocator. Leftover space stays blank at the bottom of
+    /// the column. Default.
+    #[default]
+    Auto,
+    /// Approximates pre-#6675 behavior: unpinned panels split the column evenly, regardless
+    /// of content (same total height per slot; exact remainder placement can differ from
+    /// the old cassowary-based split).
+    Even,
 }
 
 /// Configuration for the TUI fleet panel (#3884).

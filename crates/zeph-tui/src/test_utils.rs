@@ -59,6 +59,17 @@ where
     buffer_to_string(&buf)
 }
 
+/// Count non-blank rows in a `render_to_string` output — used by `desired_height`/render
+/// parity tests to verify a widget's measured row count matches what it actually draws,
+/// not just what its internal line-builder returns (#6675).
+#[must_use]
+pub fn count_non_blank_rows(output: &str) -> usize {
+    output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count()
+}
+
 fn buffer_to_string(buf: &ratatui::buffer::Buffer) -> String {
     let mut output = String::new();
     for y in 0..buf.area.height {

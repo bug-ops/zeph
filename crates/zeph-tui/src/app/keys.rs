@@ -454,6 +454,16 @@ impl App {
             [cmd] if cmd.eq_ignore_ascii_case("/mouse") => Some(TuiCommand::ToggleMouse),
             [cmd, "on"] if cmd.eq_ignore_ascii_case("/mouse") => Some(TuiCommand::SetMouse(true)),
             [cmd, "off"] if cmd.eq_ignore_ascii_case("/mouse") => Some(TuiCommand::SetMouse(false)),
+            // /panel_sizing [auto|even] — side-panel sizing strategy (#6675)
+            [cmd] if cmd.eq_ignore_ascii_case("/panel_sizing") => {
+                Some(TuiCommand::TogglePanelSizing)
+            }
+            [cmd, "auto"] if cmd.eq_ignore_ascii_case("/panel_sizing") => Some(
+                TuiCommand::SetPanelSizing(zeph_config::PanelSizingMode::Auto),
+            ),
+            [cmd, "even"] if cmd.eq_ignore_ascii_case("/panel_sizing") => Some(
+                TuiCommand::SetPanelSizing(zeph_config::PanelSizingMode::Even),
+            ),
             _ => None,
         }
     }

@@ -124,7 +124,8 @@ pub(crate) fn start_tui_early(
         .with_effective_color_mode(tui_color_mode)
         .with_motion(config.tui.motion)
         .with_delights(config.tui.delights.clone())
-        .with_mouse(config.tui.mouse);
+        .with_mouse(config.tui.mouse)
+        .with_panel_sizing(config.tui.panel_sizing);
     tui_app.set_show_source_labels(config.tui.show_source_labels);
     tui_app.set_show_balance(config.cocoon.show_balance);
 
@@ -221,6 +222,7 @@ fn spawn_tui_thread(
     motion: zeph_config::Motion,
     delights: zeph_config::DelightsConfig,
     mouse: bool,
+    panel_sizing: zeph_config::PanelSizingMode,
     theme: zeph_tui::theme::Theme,
     theme_name: String,
     effective_color_mode: zeph_tui::theme::EffectiveColorMode,
@@ -240,6 +242,7 @@ fn spawn_tui_thread(
         .with_motion(motion)
         .with_delights(delights)
         .with_mouse(mouse)
+        .with_panel_sizing(panel_sizing)
         .with_theme(theme)
         .with_theme_name(theme_name)
         .with_effective_color_mode(effective_color_mode);
@@ -359,6 +362,7 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
             params.config.tui.motion,
             params.config.tui.delights.clone(),
             params.config.tui.mouse,
+            params.config.tui.panel_sizing,
             legacy_theme,
             legacy_theme_name,
             legacy_color_mode,

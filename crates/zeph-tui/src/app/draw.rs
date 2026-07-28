@@ -7,19 +7,16 @@ use crate::layout::AppLayout;
 use crate::widgets;
 use crate::widgets::wave::EqualizerWidget;
 
-use super::{App, Panel};
+use super::{App, EQ_PANEL_H, Panel};
 
 impl App {
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
-        // Height of the equalizer slot carved from the bottom of the subagents panel.
-        const EQ_PANEL_H: u16 = 4;
-
         let collapsed = self.effective_collapsed();
         let mut layout = AppLayout::compute(
             frame.area(),
             self.show_side_panels,
             self.desired_input_height(),
-            collapsed,
+            self.panel_demands(),
         );
 
         // Micro-delight state is advanced in tick_delights() (called on AppEvent::Tick).
@@ -58,7 +55,7 @@ impl App {
         let wave_tick = self.wave_tick();
         let wave_active = self.is_agent_busy() || self.background_inflight() > 0;
         let eq_area =
-            if self.show_equalizer && wave_active && layout.subagents.height > EQ_PANEL_H + 2 {
+            if should_carve_equalizer(self.show_equalizer, wave_active, layout.subagents.height) {
                 let sub_h = layout.subagents.height - EQ_PANEL_H;
                 let eq = Rect {
                     y: layout.subagents.y + sub_h,
@@ -261,11 +258,16 @@ impl App {
             } else {
                 layout.resources
             };
+            // The badge row's height must track `compaction_badge::desired_height` exactly —
+            // a fixed Length(1) here would eat a row `panel_demands()` never budgeted for
+            // when no compaction has occurred, shifting `resources::render`'s own content
+            // down by one and desyncing sizing from rendering (#6675).
+            let badge_h = widgets::compaction_badge::desired_height(&self.metrics);
             let splits = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1),
-                    Constraint::Length(1),
+                    Constraint::Length(badge_h),
                     Constraint::Min(0),
                 ])
                 .split(resources_area);
@@ -276,11 +278,6 @@ impl App {
 
         let tick = self.throbber_state.index().cast_unsigned();
         let ascii = self.is_ascii_only();
-        let has_graph = self.metrics.orchestration_graph.as_ref().is_some_and(|s| {
-            // Use is_stale() to check if snapshot is too old to show (IC4).
-            !s.is_stale()
-        });
-        let panel_focused = self.active_panel == Panel::SubAgents;
 
         if effective[3] {
             self.render_collapsed_summary(
@@ -290,47 +287,45 @@ impl App {
                 focused_panel == Panel::SubAgents,
             );
         } else {
-            self.render_subagents_slot(
-                frame,
-                layout.subagents,
-                tick,
-                ascii,
-                panel_focused,
-                has_graph,
-            );
+            self.render_subagents_slot(frame, layout.subagents, tick, ascii);
         }
     }
 
+    /// Render the `SubAgents` slot's base layer, chosen by `App::subagent_slot_mode`, then
+    /// layer any active overlay (Fleet/Durable/Settings/Tasks) on top of it. The mode
+    /// selection is computed once and shared with sizing (`App::panel_demands`) so the two
+    /// decisions can never disagree (#6675).
     fn render_subagents_slot(
         &mut self,
         frame: &mut ratatui::Frame,
         area: ratatui::layout::Rect,
         tick: u8,
         ascii: bool,
-        panel_focused: bool,
-        has_graph: bool,
     ) {
         use ratatui::text::{Line, Span};
         use ratatui::widgets::{Clear, Paragraph};
 
-        // When SubAgents panel is focused (`a` key), always show the interactive sidebar.
-        // Otherwise: auto-show plan when graph active, security events, or subagents list.
-        if panel_focused {
-            widgets::subagents::render_interactive(
-                &self.metrics,
-                &mut self.subagent_sidebar,
-                frame,
-                area,
-                tick,
-                &self.theme,
-                ascii,
-            );
-        } else if has_graph && !self.sessions.current().plan_view_active {
-            widgets::plan_view::render(&self.metrics, frame, area, tick, ascii, &self.theme);
-        } else if self.has_recent_security_events() {
-            widgets::security::render(&self.metrics, frame, area, &self.theme);
-        } else {
-            widgets::subagents::render(&self.metrics, frame, area, &self.theme);
+        match self.subagent_slot_mode() {
+            widgets::subagents::SubAgentSlotMode::Interactive => {
+                widgets::subagents::render_interactive(
+                    &self.metrics,
+                    &mut self.subagent_sidebar,
+                    frame,
+                    area,
+                    tick,
+                    &self.theme,
+                    ascii,
+                );
+            }
+            widgets::subagents::SubAgentSlotMode::PlanView => {
+                widgets::plan_view::render(&self.metrics, frame, area, tick, ascii, &self.theme);
+            }
+            widgets::subagents::SubAgentSlotMode::Security => {
+                widgets::security::render(&self.metrics, frame, area, &self.theme);
+            }
+            widgets::subagents::SubAgentSlotMode::List => {
+                widgets::subagents::render(&self.metrics, frame, area, &self.theme);
+            }
         }
 
         // Overlay fleet panel over the subagents slot when `f` key is active (#3884).
@@ -435,6 +430,21 @@ impl App {
     }
 }
 
+/// Whether the equalizer slot should be carved from the bottom of the granted subagents
+/// rect this frame.
+///
+/// Matches `App::panel_demands()`'s own accounting: when the equalizer is active, the
+/// subagents demand already includes `+ EQ_PANEL_H` on top of its content rows, so a
+/// fully-granted slot has height `>= content_rows + EQ_PANEL_H` (`content_rows >= 1` for
+/// every base-layer mode). Requiring only `granted_height > EQ_PANEL_H` — the same
+/// floor-of-1 guarantee `fit_panel_heights` upholds elsewhere — carves the slot exactly when
+/// it was budgeted for (#6675 C1: the old `> EQ_PANEL_H + 2` margin predated content-driven
+/// sizing and silently ate the equalizer whenever the granted height matched a small content
+/// demand exactly, e.g. an empty sub-agent list).
+fn should_carve_equalizer(show_equalizer: bool, wave_active: bool, granted_height: u16) -> bool {
+    show_equalizer && wave_active && granted_height > EQ_PANEL_H
+}
+
 /// Return `area` with the top `n` rows removed.
 fn shrink_top(area: ratatui::layout::Rect, n: u16) -> ratatui::layout::Rect {
     if n >= area.height {
@@ -459,7 +469,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use tokio::sync::mpsc;
 
-    use super::App;
+    use super::{App, EQ_PANEL_H, should_carve_equalizer};
 
     fn make_app() -> App {
         let (user_tx, _) = mpsc::channel(1);
@@ -483,7 +493,7 @@ mod tests {
                         frame.buffer_mut()[(x, y)].set_symbol("#");
                     }
                 }
-                app.render_subagents_slot(frame, area, 0, false, false, false);
+                app.render_subagents_slot(frame, area, 0, false);
             })
             .unwrap();
         terminal.backend().buffer().clone()
@@ -505,5 +515,96 @@ mod tests {
                  to the whole area"
             );
         }
+    }
+
+    // ── should_carve_equalizer / draw() regression (#6675 C1) ───────────────────
+
+    #[test]
+    fn should_carve_equalizer_true_when_granted_exactly_matches_budget() {
+        // An empty sub-agent list's List-mode content is 2 rows; with the equalizer active
+        // its demand is 2 + EQ_PANEL_H, and a fully-granted slot has exactly that height.
+        // The carve must still happen here — this used to require `> EQ_PANEL_H + 2`, which
+        // silently dropped the equalizer whenever granted height matched a small content
+        // demand exactly.
+        assert!(should_carve_equalizer(true, true, 2 + EQ_PANEL_H));
+    }
+
+    #[test]
+    fn should_carve_equalizer_false_when_no_room_for_any_content() {
+        assert!(!should_carve_equalizer(true, true, EQ_PANEL_H));
+    }
+
+    #[test]
+    fn should_carve_equalizer_false_when_hidden_or_idle() {
+        assert!(!should_carve_equalizer(false, true, 20));
+        assert!(!should_carve_equalizer(true, false, 20));
+    }
+
+    #[test]
+    fn draw_side_panel_rects_tile_the_column_without_overlap_under_varying_content() {
+        // #6675 tester gap 4: with genuinely different content sizes per panel (so
+        // `panel_demands()` produces different Rows(n) for each slot, unlike the old
+        // uniform Fill(1) split), the four granted rects must still stack contiguously
+        // inside `side_panel` — no gaps, no overlap, no rect exceeding the terminal.
+        let mut app = make_app();
+        app.metrics.active_skills = vec!["one".into(), "two".into()];
+        app.metrics.total_skills = 2;
+        app.metrics.sqlite_message_count = 10;
+        app.metrics.provider_name = "claude".into();
+        app.metrics.model_name = "opus-4".into();
+        app.metrics.total_tokens = 1000;
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let layout = app.last_layout.expect("draw() must populate last_layout");
+
+        let panels = [
+            layout.skills,
+            layout.memory,
+            layout.resources,
+            layout.subagents,
+        ];
+        for rect in panels {
+            assert!(
+                rect.y + rect.height <= layout.side_panel.y + layout.side_panel.height,
+                "panel rect {rect:?} must not exceed the side_panel column {:?}",
+                layout.side_panel
+            );
+            assert_eq!(
+                rect.x, layout.side_panel.x,
+                "panel rect must align with the side_panel column's left edge"
+            );
+            assert_eq!(rect.width, layout.side_panel.width);
+        }
+        // Contiguous, non-overlapping stacking: each slot starts exactly where the
+        // previous one ends.
+        assert_eq!(layout.skills.y, layout.side_panel.y);
+        assert_eq!(layout.memory.y, layout.skills.y + layout.skills.height);
+        assert_eq!(layout.resources.y, layout.memory.y + layout.memory.height);
+        assert_eq!(
+            layout.subagents.y,
+            layout.resources.y + layout.resources.height
+        );
+    }
+
+    #[test]
+    fn draw_carves_equalizer_slot_for_empty_subagents_list_while_busy() {
+        // Full regression for #6675 C1: with zero sub-agents and the agent busy, the
+        // equalizer used to never render because the old threshold required more headroom
+        // than an empty list's content-driven demand actually grants.
+        let mut app = make_app();
+        app.show_equalizer = true;
+        app.sessions.current_mut().status_label = Some("thinking...".to_owned());
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let layout = app.last_layout.expect("draw() must populate last_layout");
+        assert!(
+            layout.subagents.height < 2 + EQ_PANEL_H,
+            "equalizer must be carved out of the subagents slot for an empty, busy session, \
+             got subagents height={}",
+            layout.subagents.height
+        );
     }
 }

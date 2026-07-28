@@ -379,6 +379,8 @@ pub(crate) struct WizardState {
     pub(crate) tui_delights_enabled: bool,
     /// Whether opt-in mouse capture is enabled at startup.
     pub(crate) tui_mouse_enabled: bool,
+    /// Side-panel vertical sizing strategy (#6675): `auto` (content-sized) or `even`.
+    pub(crate) tui_panel_sizing: zeph_config::PanelSizingMode,
     // Durable session persistence (spec-068, #5343, P4)
     /// Whether to maintain a durable, replayable JSONL event log per conversation-session.
     pub(crate) session_persistence_enabled: bool,
@@ -619,6 +621,7 @@ impl Default for WizardState {
             tui_color_mode: zeph_config::ColorMode::Auto,
             tui_delights_enabled: true,
             tui_mouse_enabled: false,
+            tui_panel_sizing: zeph_config::PanelSizingMode::default(),
             session_persistence_enabled: zeph_config::SessionConfig::default().enabled,
             session_data_dir: zeph_config::SessionConfig::default().data_dir,
             serve_http_addr: zeph_config::ServeConfig::default().http_addr,
@@ -709,6 +712,7 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
     step_tui_theme(&mut state)?;
     step_tui_delights(&mut state)?;
     step_tui_mouse(&mut state)?;
+    step_tui_panel_sizing(&mut state)?;
     step_quality(&mut state)?;
     step_review_and_write(&state, output)?;
 
@@ -1538,6 +1542,9 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     // Apply TUI mouse mode (#5103).
     config.tui.mouse = state.tui_mouse_enabled;
 
+    // Apply TUI panel sizing (#6675).
+    config.tui.panel_sizing = state.tui_panel_sizing;
+
     config
 }
 
@@ -2305,6 +2312,31 @@ fn step_tui_mouse(state: &mut WizardState) -> anyhow::Result<()> {
         .interact()?;
 
     state.tui_mouse_enabled = enabled;
+    println!();
+    Ok(())
+}
+
+fn step_tui_panel_sizing(state: &mut WizardState) -> anyhow::Result<()> {
+    use dialoguer::Confirm;
+    println!("== TUI Side-Panel Sizing ==\n");
+    println!("How should the Skills/Memory/Resources/SubAgents side panels split their column?");
+    println!("  • auto (recommended): each panel is sized from its own content, so a sparse");
+    println!("    panel doesn't waste space and a busy one isn't clipped");
+    println!("  • even: split the column equally regardless of content (pre-#6675 behavior)");
+    println!();
+    println!("Controlled by [tui] panel_sizing in config.toml.");
+    println!("Toggle at runtime with /panel_sizing [auto|even].\n");
+
+    let auto = Confirm::new()
+        .with_prompt("Use content-driven (auto) panel sizing?")
+        .default(true)
+        .interact()?;
+
+    state.tui_panel_sizing = if auto {
+        zeph_config::PanelSizingMode::Auto
+    } else {
+        zeph_config::PanelSizingMode::Even
+    };
     println!();
     Ok(())
 }
