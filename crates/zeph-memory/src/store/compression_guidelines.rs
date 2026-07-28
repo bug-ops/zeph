@@ -9,7 +9,10 @@ use std::sync::LazyLock;
 use zeph_db::sql;
 
 use regex::Regex;
-use zeph_common::secrets::{BEARER_TOKEN_PATTERN, JWT_PATTERN, PATH_PREFIXES, SECRET_PREFIXES};
+use zeph_common::secrets::{
+    BEARER_TOKEN_PATTERN, JWT_PATTERN, PATH_PREFIXES, PEM_PRIVATE_KEY_PATTERN,
+    PEM_PRIVATE_KEY_UNTERMINATED_PATTERN, SECRET_PREFIXES,
+};
 use zeph_common::text::truncate_to_bytes_ref;
 
 use crate::error::MemoryError;
@@ -41,6 +44,19 @@ static BEARER_RE: LazyLock<Regex> =
 /// The signature segment uses `*` to handle `alg=none` JWTs with an empty signature.
 static JWT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(JWT_PATTERN).expect("jwt regex"));
 
+/// Matches a full, properly-closed PEM/SSH2 private-key block (see
+/// `zeph_common::secrets::PEM_PRIVATE_KEY_PATTERN`). Unlike the `-----BEGIN` entry in
+/// `SECRET_PREFIXES`, this spans the multi-line base64 body, not just the header token (#6592
+/// follow-up — persisted compression-failure text must not retain PEM key material).
+static PEM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(PEM_PRIVATE_KEY_PATTERN).expect("pem regex"));
+
+/// Fallback for a PEM/SSH2 header with no matching footer (truncated/adversarial input). Must
+/// run after `PEM_RE` so already-closed blocks are consumed first.
+static PEM_UNTERMINATED_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(PEM_PRIVATE_KEY_UNTERMINATED_PATTERN).expect("pem unterminated regex")
+});
+
 /// Redact secrets and filesystem paths from text before persistent storage.
 ///
 /// Returns `Cow::Borrowed` when no sensitive content is found (zero-alloc fast path).
@@ -48,7 +64,22 @@ pub(crate) fn redact_sensitive(text: &str) -> Cow<'_, str> {
     // Each replace_all may return Cow::Borrowed (no match) or Cow::Owned (replaced).
     // We materialise intermediate Owned values into String so that subsequent steps
     // do not hold a borrow of a local.
-    let s0: Cow<'_, str> = SECRET_RE.replace_all(text, "[REDACTED]");
+    //
+    // PEM passes run first, before the prefix pass: `SECRET_RE` (built from
+    // `SECRET_PREFIXES`, which includes the raw `-----BEGIN` literal) would otherwise consume
+    // just the header token on its own, leaving the rest of a multi-line PEM body — the
+    // actual key material — unredacted (see `zeph_sanitizer::secret_shape::scrub_secret_shapes`
+    // for the equivalent transcript-forward-path fix and its rationale).
+    let s_pem: Cow<'_, str> = PEM_RE.replace_all(text, "[REDACTED_PEM_KEY]");
+    let s_pem_fallback: Cow<'_, str> =
+        match PEM_UNTERMINATED_RE.replace_all(s_pem.as_ref(), "[REDACTED_PEM_KEY]") {
+            Cow::Borrowed(_) => s_pem,
+            Cow::Owned(o) => Cow::Owned(o),
+        };
+    let s0: Cow<'_, str> = match SECRET_RE.replace_all(s_pem_fallback.as_ref(), "[REDACTED]") {
+        Cow::Borrowed(_) => s_pem_fallback,
+        Cow::Owned(o) => Cow::Owned(o),
+    };
     let s1: Cow<'_, str> = match PATH_RE.replace_all(s0.as_ref(), "[PATH]") {
         Cow::Borrowed(_) => s0,
         Cow::Owned(o) => Cow::Owned(o),
@@ -958,6 +989,27 @@ mod tests {
             !result.contains("eyJhbGciOiJub25lIn0"),
             "raw alg=none JWT header must not appear: {result}"
         );
+    }
+
+    #[test]
+    fn redact_sensitive_full_pem_private_key_body_is_redacted() {
+        // #6592 follow-up: persisted compression-failure text must not retain a PEM private
+        // key's multi-line base64 body — only the `-----BEGIN` header token was previously
+        // covered by `SECRET_RE` (built from `SECRET_PREFIXES`).
+        let input = "compressed context leaked:\n-----BEGIN RSA PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0B\n-----END RSA PRIVATE KEY-----\nend of context";
+        let result = redact_sensitive(input);
+        assert!(result.contains("[REDACTED_PEM_KEY]"));
+        assert!(!result.contains("MIIBVQIBADANBgkqhkiG9w0B"));
+        assert!(result.contains("compressed context leaked:"));
+        assert!(result.contains("end of context"));
+    }
+
+    #[test]
+    fn redact_sensitive_footerless_pem_header_is_redacted() {
+        let input = "-----BEGIN RSA PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0B with no footer";
+        let result = redact_sensitive(input);
+        assert!(result.contains("[REDACTED_PEM_KEY]"));
+        assert!(!result.contains("MIIBVQIBADANBgkqhkiG9w0B"));
     }
 
     // ── Category-aware store methods (MF-4) ──────────────────────────────────

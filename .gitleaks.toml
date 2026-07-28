@@ -35,4 +35,19 @@ regexes = [
   '''eyJhbGciOi\.\.\.''',
   '''ZEPH_A2A_IBCT_KEY''',
   '''VAULT_A2A_IBCT_KEY_1''',
+  # #6592 follow-up: fake PEM private-key bodies used across the new PEM-detector unit
+  # tests in zeph-common, zeph-sanitizer, zeph-subagent, zeph-core, and zeph-memory. Every
+  # value below is a truncated, non-functional fixture (verified via `gitleaks detect`), not
+  # a real key — matched on the fake body content itself, never the bare marker text alone,
+  # so a genuine future PEM key sharing the same header/footer line is still caught.
+  '''MIIBVQIBADANBgkqhkiG9w0B''',
+  '''AQEFAASCAT8wggE7AgEAAkEA''',
+  '''firstbody''',
+  '''body-material''',
+  '''\{key_body\}''',
+  '''\{cjk_body\}''',
+  '''\{huge_body\}''',
+  '''base64body''',
+  '''with no matching end marker''',
+  '''EC PRIVATE KEY-----\\nsecond''',
 ]

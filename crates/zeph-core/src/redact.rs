@@ -179,10 +179,48 @@ mod tests {
 
     #[test]
     fn redacts_private_key_header() {
+        // A header with no closing footer is now caught by the PEM footerless fallback
+        // (`[REDACTED_PEM_KEY]`), not the generic prefix pass (`[REDACTED]`) — the fallback
+        // matches first in the pipeline and consumes the header before the prefix pass runs.
+        // S3 (#6592 follow-up): the fallback body is constrained to PEM-plausible characters,
+        // so " in file" (plain prose, no punctuation the class would reject) still gets
+        // swallowed here — that's the known accepted tradeoff for short trailing runs of
+        // letters/spaces; `redacts_unterminated_header_does_not_swallow_unrelated_prose` below
+        // is the regression guard proving longer prose containing punctuation survives.
         let text = "Found -----BEGIN RSA PRIVATE KEY----- in file";
         let result = redact_secrets(text);
-        assert!(result.contains("[REDACTED]"));
+        assert!(result.contains("[REDACTED_PEM_KEY]"));
         assert!(!result.contains("-----BEGIN"));
+    }
+
+    #[test]
+    fn redacts_full_pem_private_key_body() {
+        // S1 (#6592 follow-up): `redact_secrets` delegates to
+        // `zeph_sanitizer::secret_shape::scrub_secret_shapes`, which now spans the full
+        // multi-line PEM body, not just the header token — debug dumps must not retain the
+        // base64 key material.
+        let text = "Found -----BEGIN RSA PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0B\n-----END RSA PRIVATE KEY----- in file";
+        let result = redact_secrets(text);
+        assert!(result.contains("[REDACTED_PEM_KEY]"));
+        assert!(!result.contains("MIIBVQIBADANBgkqhkiG9w0B"));
+    }
+
+    #[test]
+    fn redacts_unterminated_header_does_not_swallow_unrelated_prose() {
+        // S3 regression guard (#6592 follow-up): the footerless fallback previously used
+        // `.{0,8192}` (any character), so an unterminated header mention swallowed up to 8 KB
+        // of unrelated legitimate content — e.g. a debug dump line merely *describing* where a
+        // key file lives lost everything after "PRIVATE KEY-----". The fallback body is now
+        // constrained to PEM-plausible characters, so the match stops at the first character
+        // that cannot occur in base64 (here, the `.` in the file extension).
+        let text =
+            "Found -----BEGIN RSA PRIVATE KEY----- in file /etc/ssl/key.pem and the deploy failed";
+        let result = redact_secrets(text);
+        assert!(result.contains("[REDACTED_PEM_KEY]"));
+        assert!(
+            result.contains("and the deploy failed"),
+            "unrelated trailing prose must survive redaction, not be swallowed: {result}"
+        );
     }
 
     #[test]

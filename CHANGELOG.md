@@ -151,6 +151,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   skips `FlushGuard`'s closing write) fails to parse outright, with a one-line recovery command
   now documented. No source code change; the trace format was already correct for
   Perfetto/`chrome://tracing` and the OTLP/Jaeger backend.
+- `zeph-common`, `zeph-sanitizer`, `zeph-subagent`, `zeph-memory`: `scrub_secret_shapes` and
+  its consumers missed PEM private-key bodies and raw (no-prefix) AWS secret access keys
+  (issue #6592, follow-up to #6571); no existing pattern spanned a PEM key's multi-line body
+  at all, since `SECRET_PREFIXES`'s `-----BEGIN` entry only ever matches a literal token on a
+  single line. Added `PEM_PRIVATE_KEY_PATTERN` (multi-line, non-greedy, bounded to 8,192
+  body characters, from `-----BEGIN ... PRIVATE KEY-----`-style headers through the matching
+  footer — covers `RSA`/`EC`/`DSA`/`OPENSSH`/`ENCRYPTED`/PGP `... BLOCK` label variants and
+  the RFC 4716 SSH2 `---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----` marker style) and a
+  `PEM_PRIVATE_KEY_UNTERMINATED_PATTERN` fallback (redacts a header with no matching footer,
+  bounded the same way, so truncated/adversarially-unterminated input or a footer chunk
+  dropped by a bounded channel still gets redacted) to `zeph_common::secrets`. Both run first
+  in `scrub_secret_shapes`'s pipeline (`zeph-sanitizer`) and in `zeph-memory`'s
+  `compression_guidelines::redact_sensitive` (previously not PEM-aware at all), ahead of the
+  prefix pass, so `-----BEGIN` isn't partially consumed before the full block is matched;
+  `zeph-core::redact::redact_secrets` picks the fix up transitively via `scrub_secret_shapes`.
+  `zeph-subagent`'s live transcript-forward streaming path (`forward.rs`) also needed a
+  dedicated fix: its fixed 256-byte holdback window could split a PEM block's header and
+  footer across two separately-sanitized deltas, so neither fragment matched the full-body
+  pattern and a middle slice with neither marker passed through unredacted; the holdback now
+  widens to cover an unterminated header (capped at 8,192 bytes) and extends forward past an
+  already-closed block's footer so the whole span is always flushed as one contiguous unit.
+  Also added `AWS_SECRET_KEY_PATTERN`, a context-anchored heuristic that flags a 40-or-more
+  character base64-ish run only when immediately preceded by a marker — `aws_secret_access_key`,
+  `aws_secret_key`, `secret_access_key`, `aws_session_token`, or `session_token`, each
+  tolerant of `_`/`-`/`.`/space separators (or none, so it also matches camelCase JSON keys
+  like `SecretAccessKey`/`SessionToken` verbatim) — avoiding false positives on ordinary
+  high-entropy strings (hashes, IDs) that share the same shape.
+
 - `zeph-acp`: fixed a deadlock on every permission-gated tool call (issue #6656). `handle_prompt`
   awaited the entire agent turn inline inside the ACP SDK's `on_receive_request` callback, holding
   the SDK's strictly serial dispatch loop for the whole turn; since that same loop demultiplexes

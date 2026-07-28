@@ -189,6 +189,28 @@ fn sanitize_text(raw_text: &str, def_name: &str, layers: &SanitizeLayers) -> Str
 /// practically unreachable for realistic secret/PII lengths.
 const SANITIZE_HOLDBACK_BYTES: usize = 256;
 
+/// Cap, in bytes, on how far a progressive flush ([`split_off_safe_prefix`] with a non-zero
+/// `holdback`) will widen its holdback to keep an unterminated PEM/SSH2 private-key header
+/// (see `zeph_common::secrets::PEM_PRIVATE_KEY_UNTERMINATED_PATTERN`) fully inside the pending
+/// buffer, so the eventual flush is still covered end-to-end by that fallback pattern's own
+/// `PEM_BODY_CAP` bound (currently 8,192 characters — kept equal here so a force-flushed
+/// chunk is never larger than what the fallback pattern can redact in one match).
+///
+/// Without this cap, a subagent that never closes a `-----BEGIN ... PRIVATE KEY-----` block
+/// (adversarially, or because the footer chunk was tail-dropped by the bounded ingress
+/// channel) would force this buffer to grow without bound, since the "hold back to the
+/// header's start" rule below would otherwise apply for the rest of the task's lifetime.
+///
+/// Known low-priority UX gap (#6592 follow-up, "M6", not fixed in this pass): while a header
+/// is held back, up to this many bytes of a subagent's *legitimate* remaining output can sit
+/// unflushed with no visible progress in the live transcript (TUI detail view / `--bare`
+/// stdout) until either the footer arrives or the terminal flush releases it — delayed, never
+/// dropped, so no data is lost, but a short remaining answer can appear frozen for a moment.
+/// No status indicator (per CLAUDE.md's TUI background-status rule) currently distinguishes
+/// this from a genuine stall. Left undone here since it is UI/status plumbing rather than a
+/// redaction-correctness fix; worth a small follow-up if it proves noticeable in practice.
+const PEM_HOLDBACK_CAP_BYTES: usize = zeph_common::secrets::PEM_BODY_CAP;
+
 /// Per-task raw text accumulated but not yet sanitized/emitted (review Critical Issue #2).
 ///
 /// Kept separate for the `Text` and `Thinking` streams since they are independent logical
@@ -199,18 +221,114 @@ struct PendingSanitizeBuffers {
     thinking: String,
 }
 
+/// Byte offset in `buf` of the last PEM/SSH2 header marker (`-----BEGIN` or `---- BEGIN`)
+/// starting strictly before `before`, if any.
+fn last_header_before(buf: &str, before: usize) -> Option<usize> {
+    let region = &buf[..before];
+    [region.rfind("-----BEGIN"), region.rfind("---- BEGIN")]
+        .into_iter()
+        .flatten()
+        .max()
+}
+
+/// Byte offset just past the first PEM/SSH2 footer marker's `END` token (`-----END` or
+/// `---- END`, both exactly 8 bytes) found anywhere in `buf` at or after `marker_idx`, if any.
+fn footer_end_after(buf: &str, marker_idx: usize) -> Option<usize> {
+    let tail = &buf[marker_idx..];
+    let end_offset = [tail.find("-----END"), tail.find("---- END")]
+        .into_iter()
+        .flatten()
+        .min()?;
+    Some(marker_idx + end_offset + 8)
+}
+
+/// Compute the safe progressive-flush boundary for `buf`, starting from the flat-holdback
+/// `natural_target` (critic C1/C1-R: closes the gap where a PEM block split across streamed
+/// deltas would otherwise reach a sink as two or more separately-sanitized fragments, none of
+/// which contains the whole header-to-footer span).
+///
+/// A first version of this function only ever inspected the *last* header marker in the whole
+/// buffer via `rfind`. That is unsound: pulling the cut back to that marker's start can land
+/// it in the middle of an **earlier**, already-complete block — the flushed prefix carries
+/// that earlier block's header (so a fallback pattern redacts *something*), but what remains
+/// in the buffer is a headerless middle fragment of key body that no pattern can ever match on
+/// any later flush. Concretely, a complete key block immediately followed by a *different* PEM
+/// armor type in the same delta (e.g. `-----BEGIN RSA PRIVATE KEY-----`...`-----END RSA
+/// PRIVATE KEY-----` followed by `-----BEGIN CERTIFICATE-----`, an ordinary key+cert bundle —
+/// not an adversarial construction) reproduced this: `rfind` finds the `CERTIFICATE` header,
+/// classifies it as unterminated, and pulls the cut back into the *first* block's body.
+///
+/// This version instead walks backward from `natural_target`: find the last header marker
+/// starting before the candidate cut; if it has a footer whose end lies at or before the
+/// candidate, the candidate is safe as-is. Otherwise (no footer anywhere, or a footer that
+/// ends *after* the candidate) the candidate cannot be trusted — pull it back to that marker's
+/// own start and repeat, so an earlier header found on the next iteration is validated against
+/// the *new*, smaller candidate rather than being skipped. The candidate strictly decreases
+/// each iteration a header is found, so this always terminates. Only once a marker turns out
+/// to have **no footer anywhere in `buf`** is [`PEM_HOLDBACK_CAP_BYTES`] applied, forcing a
+/// partial flush up to `buf.len() - PEM_HOLDBACK_CAP_BYTES` if that is further forward than
+/// the marker itself — so a header that never closes (adversarial, or a dropped footer chunk)
+/// cannot force unbounded buffering, while a header that *does* close later (just further away
+/// than the cap) is never force-flushed mid-body, deferring instead to a future call once its
+/// footer is within reach (see the `PEM_BODY_CAP` doc comment in `zeph_common::secrets` for the
+/// accepted tradeoff when even that eventual span exceeds the cap).
+fn pem_safe_flush_target(buf: &str, natural_target: usize) -> usize {
+    let mut candidate = natural_target;
+    loop {
+        let Some(marker_idx) = last_header_before(buf, candidate) else {
+            return candidate;
+        };
+        match footer_end_after(buf, marker_idx) {
+            Some(block_end) if block_end <= candidate => return candidate,
+            Some(_) => candidate = marker_idx,
+            None => {
+                let capped = buf.len().saturating_sub(PEM_HOLDBACK_CAP_BYTES);
+                return marker_idx.max(capped);
+            }
+        }
+    }
+}
+
 /// Split off `buf`'s sanitizable prefix, leaving the last `holdback` bytes (rounded down to
 /// the nearest UTF-8 char boundary, same class of problem as UTF-8 chunk-boundary handling)
 /// in place for a future call to potentially combine with. Pass `holdback = 0` to flush the
 /// entire remaining buffer — used once no more data for this task is coming (an explicit
 /// `Terminal` chunk or the hard-abort backstop), so buffered content is only ever delayed,
-/// never silently dropped. Returns `None` when there is nothing new to emit yet.
+/// never silently dropped.
+///
+/// When `holdback` is non-zero (a progressive, non-terminal flush), the flush boundary is
+/// adjusted by [`pem_safe_flush_target`] around any PEM/SSH2 header marker(s) in `buf` so a
+/// flat byte-count holdback alone can never split a PEM block's `BEGIN` and `END` markers
+/// across two separate `sanitize_text` calls, each seeing only a fragment and none matching
+/// the full-body PEM pattern as a unit.
+///
+/// A final flush (`holdback == 0`) always flushes everything regardless, since nothing more
+/// is coming for this task; any still-unterminated header at that point is handled by
+/// `PEM_PRIVATE_KEY_UNTERMINATED_PATTERN`'s own fallback redaction once sanitized.
+///
+/// Returns `None` when there is nothing new to emit yet.
 fn split_off_safe_prefix(buf: &mut String, holdback: usize) -> Option<String> {
     if buf.is_empty() {
         return None;
     }
-    let target = buf.len().saturating_sub(holdback);
-    let boundary = buf.floor_char_boundary(target);
+    let target = if holdback == 0 {
+        buf.len()
+    } else {
+        // C3 (#6592 follow-up): `pem_safe_flush_target` and its helpers slice `buf` directly
+        // (`&buf[..before]`, `&buf[marker_idx..]`) before this function's own
+        // `floor_char_boundary` call below ever runs, so the candidate passed in must already
+        // sit on a UTF-8 char boundary — a raw `buf.len() - holdback` byte offset can land
+        // mid-codepoint on multibyte input (CJK, emoji, accented text) and panic. Every offset
+        // used for further slicing within `pem_safe_flush_target` (marker/footer positions
+        // from `rfind`/`find` on ASCII-only marker literals) is inherently boundary-aligned,
+        // so aligning only this entry value is sufficient. The one exception — `capped` in
+        // the unterminated-header branch, a raw arithmetic offset — is never itself used to
+        // slice `buf` again; it is only returned and re-aligned by this function's own
+        // `floor_char_boundary` call below.
+        let natural_target = buf.floor_char_boundary(buf.len().saturating_sub(holdback));
+        pem_safe_flush_target(buf, natural_target)
+    };
+    let boundary = buf.floor_char_boundary(target.min(buf.len()));
     if boundary == 0 {
         return None;
     }
@@ -1180,6 +1298,245 @@ mod tests {
         assert!(
             !combined.contains(secret_value),
             "secret split across the streaming boundary must still be masked: {combined}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pem_block_split_across_chunk_boundary_is_still_fully_masked() {
+        // Critic C1: a PEM block whose header+body arrive in one delta and whose footer
+        // arrives in a later delta must not have its header sanitized in isolation (splitting
+        // it from the body/footer, and — because the fixed-256-byte flat holdback alone would
+        // let a middle fragment with neither BEGIN nor END pass through completely
+        // unredacted). The header+body chunk here (~330 bytes) deliberately exceeds
+        // SANITIZE_HOLDBACK_BYTES so a flat holdback alone would have force-flushed part of
+        // the still-open block before the footer chunk arrives.
+        let task_id: Arc<str> = Arc::from("task-pem-chunked");
+        let def_name: Arc<str> = Arc::from("agent-pem-chunked");
+        let (sender, rx) = new_channel(Arc::clone(&task_id), Arc::clone(&def_name));
+        let buffer = new_buffer();
+
+        let body = "X".repeat(300);
+        sender.send_text("intro text before the key ");
+        sender.send_text(&format!("-----BEGIN RSA PRIVATE KEY-----\n{body}"));
+        sender.send_text("\n-----END RSA PRIVATE KEY-----\nfollowing text after the key");
+        sender.send_terminal(SubAgentState::Completed);
+        drop(sender);
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<SanitizedChunk>::new()));
+        let collected = Arc::clone(&seen);
+        run_forward_drain_with(
+            task_id,
+            def_name,
+            rx,
+            layers(),
+            ForwardSurfaces {
+                tui: true,
+                bare: false,
+            },
+            buffer,
+            move |chunk, surfaces, buffer| {
+                collected.lock().unwrap().push(chunk.clone());
+                dispatch_chunk(chunk, surfaces, buffer);
+            },
+        )
+        .await;
+
+        let combined = collect_forwarded_text(&seen.lock().unwrap());
+        assert!(
+            !combined.contains(&body),
+            "PEM body must not survive split across a chunk boundary: {combined}"
+        );
+        assert!(
+            !combined.contains('X'),
+            "no raw PEM body fragment may leak through an isolated flush of a middle slice \
+             that itself contains neither BEGIN nor END: {combined}"
+        );
+        assert!(
+            combined.contains("[REDACTED_PEM_KEY]"),
+            "PEM placeholder must be present in the combined forwarded text: {combined}"
+        );
+        assert!(
+            combined.contains("intro text before the key"),
+            "text preceding the PEM block must still be forwarded: {combined}"
+        );
+        assert!(
+            combined.contains("following text after the key"),
+            "text following the PEM block must still be forwarded: {combined}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn complete_key_immediately_followed_by_different_pem_armor_leaks_nothing() {
+        // Critic C1-R: a complete, already-closed key block immediately followed by a
+        // *different* PEM armor type's header (e.g. a certificate) in the same delta — an
+        // ordinary key+cert bundle, not an adversarial construction. The first fix for C1
+        // only ever inspected the *last* header marker via `rfind`, found the CERTIFICATE
+        // header unterminated, and pulled the cut back into the middle of the already-closed
+        // RSA key's body, leaking a headerless middle fragment that no pattern could later
+        // match. `pem_safe_flush_target` must walk backward and validate the RSA block
+        // separately from the trailing CERTIFICATE header.
+        let task_id: Arc<str> = Arc::from("task-pem-bundle");
+        let def_name: Arc<str> = Arc::from("agent-pem-bundle");
+        let (sender, rx) = new_channel(Arc::clone(&task_id), Arc::clone(&def_name));
+        let buffer = new_buffer();
+
+        // Filler character 'Z' deliberately chosen not to collide with any surrounding literal
+        // text (placeholders, marker labels) so a leak is unambiguous in the assertions below.
+        let key_body = "Z".repeat(400);
+        sender.send_text(&format!(
+            "-----BEGIN RSA PRIVATE KEY-----\n{key_body}\n-----END RSA PRIVATE KEY-----\n\
+             -----BEGIN CERTIFICATE-----\nMIIBcertbody"
+        ));
+        sender.send_text("\n-----END CERTIFICATE-----\nbundle complete");
+        sender.send_terminal(SubAgentState::Completed);
+        drop(sender);
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<SanitizedChunk>::new()));
+        let collected = Arc::clone(&seen);
+        run_forward_drain_with(
+            task_id,
+            def_name,
+            rx,
+            layers(),
+            ForwardSurfaces {
+                tui: true,
+                bare: false,
+            },
+            buffer,
+            move |chunk, surfaces, buffer| {
+                collected.lock().unwrap().push(chunk.clone());
+                dispatch_chunk(chunk, surfaces, buffer);
+            },
+        )
+        .await;
+
+        let combined = collect_forwarded_text(&seen.lock().unwrap());
+        assert!(
+            !combined.contains('Z'),
+            "no fragment of the RSA key body may leak when immediately followed by a \
+             different PEM armor type in the same delta: {combined}"
+        );
+        assert!(
+            combined.contains("[REDACTED_PEM_KEY]"),
+            "PEM placeholder must be present for the private key: {combined}"
+        );
+        assert!(
+            combined.contains("bundle complete"),
+            "text following the bundle must still be forwarded: {combined}"
+        );
+        // The certificate itself is public material, not a secret — it is not expected to be
+        // redacted by the private-key patterns (only that the *key* leaked nothing above).
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn complete_key_followed_by_bare_trailing_begin_leaks_nothing() {
+        // Critic C1-R, second reproduction: a complete key block followed by a bare trailing
+        // `-----BEGIN` (no label, no body yet — e.g. the very start of the next streamed
+        // delta) in the same buffer. Must not leak any of the first block's body either.
+        let task_id: Arc<str> = Arc::from("task-pem-trailing-begin");
+        let def_name: Arc<str> = Arc::from("agent-pem-trailing-begin");
+        let (sender, rx) = new_channel(Arc::clone(&task_id), Arc::clone(&def_name));
+        let buffer = new_buffer();
+
+        let key_body = "Z".repeat(400);
+        sender.send_text(&format!(
+            "-----BEGIN RSA PRIVATE KEY-----\n{key_body}\n-----END RSA PRIVATE KEY-----\n-----BEGIN"
+        ));
+        sender.send_text(" EC PRIVATE KEY-----\nsecondbody\n-----END EC PRIVATE KEY-----\ndone");
+        sender.send_terminal(SubAgentState::Completed);
+        drop(sender);
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<SanitizedChunk>::new()));
+        let collected = Arc::clone(&seen);
+        run_forward_drain_with(
+            task_id,
+            def_name,
+            rx,
+            layers(),
+            ForwardSurfaces {
+                tui: true,
+                bare: false,
+            },
+            buffer,
+            move |chunk, surfaces, buffer| {
+                collected.lock().unwrap().push(chunk.clone());
+                dispatch_chunk(chunk, surfaces, buffer);
+            },
+        )
+        .await;
+
+        let combined = collect_forwarded_text(&seen.lock().unwrap());
+        assert!(
+            !combined.contains('Z'),
+            "no fragment of the first key body may leak when a bare trailing -----BEGIN \
+             follows it in the same buffer: {combined}"
+        );
+        assert!(
+            !combined.contains("secondbody"),
+            "no fragment of the second key body may leak either: {combined}"
+        );
+        assert_eq!(
+            combined.matches("[REDACTED_PEM_KEY]").count(),
+            2,
+            "both blocks must be redacted independently: {combined}"
+        );
+        assert!(
+            combined.contains("done"),
+            "trailing text must survive: {combined}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pem_holdback_boundary_computation_does_not_panic_on_multibyte_text() {
+        // Critic C3: `pem_safe_flush_target`'s helpers slice the buffer using the raw
+        // `buf.len() - holdback` byte offset, computed *before* any UTF-8 char-boundary
+        // alignment — landing mid-codepoint on CJK/emoji/accented text panics
+        // ("byte index N is not a char boundary; it is inside '中'"), killing the drain task
+        // and losing the whole pending buffer. This body (300 repeats of a 3-byte CJK
+        // character, no footer in the first delta) is sized so the natural pre-header
+        // holdback cut (`buf.len() - SANITIZE_HOLDBACK_BYTES`) lands inside the CJK run, not
+        // on a character boundary — the exact shape the critic's sweep used to reproduce it.
+        let task_id: Arc<str> = Arc::from("task-pem-multibyte");
+        let def_name: Arc<str> = Arc::from("agent-pem-multibyte");
+        let (sender, rx) = new_channel(Arc::clone(&task_id), Arc::clone(&def_name));
+        let buffer = new_buffer();
+
+        let cjk_body: String = std::iter::repeat_n('中', 300).collect();
+        sender.send_text(&format!("-----BEGIN RSA PRIVATE KEY-----\n{cjk_body}"));
+        sender.send_text("\n-----END RSA PRIVATE KEY-----\ndone");
+        sender.send_terminal(SubAgentState::Completed);
+        drop(sender);
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<SanitizedChunk>::new()));
+        let collected = Arc::clone(&seen);
+        // Must not panic (the actual regression under test) — a panic here aborts the drain
+        // task and silently stops forwarding for the rest of the subagent's run.
+        run_forward_drain_with(
+            task_id,
+            def_name,
+            rx,
+            layers(),
+            ForwardSurfaces {
+                tui: true,
+                bare: false,
+            },
+            buffer,
+            move |chunk, surfaces, buffer| {
+                collected.lock().unwrap().push(chunk.clone());
+                dispatch_chunk(chunk, surfaces, buffer);
+            },
+        )
+        .await;
+
+        let combined = collect_forwarded_text(&seen.lock().unwrap());
+        assert!(
+            !combined.contains('中'),
+            "CJK key body must not leak: {combined}"
+        );
+        assert!(combined.contains("[REDACTED_PEM_KEY]"));
+        assert!(
+            combined.contains("done"),
+            "trailing text must survive: {combined}"
         );
     }
 
