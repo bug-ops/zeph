@@ -226,6 +226,10 @@ fn default_max_concurrent() -> usize {
     5
 }
 
+fn default_max_spawns_per_session() -> usize {
+    100
+}
+
 fn default_context_window_turns() -> usize {
     10
 }
@@ -600,6 +604,7 @@ impl Default for TaskSupervisorConfig {
 /// delegation_mode = "explicit_request_only"
 /// max_concurrent = 3
 /// max_spawn_depth = 2
+/// max_spawns_per_session = 50
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -620,6 +625,15 @@ pub struct SubAgentConfig {
     /// Maximum number of sub-agents that can run concurrently.
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
+    /// Maximum cumulative number of sub-agents that may be spawned within a single session,
+    /// independent of [`max_concurrent`][Self::max_concurrent] (in-flight limit) and
+    /// [`max_spawn_depth`][Self::max_spawn_depth] (recursion limit). Guards against a shallow,
+    /// low-concurrency but high-frequency sequential delegation loop that neither of those
+    /// limits would catch (issue #6545). `0` = unlimited. The counter resets at session start
+    /// and is shared across every spawn chokepoint (`SubAgentManager::spawn`/`resume` and the
+    /// ACP `/subagent spawn` path). Default: `100`.
+    #[serde(default = "default_max_spawns_per_session")]
+    pub max_spawns_per_session: usize,
     /// Additional directories to search for `.agent.md` definition files.
     pub extra_dirs: Vec<PathBuf>,
     /// User-level agents directory.
@@ -718,6 +732,7 @@ impl Default for SubAgentConfig {
             enabled: false,
             delegation_mode: DelegationMode::default(),
             max_concurrent: default_max_concurrent(),
+            max_spawns_per_session: default_max_spawns_per_session(),
             extra_dirs: Vec::new(),
             user_agents_dir: None,
             default_permission_mode: None,
@@ -806,6 +821,31 @@ mod tests {
             !cfg.forward_transcript,
             "forward_transcript must default to false (NFR-003)"
         );
+    }
+
+    #[test]
+    fn subagent_config_max_spawns_per_session_default_direct() {
+        // Direct-Default assertion (distinct from the serde round-trip below): catches a
+        // forgotten `impl Default` entry, which the per-field serde attribute would otherwise
+        // mask on every serde-loaded path while every non-serde caller silently got `0`.
+        assert_eq!(SubAgentConfig::default().max_spawns_per_session, 100);
+    }
+
+    #[test]
+    fn subagent_config_max_spawns_per_session_omitted_key_defaults_100() {
+        // Serde round-trip: a present `[agents]` section with the key absent must not
+        // silently resolve to `0` (unlimited) — that would recreate the exact "safety net
+        // ships disabled" defect class #6469/PR #6528 fixed for the tool-call/cost guardrails.
+        let toml_str = "enabled = true\nmax_concurrent = 3";
+        let cfg: SubAgentConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.max_spawns_per_session, 100);
+    }
+
+    #[test]
+    fn subagent_config_deserialize_max_spawns_per_session() {
+        let toml_str = "max_spawns_per_session = 50";
+        let cfg: SubAgentConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.max_spawns_per_session, 50);
     }
 
     #[test]

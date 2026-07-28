@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        104,
-        "MIGRATIONS registry must contain all 104 sequential steps"
+        105,
+        "MIGRATIONS registry must contain all 105 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -2124,7 +2124,42 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 104);
+    assert_eq!(MIGRATIONS.len(), 105);
+}
+
+/// SC-003 (issue #6545): the isolated `migrate_agents_max_spawns_per_session` tests in
+/// `migrate/subagent.rs` prove the function itself works, but not that it is actually wired
+/// into `MIGRATIONS` — a function that exists but is never pushed into the registry (the
+/// repo's recurring wire-X defect class) would pass those tests while silently doing nothing
+/// for a real `--migrate-config` run.
+///
+/// Deliberately does **not** use `ConfigMigrator::migrate` — that type is the separate
+/// catch-all reference-merge pass (`migrate/mod.rs`, diffs against the embedded
+/// `config/default.toml` and appends missing keys as *commented-out* advisory lines via
+/// `merge_table_commented`); it never reads `MIGRATIONS` at all. Using it here would pass even
+/// if `MigrateAgentsMaxSpawnsPerSession` were never pushed into the registry — the catch-all
+/// pass would still add `# max_spawns_per_session = 100` as a comment, and a naive
+/// `str::contains` assertion cannot tell an active key from a commented one. Instead this
+/// mirrors the real `--migrate-config` flow's first phase (`src/commands/migrate.rs`,
+/// `handle_migrate_config`): fold `MIGRATIONS.iter()` over the input, then parse the result and
+/// assert the key is present as an *active*, typed value — a parsed-document assertion cannot
+/// match a comment, unlike a substring check.
+#[test]
+fn full_registry_adds_max_spawns_per_session_to_legacy_agents_config() {
+    let legacy = "[agents]\nenabled = true\nmax_concurrent = 3\n";
+    let mut current = legacy.to_owned();
+    for m in MIGRATIONS.iter() {
+        current = m
+            .apply(&current)
+            .expect("registry migration must not fail")
+            .output;
+    }
+    let doc: toml_edit::DocumentMut = current.parse().expect("migrated output must be valid TOML");
+    assert_eq!(
+        doc["agents"]["max_spawns_per_session"].as_integer(),
+        Some(100),
+        "MIGRATIONS must add an active (non-commented) key, got: {current}"
+    );
 }
 
 #[test]
@@ -2270,6 +2305,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_agents_delegation_mode",
         "migrate_memory_consent_gate_config",
         "migrate_telegram_expandable_blockquote_config",
+        "migrate_agents_max_spawns_per_session",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);

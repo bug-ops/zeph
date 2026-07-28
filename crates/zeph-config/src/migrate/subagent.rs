@@ -70,6 +70,67 @@ pub fn migrate_agents_delegation_mode(toml_src: &str) -> Result<MigrationResult,
     })
 }
 
+/// Insert `max_spawns_per_session = 100` under `[agents]` when `enabled = true` and the key is
+/// absent (issue #6545).
+///
+/// Mirrors [`migrate_agents_delegation_mode`] exactly: `#[serde(default = "...")]` already
+/// makes the field's absence safe on load (see `SubAgentConfig::max_spawns_per_session`'s doc
+/// comment), so this insertion is behaviorally a no-op — its purpose is discoverability, so an
+/// operator who already opted into `enabled = true` sees the active session-wide spawn cap in
+/// their config file rather than having it resolved silently.
+///
+/// No-op when `[agents]` is absent, not active (only commented-out), `enabled` is not `true`,
+/// or `max_spawns_per_session` is already present.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_agents_max_spawns_per_session(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("max_spawns_per_session") || !section_header_present(toml_src, "agents") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    let Some(agents_table) = doc
+        .get_mut("agents")
+        .and_then(toml_edit::Item::as_table_mut)
+    else {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    };
+
+    let enabled = agents_table
+        .get("enabled")
+        .and_then(toml_edit::Item::as_value)
+        .and_then(toml_edit::Value::as_bool)
+        .unwrap_or(false);
+
+    if !enabled {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    agents_table.insert("max_spawns_per_session", toml_edit::value(100_i64));
+
+    Ok(MigrationResult {
+        output: doc.to_string(),
+        changed_count: 1,
+        sections_changed: vec!["agents.max_spawns_per_session".to_owned()],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,6 +180,55 @@ mod tests {
         let src = "[agents]\nenabled = true\n";
         let once = migrate_agents_delegation_mode(src).expect("migrate");
         let twice = migrate_agents_delegation_mode(&once.output).expect("migrate");
+        assert_eq!(twice.changed_count, 0);
+        assert_eq!(twice.output, once.output);
+    }
+
+    #[test]
+    fn max_spawns_inserts_100_when_enabled_and_key_absent() {
+        let src = "[agents]\nenabled = true\nmax_concurrent = 3\n";
+        let result = migrate_agents_max_spawns_per_session(src).expect("migrate");
+        assert_eq!(result.changed_count, 1);
+        assert!(result.output.contains("max_spawns_per_session = 100"));
+    }
+
+    #[test]
+    fn max_spawns_noop_when_disabled() {
+        let src = "[agents]\nenabled = false\n";
+        let result = migrate_agents_max_spawns_per_session(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert!(!result.output.contains("max_spawns_per_session"));
+    }
+
+    #[test]
+    fn max_spawns_noop_when_key_already_present() {
+        let src = "[agents]\nenabled = true\nmax_spawns_per_session = 50\n";
+        let result = migrate_agents_max_spawns_per_session(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn max_spawns_noop_when_section_absent() {
+        let src = "[llm]\nprovider = \"claude\"\n";
+        let result = migrate_agents_max_spawns_per_session(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn max_spawns_noop_when_section_only_commented_out() {
+        let src = "# [agents]\n# enabled = true\n";
+        let result = migrate_agents_max_spawns_per_session(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn max_spawns_idempotent() {
+        let src = "[agents]\nenabled = true\n";
+        let once = migrate_agents_max_spawns_per_session(src).expect("migrate");
+        let twice = migrate_agents_max_spawns_per_session(&once.output).expect("migrate");
         assert_eq!(twice.changed_count, 0);
         assert_eq!(twice.output, once.output);
     }

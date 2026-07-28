@@ -741,6 +741,17 @@ pub(crate) struct OrchestrationState {
     /// Manages spawned sub-agents.
     pub(crate) subagent_manager: Option<zeph_subagent::SubAgentManager>,
     pub(crate) subagent_config: crate::config::SubAgentConfig,
+    /// Fail-closed fallback session-wide subagent-spawn budget (issue #6545).
+    ///
+    /// Used only when no `subagent_manager` is wired (serve/daemon/acp bootstrap paths, or a
+    /// bare test harness) — see `Agent::session_budget` in `subagent_commands.rs`, which
+    /// prefers the manager's own budget (the origin/source of truth) whenever one exists and
+    /// falls back to this field otherwise, mirroring `effective_delegation_mode`'s existing
+    /// fallback-to-config precedent. Never copied into or out of `subagent_manager` — kept
+    /// deliberately independent so a future direct `subagent_manager = Some(...)` assignment
+    /// (several already exist in this crate's test helpers) can never desynchronize two
+    /// budgets that were supposed to be the same one.
+    pub(crate) session_spawn_budget: zeph_subagent::SessionSpawnBudget,
     pub(crate) orchestration_config: crate::config::OrchestrationConfig,
     /// Lazily initialized plan template cache. `None` until first use or when
     /// memory (`SQLite`) is unavailable.

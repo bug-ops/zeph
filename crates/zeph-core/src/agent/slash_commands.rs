@@ -117,6 +117,22 @@ impl<C: crate::channel::Channel> Agent<C> {
     /// `#[non_exhaustive]` variant. `/subagent spawn` is itself an explicit user action, so it
     /// stays permitted under `explicit_request_only` and `proactive`, blocked only when
     /// `permits_explicit()` is `false` (currently just `disabled`).
+    ///
+    /// A second, independent policy is enforced at this same choke point: the session-wide
+    /// cumulative spawn budget (issue #6545, `Agent::session_budget`). Since this path spawns
+    /// an out-of-process ACP session and never touches `SubAgentManager`, it would otherwise
+    /// bypass the cap entirely. `AcpSubagentSpawnFn` is fallible — but unlike the manager path
+    /// (where `NotFound`/`ConcurrencyLimit` genuinely mean "no resources allocated"), the real
+    /// callback wired in `src/runner.rs` (`zeph_acp::run_session`) launches the child process
+    /// *before* it can fail: its `Err` arm covers three cases — the launch itself failing
+    /// (nothing ran), a live child that ran for up to `session_timeout_secs` and then timed
+    /// out, and a live child that ran and then failed post-launch I/O/protocol. Only the first
+    /// allocates zero resources; the other two already spent an OS process. Because
+    /// `Result<String, String>` erases which case occurred by the time it crosses this
+    /// boundary, the budget is consumed unconditionally once `spawn_fn` returns at all (both
+    /// `Ok` and `Err`) — accepting a small overcount on launch-failure in exchange for never
+    /// undercounting a real, possibly-hung child process, which is the actual runaway-loop
+    /// threat this cap exists to bound.
     async fn handle_subagent_slash(&mut self, args: &str) -> Result<(), error::AgentError> {
         let msg: String = if args.is_empty() {
             "Usage: /subagent <subcommand>\n\nSubcommands:\n  spawn <command>  Spawn an ACP sub-agent process".to_owned()
@@ -126,6 +142,11 @@ impl<C: crate::channel::Channel> Agent<C> {
                 "spawn" => {
                     let cmd = rest.trim();
                     let effective_mode = self.effective_delegation_mode();
+                    let max_spawns = self
+                        .services
+                        .orchestration
+                        .subagent_config
+                        .max_spawns_per_session;
                     if cmd.is_empty() {
                         "Usage: /subagent spawn <command>\n\nExample: /subagent spawn zeph --acp"
                             .to_owned()
@@ -137,10 +158,24 @@ impl<C: crate::channel::Channel> Agent<C> {
                         "Sub-agent delegation is disabled by configuration \
                          ([agents].delegation_mode = \"disabled\" or [agents].enabled = false)."
                             .to_owned()
+                    } else if let Err(e) = self.session_budget().check(max_spawns) {
+                        tracing::warn!(
+                            error = %e,
+                            "/subagent spawn rejected: session spawn budget exhausted"
+                        );
+                        format!("Sub-agent error: {e}")
                     } else if let Some(spawn_fn) = self.runtime.config.acp_subagent_spawn_fn.clone()
                     {
                         let cmd = cmd.to_owned();
-                        match spawn_fn(cmd).await {
+                        let result = spawn_fn(cmd).await;
+                        // Commit point (issue #6545): record unconditionally once `spawn_fn`
+                        // has returned at all, in both the `Ok` and `Err` arms — see the doc
+                        // comment above for why an `Err` here cannot be assumed to mean "never
+                        // launched". Re-borrows `self` fresh (rather than holding a reference
+                        // across the `.await` above) since `SessionSpawnBudget` has no
+                        // `Clone`/`Arc` by design — see its own doc comment.
+                        self.session_budget().record_spawn();
+                        match result {
                             Ok(output) => output,
                             Err(e) => format!("Sub-agent error: {e}"),
                         }

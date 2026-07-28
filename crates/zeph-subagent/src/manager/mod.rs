@@ -526,6 +526,14 @@ pub struct SubAgentManager {
     /// is authoritative at spawn time; `SubAgentManager` does not re-read `enabled` itself.
     /// Defaults to [`zeph_config::DelegationMode::default()`] (`Proactive`) until set.
     delegation_mode: zeph_config::DelegationMode,
+    /// Session-wide cumulative subagent-spawn budget (issue #6545).
+    ///
+    /// This manager owns the origin instance: [`session_budget`][Self::session_budget] exposes
+    /// a `&SessionSpawnBudget` reference so other chokepoints that never touch this manager —
+    /// e.g. the ACP `/subagent spawn` path in `zeph-core`'s `handle_subagent_slash` — can
+    /// enforce the same session-wide cap. See [`SessionSpawnBudget`]'s own doc comment for why
+    /// it is a plain, uncloned `AtomicUsize` newtype rather than a shared `Arc` handle.
+    session_spawn_budget: crate::budget::SessionSpawnBudget,
 }
 
 impl std::fmt::Debug for SubAgentManager {
@@ -549,6 +557,7 @@ impl std::fmt::Debug for SubAgentManager {
             .field("secret_registry", &self.secret_registry.is_some())
             .field("pii_filter", &self.pii_filter.is_some())
             .field("delegation_mode", &self.delegation_mode)
+            .field("session_spawn_budget", &self.session_spawn_budget)
             .finish()
     }
 }
@@ -576,7 +585,21 @@ impl SubAgentManager {
             secret_registry: None,
             pii_filter: None,
             delegation_mode: zeph_config::DelegationMode::default(),
+            session_spawn_budget: crate::budget::SessionSpawnBudget::default(),
         }
+    }
+
+    /// The session-wide cumulative subagent-spawn budget this manager originates (issue
+    /// #6545).
+    ///
+    /// Returns a reference to this manager's own budget instance — not a fresh, independent
+    /// one — so a caller reading through this accessor observes the same cumulative count as
+    /// every spawn through this manager. See
+    /// [`SessionSpawnBudget`][crate::budget::SessionSpawnBudget]'s doc comment for why the type
+    /// itself has no `Clone`/`Arc`.
+    #[must_use]
+    pub fn session_budget(&self) -> &crate::budget::SessionSpawnBudget {
+        &self.session_spawn_budget
     }
 
     /// Inject a [`TaskSupervisor`] so subagent lifecycle tasks are registered and visible.

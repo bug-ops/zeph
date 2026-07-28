@@ -766,6 +766,7 @@ enabled = false                    # Enable native worktree isolation for backgr
 [agents]
 enabled = false            # Enable sub-agent system (default: false)
 max_concurrent = 1         # Max concurrent sub-agents (default: 1)
+max_spawns_per_session = 100  # Cumulative spawn cap for the whole session (default: 100, 0 = unlimited)
 delegation_mode = "proactive"  # Autonomous spawn control: "proactive" (default), "explicit_request_only", or "disabled"
 extra_dirs = []            # Additional directories to scan for agent definitions
 # default_memory_scope = "project"  # Default memory scope for agents without explicit `memory` field

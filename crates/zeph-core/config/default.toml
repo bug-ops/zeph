@@ -710,6 +710,9 @@ enabled = false
 delegation_mode = "proactive"
 # Maximum number of sub-agents that can run concurrently
 max_concurrent = 1
+# Maximum cumulative number of sub-agents that may be spawned within a single session,
+# independent of max_concurrent and max_spawn_depth (issue #6545). 0 = unlimited.
+max_spawns_per_session = 100
 # Allow sub-agents to use bypass_permissions mode (enable only in trusted environments)
 allow_bypass_permissions = false
 # Enable writing JSONL transcripts for sub-agent sessions (required for /agent resume)

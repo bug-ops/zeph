@@ -1383,6 +1383,98 @@ fn test_record_spawn_failure() {
     );
 }
 
+/// Issue #6545 (S2): unlike `ConcurrencyLimit`, `SessionSpawnLimit` is not special-cased as
+/// transient inside `record_spawn_failure` — it falls through to `TaskStatus::Failed` +
+/// `dag::propagate_failure`, exactly like any other `SubAgentError` variant.
+/// `record_spawn_failure` performs no error-type inspection beyond the `ConcurrencyLimit`
+/// check, so what happens next is entirely a function of the node's `FailureStrategy`. This
+/// test pins that behavior under the shipped **default** (`FailureStrategy::Abort`): the
+/// failure is terminal for the graph. It does **not** mean `SessionSpawnLimit` can never be
+/// retried in general — under the opt-in `FailureStrategy::Retry`, `propagate_failure`'s own
+/// `Retry` arm resurrects *any* `Failed` node (including one classified from
+/// `SessionSpawnLimit`) back to `Ready`, bounded by `max_retries` — see
+/// `test_record_spawn_failure_session_spawn_limit_bounded_retry_under_retry_strategy` below.
+#[test]
+fn test_record_spawn_failure_session_spawn_limit_marks_failed_not_ready() {
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+
+    let error = SubAgentError::SessionSpawnLimit {
+        spawned: 100,
+        max: 100,
+    };
+    let actions = scheduler.record_spawn_failure(TaskId(0), &error);
+    assert_eq!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Failed,
+        "under the default FailureStrategy::Abort, SessionSpawnLimit is terminal"
+    );
+    assert_eq!(scheduler.graph.status, GraphStatus::Failed);
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, SchedulerAction::Done { .. }))
+    );
+}
+
+/// Issue #6545 (I6): pins the `FailureStrategy::Retry` case the test above explicitly does not
+/// cover. `record_spawn_failure` classifies `SessionSpawnLimit` identically to every
+/// non-`ConcurrencyLimit` error — it has no special "unretryable" marking — so under a node's
+/// opt-in `Retry` strategy, `dag::propagate_failure` resurrects it back to `Ready` like any
+/// other failure, bounded by `max_retries` (not unbounded — the guard itself is check-only and
+/// never consumes budget, so these bounded retries cost nothing either way, but the node does
+/// leave `Failed` and re-enter `Ready` rather than staying terminal).
+#[test]
+fn test_record_spawn_failure_session_spawn_limit_bounded_retry_under_retry_strategy() {
+    use crate::graph::FailureStrategy;
+
+    let graph = graph_from_nodes(vec![make_node(0, &[])]);
+    let mut scheduler = make_scheduler(graph);
+
+    scheduler.graph.tasks[0].failure_strategy = Some(FailureStrategy::Retry);
+    scheduler.graph.tasks[0].max_retries = Some(2);
+    scheduler.graph.tasks[0].retry_count = 0;
+
+    let error = SubAgentError::SessionSpawnLimit {
+        spawned: 100,
+        max: 100,
+    };
+
+    // First two failures: resurrected to Ready, retry_count increments, no terminal actions.
+    for expected_retry_count in 1..=2 {
+        scheduler.graph.tasks[0].status = TaskStatus::Running;
+        let actions = scheduler.record_spawn_failure(TaskId(0), &error);
+        assert_eq!(
+            scheduler.graph.tasks[0].status,
+            TaskStatus::Ready,
+            "under FailureStrategy::Retry, SessionSpawnLimit is resurrected like any other \
+             failure while retry_count < max_retries"
+        );
+        assert_eq!(scheduler.graph.tasks[0].retry_count, expected_retry_count);
+        assert!(
+            actions.is_empty(),
+            "propagate_failure's Retry branch returns no cancel/done actions on resurrection"
+        );
+    }
+
+    // Third failure: max_retries (2) exhausted — falls through to terminal Abort behavior,
+    // proving the retry is bounded, not unbounded.
+    scheduler.graph.tasks[0].status = TaskStatus::Running;
+    let actions = scheduler.record_spawn_failure(TaskId(0), &error);
+    assert_eq!(
+        scheduler.graph.tasks[0].status,
+        TaskStatus::Failed,
+        "retries must be bounded by max_retries, not indefinite"
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, SchedulerAction::Done { .. }))
+    );
+}
+
 #[test]
 fn test_record_spawn_failure_concurrency_limit_reverts_to_ready() {
     let graph = graph_from_nodes(vec![make_node(0, &[])]);

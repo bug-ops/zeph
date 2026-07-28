@@ -170,6 +170,130 @@ async fn subagent_spawn_explicit_request_only_still_allows_acp_spawn() {
     );
 }
 
+/// Issue #6545, N1 (revised — see security audit `2026-07-28T00-38-48-security.md`):
+/// `AcpSubagentSpawnFn` is fallible, but its `Err` arm cannot be assumed to mean "never
+/// launched" — the real callback (`zeph_acp::run_session`) launches the child process before
+/// it can time out or fail post-launch, and `Result<String, String>` erases that distinction
+/// by the time it crosses this boundary. So a *simulated post-launch failure* (as opposed to
+/// the callback simply not existing, or the pre-flight budget `check()` rejecting the attempt
+/// before `spawn_fn` is ever called) must still consume budget: undercounting a real process
+/// launch is the actual vulnerability this cap exists to prevent, not the minor overcount of
+/// the rarer "never launched" sub-case. Regression guard against reverting to the earlier,
+/// incorrect `Ok`-arm-only commit point.
+#[tokio::test]
+async fn subagent_spawn_post_launch_failure_still_consumes_budget() {
+    let mut h = QuickTestAgent::minimal("");
+    h.agent.services.orchestration.subagent_config.enabled = true;
+    h.agent.runtime.config.acp_subagent_spawn_fn = Some(std::sync::Arc::new(|_cmd: String| {
+        Box::pin(async move { Err("launch failed".to_owned()) })
+    }));
+
+    let result = h
+        .agent
+        .dispatch_slash_command("/subagent spawn my-command")
+        .await;
+    assert!(result.is_some(), "must be intercepted");
+    let output = h.sent_messages().join("\n");
+    assert!(
+        output.contains("launch failed"),
+        "expected the spawn_fn error, got: {output}"
+    );
+    assert_eq!(
+        h.agent
+            .services
+            .orchestration
+            .session_spawn_budget
+            .spawned(),
+        1,
+        "spawn_fn having returned at all — even Err — means it was invoked and must consume \
+         budget, since its Err arm can mean a real child process ran and then failed"
+    );
+}
+
+/// Issue #6545, N3(b): with no `SubAgentManager` wired at all (the `QuickTestAgent::minimal`
+/// harness default — matches serve/daemon/acp bootstrap paths per critic finding N2/R4), the
+/// ACP chokepoint must still enforce the cap via `OrchestrationState`'s own fallback budget.
+#[tokio::test]
+async fn subagent_spawn_cap_reached_enforced_without_manager() {
+    let mut h = QuickTestAgent::minimal("");
+    h.agent.services.orchestration.subagent_config.enabled = true;
+    h.agent
+        .services
+        .orchestration
+        .subagent_config
+        .max_spawns_per_session = 1;
+    h.agent.runtime.config.acp_subagent_spawn_fn = Some(std::sync::Arc::new(|cmd: String| {
+        Box::pin(async move { Ok(format!("spawned: {cmd}")) })
+    }));
+    assert!(
+        h.agent.services.orchestration.subagent_manager.is_none(),
+        "precondition: this test exercises the no-manager fallback path"
+    );
+
+    let first = h
+        .agent
+        .dispatch_slash_command("/subagent spawn first-command")
+        .await;
+    assert!(first.is_some());
+    assert!(
+        h.sent_messages()
+            .join("\n")
+            .contains("spawned: first-command")
+    );
+
+    let second = h
+        .agent
+        .dispatch_slash_command("/subagent spawn second-command")
+        .await;
+    assert!(second.is_some());
+    let output = h.sent_messages().join("\n");
+    assert!(
+        !output.contains("spawned: second-command"),
+        "cap must reject the second spawn, got: {output}"
+    );
+    assert!(
+        output.contains("session spawn limit"),
+        "rejection must name the session spawn limit, got: {output}"
+    );
+}
+
+/// Issue #6545, N3(a): with a `SubAgentManager` wired (mirrors `runner.rs`'s production
+/// `with_orchestration` path), an ACP spawn through the chokepoint must contribute to the
+/// exact same cumulative count the manager itself sees — proving `Agent::session_budget`'s
+/// accessor resolves to the manager's own budget, not a disconnected fallback, whenever a
+/// manager exists. (The reverse — a manager-side spawn being observable through the ACP
+/// chokepoint — is trivially true through the shared `&SessionSpawnBudget` reference and isn't
+/// separately asserted here.)
+#[tokio::test]
+async fn subagent_spawn_visible_to_manager_budget_when_wired() {
+    let mut h = QuickTestAgent::minimal("");
+    h.agent.services.orchestration.subagent_config.enabled = true;
+    h.agent.services.orchestration.subagent_manager = Some(zeph_subagent::SubAgentManager::new(4));
+    h.agent.runtime.config.acp_subagent_spawn_fn = Some(std::sync::Arc::new(|cmd: String| {
+        Box::pin(async move { Ok(format!("spawned: {cmd}")) })
+    }));
+
+    let result = h
+        .agent
+        .dispatch_slash_command("/subagent spawn my-command")
+        .await;
+    assert!(result.is_some());
+    assert!(h.sent_messages().join("\n").contains("spawned: my-command"));
+
+    let mgr = h
+        .agent
+        .services
+        .orchestration
+        .subagent_manager
+        .as_ref()
+        .expect("manager must still be wired");
+    assert_eq!(
+        mgr.session_budget().spawned(),
+        1,
+        "the ACP spawn must be visible through the manager's own budget handle"
+    );
+}
+
 #[tokio::test]
 async fn subagent_unknown_subcommand_returns_error() {
     let mut h = QuickTestAgent::minimal("");

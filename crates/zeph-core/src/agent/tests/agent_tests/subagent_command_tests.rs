@@ -100,6 +100,39 @@ async fn agent_command_status_no_agents_returns_empty_message() {
         .await
         .unwrap();
     assert!(resp.contains("No active sub-agents"));
+    // Issue #6545, S4 regression: the "Session spawns: N/max" line must survive the early
+    // return — this is exactly the state right after the cap fires, when an operator most
+    // needs to see the count. Default config's max_spawns_per_session is 100.
+    assert!(
+        resp.starts_with("Session spawns: 0/100"),
+        "expected the spawns line as the first line, got: {resp}"
+    );
+}
+
+/// Issue #6545, S4 regression: `handle_agent_list`'s *other* early return (no definitions
+/// loaded at all, distinct from the "no active agents" branch above) must also carry the
+/// spawns line — `make_agent_with_manager()` always pushes a "helper" definition, so this
+/// test builds its own manager with none.
+#[tokio::test]
+async fn agent_command_list_no_definitions_still_shows_spawns_line() {
+    use zeph_subagent::SubAgentManager;
+
+    let provider = mock_provider(vec![]);
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+    agent.services.orchestration.subagent_manager = Some(SubAgentManager::new(4));
+
+    let resp = agent
+        .handle_agent_command(AgentCommand::List)
+        .await
+        .unwrap();
+    assert!(resp.contains("No sub-agent definitions found."));
+    assert!(
+        resp.starts_with("Session spawns: 0/100"),
+        "expected the spawns line as the first line, got: {resp}"
+    );
 }
 
 #[tokio::test]

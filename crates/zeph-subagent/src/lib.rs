@@ -39,6 +39,7 @@
 //! ```
 
 mod agent_loop;
+pub mod budget;
 pub mod command;
 pub mod cwd_guard;
 pub mod def;
@@ -55,6 +56,7 @@ pub mod resolve;
 pub mod state;
 pub mod transcript;
 
+pub use budget::SessionSpawnBudget;
 pub use command::{AgentCommand, AgentsCommand};
 pub use cwd_guard::CwdLock;
 pub use def::{

@@ -22,6 +22,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-core`: new `Channel::send_skill_catalog` method (default no-op) and
   `AgentEvent::SkillCatalog`, forwarded by `AnyChannel`, `GatewayChannel`, and
   `AppChannel`, overridden by `TuiChannel` to feed the mention picker's Skills tab.
+- `zeph-subagent`, `zeph-config`, `zeph-core`: configurable, default-on session-wide
+  cumulative cap on total sub-agent spawns (issue #6545), independent of the existing
+  `max_concurrent` (in-flight) and `max_spawn_depth` (recursion) guardrails — catches a
+  shallow, low-concurrency but high-frequency sequential delegation loop that neither of
+  those bounds. New `[agents] max_spawns_per_session` config field (default `100`, `0` =
+  unlimited), new `SubAgentError::SessionSpawnLimit` variant, and a new
+  `zeph_subagent::SessionSpawnBudget` counter type (an uncloneable `AtomicUsize` newtype,
+  reached via an `Agent::session_budget()` accessor rather than a copied handle) so
+  `SubAgentManager::spawn`/`resume` and the ACP `/subagent spawn` path (which never touches
+  `SubAgentManager`) enforce the same cumulative counter. The cap is checked ahead of
+  `max_spawn_depth`/`max_concurrent` but
+  consumed only at each spawn path's true commit point, so a spawn rejected for any other
+  reason — including a transient `ConcurrencyLimit` the orchestration scheduler retries —
+  never burns budget it never used. `--migrate-config` populates the new key on existing
+  configs; `/agent status` and `/agent list` surface the running count.
 
 ### Changed
 

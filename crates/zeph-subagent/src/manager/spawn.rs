@@ -570,9 +570,10 @@ impl SubAgentManager {
     /// # Errors
     ///
     /// Returns [`SubAgentError::NotFound`] if no definition with the given name exists,
-    /// [`SubAgentError::ConcurrencyLimit`] if the concurrency limit is exceeded, or
-    /// [`SubAgentError::Invalid`] if the agent requests `bypass_permissions` but the config
-    /// does not allow it (`allow_bypass_permissions: false`).
+    /// [`SubAgentError::ConcurrencyLimit`] if the concurrency limit is exceeded,
+    /// [`SubAgentError::SessionSpawnLimit`] if the session-wide cumulative spawn cap has been
+    /// reached, or [`SubAgentError::Invalid`] if the agent requests `bypass_permissions` but
+    /// the config does not allow it (`allow_bypass_permissions: false`).
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     // complex algorithm function; both suppressions justified until the function is decomposed in a future refactor
     #[tracing::instrument(name = "subagent.manager.spawn", skip_all, fields(def_name = def_name))]
@@ -612,6 +613,26 @@ impl SubAgentManager {
                 origin: ctx.origin,
                 def_name: def_name.to_owned(),
             });
+        }
+
+        // Session-wide cumulative spawn cap (issue #6545): checked before the depth/concurrency
+        // checks below, same as the delegation gate above. Deliberately also precedes the
+        // max_spawn_depth check, one step further than issue #6545 formally requires (only
+        // priority over ConcurrencyLimit was required) — harmless today since `spawn_depth` is
+        // always 0 in production, and it keeps both "no resources allocated yet" guards
+        // adjacent. Read-only: budget is consumed only at the commit point below, not here, so
+        // a spawn rejected by a later check (NotFound, ConcurrencyLimit) never burns budget it
+        // never used.
+        if let Err(e) = self
+            .session_spawn_budget
+            .check(config.max_spawns_per_session)
+        {
+            tracing::warn!(
+                error = %e,
+                def_name,
+                "sub-agent spawn rejected: session spawn budget exhausted"
+            );
+            return Err(e);
         }
 
         if ctx.spawn_depth >= config.max_spawn_depth {
@@ -896,6 +917,11 @@ impl SubAgentManager {
         };
 
         self.agents.insert(task_id.clone(), handle);
+        // Commit point for the session-wide spawn budget (issue #6545): the handle is now
+        // owned by the manager and every fallible step above has already succeeded, so this
+        // spawn is real and must count toward the cap. Must stay after the insert, not at the
+        // guard above — see the check/consume split note there.
+        self.session_spawn_budget.record_spawn();
 
         if let Some(ref registry) = self.fleet_registry {
             let registry = Arc::clone(registry);
@@ -1062,7 +1088,9 @@ impl SubAgentManager {
     /// [`SubAgentError::NotFound`] if no transcript with the given prefix exists,
     /// [`SubAgentError::AmbiguousId`] if the prefix matches multiple agents,
     /// [`SubAgentError::Transcript`] on I/O or parse failure,
-    /// [`SubAgentError::ConcurrencyLimit`] if the concurrency limit is exceeded.
+    /// [`SubAgentError::ConcurrencyLimit`] if the concurrency limit is exceeded, or
+    /// [`SubAgentError::SessionSpawnLimit`] if the session-wide cumulative spawn cap has been
+    /// reached.
     #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     #[tracing::instrument(name = "subagent.manager.resume", skip_all, fields(id_prefix = id_prefix))]
     pub async fn resume(
@@ -1091,6 +1119,22 @@ impl SubAgentManager {
                 origin: super::SpawnOrigin::Explicit,
                 def_name: id_prefix.to_owned(),
             });
+        }
+
+        // Session-wide cumulative spawn cap (issue #6545): `resume()` allocates the identical
+        // per-spawn resources `spawn()` does (transcript writer, agent loop task, handle), so
+        // an `/agent resume`-in-a-loop bypass would otherwise be uncapped. Read-only here; see
+        // the check/consume split note on the `spawn()` guard above.
+        if let Err(e) = self
+            .session_spawn_budget
+            .check(config.max_spawns_per_session)
+        {
+            tracing::warn!(
+                error = %e,
+                id_prefix,
+                "sub-agent resume rejected: session spawn budget exhausted"
+            );
+            return Err(e);
         }
 
         let dir = self.effective_transcript_dir(config);
@@ -1301,6 +1345,9 @@ impl SubAgentManager {
         };
 
         self.agents.insert(new_task_id.clone(), handle);
+        // Commit point for the session-wide spawn budget (issue #6545) — see the matching
+        // note in `spawn()`.
+        self.session_spawn_budget.record_spawn();
         tracing::info!(
             task_id = %new_task_id,
             original_id = %original_id,

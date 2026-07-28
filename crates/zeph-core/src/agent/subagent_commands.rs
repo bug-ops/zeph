@@ -264,6 +264,7 @@ impl<C: Channel> Agent<C> {
     fn handle_agent_list(&self) -> Option<String> {
         use std::fmt::Write as _;
         let mgr = self.services.orchestration.subagent_manager.as_ref()?;
+        let spawns_line = self.format_session_spawns_line();
         let mode_label = match mgr.delegation_mode() {
             zeph_config::DelegationMode::Disabled => "disabled",
             zeph_config::DelegationMode::ExplicitRequestOnly => "explicit_request_only",
@@ -273,10 +274,11 @@ impl<C: Channel> Agent<C> {
         let defs = mgr.definitions();
         if defs.is_empty() {
             return Some(format!(
-                "Delegation mode: {mode_label}\nNo sub-agent definitions found."
+                "{spawns_line}\nDelegation mode: {mode_label}\nNo sub-agent definitions found."
             ));
         }
-        let mut out = format!("Delegation mode: {mode_label}\nAvailable sub-agents:\n");
+        let mut out =
+            format!("{spawns_line}\nDelegation mode: {mode_label}\nAvailable sub-agents:\n");
         for d in defs {
             let memory_label = match d.memory {
                 Some(zeph_subagent::MemoryScope::User) => " [memory:user]",
@@ -300,11 +302,12 @@ impl<C: Channel> Agent<C> {
     fn handle_agent_status(&self) -> Option<String> {
         use std::fmt::Write as _;
         let mgr = self.services.orchestration.subagent_manager.as_ref()?;
+        let spawns_line = self.format_session_spawns_line();
         let statuses = mgr.statuses();
         if statuses.is_empty() {
-            return Some("No active sub-agents.".into());
+            return Some(format!("{spawns_line}\nNo active sub-agents."));
         }
-        let mut out = String::from("Active sub-agents:\n");
+        let mut out = format!("{spawns_line}\nActive sub-agents:\n");
         for (id, s) in &statuses {
             let state = format!("{:?}", s.state).to_lowercase();
             let elapsed = s.started_at.elapsed().as_secs();
@@ -828,6 +831,55 @@ impl<C: Channel> Agent<C> {
             .subagent_config
             .effective_delegation_mode()
     }
+
+    /// The session-wide cumulative subagent-spawn budget in force for this session (issue
+    /// #6545).
+    ///
+    /// Returns the `SubAgentManager`'s own budget when a manager is wired (the common case:
+    /// CLI/TUI runner), so a manager-side spawn and the ACP `/subagent spawn` chokepoint in
+    /// `slash_commands.rs` observe and contribute to the exact same cumulative count. Falls
+    /// back to `OrchestrationState::session_spawn_budget` when no manager is wired
+    /// (serve/daemon/acp bootstrap paths, or a bare test harness) — fail-closed rather than
+    /// unenforced, mirroring [`effective_delegation_mode`][Self::effective_delegation_mode]'s
+    /// fallback-to-config precedent above. An accessor rather than a copied handle, so a
+    /// future direct `subagent_manager = Some(...)` assignment elsewhere can never
+    /// desynchronize two independent budgets.
+    pub(super) fn session_budget(&self) -> &zeph_subagent::SessionSpawnBudget {
+        self.services
+            .orchestration
+            .subagent_manager
+            .as_ref()
+            .map_or(
+                &self.services.orchestration.session_spawn_budget,
+                zeph_subagent::SubAgentManager::session_budget,
+            )
+    }
+
+    /// Format the `Session spawns: N/max` (or `N/unlimited`) line shared by
+    /// `handle_agent_status` and `handle_agent_list`.
+    ///
+    /// Must be called before either function's early "no active agents"/"no definitions"
+    /// return, not just the non-empty branch — that early return is precisely the state right
+    /// after the cap fires under the shipped `max_concurrent = 1` default, which is exactly
+    /// when an operator needs to see the count (issue #6545). Reads through
+    /// [`session_budget`][Self::session_budget] rather than a manager parameter's own
+    /// `session_budget()`, so this stays the only path that resolves which budget instance
+    /// applies — both callers happen to have a manager in hand already, but routing through
+    /// the accessor avoids a second, parallel resolution path to the same value.
+    fn format_session_spawns_line(&self) -> String {
+        let max = self
+            .services
+            .orchestration
+            .subagent_config
+            .max_spawns_per_session;
+        let spawned = self.session_budget().spawned();
+        if max == 0 {
+            format!("Session spawns: {spawned}/unlimited")
+        } else {
+            format!("Session spawns: {spawned}/{max}")
+        }
+    }
+
     /// Build a `SpawnContext` from current agent state for sub-agent spawning.
     pub(super) fn build_spawn_context(
         &self,

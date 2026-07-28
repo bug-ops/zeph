@@ -504,6 +504,290 @@ async fn concurrency_limit_enforced() {
     assert_matches!(err, SubAgentError::ConcurrencyLimit { .. });
 }
 
+mod session_spawn_budget_gate {
+    //! Session-wide cumulative subagent spawn cap (issue #6545).
+
+    use super::*;
+
+    fn cfg_with_max_spawns(max: usize) -> SubAgentConfig {
+        SubAgentConfig {
+            max_spawns_per_session: max,
+            ..SubAgentConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn cap_reached_returns_session_spawn_limit() {
+        let mut mgr = SubAgentManager::new(10);
+        mgr.definitions.push(sample_def());
+        let cfg = cfg_with_max_spawns(1);
+
+        mgr.spawn(
+            "bot",
+            "first",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &cfg,
+            SpawnContext::default(),
+        )
+        .await
+        .unwrap();
+
+        let err = mgr
+            .spawn(
+                "bot",
+                "second",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+                SpawnContext::default(),
+            )
+            .await
+            .unwrap_err();
+        assert_matches!(err, SubAgentError::SessionSpawnLimit { spawned: 1, max: 1 });
+    }
+
+    #[tokio::test]
+    async fn zero_is_unlimited_sentinel() {
+        let mut mgr = SubAgentManager::new(10);
+        mgr.definitions.push(sample_def());
+        let cfg = cfg_with_max_spawns(0);
+
+        for i in 0..5 {
+            mgr.spawn(
+                "bot",
+                &format!("task-{i}"),
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+                SpawnContext::default(),
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(mgr.session_budget().spawned(), 5);
+    }
+
+    #[tokio::test]
+    async fn concurrency_limit_rejection_does_not_consume_budget() {
+        let mut mgr = SubAgentManager::new(1);
+        mgr.definitions.push(sample_def());
+        let cfg = cfg_with_max_spawns(10);
+
+        mgr.spawn(
+            "bot",
+            "first",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &cfg,
+            SpawnContext::default(),
+        )
+        .await
+        .unwrap();
+
+        let err = mgr
+            .spawn(
+                "bot",
+                "second",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+                SpawnContext::default(),
+            )
+            .await
+            .unwrap_err();
+        assert_matches!(err, SubAgentError::ConcurrencyLimit { .. });
+        assert_eq!(
+            mgr.session_budget().spawned(),
+            1,
+            "a transient ConcurrencyLimit rejection must not consume budget \
+             (DagScheduler::record_spawn_failure retries it)"
+        );
+    }
+
+    #[tokio::test]
+    async fn not_found_rejection_does_not_consume_budget() {
+        let mut mgr = SubAgentManager::new(10);
+        let cfg = cfg_with_max_spawns(10);
+
+        let err = mgr
+            .spawn(
+                "missing",
+                "task",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+                SpawnContext::default(),
+            )
+            .await
+            .unwrap_err();
+        assert_matches!(err, SubAgentError::NotFound(_));
+        assert_eq!(mgr.session_budget().spawned(), 0);
+    }
+
+    #[tokio::test]
+    async fn session_spawn_limit_takes_priority_over_concurrency_limit() {
+        let mut mgr = SubAgentManager::new(1);
+        mgr.definitions.push(sample_def());
+        let cfg = cfg_with_max_spawns(1);
+
+        mgr.spawn(
+            "bot",
+            "first",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &cfg,
+            SpawnContext::default(),
+        )
+        .await
+        .unwrap();
+
+        // Both the session cap (1) and the concurrency limit (1) are now exhausted.
+        let err = mgr
+            .spawn(
+                "bot",
+                "second",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+                SpawnContext::default(),
+            )
+            .await
+            .unwrap_err();
+        assert_matches!(
+            err,
+            SubAgentError::SessionSpawnLimit { .. },
+            "the session cap must be checked before the concurrency check"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_is_gated_and_counts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_id = "deadcode-0000-0000-0000-000000000000";
+        write_completed_meta(tmp.path(), agent_id, "bot");
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        let cfg = SubAgentConfig {
+            transcript_dir: Some(tmp.path().to_path_buf()),
+            max_spawns_per_session: 1,
+            ..SubAgentConfig::default()
+        };
+
+        let (new_id, _def_name) = mgr
+            .resume(
+                "deadcode",
+                "continue the work",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(mgr.session_budget().spawned(), 1);
+        mgr.cancel(&new_id).unwrap();
+
+        let agent_id2 = "beefcode-0000-0000-0000-000000000000";
+        write_completed_meta(tmp.path(), agent_id2, "bot");
+        let err = mgr
+            .resume(
+                "beefcode",
+                "continue the work",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_matches!(err, SubAgentError::SessionSpawnLimit { .. });
+    }
+
+    /// `spawn_for_task` delegates straight to `spawn` (see `manager/spawn.rs`), so the same
+    /// budget gate must reject it too — mirrors `spawn_for_task_is_gated_identically` in
+    /// `delegation_mode_gate` below.
+    #[tokio::test]
+    async fn spawn_for_task_is_gated_and_counts() {
+        let mut mgr = SubAgentManager::new(10);
+        mgr.definitions.push(sample_def());
+        let cfg = cfg_with_max_spawns(1);
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        mgr.spawn_for_task(
+            "bot",
+            "task",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &cfg,
+            SpawnContext::default(),
+            move |id, result| {
+                let _ = tx.send((id, result));
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(mgr.session_budget().spawned(), 1);
+
+        let (tx2, _rx2) = tokio::sync::mpsc::unbounded_channel();
+        let err = mgr
+            .spawn_for_task(
+                "bot",
+                "task2",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+                SpawnContext::default(),
+                move |id, result| {
+                    let _ = tx2.send((id, result));
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_matches!(err, SubAgentError::SessionSpawnLimit { .. });
+        assert!(
+            rx.try_recv().is_err(),
+            "on_done must never fire for a rejected spawn"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_budget_accessor_reflects_spawn_count() {
+        let mut mgr = SubAgentManager::new(10);
+        mgr.definitions.push(sample_def());
+        let cfg = cfg_with_max_spawns(0);
+
+        assert_eq!(mgr.session_budget().spawned(), 0);
+        for i in 0..3 {
+            mgr.spawn(
+                "bot",
+                &format!("task-{i}"),
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+                SpawnContext::default(),
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(mgr.session_budget().spawned(), 3);
+    }
+}
+
 // --- #1619 regression tests: reserved_slots ---
 
 #[tokio::test]

@@ -89,8 +89,9 @@ use super::{
     MigrateError, Migration, MigrationResult, migrate_a2a_card_trust_config,
     migrate_a2a_server_remove_inert_fields, migrate_acp_auth_clients_config,
     migrate_acp_subagents_config, migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry,
-    migrate_agent_time_reminder, migrate_agents_delegation_mode, migrate_autodream_config,
-    migrate_caveman_config, migrate_cocoon_provider_notice, migrate_cocoon_show_balance,
+    migrate_agent_time_reminder, migrate_agents_delegation_mode,
+    migrate_agents_max_spawns_per_session, migrate_autodream_config, migrate_caveman_config,
+    migrate_cocoon_provider_notice, migrate_cocoon_show_balance,
     migrate_compression_predictor_config, migrate_database_url, migrate_deep_link_config,
     migrate_durable_config, migrate_durable_hwm_advisory, migrate_durable_key_rotation,
     migrate_durable_shared_db, migrate_durable_stale_running_after_secs, migrate_egress_config,
@@ -1339,5 +1340,18 @@ impl Migration for MigrateTelegramExpandableBlockquoteConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_telegram_expandable_blockquote_config(toml_src)
+    }
+}
+
+/// Step 105 — insert an active `max_spawns_per_session = 100` value into an existing
+/// `[agents]` table with `enabled = true` and no `max_spawns_per_session` key (issue #6545).
+pub(super) struct MigrateAgentsMaxSpawnsPerSession;
+impl Migration for MigrateAgentsMaxSpawnsPerSession {
+    fn name(&self) -> &'static str {
+        "migrate_agents_max_spawns_per_session"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_agents_max_spawns_per_session(toml_src)
     }
 }

@@ -122,4 +122,39 @@ pub enum SubAgentError {
         origin: crate::manager::SpawnOrigin,
         def_name: String,
     },
+
+    /// The session-wide cumulative spawn budget has been exhausted (issue #6545).
+    ///
+    /// Distinct from [`SubAgentError::ConcurrencyLimit`] (bounds in-flight agents) and
+    /// [`SubAgentError::MaxDepthExceeded`] (bounds recursion depth): this bounds the total
+    /// number of subagents spawned over the session's lifetime, independent of both, so a
+    /// shallow, low-concurrency but high-frequency sequential delegation loop is still caught.
+    /// The `Display` string names the config key directly because the only user-visible
+    /// surface for most callers is `format!("Failed to spawn sub-agent: {e}")`.
+    #[error(
+        "session spawn limit reached (spawned: {spawned}, max: {max}) — raise \
+         [agents].max_spawns_per_session in config.toml, or set it to 0 for unlimited"
+    )]
+    SessionSpawnLimit { spawned: usize, max: usize },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// NFR-004 (issue #6545): the only user-visible surface for most callers is
+    /// `format!("Failed to spawn sub-agent: {e}")`, so the remedy must live in `Display`
+    /// itself — verify the config key is named verbatim, not just implied.
+    #[test]
+    fn session_spawn_limit_display_names_config_key() {
+        let err = SubAgentError::SessionSpawnLimit {
+            spawned: 100,
+            max: 100,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("[agents].max_spawns_per_session"),
+            "Display must name the config key verbatim, got: {msg}"
+        );
+    }
 }

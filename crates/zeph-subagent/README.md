@@ -161,9 +161,20 @@ delegation_mode = "proactive"  # "disabled" | "explicit_request_only" | "proacti
 
 - `disabled` — no spawn from any code path (slash command, orchestration scheduler, `/subagent spawn`); read-only operations (`/agent list`) still work.
 - `explicit_request_only` — only spawns attributable to a direct user action (`/agent spawn`, `/agent resume`, `/subagent spawn`) are permitted; the orchestration scheduler's autonomous DAG dispatch is rejected.
-- `proactive` — both explicit and autonomous spawns are permitted, subject to the pre-existing `max_concurrent`/`max_spawn_depth`/permission-grant constraints. Matches the subsystem's behavior prior to this field's introduction.
+- `proactive` — both explicit and autonomous spawns are permitted, subject to the pre-existing `max_concurrent`/`max_spawn_depth`/`max_spawns_per_session`/permission-grant constraints. Matches the subsystem's behavior prior to this field's introduction.
 
 Enforcement is fail-closed: every spawn is tagged with a `SpawnOrigin` (`Explicit` or `Autonomous`) on `SpawnContext`, and an untagged context defaults to `Autonomous` — the restrictive value — so a forgotten call site is denied under the restrictive modes rather than silently allowed. `SubAgentManager::spawn` (and `spawn_for_task`, which delegates to it) is the single chokepoint; a rejected spawn returns `SubAgentError::DelegationDenied` before any resource is allocated. Overridable via `ZEPH_AGENTS_DELEGATION_MODE` or `--delegation-mode`.
+
+## Session-wide spawn cap
+
+Independent of `max_concurrent` (in-flight limit) and `max_spawn_depth` (recursion limit), `max_spawns_per_session` bounds the *cumulative* number of sub-agents spawned over a session's lifetime — catching a shallow, low-concurrency but high-frequency sequential delegation loop that neither of those limits would (issue #6545):
+
+```toml
+[agents]
+max_spawns_per_session = 100   # default: 100; 0 = unlimited
+```
+
+`SessionSpawnBudget` is a plain, uncloneable `AtomicUsize` counter — `SubAgentManager` owns the origin instance, `zeph-core`'s `OrchestrationState` owns an independent fallback used only when no manager is wired. `SubAgentManager::spawn`/`resume` and `zeph-core`'s ACP `/subagent spawn` chokepoint (which never touches `SubAgentManager` at all) reach whichever instance applies through an `Agent::session_budget()` accessor that hands out a `&SessionSpawnBudget` reference, so both paths enforce the exact same session-wide counter without ever copying it. Checked before `max_spawn_depth`/`max_concurrent`, but only *consumed* at each path's true commit point — a spawn rejected for any other reason (`NotFound`, a transient `ConcurrencyLimit` the orchestration scheduler will retry, a failed ACP process launch) never burns budget it never used. Reaching the cap returns `SubAgentError::SessionSpawnLimit`, whose `Display` names the config key directly. Resets at session start; never persisted.
 
 ## Features
 

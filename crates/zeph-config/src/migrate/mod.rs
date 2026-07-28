@@ -44,7 +44,7 @@ pub use memory::*;
 pub use plugins::migrate_plugins_reputation_config;
 pub use serve::migrate_serve_config;
 pub use session::*;
-pub use subagent::migrate_agents_delegation_mode;
+pub use subagent::{migrate_agents_delegation_mode, migrate_agents_max_spawns_per_session};
 pub use tools::*;
 
 /// Returns `true` when `name` is an active (non-commented) TOML section header in `src`.
@@ -608,19 +608,19 @@ mod steps;
 use steps::{
     MigrateA2aCardTrustConfig, MigrateA2aServerRemoveInertFields, MigrateAcpAuthClientsConfig,
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
-    MigrateAgentTimeReminder, MigrateAgentsDelegationMode, MigrateAutodreamConfig,
-    MigrateCavemanConfig, MigrateCocoonProviderNotice, MigrateCocoonShowBalance,
-    MigrateCompressionPredictorConfig, MigrateDatabaseUrl, MigrateDeepLinkConfig,
-    MigrateDurableConfig, MigrateDurableHwmAdvisory, MigrateDurableKeyRotation,
-    MigrateDurableSharedDb, MigrateDurableStaleRunningAfterSecs, MigrateEgressConfig,
-    MigrateEmbedProviderRename, MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults,
-    MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
-    MigrateGoalsConfig, MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig,
-    MigrateHooksTurnComplete, MigrateIntegrityConfig, MigrateKnowledgeConfig,
-    MigrateLlmStreamLimits, MigrateMagicDocsConfig, MigrateMcpElicitationConfig,
-    MigrateMcpMaxConnectAttempts, MigrateMcpMediaConfig, MigrateMcpRetryAndToolTimeout,
-    MigrateMcpTrustLevels, MigrateMemoryConsentGateConfig, MigrateMemoryGraph,
-    MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
+    MigrateAgentTimeReminder, MigrateAgentsDelegationMode, MigrateAgentsMaxSpawnsPerSession,
+    MigrateAutodreamConfig, MigrateCavemanConfig, MigrateCocoonProviderNotice,
+    MigrateCocoonShowBalance, MigrateCompressionPredictorConfig, MigrateDatabaseUrl,
+    MigrateDeepLinkConfig, MigrateDurableConfig, MigrateDurableHwmAdvisory,
+    MigrateDurableKeyRotation, MigrateDurableSharedDb, MigrateDurableStaleRunningAfterSecs,
+    MigrateEgressConfig, MigrateEmbedProviderRename, MigrateEvalModelToProvider,
+    MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow,
+    MigrateForgettingConfig, MigrateGoalsConfig, MigrateGonkagateToGonka,
+    MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateIntegrityConfig,
+    MigrateKnowledgeConfig, MigrateLlmStreamLimits, MigrateMagicDocsConfig,
+    MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpMediaConfig,
+    MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels, MigrateMemoryConsentGateConfig,
+    MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
     MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
     MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
     MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig, MigrateMemoryTypeAwareCompose,
@@ -860,6 +860,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 104 — add expandable_blockquote_min_lines advisory comment to an
             // existing active [telegram] table (spec 007-3-telegram-rich-text, #6541)
             Box::new(MigrateTelegramExpandableBlockquoteConfig),
+            // Step 105 — insert active max_spawns_per_session = 100 into an existing
+            // [agents] table with enabled = true and no max_spawns_per_session key (#6545)
+            Box::new(MigrateAgentsMaxSpawnsPerSession),
         ]
     });
 
