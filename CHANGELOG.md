@@ -269,6 +269,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   A genuine hang is not caught by nextest's `slow-timeout` (warn-only, no `terminate-after`
   configured); it surfaces only coarsely, as CI's job-level `timeout-minutes: 10` killing the
   whole shard.
+- `tests/performance_agent_integration.rs`: removed the same flaky wall-clock defect class from
+  `agent_throughput_multiple_responses` (issue #6690, same class as #6687/#6679) — a fixed
+  `elapsed.as_secs() < 10` budget around a fully-mocked `Agent::run()` call, plus an unasserted
+  per-message throughput `println!`. Kept the structural `outputs.len() >= 5` assertion, which
+  proves all 5 mocked responses were actually processed and sent.
+- `tests/performance_agent_integration.rs`: fixed `tool_executor_overhead_is_minimal` (issue
+  #6689), which measured `Instant::now()`/`.elapsed()` around two adjacent statements with no
+  work between them, so its `< 10ms` assertion passed unconditionally regardless of any real
+  regression, and its `if let Some(time) = ...` guard meant the assertion was silently skipped
+  entirely whenever the mocked tool call never fired. Widening the timed region to cover the
+  mock's own bookkeeping (mutex locks, struct construction) was considered and rejected: it
+  still only measures test-scaffolding overhead, not a real tool-executor dispatch path, so it
+  can never catch a genuine regression — only widen the flake surface for no benefit, the same
+  defect class the sibling #6690/#6687/#6688 fixes exist to remove. Real dispatch/pattern-
+  matching overhead (production `ShellExecutor`, not a mock) is already covered separately by
+  `tool_executor_pattern_matching_overhead` (left unchanged, out of scope for this issue).
+  Replaced the vacuous timing assertion with `assert_eq!(executor.get_call_count(), 1)` — the
+  same unconditional load-bearing-dispatch pattern already used by the sibling
+  `agent_integration_with_safe_bash_blocks` test in this file — so the test now fails whenever
+  the tool call is never dispatched instead of silently passing with zero assertions executed.
 - `zeph-acp`: fixed a session-turn race where a closed/deleted session's agent-loop task could
   keep running and emit events/notifications under a `SessionId` reused by a later
   `session/load`/`session/resume` (issue #6674). `do_close_session`/`do_delete_session` previously

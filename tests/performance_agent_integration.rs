@@ -91,10 +91,9 @@ impl Channel for MockChannel {
     }
 }
 
-// Instrumented mock tool executor to track timing and execution
+// Instrumented mock tool executor to track dispatch and execution
 #[derive(Clone)]
 struct InstrumentedMockExecutor {
-    execution_time: Arc<Mutex<Option<Duration>>>,
     call_count: Arc<Mutex<u32>>,
     execution_log: Arc<Mutex<Vec<String>>>,
 }
@@ -102,7 +101,6 @@ struct InstrumentedMockExecutor {
 impl InstrumentedMockExecutor {
     fn new() -> Self {
         Self {
-            execution_time: Arc::new(Mutex::new(None)),
             call_count: Arc::new(Mutex::new(0)),
             execution_log: Arc::new(Mutex::new(Vec::new())),
         }
@@ -110,10 +108,6 @@ impl InstrumentedMockExecutor {
 
     fn get_call_count(&self) -> u32 {
         *self.call_count.lock().unwrap()
-    }
-
-    fn get_execution_time(&self) -> Option<Duration> {
-        *self.execution_time.lock().unwrap()
     }
 }
 
@@ -123,15 +117,11 @@ impl ToolExecutor for InstrumentedMockExecutor {
     }
 
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        let start = Instant::now();
-        let elapsed = start.elapsed();
-
-        *self.execution_time.lock().unwrap() = Some(elapsed);
         *self.call_count.lock().unwrap() += 1;
-        self.execution_log.lock().unwrap().push(format!(
-            "execute_tool_call() called, tool={}, elapsed={elapsed:?}",
-            call.tool_id,
-        ));
+        self.execution_log
+            .lock()
+            .unwrap()
+            .push(format!("execute_tool_call() called, tool={}", call.tool_id));
 
         Ok(Some(ToolOutput {
             tool_name: call.tool_id.clone(),
@@ -253,14 +243,12 @@ async fn tool_executor_overhead_is_minimal() {
 
     let _ = agent.run().await;
 
-    // Check that tool executor overhead is minimal (just mock, no real bash)
-    if let Some(time) = executor.get_execution_time() {
-        // Mock executor should take < 10ms (CI runners have high mutex/scheduling jitter)
-        assert!(
-            time.as_millis() < 10,
-            "Tool executor mock call overhead should be minimal: {time:?}",
-        );
-    }
+    // No wall-clock budget here (see #6689): timing the mock's own bookkeeping can never catch
+    // a real tool-executor dispatch regression — that coverage lives in
+    // `tool_executor_pattern_matching_overhead` below, which drives the production
+    // `ShellExecutor`. This assertion fires unconditionally instead of being silently skipped
+    // when `execute_tool_call` is never invoked.
+    assert_eq!(executor.get_call_count(), 1);
 }
 
 // ==========================
@@ -431,10 +419,12 @@ async fn agent_throughput_multiple_responses() {
         executor.clone(),
     );
 
-    let start = Instant::now();
     let _ = agent.run().await;
-    let elapsed = start.elapsed();
 
+    // No wall-clock budget here (see #6690, same defect class as #6687/#6688): this is a
+    // fully-mocked Agent::run() call with no real I/O, so a fixed elapsed-time assertion races
+    // CI load rather than catching a genuine regression. A hang is caught only coarsely, at the
+    // shard level, by CI's job-level `timeout-minutes: 10` (.github/workflows/ci.yml).
     // Should process 5 messages — each produces a text response sent to channel
     let outputs = output_sent.lock().unwrap();
     assert!(
@@ -442,16 +432,6 @@ async fn agent_throughput_multiple_responses() {
         "expected at least 5 outputs, got {}",
         outputs.len()
     );
-
-    // Sanity check: should complete in reasonable time
-    assert!(
-        elapsed.as_secs() < 10,
-        "5 responses should complete: {elapsed:?}",
-    );
-
-    let total_ms = elapsed.as_millis() as u64;
-    let per_msg = total_ms as f64 / 5.0;
-    println!("5-message throughput: {total_ms}ms total ({per_msg:.0}ms per message)");
 }
 
 #[tokio::test]
