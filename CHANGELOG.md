@@ -107,6 +107,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bar; a second `Ctrl+C` within that window quits, a later press re-arms instead. `q` and
   `/quit` are unaffected.
 
+### Removed
+
+- `zeph-plugins`: removed the unused, test-only `extract_archive` helper (issue #6467).
+  It was `#[cfg(test)]`-gated with zero production call sites — all real extraction paths
+  already used the hardened `extract_archive_safe`, which rejects absolute paths, `..`
+  components, and symlink entries. This is dead-code hygiene, not a vulnerability fix; the
+  4 tests that exercised `extract_archive` now call `extract_archive_safe` instead.
+
 ### Fixed
 
 - `zeph-acp`: fixed a deadlock on every permission-gated tool call (issue #6656). `handle_prompt`

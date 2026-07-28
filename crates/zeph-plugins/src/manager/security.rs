@@ -530,36 +530,10 @@ pub(crate) fn scan_skill_entries(
     }
 }
 
-/// Extract a `.tar.gz` plugin archive into `dest`.
-///
-/// Only gzip-compressed tar archives are supported. The format is detected by the gzip magic
-/// bytes (`0x1f 0x8b`); any other format returns [`PluginError::InvalidSource`].
-///
-/// # Errors
-///
-/// Returns [`PluginError::InvalidSource`] when the archive format is unrecognized or extraction
-/// fails.
-#[cfg(test)]
-pub(crate) fn extract_archive(bytes: &[u8], dest: &Path, url: &str) -> Result<(), PluginError> {
-    if !bytes.starts_with(&[0x1f, 0x8b]) {
-        return Err(PluginError::InvalidSource {
-            path: url.to_owned(),
-            reason: "unsupported archive format: only .tar.gz is supported".to_owned(),
-        });
-    }
-    let gz = flate2::read::GzDecoder::new(bytes);
-    let mut archive = tar::Archive::new(gz);
-    archive
-        .unpack(dest)
-        .map_err(|e| PluginError::InvalidSource {
-            path: url.to_owned(),
-            reason: format!("tar.gz extraction failed: {e}"),
-        })
-}
-
 /// Extract a `.tar.gz` archive with tar-slip protection.
 ///
-/// Unlike [`extract_archive`], this function rejects:
+/// Only gzip-compressed tar archives are supported (gzip magic `0x1f 0x8b`). Beyond plain
+/// extraction, this function rejects:
 /// - Absolute paths inside the archive.
 /// - Entries with `..` path components.
 /// - Symbolic link entries (prevent symlink-based traversal).

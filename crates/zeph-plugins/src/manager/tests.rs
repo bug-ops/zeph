@@ -804,13 +804,14 @@ fn collect_skill_dirs_returns_installed_skill_paths() {
     );
 }
 
-// --- extract_archive tests ---
+// --- extract_archive_safe tests ---
 
 #[test]
-fn extract_archive_rejects_non_gz_bytes() {
+fn extract_archive_safe_rejects_non_gz_bytes() {
     let fake_bytes = b"PK\x03\x04not a tar.gz";
     let tmp = tempfile::tempdir().unwrap();
-    let err = extract_archive(fake_bytes, tmp.path(), "http://example.com/plugin.zip").unwrap_err();
+    let err =
+        extract_archive_safe(fake_bytes, tmp.path(), "http://example.com/plugin.zip").unwrap_err();
     assert!(
         matches!(err, PluginError::InvalidSource { .. }),
         "non-gz archive must return InvalidSource, got {err:?}"
@@ -2103,7 +2104,7 @@ path = "skills/injected"
     // download_and_extract + scan path directly using a local TempDir.
     let dest = tempfile::tempdir().unwrap();
     let bytes = build_tar_gz(tmp_src.path());
-    extract_archive(&bytes, dest.path(), "https://test/plugin.tar.gz").unwrap();
+    extract_archive_safe(&bytes, dest.path(), "https://test/plugin.tar.gz").unwrap();
 
     let manifest_path = dest.path().join("plugin.toml");
     let manifest_str = std::fs::read_to_string(&manifest_path).unwrap();
@@ -2738,7 +2739,7 @@ fn ephemeral_reputation_check_warns_on_near_match_advisory() {
     );
     let archive = build_tar_gz(&src);
     let dest = tempfile::tempdir().unwrap();
-    extract_archive(&archive, dest.path(), "https://test/github-pr.tar.gz").unwrap();
+    extract_archive_safe(&archive, dest.path(), "https://test/github-pr.tar.gz").unwrap();
 
     let manifest_str = std::fs::read_to_string(dest.path().join("plugin.toml")).unwrap();
     let manifest: crate::manifest::PluginManifest = toml::from_str(&manifest_str).unwrap();
@@ -2776,7 +2777,7 @@ fn ephemeral_reputation_check_block_mode_yields_reputation_blocked() {
     );
     let archive = build_tar_gz(&src);
     let dest = tempfile::tempdir().unwrap();
-    extract_archive(&archive, dest.path(), "https://test/github-pr.tar.gz").unwrap();
+    extract_archive_safe(&archive, dest.path(), "https://test/github-pr.tar.gz").unwrap();
 
     let manifest_str = std::fs::read_to_string(dest.path().join("plugin.toml")).unwrap();
     let manifest: crate::manifest::PluginManifest = toml::from_str(&manifest_str).unwrap();

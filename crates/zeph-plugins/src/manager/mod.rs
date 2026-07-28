@@ -306,8 +306,6 @@ mod store;
 mod tests;
 
 pub use registry::{MAX_ARCHIVE_BYTES, download_and_extract};
-#[cfg(test)]
-pub(crate) use security::extract_archive;
 pub use security::validate_url_scheme_ephemeral;
 pub(crate) use security::{
     check_allowed_commands_overlay_effect, extract_archive_safe, scan_skill_entries,
