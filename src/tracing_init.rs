@@ -19,11 +19,15 @@ pub(crate) struct TracingGuards {
     /// Held for its `Drop` side-effect (flushes the async file writer).
     #[allow(dead_code)]
     pub(crate) log_guard: Option<WorkerGuard>,
-    /// Chrome trace flush guard. `None` when the `profiling` feature is absent or telemetry is
-    /// disabled. Dropping this guard writes the final `]` to the JSON trace file.
+    /// Chrome trace flush guard, held in a shared take-once cell. `None` when the `profiling`
+    /// feature is absent or telemetry is disabled. Dropping the inner guard writes the final
+    /// `]` to the JSON trace file.
+    ///
+    /// The cell is shared with [`spawn_sigterm_flush_task`] so that whichever of the two paths
+    /// runs first — normal `TracingGuards` drop, or a SIGTERM arriving mid-session — flushes
+    /// the guard; the other finds `None` and no-ops (see #6683).
     #[cfg(feature = "profiling")]
-    #[allow(dead_code)]
-    pub(crate) chrome_guard: Option<tracing_chrome::FlushGuard>,
+    pub(crate) chrome_guard: Option<ChromeGuardCell>,
     /// Pyroscope push guard. `None` when the `profiling-pyroscope` feature is absent,
     /// telemetry is disabled, or no endpoint is configured.
     /// Dropping this guard signals the background push task to stop.
@@ -37,16 +41,34 @@ pub(crate) struct TracingGuards {
     pub(crate) otel_provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
 }
 
-// Drop order: otel_provider shuts down first (flushes pending spans),
-// then chrome_guard, then log_guard. Rust drops struct fields in
+// Drop order: otel_provider shuts down first (flushes pending spans), then chrome_guard is
+// taken from its shared cell and flushed explicitly (rather than relying on Arc refcounting,
+// since the SIGTERM task in spawn_sigterm_flush_task holds a second clone of the same cell),
+// then log_guard drops via the normal field-declaration-order glue. Rust drops struct fields in
 // declaration order, so otel_provider must be declared last.
-#[cfg(feature = "otel")]
+#[cfg(any(feature = "otel", feature = "profiling"))]
 impl Drop for TracingGuards {
     fn drop(&mut self) {
+        #[cfg(feature = "otel")]
         if let Some(provider) = self.otel_provider.take()
             && let Err(e) = provider.shutdown()
         {
             eprintln!("zeph: OTLP provider shutdown error: {e}");
+        }
+        #[cfg(feature = "profiling")]
+        if let Some(cell) = self.chrome_guard.take() {
+            // `locked` is an explicit binding (not `drop(cell.lock().take())`) so the lock is
+            // held across the flush by ordinary block scoping — not by relying on temporary
+            // lifetime rules for a `.lock().take()` chain, which are easy to get wrong on a
+            // "simplification" pass. This is load-bearing: it serializes this path against
+            // `spawn_sigterm_flush_task`'s matching pattern, so a concurrent SIGTERM can never
+            // observe (or race) a half-flushed trace file. Do NOT split this into two statements
+            // (`let taken = cell.lock().take(); drop(taken);`) — that releases the lock before
+            // the flush runs and reintroduces the truncation bug #6683 fixes (critic finding S2).
+            let mut locked = cell.lock();
+            if let Some(guard) = locked.take() {
+                drop(guard);
+            }
         }
     }
 }
@@ -92,6 +114,16 @@ fn resolve_log_path(
 ///
 /// When `tui_mode` is true and no file log sink is configured, a warning is printed to
 /// stderr before the TUI takes over, because the OTLP layer becomes the sole subscriber.
+///
+/// `owns_sigterm_elsewhere` must be `true` whenever some other code path reached by this
+/// invocation will install its own SIGTERM handler and own graceful shutdown — `--daemon`
+/// mode, `zeph serve-sessions`, and `zeph scheduler serve` all do (see `src/daemon.rs`,
+/// `src/serve/mod.rs`, `src/commands/scheduler_daemon.rs`). The caller computes this from
+/// already-parsed CLI/config state before dispatch, since `init_tracing` runs before the
+/// subcommand match. Passing `false` for a path that in fact owns SIGTERM itself would let the
+/// local-trace flush task (installed by `build_chrome_layer`, `profiling`-feature-gated) race
+/// and beat that path's graceful drain with a hard exit — this is exactly critic finding C1 for
+/// #6683.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn init_tracing(
     logging: &LoggingConfig,
@@ -101,6 +133,7 @@ pub(crate) fn init_tracing(
     // When true (`--json` mode), the stderr fmt layer is suppressed so no human-readable
     // text can interleave with the machine-readable JSONL stream on stdout.
     json_mode: bool,
+    #[cfg(feature = "profiling")] owns_sigterm_elsewhere: bool,
     #[cfg(feature = "profiling")] metrics_collector: Option<
         std::sync::Arc<zeph_core::metrics::MetricsCollector>,
     >,
@@ -228,6 +261,15 @@ pub(crate) fn init_tracing(
     // Optional Chrome JSON trace layer (compiled in only with the profiling feature).
     #[cfg(feature = "profiling")]
     let chrome_guard = build_chrome_layer(telemetry, &mut layers);
+    // Installing the SIGTERM flush task is a process-global side effect (it registers a signal
+    // listener that overrides SIGTERM's default disposition for the whole process) — kept
+    // visible here at the process-level function rather than buried inside `build_chrome_layer`
+    // (critic finding M2). Only installed when nothing else on this invocation's path already
+    // owns SIGTERM (see `owns_sigterm_elsewhere`'s doc comment above — critic finding C1).
+    #[cfg(feature = "profiling")]
+    if !owns_sigterm_elsewhere && let Some(cell) = chrome_guard.as_ref() {
+        spawn_sigterm_flush_task(std::sync::Arc::clone(cell));
+    }
 
     // Optional OTLP gRPC trace layer — active only when the `otel` feature is compiled in
     // AND `telemetry.backend == Otlp`. Layers are mutually selected by backend variant:
@@ -285,17 +327,32 @@ pub(crate) fn init_tracing(
     }
 }
 
+/// Shared take-once cell holding the Chrome trace [`FlushGuard`](tracing_chrome::FlushGuard).
+///
+/// Cloned between [`TracingGuards::chrome_guard`](TracingGuards) and, when nothing else on the
+/// current invocation's path already owns SIGTERM, the task spawned by
+/// [`spawn_sigterm_flush_task`] — whichever path runs first takes the guard and drops it,
+/// closing the trace file's JSON array; the other finds `None` and no-ops.
+#[cfg(feature = "profiling")]
+type ChromeGuardCell = std::sync::Arc<parking_lot::Mutex<Option<tracing_chrome::FlushGuard>>>;
+
 /// Build the Chrome JSON trace layer and append it to `layers`.
 ///
-/// Returns a `FlushGuard` that must be held until process exit.
-/// Returns `None` when telemetry is disabled or backend is not `Local`.
+/// Returns a shared cell wrapping the `FlushGuard`, which must be held (via
+/// [`TracingGuards`]) until process exit. Returns `None` when telemetry is disabled or backend
+/// is not `Local`.
+///
+/// This function only constructs the layer and the guard cell — it does not decide whether to
+/// install the SIGTERM flush handler; see [`init_tracing`]'s `owns_sigterm_elsewhere` parameter
+/// and [`spawn_sigterm_flush_task`] for that (critic finding M2: that decision is a
+/// process-global side effect and belongs at the process-level call site, not hidden here).
 #[cfg(feature = "profiling")]
 fn build_chrome_layer(
     telemetry: &TelemetryConfig,
     layers: &mut Vec<
         Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync + 'static>,
     >,
-) -> Option<tracing_chrome::FlushGuard> {
+) -> Option<ChromeGuardCell> {
     use zeph_core::config::TelemetryBackend;
 
     if !telemetry.enabled {
@@ -326,14 +383,87 @@ fn build_chrome_layer(
     let filename = format!("{session_id}_{timestamp}.json");
     let trace_path = telemetry.trace_dir.join(filename);
 
+    // TraceStyle::Async records on_new_span/on_close once per span lifetime (true wall-clock
+    // duration) instead of Threaded's on_enter/on_exit, which fire on every poll of an async
+    // span — fragmenting any span with an internal `.await` into hundreds of short on-CPU
+    // slices instead of one continuous duration (#6682). The paired `b`/`e` events this
+    // produces share an `id` (the span tree's root) rather than pairing complete "X" events;
+    // see the reworked jq recipes in `.claude/rules/continuous-improvement.md`.
     let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
         .file(trace_path)
         .include_args(telemetry.include_args)
+        .trace_style(tracing_chrome::TraceStyle::Async)
         .build();
 
+    let guard_cell: ChromeGuardCell = std::sync::Arc::new(parking_lot::Mutex::new(Some(guard)));
+
     layers.push(Box::new(chrome_layer));
-    Some(guard)
+    Some(guard_cell)
 }
+
+/// Installs a SIGTERM handler that flushes the Chrome trace file and then re-raises SIGTERM.
+///
+/// Registering a `tokio::signal::unix::signal` listener replaces SIGTERM's default
+/// terminate-immediately disposition, so once installed, this task becomes responsible for
+/// actually ending the process. It does so by flushing the trace file (bounded: `FlushGuard`'s
+/// `Drop` blocks briefly on the writer thread's join) and then calling
+/// [`signal_hook::low_level::emulate_default_handler`], which resets SIGTERM's disposition back
+/// to `SIG_DFL` and re-raises it — the process therefore still dies *by the signal*
+/// (`WIFSIGNALED`, `WTERMSIG == SIGTERM`), matching what external supervisors (systemd
+/// `SuccessExitStatus`/`Restart=on-failure`, launchd, container runtimes, `zeph scheduler
+/// stop`'s wait loop) expect from an unhandled `SIGTERM`, rather than a plain `exit(143)`
+/// (`WIFEXITED`) that reads identically via `$?` but is distinguishable via `wait`/`waitpid`
+/// (critic finding S3, point 1). If `emulate_default_handler` itself errors (documented as
+/// occurring only for an unrecognized signal, which `SIGTERM` never is), `std::process::exit`
+/// is used as a fallback so the process still terminates rather than hanging forever.
+///
+/// **Caller must not install this task for a path that owns SIGTERM itself** — see
+/// [`init_tracing`]'s `owns_sigterm_elsewhere` parameter (critic finding C1).
+///
+/// Known limitation, not fixable by this task (critic finding S3, point 2): the
+/// `tokio::signal::unix::signal` registration installs a process-global handler that outlives
+/// this task and is never explicitly removed. If the tokio runtime cannot schedule this task —
+/// e.g. every worker thread is blocked in CPU-bound or blocking synchronous work — the process
+/// cannot react to `SIGTERM` at all until scheduling resumes, and `SIGKILL` is required instead.
+/// This directly affects the project's own `pkill -f "target/.*zeph"` live-testing teardown habit
+/// (`.claude/rules/continuous-improvement.md`) in that specific pathological case.
+///
+/// Unix only: `pkill`'s default signal (the reproduction path for #6683) is a Unix concept: on
+/// non-Unix platforms this is a no-op and the previous (correct, non-truncating) `Ctrl-C`-only
+/// behavior is unchanged.
+#[cfg(all(feature = "profiling", unix))]
+fn spawn_sigterm_flush_task(guard_cell: ChromeGuardCell) {
+    let fut = async move {
+        let Ok(mut sigterm) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        else {
+            return;
+        };
+        sigterm.recv().await;
+        {
+            // `locked` is an explicit binding for the same load-bearing reason described in
+            // `TracingGuards::drop`'s matching comment: it must be held across the flush so
+            // that path (racing on the same cell) can never observe a half-flushed state.
+            let mut locked = guard_cell.lock();
+            if let Some(guard) = locked.take() {
+                drop(guard);
+                eprintln!("[zeph] received SIGTERM: flushed local trace file before exit");
+            }
+        }
+        if let Err(e) =
+            signal_hook::low_level::emulate_default_handler(signal_hook::consts::SIGTERM)
+        {
+            eprintln!(
+                "[zeph] warning: failed to re-raise SIGTERM after flush ({e}); exiting directly"
+            );
+            std::process::exit(143); // 128 + SIGTERM(15): conventional signal-termination exit code
+        }
+    };
+    tokio::spawn(fut); // EXEMPT(#5143): TaskSupervisor is not yet constructed at tracing-init time
+}
+
+#[cfg(all(feature = "profiling", not(unix)))]
+fn spawn_sigterm_flush_task(_guard_cell: ChromeGuardCell) {}
 
 /// Build the OTLP gRPC trace layer and append it to `layers`.
 ///
@@ -823,7 +953,7 @@ mod tests {
         );
     }
 
-    /// Verify that `build_chrome_layer` returns a `FlushGuard` and creates a `.json` trace file
+    /// Verify that `build_chrome_layer` returns a guard cell and creates a `.json` trace file
     /// when telemetry is enabled with `backend = Local`.
     #[cfg(feature = "profiling")]
     #[test]
@@ -842,11 +972,14 @@ mod tests {
         let guard = build_chrome_layer(&telemetry, &mut layers);
         assert!(
             guard.is_some(),
-            "expected FlushGuard when telemetry is enabled"
+            "expected a guard cell when telemetry is enabled"
         );
         assert_eq!(layers.len(), 1, "one chrome layer should be appended");
-        // Drop the guard to flush and close the file.
-        drop(guard);
+        // Take and drop the guard from its cell to flush and close the file, mirroring what
+        // TracingGuards::drop and spawn_sigterm_flush_task each do.
+        let taken = guard.and_then(|cell| cell.lock().take());
+        assert!(taken.is_some(), "expected the guard cell to hold a guard");
+        drop(taken);
         let json_files: Vec<_> = std::fs::read_dir(dir.path())
             .expect("read dir")
             .filter_map(std::result::Result::ok)
@@ -855,6 +988,188 @@ mod tests {
         assert!(
             !json_files.is_empty(),
             "expected at least one .json trace file"
+        );
+    }
+
+    /// Verify that `TracingGuards::drop` takes and flushes the chrome guard from its shared
+    /// cell, closing the trace file's JSON array, even while a second clone of the cell (standing
+    /// in for the SIGTERM task's clone in [`spawn_sigterm_flush_task`]) is still alive (#6683).
+    #[cfg(feature = "profiling")]
+    #[test]
+    fn tracing_guards_drop_flushes_chrome_guard_cell() {
+        use zeph_core::config::{TelemetryBackend, TelemetryConfig};
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let telemetry = TelemetryConfig {
+            enabled: true,
+            backend: TelemetryBackend::Local,
+            trace_dir: dir.path().to_path_buf(),
+            ..TelemetryConfig::default()
+        };
+        let mut layers: Vec<
+            Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>,
+        > = Vec::new();
+        let cell = build_chrome_layer(&telemetry, &mut layers).expect("guard cell");
+        let cell_clone = std::sync::Arc::clone(&cell);
+
+        let guards = TracingGuards {
+            log_guard: None,
+            chrome_guard: Some(cell),
+            #[cfg(feature = "profiling-pyroscope")]
+            pyroscope_guard: None,
+            #[cfg(feature = "otel")]
+            otel_provider: None,
+        };
+        drop(guards);
+
+        assert!(
+            cell_clone.lock().is_none(),
+            "TracingGuards::drop must take the guard out of the shared cell"
+        );
+        let json_files: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+            .collect();
+        assert!(!json_files.is_empty(), "expected a .json trace file");
+        let contents = std::fs::read_to_string(json_files[0].path()).expect("read trace file");
+        assert!(
+            contents.trim_end().ends_with(']'),
+            "flushed trace file must be a well-formed, closed JSON array: {contents}"
+        );
+    }
+
+    /// Verify the core race invariant behind #6683 under genuine OS-thread concurrency (not
+    /// just sequential simulation, per critic finding M3): two threads race to take the guard
+    /// out of the shared cell at the same instant (synchronized via a `Barrier`), and exactly
+    /// one of them must retrieve it — mutual exclusion must hold even under real contention.
+    #[cfg(feature = "profiling")]
+    #[test]
+    fn chrome_guard_cell_take_is_idempotent_under_concurrent_access() {
+        use zeph_core::config::{TelemetryBackend, TelemetryConfig};
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let telemetry = TelemetryConfig {
+            enabled: true,
+            backend: TelemetryBackend::Local,
+            trace_dir: dir.path().to_path_buf(),
+            ..TelemetryConfig::default()
+        };
+        let mut layers: Vec<
+            Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>,
+        > = Vec::new();
+        let cell = build_chrome_layer(&telemetry, &mut layers).expect("guard cell");
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let cell_a = std::sync::Arc::clone(&cell);
+        let barrier_a = std::sync::Arc::clone(&barrier);
+        let racer = std::thread::spawn(move || {
+            barrier_a.wait();
+            cell_a.lock().take()
+        });
+        barrier.wait();
+        let here = cell.lock().take();
+        let there = racer.join().expect("racer thread panicked");
+
+        let taken_count = usize::from(here.is_some()) + usize::from(there.is_some());
+        assert_eq!(
+            taken_count, 1,
+            "exactly one of two concurrent takers must retrieve the guard, never zero or both"
+        );
+    }
+
+    /// Verify that `spawn_sigterm_flush_task` installs its listener without panicking and
+    /// without touching the guard cell before an actual signal arrives — the normal flush path
+    /// (`TracingGuards::drop`) must still work undisturbed while the task is parked waiting.
+    ///
+    /// This necessarily registers a real, process-wide SIGTERM listener for the remainder of
+    /// the test process (critic finding M3: unavoidable for testing installation at all — the
+    /// task is inert until a real SIGTERM arrives, which this test never sends, so it cannot
+    /// affect other tests in the same nextest-per-process test binary).
+    #[cfg(feature = "profiling")]
+    #[tokio::test]
+    async fn spawn_sigterm_flush_task_does_not_touch_guard_before_signal() {
+        use zeph_core::config::{TelemetryBackend, TelemetryConfig};
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let telemetry = TelemetryConfig {
+            enabled: true,
+            backend: TelemetryBackend::Local,
+            trace_dir: dir.path().to_path_buf(),
+            ..TelemetryConfig::default()
+        };
+        let mut layers: Vec<
+            Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>,
+        > = Vec::new();
+        let cell = build_chrome_layer(&telemetry, &mut layers).expect("guard cell");
+        spawn_sigterm_flush_task(std::sync::Arc::clone(&cell));
+        // Give the spawned listener task a chance to register before this test ends.
+        tokio::task::yield_now().await;
+        let taken = cell.lock().take();
+        assert!(
+            taken.is_some(),
+            "normal flush path must still work with the SIGTERM task installed"
+        );
+    }
+
+    /// Verify #6682: `TraceStyle::Async` records paired `ph:"b"`/`"e"` events sharing an `id`
+    /// (never a fragmented `ph:"X"` complete event), confirming the layer is actually configured
+    /// as documented rather than only asserting it via code reading. Drives a real span through
+    /// a scoped (non-global) subscriber via `tracing::subscriber::with_default`.
+    #[cfg(feature = "profiling")]
+    #[test]
+    fn chrome_layer_async_style_records_paired_b_e_events_with_shared_id() {
+        use zeph_core::config::{TelemetryBackend, TelemetryConfig};
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let telemetry = TelemetryConfig {
+            enabled: true,
+            backend: TelemetryBackend::Local,
+            trace_dir: dir.path().to_path_buf(),
+            ..TelemetryConfig::default()
+        };
+        let mut layers: Vec<
+            Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>,
+        > = Vec::new();
+        let cell = build_chrome_layer(&telemetry, &mut layers).expect("guard cell");
+        let subscriber = tracing_subscriber::registry().with(layers);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("test.nested.span");
+            let _entered = span.enter();
+            tracing::info!("inside span");
+        });
+
+        let guard = cell
+            .lock()
+            .take()
+            .expect("guard cell still holds the guard");
+        drop(guard); // flush and close the JSON array
+
+        let json_files: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+            .collect();
+        assert!(!json_files.is_empty(), "expected a .json trace file");
+        let contents = std::fs::read_to_string(json_files[0].path()).expect("read trace file");
+        let events: Vec<serde_json::Value> =
+            serde_json::from_str(&contents).expect("trace file must be a valid JSON array");
+
+        assert!(
+            events.iter().all(|e| e["ph"] != "X"),
+            "TraceStyle::Async must never emit complete ph:\"X\" events: {events:?}"
+        );
+        let b_events: Vec<_> = events.iter().filter(|e| e["ph"] == "b").collect();
+        let e_events: Vec<_> = events.iter().filter(|e| e["ph"] == "e").collect();
+        assert!(!b_events.is_empty(), "expected at least one ph:\"b\" event");
+        assert_eq!(
+            b_events.len(),
+            e_events.len(),
+            "every b event must have a matching e event for a cleanly-closed span: {events:?}"
+        );
+        let b_id = b_events[0]["id"]
+            .as_u64()
+            .expect("b event must carry a numeric id");
+        assert!(
+            e_events.iter().any(|e| e["id"].as_u64() == Some(b_id)),
+            "b and e events for the same span tree must share an id: {events:?}"
         );
     }
 

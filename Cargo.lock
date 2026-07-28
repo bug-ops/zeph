@@ -11171,6 +11171,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "signal-hook 0.4.4",
  "similar 3.1.1",
  "sqlx",
  "sysinfo 0.39.6",

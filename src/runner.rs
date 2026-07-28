@@ -841,12 +841,36 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // guaranteeing no human-readable text interleaves with the JSONL stdout stream.
     let json_mode_early = cli.json || base_config.cli.json;
 
+    // Whether some other code path reached by this invocation will install its own SIGTERM
+    // handler and own graceful shutdown once dispatch proceeds below — `init_tracing`'s local
+    // trace flush task must not compete with those for the same signal (critic finding C1,
+    // #6683: a naive `!daemon_mode` gate let the flush task's hard exit race and beat
+    // `serve-sessions`'/`scheduler serve`'s graceful drain). `cli.command` is already fully
+    // parsed at this point, decidable without executing any of the async dispatch logic below.
+    #[cfg(feature = "profiling")]
+    let owns_sigterm_elsewhere = {
+        #[cfg(feature = "session")]
+        let owns_serve_sessions =
+            matches!(cli.command.as_ref(), Some(Command::ServeSessions { .. }));
+        #[cfg(not(feature = "session"))]
+        let owns_serve_sessions = false;
+
+        #[cfg(all(unix, feature = "scheduler"))]
+        let owns_scheduler_serve = matches!(cli.command.as_ref(), Some(Command::Serve { .. }));
+        #[cfg(not(all(unix, feature = "scheduler")))]
+        let owns_scheduler_serve = false;
+
+        runtime_ctx.daemon_mode || owns_serve_sessions || owns_scheduler_serve
+    };
+
     let _tracing_guards = init_tracing(
         &logging_config,
         runtime_ctx,
         telemetry_config,
         redact_secrets,
         json_mode_early,
+        #[cfg(feature = "profiling")]
+        owns_sigterm_elsewhere,
         #[cfg(feature = "profiling")]
         Some(std::sync::Arc::clone(&metrics_collector_arc)),
     );

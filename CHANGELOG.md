@@ -291,6 +291,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   on the session (previously always accepted and silently dropped its own output) — and its
   expanded prompt text is now persisted/replayed as part of the session's conversation history
   like a normal turn, rather than never being recorded anywhere.
+- `zeph` (binary): fixed local trace files being left as unterminated JSON when the process was
+  killed via `pkill`'s default `SIGTERM` (issue #6683). Plain CLI/TUI mode had no `SIGTERM`
+  handling at all — only `Ctrl-C`/`SIGINT` — so the OS default disposition terminated the process
+  before any `Drop` impl ran, skipping the Chrome trace `FlushGuard`'s closing `]` write.
+  `init_tracing` now hands the guard to both `TracingGuards` and a new `SIGTERM` listener task
+  via a shared take-once cell, so whichever path runs first flushes the trace file and the other
+  safely no-ops. The listener is installed only when nothing else on the invocation's path
+  already owns `SIGTERM` — `--daemon`, `zeph serve-sessions`, and `zeph scheduler serve` each
+  install their own graceful-shutdown `SIGTERM` handler, and an earlier version of this fix
+  gated on `!daemon_mode` alone, which raced and beat those two non-daemon paths' graceful drain
+  with a hard exit (caught in review). Once installed, the listener flushes and then calls
+  `signal_hook::low_level::emulate_default_handler` to reset `SIGTERM` to its default disposition
+  and re-raise it, so the process still dies *by the signal* (`WIFSIGNALED`) as external
+  supervisors (systemd, launchd, container runtimes, `zeph scheduler stop`'s wait loop) expect,
+  rather than a plain `exit(143)` that reads identically via `$?` but is distinguishable via
+  `wait`/`waitpid`. New dependency: `signal-hook` 0.4.4 (Unix-only, mirrors the existing `nix`
+  scoping in `zeph-tools`).
+- `zeph` (binary): switched `build_chrome_layer` to `tracing_chrome::TraceStyle::Async` (issue
+  #6682), fixing wall-clock-inaccurate local trace spans. The previous `Threaded` default fires
+  `on_enter`/`on_exit` on every poll of an async span, fragmenting any span with an internal
+  `.await` into many short on-CPU slices instead of one continuous duration — confirmed on a
+  127s session where the top-level `core.agent.run` span reconstructed as 209 fragments
+  totalling 234ms instead of ~127,236ms wall time (originally surfaced, but left unresolved, by
+  the #6676 jq-recipe fix above). `Async` style fires `on_new_span`/`on_close` once per span
+  lifetime instead, verified against the `tracing-chrome` 0.7.2 source. The jq recipes in
+  `.claude/rules/continuous-improvement.md` are reworked to pair the resulting `ph:"b"`/`"e"`
+  events by `id` (the span tree's root, shared across all spans under it) with a LIFO stack
+  instead of `B`/`E` by thread id; that file is untracked (global gitignore) so the change does
+  not appear in this PR's diff.
 
 ## [0.22.3] - 2026-07-22
 ### Fixed
