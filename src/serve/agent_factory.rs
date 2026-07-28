@@ -1894,6 +1894,13 @@ mod tests {
         }
     }
 
+    /// Stack size for [`build_agent_factory_gates_trust_state_independently_per_session`]'s
+    /// dedicated test thread. Matches the `coverage` job's `RUST_MIN_STACK` in
+    /// `.github/workflows/ci.yml` (set for this same test under `-C instrument-coverage`,
+    /// commit `9a1efb89a`) — `Builder::stack_size` takes precedence over `RUST_MIN_STACK`, so
+    /// this must stay at least as large or it would silently shrink that protection back down.
+    const TEST_THREAD_STACK_SIZE: usize = 32 * 1024 * 1024;
+
     /// R3 (SEC-H1 guardrail, #5973/#5977): `build_agent_factory` must give each session its
     /// OWN `TrustGateExecutor` trust-state instance — not share one gated executor (and its
     /// single mutable `effective_trust` atomic) across every `/sessions` agent built from the
@@ -1903,8 +1910,38 @@ mod tests {
     /// A's), and asserts A's `bash` (`QUARANTINE_DENIED`) call is STILL Blocked. This test FAILS
     /// if `ServeAgentDeps::tool_executor`/`build_agent_factory` reverts to gating once, eagerly,
     /// in `assemble_serve_deps` instead of per session.
-    #[tokio::test]
-    async fn build_agent_factory_gates_trust_state_independently_per_session() {
+    ///
+    /// Runs the test body on a dedicated large-stack thread instead of directly under
+    /// `#[tokio::test]`. This test keeps TWO full `Agent`s alive simultaneously plus a large
+    /// `Config` (see #6699): in an unoptimized build, the self-by-value setter chain in
+    /// `agent_setup.rs`/`agent_factory.rs` (~120 calls) that constructs each `Agent<C>`, combined
+    /// with `--features full`'s unboxed `AnyProvider` variants (`Candle`/`Gonka`/`Cocoon`),
+    /// consumes most of the default 2 MiB test-thread stack before a downstream `regex_automata`
+    /// SIMD prefilter build (`VigilGate::try_new`) is reached, overflowing it. Same pattern as
+    /// `MAIN_THREAD_STACK_SIZE` in `src/main.rs` (#5394) — a large/deep-frame condition, not
+    /// unbounded recursion.
+    #[test]
+    fn build_agent_factory_gates_trust_state_independently_per_session() {
+        let result = std::thread::Builder::new()
+            .name("agent-factory-trust-state-test".into())
+            .stack_size(TEST_THREAD_STACK_SIZE)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to build test runtime")
+                    .block_on(
+                        build_agent_factory_gates_trust_state_independently_per_session_body(),
+                    );
+            })
+            .expect("failed to spawn test thread")
+            .join();
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    async fn build_agent_factory_gates_trust_state_independently_per_session_body() {
         let memory = make_memory().await;
         let cid_a = memory.sqlite().create_conversation().await.unwrap();
         let cid_b = memory.sqlite().create_conversation().await.unwrap();

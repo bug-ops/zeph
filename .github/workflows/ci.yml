@@ -455,10 +455,11 @@ jobs:
       # Config-heavy async test frames (same root cause as the daemon-startup
       # stack overflow fixed in #5394); tests that build more than one Agent/
       # ServeAgentDeps in the same frame (e.g.
-      # build_agent_factory_gates_trust_state_independently_per_session) can
-      # overflow the default per-test thread stack under instrumentation even
-      # though they pass in the non-instrumented `test` job. Give test threads
-      # a larger stack here rather than in every other job.
+      # build_agent_factory_gates_trust_state_independently_per_session, which as of
+      # #6699 spawns its own 32 MiB-stack thread and so no longer depends on this var
+      # itself) can overflow the default per-test thread stack under instrumentation
+      # even though they pass in the non-instrumented `test` job. Keep this set — it
+      # protects any other, unnamed multi-agent test that doesn't manage its own stack.
       RUST_MIN_STACK: "33554432"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

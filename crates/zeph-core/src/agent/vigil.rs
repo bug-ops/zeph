@@ -24,6 +24,7 @@
 //! - Retry-safe block semantics so a poisoned page does not trigger a fetch retry loop.
 
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
 use regex::Regex;
 use zeph_common::patterns::RAW_INJECTION_PATTERNS;
@@ -36,6 +37,24 @@ struct CompiledPattern {
     name: String,
     regex: Regex,
 }
+
+struct BundledPattern {
+    name: &'static str,
+    regex: Regex,
+}
+
+/// Compiled bundled injection patterns, compiled once per process instead of once per
+/// [`VigilGate::try_new`] call. `Regex::clone` is a cheap `Arc` bump, so every gate
+/// construction reuses this compile.
+static BUNDLED_PATTERNS: LazyLock<Vec<BundledPattern>> = LazyLock::new(|| {
+    RAW_INJECTION_PATTERNS
+        .iter()
+        .map(|(name, pat)| BundledPattern {
+            name,
+            regex: Regex::new(pat).expect("bundled patterns are valid"),
+        })
+        .collect()
+});
 
 #[non_exhaustive]
 /// Action to take when VIGIL flags a tool output.
@@ -92,11 +111,11 @@ impl VigilGate {
     pub fn try_new(config: VigilConfig) -> Result<Self, ConfigError> {
         config.validate()?;
 
-        let mut patterns: Vec<CompiledPattern> = RAW_INJECTION_PATTERNS
+        let mut patterns: Vec<CompiledPattern> = BUNDLED_PATTERNS
             .iter()
-            .map(|(name, pat)| CompiledPattern {
-                name: (*name).to_owned(),
-                regex: Regex::new(pat).expect("bundled patterns are valid"),
+            .map(|bp| CompiledPattern {
+                name: bp.name.to_owned(),
+                regex: bp.regex.clone(),
             })
             .collect();
 

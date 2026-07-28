@@ -209,6 +209,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - RC-4 (AutoSkill draft-name collisions with native tool IDs) is tracked separately in #6702
     and intentionally out of scope here.
 
+- `crates/zeph-core`/`src/serve/agent_factory.rs`: `cargo test --features full` could crash with
+  a genuine stack overflow (`SIGABRT`) on
+  `serve::agent_factory::tests::build_agent_factory_gates_trust_state_independently_per_session`
+  (issue #6699) — not the reporter's suspected `Config::default()` size growth, but
+  `VigilGate::try_new` (`crates/zeph-core/src/agent/vigil.rs`) recompiling the entire bundled
+  14-pattern injection bank via `regex::Regex::new()` on every `Agent` construction, the only one
+  of 7 consumers of `RAW_INJECTION_PATTERNS` that didn't already cache the compile behind a
+  `LazyLock` (matching `zeph-sanitizer`, `zeph-mcp`, `zeph-skills`). One bundled pattern triggers
+  `regex_automata`'s SIMD Teddy-prefilter builder, whose frame overflowed the default 2 MiB test
+  thread stack when reached ~25 frames deep through this test's two-`Agent`, `--features
+  full`-inflated (`AnyProvider`'s unboxed `Candle`/`Gonka`/`Cocoon` variants) construction chain.
+  Cached the bundled-pattern compile behind a process-wide `static ...: LazyLock<Vec<_>>` in
+  `vigil.rs` (a genuine perf fix independent of the crash — removes O(sessions) redundant
+  compilation) and gave the specific test a dedicated 32 MiB-stack thread (matching
+  `MAIN_THREAD_STACK_SIZE` in `src/main.rs`, #5394, and the `coverage` job's existing
+  `RUST_MIN_STACK: "33554432"` from commit `9a1efb89a`, which this test now also self-provides
+  rather than relying solely on the CI env var).
+
 - `zeph-channels`: `MAX_RETRY_SECS` (the upper bound `send_with_retry` clamps a `Retry-After`
   delay to) had no compile-time invariant guard (issue #6517). #6516 (closing #6496) filtered
   the *parsed* `Retry-After` values so a negative/non-finite header or body field could no
