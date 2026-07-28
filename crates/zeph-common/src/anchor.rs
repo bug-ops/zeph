@@ -269,6 +269,35 @@ fn decode_file_id(segment: &str) -> Option<Vec<u8>> {
 ///
 /// Format: `ZEPH_HISTORY_ANCHOR_<SUBSYSTEM>_<file_id>` (ASCII-safe-encoded, falling back to a
 /// `hex:`-prefixed hex encoding for any byte outside `[A-Za-z0-9._-]`).
+///
+/// # Examples
+///
+/// The common, ASCII-safe path:
+///
+/// ```
+/// use zeph_common::anchor::{AnchorSubsystem, anchor_key, parse_anchor_key};
+///
+/// let key = anchor_key(AnchorSubsystem::SubagentTranscript, b"task-42");
+/// assert_eq!(key, "ZEPH_HISTORY_ANCHOR_SUBAGENT_task-42");
+///
+/// let (subsystem, file_id) = parse_anchor_key(&key).unwrap();
+/// assert_eq!(subsystem, AnchorSubsystem::SubagentTranscript);
+/// assert_eq!(file_id, b"task-42");
+/// ```
+///
+/// A `file_id` containing a byte outside `[A-Za-z0-9._-]` falls back to the `hex:`-prefixed
+/// encoding, which round-trips through [`parse_anchor_key`] the same way:
+///
+/// ```
+/// use zeph_common::anchor::{AnchorSubsystem, anchor_key, parse_anchor_key};
+///
+/// let key = anchor_key(AnchorSubsystem::SessionLog, b"a/b");
+/// assert_eq!(key, "ZEPH_HISTORY_ANCHOR_SESSION_hex:612f62");
+///
+/// let (subsystem, file_id) = parse_anchor_key(&key).unwrap();
+/// assert_eq!(subsystem, AnchorSubsystem::SessionLog);
+/// assert_eq!(file_id, b"a/b");
+/// ```
 #[must_use]
 pub fn anchor_key(subsystem: AnchorSubsystem, file_id: &[u8]) -> String {
     format!(

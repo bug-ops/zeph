@@ -61,6 +61,7 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::Duration;
 
+use tracing::Instrument as _;
 use zeph_common::anchor::{Anchor, AnchorError, AnchorStore, AnchorSubsystem, parse_anchor_key};
 use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor, TaskSupervisor};
 
@@ -118,6 +119,12 @@ impl AgeVaultAnchorStore {
         timeout: Duration,
     ) -> Result<Option<Anchor>, AnchorError> {
         let key = zeph_common::anchor::anchor_key(subsystem, file_id);
+        let _span = tracing::info_span!(
+            "core.anchor.get_sync",
+            subsystem = subsystem.key_segment(),
+            key = %key
+        )
+        .entered();
         let deadline = std::time::Instant::now() + timeout;
         loop {
             match self.vault.try_read() {
@@ -151,20 +158,28 @@ impl AnchorStore for AgeVaultAnchorStore {
         // suspension point to race against, and the timeout can never fire (issue #6449 M1
         // regression: a prior version called `get_sync` here directly).
         let key = zeph_common::anchor::anchor_key(subsystem, file_id);
+        let span = tracing::info_span!(
+            "core.anchor.get",
+            subsystem = subsystem.key_segment(),
+            key = %key
+        );
         let vault = Arc::clone(&self.vault);
         let supervisor = self.supervisor.clone();
-        Box::pin(async move {
-            let handle = supervisor.spawn_blocking(Arc::from("anchor-get"), move || {
-                let guard = vault
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                decode_anchor(guard.get(&key))
-            });
-            handle
-                .join()
-                .await
-                .map_err(|e| AnchorError::Store(format!("spawn_blocking: {e}")))?
-        })
+        Box::pin(
+            async move {
+                let handle = supervisor.spawn_blocking(Arc::from("anchor-get"), move || {
+                    let guard = vault
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    decode_anchor(guard.get(&key))
+                });
+                handle
+                    .join()
+                    .await
+                    .map_err(|e| AnchorError::Store(format!("spawn_blocking: {e}")))?
+            }
+            .instrument(span),
+        )
     }
 
     fn get_sync(
@@ -182,28 +197,36 @@ impl AnchorStore for AgeVaultAnchorStore {
         anchor: Anchor,
     ) -> Pin<Box<dyn Future<Output = Result<(), AnchorError>> + Send + '_>> {
         let key = zeph_common::anchor::anchor_key(subsystem, file_id);
+        let span = tracing::info_span!(
+            "core.anchor.put",
+            subsystem = subsystem.key_segment(),
+            key = %key
+        );
         let vault = Arc::clone(&self.vault);
         let supervisor = self.supervisor.clone();
-        Box::pin(async move {
-            let json = serde_json::to_string(&anchor)
-                .map_err(|e| AnchorError::Store(format!("anchor JSON encode failed: {e}")))?;
-            let handle = supervisor.spawn_blocking(Arc::from("anchor-put"), move || {
-                let mut guard = vault
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                // An anchor is our own managed entry, always overwritten on re-finalize —
-                // mirrors the OAuth store's `set_secret_mut(.., true)` rationale.
-                guard
-                    .set_secret_mut(key, json, true)
-                    .map_err(|e| e.to_string())?;
-                guard.save().map_err(|e| e.to_string())
-            });
-            handle
-                .join()
-                .await
-                .map_err(|e| AnchorError::Store(format!("spawn_blocking: {e}")))?
-                .map_err(AnchorError::Store)
-        })
+        Box::pin(
+            async move {
+                let json = serde_json::to_string(&anchor)
+                    .map_err(|e| AnchorError::Store(format!("anchor JSON encode failed: {e}")))?;
+                let handle = supervisor.spawn_blocking(Arc::from("anchor-put"), move || {
+                    let mut guard = vault
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    // An anchor is our own managed entry, always overwritten on re-finalize —
+                    // mirrors the OAuth store's `set_secret_mut(.., true)` rationale.
+                    guard
+                        .set_secret_mut(key, json, true)
+                        .map_err(|e| e.to_string())?;
+                    guard.save().map_err(|e| e.to_string())
+                });
+                handle
+                    .join()
+                    .await
+                    .map_err(|e| AnchorError::Store(format!("spawn_blocking: {e}")))?
+                    .map_err(AnchorError::Store)
+            }
+            .instrument(span),
+        )
     }
 
     fn delete(
@@ -212,24 +235,32 @@ impl AnchorStore for AgeVaultAnchorStore {
         file_id: &[u8],
     ) -> Pin<Box<dyn Future<Output = Result<(), AnchorError>> + Send + '_>> {
         let key = zeph_common::anchor::anchor_key(subsystem, file_id);
+        let span = tracing::info_span!(
+            "core.anchor.delete",
+            subsystem = subsystem.key_segment(),
+            key = %key
+        );
         let vault = Arc::clone(&self.vault);
         let supervisor = self.supervisor.clone();
-        Box::pin(async move {
-            let handle = supervisor.spawn_blocking(Arc::from("anchor-delete"), move || {
-                let mut guard = vault
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if !guard.remove_secret_mut(&key) {
-                    return Ok(()); // absent — a no-op, not an error
-                }
-                guard.save().map_err(|e| e.to_string())
-            });
-            handle
-                .join()
-                .await
-                .map_err(|e| AnchorError::Store(format!("spawn_blocking: {e}")))?
-                .map_err(AnchorError::Store)
-        })
+        Box::pin(
+            async move {
+                let handle = supervisor.spawn_blocking(Arc::from("anchor-delete"), move || {
+                    let mut guard = vault
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if !guard.remove_secret_mut(&key) {
+                        return Ok(()); // absent — a no-op, not an error
+                    }
+                    guard.save().map_err(|e| e.to_string())
+                });
+                handle
+                    .join()
+                    .await
+                    .map_err(|e| AnchorError::Store(format!("spawn_blocking: {e}")))?
+                    .map_err(AnchorError::Store)
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -417,6 +448,8 @@ pub fn run_anchor_sweep(
     max_session_anchors: usize,
     now: u64,
 ) -> Result<AnchorSweepReport, String> {
+    let _span = tracing::info_span!("core.anchor.sweep", max_session_anchors).entered();
+
     // Step 1: snapshot every anchor key + raw value under a brief READ lock — no I/O here.
     let snapshot: Vec<(String, String)> = {
         let guard = vault

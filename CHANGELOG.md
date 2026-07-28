@@ -37,6 +37,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reason — including a transient `ConcurrencyLimit` the orchestration scheduler retries —
   never burns budget it never used. `--migrate-config` populates the new key on existing
   configs; `/agent status` and `/agent list` surface the running count.
+- `zeph-common`: `# Examples` doctest on `anchor_key`, covering both the ASCII-safe encoding
+  and the `hex:`-prefixed fallback, each round-tripped through `parse_anchor_key` (issue #6465).
+- `zeph-core`: dedicated `core.anchor.put`/`core.anchor.get`/`core.anchor.get_sync`/
+  `core.anchor.delete`/`core.anchor.sweep` tracing spans on `AgeVaultAnchorStore`'s vault-anchor
+  operations and the reconcile-and-cap sweep (issue #6464). Observability-only, no behavior
+  change.
 
 ### Changed
 
