@@ -864,7 +864,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         runtime_ctx.daemon_mode || owns_serve_sessions || owns_scheduler_serve
     };
 
-    let _tracing_guards = init_tracing(
+    let tracing_guards = init_tracing(
         &logging_config,
         runtime_ctx,
         telemetry_config,
@@ -1137,7 +1137,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 cli.vault_path.as_deref(),
             )
             .await?;
-            std::process::exit(exit_code);
+            crate::tracing_init::exit_with_flush(tracing_guards, exit_code);
         }
         #[cfg(feature = "gonka")]
         Some(Command::Gonka {
@@ -1153,7 +1153,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 cli.vault_path.as_deref(),
             )
             .await?;
-            std::process::exit(exit_code);
+            crate::tracing_init::exit_with_flush(tracing_guards, exit_code);
         }
         #[cfg(feature = "cocoon")]
         Some(Command::Cocoon {
@@ -1169,7 +1169,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 cli.vault_path.as_deref(),
             )
             .await?;
-            std::process::exit(exit_code);
+            crate::tracing_init::exit_with_flush(tracing_guards, exit_code);
         }
         Some(Command::Notify {
             command: crate::cli::NotifyCommand::Test,
@@ -1647,11 +1647,22 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         }};
     }
 
-    // Bootstrap signal handler that calls process::exit(130) — conceptually pre-supervisor.
-    let early_ctrlc = tokio::spawn(async {
-        // EXEMPT(#5143): aborted at runner.rs:3473; spawned before supervisor exists
+    // Bootstrap signal handler that flushes pending log/trace writers and exits(130) —
+    // conceptually pre-supervisor. Clones of the guard cells (not `tracing_guards` itself) are
+    // moved into the task so `tracing_guards` stays alive on `run()`'s stack for the normal
+    // drop path (#6696).
+    let ctrlc_log_guard_cell = tracing_guards.log_guard.clone();
+    #[cfg(feature = "profiling")]
+    let ctrlc_chrome_guard_cell = tracing_guards.chrome_guard.clone();
+    let early_ctrlc = tokio::spawn(async move {
+        // EXEMPT(#5143): aborted at runner.rs:4051; spawned before supervisor exists
         let _ = tokio::signal::ctrl_c().await;
-        std::process::exit(130);
+        crate::tracing_init::flush_and_exit_on_ctrlc(
+            ctrlc_log_guard_cell.as_ref(),
+            #[cfg(feature = "profiling")]
+            ctrlc_chrome_guard_cell.as_ref(),
+            130,
+        );
     });
 
     #[cfg(feature = "tui")]

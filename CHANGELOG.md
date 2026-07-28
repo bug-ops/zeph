@@ -166,10 +166,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   between receiving SIGTERM and process exit — up to ~1.1s in the worst case (a 100ms enqueue
   timeout plus a 1000ms worker-shutdown timeout per guard, log and chrome) — worth knowing for
   process supervisors with sub-second stop windows and for this project's own
-  `pkill -f "target/.*zeph"` live-testing teardown habit. Known residual gap (tracked as a
-  follow-up, out of scope here since #6693 is SIGTERM-only): Ctrl-C is handled separately by
-  `early_ctrlc` (`src/runner.rs`) via `std::process::exit(130)`, which still bypasses
-  `TracingGuards::drop` entirely and remains truncating on both Unix and non-Unix.
+  `pkill -f "target/.*zeph"` live-testing teardown habit. Known residual gap at the time (tracked
+  as a follow-up, out of scope here since #6693 is SIGTERM-only): Ctrl-C was handled separately
+  by `early_ctrlc` (`src/runner.rs`) via `std::process::exit(130)`, which still bypassed
+  `TracingGuards::drop` entirely and remained truncating on both Unix and non-Unix. **Closed by
+  #6696 below.**
+- `src/tracing_init.rs`, `src/runner.rs`: closed the #6693 residual gap above — `std::process::exit`
+  runs no destructors, so 4 call sites still bypassed `TracingGuards::drop`'s flush logic entirely
+  (issue #6696): the `Doctor`/`Gonka::Doctor`/`Cocoon::Doctor` command handlers in `runner.rs`, and
+  `early_ctrlc`, the bootstrap Ctrl-C task live from `init_tracing` until the real signal handler
+  takes over. Added `crate::tracing_init::exit_with_flush(guards, code)`, which drops a
+  `TracingGuards` (running its take-and-flush `Drop` logic) before exiting, for the three doctor
+  call sites; and `flush_and_exit_on_ctrlc(log_guard_cell, chrome_guard_cell, code)`, which flushes
+  clones of the same shared cells `TracingGuards` holds, for `early_ctrlc` — `tracing_guards` itself
+  stays alive on `run()`'s stack for the normal-exit drop path, so only cheap `Arc` clones of the two
+  cells move into the spawned task. The lock-hold-across-flush logic previously duplicated between
+  `TracingGuards::drop` and `spawn_sigterm_flush_task` is now a single shared
+  `take_and_flush_guard_cells` helper, reused by both plus the new Ctrl-C path. Unlike
+  `spawn_sigterm_flush_task` (`#[cfg(unix)]`-only), `flush_and_exit_on_ctrlc` runs on every
+  platform — `tokio::signal::ctrl_c()` is cross-platform — so this also closes the non-Unix half of
+  the gap that #6693 left open. Two sites sharing the same `std::process::exit` pattern
+  (`Notify::Test`, `UrlScheme::Status`) plus 5 `deep-link`-feature-gated sites inside
+  `handle_url_open` were intentionally left out of scope; tracked as a follow-up.
 - `.claude/rules/continuous-improvement.md`: fixed the "Local Trace Analysis" jq recipes, which
   matched zero events against every real local trace file (issue #6676). `tracing-chrome` 0.7.2
   writes a bare top-level JSON array (not `{"traceEvents": [...]}`) and never emits `ph:"X"`

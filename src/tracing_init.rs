@@ -18,19 +18,21 @@ pub(crate) struct TracingGuards {
     /// Async file-writer guard for the rolling log file, held in a shared take-once cell.
     /// `None` when file logging is disabled.
     ///
-    /// The cell is shared with [`spawn_sigterm_flush_task`] so that whichever of the two paths
-    /// runs first — normal `TracingGuards` drop, or a SIGTERM arriving mid-session — flushes
-    /// the guard; the other finds `None` and no-ops. This is unconditional (unlike
+    /// The cell is shared with [`spawn_sigterm_flush_task`] (SIGTERM) and
+    /// [`flush_and_exit_on_ctrlc`] (Ctrl-C) so that whichever of the three racing paths —
+    /// normal `TracingGuards` drop, a SIGTERM arriving mid-session, or Ctrl-C — runs first
+    /// flushes the guard; the other two find `None` and no-op. This is unconditional (unlike
     /// `chrome_guard`) because file logging is not gated behind the `profiling` feature
-    /// (generalizes the `chrome_guard` pattern from #6683; see #6693).
+    /// (generalizes the `chrome_guard` pattern from #6683; see #6693, #6696).
     pub(crate) log_guard: Option<LogGuardCell>,
     /// Chrome trace flush guard, held in a shared take-once cell. `None` when the `profiling`
     /// feature is absent or telemetry is disabled. Dropping the inner guard writes the final
     /// `]` to the JSON trace file.
     ///
-    /// The cell is shared with [`spawn_sigterm_flush_task`] so that whichever of the two paths
-    /// runs first — normal `TracingGuards` drop, or a SIGTERM arriving mid-session — flushes
-    /// the guard; the other finds `None` and no-ops (see #6683).
+    /// The cell is shared with [`spawn_sigterm_flush_task`] (SIGTERM) and
+    /// [`flush_and_exit_on_ctrlc`] (Ctrl-C) so that whichever of the three racing paths —
+    /// normal `TracingGuards` drop, a SIGTERM arriving mid-session, or Ctrl-C — runs first
+    /// flushes the guard; the other two find `None` and no-op (see #6683, #6696).
     #[cfg(feature = "profiling")]
     pub(crate) chrome_guard: Option<ChromeGuardCell>,
     /// Pyroscope push guard. `None` when the `profiling-pyroscope` feature is absent,
@@ -46,13 +48,16 @@ pub(crate) struct TracingGuards {
     pub(crate) otel_provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
 }
 
-// Drop order: otel_provider shuts down first (flushes pending spans), then chrome_guard, then
-// log_guard — each of the latter two taken from its shared cell and flushed explicitly (rather
-// than relying on Arc refcounting or struct-field-declaration-order drop glue, since
-// spawn_sigterm_flush_task holds a second clone of each cell). This explicit take-and-drop is
-// load-bearing for log_guard too (not just chrome_guard): once a SIGTERM-flush task is spawned,
-// it holds a second `Arc` clone of `log_guard`'s cell, so merely dropping `TracingGuards`'s own
-// clone would not run `WorkerGuard::drop` (the refcount would still be nonzero) — see #6693.
+// Drop order: otel_provider shuts down first (flushes pending spans), then
+// take_and_flush_guard_cells takes and flushes log_guard, then chrome_guard, each from its
+// shared cell (rather than relying on Arc refcounting or struct-field-declaration-order drop
+// glue, since spawn_sigterm_flush_task and flush_and_exit_on_ctrlc each hold their own clone of
+// both cells). The log-then-chrome order is not load-bearing — the two writers are independent
+// files, so either order is correct — it is simply the order take_and_flush_guard_cells checks
+// them in. What IS load-bearing is the explicit take-and-drop itself: once a SIGTERM-flush task
+// or the Ctrl-C flush path is live, each holds a second `Arc` clone of both cells, so merely
+// dropping `TracingGuards`'s own clone would not run the inner guard's `Drop` (the refcount
+// would still be nonzero) — see #6693, #6696.
 impl Drop for TracingGuards {
     fn drop(&mut self) {
         #[cfg(feature = "otel")]
@@ -61,30 +66,88 @@ impl Drop for TracingGuards {
         {
             eprintln!("zeph: OTLP provider shutdown error: {e}");
         }
-        #[cfg(feature = "profiling")]
-        if let Some(cell) = self.chrome_guard.take() {
-            // `locked` is an explicit binding (not `drop(cell.lock().take())`) so the lock is
-            // held across the flush by ordinary block scoping — not by relying on temporary
-            // lifetime rules for a `.lock().take()` chain, which are easy to get wrong on a
-            // "simplification" pass. This is load-bearing: it serializes this path against
-            // `spawn_sigterm_flush_task`'s matching pattern, so a concurrent SIGTERM can never
-            // observe (or race) a half-flushed trace file. Do NOT split this into two statements
-            // (`let taken = cell.lock().take(); drop(taken);`) — that releases the lock before
-            // the flush runs and reintroduces the truncation bug #6683 fixes (critic finding S2).
-            let mut locked = cell.lock();
-            if let Some(guard) = locked.take() {
-                drop(guard);
-            }
-        }
-        // Same load-bearing take-and-drop pattern as chrome_guard above, generalized to the
-        // file-log writer (#6693) — see this field's doc comment on `TracingGuards::log_guard`.
-        if let Some(cell) = self.log_guard.take() {
-            let mut locked = cell.lock();
-            if let Some(guard) = locked.take() {
-                drop(guard);
-            }
+        take_and_flush_guard_cells(
+            self.log_guard.as_ref(),
+            #[cfg(feature = "profiling")]
+            self.chrome_guard.as_ref(),
+        );
+    }
+}
+
+/// Takes each guard out of its shared cell (if still present) and drops it in place, running
+/// the writer's flush-on-drop logic. Returns `true` if at least one guard was actually flushed.
+///
+/// Shared by [`TracingGuards::drop`], [`spawn_sigterm_flush_task`], and
+/// [`flush_and_exit_on_ctrlc`] so the load-bearing lock-then-flush pattern is defined exactly
+/// once instead of being copy-pasted a third time. For each cell, `locked` is an explicit
+/// binding (never the shorthand `drop(cell.lock().take())`) so the lock is held across the
+/// flush by ordinary block scoping — this is load-bearing: it serializes this path against
+/// whichever other path (SIGTERM flush, Ctrl-C flush, or `TracingGuards::drop`) is racing on the
+/// same cell, so neither can ever observe or produce a half-flushed writer. Do NOT split a
+/// branch into two statements (`let taken = cell.lock().take(); drop(taken);`) — that releases
+/// the lock before the flush runs and reintroduces the truncation bug #6683 fixes (critic
+/// finding S2).
+fn take_and_flush_guard_cells(
+    log_guard_cell: Option<&LogGuardCell>,
+    #[cfg(feature = "profiling")] chrome_guard_cell: Option<&ChromeGuardCell>,
+) -> bool {
+    let mut flushed_something = false;
+    if let Some(cell) = log_guard_cell {
+        let mut locked = cell.lock();
+        if let Some(guard) = locked.take() {
+            drop(guard);
+            flushed_something = true;
         }
     }
+    #[cfg(feature = "profiling")]
+    if let Some(cell) = chrome_guard_cell {
+        let mut locked = cell.lock();
+        if let Some(guard) = locked.take() {
+            drop(guard);
+            flushed_something = true;
+        }
+    }
+    flushed_something
+}
+
+/// Drops `guards` — running [`TracingGuards`]'s take-and-flush `Drop` logic — and then exits
+/// with `code`.
+///
+/// Use this instead of a bare `std::process::exit` at any call site where a `TracingGuards`
+/// value is still alive on the stack: `std::process::exit` runs no destructors, so it silently
+/// truncates the log file and/or local trace file without this wrapper (#6696).
+pub(crate) fn exit_with_flush(guards: TracingGuards, code: i32) -> ! {
+    drop(guards);
+    std::process::exit(code);
+}
+
+/// Flushes whichever of `log_guard_cell` / `chrome_guard_cell` still holds a guard, then exits
+/// with `code`.
+///
+/// Mirrors [`spawn_sigterm_flush_task`]'s flush step but for Ctrl-C (`SIGINT`): unlike SIGTERM,
+/// Ctrl-C is handled by `runner.rs`'s `early_ctrlc` task, which previously called
+/// `std::process::exit` directly — running no destructors and skipping `TracingGuards::drop`'s
+/// flush entirely (#6696). Callers pass clones of the same cells stored in `TracingGuards`, so
+/// this races safely against the normal drop path exactly like `spawn_sigterm_flush_task` does.
+///
+/// Cross-platform: `tokio::signal::ctrl_c()` works on every platform including non-Unix, unlike
+/// `spawn_sigterm_flush_task` which is `#[cfg(unix)]`-only — so wiring this into `early_ctrlc`
+/// closes the non-Unix Ctrl-C flush gap that `spawn_sigterm_flush_task`'s doc comment used to
+/// flag as an open follow-up.
+///
+/// Does not flush `otel_provider` or `pyroscope_guard` — same scope as
+/// `spawn_sigterm_flush_task`, which covers only the file-log and local-trace writers.
+pub(crate) fn flush_and_exit_on_ctrlc(
+    log_guard_cell: Option<&LogGuardCell>,
+    #[cfg(feature = "profiling")] chrome_guard_cell: Option<&ChromeGuardCell>,
+    code: i32,
+) -> ! {
+    take_and_flush_guard_cells(
+        log_guard_cell,
+        #[cfg(feature = "profiling")]
+        chrome_guard_cell,
+    );
+    std::process::exit(code);
 }
 
 /// Resolve the effective log file path from CLI and config sources.
@@ -493,13 +556,11 @@ fn should_install_sigterm_flush_task(
 /// Unix only: `pkill`'s default signal (the reproduction path for #6683/#6693) is a Unix concept:
 /// on non-Unix platforms this is a no-op.
 ///
-/// Known gap, not addressed by this task (critic finding S2): Ctrl-C is handled separately by
-/// `early_ctrlc` (`src/runner.rs`), which calls `std::process::exit(130)` directly — that runs no
-/// destructors, so it does not flush `TracingGuards` either, and is live for nearly all of
-/// bootstrap and dispatch (until `early_ctrlc.abort()`). On non-Unix platforms, where this task is
-/// a no-op, Ctrl-C's `process::exit` path is the *only* termination route, so the truncation this
-/// task fixes for `SIGTERM` on Unix is not fixed for Ctrl-C anywhere. Tracked as a follow-up, not
-/// fixed here (#6693 is SIGTERM-only in scope).
+/// Ctrl-C is handled separately by `early_ctrlc` (`src/runner.rs`), which now calls
+/// [`flush_and_exit_on_ctrlc`] instead of a bare `std::process::exit` (#6696), so both signals
+/// flush `log_guard_cell`/`chrome_guard_cell` before the process terminates — including on
+/// non-Unix platforms, where this SIGTERM task is a no-op but the Ctrl-C path still runs since
+/// `tokio::signal::ctrl_c()` is cross-platform.
 #[cfg(unix)]
 fn spawn_sigterm_flush_task(
     log_guard_cell: Option<LogGuardCell>,
@@ -512,25 +573,11 @@ fn spawn_sigterm_flush_task(
             return;
         };
         sigterm.recv().await;
-        let mut flushed_something = false;
-        if let Some(cell) = log_guard_cell {
-            // `locked` is an explicit binding for the same load-bearing reason described in
-            // `TracingGuards::drop`'s matching comment: it must be held across the flush so
-            // that path (racing on the same cell) can never observe a half-flushed state.
-            let mut locked = cell.lock();
-            if let Some(guard) = locked.take() {
-                drop(guard);
-                flushed_something = true;
-            }
-        }
-        #[cfg(feature = "profiling")]
-        if let Some(cell) = chrome_guard_cell {
-            let mut locked = cell.lock();
-            if let Some(guard) = locked.take() {
-                drop(guard);
-                flushed_something = true;
-            }
-        }
+        let flushed_something = take_and_flush_guard_cells(
+            log_guard_cell.as_ref(),
+            #[cfg(feature = "profiling")]
+            chrome_guard_cell.as_ref(),
+        );
         if flushed_something {
             eprintln!("[zeph] received SIGTERM: flushed pending log/trace writers before exit");
         }
