@@ -22,7 +22,6 @@ use parking_lot::{Mutex, RwLock};
 
 use agent_client_protocol as acp;
 use tokio::sync::{mpsc, oneshot};
-#[cfg(feature = "unstable-elicitation")]
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use zeph_common::task_supervisor::TaskSupervisor;
@@ -318,6 +317,20 @@ pub(crate) struct SessionEntry {
     /// after `tool_call_update` notifications are sent (ACP requires the terminal to
     /// remain alive until after the notification that embeds it).
     pub(crate) shell_executor: Option<AcpShellExecutor>,
+    /// Join handle for this session's agent-loop task (`spawn_local`, spawned in
+    /// `do_new_session`/`do_load_session`/`do_fork_session`/`do_resume_session`).
+    ///
+    /// `Mutex`-wrapped (unlike `elicitation_bridge_handle` below) because it is attached
+    /// *after* the entry is already behind `self.sessions`' lock — the loop task is spawned
+    /// once `session_ctx` is ready, which depends on async work (conversation resolution)
+    /// that happens after the entry is constructed — so it needs interior mutability to be
+    /// set through a shared reference (see `set_agent_loop_handle`). `do_close_session` and
+    /// `do_delete_session` `take()` and abort+await it (bounded) before removing the entry,
+    /// so a subsequent reload/resume can never race a still-running loop left over from a
+    /// closed/deleted session generation (#6674). `Drop` also aborts it unconditionally as a
+    /// safety net for the other entry-removal path (LRU eviction in `do_fork_session`/
+    /// `do_resume_session`), mirroring `elicitation_bridge_handle`'s existing pattern.
+    pub(crate) agent_loop_handle: Mutex<Option<JoinHandle<()>>>,
     /// Join handle for the elicitation bridge task spawned in `do_new_session`.
     ///
     /// Aborted on session close / reap for clean shutdown. `None` when the IDE
@@ -331,6 +344,9 @@ pub(crate) struct SessionEntry {
 
 impl Drop for SessionEntry {
     fn drop(&mut self) {
+        if let Some(handle) = self.agent_loop_handle.lock().take() {
+            handle.abort();
+        }
         #[cfg(feature = "unstable-elicitation")]
         if let Some(handle) = self.elicitation_bridge_handle.take() {
             handle.abort();
@@ -850,13 +866,16 @@ fn session_event_to_updates(
 /// Returns `true` when `trimmed_text` is an ACP-native slash command that should
 /// be handled by [`ZephAcpAgentState::handle_slash_command`] rather than forwarded
 /// to the agent loop.
+///
+/// `/review` is deliberately absent: `do_prompt` (`turn.rs`) intercepts it before this check
+/// even runs, expanding it into a real prompt that flows through the normal turn machinery
+/// instead of `handle_slash_command`'s synchronous short-circuit reply (#6673).
 fn is_acp_native_slash_command(trimmed_text: &str) -> bool {
     trimmed_text == "/help"
         || trimmed_text.starts_with("/help ")
         || trimmed_text == "/mode"
         || trimmed_text.starts_with("/mode ")
         || trimmed_text == "/clear"
-        || trimmed_text.starts_with("/review")
         || trimmed_text == "/model"
         || trimmed_text.starts_with("/model ")
 }

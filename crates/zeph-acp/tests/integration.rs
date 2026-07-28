@@ -53,6 +53,38 @@ fn multi_turn_echo_spawner() -> AgentSpawner {
     })
 }
 
+/// Spawner that never completes on its own — awaits `pending()` forever, ignoring the
+/// channel and `cancel_signal` entirely — so the only way this task ever stops is via
+/// `JoinHandle::abort()` (#6674 regression coverage).
+///
+/// `started` is notified once the task begins running (so tests can wait for it before
+/// racing a close/delete against it); `alive` flips to `false` only when the task's future
+/// is actually dropped — by the runtime unwinding an aborted task, or (if the fix regresses)
+/// never, if nothing ever aborts it. Checking `alive` right after `session/close` or
+/// `session/delete` completes is a direct, non-flaky proof that the loop task was joined
+/// before the response went out, not just signaled and left to run.
+fn hanging_spawner(
+    started: Arc<tokio::sync::Notify>,
+    alive: Arc<std::sync::atomic::AtomicBool>,
+) -> AgentSpawner {
+    Arc::new(move |_channel, _ctx, _session| {
+        let started = Arc::clone(&started);
+        let alive = Arc::clone(&alive);
+        Box::pin(async move {
+            struct ClearOnDrop(Arc<std::sync::atomic::AtomicBool>);
+            impl Drop for ClearOnDrop {
+                fn drop(&mut self) {
+                    self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            alive.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _clear_on_drop = ClearOnDrop(alive);
+            started.notify_one();
+            std::future::pending::<()>().await;
+        })
+    })
+}
+
 /// Spawner that sends N text chunks then flushes.
 fn text_chunks_spawner(chunks: Vec<&'static str>) -> AgentSpawner {
     Arc::new(move |mut channel, _ctx, _session| {
@@ -601,6 +633,90 @@ async fn drain_until_stop_collects_text_chunks() {
         .await;
 }
 
+/// Regression test for #6673: `/review`'s output must actually reach the client, not be
+/// silently discarded. `close_session_aborts_agent_loop_task`-style unit tests already prove
+/// `/review` is *dispatched* correctly, but that alone doesn't prove the client ever *sees*
+/// the agent's response — before this fix, `handle_review_command` bypassed
+/// `acquire_prompt_channels` entirely, so the agent loop's `AgentMessageChunk` notifications
+/// either leaked into the next unrelated turn (pre-#6666/#6667) or were silently drained and
+/// discarded by the next turn's `acquire_prompt_channels` (post-#6666/#6667) — either way, the
+/// client issuing `/review` never received its own output. This test registers a real
+/// `session/update` notification handler (mirroring the ACP client examples' pattern) so it can
+/// assert on content actually delivered over the wire, not just on `PromptResponse.stop_reason`.
+#[tokio::test(flavor = "current_thread")]
+async fn review_command_output_is_delivered_to_client() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(
+                text_chunks_spawner(vec!["review", " ", "output"]),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
+            let collected = Arc::new(std::sync::Mutex::new(String::new()));
+            let collected_for_handler = Arc::clone(&collected);
+            let client_fut = acp::Client
+                .builder()
+                .on_receive_notification(
+                    move |notification: acp::schema::v1::SessionNotification, _cx| {
+                        let collected = Arc::clone(&collected_for_handler);
+                        async move {
+                            if let acp::schema::v1::SessionUpdate::AgentMessageChunk(chunk) =
+                                notification.update
+                                && let acp::schema::v1::ContentBlock::Text(text) = chunk.content
+                            {
+                                collected.lock().unwrap().push_str(&text.text);
+                            }
+                            Ok(())
+                        }
+                    },
+                    acp::on_receive_notification!(),
+                )
+                .connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                    cx.send_request(acp::schema::v1::InitializeRequest::new(
+                        acp::schema::ProtocolVersion::LATEST,
+                    ))
+                    .block_task()
+                    .await?;
+
+                    let session_id = cx
+                        .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                        .block_task()
+                        .await?
+                        .session_id;
+
+                    let content = vec![acp::schema::v1::ContentBlock::Text(
+                        acp::schema::v1::TextContent::new("/review"),
+                    )];
+                    let resp = cx
+                        .send_request(acp::schema::v1::PromptRequest::new(session_id, content))
+                        .block_task()
+                        .await?;
+
+                    assert_eq!(resp.stop_reason, acp::schema::v1::StopReason::EndTurn);
+                    Ok(())
+                });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "review round-trip test failed: {result:?}");
+                }
+            }
+            assert_eq!(
+                *collected.lock().unwrap(),
+                "review output",
+                "the spawner's chunks must have reached the client as AgentMessageChunk \
+                 notifications — before #6673 this would be empty since /review never called \
+                 acquire_prompt_channels"
+            );
+        })
+        .await;
+}
+
 /// AC #10: `session/cancel` prior to prompt causes the prompt to complete with
 /// `StopReason::Cancelled`.
 ///
@@ -962,6 +1078,115 @@ async fn delete_session_removes_session_from_list() {
                     .await
                     .expect("acp_session_exists query failed"),
                 "deleted session must not survive in the persistence store"
+            );
+        })
+        .await;
+}
+
+/// `session/close` must abort and await the session's agent-loop task before returning, so a
+/// task left running past the close can never keep emitting events/notifications under a
+/// `SessionId` that may be reused by a later `session/load`/`session/resume` (#6674).
+#[tokio::test(flavor = "current_thread")]
+async fn close_session_aborts_agent_loop_task() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let started = Arc::new(tokio::sync::Notify::new());
+            let alive = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(
+                hanging_spawner(Arc::clone(&started), Arc::clone(&alive)),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
+            let started_for_client = Arc::clone(&started);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                let session_id = cx
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
+
+                // Wait for the agent-loop task to actually start running before racing close
+                // against it — otherwise a close that lands before the task is even polled
+                // once would pass vacuously.
+                started_for_client.notified().await;
+
+                cx.send_request(acp::schema::v1::CloseSessionRequest::new(session_id))
+                    .block_task()
+                    .await?;
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "close_session test failed: {result:?}");
+                }
+            }
+            assert!(
+                !alive.load(std::sync::atomic::Ordering::SeqCst),
+                "agent-loop task must be aborted and joined before session/close returns"
+            );
+        })
+        .await;
+}
+
+/// Same guarantee as `close_session_aborts_agent_loop_task`, for `session/delete` (#6674).
+#[tokio::test(flavor = "current_thread")]
+async fn delete_session_aborts_agent_loop_task() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let workdir = temp_workdir();
+            let started = Arc::new(tokio::sync::Notify::new());
+            let alive = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (sw, sr, cw, cr) = duplex_pair();
+            let server_fut = serve_connection(
+                hanging_spawner(Arc::clone(&started), Arc::clone(&alive)),
+                test_config("test-agent"),
+                sw,
+                sr,
+                "acp-local".to_owned(),
+            );
+            let started_for_client = Arc::clone(&started);
+            let client_fut = acp::Client.connect_with(acp::ByteStreams::new(cw, cr), async |cx| {
+                cx.send_request(acp::schema::v1::InitializeRequest::new(
+                    acp::schema::ProtocolVersion::LATEST,
+                ))
+                .block_task()
+                .await?;
+
+                let session_id = cx
+                    .send_request(acp::schema::v1::NewSessionRequest::new(workdir.path()))
+                    .block_task()
+                    .await?
+                    .session_id;
+
+                started_for_client.notified().await;
+
+                cx.send_request(acp::schema::v1::DeleteSessionRequest::new(session_id))
+                    .block_task()
+                    .await?;
+                Ok(())
+            });
+            tokio::select! {
+                res = server_fut => panic!("server exited before client: {res:?}"),
+                result = client_fut => {
+                    assert!(result.is_ok(), "delete_session test failed: {result:?}");
+                }
+            }
+            assert!(
+                !alive.load(std::sync::atomic::Ordering::SeqCst),
+                "agent-loop task must be aborted and joined before session/delete returns"
             );
         })
         .await;

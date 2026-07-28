@@ -40,6 +40,16 @@ use super::{
 
 const LOOPBACK_CHANNEL_CAPACITY: usize = 64;
 
+/// Bound on how long `do_close_session`/`do_delete_session` wait for a session's agent-loop
+/// task to stop after it is aborted (#6674).
+///
+/// `abort()` only takes effect at the task's next `.await` point, so a task deep in a long
+/// synchronous section could take a moment to unwind. This timeout bounds *the handler's*
+/// latency, not the correctness guarantee: the entry is removed from `self.sessions` either
+/// way once this returns, so a subsequent reload/resume still gets a fresh, generation-stamped
+/// entry regardless of whether the old task has actually finished unwinding by then.
+const AGENT_LOOP_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Look up the `ConversationId` for an existing ACP session, creating one for legacy
 /// sessions that predate migration 026 (where `conversation_id` is `NULL`).
 ///
@@ -114,6 +124,65 @@ impl ZephAcpAgentState {
             }
             Ok(())
         })
+    }
+
+    /// Attach `handle` — the just-spawned agent-loop task's `JoinHandle` — to `session_id`'s
+    /// entry, so `do_close_session`/`do_delete_session` can later abort and await it (#6674).
+    ///
+    /// Called as a follow-up step after `tokio::task::spawn_local`, not at `make_session_entry`
+    /// construction time: the loop task is spawned once `session_ctx` is ready, which depends
+    /// on async work (conversation resolution, MCP server registration) that happens after the
+    /// entry already exists in `self.sessions`. That gap is exactly the race #6674 is about: if
+    /// a `session/close`/`session/delete` for this `SessionId` lands while the entry exists but
+    /// this call hasn't run yet, `stop_agent_loop` finds `agent_loop_handle == None` and aborts
+    /// nothing — `cancel_signal.notify_one()` alone does not stop a loop that isn't checking it
+    /// yet, or ever. So when the entry is no longer present here (removed by that close/delete),
+    /// `handle` must be aborted directly rather than silently dropped — `JoinHandle::drop` does
+    /// not abort the task on its own, and without this the loop this call was meant to track
+    /// would run untracked and unabortable under a `SessionId` that is now free to be reloaded.
+    fn set_agent_loop_handle(
+        &self,
+        session_id: &acp::schema::v1::SessionId,
+        handle: tokio::task::JoinHandle<()>,
+    ) {
+        match self.sessions.lock().get(session_id) {
+            Some(entry) => *entry.agent_loop_handle.lock() = Some(handle),
+            None => handle.abort(),
+        }
+    }
+
+    /// Abort and await (bounded) `entry`'s agent-loop task before it is dropped, so a
+    /// subsequent `session/load` or `session/resume` reusing the same `SessionId` can never
+    /// race a still-running loop left over from a closed/deleted session generation (#6674).
+    ///
+    /// `cancel_signal` is notified first — the same signal `do_cancel` (`mod.rs`) uses to
+    /// interrupt an in-flight turn — but this is *not* a graceful wait: there is no `.await`
+    /// between the `notify_one()` and the `abort()` immediately below to give the loop any
+    /// chance to observe the signal and unwind on its own. For `do_close_session` specifically
+    /// (unlike `do_delete_session`, which discards session state outright), this is a known,
+    /// accepted risk: an `abort()` landing mid-write could tear an in-flight persistence write.
+    /// This is the same abort-only shape the issue's own suggested fix direction describes; a
+    /// graceful-then-abort shutdown (mirroring `TaskSupervisor::shutdown_all(timeout)`) is
+    /// tracked as a follow-up, out of scope here. Whichever future implementation lands: the
+    /// grace period must be inserted *before* the entry leaves `self.sessions` (i.e. before
+    /// `stop_agent_loop` is even called), not between `notify_one()` and `abort()` here —
+    /// inserting it here would reopen #6674's exact race, since the entry is already removed
+    /// by the time this runs and a concurrent `session/load`/`session/resume` could build a new
+    /// generation while the old loop is still alive and ungraced.
+    async fn stop_agent_loop(entry: &SessionEntry) {
+        entry.cancel_signal.notify_one();
+        let Some(handle) = entry.agent_loop_handle.lock().take() else {
+            return;
+        };
+        handle.abort();
+        if tokio::time::timeout(AGENT_LOOP_SHUTDOWN_TIMEOUT, handle)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                "session agent-loop task did not stop within {AGENT_LOOP_SHUTDOWN_TIMEOUT:?} after abort"
+            );
+        }
     }
 
     /// Assemble the `NewSessionResponse` with config options and project rule metadata.
@@ -254,12 +323,13 @@ impl ZephAcpAgentState {
 
         let spawner = Arc::clone(&self.spawner);
         let span = tracing::info_span!("acp.session.agent_loop", session_id = %session_id);
-        tokio::task::spawn_local(
+        let agent_loop_handle = tokio::task::spawn_local(
             async move {
                 (spawner)(channel, Some(acp_ctx), session_ctx).await;
             }
             .instrument(span),
         );
+        self.set_agent_loop_handle(&session_id, agent_loop_handle);
 
         let resp = self.build_new_session_response(session_id.clone(), &initial_model);
         self.send_commands_update_nowait(&session_id);
@@ -300,7 +370,10 @@ impl ZephAcpAgentState {
         }
         let removed = self.sessions.lock().remove(&args.session_id);
         if let Some(entry) = removed {
-            entry.cancel_signal.notify_one();
+            // #6674: abort and await (bounded) the session's agent-loop task before doing
+            // anything else with the removed entry, so it can never keep running — and
+            // emitting events/notifications under this `SessionId` — past this point.
+            Self::stop_agent_loop(&entry).await;
             // Snapshot the session's config fields (#5373) so a later `session/resume` or
             // `session/fork` of this now-evicted session can inherit them instead of
             // resetting to configured defaults.
@@ -339,8 +412,16 @@ impl ZephAcpAgentState {
         // silent failure here would let a transient DB error (lock/disk full/pool exhaustion)
         // report success to the client while the persisted row — and the resurrection risk it
         // carries — survives.
-        if let Some(entry) = self.sessions.lock().remove(&args.session_id) {
-            entry.cancel_signal.notify_one();
+        // Lock released before the `.await` below (the `MutexGuard` temporary from `.lock()`
+        // would otherwise be kept alive for the whole `if let` block, which is not `Send` and
+        // fails to compile under the `acp::on_receive_request!()` dispatcher — see
+        // do_close_session's identical two-statement split above for the same reason).
+        let removed = self.sessions.lock().remove(&args.session_id);
+        if let Some(entry) = removed {
+            // #6674: abort and await (bounded) the agent-loop task before proceeding, so it
+            // can never outlive this handler under a `SessionId` that may be reused by a
+            // later `session/load`/`session/resume`.
+            Self::stop_agent_loop(&entry).await;
         }
         if let Some(ref store) = self.store
             && let Err(e) = store
@@ -447,12 +528,13 @@ impl ZephAcpAgentState {
 
         let spawner = Arc::clone(&self.spawner);
         let span = tracing::info_span!("acp.session.agent_loop", session_id = %args.session_id);
-        tokio::task::spawn_local(
+        let agent_loop_handle = tokio::task::spawn_local(
             async move {
                 (spawner)(channel, Some(acp_ctx), session_ctx).await;
             }
             .instrument(span),
         );
+        self.set_agent_loop_handle(&args.session_id, agent_loop_handle);
 
         self.replay_session_events(&args.session_id, events).await;
 
@@ -704,12 +786,13 @@ impl ZephAcpAgentState {
 
         let spawner = Arc::clone(&self.spawner);
         let span = tracing::info_span!("acp.session.agent_loop", session_id = %new_id);
-        tokio::task::spawn_local(
+        let agent_loop_handle = tokio::task::spawn_local(
             async move {
                 (spawner)(channel, Some(acp_ctx), session_ctx).await;
             }
             .instrument(span),
         );
+        self.set_agent_loop_handle(&new_id, agent_loop_handle);
 
         let available_models = self.available_models_snapshot();
         let config_options = build_config_options(
@@ -835,12 +918,13 @@ impl ZephAcpAgentState {
 
         let spawner = Arc::clone(&self.spawner);
         let span = tracing::info_span!("acp.session.agent_loop", session_id = %args.session_id);
-        tokio::task::spawn_local(
+        let agent_loop_handle = tokio::task::spawn_local(
             async move {
                 (spawner)(channel, Some(acp_ctx), session_ctx).await;
             }
             .instrument(span),
         );
+        self.set_agent_loop_handle(&args.session_id, agent_loop_handle);
 
         Ok(acp::schema::v1::ResumeSessionResponse::new())
     }
@@ -1271,6 +1355,7 @@ impl ZephAcpAgentState {
             auto_approve_level: Mutex::new(config.auto_approve_level),
             temperature_preset: Mutex::new(config.temperature_preset),
             shell_executor,
+            agent_loop_handle: Mutex::new(None),
             #[cfg(feature = "unstable-elicitation")]
             elicitation_bridge_handle: None,
             #[cfg(feature = "unstable-session-usage")]

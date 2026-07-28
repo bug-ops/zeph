@@ -210,6 +210,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `TestWriteGate` channel handshake (with a 30s bound so a regression to an inline write path
   fails with a clear panic instead of hanging the CI shard) to prove `dump_request` returns
   before its `spawn_blocking` write completes, with no timing race window at all.
+- `zeph-acp`: fixed a session-turn race where a closed/deleted session's agent-loop task could
+  keep running and emit events/notifications under a `SessionId` reused by a later
+  `session/load`/`session/resume` (issue #6674). `do_close_session`/`do_delete_session` previously
+  only fired a bare `cancel_signal.notify_one()` and removed the session's map entry, without
+  waiting for or aborting the still-running loop task. `SessionEntry` now carries the loop task's
+  `JoinHandle`; close/delete abort and await it (bounded by a 5s timeout) before proceeding, and
+  `Drop for SessionEntry` also aborts it unconditionally as a safety net covering the LRU-eviction
+  removal path in `do_fork_session`/`do_resume_session`.
+- `zeph-acp`: fixed `/review` silently discarding its own output (issue #6673, regression
+  surfaced by #6666/#6667's fix above). `handle_review_command` dispatched the expanded review
+  prompt via a fire-and-forget `input_tx.try_send` and returned `EndTurn` immediately, without
+  ever calling `acquire_prompt_channels`/acquiring `output_rx` — before #6666/#6667, the agent
+  loop's resulting events leaked into the *next* unrelated `session/prompt` call's drain; after
+  that fix, `acquire_prompt_channels`'s new inter-turn drain discards them outright, so `/review`
+  produced no client-visible output either way. `/review` is now intercepted in `do_prompt` and
+  expanded into a real prompt that flows through the same `acquire_prompt_channels`/drain turn
+  path as any other prompt, so its output is actually delivered. Client-visible behavior change:
+  `/review` now participates in the same per-session turn contention check as any other prompt
+  — it can be rejected with "prompt already in progress" if another turn is already in flight
+  on the session (previously always accepted and silently dropped its own output) — and its
+  expanded prompt text is now persisted/replayed as part of the session's conversation history
+  like a normal turn, rather than never being recorded anywhere.
 
 ## [0.22.3] - 2026-07-22
 ### Fixed

@@ -3,9 +3,12 @@
 
 //! ACP-native slash-command handlers for `ZephAcpAgentState`.
 //!
-//! Groups the `/help`, `/review`, `/mode`, `/clear`, and `/model` command dispatch and the
+//! Groups the `/help`, `/mode`, `/clear`, and `/model` command dispatch and the
 //! `AvailableCommandsUpdate` notification helper so the slash-command surface is isolated
-//! from session lifecycle and prompt-turn logic in [`super`].
+//! from session lifecycle and prompt-turn logic in [`super`]. `/review`'s prompt-text builder
+//! (`build_review_prompt`) also lives here, but its dispatch is handled by `do_prompt`
+//! (`turn.rs`) directly rather than by [`ZephAcpAgentState::handle_slash_command`] below
+//! (#6673 — see `is_acp_native_slash_command`'s doc in `mod.rs` for why).
 
 use agent_client_protocol as acp;
 use zeph_core::channel::ChannelMessage;
@@ -15,6 +18,36 @@ use super::{AgentSpawner, ProviderFactory, SessionConfigSeed, ZephAcpAgent};
 use super::{ZephAcpAgentState, build_available_commands};
 #[cfg(test)]
 use tokio::sync::mpsc;
+
+/// Build the expanded `/review [path]` prompt text, validating `arg` first.
+///
+/// Pure and side-effect-free — used by `do_prompt` (`turn.rs`) to expand `/review` into a real
+/// prompt that flows through the normal `acquire_prompt_channels`/drain turn machinery (#6673),
+/// rather than being dispatched fire-and-forget the way the other ACP-native slash commands are.
+pub(crate) fn build_review_prompt(arg: &str) -> acp::Result<String> {
+    // Validate arg to prevent prompt injection: allow only safe path characters.
+    if !arg.is_empty() {
+        let valid = arg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | ' ' | '-'));
+        if !valid || arg.len() > 512 {
+            return Err(acp::Error::invalid_request()
+                .data("invalid path argument: only alphanumeric, _, ., /, space, - allowed (max 512 chars)"));
+        }
+    }
+    Ok(if arg.is_empty() {
+        "Review the recent changes in this workspace. Show a plain-text diff summary. \
+         Use only read_file and list_directory tools. Do not execute any commands or \
+         write any files."
+            .to_owned()
+    } else {
+        format!(
+            "Review the following file or path: {arg}. Show a plain-text diff summary. \
+             Use only read_file and list_directory tools. Do not execute any commands or \
+             write any files."
+        )
+    })
+}
 
 impl ZephAcpAgentState {
     /// Dispatch a slash command, returning a short-circuit `PromptResponse`.
@@ -33,9 +66,6 @@ impl ZephAcpAgentState {
             // out of sync with the real command set (49 commands).
             "/help" => zeph_commands::render_help_text(),
             "/model" => self.handle_model_command(session_id, arg).await?,
-            "/review" => {
-                return self.handle_review_command(session_id, arg);
-            }
             "/mode" => {
                 let valid_ids: &[&str] = &["code", "architect", "ask"];
                 if !valid_ids.contains(&arg) {
@@ -108,61 +138,6 @@ impl ZephAcpAgentState {
         let notification = acp::schema::v1::SessionNotification::new(session_id.clone(), update);
         if let Err(e) = self.send_notification(session_id, notification).await {
             tracing::warn!(error = %e, "failed to send command reply");
-        }
-
-        Ok(acp::schema::v1::PromptResponse::new(
-            acp::schema::v1::StopReason::EndTurn,
-        ))
-    }
-
-    fn handle_review_command(
-        &self,
-        session_id: &acp::schema::v1::SessionId,
-        arg: &str,
-    ) -> acp::Result<acp::schema::v1::PromptResponse> {
-        // Validate arg to prevent prompt injection: allow only safe path characters.
-        if !arg.is_empty() {
-            let valid = arg
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | ' ' | '-'));
-            if !valid || arg.len() > 512 {
-                return Err(acp::Error::invalid_request()
-                    .data("invalid path argument: only alphanumeric, _, ., /, space, - allowed (max 512 chars)"));
-            }
-        }
-        let review_prompt = if arg.is_empty() {
-            "Review the recent changes in this workspace. Show a plain-text diff summary. \
-             Use only read_file and list_directory tools. Do not execute any commands or \
-             write any files."
-                .to_owned()
-        } else {
-            format!(
-                "Review the following file or path: {arg}. Show a plain-text diff summary. \
-                 Use only read_file and list_directory tools. Do not execute any commands or \
-                 write any files."
-            )
-        };
-
-        let tx = self
-            .sessions
-            .lock()
-            .get(session_id)
-            .map(|e| e.input_tx.clone());
-        let Some(tx) = tx else {
-            return Err(acp::Error::invalid_request().data("session not found"));
-        };
-        if tx
-            .try_send(ChannelMessage {
-                text: review_prompt,
-                attachments: vec![],
-                is_guest_context: false,
-                is_from_bot: false,
-                // #6419: see do_prompt above.
-                owner_key: Some(self.owner_key.clone()),
-            })
-            .is_err()
-        {
-            tracing::warn!(%session_id, "failed to forward /review to agent input");
         }
 
         Ok(acp::schema::v1::PromptResponse::new(
@@ -479,19 +454,47 @@ mod owner_key_threading_tests {
     async fn review_command_threads_connection_owner_key_into_channel_message() {
         let (agent, session_id, mut channel) = make_agent_with_owner_key("acp:alice");
 
+        let review_request = acp::schema::v1::PromptRequest::new(
+            session_id.clone(),
+            vec![acp::schema::v1::ContentBlock::Text(
+                acp::schema::v1::TextContent::new("/review".to_owned()),
+            )],
+        );
+
+        // #6673: `/review` is now routed through the normal `do_prompt` turn machinery, so a
+        // stand-in "agent loop" must receive the forwarded prompt and flush to end the turn —
+        // unlike the pre-#6673 fire-and-forget dispatch this test used to exercise directly.
+        let agent_loop = tokio::spawn(async move {
+            let msg = channel
+                .recv()
+                .await
+                .expect("recv must not error")
+                .expect("do_prompt must forward the expanded /review prompt");
+            channel.flush_chunks().await.unwrap();
+            msg
+        });
+
         agent
-            .handle_review_command(&session_id, "")
+            .do_prompt(review_request)
+            .await
             .expect("/review must succeed");
 
-        let msg = channel
-            .recv()
+        let msg = agent_loop
             .await
-            .expect("recv must not error")
-            .expect("handle_review_command must forward a ChannelMessage");
+            .expect("agent-loop stand-in must not panic");
         assert_eq!(
             msg.owner_key.as_deref(),
             Some("acp:alice"),
             "/review must carry the connection's owner_key, not fall back to None/local"
+        );
+        // Guards against a mutation that deletes the `build_review_prompt` expansion (e.g.
+        // forwarding the raw "/review" text unchanged): only the owner_key threading would
+        // still be exercised by the assertion above, since it doesn't depend on the prompt
+        // text at all.
+        assert_eq!(
+            msg.text,
+            build_review_prompt("").expect("empty arg must always build successfully"),
+            "do_prompt must forward /review's build_review_prompt expansion, not raw text"
         );
     }
 

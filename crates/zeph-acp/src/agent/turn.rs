@@ -329,11 +329,9 @@ impl ZephAcpAgentState {
     /// event still queued at this point is provably an orphan left over from a prior turn, not
     /// something the turn about to start could have produced yet. A late post-flush `Usage`
     /// event discarded this way is intentional, not a bug: attributing it to the *next* turn's
-    /// accounting would misattribute cost/tokens to the wrong prompt. Note this drain is not
-    /// side-effect-free in every case: `/review` (`handle_review_command`) dispatches via
-    /// `input_tx.try_send` and returns `EndTurn` immediately without ever calling this method,
-    /// so its live output events — not leftovers from an aborted turn, but genuine outputs of
-    /// a fire-and-forget prompt that never had a reader — are silently discarded here too.
+    /// accounting would misattribute cost/tokens to the wrong prompt. `/review` (#6673) is routed
+    /// through this same method like any other prompt, so it no longer has the fire-and-forget
+    /// gap this note used to describe.
     fn acquire_prompt_channels(
         &self,
         session_id: &acp::schema::v1::SessionId,
@@ -386,11 +384,27 @@ impl ZephAcpAgentState {
             .await?;
 
         let trimmed_text = text.trim_start();
-        if trimmed_text.starts_with('/') && is_acp_native_slash_command(trimmed_text) {
+        // #6673: `/review` must go through the normal acquire_prompt_channels/drain turn path
+        // below like any other prompt, so its output is actually delivered to the client —
+        // unlike the other ACP-native slash commands, which reply synchronously via
+        // `handle_slash_command`'s short-circuit `EndTurn` and never touch the agent loop's
+        // real output channel. Parsed the same way `handle_slash_command` splits cmd/arg —
+        // including trimming the command token on *both* ends, not just leading whitespace
+        // via `trim_start` above, so trailing whitespace (`"/review\n"`, `"/review\t"`) still
+        // matches `/review` exactly like it does for `handle_slash_command`'s other commands,
+        // instead of falling through as a raw prompt. `/reviewfoo` (no separating space) is
+        // still correctly left as an ordinary prompt, not mistaken for `/review`.
+        let mut review_parts = trimmed_text.splitn(2, ' ');
+        let text = if review_parts.next().map(str::trim) == Some("/review") {
+            let arg = review_parts.next().unwrap_or("").trim();
+            super::slash::build_review_prompt(arg)?
+        } else if trimmed_text.starts_with('/') && is_acp_native_slash_command(trimmed_text) {
             return self
                 .handle_slash_command(&args.session_id, trimmed_text)
                 .await;
-        }
+        } else {
+            text
+        };
 
         let (input_tx, output_rx, generation) = self.acquire_prompt_channels(&args.session_id)?;
         let mut channel_guard =
@@ -1126,5 +1140,51 @@ mod output_rx_leak_regression_tests {
             !agent.sessions.lock().contains_key(&session_id),
             "Drop must not re-insert a session entry that was removed while the turn was in flight"
         );
+    }
+
+    /// Regression test for #6673: `/review` must go through the same
+    /// `acquire_prompt_channels` contention check as every other prompt, instead of bypassing
+    /// it via the old fire-and-forget `handle_review_command` dispatch (which never took
+    /// `output_rx`, so it could run concurrently with an in-flight turn and its own output
+    /// would go nowhere). The sharpest observable proof the routing actually changed: with a
+    /// turn already holding the receiver, `/review` must now fail with the same "prompt
+    /// already in progress" error `acquire_prompt_channels` raises for any other prompt —
+    /// before the fix, it would have short-circuited to `EndTurn` regardless.
+    #[tokio::test]
+    async fn review_command_rejects_when_a_turn_is_already_in_progress() {
+        // Also covers the trailing-whitespace regression fixed alongside this test: `"/review"`
+        // is only leading-trimmed by `do_prompt` before the command-token split, so a naive
+        // `review_parts.next() == Some("/review")` comparison (without `.map(str::trim)` on the
+        // extracted token) would fail to recognize `"/review\n"`/`"/review\t"` as the command at
+        // all, falling through as an ordinary prompt instead of hitting this contention check —
+        // silently *passing* this test for the wrong reason (the contention error would never
+        // fire, but only because the command wasn't recognized, not because it was rejected).
+        for text in ["/review", "/review\n", "/review\t"] {
+            let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
+            let agent = ZephAcpAgent::new(spawner, 4, 1800, None);
+            let (session_id, _channel) =
+                register_test_session(&agent, &format!("review-contention-session-{text:?}"));
+
+            // Simulate a turn already in flight by taking the receiver out directly, exactly
+            // what `do_prompt`'s own `acquire_prompt_channels` call would have done.
+            let _held = agent
+                .acquire_prompt_channels(&session_id)
+                .expect("first acquire must succeed");
+
+            let err = match agent.do_prompt(text_prompt_request(session_id, text)).await {
+                Ok(resp) => panic!(
+                    "{text:?} must be rejected while another turn is in progress, not silently \
+                     accepted as an ordinary prompt (got {:?})",
+                    resp.stop_reason
+                ),
+                Err(e) => e,
+            };
+            assert_eq!(
+                err.data.as_ref().and_then(serde_json::Value::as_str),
+                Some("prompt already in progress"),
+                "expected the same contention error acquire_prompt_channels raises for any \
+                 other prompt for input {text:?}, got: {err}"
+            );
+        }
     }
 }

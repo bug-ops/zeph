@@ -86,10 +86,13 @@ impl ZephAcpAgentState {
     /// Evict the oldest idle session when the session limit is reached.
     ///
     /// Idle is defined as: `output_rx` is `Some` (no prompt in flight).
-    /// The lock-drop-and-reacquire pattern is intentional: the first lock
-    /// guard must be released before removing the entry to avoid a potential
-    /// deadlock if `cancel_signal.notify_one()` ever triggers reentrant
-    /// session-map access.
+    /// The two separate `self.sessions.lock()` calls below are intentional: the first is
+    /// scoped to just the `.iter()` scan + `min_by_key` that picks the victim, so the lock
+    /// isn't held for that O(n) work any longer than necessary; the second (re-)acquires it to
+    /// remove the victim. That second guard, via `if let`'s temporary lifetime extension, stays
+    /// held for the rest of the block — including `entry.cancel_signal.notify_one()` and
+    /// `entry`'s `Drop` (which now also aborts its agent-loop `JoinHandle`, #6674) — which is
+    /// safe only because nothing on either path touches `self.sessions` again.
     pub(crate) fn evict_oldest_idle_session_if_full(&self) -> acp::Result<()> {
         if self.sessions.lock().len() < self.max_sessions {
             return Ok(());
