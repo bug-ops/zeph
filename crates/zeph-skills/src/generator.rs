@@ -314,8 +314,12 @@ impl SkillGenerator {
     /// does not check for directory existence (re-extraction overwrites previous candidates).
     /// The output path is `<output_dir>/_quarantine/<name>/SKILL.md`.
     ///
-    /// The `_quarantine` prefix ensures the registry's directory scanner never loads these
-    /// files as active skills, because `validate_skill_name` rejects `_`-prefixed names.
+    /// The `_quarantine` prefix is a human-readable convention only — the registry's directory
+    /// scanner applies no directory-name filtering and will happily load a `SKILL.md` found
+    /// under this path as an active skill. Quarantine is enforced solely by the `skill_trust`
+    /// database row that the caller MUST write immediately after this call returns, at
+    /// [`zeph_common::SkillTrustLevel::Quarantined`]. Never treat the directory name as a
+    /// security boundary.
     ///
     /// # Errors
     ///

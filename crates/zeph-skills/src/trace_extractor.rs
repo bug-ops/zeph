@@ -100,6 +100,13 @@ pub struct TraceExtractionResult {
     pub candidates_merged: u32,
     /// Candidates discarded as near-duplicates.
     pub candidates_discarded: u32,
+    /// Skills written to the quarantine directory this run, as `(skill_name, skill_md_path)`.
+    ///
+    /// Covers both the `Add` path (new draft) and the `Merge` path (new version of an
+    /// existing skill). The caller uses this to persist a `skill_trust` row at
+    /// [`zeph_common::SkillTrustLevel::Quarantined`] for each entry — quarantine is enforced
+    /// at the DB layer, not by the `_quarantine/` directory name.
+    pub saved_skill_paths: Vec<(String, PathBuf)>,
 }
 
 /// Orchestrates the conversation trace → skill extraction pipeline.
@@ -309,7 +316,9 @@ impl TraceExtractor {
         result: &mut TraceExtractionResult,
     ) {
         if existing_embeddings.is_empty() {
-            self.save_quarantined(skill, session_id).await;
+            if let Some(path) = self.save_quarantined(skill, session_id).await {
+                result.saved_skill_paths.push((skill.name.clone(), path));
+            }
             result.candidates_saved += 1;
             self.notify_proposed(&skill.name);
             return;
@@ -317,7 +326,9 @@ impl TraceExtractor {
 
         let Some((nearest_meta, nearest_sim)) = find_nearest(candidate_emb, existing_embeddings)
         else {
-            self.save_quarantined(skill, session_id).await;
+            if let Some(path) = self.save_quarantined(skill, session_id).await {
+                result.saved_skill_paths.push((skill.name.clone(), path));
+            }
             result.candidates_saved += 1;
             self.notify_proposed(&skill.name);
             return;
@@ -331,7 +342,9 @@ impl TraceExtractor {
             nearest_meta,
         ) {
             MergeDecision::Add => {
-                self.save_quarantined(skill, session_id).await;
+                if let Some(path) = self.save_quarantined(skill, session_id).await {
+                    result.saved_skill_paths.push((skill.name.clone(), path));
+                }
                 result.candidates_saved += 1;
                 self.notify_proposed(&skill.name);
             }
@@ -358,7 +371,12 @@ impl TraceExtractor {
                     )
                     .await
                 {
-                    Ok(()) => {
+                    Ok((merged_name, path)) => {
+                        // Key the trust row on the name actually written to disk, never on
+                        // `nearest_name` — the merge LLM is free to rename the skill, and
+                        // `nearest_meta` carries no trust/source gating, so it can point at an
+                        // unrelated Bundled/Trusted skill (#6702 S1/S2).
+                        result.saved_skill_paths.push((merged_name, path));
                         result.candidates_merged += 1;
                         self.notify_proposed(&format!("{nearest_name} v{}", nearest_version + 1));
                     }
@@ -426,24 +444,34 @@ impl TraceExtractor {
 
     /// Write a candidate skill to the quarantine directory. Logs on failure.
     #[tracing::instrument(name = "skills.trace_extraction.save_quarantined", skip_all, fields(skill = %skill.name, session_id))]
-    async fn save_quarantined(&self, skill: &GeneratedSkill, session_id: &str) {
+    async fn save_quarantined(&self, skill: &GeneratedSkill, session_id: &str) -> Option<PathBuf> {
         match self.generator.write_quarantined(skill).await {
-            Ok(path) => tracing::info!(
-                session_id,
-                skill = %skill.name,
-                path = %path.display(),
-                "trace_extractor: skill quarantined"
-            ),
-            Err(e) => tracing::warn!(
-                session_id,
-                skill = %skill.name,
-                error = %e,
-                "trace_extractor: failed to write quarantined skill"
-            ),
+            Ok(path) => {
+                tracing::info!(
+                    session_id,
+                    skill = %skill.name,
+                    path = %path.display(),
+                    "trace_extractor: skill quarantined"
+                );
+                Some(path)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    session_id,
+                    skill = %skill.name,
+                    error = %e,
+                    "trace_extractor: failed to write quarantined skill"
+                );
+                None
+            }
         }
     }
 
     /// Call the LLM merge prompt and write the merged skill to quarantine.
+    ///
+    /// Returns the *written* skill's name paired with its path — the merge LLM is free to
+    /// rename the skill, so callers must never assume the returned name equals
+    /// `existing_name` (spec 057; see #6702 S2).
     ///
     /// # Errors
     ///
@@ -456,7 +484,7 @@ impl TraceExtractor {
         existing_version: u32,
         existing_skill_dir: &Path,
         session_id: &str,
-    ) -> Result<(), SkillError> {
+    ) -> Result<(String, PathBuf), SkillError> {
         async move {
             // Read the existing skill body from disk so the merge LLM sees full content.
             // Fall back to a minimal stub when the file cannot be read (e.g. quarantined draft).
@@ -495,16 +523,17 @@ impl TraceExtractor {
             }
 
             let merged = parse_and_validate_pub(&content)?;
-            self.generator.write_quarantined(&merged).await?;
+            let path = self.generator.write_quarantined(&merged).await?;
 
             tracing::info!(
                 session_id,
                 existing = existing_name,
+                merged = %merged.name,
                 next_version = existing_version + 1,
                 "trace_extractor: merged skill quarantined"
             );
 
-            Ok(())
+            Ok((merged.name, path))
         }
         .instrument(tracing::info_span!(
             "skills.trace_extraction.merge",
@@ -638,6 +667,7 @@ mod tests {
             candidates_merged: 1,
             candidates_discarded: 0,
             candidates_rejected_injection: 0,
+            saved_skill_paths: vec![],
         };
         let (sid, _ts, proposed, saved, merged) = session_record("test-session-123", &result);
         assert_eq!(sid, "test-session-123");
@@ -867,5 +897,167 @@ mod tests {
             has_line_delimiter,
             "closing delimiter must be appended even when '---' appears inside a field value"
         );
+    }
+
+    #[tokio::test]
+    async fn apply_decision_add_path_populates_saved_skill_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let extract_provider = zeph_llm::any::AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::with_responses(vec![
+                "---\nname: my-new-skill\ndescription: A new skill for testing.\nversion: 0\nsource: trace_extraction\n---\n\n## How to use\nDo the thing.".to_string(),
+            ]),
+        );
+        let embed_provider = zeph_llm::any::AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::default().with_embedding(vec![1.0, 0.0]),
+        );
+        let extractor = TraceExtractor::new(
+            extract_provider,
+            embed_provider,
+            tmp.path().to_path_buf(),
+            200,
+            131_072,
+            0.75,
+            0.90,
+            true,
+            None,
+        );
+        let messages = [UserMessage {
+            text: "help me write a script".into(),
+        }];
+        let result = extractor
+            .extract_from_trace(&messages, &[], "add-session")
+            .await
+            .unwrap();
+        assert_eq!(result.candidates_saved, 1);
+        assert_eq!(result.saved_skill_paths.len(), 1);
+        assert_eq!(result.saved_skill_paths[0].0, "my-new-skill");
+        assert!(result.saved_skill_paths[0].1.ends_with("SKILL.md"));
+    }
+
+    #[tokio::test]
+    async fn apply_decision_merge_path_populates_saved_skill_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The merge LLM response deliberately renames the skill (`existing-skill-v2` !=
+        // `existing-skill`) so this test locks in #6702 S1/S2: `saved_skill_paths` must be
+        // keyed on the name actually written to disk, never on `nearest_name`.
+        let extract_provider = zeph_llm::any::AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::with_responses(vec![
+                "---\nname: improved-script-helper\ndescription: A refined script helper.\nversion: 0\nsource: trace_extraction\n---\n\n## How to use\nDo the thing better.".to_string(),
+                "---\nname: existing-skill-v2\ndescription: An improved version.\nversion: 1\nsource: trace_extraction\n---\n\n## How to use\nDo the merged thing.".to_string(),
+            ]),
+        );
+        // Fixed candidate embedding [1.0, 0.0]; existing skill embedding [0.8, 0.6] yields
+        // cosine similarity 0.8, landing inside the (0.75, 0.90) merge zone.
+        let embed_provider = zeph_llm::any::AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::default().with_embedding(vec![1.0, 0.0]),
+        );
+        let extractor = TraceExtractor::new(
+            extract_provider,
+            embed_provider,
+            tmp.path().to_path_buf(),
+            200,
+            131_072,
+            0.75,
+            0.90,
+            true,
+            None,
+        );
+        let existing_meta = SkillMeta {
+            name: "existing-skill".into(),
+            description: "An existing skill.".into(),
+            version: 1,
+            source: "trace_extraction".into(),
+            session_id: None,
+            compatibility: None,
+            license: None,
+            metadata: vec![],
+            allowed_tools: vec![],
+            requires_secrets: vec![],
+            skill_dir: tmp.path().join("existing-skill"),
+            source_url: None,
+            git_hash: None,
+            category: None,
+            triggers: vec![],
+            parent_skill: None,
+            proactive_domain: None,
+            extensions: None,
+        };
+        let existing_embeddings = vec![(existing_meta, SkillEmbedding::from_raw(vec![0.8, 0.6]))];
+        let messages = [UserMessage {
+            text: "help me improve my script".into(),
+        }];
+        let result = extractor
+            .extract_from_trace(&messages, &existing_embeddings, "merge-session")
+            .await
+            .unwrap();
+        assert_eq!(result.candidates_merged, 1);
+        assert_eq!(result.saved_skill_paths.len(), 1);
+        assert_eq!(
+            result.saved_skill_paths[0].0, "existing-skill-v2",
+            "must key the trust row on the name actually written, not on nearest_name"
+        );
+        assert_ne!(result.saved_skill_paths[0].0, "existing-skill");
+        assert!(result.saved_skill_paths[0].1.ends_with("SKILL.md"));
+    }
+
+    #[tokio::test]
+    async fn apply_decision_merge_same_name_path_populates_saved_skill_paths() {
+        // `MERGE_SYSTEM_PROMPT` instructs the merge LLM to preserve the existing skill's name,
+        // so `merged.name == nearest_name` is the dominant production outcome, not the
+        // exception covered by the rename test above (#6702 S1'/N2 — the round-2 fix rewrote
+        // the only merge test to mock a rename, dropping coverage of this path entirely).
+        let tmp = tempfile::tempdir().unwrap();
+        let extract_provider = zeph_llm::any::AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::with_responses(vec![
+                "---\nname: improved-script-helper\ndescription: A refined script helper.\nversion: 0\nsource: trace_extraction\n---\n\n## How to use\nDo the thing better.".to_string(),
+                "---\nname: existing-skill\ndescription: An improved version.\nversion: 1\nsource: trace_extraction\n---\n\n## How to use\nDo the merged thing.".to_string(),
+            ]),
+        );
+        let embed_provider = zeph_llm::any::AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::default().with_embedding(vec![1.0, 0.0]),
+        );
+        let extractor = TraceExtractor::new(
+            extract_provider,
+            embed_provider,
+            tmp.path().to_path_buf(),
+            200,
+            131_072,
+            0.75,
+            0.90,
+            true,
+            None,
+        );
+        let existing_meta = SkillMeta {
+            name: "existing-skill".into(),
+            description: "An existing skill.".into(),
+            version: 1,
+            source: "trace_extraction".into(),
+            session_id: None,
+            compatibility: None,
+            license: None,
+            metadata: vec![],
+            allowed_tools: vec![],
+            requires_secrets: vec![],
+            skill_dir: tmp.path().join("existing-skill"),
+            source_url: None,
+            git_hash: None,
+            category: None,
+            triggers: vec![],
+            parent_skill: None,
+            proactive_domain: None,
+            extensions: None,
+        };
+        let existing_embeddings = vec![(existing_meta, SkillEmbedding::from_raw(vec![0.8, 0.6]))];
+        let messages = [UserMessage {
+            text: "help me improve my script".into(),
+        }];
+        let result = extractor
+            .extract_from_trace(&messages, &existing_embeddings, "merge-same-name-session")
+            .await
+            .unwrap();
+        assert_eq!(result.candidates_merged, 1);
+        assert_eq!(result.saved_skill_paths.len(), 1);
+        assert_eq!(result.saved_skill_paths[0].0, "existing-skill");
+        assert!(result.saved_skill_paths[0].1.ends_with("SKILL.md"));
     }
 }

@@ -148,6 +148,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-skills`, `zeph-core`: `SkillGenerator::write_quarantined` wrote an AutoSkill draft's
+  `SKILL.md` to `_quarantine/<name>/` but never persisted a `skill_trust` DB row (issue #6702).
+  The doc comment claimed the `_quarantine` directory prefix kept the registry from ever loading
+  these drafts, but the loader applies no directory-name filtering at all — quarantine was never
+  actually enforced. Because no DB row existed yet, the first hot-reload's
+  `update_trust_for_reloaded_skills` had no existing row to preserve and fell through to
+  `[skills.trust] default_level`, silently trusting an unreviewed draft whenever an operator set
+  `default_level = "trusted"`. `TraceExtractionResult` now reports `saved_skill_paths` for every
+  skill written during extraction (`Add` and `Merge` branches), keyed on the name actually
+  written to disk — the `Merge` branch previously keyed the row on the *pre-merge* skill's name
+  (`nearest_name`), which could clobber an unrelated Bundled/Trusted skill's trust row when the
+  merge LLM renamed the result, and left the actually-written skill without any row at all.
+  `trace_extraction::log_and_persist` eagerly writes a `Quarantined` `skill_trust` row right
+  after generation, before the skill can ever be hot-reloaded, retrying the write once on
+  failure and escalating to `error!` if the retry also fails. Because `MERGE_SYSTEM_PROMPT`
+  instructs the merge LLM to *preserve* the existing skill's name, `merged.name == nearest_name`
+  is the dominant merge outcome, not the exception — so the eager write additionally checks the
+  target skill's existing `skill_trust.source_path` (if any) against the quarantine directory
+  about to be recorded, and skips the upsert with a `tracing::warn!` instead of overwriting when
+  they differ. Without this guard, merging against a Bundled or Trusted skill living outside the
+  quarantine dir would silently clobber its trust row, causing the following hot-reload to demote
+  it to `[skills.trust] hash_mismatch_level` as a tampered skill. Also extracted the native-tool-ID
+  collision `tracing::warn!` (fired when a skill name collides with a tool ID after
+  hyphen/underscore normalization) into its own helper called from `skill_catalog_items` — the
+  call site shared by both the startup catalog emit and every hot-reload — so the warning no
+  longer depends on `SemanticMemory` being configured and fires at startup, not only after the
+  first post-startup file change.
+
 - `zeph-channels`: `MAX_RETRY_SECS` (the upper bound `send_with_retry` clamps a `Retry-After`
   delay to) had no compile-time invariant guard (issue #6517). #6516 (closing #6496) filtered
   the *parsed* `Retry-After` values so a negative/non-finite header or body field could no

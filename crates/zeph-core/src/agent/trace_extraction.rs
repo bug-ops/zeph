@@ -8,9 +8,11 @@
 //! Idempotency is enforced via the `skill_trace_sessions` `SQLite` table.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::Role;
+use zeph_memory::semantic::SemanticMemory;
 use zeph_skills::loader::SkillMeta;
 use zeph_skills::trace_extractor::{
     TraceExtractionResult, TraceExtractor, UserMessage, session_record,
@@ -90,6 +92,7 @@ impl<C: Channel> super::Agent<C> {
 
         let status_tx = self.services.session.status_tx.clone();
         let db_pool = self.get_db_pool_for_trace_extraction();
+        let memory = self.services.memory.persistence.memory.clone();
 
         let _ = self
             .services
@@ -114,6 +117,7 @@ impl<C: Channel> super::Agent<C> {
                     user_messages,
                     conversation_id,
                     db_pool,
+                    memory,
                     status_tx,
                 )
             },
@@ -161,6 +165,7 @@ async fn run_extraction(
     user_messages: Vec<UserMessage>,
     session_id: String,
     db_pool: Option<zeph_db::DbPool>,
+    memory: Option<Arc<SemanticMemory>>,
     status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 ) {
     let extractor = TraceExtractor::new(
@@ -180,7 +185,7 @@ async fn run_extraction(
         .await
     {
         Ok(result) => {
-            log_and_persist(&session_id, &result, db_pool).await;
+            log_and_persist(&session_id, &result, db_pool, memory).await;
         }
         Err(e) => {
             tracing::warn!(session_id = %session_id, error = %e, "trace_extraction: failed (session NOT marked as processed)");
@@ -188,10 +193,19 @@ async fn run_extraction(
     }
 }
 
+/// Log the extraction summary, persist the idempotency row, and record each freshly
+/// quarantined skill's `skill_trust` row at [`zeph_common::SkillTrustLevel::Quarantined`].
+///
+/// The trust write happens here — not in `zeph-skills` — because writing the draft `SKILL.md`
+/// to `_quarantine/` is not itself a security boundary (see `SkillGenerator::write_quarantined`
+/// doc comment): without this DB row, the next hot-reload's `update_trust_for_reloaded_skills`
+/// finds no existing row for the new skill and falls back to `trust_cfg.default_level`, which
+/// can silently trust an unreviewed draft (#6702).
 async fn log_and_persist(
     session_id: &str,
     result: &TraceExtractionResult,
     db_pool: Option<zeph_db::DbPool>,
+    memory: Option<Arc<SemanticMemory>>,
 ) {
     tracing::info!(
         session_id = %session_id,
@@ -200,21 +214,342 @@ async fn log_and_persist(
         merged = result.candidates_merged,
         "trace_extraction: session complete"
     );
-    let Some(pool) = db_pool else { return };
-    let (sid, ts, proposed, saved, merged) = session_record(session_id, result);
-    let _ = zeph_db::query(
-        "INSERT OR IGNORE INTO skill_trace_sessions \
-         (session_id, processed_at, candidates_proposed, candidates_saved, candidates_merged) \
-         VALUES (?, ?, ?, ?, ?)",
-    )
-    .bind(sid)
-    .bind(ts)
-    .bind(proposed)
-    .bind(saved)
-    .bind(merged)
-    .execute(&pool)
+    if let Some(pool) = db_pool {
+        let (sid, ts, proposed, saved, merged) = session_record(session_id, result);
+        let _ = zeph_db::query(
+            "INSERT OR IGNORE INTO skill_trace_sessions \
+             (session_id, processed_at, candidates_proposed, candidates_saved, candidates_merged) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(sid)
+        .bind(ts)
+        .bind(proposed)
+        .bind(saved)
+        .bind(merged)
+        .execute(&pool)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "trace_extraction: failed to write idempotency row");
+        });
+    }
+
+    let Some(memory) = memory else { return };
+    for (skill_name, skill_md_path) in &result.saved_skill_paths {
+        persist_quarantined_trust_row(session_id, &memory, skill_name, skill_md_path).await;
+    }
+}
+
+/// Hash a single quarantined skill and (re)write its `skill_trust` row, unless doing so would
+/// clobber the row of an unrelated skill that happens to share the name.
+async fn persist_quarantined_trust_row(
+    session_id: &str,
+    memory: &SemanticMemory,
+    skill_name: &str,
+    skill_md_path: &std::path::Path,
+) {
+    let md_path = skill_md_path.to_path_buf();
+    let Ok(Some((skill_dir, hash))) = tokio::task::spawn_blocking(move || {
+        let skill_dir = md_path.parent().map(std::path::Path::to_path_buf)?;
+        let hash = zeph_skills::compute_skill_hash(&skill_dir).ok()?;
+        Some((skill_dir, hash))
+    })
     .await
-    .map_err(|e| {
-        tracing::warn!(error = %e, "trace_extraction: failed to write idempotency row");
-    });
+    else {
+        tracing::warn!(
+            session_id = %session_id,
+            skill = %skill_name,
+            "trace_extraction: failed to hash quarantined skill, trust row not written"
+        );
+        return;
+    };
+    // `source_path` stores the skill *directory*, matching the convention used by
+    // `update_trust_for_reloaded_skills` (skill_reload.rs) — the two write sites must agree so
+    // the column doesn't flip-flop between the eager write here and the next hot-reload
+    // (#6702 M3).
+    let source_path = skill_dir.to_str();
+    if has_conflicting_trust_row(memory, skill_name, source_path).await {
+        tracing::warn!(
+            session_id = %session_id,
+            skill = %skill_name,
+            quarantine_source_path = ?source_path,
+            "trace_extraction: name collision with an existing skill outside the quarantine \
+             dir, skipping trust upsert to avoid clobbering it"
+        );
+        return;
+    }
+    // A failed write here means the exact #6702 bug recurs on the next reload with nothing
+    // left to retry it (the draft is already on disk, quarantine-only). Retry once
+    // synchronously before giving up — this is a local SQLite write, so a bounded retry is
+    // cheap and covers transient lock contention (#6702 M1).
+    let mut attempt = memory
+        .sqlite()
+        .upsert_skill_trust(
+            skill_name,
+            zeph_common::SkillTrustLevel::Quarantined,
+            zeph_memory::store::SourceKind::Hub,
+            None,
+            source_path,
+            &hash,
+        )
+        .await;
+    if attempt.is_err() {
+        attempt = memory
+            .sqlite()
+            .upsert_skill_trust(
+                skill_name,
+                zeph_common::SkillTrustLevel::Quarantined,
+                zeph_memory::store::SourceKind::Hub,
+                None,
+                source_path,
+                &hash,
+            )
+            .await;
+    }
+    if let Err(e) = attempt {
+        tracing::error!(
+            session_id = %session_id,
+            skill = %skill_name,
+            error = %e,
+            "trace_extraction: failed to persist quarantined trust row after retry"
+        );
+    }
+}
+
+/// Whether `skill_name` already has a trust row owned by a *different* on-disk skill.
+///
+/// The merge prompt instructs the LLM to preserve the existing skill's name
+/// (`merge_prompts.rs`), so `skill_name` here routinely collides with a Bundled or Trusted
+/// skill living outside the quarantine dir. Blindly upserting would clobber that unrelated
+/// skill's trust row, and the next hot-reload would demote it via `hash_mismatch_level`
+/// (#6702 S1'). A row with no recorded `source_path` (legacy/manual rows) or one that already
+/// points at `quarantine_source_path` (re-extracting the same evolving draft in place) is safe
+/// to overwrite; only a row whose `source_path` names a different directory is a genuine
+/// collision.
+async fn has_conflicting_trust_row(
+    memory: &SemanticMemory,
+    skill_name: &str,
+    quarantine_source_path: Option<&str>,
+) -> bool {
+    let Some(row) = memory
+        .sqlite()
+        .load_skill_trust(skill_name)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return false;
+    };
+    match row.source_path.as_deref() {
+        None => false,
+        existing => existing != quarantine_source_path,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use zeph_memory::semantic::SemanticMemory;
+
+    use super::*;
+
+    async fn test_memory() -> Arc<SemanticMemory> {
+        let provider = zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+        Arc::new(
+            SemanticMemory::new(
+                ":memory:",
+                "http://127.0.0.1:1",
+                None,
+                provider,
+                "test-model",
+            )
+            .await
+            .unwrap(),
+        )
+    }
+
+    /// Regression test for #6702: `log_and_persist` must eagerly write a `Quarantined`
+    /// `skill_trust` row for every skill saved during extraction, so the very first
+    /// hot-reload never has to fall back to `trust_cfg.default_level`.
+    #[tokio::test]
+    async fn log_and_persist_writes_quarantined_trust_row_for_saved_skills() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = tmp.path().join("my-new-skill");
+        tokio::fs::create_dir_all(&skill_dir).await.unwrap();
+        let skill_md_path = skill_dir.join("SKILL.md");
+        tokio::fs::write(
+            &skill_md_path,
+            "---\nname: my-new-skill\ndescription: A test skill.\nversion: 0\nsource: trace_extraction\n---\n\n## How to use\nDo the thing.\n",
+        )
+        .await
+        .unwrap();
+
+        let memory = test_memory().await;
+        let result = TraceExtractionResult {
+            saved_skill_paths: vec![("my-new-skill".to_string(), skill_md_path)],
+            ..Default::default()
+        };
+
+        log_and_persist("test-session", &result, None, Some(memory.clone())).await;
+
+        let row = memory
+            .sqlite()
+            .load_skill_trust("my-new-skill")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.trust_level, zeph_common::SkillTrustLevel::Quarantined);
+        assert_eq!(row.source_kind, zeph_memory::store::SourceKind::Hub);
+    }
+
+    /// Spec 057 NEVER clause: a merge result written under a name that already carries a
+    /// `Trusted` row (a human-reviewed skill, or a coincidental name reuse) must still be
+    /// reset to `Quarantined` — trust must never be inherited from an existing row. Locks in
+    /// the S1/S2 fix (`saved_skill_paths` keyed on the written name) end-to-end through
+    /// `log_and_persist`. The existing row has no recorded `source_path`, which also exercises
+    /// the "unknown provenance" branch of the S1' guard
+    /// (`log_and_persist_skips_upsert_on_source_path_collision` below covers the "known,
+    /// different directory" branch).
+    #[tokio::test]
+    async fn log_and_persist_resets_already_trusted_skill_to_quarantined() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = tmp.path().join("existing-skill-v2");
+        tokio::fs::create_dir_all(&skill_dir).await.unwrap();
+        let skill_md_path = skill_dir.join("SKILL.md");
+        tokio::fs::write(
+            &skill_md_path,
+            "---\nname: existing-skill-v2\ndescription: A merged skill.\nversion: 1\nsource: trace_extraction\n---\n\n## How to use\nDo the merged thing.\n",
+        )
+        .await
+        .unwrap();
+
+        let memory = test_memory().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "existing-skill-v2",
+                zeph_common::SkillTrustLevel::Trusted,
+                zeph_memory::store::SourceKind::Local,
+                None,
+                None,
+                "stale-hash",
+            )
+            .await
+            .unwrap();
+
+        let result = TraceExtractionResult {
+            saved_skill_paths: vec![("existing-skill-v2".to_string(), skill_md_path)],
+            ..Default::default()
+        };
+
+        log_and_persist("test-session", &result, None, Some(memory.clone())).await;
+
+        let row = memory
+            .sqlite()
+            .load_skill_trust("existing-skill-v2")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.trust_level,
+            zeph_common::SkillTrustLevel::Quarantined,
+            "trust must never be inherited from an existing row (spec 057)"
+        );
+    }
+
+    /// #6702 S1': the merge prompt instructs the LLM to preserve the existing skill's name, so
+    /// `saved_skill_paths` routinely carries a name that already belongs to an unrelated skill
+    /// living outside the quarantine dir (e.g. a Bundled skill). `log_and_persist` must detect
+    /// the `source_path` mismatch and skip the upsert entirely, leaving that skill's real trust
+    /// row untouched instead of clobbering it with quarantine metadata for an unrelated draft.
+    #[tokio::test]
+    async fn log_and_persist_skips_upsert_on_source_path_collision() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bundled_dir = tmp.path().join("bundled").join("existing-skill");
+        let quarantine_dir = tmp.path().join("_quarantine").join("existing-skill");
+        tokio::fs::create_dir_all(&quarantine_dir).await.unwrap();
+        let skill_md_path = quarantine_dir.join("SKILL.md");
+        tokio::fs::write(
+            &skill_md_path,
+            "---\nname: existing-skill\ndescription: A merged draft.\nversion: 1\nsource: trace_extraction\n---\n\n## How to use\nDo the merged thing.\n",
+        )
+        .await
+        .unwrap();
+
+        let memory = test_memory().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "existing-skill",
+                zeph_common::SkillTrustLevel::Trusted,
+                zeph_memory::store::SourceKind::Bundled,
+                None,
+                bundled_dir.to_str(),
+                "bundled-hash",
+            )
+            .await
+            .unwrap();
+
+        let result = TraceExtractionResult {
+            saved_skill_paths: vec![("existing-skill".to_string(), skill_md_path)],
+            ..Default::default()
+        };
+
+        log_and_persist("test-session", &result, None, Some(memory.clone())).await;
+
+        let row = memory
+            .sqlite()
+            .load_skill_trust("existing-skill")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.trust_level,
+            zeph_common::SkillTrustLevel::Trusted,
+            "a name collision with a skill outside the quarantine dir must not clobber its trust row"
+        );
+        assert_eq!(row.source_kind, zeph_memory::store::SourceKind::Bundled);
+        assert_eq!(row.source_path.as_deref(), bundled_dir.to_str());
+        assert_eq!(row.blake3_hash, "bundled-hash");
+    }
+
+    // Opens a migrated in-memory SQLite pool with the `skill_trace_sessions` table, mirroring
+    // `shadow_sentinel.rs`'s `test_pool` helper.
+    async fn test_pool() -> zeph_db::DbPool {
+        zeph_db::DbConfig {
+            url: ":memory:".to_owned(),
+            ..Default::default()
+        }
+        .connect()
+        .await
+        .expect("connect + migrate in-memory sqlite pool")
+    }
+
+    /// When `memory` is `None` (no `SemanticMemory` configured), `log_and_persist` must still
+    /// persist the `skill_trace_sessions` idempotency row — the trust-write loop and the
+    /// session-row insert are structurally independent, so the absence of one must not silently
+    /// drop the other.
+    #[tokio::test]
+    async fn log_and_persist_without_memory_still_persists_session_row() {
+        let pool = test_pool().await;
+        let result = TraceExtractionResult {
+            candidates_proposed: 1,
+            candidates_saved: 1,
+            saved_skill_paths: vec![("orphan-skill".to_string(), PathBuf::from("/nonexistent"))],
+            ..Default::default()
+        };
+
+        log_and_persist("test-session", &result, Some(pool.clone()), None).await;
+
+        let count: i64 =
+            zeph_db::query_scalar("SELECT COUNT(*) FROM skill_trace_sessions WHERE session_id = ?")
+                .bind("test-session")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            count, 1,
+            "session row must be persisted even without memory"
+        );
+    }
 }

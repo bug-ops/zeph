@@ -7,6 +7,8 @@
 //! per-skill trust scores, and reloads `instructions`/`AGENTS.md` overlays when the
 //! filesystem watcher signals a change.
 
+use std::collections::HashSet;
+
 use super::Agent;
 use crate::channel::Channel;
 use crate::context::build_system_prompt;
@@ -14,6 +16,7 @@ use zeph_llm::provider::LlmProvider;
 use zeph_skills::loader::Skill;
 use zeph_skills::matcher::{SkillMatcher, SkillMatcherBackend};
 use zeph_skills::registry::SkillRegistry;
+use zeph_tools::registry::ToolDef;
 
 impl<C: Channel> Agent<C> {
     /// Builds the current skill catalog (name + description) for
@@ -23,7 +26,9 @@ impl<C: Channel> Agent<C> {
     /// apply the same [`zeph_common::SkillTrustLevel::Blocked`] filter — reading
     /// `registry.read().all_meta()` raw at only one of the two sites would let blocked
     /// skills appear in the mention picker until the first hot-reload, then silently
-    /// vanish (M2).
+    /// vanish (M2). Also runs [`Self::warn_on_tool_id_collisions`] here for the same reason:
+    /// it is the one call site that fires on both startup and every hot-reload, independent
+    /// of trust-DB/`memory` availability (#6702 S4).
     pub(super) async fn skill_catalog_items(&mut self) -> Vec<crate::channel::SkillCatalogItem> {
         let all_meta: Vec<zeph_skills::loader::SkillMeta> = self
             .services
@@ -34,6 +39,7 @@ impl<C: Channel> Agent<C> {
             .into_iter()
             .cloned()
             .collect();
+        self.warn_on_tool_id_collisions(&all_meta);
         let trust_map = match self.build_skill_trust_map().await {
             crate::agent::trust_commands::SkillTrustMapLoad::Fresh(map) => map,
             crate::agent::trust_commands::SkillTrustMapLoad::LoadFailed => {
@@ -53,6 +59,36 @@ impl<C: Channel> Agent<C> {
                 description: m.description,
             })
             .collect()
+    }
+
+    /// WARN when a skill name collides with a native (non-MCP) tool ID after hyphen/underscore
+    /// normalization (#6702). `AutoSkill` names can never contain `_` (rejected by both
+    /// `validate_generated_name` and `validate_skill_name`), so only `-` -> `_` normalization
+    /// is needed.
+    ///
+    /// Deliberately independent of `memory`/trust-DB availability, and called from
+    /// [`Self::skill_catalog_items`] rather than [`Self::update_trust_for_reloaded_skills`] —
+    /// the latter early-returns when `memory` is `None` and is only invoked from the
+    /// hot-reload path, so a collision present at startup (before any file changes) never
+    /// warned (#6702 S4).
+    fn warn_on_tool_id_collisions(&self, all_meta: &[zeph_skills::loader::SkillMeta]) {
+        let native_tool_ids: HashSet<String> = self
+            .tool_executor
+            .tool_definitions_erased()
+            .into_iter()
+            .filter(|t| !ToolDef::is_mcp_tool(t))
+            .map(|t| t.id.to_string())
+            .collect();
+        for meta in all_meta {
+            let normalized = meta.name.replace('-', "_");
+            if native_tool_ids.contains(&normalized) {
+                tracing::warn!(
+                    skill = %meta.name,
+                    tool_id = %normalized,
+                    "skill name collides with a native tool ID after hyphen/underscore normalization"
+                );
+            }
+        }
     }
 
     /// Update trust DB records for all reloaded skills.
@@ -380,5 +416,244 @@ impl<C: Channel> Agent<C> {
             "reloaded instruction files"
         );
         self.runtime.instructions.blocks = new_blocks;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use zeph_common::SkillTrustLevel;
+    use zeph_memory::semantic::SemanticMemory;
+    use zeph_memory::store::SourceKind;
+
+    use super::super::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use super::*;
+
+    async fn test_memory() -> Arc<SemanticMemory> {
+        let provider = zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+        Arc::new(
+            SemanticMemory::new(
+                ":memory:",
+                "http://127.0.0.1:1",
+                None,
+                provider,
+                "test-model",
+            )
+            .await
+            .unwrap(),
+        )
+    }
+
+    fn agent_with_memory_and_executor(
+        memory: Arc<SemanticMemory>,
+        executor: MockToolExecutor,
+    ) -> Agent<MockChannel> {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+            memory,
+            zeph_memory::ConversationId(1),
+            50,
+            5,
+            50,
+        )
+    }
+
+    /// Regression test for #6702: once a `skill_trust` row has been written at
+    /// `Quarantined` (simulating the eager write `log_and_persist` now performs right
+    /// after an `AutoSkill` draft is generated), a hot-reload pass with
+    /// `trust_cfg.default_level = Trusted` must NOT silently promote it. Only the
+    /// `_quarantine/` directory naming used to be relied on for this — which the loader
+    /// never actually enforced.
+    #[tokio::test]
+    async fn update_trust_preserves_quarantine_despite_trusted_default() {
+        let managed = tempfile::tempdir().unwrap();
+        let skill_dir = managed.path().join("_quarantine").join("my-skill");
+        tokio::fs::create_dir_all(&skill_dir).await.unwrap();
+        tokio::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: A test skill.\nversion: 0\nsource: trace_extraction\n---\n\n## How to use\nDo the thing.\n",
+        )
+        .await
+        .unwrap();
+        let hash = zeph_skills::compute_skill_hash(&skill_dir).unwrap();
+
+        let memory = test_memory().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "my-skill",
+                SkillTrustLevel::Quarantined,
+                SourceKind::Hub,
+                None,
+                skill_dir.to_str(),
+                &hash,
+            )
+            .await
+            .unwrap();
+
+        let mut agent =
+            agent_with_memory_and_executor(memory.clone(), MockToolExecutor::no_tools());
+        agent.services.skill.trust_config.default_level = SkillTrustLevel::Trusted;
+        agent.services.skill.managed_dir = Some(managed.path().to_path_buf());
+
+        let meta = zeph_skills::loader::SkillMeta {
+            name: "my-skill".into(),
+            description: "A test skill.".into(),
+            version: 0,
+            source: "trace_extraction".into(),
+            skill_dir: skill_dir.clone(),
+            ..Default::default()
+        };
+        agent.update_trust_for_reloaded_skills(&[meta]).await;
+
+        let row = memory
+            .sqlite()
+            .load_skill_trust("my-skill")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.trust_level,
+            SkillTrustLevel::Quarantined,
+            "an existing Quarantined row must survive a reload even when default_level=Trusted"
+        );
+    }
+
+    struct MessageCaptureLayer {
+        messages: Arc<Mutex<Vec<String>>>,
+    }
+    struct MessageVisitor(String);
+    impl tracing::field::Visit for MessageVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0 = format!("{value:?}");
+            }
+        }
+    }
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for MessageCaptureLayer {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut visitor = MessageVisitor(String::new());
+            event.record(&mut visitor);
+            self.messages.lock().unwrap().push(visitor.0);
+        }
+    }
+
+    fn colliding_tool_executor() -> MockToolExecutor {
+        let tool_def = ToolDef {
+            id: "list_directory".into(),
+            description: "list directory tool".into(),
+            schema: schemars::Schema::default(),
+            invocation: zeph_tools::registry::InvocationHint::ToolCall,
+            output_schema: None,
+            server_id: None,
+        };
+        MockToolExecutor::no_tools().with_definitions(vec![tool_def])
+    }
+
+    fn colliding_skill_meta() -> zeph_skills::loader::SkillMeta {
+        zeph_skills::loader::SkillMeta {
+            name: "list-directory".into(),
+            description: "A colliding skill.".into(),
+            version: 0,
+            source: "trace_extraction".into(),
+            skill_dir: std::path::PathBuf::from("/nonexistent/list-directory"),
+            ..Default::default()
+        }
+    }
+
+    fn capture_warn_messages() -> (Arc<Mutex<Vec<String>>>, tracing::subscriber::DefaultGuard) {
+        let messages: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let layer = MessageCaptureLayer {
+            messages: messages.clone(),
+        };
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let guard = tracing::subscriber::set_default(subscriber);
+        (messages, guard)
+    }
+
+    fn assert_collision_warn_fired(captured: &[String]) {
+        assert!(
+            captured.iter().any(|m| m.contains(
+                "skill name collides with a native tool ID after hyphen/underscore normalization"
+            )),
+            "expected a collision WARN, got: {captured:?}"
+        );
+    }
+
+    /// Regression test for #6702 direction 1: a skill whose name collides with a native
+    /// tool ID after hyphen/underscore normalization must WARN, with `memory` present.
+    #[tokio::test]
+    async fn update_trust_warns_on_native_tool_id_collision() {
+        let memory = test_memory().await;
+        let agent = agent_with_memory_and_executor(memory, colliding_tool_executor());
+
+        let (messages, _guard) = capture_warn_messages();
+        agent.warn_on_tool_id_collisions(&[colliding_skill_meta()]);
+        assert_collision_warn_fired(&messages.lock().unwrap());
+    }
+
+    /// Regression test for #6702 S4(a): the collision WARN must fire even when `memory` is
+    /// `None` (no `SemanticMemory` configured) — the check must not be gated behind trust-DB
+    /// availability, since `update_trust_for_reloaded_skills` early-returns without memory but
+    /// the collision itself has nothing to do with the trust DB.
+    #[tokio::test]
+    async fn warn_on_tool_id_collisions_fires_without_memory() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let agent = Agent::new(
+            provider,
+            channel,
+            registry,
+            None,
+            5,
+            colliding_tool_executor(),
+        );
+
+        let (messages, _guard) = capture_warn_messages();
+        agent.warn_on_tool_id_collisions(&[colliding_skill_meta()]);
+        assert_collision_warn_fired(&messages.lock().unwrap());
+    }
+
+    /// Regression test for #6702 S4(b): the collision check must run from
+    /// `skill_catalog_items()` — the call site shared by the startup emit (`Agent::run`) and
+    /// every hot-reload — so a colliding skill present at startup (steady state, before any
+    /// file changes) is caught too, not only after the first hot-reload's fingerprint change.
+    #[tokio::test]
+    async fn skill_catalog_items_warns_on_native_tool_id_collision() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let skill_dir = temp_dir.path().join("list-directory");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: list-directory\ndescription: A colliding skill.\n---\nBody",
+        )
+        .unwrap();
+        let registry = SkillRegistry::load(&[temp_dir.path().to_path_buf()]);
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            registry,
+            None,
+            5,
+            colliding_tool_executor(),
+        );
+
+        let (messages, _guard) = capture_warn_messages();
+        let _ = agent.skill_catalog_items().await;
+        assert_collision_warn_fired(&messages.lock().unwrap());
     }
 }
