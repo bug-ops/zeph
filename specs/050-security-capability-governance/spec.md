@@ -281,6 +281,14 @@ ScopedToolExecutor
 `ScopedToolExecutor` wraps *outside* `PolicyGateExecutor` so an out-of-scope
 call short-circuits before policy evaluation.
 
+> [!note] `TrustGateExecutor` and skill-trust semantics live in 005-skills (#6701)
+> This diagram places `TrustGateExecutor` in the executor stack, but the semantics of the
+> per-turn trust floor it reads (`TurnTrustFloor`), how proactive skill matching feeds — or,
+> since #6701, no longer feeds — that floor, and how explicit skill invocation folds it, are
+> specified in `[[005-skills/spec#Trust-Aware Skill Activation and Turn Trust Floor (#6701)|005-skills § Trust-Aware Skill Activation]]`.
+> Treat 005-skills as the source of truth for skill-trust governance; this spec only owns
+> the capability-scope wiring around it.
+
 **Scope-swap semantics (C6 mitigation).** Scope swaps via `/scope <name>`
 take effect at the next `execute_tool_call` boundary; in-flight calls
 complete under the scope active at admission. The audit emission carries

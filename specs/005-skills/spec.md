@@ -545,16 +545,102 @@ The tool returns a confirmation message with the skill's name and first 200 char
 
 `invoke_skill` checks:
 1. Skill exists in the registry
-2. Skill trust level is ≥ `Provisional` — `Quarantined` skills cannot be invoked
+2. Skill trust level is not `Blocked` — `Blocked` skills are refused outright at `resolve_body`; a `Quarantined` skill is invocable (see § Trust-Aware Skill Activation and Turn Trust Floor below)
 3. Skill is not in the channel blocklist for the current channel
+
+> [!warning] Superseded wording (#6701)
+> Earlier revisions of this section stated "Skill trust level is ≥ `Provisional` —
+> `Quarantined` skills cannot be invoked." That contradicted the shipped
+> `SkillTrustGate::resolve_body` behavior (it only ever refused `Blocked`) and is corrected
+> here: a `Quarantined` skill CAN be explicitly invoked — its sanitized,
+> `wrap_quarantined`-wrapped body is returned — but doing so now folds the turn's trust
+> floor to `Quarantined` for the remainder of the turn. Only `Blocked` skills are refused.
 
 ### Key Invariants
 
 - `invoke_skill` is always exempt from the utility gate and the adversarial policy gate — listed in both `UtilityScoringConfig::exempt_tools` and `AdversarialPolicyConfig::exempt_tools` by default
 - `invoke_skill` and `load_skill` are both in `QUARANTINE_DENIED` — they cannot be triggered by quarantined skill content
-- The trust check applied to `invoke_skill`/`load_skill` is a per-turn weakest-link fold (`TrustGateExecutor::effective_trust`, computed in `zeph_core::agent::context::assembly`), not a per-skill check: if ANY skill active this turn is `Quarantined`, the call is denied for the whole turn regardless of which skill is targeted. A denial reflects the turn's overall trust floor and is not necessarily about the specific skill/tool targeted by the call — it may or may not itself be the quarantined one — see #5729 and `TrustGateExecutor`'s doc comment
+- The trust check applied to `invoke_skill`/`load_skill` is a per-turn weakest-link fold (`TrustGateExecutor::effective_trust`, computed in `zeph_core::agent::context::assembly`), not a per-skill check: if ANY skill active this turn is `Quarantined`, the call is denied for the whole turn regardless of which skill is targeted. A denial reflects the turn's overall trust floor and is not necessarily about the specific skill/tool targeted by the call — it may or may not itself be the quarantined one — see #5729 and `TrustGateExecutor`'s doc comment. Since #6701 (D1, see below), proactive/implicit matching can no longer be the source of an already-`Quarantined` floor at the start of a turn — that state now only arises from an explicit `Quarantined` invocation earlier in the same turn, or an inherited subagent trust cap
 - `invoke_skill` carries intent-to-apply semantics: the invoked skill IS injected; `load_skill` is preview-only and does NOT update the active skill
-- NEVER invoke a `Quarantined` skill via this tool — trust gate must check before injection
+- NEVER invoke a `Blocked` skill via this tool — `resolve_body` refuses it outright (unchanged)
+- Invoking a `Quarantined` skill via this tool MUST fold the turn's trust floor to `Quarantined` for the remainder of the turn (`TurnTrustFloor::fold`, monotonic downgrade only) — this supersedes the earlier "cannot be invoked" wording and closes the RC-3 gap where invocation previously degraded nothing (#6701)
+
+---
+
+## Trust-Aware Skill Activation and Turn Trust Floor (#6701)
+
+Proactive/implicit skill matching previously fed the same weakest-link trust fold as
+explicit invocation, with no trust filter on the matcher's output — the inverse of the
+intended posture: an accidentally-matched `Quarantined` skill (never requested by the model,
+merely scoring above `min_injection_score`) silently dropped the whole turn's trust floor
+(denying every `QUARANTINE_DENIED` tool and all MCP tools), while a deliberately-invoked
+`Quarantined` skill's body entered the context with no consequence. This section documents
+the corrected invariants; #6702 tracks a related but lower-priority follow-up (AutoSkill
+draft names shadowing native tool IDs, and `sync_skill_trust` silently re-promoting
+operator-moved-aside drafts) and is intentionally out of scope here.
+
+### Proactive/Implicit Activation Excludes Quarantined and Blocked (D1)
+
+A trust-aware activation filter runs immediately before `active_skill_names` is assigned in
+the per-turn context assembly (`zeph-core`), dropping any matched index whose resolved trust
+is `Quarantined` or `Blocked`. Such skills remain visible in the `<other_skills>` catalog
+(annotated `trust="quarantined"`) so the model can name them to the operator, but their
+bodies are never injected and they never enter the weakest-link fold. Filtering is
+index-based, preserving the existing `matched_indices` ↔ `active_skills` 1:1 invariant (see
+§ Construction-Time / Reload-Time Skill Prompt Contract). A skill missing from the trust map
+keeps the `Trusted` fallback and is not filtered by this step.
+
+### Retrieval-Fallback Mode Must Never Fold Below Trusted (D4)
+
+When skill-matcher infrastructure is unavailable, or no matcher is configured, every
+registered skill becomes provisionally "active" (`skill_fallback_mode`) and only
+description-only catalog text is injected — no skill body enters the prompt in this mode.
+Because nothing is actually injected, `effective_trust` MUST remain `Trusted` regardless of
+how many `Quarantined`/`Blocked` skills exist in the registry. This is a NEVER-severity
+invariant: before #6701, this mode silently locked every turn in fallback mode to
+`Quarantined` — defending against content that was never placed in the prompt.
+
+### `TurnTrustFloor`: Explicit Invocation Degrades, Never Restores (D3)
+
+`TurnTrustFloor` (a newtype over `Arc<AtomicU8>`, `zeph-common`) exposes three operations:
+`set(level)` (turn-start assignment, called once per turn), `fold(level)` (monotonic
+downgrade — `min` against the current value, never an upgrade), and `get()`.
+`TrustGateExecutor` reads this shared cell; `ToolExecutor::set_effective_trust` maps to
+`set`.
+
+- `SkillTrustGate::resolve_body` calls `fold(Quarantined)` whenever it returns a
+  `Quarantined` body — an explicit `invoke_skill`/`load_skill` of an unreviewed skill now
+  degrades the remainder of that turn's trust. This supersedes the prior wording in
+  § Agent-Invocable Skills that `Quarantined` skills "cannot be invoked": they CAN be
+  invoked, but invocation is no longer free.
+- Subagent spawn folds the parent's trust cap into the child (`fold(cap)`), never `set`s
+  it — a child MUST NOT be able to restore itself above an inherited cap via its own
+  turn-start `set_effective_trust` call. Previously the child's own per-turn `set`
+  overwrote a stricter inherited cap instead of narrowing it.
+
+### Key Invariants
+
+- A `Quarantined`/`Blocked` skill matched by proactive/implicit routing MUST NOT enter
+  `active_skill_names` — it remains discoverable in `<other_skills>` but inert until
+  promoted (`zeph skill trust <name> trusted`)
+- With one `Trusted` and one `Quarantined` skill matched in the same turn,
+  `effective_trust` MUST remain `Trusted` and `bash`/`write`/MCP tools MUST execute
+- `skill_fallback_mode == true` MUST yield `effective_trust == Trusted` even when the
+  registry contains `Quarantined` skills — NEVER let retrieval-fallback mode fold trust
+  below `Trusted`
+- `invoke_skill`/`load_skill` on a `Quarantined` skill MUST return the wrapped body AND
+  fold the turn's trust floor to `Quarantined` for its remainder — a subsequent `bash` call
+  in the same turn MUST be denied
+- `TurnTrustFloor::fold` MUST NEVER raise trust; a child subagent spawned with
+  `max_trust_level = Quarantined` MUST stay `Quarantined` across its own turn rebuilds —
+  NEVER let a child's own `set` restore it above an inherited cap
+- `Blocked` skill behavior is unchanged by this fix: excluded from both catalog and
+  actives, and refused outright at `resolve_body`
+- The weakest-link fold MUST be implemented as a single shared helper — NEVER duplicate
+  the fold logic between context assembly and subagent spawn
+- NEVER remove the weakest-link fold for skills whose bodies were actually
+  injected/invoked — it remains defense-in-depth against a prompt-injected skill body
+  steering the model into other tools; D1 narrows the fold's *input*, never its strength
 
 ---
 
