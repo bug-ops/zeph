@@ -152,6 +152,34 @@ impl SkillTrustLevel {
     pub const fn is_active(self) -> bool {
         !matches!(self, Self::Blocked)
     }
+
+    /// Returns `true` for trust levels that must never appear on a listing surface with no
+    /// trust-annotation mechanism — [`Blocked`](Self::Blocked) (explicitly disabled) and
+    /// [`Quarantined`](Self::Quarantined) (unreviewed / hash-mismatched) alike.
+    ///
+    /// This is the *hide* strategy for surfaces that cannot show a trust level inline, e.g.
+    /// the mention-picker catalog (`SkillCatalogItem` carries only `name`/`description`, no
+    /// trust field). Contrast with the *annotate* strategy used by the XML skill-prompt
+    /// catalog (`zeph_skills::prompt::format_skills_catalog`'s `trust_levels` parameter),
+    /// which keeps a `Quarantined`/`Blocked` skill visible with a `trust="..."` attribute so
+    /// the model/operator can still name it and promote it — that surface intentionally does
+    /// *not* use this method. This method says nothing about matching-candidate selection or
+    /// per-turn dispatch gating (`TurnTrustFloor`, weakest-link trust fold) either — those are
+    /// separate concerns with their own filtering logic.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_common::SkillTrustLevel;
+    ///
+    /// assert!(SkillTrustLevel::Blocked.is_hidden_from_catalog());
+    /// assert!(SkillTrustLevel::Quarantined.is_hidden_from_catalog());
+    /// assert!(!SkillTrustLevel::Trusted.is_hidden_from_catalog());
+    /// ```
+    #[must_use]
+    pub const fn is_hidden_from_catalog(self) -> bool {
+        matches!(self, Self::Blocked | Self::Quarantined)
+    }
 }
 
 impl FromStr for SkillTrustLevel {
@@ -210,6 +238,14 @@ mod tests {
         assert!(SkillTrustLevel::Verified.is_active());
         assert!(SkillTrustLevel::Quarantined.is_active());
         assert!(!SkillTrustLevel::Blocked.is_active());
+    }
+
+    #[test]
+    fn is_hidden_from_catalog_excludes_blocked_and_quarantined_only() {
+        assert!(SkillTrustLevel::Blocked.is_hidden_from_catalog());
+        assert!(SkillTrustLevel::Quarantined.is_hidden_from_catalog());
+        assert!(!SkillTrustLevel::Trusted.is_hidden_from_catalog());
+        assert!(!SkillTrustLevel::Verified.is_hidden_from_catalog());
     }
 
     #[test]

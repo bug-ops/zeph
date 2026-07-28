@@ -20,12 +20,12 @@ use zeph_tools::registry::ToolDef;
 
 impl<C: Channel> Agent<C> {
     /// Builds the current skill catalog (name + description) for
-    /// [`Channel::send_skill_catalog`], excluding blocked skills.
+    /// [`Channel::send_skill_catalog`], excluding blocked and quarantined skills.
     ///
     /// Shared by the startup emit (`Agent::run`) and the hot-reload emit below so both
-    /// apply the same [`zeph_common::SkillTrustLevel::Blocked`] filter — reading
-    /// `registry.read().all_meta()` raw at only one of the two sites would let blocked
-    /// skills appear in the mention picker until the first hot-reload, then silently
+    /// apply the same [`zeph_common::SkillTrustLevel::is_hidden_from_catalog`] filter —
+    /// reading `registry.read().all_meta()` raw at only one of the two sites would let
+    /// hidden skills appear in the mention picker until the first hot-reload, then silently
     /// vanish (M2). Also runs [`Self::warn_on_tool_id_collisions`] here for the same reason:
     /// it is the one call site that fires on both startup and every hot-reload, independent
     /// of trust-DB/`memory` availability (#6702 S4).
@@ -49,10 +49,9 @@ impl<C: Channel> Agent<C> {
         all_meta
             .into_iter()
             .filter(|m| {
-                !matches!(
-                    trust_map.get(&m.name),
-                    Some(snap) if snap.trust_level == zeph_common::SkillTrustLevel::Blocked
-                )
+                !trust_map
+                    .get(&m.name)
+                    .is_some_and(|snap| snap.trust_level.is_hidden_from_catalog())
             })
             .map(|m| crate::channel::SkillCatalogItem {
                 name: m.name,
@@ -143,17 +142,21 @@ impl<C: Channel> Agent<C> {
                 .flatten();
             let trust_level = if let Some(ref row) = existing {
                 if row.blake3_hash != current_hash {
-                    trust_cfg.hash_mismatch_level
+                    // A hash mismatch must never un-block an explicit operator Blocked
+                    // decision either: take the more restrictive of the stored level and
+                    // `hash_mismatch_level` (default Quarantined, severity 2). Without this,
+                    // a single-byte edit to a Blocked skill (severity 3) would silently
+                    // downgrade it to Quarantined (is_active() flips true, matchable again) —
+                    // same defect class as the source_kind branch below (#6707).
+                    row.trust_level.min_trust(trust_cfg.hash_mismatch_level)
                 } else if row.source_kind != source_kind {
-                    // source_kind changed (e.g., hub → bundled on upgrade).
-                    // Never override an explicit operator block. For active trust levels,
-                    // adopt the source-kind initial level when it grants more trust.
-                    let stored = row.trust_level;
-                    if !stored.is_active() || stored.severity() <= initial_level.severity() {
-                        stored
-                    } else {
-                        *initial_level
-                    }
+                    // source_kind changed (e.g., hub -> local on relocation) but content is
+                    // unchanged (hash still matches). A relocation must never silently
+                    // escalate trust: take the more restrictive (higher-severity) of the
+                    // stored level and the new source kind's default. Otherwise a Quarantined
+                    // skill moved out of `managed_dir` (Hub -> Local, whose default is
+                    // Trusted) would be promoted straight to Trusted with no review (#6707).
+                    row.trust_level.min_trust(*initial_level)
                 } else {
                     row.trust_level
                 }
@@ -528,6 +531,277 @@ mod tests {
         );
     }
 
+    /// Regression test for #6707: relocating a `Quarantined` skill's directory out of
+    /// `managed_dir` (content unchanged, hash still matches) flips its classified
+    /// `source_kind` from `Hub` to `Local`. Since `[skills.trust] local_level` defaults to
+    /// `Trusted`, the source_kind-mismatch branch must not silently promote the skill —
+    /// the stored `Quarantined` level must survive.
+    #[tokio::test]
+    async fn update_trust_source_kind_change_never_escalates_active_trust() {
+        let managed = tempfile::tempdir().unwrap();
+        let relocated = tempfile::tempdir().unwrap();
+        let skill_dir = relocated.path().join("my-skill");
+        tokio::fs::create_dir_all(&skill_dir).await.unwrap();
+        let skill_md = "---\nname: my-skill\ndescription: A test skill.\nversion: 0\nsource: trace_extraction\n---\n\n## How to use\nDo the thing.\n";
+        tokio::fs::write(skill_dir.join("SKILL.md"), skill_md)
+            .await
+            .unwrap();
+        let hash = zeph_skills::compute_skill_hash(&skill_dir).unwrap();
+
+        let memory = test_memory().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "my-skill",
+                SkillTrustLevel::Quarantined,
+                SourceKind::Hub,
+                None,
+                // Original (pre-relocation) path, still inside managed_dir.
+                managed.path().join("my-skill").to_str(),
+                &hash,
+            )
+            .await
+            .unwrap();
+
+        let mut agent =
+            agent_with_memory_and_executor(memory.clone(), MockToolExecutor::no_tools());
+        agent.services.skill.trust_config.local_level = SkillTrustLevel::Trusted;
+        agent.services.skill.managed_dir = Some(managed.path().to_path_buf());
+
+        let meta = zeph_skills::loader::SkillMeta {
+            name: "my-skill".into(),
+            description: "A test skill.".into(),
+            version: 0,
+            source: "trace_extraction".into(),
+            // Relocated outside managed_dir -> classify_source_kind now returns `Local`.
+            skill_dir: skill_dir.clone(),
+            ..Default::default()
+        };
+        agent.update_trust_for_reloaded_skills(&[meta]).await;
+
+        let row = memory
+            .sqlite()
+            .load_skill_trust("my-skill")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.trust_level,
+            SkillTrustLevel::Quarantined,
+            "relocating a Quarantined skill out of managed_dir must not promote it to the \
+             new source kind's (Trusted) default"
+        );
+        assert_eq!(
+            row.source_kind,
+            SourceKind::Local,
+            "source_kind must still be updated to reflect the new location"
+        );
+    }
+
+    /// Regression test for #6707 (S4): a hash mismatch must never un-block an explicit
+    /// operator `Blocked` decision either — same defect class as the source_kind-mismatch
+    /// branch above, one `if` earlier in `update_trust_for_reloaded_skills`. Before the fix,
+    /// any hash mismatch unconditionally assigned `hash_mismatch_level` (default
+    /// `Quarantined`, severity 2), silently downgrading a `Blocked` (severity 3) skill and
+    /// making it `is_active()` again on a single-byte content edit.
+    #[tokio::test]
+    async fn update_trust_hash_mismatch_never_unblocks_explicit_block() {
+        let managed = tempfile::tempdir().unwrap();
+        let skill_dir = managed.path().join("my-skill");
+        tokio::fs::create_dir_all(&skill_dir).await.unwrap();
+        let skill_md = "---\nname: my-skill\ndescription: A test skill.\nversion: 0\nsource: trace_extraction\n---\n\n## How to use\nDo the thing.\n";
+        tokio::fs::write(skill_dir.join("SKILL.md"), skill_md)
+            .await
+            .unwrap();
+
+        let memory = test_memory().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "my-skill",
+                SkillTrustLevel::Blocked,
+                // Same source_kind the reload will compute (skill_dir is inside managed_dir,
+                // no .bundled marker), so only the hash-mismatch branch fires, not the
+                // source_kind-mismatch one — isolates the behavior under test.
+                SourceKind::Hub,
+                None,
+                skill_dir.to_str(),
+                // Deliberately stale hash, unrelated to the real file content below, so the
+                // freshly computed hash never matches and the hash-mismatch branch fires.
+                "stale-hash-does-not-match-actual-content",
+            )
+            .await
+            .unwrap();
+
+        let mut agent =
+            agent_with_memory_and_executor(memory.clone(), MockToolExecutor::no_tools());
+        agent.services.skill.trust_config.hash_mismatch_level = SkillTrustLevel::Quarantined;
+        agent.services.skill.managed_dir = Some(managed.path().to_path_buf());
+
+        let meta = zeph_skills::loader::SkillMeta {
+            name: "my-skill".into(),
+            description: "A test skill.".into(),
+            version: 0,
+            source: "trace_extraction".into(),
+            skill_dir: skill_dir.clone(),
+            ..Default::default()
+        };
+        agent.update_trust_for_reloaded_skills(&[meta]).await;
+
+        let row = memory
+            .sqlite()
+            .load_skill_trust("my-skill")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.trust_level,
+            SkillTrustLevel::Blocked,
+            "a hash mismatch on an explicitly Blocked skill must not demote it to \
+             hash_mismatch_level (Quarantined) — the operator block must survive"
+        );
+    }
+
+    /// Reverse-direction sibling of `update_trust_source_kind_change_never_escalates_active_trust`:
+    /// proves the `row.trust_level.min_trust(*initial_level)` call site passes its arguments
+    /// in a way that correctly picks the *worse* (higher-severity) level when the new source
+    /// kind's default is stricter than the stored level — not just that `min_trust` itself
+    /// works (that's covered by `zeph-common`'s own unit tests), but that this specific call
+    /// site wires it with the right operands in both directions.
+    #[tokio::test]
+    async fn update_trust_source_kind_change_demotes_to_worse_new_default() {
+        let managed = tempfile::tempdir().unwrap();
+        let skill_dir = managed.path().join("my-skill");
+        tokio::fs::create_dir_all(&skill_dir).await.unwrap();
+        let skill_md = "---\nname: my-skill\ndescription: A test skill.\nversion: 0\nsource: trace_extraction\n---\n\n## How to use\nDo the thing.\n";
+        tokio::fs::write(skill_dir.join("SKILL.md"), skill_md)
+            .await
+            .unwrap();
+        let hash = zeph_skills::compute_skill_hash(&skill_dir).unwrap();
+
+        let memory = test_memory().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "my-skill",
+                SkillTrustLevel::Trusted,
+                SourceKind::Local,
+                None,
+                skill_dir.to_str(),
+                &hash,
+            )
+            .await
+            .unwrap();
+
+        let mut agent =
+            agent_with_memory_and_executor(memory.clone(), MockToolExecutor::no_tools());
+        // An extreme, unambiguous target level (Blocked, severity 3) rules out any
+        // coincidental pass — this specifically regression-locks against the old "adopt
+        // initial_level for any active stored level" logic being reintroduced without a
+        // severity comparison (`min_trust` itself is commutative, so this test's value is
+        // in exercising the real call site end-to-end, not in catching an argument swap).
+        agent.services.skill.trust_config.default_level = SkillTrustLevel::Blocked;
+        agent.services.skill.managed_dir = Some(managed.path().to_path_buf());
+
+        let meta = zeph_skills::loader::SkillMeta {
+            name: "my-skill".into(),
+            description: "A test skill.".into(),
+            version: 0,
+            source: "trace_extraction".into(),
+            // Still inside managed_dir but with no `.bundled` marker -> classify_source_kind
+            // returns Hub (a genuine source_kind change from the stored Local).
+            skill_dir: skill_dir.clone(),
+            ..Default::default()
+        };
+        agent.update_trust_for_reloaded_skills(&[meta]).await;
+
+        let row = memory
+            .sqlite()
+            .load_skill_trust("my-skill")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.trust_level,
+            SkillTrustLevel::Blocked,
+            "a source_kind change to a stricter default must demote the stored Trusted level, \
+             proving min_trust's arguments are wired in the right direction at this call site"
+        );
+        assert_eq!(row.source_kind, SourceKind::Hub);
+    }
+
+    /// #6706 (M3): documents the intentional fail-closed side effect of the symmetric
+    /// `min_trust` enforcement — moving a `Trusted` skill's directory *into* `managed_dir`
+    /// (Local -> Hub) under the realistic default `[skills.trust] default_level =
+    /// "quarantined"` demotes it to `Quarantined`, the same as any other newly-discovered
+    /// Hub skill. This is not a new decision introduced by #6707/#6706, it falls out of
+    /// enforcing "never escalate" symmetrically: a relocation can also never *implicitly*
+    /// inherit a higher trust level than the destination's default allows either.
+    #[tokio::test]
+    async fn update_trust_relocation_into_managed_dir_demotes_to_stricter_hub_default() {
+        let managed = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let skill_dir = outside.path().join("my-skill");
+        tokio::fs::create_dir_all(&skill_dir).await.unwrap();
+        let skill_md = "---\nname: my-skill\ndescription: A test skill.\nversion: 0\nsource: trace_extraction\n---\n\n## How to use\nDo the thing.\n";
+        tokio::fs::write(skill_dir.join("SKILL.md"), skill_md)
+            .await
+            .unwrap();
+        let hash = zeph_skills::compute_skill_hash(&skill_dir).unwrap();
+
+        let memory = test_memory().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "my-skill",
+                SkillTrustLevel::Trusted,
+                SourceKind::Local,
+                None,
+                skill_dir.to_str(),
+                &hash,
+            )
+            .await
+            .unwrap();
+
+        let mut agent =
+            agent_with_memory_and_executor(memory.clone(), MockToolExecutor::no_tools());
+        // Realistic operator config: unset .bundled marker/allowlist -> plain Hub skill under
+        // the default `default_level` (Quarantined per `TrustConfig::default()`).
+        agent.services.skill.trust_config.default_level = SkillTrustLevel::Quarantined;
+        agent.services.skill.managed_dir = Some(managed.path().to_path_buf());
+
+        let relocated_dir = managed.path().join("my-skill");
+        tokio::fs::create_dir_all(&relocated_dir).await.unwrap();
+        tokio::fs::write(relocated_dir.join("SKILL.md"), skill_md)
+            .await
+            .unwrap();
+
+        let meta = zeph_skills::loader::SkillMeta {
+            name: "my-skill".into(),
+            description: "A test skill.".into(),
+            version: 0,
+            source: "trace_extraction".into(),
+            // Relocated inside managed_dir -> classify_source_kind now returns `Hub`.
+            skill_dir: relocated_dir,
+            ..Default::default()
+        };
+        agent.update_trust_for_reloaded_skills(&[meta]).await;
+
+        let row = memory
+            .sqlite()
+            .load_skill_trust("my-skill")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.trust_level,
+            SkillTrustLevel::Quarantined,
+            "relocating a Trusted skill into managed_dir under a stricter Hub default must \
+             demote it, not silently keep the previous, more permissive Trusted level"
+        );
+        assert_eq!(row.source_kind, SourceKind::Hub);
+    }
+
     struct MessageCaptureLayer {
         messages: Arc<Mutex<Vec<String>>>,
     }
@@ -658,5 +932,53 @@ mod tests {
         let (messages, _guard) = capture_warn_messages();
         let _ = agent.skill_catalog_items().await;
         assert_collision_warn_fired(&messages.lock().unwrap());
+    }
+
+    /// Regression test for #6706: a skill with a persisted `Quarantined` trust row must not
+    /// appear in the catalog fed to the mention picker (`skill_catalog_items` /
+    /// `Channel::send_skill_catalog`), the same way `Blocked` skills are already excluded.
+    #[tokio::test]
+    async fn skill_catalog_items_excludes_quarantined_skill() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let skill_dir = temp_dir.path().join("quarantined-skill");
+        std::fs::create_dir(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: quarantined-skill\ndescription: A quarantined skill.\n---\nBody",
+        )
+        .unwrap();
+        let registry = SkillRegistry::load(&[temp_dir.path().to_path_buf()]);
+
+        let memory = test_memory().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "quarantined-skill",
+                SkillTrustLevel::Quarantined,
+                SourceKind::Local,
+                None,
+                skill_dir.to_str(),
+                "irrelevant-hash",
+            )
+            .await
+            .unwrap();
+
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            registry,
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(memory, zeph_memory::ConversationId(1), 50, 5, 50);
+
+        let items = agent.skill_catalog_items().await;
+        assert!(
+            items.iter().all(|i| i.name != "quarantined-skill"),
+            "a Quarantined skill must not appear in the catalog/mention-picker listing"
+        );
     }
 }

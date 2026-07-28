@@ -208,6 +208,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     (`parent_effective_trust_level`), which previously duplicated the same logic.
   - RC-4 (AutoSkill draft-name collisions with native tool IDs) is tracked separately in #6702
     and intentionally out of scope here.
+- `zeph-core`, `zeph-common`: closed the remaining trust-quarantine gaps left open by #6702's
+  own fix, split out as #6707 and #6706. (1) `update_trust_for_reloaded_skills`'s
+  `source_kind`-mismatch branch (e.g. a skill's directory relocated from inside `managed_dir`
+  to outside it, flipping its classified kind from `Hub` to `Local`) previously adopted the new
+  source kind's default trust level whenever the stored level was "active" (not `Blocked`) —
+  since `Quarantined` is active and `[skills.trust] local_level` defaults to `Trusted`, moving a
+  `Quarantined` skill's unchanged-content directory out of `managed_dir` silently promoted it to
+  `Trusted` on the next reload, with no review step. The branch now takes
+  `SkillTrustLevel::min_trust` of the stored level and the new source kind's default, so a
+  `source_kind` change can never move a skill's effective trust to something higher than it
+  already had — symmetrically, relocating a `Trusted` skill *into* a source kind with a
+  stricter default now correctly demotes it too, an intentional fail-closed side effect of the
+  same fix. The adjacent hash-mismatch branch had the identical defect one line above: a
+  hash-mismatched skill was unconditionally assigned `hash_mismatch_level` (default
+  `Quarantined`) even when the existing row was an explicit operator `Blocked`, silently
+  un-blocking it on a one-byte edit — now also `min_trust`-clamped against the stored level.
+  (2) `skill_catalog_items` (feeds `Channel::send_skill_catalog` / the TUI mention picker)
+  filtered out only `Blocked` skills, so a `Quarantined` skill still appeared there as a
+  normal, invocable skill name; new `SkillTrustLevel::is_hidden_from_catalog` (`zeph-common`,
+  next to `is_active`/`min_trust`) closes this — `SkillCatalogItem` carries no trust field, so
+  hiding is the only option on this surface. #6706's other two originally-identified sites
+  (`reload_skills`'s system-prompt catalog listing and `apply_skill_trust_and_gating`'s
+  per-turn `remaining_skills` catalog filter) turned out to already be correctly handled by the
+  concurrently-merged #6710/#6701 fix, which takes the *annotate* strategy instead of *hide* at
+  both: `Quarantined`/`Blocked` skills stay visible in the XML catalog with a `trust="..."`
+  attribute (`format_skills_catalog`'s `trust_levels` parameter) so the model/operator can still
+  name and promote them, while #6710's own `filter_active_skills_by_trust` (RC-1) already
+  excludes them from `active_skill_names`/matching. This PR does not alter that design — the
+  mention-picker exclusion above is the only remaining hide-site.
 
 - `crates/zeph-core`/`src/serve/agent_factory.rs`: `cargo test --features full` could crash with
   a genuine stack overflow (`SIGABRT`) on
