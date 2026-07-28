@@ -103,6 +103,30 @@ impl SkillTrustLevel {
         }
     }
 
+    /// Inverse of [`severity`](Self::severity): reconstructs a level from its ordinal.
+    ///
+    /// Any value `>= 3` maps to [`Blocked`](Self::Blocked) — the most restrictive level —
+    /// so a corrupted or out-of-range stored ordinal fails closed rather than open.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zeph_common::SkillTrustLevel;
+    ///
+    /// assert_eq!(SkillTrustLevel::from_severity(0), SkillTrustLevel::Trusted);
+    /// assert_eq!(SkillTrustLevel::from_severity(3), SkillTrustLevel::Blocked);
+    /// assert_eq!(SkillTrustLevel::from_severity(255), SkillTrustLevel::Blocked);
+    /// ```
+    #[must_use]
+    pub const fn from_severity(v: u8) -> Self {
+        match v {
+            0 => Self::Trusted,
+            1 => Self::Verified,
+            2 => Self::Quarantined,
+            _ => Self::Blocked,
+        }
+    }
+
     /// Returns the string representation used for database storage.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -215,6 +239,27 @@ mod tests {
         assert_eq!(
             SkillTrustLevel::Verified.min_trust(SkillTrustLevel::Verified),
             SkillTrustLevel::Verified
+        );
+    }
+
+    #[test]
+    fn from_severity_round_trips_through_severity() {
+        for level in [
+            SkillTrustLevel::Trusted,
+            SkillTrustLevel::Verified,
+            SkillTrustLevel::Quarantined,
+            SkillTrustLevel::Blocked,
+        ] {
+            assert_eq!(SkillTrustLevel::from_severity(level.severity()), level);
+        }
+    }
+
+    #[test]
+    fn from_severity_out_of_range_fails_closed_to_blocked() {
+        assert_eq!(SkillTrustLevel::from_severity(4), SkillTrustLevel::Blocked);
+        assert_eq!(
+            SkillTrustLevel::from_severity(255),
+            SkillTrustLevel::Blocked
         );
     }
 }

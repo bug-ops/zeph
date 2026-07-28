@@ -2025,6 +2025,204 @@ fn resume_with_spawn_context_applies_trust_cap_to_executor() {
     mgr.cancel(&new_id).unwrap();
 }
 
+/// #6701 (RC-5, D3): when a `turn_trust_floor` handle is present, the cap must be applied via
+/// `TurnTrustFloor::fold` — a monotonic downgrade that can never restore trust above a floor
+/// already folded lower earlier in this same task (e.g. by an explicit `invoke_skill` of a
+/// Quarantined skill via `SkillTrustGate::resolve_body`) — instead of the executor's
+/// `set_effective_trust`, which would be a full overwrite.
+#[test]
+fn resume_with_spawn_context_folds_never_raises_an_already_lower_floor() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let agent_id = "d0d00001-0000-0000-0000-000000000000";
+    write_completed_meta(tmp.path(), agent_id, "bot");
+
+    let mut mgr = make_manager();
+    mgr.definitions.push(sample_def());
+    let cfg = make_cfg_with_dir(tmp.path());
+
+    let tracker = Arc::new(TrustTrackingExecutor {
+        recorded: Mutex::new(None),
+    });
+    let executor: Arc<dyn ErasedToolExecutor> = Arc::clone(&tracker) as _;
+
+    // Floor already folded down to Blocked earlier in this task — Blocked is MORE
+    // restrictive than the Quarantined cap below.
+    let floor = zeph_common::TurnTrustFloor::new(SkillTrustLevel::Blocked);
+    let ctx = SpawnContext {
+        max_trust_level: Some(SkillTrustLevel::Quarantined),
+        turn_trust_floor: Some(floor.clone()),
+        ..SpawnContext::default()
+    };
+    let (new_id, _) = rt
+        .block_on(mgr.resume(
+            "d0d00001",
+            "continue",
+            mock_provider(vec!["done"]),
+            executor,
+            None,
+            &cfg,
+            Some(&ctx),
+        ))
+        .unwrap();
+
+    assert_eq!(
+        floor.get(),
+        SkillTrustLevel::Blocked,
+        "fold(cap) must never restore trust above a floor already folded lower this task"
+    );
+    assert_eq!(
+        *tracker.recorded.lock().unwrap(),
+        None,
+        "when turn_trust_floor is wired, the fold happens directly on the shared cell — the \
+         executor's own set_effective_trust must not be called at all"
+    );
+
+    let _guard = rt.enter();
+    mgr.cancel(&new_id).unwrap();
+}
+
+/// Companion to the above: a floor that starts ABOVE the cap must still be lowered by fold.
+#[test]
+fn resume_with_spawn_context_folds_lowers_a_higher_floor() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let agent_id = "d0d00002-0000-0000-0000-000000000000";
+    write_completed_meta(tmp.path(), agent_id, "bot");
+
+    let mut mgr = make_manager();
+    mgr.definitions.push(sample_def());
+    let cfg = make_cfg_with_dir(tmp.path());
+
+    let executor: Arc<dyn ErasedToolExecutor> = Arc::new(TrustTrackingExecutor {
+        recorded: Mutex::new(None),
+    });
+
+    let floor = zeph_common::TurnTrustFloor::new(SkillTrustLevel::Trusted);
+    let ctx = SpawnContext {
+        max_trust_level: Some(SkillTrustLevel::Quarantined),
+        turn_trust_floor: Some(floor.clone()),
+        ..SpawnContext::default()
+    };
+    let (new_id, _) = rt
+        .block_on(mgr.resume(
+            "d0d00002",
+            "continue",
+            mock_provider(vec!["done"]),
+            executor,
+            None,
+            &cfg,
+            Some(&ctx),
+        ))
+        .unwrap();
+
+    assert_eq!(
+        floor.get(),
+        SkillTrustLevel::Quarantined,
+        "fold(cap) must lower a floor that started above (more trusted than) the cap"
+    );
+
+    let _guard = rt.enter();
+    mgr.cancel(&new_id).unwrap();
+}
+
+/// #6701 (S4): the resume-path fold tests above only exercise the resume/rebuild call site
+/// (`spawn.rs`'s `resume`). The fresh-spawn call site (`spawn.rs`'s `spawn`, applied right after
+/// `build_filtered_executor`) has its own identical `fold`-vs-`set` branch and needs its own
+/// coverage — a regression that broke only the fresh-spawn site would otherwise pass silently.
+#[test]
+fn spawn_with_context_folds_never_raises_an_already_lower_floor() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    let mut mgr = make_manager();
+    mgr.definitions.push(sample_def());
+
+    let tracker = Arc::new(TrustTrackingExecutor {
+        recorded: Mutex::new(None),
+    });
+    let executor: Arc<dyn ErasedToolExecutor> = Arc::clone(&tracker) as _;
+
+    // Floor already folded down to Blocked earlier in this task — Blocked is MORE
+    // restrictive than the Quarantined cap below.
+    let floor = zeph_common::TurnTrustFloor::new(SkillTrustLevel::Blocked);
+    let ctx = SpawnContext {
+        max_trust_level: Some(SkillTrustLevel::Quarantined),
+        turn_trust_floor: Some(floor.clone()),
+        origin: super::SpawnOrigin::Explicit,
+        ..SpawnContext::default()
+    };
+    let new_id = rt
+        .block_on(mgr.spawn(
+            "bot",
+            "go",
+            mock_provider(vec!["done"]),
+            executor,
+            None,
+            &SubAgentConfig::default(),
+            ctx,
+        ))
+        .unwrap();
+
+    assert_eq!(
+        floor.get(),
+        SkillTrustLevel::Blocked,
+        "fresh spawn's fold(cap) must never restore trust above a floor already folded lower"
+    );
+    assert_eq!(
+        *tracker.recorded.lock().unwrap(),
+        None,
+        "when turn_trust_floor is wired, fresh spawn must fold directly on the shared cell — \
+         the executor's own set_effective_trust must not be called at all"
+    );
+
+    let _guard = rt.enter();
+    mgr.cancel(&new_id).unwrap();
+}
+
+/// Companion to the above: a floor that starts ABOVE the cap must still be lowered by fold, at
+/// the fresh-spawn call site.
+#[test]
+fn spawn_with_context_folds_lowers_a_higher_floor() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    let mut mgr = make_manager();
+    mgr.definitions.push(sample_def());
+
+    let executor: Arc<dyn ErasedToolExecutor> = Arc::new(TrustTrackingExecutor {
+        recorded: Mutex::new(None),
+    });
+
+    let floor = zeph_common::TurnTrustFloor::new(SkillTrustLevel::Trusted);
+    let ctx = SpawnContext {
+        max_trust_level: Some(SkillTrustLevel::Quarantined),
+        turn_trust_floor: Some(floor.clone()),
+        origin: super::SpawnOrigin::Explicit,
+        ..SpawnContext::default()
+    };
+    let new_id = rt
+        .block_on(mgr.spawn(
+            "bot",
+            "go",
+            mock_provider(vec!["done"]),
+            executor,
+            None,
+            &SubAgentConfig::default(),
+            ctx,
+        ))
+        .unwrap();
+
+    assert_eq!(
+        floor.get(),
+        SkillTrustLevel::Quarantined,
+        "fresh spawn's fold(cap) must lower a floor that started above the cap"
+    );
+
+    let _guard = rt.enter();
+    mgr.cancel(&new_id).unwrap();
+}
+
 #[test]
 fn resume_with_spawn_context_wires_debug_dump_sink_to_resumed_loop() {
     // Regression test for #6391 (S1 follow-up): the production `/agent resume` call site

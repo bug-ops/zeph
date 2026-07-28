@@ -150,6 +150,23 @@ pub struct SpawnContext {
     /// `None` means no cap is imposed by the parent (the sub-agent's own definition
     /// determines its trust level).
     pub max_trust_level: Option<SkillTrustLevel>,
+    /// Shared per-turn trust floor (#6701) the cap in [`max_trust_level`][Self::max_trust_level]
+    /// is applied to.
+    ///
+    /// When `Some`, [`SubAgentManager::spawn`]/resume applies the cap via
+    /// [`zeph_common::TurnTrustFloor::fold`] on this handle directly — a monotonic downgrade
+    /// that can never raise trust — instead of calling `set_effective_trust` on the built
+    /// executor, which would be a full overwrite and could restore trust above a floor
+    /// already lowered earlier in the same task (e.g. by an explicit `invoke_skill` of a
+    /// Quarantined skill). `None` falls back to the pre-#6701 `set_effective_trust` behavior
+    /// (e.g. call sites/tests that construct an executor with no shared floor to fold).
+    ///
+    /// # Caller responsibility for nested spawns
+    ///
+    /// Like [`max_trust_level`][Self::max_trust_level], this field does **not** propagate
+    /// automatically — a sub-agent that spawns its own children must copy this field from
+    /// its received `SpawnContext` into the child's `SpawnContext`.
+    pub turn_trust_floor: Option<zeph_common::TurnTrustFloor>,
     /// Tool names that this sub-agent is allowed to invoke, inherited from the parent.
     ///
     /// When `Some(set)`, the effective tool allowlist for the spawned agent is the

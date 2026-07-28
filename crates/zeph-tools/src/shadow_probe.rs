@@ -38,9 +38,7 @@ use tracing::{Instrument as _, info_span};
 use crate::SkillTrustLevel;
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 use crate::registry::ToolDef;
-use crate::trust_gate::{
-    is_quarantine_denied, quarantine_denial_message, trust_to_u8, u8_to_trust,
-};
+use crate::trust_gate::{is_quarantine_denied, quarantine_denial_message};
 
 /// Probe interface required by `ShadowProbeExecutor`.
 ///
@@ -147,9 +145,7 @@ impl<T: ToolExecutor> ShadowProbeExecutor<T> {
             probe,
             turn_number,
             risk_level,
-            effective_trust: std::sync::atomic::AtomicU8::new(trust_to_u8(
-                SkillTrustLevel::Trusted,
-            )),
+            effective_trust: std::sync::atomic::AtomicU8::new(SkillTrustLevel::Trusted.severity()),
         }
     }
 
@@ -162,7 +158,7 @@ impl<T: ToolExecutor> ShadowProbeExecutor<T> {
     }
 
     fn effective_trust(&self) -> SkillTrustLevel {
-        u8_to_trust(
+        SkillTrustLevel::from_severity(
             self.effective_trust
                 .load(std::sync::atomic::Ordering::Relaxed),
         )
@@ -370,7 +366,7 @@ impl<T: ToolExecutor> ToolExecutor for ShadowProbeExecutor<T> {
 
     fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
         self.effective_trust
-            .store(trust_to_u8(level), std::sync::atomic::Ordering::Relaxed);
+            .store(level.severity(), std::sync::atomic::Ordering::Relaxed);
         self.inner.set_effective_trust(level);
     }
 

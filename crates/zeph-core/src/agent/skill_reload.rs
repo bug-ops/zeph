@@ -244,6 +244,7 @@ impl<C: Channel> Agent<C> {
         }
     }
     #[tracing::instrument(name = "core.agent.reload_skills", skip_all, level = "debug")]
+    #[allow(clippy::too_many_lines)] // gate check + matcher rebuild + trust refresh + catalog prompt: one cohesive reload pipeline
     pub(super) async fn reload_skills(&mut self) {
         // #6031: single DRY choke point for the skill-hot-reload gate — covers every entry
         // point (runner/daemon/acp/serve) at once, instead of patching each `SkillWatcher`
@@ -348,7 +349,9 @@ impl<C: Channel> Agent<C> {
                 resources: zeph_skills::resource::SkillResources::default(),
             })
             .collect();
-        let skills_prompt = zeph_skills::prompt::format_skills_catalog(&catalog_skills);
+        let trust_levels = crate::skill_invoker::snapshot_map_to_trust_levels(&trust_map);
+        let skills_prompt =
+            zeph_skills::prompt::format_skills_catalog(&catalog_skills, &trust_levels);
         self.services
             .skill
             .last_skills_prompt

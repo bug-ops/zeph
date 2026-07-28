@@ -386,7 +386,7 @@ pub(crate) async fn assemble_serve_deps(
                 validation_shell,
                 zeph_tools::DynExecutor(Arc::clone(&tool_executor)),
             ));
-        let (composed_for_validation, _trust_snapshot) =
+        let (composed_for_validation, _trust_snapshot, _turn_trust_floor) =
             crate::serve::agent_factory::compose_session_tool_tree(
                 tool_executor_for_validation,
                 &core.registry,

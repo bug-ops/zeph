@@ -312,7 +312,12 @@ impl<C: Channel> Agent<C> {
                 })
                 .collect()
         };
-        let skills_prompt = format_skills_catalog(&catalog_skills);
+        // No trust data has been loaded from the store yet at construction time — every skill
+        // resolves to `SkillTrustLevel::MISSING_ENTRY_FALLBACK` (Trusted), so no catalog entry
+        // gets a trust attribute here; the first turn's `reload_skills`/`apply_skill_trust_and_gating`
+        // refreshes this with real data.
+        let skills_prompt =
+            format_skills_catalog(&catalog_skills, &std::collections::HashMap::new());
         let system_prompt = build_system_prompt(&skills_prompt, None);
         tracing::debug!(len = system_prompt.len(), "initial system prompt built");
         tracing::trace!(prompt = %system_prompt, "full system prompt");

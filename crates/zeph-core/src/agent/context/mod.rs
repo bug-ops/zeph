@@ -5,6 +5,10 @@ mod assembly;
 mod summarization;
 
 pub(super) use crate::text::truncate_to_chars as truncate_chars;
+/// Re-exported so `agent::subagent_commands::parent_effective_trust_level`'s no-floor-wired
+/// fallback path can apply the same D4 `skill_fallback_mode` guard as the parent's own gate
+/// (#6701, S1), instead of duplicating the fold logic.
+pub(super) use assembly::compute_effective_trust;
 #[cfg(test)]
 pub(super) use zeph_agent_context::state::CompactionOutcome;
 #[cfg(test)]

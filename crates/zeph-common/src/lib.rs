@@ -44,6 +44,7 @@ pub mod text;
 pub mod timestamp;
 pub mod tool_classification;
 pub mod trust_level;
+pub mod turn_trust_floor;
 pub mod types;
 
 /// Prefix embedded in tool output bodies when the full output was stored externally.
@@ -65,6 +66,7 @@ pub use task_supervisor::{
 };
 pub use text::format_tokens;
 pub use trust_level::SkillTrustLevel;
+pub use turn_trust_floor::TurnTrustFloor;
 pub use types::{
     ProviderName, SessionId, SessionIdError, SkillName, StopHint, ToolDefinition, ToolName,
 };

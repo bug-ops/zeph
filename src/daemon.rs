@@ -398,6 +398,7 @@ where
             std::collections::HashMap<String, zeph_core::skill_invoker::SkillTrustSnapshot>,
         >,
     >,
+    turn_trust_floor: zeph_common::TurnTrustFloor,
     /// Same `Arc` used to build the `get_current_time` tool executor (#6361) — shared so the
     /// tool and the time-reminder injection agree on "now".
     clock: std::sync::Arc<dyn zeph_common::ClockSource>,
@@ -436,6 +437,7 @@ where
     )
     .with_trust_config(config.skills.trust.clone())
     .with_trust_snapshot(deps.trust_snapshot)
+    .with_turn_trust_floor(deps.turn_trust_floor)
     .with_memory(
         deps.memory,
         deps.conversation_id,
@@ -856,7 +858,7 @@ pub(crate) async fn run_daemon(
         std::sync::Arc::new(memory.sqlite().clone()),
     )
     .with_conversation(conversation_id.0);
-    let (skill_loader_executor, skill_invoke_executor, trust_snapshot) =
+    let (skill_loader_executor, skill_invoke_executor, trust_snapshot, turn_trust_floor) =
         agent_setup::build_skill_executors(&registry);
     // Hoisted out of the composite-executor block below (rather than resolved twice) so it can
     // also be passed to `apply_code_rag_retriever` once the agent exists (#6022: previously the
@@ -899,8 +901,11 @@ pub(crate) async fn run_daemon(
     // memory + overflow) behind one outermost TrustGateExecutor, matching runner.rs and ACP
     // (`src/acp.rs`). Previously only the base chain was gated here, so a Quarantined skill
     // could still reach `memory_save` and any MCP-sourced tool.
-    let (trust_gated, mcp_ids_handle) =
-        agent_setup::apply_common_tool_gating(inner_executor, &permission_policy);
+    let (trust_gated, mcp_ids_handle) = agent_setup::apply_common_tool_gating(
+        inner_executor,
+        &permission_policy,
+        turn_trust_floor.clone(),
+    );
     agent_setup::register_mcp_tool_ids(&mcp_ids_handle, &mcp_tools);
     // #5958: shared trajectory risk slot — written by begin_turn(), read by PolicyGateExecutor.
     // Mirrors src/runner.rs; previously the daemon never created this, so TrajectorySentinel
@@ -1136,6 +1141,7 @@ pub(crate) async fn run_daemon(
         mcp_shared_tools,
         provider_config_snapshot,
         trust_snapshot,
+        turn_trust_floor,
         clock,
     };
     let agent = Box::pin(build_daemon_agent(deps, loopback_channel)).await;
@@ -1554,6 +1560,7 @@ mod tests {
             trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            turn_trust_floor: zeph_common::TurnTrustFloor::default(),
             clock: std::sync::Arc::new(zeph_common::SystemClock),
         };
 
@@ -1646,6 +1653,7 @@ mod tests {
             trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            turn_trust_floor: zeph_common::TurnTrustFloor::default(),
             clock: std::sync::Arc::new(zeph_common::SystemClock),
         };
 
@@ -1727,6 +1735,7 @@ mod tests {
             trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            turn_trust_floor: zeph_common::TurnTrustFloor::default(),
             clock: std::sync::Arc::new(zeph_common::SystemClock),
         };
 
@@ -2089,6 +2098,7 @@ mod tests {
         let (gated, mcp_ids_handle) = agent_setup::apply_common_tool_gating(
             inner_executor,
             &zeph_tools::PermissionPolicy::default(),
+            zeph_common::TurnTrustFloor::default(),
         );
         agent_setup::register_mcp_tool_ids(&mcp_ids_handle, std::slice::from_ref(&mcp_tool));
         gated.set_effective_trust(zeph_common::SkillTrustLevel::Quarantined);
@@ -2236,6 +2246,7 @@ mod tests {
         let (trust_gated, mcp_ids_handle) = agent_setup::apply_common_tool_gating(
             inner_executor,
             &zeph_tools::PermissionPolicy::default(),
+            zeph_common::TurnTrustFloor::default(),
         );
         agent_setup::register_mcp_tool_ids(&mcp_ids_handle, std::slice::from_ref(&mcp_tool));
         zeph_tools::ToolExecutor::set_effective_trust(
@@ -2479,6 +2490,7 @@ mod tests {
         let (trust_gated, _mcp_ids_handle) = agent_setup::apply_common_tool_gating(
             zeph_tools::DynExecutor(std::sync::Arc::new(base_executor)),
             &zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full),
+            zeph_common::TurnTrustFloor::default(),
         );
 
         let policy_config = zeph_tools::PolicyConfig {
@@ -2627,7 +2639,7 @@ mod tests {
 
         let registry =
             std::sync::Arc::new(RwLock::new(zeph_skills::registry::SkillRegistry::empty()));
-        let (skill_loader_executor, skill_invoke_executor, _trust_snapshot) =
+        let (skill_loader_executor, skill_invoke_executor, _trust_snapshot, _turn_trust_floor) =
             agent_setup::build_skill_executors(&registry);
 
         let composite = zeph_tools::CompositeExecutor::new(

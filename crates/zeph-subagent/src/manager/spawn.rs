@@ -762,7 +762,15 @@ impl SubAgentManager {
         );
 
         if let Some(cap) = ctx.max_trust_level {
-            executor.set_effective_trust(cap);
+            // #6701 (RC-5): fold, never set — a plain set_effective_trust(cap) here would
+            // overwrite any downgrade already applied to the shared trust floor (e.g. by an
+            // earlier invoke_skill of a Quarantined skill in this same task), restoring trust
+            // above where it should sit. fold(cap) can only ever lower it.
+            if let Some(floor) = &ctx.turn_trust_floor {
+                floor.fold(cap);
+            } else {
+                executor.set_effective_trust(cap);
+            }
         }
 
         let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);
@@ -1240,7 +1248,15 @@ impl SubAgentManager {
         if let Some(ctx) = spawn_context
             && let Some(cap) = ctx.max_trust_level
         {
-            executor.set_effective_trust(cap);
+            // #6701 (RC-5): fold, never set — see the identical rationale at the fresh-spawn
+            // call site above. This resume/rebuild path is exactly the "own turn rebuild" case
+            // the fix targets: a plain set here would restore trust above a floor already
+            // folded down earlier in the same task.
+            if let Some(floor) = &ctx.turn_trust_floor {
+                floor.fold(cap);
+            } else {
+                executor.set_effective_trust(cap);
+            }
         }
 
         let (secret_request_tx, pending_secret_rx) = mpsc::channel::<SecretRequest>(4);

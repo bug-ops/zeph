@@ -1576,21 +1576,33 @@ pub(crate) fn build_quality_pipeline(
 /// `apply_skill_trust_and_gating` and read lock-free by both executors — callers must also
 /// thread it into `.with_trust_snapshot(...)` on the agent builder (the `SkillState` writer) so
 /// all three holders share the same instance.
+///
+/// Also creates the shared per-turn [`zeph_common::TurnTrustFloor`] (#6701) and wires it into
+/// both executors via `with_turn_trust_floor`, so an explicit `invoke_skill`/`load_skill` of a
+/// Quarantined body folds the turn's trust down (RC-3). The floor is created here (rather than
+/// inside `apply_common_tool_gating`) because this function's outputs feed into the composite
+/// tree `apply_common_tool_gating` gates — callers MUST pass the returned floor into that call
+/// so `TrustGateExecutor` shares the identical cell.
+#[allow(clippy::type_complexity)] // 4-tuple of pre-existing types (executors + shared snapshot + trust floor); a type alias would only rename these once, at one call site
 pub(crate) fn build_skill_executors(
     registry: &Arc<RwLock<zeph_skills::registry::SkillRegistry>>,
 ) -> (
     zeph_core::SkillLoaderExecutor,
     zeph_core::SkillInvokeExecutor,
     Arc<RwLock<std::collections::HashMap<String, zeph_core::SkillTrustSnapshot>>>,
+    zeph_common::TurnTrustFloor,
 ) {
     let trust_snapshot: Arc<
         RwLock<std::collections::HashMap<String, zeph_core::SkillTrustSnapshot>>,
     > = Arc::new(RwLock::new(std::collections::HashMap::new()));
+    let turn_trust_floor = zeph_common::TurnTrustFloor::default();
     let loader =
-        zeph_core::SkillLoaderExecutor::new(Arc::clone(registry), Arc::clone(&trust_snapshot));
+        zeph_core::SkillLoaderExecutor::new(Arc::clone(registry), Arc::clone(&trust_snapshot))
+            .with_turn_trust_floor(turn_trust_floor.clone());
     let invoker =
-        zeph_core::SkillInvokeExecutor::new(Arc::clone(registry), Arc::clone(&trust_snapshot));
-    (loader, invoker, trust_snapshot)
+        zeph_core::SkillInvokeExecutor::new(Arc::clone(registry), Arc::clone(&trust_snapshot))
+            .with_turn_trust_floor(turn_trust_floor.clone());
+    (loader, invoker, trust_snapshot, turn_trust_floor)
 }
 
 /// Wires a [`zeph_core::debug_dump::DebugDumper`] into `agent` for `dir`/`format`, shared by
@@ -2166,11 +2178,19 @@ pub(crate) type McpToolIdsHandle = Arc<RwLock<std::collections::HashSet<String>>
 ///
 /// Returns the gated executor plus the MCP tool-id handle the caller must populate (via
 /// [`register_mcp_tool_ids`]) once the MCP tool list is known.
+///
+/// `turn_trust_floor` seeds the gate's per-turn trust floor (#6701). Pass the same handle
+/// returned by [`build_skill_executors`] so `TrustGateExecutor` and `SkillTrustGate` (via
+/// `SkillLoaderExecutor`/`SkillInvokeExecutor`) share the identical cell — a call site with
+/// no skill-executor counterpart to share with may pass a fresh
+/// `zeph_common::TurnTrustFloor::default()`.
 pub(crate) fn apply_common_tool_gating(
     inner: zeph_tools::DynExecutor,
     permission_policy: &zeph_tools::PermissionPolicy,
+    turn_trust_floor: zeph_common::TurnTrustFloor,
 ) -> (zeph_tools::DynExecutor, McpToolIdsHandle) {
-    let gated = zeph_tools::TrustGateExecutor::new(inner, permission_policy.clone());
+    let gated = zeph_tools::TrustGateExecutor::new(inner, permission_policy.clone())
+        .with_trust_floor(turn_trust_floor);
     let handle = gated.mcp_tool_ids_handle();
     (zeph_tools::DynExecutor(Arc::new(gated)), handle)
 }
@@ -4303,6 +4323,7 @@ mod tests {
         let (gated, mcp_handle) = apply_common_tool_gating(
             zeph_tools::DynExecutor(inner),
             &zeph_tools::PermissionPolicy::default(),
+            zeph_common::TurnTrustFloor::default(),
         );
         register_mcp_tool_ids(&mcp_handle, std::slice::from_ref(&mcp_tool));
         gated.set_effective_trust(zeph_common::SkillTrustLevel::Quarantined);
@@ -4347,7 +4368,11 @@ mod tests {
             ));
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
-        let (gated, mcp_handle) = apply_common_tool_gating(zeph_tools::DynExecutor(inner), &policy);
+        let (gated, mcp_handle) = apply_common_tool_gating(
+            zeph_tools::DynExecutor(inner),
+            &policy,
+            zeph_common::TurnTrustFloor::default(),
+        );
         register_mcp_tool_ids(&mcp_handle, std::slice::from_ref(&mcp_tool));
         gated.set_effective_trust(zeph_common::SkillTrustLevel::Trusted);
 
@@ -4410,8 +4435,11 @@ mod tests {
         let inner: Arc<dyn zeph_tools::ErasedToolExecutor> = Arc::new(NoopExec);
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
-        let (trust_gated, _handle) =
-            apply_common_tool_gating(zeph_tools::DynExecutor(inner), &policy);
+        let (trust_gated, _handle) = apply_common_tool_gating(
+            zeph_tools::DynExecutor(inner),
+            &policy,
+            zeph_common::TurnTrustFloor::default(),
+        );
         let executor =
             apply_policy_gate_chain(trust_gated, &PolicyGatePieces::default(), None, None);
         let result = executor.execute_tool_call(&make_tool_call("read")).await;
@@ -4471,8 +4499,11 @@ mod tests {
         let inner: Arc<dyn zeph_tools::ErasedToolExecutor> = Arc::new(NoopExec);
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
-        let (trust_gated, _handle) =
-            apply_common_tool_gating(zeph_tools::DynExecutor(inner), &policy);
+        let (trust_gated, _handle) = apply_common_tool_gating(
+            zeph_tools::DynExecutor(inner),
+            &policy,
+            zeph_common::TurnTrustFloor::default(),
+        );
         let executor = apply_policy_gate_chain(trust_gated, &pieces, Some(&audit_logger), None);
 
         let result = executor.execute_tool_call(&make_tool_call("shell")).await;

@@ -51,6 +51,17 @@ pub struct SkillTrustSnapshot {
     pub blake3_hash: String,
 }
 
+/// Projects a [`SkillTrustSnapshot`] map down to just [`SkillTrustLevel`] — used by prompt
+/// formatting functions (`format_skills_prompt`, `format_skills_catalog`) that only need the
+/// level, not `requires_trust_check`/`blake3_hash`.
+pub(crate) fn snapshot_map_to_trust_levels(
+    map: &HashMap<String, SkillTrustSnapshot>,
+) -> HashMap<String, SkillTrustLevel> {
+    map.iter()
+        .map(|(k, v)| (k.clone(), v.trust_level))
+        .collect()
+}
+
 /// Parameters for the `invoke_skill` tool call.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct InvokeSkillParams {
@@ -85,6 +96,15 @@ impl SkillInvokeExecutor {
         Self {
             gate: SkillTrustGate::new(registry, trust_snapshot),
         }
+    }
+
+    /// Wires the shared per-turn trust floor (#6701) so an `invoke_skill` of a Quarantined
+    /// body folds the turn's trust down for its remainder — see
+    /// [`SkillTrustGate::with_turn_trust_floor`].
+    #[must_use]
+    pub fn with_turn_trust_floor(mut self, turn_trust_floor: zeph_common::TurnTrustFloor) -> Self {
+        self.gate = self.gate.with_turn_trust_floor(turn_trust_floor);
+        self
     }
 }
 

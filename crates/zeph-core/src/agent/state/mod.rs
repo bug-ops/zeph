@@ -89,6 +89,17 @@ pub(crate) struct SkillState {
     /// `SkillInvokeExecutor` can perform per-invocation re-hash when the flag is set.
     pub(crate) trust_snapshot:
         Arc<RwLock<HashMap<String, crate::skill_invoker::SkillTrustSnapshot>>>,
+    /// Shared per-turn trust floor (#6701), the same cell the agent's `TrustGateExecutor`
+    /// reads. `None` until wired via `Agent::with_turn_trust_floor` — callers that never wire
+    /// one (e.g. some test fixtures) get pre-#6701 behavior at spawn time: a subagent trust
+    /// cap falls back to `set_effective_trust` instead of `TurnTrustFloor::fold`.
+    pub(crate) turn_trust_floor: Option<zeph_common::TurnTrustFloor>,
+    /// Whether this turn's skill activation ran in retrieval-fallback mode (#6701, S1) —
+    /// mirrors the `skill_fallback_mode` local computed by `match_and_rank_skills` each turn.
+    /// Persisted so `subagent_commands::parent_effective_trust_level`'s no-floor-wired fallback
+    /// path can apply the same D4 guard `compute_effective_trust` applies to the parent's own
+    /// gate, instead of recomputing a fold blind to fallback mode.
+    pub(crate) skill_fallback_mode: bool,
     pub(crate) skill_paths: Vec<PathBuf>,
     pub(crate) managed_dir: Option<PathBuf>,
     pub(crate) trust_config: crate::config::TrustConfig,
@@ -1571,6 +1582,8 @@ impl SkillState {
         Self {
             registry,
             trust_snapshot: Arc::new(RwLock::new(HashMap::new())),
+            turn_trust_floor: None,
+            skill_fallback_mode: false,
             skill_paths: Vec::new(),
             managed_dir: None,
             trust_config: crate::config::TrustConfig::default(),

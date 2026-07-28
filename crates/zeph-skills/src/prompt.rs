@@ -541,17 +541,39 @@ pub fn format_skills_prompt_compact(skills: &[Skill]) -> String {
     out
 }
 
+/// Formats the `<other_skills>` catalog block: name + description only, no bodies.
+///
+/// `trust_levels` annotates each entry with `trust="quarantined"`/`trust="blocked"` when the
+/// skill's resolved trust is not `Trusted`/`Verified` (#6701, D1) — this is how a skill dropped
+/// from `active_skill_names` by the trust-aware activation filter remains discoverable and
+/// nameable to the operator (`zeph skill trust <name> trusted`) despite never being activated.
+/// A skill absent from `trust_levels`, or resolved to `Trusted`/`Verified`, gets no attribute.
+///
+/// The `trust="blocked"` case is defensive: in the `zeph-core` agent turn path, a `Blocked`
+/// skill is already excluded from `skills` (and from `trust_levels`' effective domain) before
+/// this function is called — per spec, `Blocked` is excluded from both catalog and actives,
+/// unlike `Quarantined`, which D1 still surfaces here. This function itself makes no such
+/// assumption about its caller, so the branch stays live for any consumer that passes an
+/// unfiltered `skills`/`trust_levels` pair (e.g. a future CLI preview command).
 #[must_use]
-pub fn format_skills_catalog(skills: &[Skill]) -> String {
+pub fn format_skills_catalog<S: std::hash::BuildHasher>(
+    skills: &[Skill],
+    trust_levels: &HashMap<String, SkillTrustLevel, S>,
+) -> String {
     if skills.is_empty() {
         return String::new();
     }
 
     let mut out = String::from("<other_skills>\n");
     for skill in skills {
+        let trust_attr = match trust_levels.get(skill.name()) {
+            Some(SkillTrustLevel::Quarantined) => " trust=\"quarantined\"",
+            Some(SkillTrustLevel::Blocked) => " trust=\"blocked\"",
+            _ => "",
+        };
         let _ = writeln!(
             out,
-            "  <skill name=\"{}\" description=\"{}\" />",
+            "  <skill name=\"{}\" description=\"{}\"{trust_attr} />",
             xml_escape(skill.name()),
             xml_escape(skill.description()),
         );
@@ -868,18 +890,59 @@ mod tests {
     #[test]
     fn format_skills_catalog_empty() {
         let empty: &[Skill] = &[];
-        assert_eq!(format_skills_catalog(empty), "");
+        assert_eq!(format_skills_catalog(empty, &HashMap::new()), "");
     }
 
     #[test]
     fn format_skills_catalog_produces_other_skills_tag() {
         let skills = vec![make_skill("test", "A test skill.", "body")];
-        let output = format_skills_catalog(&skills);
+        let output = format_skills_catalog(&skills, &HashMap::new());
         assert!(output.starts_with("<other_skills>"));
         assert!(output.ends_with("</other_skills>"));
         assert!(output.contains("name=\"test\""));
         assert!(output.contains("description=\"A test skill.\""));
         assert!(!output.contains("body"));
+    }
+
+    /// #6701 (D1): a Quarantined/Blocked skill dropped from `active_skill_names` by the
+    /// trust-aware activation filter must still surface in the catalog, annotated so the
+    /// operator/model can see it exists and how to promote it.
+    #[test]
+    fn format_skills_catalog_annotates_quarantined_and_blocked_trust() {
+        let skills = vec![
+            make_skill("q-skill", "Quarantined one.", "body"),
+            make_skill("b-skill", "Blocked one.", "body"),
+            make_skill("t-skill", "Trusted one.", "body"),
+        ];
+        let mut trust_levels = HashMap::new();
+        trust_levels.insert("q-skill".to_string(), SkillTrustLevel::Quarantined);
+        trust_levels.insert("b-skill".to_string(), SkillTrustLevel::Blocked);
+        trust_levels.insert("t-skill".to_string(), SkillTrustLevel::Trusted);
+
+        let output = format_skills_catalog(&skills, &trust_levels);
+        assert!(
+            output.contains(
+                "name=\"q-skill\" description=\"Quarantined one.\" trust=\"quarantined\" />"
+            ),
+            "expected trust=\"quarantined\" attribute, got:\n{output}"
+        );
+        assert!(
+            output.contains("name=\"b-skill\" description=\"Blocked one.\" trust=\"blocked\" />"),
+            "expected trust=\"blocked\" attribute, got:\n{output}"
+        );
+        assert!(
+            output.contains("name=\"t-skill\" description=\"Trusted one.\" />"),
+            "Trusted skill must get no trust attribute, got:\n{output}"
+        );
+    }
+
+    /// A skill absent from `trust_levels` (never trust-classified) must get no attribute,
+    /// matching `SkillTrustLevel::MISSING_ENTRY_FALLBACK` (Trusted).
+    #[test]
+    fn format_skills_catalog_no_attribute_for_unclassified_skill() {
+        let skills = vec![make_skill("unknown", "desc", "body")];
+        let output = format_skills_catalog(&skills, &HashMap::new());
+        assert!(!output.contains("trust="));
     }
 
     #[test]
@@ -961,7 +1024,7 @@ mod tests {
             "compact: description not escaped"
         );
 
-        let catalog = format_skills_catalog(&skills);
+        let catalog = format_skills_catalog(&skills, &HashMap::new());
         assert!(
             catalog.contains("a&amp;b&lt;c&gt;d&quot;e"),
             "catalog: name not escaped"

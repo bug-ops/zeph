@@ -79,6 +79,15 @@ impl SkillLoaderExecutor {
             gate: SkillTrustGate::new(registry, trust_snapshot),
         }
     }
+
+    /// Wires the shared per-turn trust floor (#6701) so a `load_skill` preview of a
+    /// Quarantined body folds the turn's trust down for its remainder — see
+    /// [`SkillTrustGate::with_turn_trust_floor`].
+    #[must_use]
+    pub fn with_turn_trust_floor(mut self, turn_trust_floor: zeph_common::TurnTrustFloor) -> Self {
+        self.gate = self.gate.with_turn_trust_floor(turn_trust_floor);
+        self
+    }
 }
 
 impl ToolExecutor for SkillLoaderExecutor {

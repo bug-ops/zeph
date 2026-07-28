@@ -215,7 +215,7 @@ pub(crate) async fn build_agent_factory(
             zeph_tools::DynExecutor(deps.tool_executor),
         ));
 
-    let (composed_base, trust_snapshot) = compose_session_tool_tree(
+    let (composed_base, trust_snapshot, turn_trust_floor) = compose_session_tool_tree(
         session_tool_executor,
         &deps.registry,
         &deps.memory,
@@ -236,6 +236,7 @@ pub(crate) async fn build_agent_factory(
         &deps.policy_gate_pieces,
         deps.audit_logger.as_ref(),
         Some((&trajectory_risk_slot, &trajectory_signal_queue)),
+        turn_trust_floor.clone(),
     );
 
     let build_agent = move |channel| {
@@ -329,6 +330,12 @@ pub(crate) async fn build_agent_factory(
         // matching src/acp.rs/src/daemon.rs — without this, SkillLoaderExecutor/
         // SkillInvokeExecutor's trust bookkeeping would never reach the Agent that reads it.
         .with_trust_snapshot(trust_snapshot)
+        // #6701 (S2): wire the same turn trust floor gate_serve_session_executor already
+        // installed into TrustGateExecutor above — matching src/acp.rs/src/daemon.rs/
+        // src/runner.rs. Without this, services.skill.turn_trust_floor stays None for every
+        // serve session, so a spawned subagent's SpawnContext.turn_trust_floor would be None
+        // too, falling back to the pre-#6701 set_effective_trust behavior at spawn time.
+        .with_turn_trust_floor(turn_trust_floor)
         .with_rl_routing(
             deps.rl_routing_enabled,
             deps.rl_learning_rate,
@@ -490,6 +497,7 @@ fn gate_serve_session_executor(
         &zeph_tools::TrajectoryRiskSlot,
         &zeph_tools::RiskSignalQueue,
     )>,
+    turn_trust_floor: zeph_common::TurnTrustFloor,
 ) -> (
     zeph_tools::DynExecutor,
     crate::agent_setup::McpToolIdsHandle,
@@ -497,6 +505,7 @@ fn gate_serve_session_executor(
     let (trust_gated, mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
         zeph_tools::DynExecutor(tool_executor),
         permission_policy,
+        turn_trust_floor,
     );
     // R7: serve has no MCP-provided tools yet (deps.rs's "Known gap") — this empty-slice call
     // is the exact seam a future MCP-wiring PR must populate with the connected tool list.
@@ -618,6 +627,7 @@ pub(super) fn compose_session_tool_tree(
 ) -> (
     Arc<dyn ErasedToolExecutor>,
     Arc<parking_lot::RwLock<std::collections::HashMap<String, zeph_core::SkillTrustSnapshot>>>,
+    zeph_common::TurnTrustFloor,
 ) {
     let memory_executor = {
         let mut e = zeph_core::memory_tools::MemoryToolExecutor::with_validator(
@@ -637,7 +647,7 @@ pub(super) fn compose_session_tool_tree(
     let overflow_executor =
         zeph_core::overflow_tools::OverflowToolExecutor::new(Arc::new(memory.sqlite().clone()))
             .with_conversation(conversation_id.0);
-    let (skill_loader_executor, skill_invoke_executor, trust_snapshot) =
+    let (skill_loader_executor, skill_invoke_executor, trust_snapshot, turn_trust_floor) =
         crate::agent_setup::build_skill_executors(registry);
     let composed: Arc<dyn ErasedToolExecutor> = Arc::new(zeph_tools::CompositeExecutor::new(
         skill_loader_executor,
@@ -652,7 +662,7 @@ pub(super) fn compose_session_tool_tree(
             ),
         ),
     ));
-    (composed, trust_snapshot)
+    (composed, trust_snapshot, turn_trust_floor)
 }
 
 /// Opens (and replays, per D-10) the durable event log for `session_id`, wraps it in a
@@ -2056,6 +2066,7 @@ mod tests {
             &policy_gate_pieces,
             None,
             Some((&trajectory_risk_slot, &trajectory_signal_queue)),
+            zeph_common::TurnTrustFloor::default(),
         );
 
         let denied = gated
@@ -2148,6 +2159,7 @@ mod tests {
             &crate::agent_setup::PolicyGatePieces::default(),
             None,
             None,
+            zeph_common::TurnTrustFloor::default(),
         );
         (gated, trajectory_signal_queue)
     }

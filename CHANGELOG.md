@@ -175,6 +175,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   call site shared by both the startup catalog emit and every hot-reload — so the warning no
   longer depends on `SemanticMemory` being configured and fires at startup, not only after the
   first post-startup file change.
+- `zeph-core`, `zeph-tools`, `zeph-common`, `zeph-subagent`: a skill that merely scored above
+  the matcher's similarity threshold this turn — never explicitly invoked by the model — could
+  drop the entire turn's `effective_trust` to `Quarantined` via the weakest-link fold in
+  `apply_skill_trust_and_gating`, denying every `bash`/`write`/MCP tool call for the rest of the
+  turn and every foreground-spawned subagent (issue #6701, security P1). Root causes and fixes:
+  - **RC-1**: `active_skill_names` was assigned directly from the matcher's output with no trust
+    filter. Added a trust-aware activation filter (`Agent::filter_active_skills_by_trust`) that
+    drops `Quarantined`/`Blocked` matches from the active set before the fold runs, while keeping
+    them visible in the `<other_skills>` catalog (`format_skills_catalog` now takes a trust-level
+    map and annotates entries with `trust="quarantined"`/`trust="blocked"`) so the model/operator
+    can still name them and promote with `zeph skill trust <name> trusted`. A `tracing::warn!`
+    names the dropped skill and the promotion command.
+  - **RC-2**: retrieval-fallback mode (matcher unavailable or unconfigured) previously folded
+    trust over the full, unscored skill set even though only description-only catalog text is
+    injected in that mode. `apply_skill_trust_and_gating`'s effective-trust computation
+    (`compute_effective_trust`) now forces `Trusted` whenever `skill_fallback_mode` is set,
+    regardless of how many Quarantined/Blocked skills exist in the registry.
+  - **RC-3**: `SkillTrustGate::resolve_body` refused only `Blocked` skills — an explicit
+    `invoke_skill`/`load_skill` of a `Quarantined` skill returned its sanitized body but never
+    degraded the turn's trust for subsequent tool calls, contradicting the documented invariant.
+    It now folds the new `zeph_common::TurnTrustFloor` (a monotonic-downgrade-only shared cell,
+    `set`/`fold`/`get`) to `Quarantined` whenever it returns a Quarantined body.
+  - **RC-5**: subagent spawn/resume applied an inherited trust cap via a plain
+    `set_effective_trust(cap)`, which could restore trust above a floor already folded lower
+    earlier in the same task. `SpawnContext` gained a `turn_trust_floor` handle
+    (`Option<TurnTrustFloor>`), and spawn/resume now calls `TurnTrustFloor::fold(cap)` on it when
+    present, falling back to the old `set_effective_trust` behavior otherwise.
+  - The weakest-link fold itself is unchanged as defense-in-depth for skills actually
+    injected/invoked this turn, and is now a single shared helper (`fold_weakest_trust`) used by
+    both `apply_skill_trust_and_gating` and the subagent trust-cap computation
+    (`parent_effective_trust_level`), which previously duplicated the same logic.
+  - RC-4 (AutoSkill draft-name collisions with native tool IDs) is tracked separately in #6702
+    and intentionally out of scope here.
 
 - `zeph-channels`: `MAX_RETRY_SECS` (the upper bound `send_with_retry` clamps a `Retry-After`
   delay to) had no compile-time invariant guard (issue #6517). #6516 (closing #6496) filtered

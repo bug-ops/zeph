@@ -4,12 +4,10 @@
 //! Trust-level enforcement layer for tool execution.
 
 use std::collections::HashSet;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU8, Ordering},
-};
+use std::sync::Arc;
 
 use parking_lot::RwLock;
+use zeph_common::TurnTrustFloor;
 
 use crate::SkillTrustLevel;
 
@@ -49,29 +47,11 @@ pub(crate) fn quarantine_denial_message(tool_id: &str, active_skills: &[String])
     }
 }
 
-pub(crate) fn trust_to_u8(level: SkillTrustLevel) -> u8 {
-    match level {
-        SkillTrustLevel::Trusted => 0,
-        SkillTrustLevel::Verified => 1,
-        SkillTrustLevel::Quarantined => 2,
-        _ => 3,
-    }
-}
-
-pub(crate) fn u8_to_trust(v: u8) -> SkillTrustLevel {
-    match v {
-        0 => SkillTrustLevel::Trusted,
-        1 => SkillTrustLevel::Verified,
-        2 => SkillTrustLevel::Quarantined,
-        _ => SkillTrustLevel::Blocked,
-    }
-}
-
 /// Wraps an inner `ToolExecutor` and applies trust-level permission overlays.
 pub struct TrustGateExecutor<T: ToolExecutor> {
     inner: T,
     policy: PermissionPolicy,
-    effective_trust: AtomicU8,
+    effective_trust: TurnTrustFloor,
     /// Sanitized IDs of all registered MCP tools. When a Quarantined skill is
     /// active, any tool whose ID appears in this set is denied — regardless of
     /// whether its name matches `QUARANTINE_DENIED`. Populated at startup by
@@ -96,7 +76,7 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
         Self {
             inner,
             policy,
-            effective_trust: AtomicU8::new(trust_to_u8(SkillTrustLevel::Trusted)),
+            effective_trust: TurnTrustFloor::new(SkillTrustLevel::Trusted),
             mcp_tool_ids: Arc::new(RwLock::new(HashSet::new())),
         }
     }
@@ -109,14 +89,38 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
         Arc::clone(&self.mcp_tool_ids)
     }
 
+    /// Replaces this gate's trust floor with an externally-owned, shared one (#6701).
+    ///
+    /// Use when another component (e.g. `SkillTrustGate`) must observe and fold the exact
+    /// same cell this gate reads in `check_trust` — pass the same
+    /// `TurnTrustFloor` to both instead of relying on [`trust_floor`](Self::trust_floor),
+    /// which can only be called *after* this gate already exists.
+    #[must_use]
+    pub fn with_trust_floor(mut self, floor: TurnTrustFloor) -> Self {
+        self.effective_trust = floor;
+        self
+    }
+
+    /// Returns a clone of the shared per-turn trust floor (#6701).
+    ///
+    /// Cloning is cheap (an `Arc` clone) and shares the same underlying cell — callers that
+    /// need to downgrade trust from outside the `ToolExecutor` trait chain (e.g. a subagent
+    /// spawn applying an inherited trust cap, or `SkillTrustGate::resolve_body` degrading on
+    /// a Quarantined body read) can call [`TurnTrustFloor::fold`] on the returned handle
+    /// directly instead of routing a `set_effective_trust` call back down through every
+    /// wrapping executor layer.
+    #[must_use]
+    pub fn trust_floor(&self) -> TurnTrustFloor {
+        self.effective_trust.clone()
+    }
+
     pub fn set_effective_trust(&self, level: SkillTrustLevel) {
-        self.effective_trust
-            .store(trust_to_u8(level), Ordering::Relaxed);
+        self.effective_trust.set(level);
     }
 
     #[must_use]
     pub fn effective_trust(&self) -> SkillTrustLevel {
-        u8_to_trust(self.effective_trust.load(Ordering::Relaxed))
+        self.effective_trust.get()
     }
 
     fn is_mcp_tool(&self, tool_id: &str) -> bool {
@@ -299,8 +303,7 @@ impl<T: ToolExecutor> ToolExecutor for TrustGateExecutor<T> {
     }
 
     fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
-        self.effective_trust
-            .store(trust_to_u8(level), Ordering::Relaxed);
+        self.effective_trust.set(level);
     }
 
     /// Returns `true` when the current policy would require confirmation for `call`.
@@ -910,6 +913,23 @@ mod tests {
             matches!(result, Err(ToolError::Blocked { .. })),
             "ReadOnly mode must deny non-allowlisted tools"
         );
+    }
+
+    #[test]
+    fn trust_floor_handle_shares_state_with_gate() {
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
+        let floor = gate.trust_floor();
+        assert_eq!(floor.get(), SkillTrustLevel::Trusted);
+
+        // A downgrade issued through the gate's own set_effective_trust must be visible
+        // through the handle (same underlying cell).
+        gate.set_effective_trust(SkillTrustLevel::Quarantined);
+        assert_eq!(floor.get(), SkillTrustLevel::Quarantined);
+
+        // A fold issued through the handle must be visible through the gate.
+        floor.set(SkillTrustLevel::Trusted);
+        floor.fold(SkillTrustLevel::Verified);
+        assert_eq!(gate.effective_trust(), SkillTrustLevel::Verified);
     }
 
     #[test]

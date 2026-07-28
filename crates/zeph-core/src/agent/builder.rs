@@ -501,6 +501,21 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Wire the shared per-turn trust floor (#6701) — the same handle
+    /// `zeph_tools::TrustGateExecutor::trust_floor()` returns for the executor built into this
+    /// agent's `tool_executor` chain.
+    ///
+    /// Enables two things: `SkillTrustGate::resolve_body` folding the turn's trust down on a
+    /// Quarantined body read (wired separately via `SkillLoaderExecutor`/`SkillInvokeExecutor`'s
+    /// own `with_turn_trust_floor`, sharing this same `Arc`), and subagent spawn folding an
+    /// inherited trust cap onto this exact cell (`SpawnContext::turn_trust_floor`) instead of
+    /// overwriting it via `set_effective_trust`.
+    #[must_use]
+    pub fn with_turn_trust_floor(mut self, floor: zeph_common::TurnTrustFloor) -> Self {
+        self.services.skill.turn_trust_floor = Some(floor);
+        self
+    }
+
     /// Configure skill matching parameters (disambiguation, two-stage, confusability).
     #[must_use]
     pub fn with_skill_matching_config(

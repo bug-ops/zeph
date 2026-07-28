@@ -928,6 +928,11 @@ impl<C: Channel> Agent<C> {
             // (foreground, background, and orchestration-driven via
             // `handle_scheduler_spawn_action`) is covered.
             max_trust_level: Some(self.parent_effective_trust_level()),
+            // #6701 (RC-5): shared handle to the same `TurnTrustFloor` cell this agent's own
+            // `TrustGateExecutor` reads, so the cap above is applied via `fold` (monotonic
+            // downgrade) rather than `set_effective_trust` (full overwrite) at spawn/resume —
+            // see `SpawnContext::turn_trust_floor`'s doc comment.
+            turn_trust_floor: self.services.skill.turn_trust_floor.clone(),
             // This helper's own three callers (`handle_agent_background`,
             // `handle_agent_spawn_foreground`, `handle_agent_resume`) are all dispatched from
             // the explicit `/agent spawn`/`/agent resume` slash command, so `Explicit` is the
@@ -971,24 +976,23 @@ impl<C: Channel> Agent<C> {
     }
     /// Compute the parent session's own current effective trust level (issue #6493).
     ///
-    /// Mirrors the fold in [`crate::agent::context::assembly`]'s
-    /// `apply_skill_trust_and_gating` exactly, so the cap handed to a spawned sub-agent is
-    /// always consistent with what is actually enforced on the parent's own tool gate this
-    /// turn: the least-trusted level among all skills active this turn, or `Trusted` when no
-    /// skill is active.
+    /// When a `turn_trust_floor` is wired (#6701), reads it directly — it is the exact same
+    /// cell the parent's own `TrustGateExecutor` enforces against, so this is correct by
+    /// construction and also observes any mid-turn fold (e.g. an `invoke_skill` of a
+    /// Quarantined skill via `SkillTrustGate::resolve_body`, which `active_skill_names` alone
+    /// would miss — S3). Falls back to [`crate::agent::context::compute_effective_trust`] (D2,
+    /// with the D4 `skill_fallback_mode` guard — S1) only when no floor was wired, e.g. some
+    /// test fixtures that construct an `Agent` without `with_turn_trust_floor`.
     fn parent_effective_trust_level(&self) -> zeph_common::SkillTrustLevel {
-        if self.services.skill.active_skill_names.is_empty() {
-            return zeph_common::SkillTrustLevel::Trusted;
+        if let Some(floor) = &self.services.skill.turn_trust_floor {
+            return floor.get();
         }
         let snapshot = self.services.skill.trust_snapshot.read();
-        self.services
-            .skill
-            .active_skill_names
-            .iter()
-            .filter_map(|name| snapshot.get(name).map(|s| s.trust_level))
-            .fold(zeph_common::SkillTrustLevel::Trusted, |acc, lvl| {
-                acc.min_trust(lvl)
-            })
+        crate::agent::context::compute_effective_trust(
+            self.services.skill.skill_fallback_mode,
+            &self.services.skill.active_skill_names,
+            &snapshot,
+        )
     }
     /// Extract recent parent messages for history propagation (Section 5.7 in spec).
     ///
@@ -2081,6 +2085,81 @@ mod tests {
             Some(zeph_common::SkillTrustLevel::Quarantined),
             "the cap must be the LEAST-trusted of all active skills this turn (weakest-link), \
              matching the fold `apply_skill_trust_and_gating` applies to the parent's own gate"
+        );
+    }
+
+    /// #6701 (S1): before this fix, `parent_effective_trust_level` folded raw
+    /// `active_skill_names` with no `skill_fallback_mode` guard. In retrieval-fallback mode
+    /// `active_skill_names` is every registered skill (Quarantined/Blocked included), so a
+    /// subagent spawned during a fallback-mode turn would have been capped to Quarantined or
+    /// worse — a new lockout regression the D4 guard on the parent's OWN gate did not cover.
+    #[test]
+    fn build_spawn_context_ignores_fallback_mode_registry_trust_for_cap() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            registry,
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        // Simulate retrieval-fallback mode: every registered skill is "active" for catalog
+        // purposes, including one the operator has Blocked.
+        agent.services.skill.skill_fallback_mode = true;
+        agent.services.skill.active_skill_names =
+            vec!["trusted-skill".into(), "blocked-skill".into()];
+        agent.services.skill.trust_snapshot.write().insert(
+            "blocked-skill".into(),
+            crate::skill_invoker::SkillTrustSnapshot {
+                trust_level: zeph_common::SkillTrustLevel::Blocked,
+                requires_trust_check: false,
+                blake3_hash: String::new(),
+            },
+        );
+
+        let ctx = agent.build_spawn_context(&zeph_config::SubAgentConfig::default());
+        assert_eq!(
+            ctx.max_trust_level,
+            Some(zeph_common::SkillTrustLevel::Trusted),
+            "skill_fallback_mode must force the subagent cap to Trusted regardless of registry \
+             contents, matching the D4 guard applied to the parent's own gate"
+        );
+    }
+
+    /// #6701 (S1/S3): when a `turn_trust_floor` is wired, `parent_effective_trust_level` must
+    /// read it directly rather than recompute from `active_skill_names` — this is what makes
+    /// it observe a mid-turn fold (e.g. an `invoke_skill` of a Quarantined skill) that
+    /// `active_skill_names` alone would miss, and is also immune to the S1 fallback-mode bug
+    /// since the floor itself is already fallback-mode-aware.
+    #[test]
+    fn build_spawn_context_reads_wired_turn_trust_floor_directly() {
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            registry,
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        // No active skills and skill_fallback_mode is false — the no-floor fallback path would
+        // compute Trusted here. Wire a floor that was independently folded to Quarantined
+        // (e.g. by a mid-turn invoke_skill) to prove the floor wins.
+        let floor = zeph_common::TurnTrustFloor::new(zeph_common::SkillTrustLevel::Trusted);
+        floor.fold(zeph_common::SkillTrustLevel::Quarantined);
+        agent.services.skill.turn_trust_floor = Some(floor);
+
+        let ctx = agent.build_spawn_context(&zeph_config::SubAgentConfig::default());
+        assert_eq!(
+            ctx.max_trust_level,
+            Some(zeph_common::SkillTrustLevel::Quarantined),
+            "a wired turn_trust_floor must be read directly, reflecting mid-turn folds that \
+             active_skill_names alone cannot see"
         );
     }
 

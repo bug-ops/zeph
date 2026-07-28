@@ -1484,6 +1484,7 @@ where
     trust_config: zeph_core::config::TrustConfig,
     trust_snapshot:
         std::sync::Arc<RwLock<std::collections::HashMap<String, zeph_core::SkillTrustSnapshot>>>,
+    turn_trust_floor: zeph_common::TurnTrustFloor,
     quality_pipeline: Option<std::sync::Arc<zeph_core::quality::SelfCheckPipeline>>,
     rl_routing_enabled: bool,
     rl_learning_rate: f32,
@@ -1562,6 +1563,7 @@ where
     })
     .with_trust_config(deps.trust_config)
     .with_trust_snapshot(deps.trust_snapshot)
+    .with_turn_trust_floor(deps.turn_trust_floor)
     .with_quality_pipeline(deps.quality_pipeline)
     .with_rl_routing(
         deps.rl_routing_enabled,
@@ -1779,7 +1781,7 @@ async fn spawn_acp_agent(
         }
         ex
     };
-    let (skill_loader_executor, skill_invoke_executor, trust_snapshot) =
+    let (skill_loader_executor, skill_invoke_executor, trust_snapshot, turn_trust_floor) =
         agent_setup::build_skill_executors(&registry);
 
     // #5958: shared trajectory risk slot/signal queue, created here (rather than further below,
@@ -1903,6 +1905,7 @@ async fn spawn_acp_agent(
     let (trust_gated, mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
         zeph_tools::DynExecutor(base_composite),
         &permission_policy,
+        turn_trust_floor.clone(),
     );
     crate::agent_setup::register_mcp_tool_ids(&mcp_ids_handle, &mcp_tools);
 
@@ -2142,6 +2145,7 @@ async fn spawn_acp_agent(
         semantic_scan_provider,
         trust_config: d.trust_config.clone(),
         trust_snapshot: Arc::clone(&trust_snapshot),
+        turn_trust_floor: turn_trust_floor.clone(),
         quality_pipeline: d.quality_pipeline.clone(),
         rl_routing_enabled: d.rl_routing_enabled,
         rl_learning_rate: d.rl_learning_rate,
@@ -3566,6 +3570,7 @@ mod tests {
         let (gated, mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
             inner_executor,
             &zeph_tools::PermissionPolicy::default(),
+            zeph_common::TurnTrustFloor::default(),
         );
         crate::agent_setup::register_mcp_tool_ids(&mcp_ids_handle, std::slice::from_ref(&mcp_tool));
         zeph_tools::executor::ToolExecutor::set_effective_trust(
@@ -3768,6 +3773,7 @@ mod tests {
         let (trust_gated, mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
             inner_executor,
             &zeph_tools::PermissionPolicy::default(),
+            zeph_common::TurnTrustFloor::default(),
         );
         crate::agent_setup::register_mcp_tool_ids(&mcp_ids_handle, std::slice::from_ref(&mcp_tool));
         zeph_tools::ToolExecutor::set_effective_trust(
@@ -4044,6 +4050,7 @@ mod tests {
         let (trust_gated, _mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
             zeph_tools::DynExecutor(Arc::new(base_executor)),
             &zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full),
+            zeph_common::TurnTrustFloor::default(),
         );
 
         let policy_config = zeph_tools::PolicyConfig {
@@ -4231,6 +4238,7 @@ mod tests {
         let (gated, _mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
             zeph_tools::DynExecutor(composite),
             &policy,
+            zeph_common::TurnTrustFloor::default(),
         );
         (gated, trajectory_signal_queue)
     }
@@ -4468,7 +4476,7 @@ mod tests {
         >,
     ) {
         let registry = Arc::new(RwLock::new(zeph_skills::registry::SkillRegistry::empty()));
-        let (skill_loader_executor, skill_invoke_executor, trust_snapshot) =
+        let (skill_loader_executor, skill_invoke_executor, trust_snapshot, _turn_trust_floor) =
             agent_setup::build_skill_executors(&registry);
 
         let mock_provider =
@@ -5517,6 +5525,7 @@ mod tests {
             semantic_scan_provider: config.skills.semantic_scan_provider.as_str().to_owned(),
             trust_config: config.skills.trust.clone(),
             trust_snapshot: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            turn_trust_floor: zeph_common::TurnTrustFloor::default(),
             quality_pipeline: None,
             rl_routing_enabled: config.skills.rl_routing_enabled,
             rl_learning_rate: config.skills.rl_learning_rate,

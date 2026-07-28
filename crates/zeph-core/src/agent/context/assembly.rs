@@ -19,6 +19,59 @@ use crate::channel::Channel;
 use crate::context::build_system_prompt_with_instructions;
 use tracing::Instrument as _;
 
+/// Weakest-link trust fold (#6701, D2): folds [`SkillTrustLevel::min_trust`] over `names`,
+/// each resolved via `trust_map`, defaulting to [`SkillTrustLevel::Trusted`] when `names` is
+/// empty or a name has no trust-map entry (a missing entry means "never classified", not
+/// "known untrusted" — see [`SkillTrustLevel::MISSING_ENTRY_FALLBACK`]).
+///
+/// This is the single shared implementation of the fold applied to skills whose bodies were
+/// ACTUALLY injected/invoked this turn (not merely matched — see [`apply_skill_trust_and_gating`]'s
+/// own doc comment for why proactive matching alone is no longer sufficient input). Used by
+/// [`compute_effective_trust`], which both [`apply_skill_trust_and_gating`] (the turn's own
+/// `effective_trust` gate) and `subagent_commands::parent_effective_trust_level`'s
+/// no-floor-wired fallback path (the cap propagated to a spawned sub-agent's
+/// `SpawnContext::max_trust_level`) route through — so they can never compute a fold result
+/// inconsistent with each other. `parent_effective_trust_level` prefers reading the live
+/// `TurnTrustFloor` directly when one is wired (#6701, S1/S3) — this fold-based path is its
+/// fallback only, and remains the source of truth for the parent's own gate either way.
+///
+/// [`SkillTrustLevel::min_trust`]: zeph_common::SkillTrustLevel::min_trust
+/// [`SkillTrustLevel::Trusted`]: zeph_common::SkillTrustLevel::Trusted
+/// [`SkillTrustLevel::MISSING_ENTRY_FALLBACK`]: zeph_common::SkillTrustLevel::MISSING_ENTRY_FALLBACK
+pub(crate) fn fold_weakest_trust<'a>(
+    names: impl Iterator<Item = &'a str>,
+    trust_map: &std::collections::HashMap<String, crate::skill_invoker::SkillTrustSnapshot>,
+) -> zeph_common::SkillTrustLevel {
+    names
+        .filter_map(|name| trust_map.get(name).map(|s| s.trust_level))
+        .fold(zeph_common::SkillTrustLevel::Trusted, |acc, lvl| {
+            acc.min_trust(lvl)
+        })
+}
+
+/// Computes this turn's `effective_trust` (#6701): [`fold_weakest_trust`] over `active_names`,
+/// forced to [`SkillTrustLevel::Trusted`] when `active_names` is empty OR
+/// `skill_fallback_mode` is `true`.
+///
+/// The `skill_fallback_mode` guard is D4 (closing RC-2): retrieval-fallback mode injects
+/// description-only catalog text for every registered skill with no body/trust consequence, so
+/// `effective_trust` MUST remain `Trusted` regardless of how many Quarantined/Blocked skills
+/// exist in the registry — before #6701, this mode could silently lock every turn to
+/// `Quarantined` defending against content that was never placed in the prompt.
+///
+/// [`SkillTrustLevel::Trusted`]: zeph_common::SkillTrustLevel::Trusted
+pub(crate) fn compute_effective_trust(
+    skill_fallback_mode: bool,
+    active_names: &[String],
+    trust_map: &std::collections::HashMap<String, crate::skill_invoker::SkillTrustSnapshot>,
+) -> zeph_common::SkillTrustLevel {
+    if skill_fallback_mode || active_names.is_empty() {
+        zeph_common::SkillTrustLevel::Trusted
+    } else {
+        fold_weakest_trust(active_names.iter().map(String::as_str), trust_map)
+    }
+}
+
 // ── Security event sink adapter ───────────────────────────────────────────────
 //
 // Wraps the metrics watch-channel sender so `ContextService::prepare_context`
@@ -824,7 +877,7 @@ impl<C: Channel> Agent<C> {
         // `QueryEmbedCache` for the cache-state semantics.
         let mut query_embed_cache = QueryEmbedCache::default();
 
-        let (matched_indices, skill_fallback_mode, skills_to_record) = self
+        let (matched_indices, skill_fallback_mode, mut skills_to_record) = self
             .match_and_rank_skills(
                 query,
                 effective_query,
@@ -835,10 +888,36 @@ impl<C: Channel> Agent<C> {
             .await;
         let matched_indices = self.filter_skills_missing_secrets(&all_meta, matched_indices);
 
+        // #6701 (S1): persisted so subagent_commands::parent_effective_trust_level's
+        // no-floor-wired fallback path can apply the same D4 guard as the parent's own gate.
+        self.services.skill.skill_fallback_mode = skill_fallback_mode;
+
+        // #6701 (D1): resolve this turn's trust map once, here, so the activation filter below
+        // can drop Quarantined/Blocked matches BEFORE `active_skill_names` is assigned — the
+        // weakest-link fold in `apply_skill_trust_and_gating` never sees them. The same map is
+        // passed forward to `apply_skill_trust_and_gating` so it isn't re-resolved (and the
+        // trust snapshot isn't written twice) later in this same turn.
+        let trust_map = self.resolve_trust_map().await;
+        let matched_indices = Self::filter_active_skills_by_trust(
+            &all_meta,
+            matched_indices,
+            &trust_map,
+            skill_fallback_mode,
+        );
+
         self.services.skill.active_skill_names = matched_indices
             .iter()
             .filter_map(|&i| all_meta.get(i).map(|m| m.name.clone()))
             .collect();
+
+        // #6701 (S7): a skill the D1 filter above dropped from `active_skill_names` (Quarantined
+        // or Blocked) was never actually activated this turn, so it must not be recorded as
+        // usage or feed the confidence/RL metrics either — both would otherwise count a skill
+        // whose body was never injected.
+        Self::filter_skills_to_record(
+            &mut skills_to_record,
+            &self.services.skill.active_skill_names,
+        );
 
         let skill_names = self.services.skill.active_skill_names.clone();
         let total = all_meta.len();
@@ -862,8 +941,13 @@ impl<C: Channel> Agent<C> {
         let (all_skills, active_skills, matched_indices) =
             self.load_and_filter_skills_by_channel(&all_meta, &matched_indices);
 
-        let (trust_map, remaining_skills) = self
-            .apply_skill_trust_and_gating(&all_skills, &active_skills)
+        let remaining_skills = self
+            .apply_skill_trust_and_gating(
+                &all_skills,
+                &active_skills,
+                &trust_map,
+                skill_fallback_mode,
+            )
             .await;
 
         // Build health_map: skill_name -> (posterior_mean, total_uses) for XML attributes.
@@ -892,7 +976,10 @@ impl<C: Channel> Agent<C> {
         if !erl_suffix.is_empty() {
             skills_prompt.push_str(&erl_suffix);
         }
-        let catalog_prompt = format_skills_catalog(&remaining_skills);
+        // #6701 (D1): annotate catalog entries with their trust level so a skill dropped from
+        // `active_skill_names` by the activation filter above remains nameable/promotable.
+        let catalog_trust_levels = crate::skill_invoker::snapshot_map_to_trust_levels(&trust_map);
+        let catalog_prompt = format_skills_catalog(&remaining_skills, &catalog_trust_levels);
         self.services
             .skill
             .last_skills_prompt
@@ -1656,22 +1743,18 @@ impl<C: Channel> Agent<C> {
         (all_skills, active_skills, matched_indices)
     }
 
-    /// Resolves per-skill trust levels, writes the per-turn trust snapshot (so
-    /// `SkillInvokeExecutor` can resolve trust without re-querying the store on every
-    /// tool call), filters `all_skills` down to the non-active catalog skills allowed by
-    /// trust, gates the tool executor to the most restrictive trust level among
-    /// `active_skills`, and fires PASTE speculative activation (#3642).
+    /// Resolves this turn's skill trust map, writing the per-turn trust snapshot (so
+    /// `SkillInvokeExecutor` can resolve trust without re-querying the store on every tool
+    /// call) on a fresh load, or reusing the previous turn's snapshot on a load failure.
     ///
-    /// Returns `(trust_map, remaining_skills)` for use by the prompt-formatting step.
-    async fn apply_skill_trust_and_gating(
+    /// Shared by [`filter_active_skills_by_trust`](Self::filter_active_skills_by_trust) (the D1
+    /// activation filter, run before `active_skill_names` is assigned) and
+    /// [`apply_skill_trust_and_gating`](Self::apply_skill_trust_and_gating) (catalog filter +
+    /// weakest-link fold) — both callers this turn share the identical map from one DB read.
+    async fn resolve_trust_map(
         &mut self,
-        all_skills: &[Skill],
-        active_skills: &[Skill],
-    ) -> (
-        std::collections::HashMap<String, crate::skill_invoker::SkillTrustSnapshot>,
-        Vec<Skill>,
-    ) {
-        let trust_map = match self.build_skill_trust_map().await {
+    ) -> std::collections::HashMap<String, crate::skill_invoker::SkillTrustSnapshot> {
+        match self.build_skill_trust_map().await {
             crate::agent::trust_commands::SkillTrustMapLoad::Fresh(map) => {
                 self.services.skill.trust_snapshot.write().clone_from(&map);
                 map
@@ -1679,8 +1762,9 @@ impl<C: Channel> Agent<C> {
             crate::agent::trust_commands::SkillTrustMapLoad::LoadFailed => {
                 // Do NOT overwrite the persisted snapshot — leave it exactly as the previous
                 // turn left it, and reuse it as this turn's local trust map too, so every
-                // downstream use (catalog filter, effective_trust fold, PASTE activation)
-                // sees the stale-but-real data instead of failing open to Trusted.
+                // downstream use (activation filter, catalog filter, effective_trust fold,
+                // PASTE activation) sees the stale-but-real data instead of failing open to
+                // Trusted.
                 //
                 // Residual: on the very first turn ever, `trust_snapshot` still holds its
                 // `HashMap::new()` construction-time value, so a load failure on that one
@@ -1688,13 +1772,101 @@ impl<C: Channel> Agent<C> {
                 // fail-open-to-Trusted behavior). There is no "previous" state before the
                 // first turn to fall back to — accepted per the issue's remediation scope.
                 tracing::warn!(
-                    "apply_skill_trust_and_gating: trust snapshot load failed, reusing \
-                     previous turn's snapshot (stale this turn)"
+                    "resolve_trust_map: trust snapshot load failed, reusing previous turn's \
+                     snapshot (stale this turn)"
                 );
                 self.services.skill.trust_snapshot.read().clone()
             }
-        };
+        }
+    }
 
+    /// Trust-aware activation filter (#6701, D1): drops any matched index whose resolved
+    /// trust is `Quarantined`/`Blocked` from the active set BEFORE it is assigned to
+    /// `active_skill_names` — closing RC-1, where a skill merely scoring above the matcher's
+    /// similarity threshold (never explicitly invoked) could drop the whole turn's
+    /// `effective_trust` via the weakest-link fold in
+    /// [`apply_skill_trust_and_gating`](Self::apply_skill_trust_and_gating).
+    ///
+    /// Filtered skills are NOT lost — they remain visible in the `<other_skills>` catalog
+    /// (annotated `trust="quarantined"`/`trust="blocked"` by `format_skills_catalog`) so the
+    /// model can still name them to the operator, who can promote them with
+    /// `zeph skill trust <name> trusted`. A skill missing from `trust_map` keeps the
+    /// `Trusted` fallback and is not filtered here.
+    ///
+    /// Skipped entirely when `skill_fallback_mode` is `true` (D4, closing RC-2): retrieval
+    /// fallback injects description-only text for every registered skill with no
+    /// body/trust consequence (see `match_and_rank_skills`'s doc comment), so filtering here
+    /// would only move a skill's description between prompt sections, never change what
+    /// enters the prompt or the weakest-link fold — the fold's own fallback-mode guard below
+    /// is the invariant that actually matters for D4.
+    fn filter_active_skills_by_trust(
+        all_meta: &[&SkillMeta],
+        matched_indices: Vec<usize>,
+        trust_map: &std::collections::HashMap<String, crate::skill_invoker::SkillTrustSnapshot>,
+        skill_fallback_mode: bool,
+    ) -> Vec<usize> {
+        if skill_fallback_mode {
+            return matched_indices;
+        }
+        matched_indices
+            .into_iter()
+            .filter(|&i| {
+                let Some(meta) = all_meta.get(i) else {
+                    return false;
+                };
+                match trust_map.get(&meta.name) {
+                    Some(snap)
+                        if matches!(
+                            snap.trust_level,
+                            zeph_common::SkillTrustLevel::Quarantined
+                                | zeph_common::SkillTrustLevel::Blocked
+                        ) =>
+                    {
+                        tracing::warn!(
+                            skill = %meta.name,
+                            trust = %snap.trust_level,
+                            "skill matched but not activated this turn (trust={}); promote \
+                             with `zeph skill trust {} trusted` if this skill is safe",
+                            snap.trust_level,
+                            meta.name
+                        );
+                        false
+                    }
+                    _ => true,
+                }
+            })
+            .collect()
+    }
+
+    /// Drops any name from `skills_to_record` that is not present in `active_names` (#6701, S7).
+    ///
+    /// `skills_to_record` is captured by `match_and_rank_skills` before the D1 activation filter
+    /// runs, so without this a Quarantined/Blocked skill the filter dropped from
+    /// `active_skill_names` would still be passed to `record_skill_usage` — polluting the
+    /// usage-count/confidence/RL-rerank learning signal with a skill whose body was never
+    /// actually injected this turn.
+    fn filter_skills_to_record(skills_to_record: &mut Vec<String>, active_names: &[String]) {
+        let active_name_set: std::collections::HashSet<&str> =
+            active_names.iter().map(String::as_str).collect();
+        skills_to_record.retain(|name| active_name_set.contains(name.as_str()));
+    }
+
+    /// Filters `all_skills` down to the non-active catalog skills allowed by trust, gates the
+    /// tool executor to the most restrictive trust level among skills whose bodies were
+    /// actually injected this turn, and fires PASTE speculative activation (#3642).
+    ///
+    /// `trust_map` is the map [`resolve_trust_map`](Self::resolve_trust_map) already resolved
+    /// earlier this turn (before the D1 activation filter ran) — passed in rather than
+    /// re-resolved so the trust snapshot isn't written twice per turn.
+    ///
+    /// Returns `remaining_skills` for use by the prompt-formatting step.
+    async fn apply_skill_trust_and_gating(
+        &mut self,
+        all_skills: &[Skill],
+        active_skills: &[Skill],
+        trust_map: &std::collections::HashMap<String, crate::skill_invoker::SkillTrustSnapshot>,
+        skill_fallback_mode: bool,
+    ) -> Vec<Skill> {
         let remaining_skills: Vec<Skill> = all_skills
             .iter()
             .filter(|s| {
@@ -1714,35 +1886,36 @@ impl<C: Channel> Agent<C> {
             .cloned()
             .collect();
 
-        // Deliberate weakest-link policy: fold the most restrictive trust level among ALL
-        // skills active this turn into a single `effective_trust` value applied to the
-        // executor gate (`TrustGateExecutor::set_effective_trust`). If ANY co-active skill is
-        // Quarantined, QUARANTINE_DENIED tools are denied for the WHOLE turn, regardless of
-        // which specific skill/tool a call targets — this prevents a Quarantined (potentially
-        // prompt-injected) skill's content from steering the model into invoking other
-        // tools/skills as a side channel. See #5729 for the resulting UX gap (an unrelated,
+        // Deliberate weakest-link policy: fold the most restrictive trust level among all
+        // skills active this turn (post-D1-filter — i.e. skills whose bodies were actually
+        // injected/invoked, never just proactively matched) into a single `effective_trust`
+        // value applied to the executor gate (`TrustGateExecutor::set_effective_trust`). If
+        // ANY co-active skill is Quarantined, QUARANTINE_DENIED tools are denied for the WHOLE
+        // turn, regardless of which specific skill/tool a call targets — this remains
+        // defense-in-depth against a Quarantined (potentially prompt-injected) skill's content
+        // steering the model into invoking other tools/skills as a side channel. D1 narrows
+        // this fold's *input* (Quarantined/Blocked matches never reach `active_skill_names`),
+        // it does not weaken the fold itself. See #5729 for the resulting UX gap (an unrelated,
         // non-quarantined skill's own `invoke_skill` call is also denied) and
         // `TrustGateExecutor::check_trust`'s doc comment for the matching rationale.
-        let effective_trust = if self.services.skill.active_skill_names.is_empty() {
-            zeph_common::SkillTrustLevel::Trusted
-        } else {
-            self.services
-                .skill
-                .active_skill_names
-                .iter()
-                .filter_map(|name| trust_map.get(name).map(|s| s.trust_level))
-                .fold(zeph_common::SkillTrustLevel::Trusted, |acc, lvl| {
-                    acc.min_trust(lvl)
-                })
-        };
+        //
+        // #6701 (D4): retrieval-fallback mode (`skill_fallback_mode`) injects description-only
+        // catalog text for every registered skill — no body enters the prompt, so nothing here
+        // should ever fold trust below Trusted, no matter how many Quarantined/Blocked skills
+        // exist in the registry.
+        let effective_trust = compute_effective_trust(
+            skill_fallback_mode,
+            &self.services.skill.active_skill_names,
+            trust_map,
+        );
         self.tool_executor.set_effective_trust(effective_trust);
 
         // PASTE: rebuild tool→skill mapping and fire speculative dispatches.
         // Runs only when mode is Pattern or Both and PatternStore is initialized.
-        self.run_paste_skill_activation(active_skills, &trust_map)
+        self.run_paste_skill_activation(active_skills, trust_map)
             .await;
 
-        (trust_map, remaining_skills)
+        remaining_skills
     }
 
     /// Formats the `<available_skills>` prompt block for `active_skills`: dispatches
@@ -1777,11 +1950,7 @@ impl<C: Channel> Agent<C> {
         {
             format_skills_prompt_compact(active_skills)
         } else {
-            let trust_levels: std::collections::HashMap<String, zeph_common::SkillTrustLevel> =
-                trust_map
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.trust_level))
-                    .collect();
+            let trust_levels = crate::skill_invoker::snapshot_map_to_trust_levels(trust_map);
 
             // GoSkills: experiment engine applies config overrides before context assembly,
             // so checking services.skill.group_structured here reflects any active A/B variation.
@@ -2377,6 +2546,254 @@ mod tests {
     use super::*;
     use zeph_context::assembler::{MAX_KEEP_TAIL_SCAN, memory_first_keep_tail};
     use zeph_llm::provider::{Message, MessagePart, Role};
+
+    // ── #6701: trust-aware skill activation and turn trust floor ────────────
+
+    fn trust_snapshot(
+        level: zeph_common::SkillTrustLevel,
+    ) -> crate::skill_invoker::SkillTrustSnapshot {
+        crate::skill_invoker::SkillTrustSnapshot {
+            trust_level: level,
+            requires_trust_check: false,
+            blake3_hash: String::new(),
+        }
+    }
+
+    fn skill_meta_named(name: &str) -> SkillMeta {
+        SkillMeta {
+            name: name.to_owned(),
+            description: format!("{name} description"),
+            ..Default::default()
+        }
+    }
+
+    // ── fold_weakest_trust (D2) ──────────────────────────────────────────────
+
+    #[test]
+    fn fold_weakest_trust_empty_names_is_trusted() {
+        let trust_map = std::collections::HashMap::new();
+        assert_eq!(
+            fold_weakest_trust(std::iter::empty(), &trust_map),
+            zeph_common::SkillTrustLevel::Trusted
+        );
+    }
+
+    #[test]
+    fn fold_weakest_trust_picks_least_trusted_across_names() {
+        let mut trust_map = std::collections::HashMap::new();
+        trust_map.insert(
+            "a".to_string(),
+            trust_snapshot(zeph_common::SkillTrustLevel::Trusted),
+        );
+        trust_map.insert(
+            "b".to_string(),
+            trust_snapshot(zeph_common::SkillTrustLevel::Quarantined),
+        );
+        assert_eq!(
+            fold_weakest_trust(["a", "b"].into_iter(), &trust_map),
+            zeph_common::SkillTrustLevel::Quarantined,
+            "the least-trusted co-active skill must determine the fold result"
+        );
+    }
+
+    #[test]
+    fn fold_weakest_trust_missing_entry_defaults_to_trusted() {
+        let trust_map = std::collections::HashMap::new();
+        assert_eq!(
+            fold_weakest_trust(["never-classified"].into_iter(), &trust_map),
+            zeph_common::SkillTrustLevel::Trusted,
+            "a name absent from trust_map must use the Trusted fallback, not be excluded"
+        );
+    }
+
+    // ── compute_effective_trust (D4, closing RC-2) ───────────────────────────
+
+    #[test]
+    fn compute_effective_trust_fallback_mode_stays_trusted_despite_quarantined_registry() {
+        let mut trust_map = std::collections::HashMap::new();
+        trust_map.insert(
+            "quarantined-skill".to_string(),
+            trust_snapshot(zeph_common::SkillTrustLevel::Quarantined),
+        );
+        let active_names = vec!["quarantined-skill".to_string()];
+
+        let result = compute_effective_trust(true, &active_names, &trust_map);
+        assert_eq!(
+            result,
+            zeph_common::SkillTrustLevel::Trusted,
+            "retrieval-fallback mode must never fold trust below Trusted (D4)"
+        );
+    }
+
+    #[test]
+    fn compute_effective_trust_non_fallback_mode_still_folds_quarantined() {
+        let mut trust_map = std::collections::HashMap::new();
+        trust_map.insert(
+            "quarantined-skill".to_string(),
+            trust_snapshot(zeph_common::SkillTrustLevel::Quarantined),
+        );
+        let active_names = vec!["quarantined-skill".to_string()];
+
+        let result = compute_effective_trust(false, &active_names, &trust_map);
+        assert_eq!(
+            result,
+            zeph_common::SkillTrustLevel::Quarantined,
+            "outside fallback mode, a genuinely active Quarantined skill must still fold down \
+             (defense-in-depth is unchanged by D4)"
+        );
+    }
+
+    #[test]
+    fn compute_effective_trust_empty_active_names_is_trusted() {
+        let trust_map = std::collections::HashMap::new();
+        assert_eq!(
+            compute_effective_trust(false, &[], &trust_map),
+            zeph_common::SkillTrustLevel::Trusted
+        );
+    }
+
+    #[test]
+    fn compute_effective_trust_mixed_trusted_and_quarantined_active_stays_quarantined() {
+        // Key invariant: "with one Trusted and one Quarantined skill matched in the same turn,
+        // effective_trust MUST remain Trusted" — no, per spec this invariant is about
+        // ACTIVATION (D1 drops Quarantined before this point). This test instead proves the
+        // fold's own weakest-link behavior is unchanged for names that DO reach it (D2's "never
+        // remove the fold for skills whose bodies were actually injected" invariant).
+        let mut trust_map = std::collections::HashMap::new();
+        trust_map.insert(
+            "trusted-skill".to_string(),
+            trust_snapshot(zeph_common::SkillTrustLevel::Trusted),
+        );
+        trust_map.insert(
+            "quarantined-skill".to_string(),
+            trust_snapshot(zeph_common::SkillTrustLevel::Quarantined),
+        );
+        let active_names = vec!["trusted-skill".to_string(), "quarantined-skill".to_string()];
+
+        let result = compute_effective_trust(false, &active_names, &trust_map);
+        assert_eq!(result, zeph_common::SkillTrustLevel::Quarantined);
+    }
+
+    // ── filter_active_skills_by_trust (D1, closing RC-1) ─────────────────────
+
+    #[test]
+    fn filter_active_skills_by_trust_drops_quarantined_and_blocked_from_active_set() {
+        let trusted = skill_meta_named("trusted-skill");
+        let quarantined = skill_meta_named("quarantined-skill");
+        let blocked = skill_meta_named("blocked-skill");
+        let unclassified = skill_meta_named("unclassified-skill");
+        let all_meta: Vec<&SkillMeta> = vec![&trusted, &quarantined, &blocked, &unclassified];
+
+        let mut trust_map = std::collections::HashMap::new();
+        trust_map.insert(
+            "trusted-skill".to_string(),
+            trust_snapshot(zeph_common::SkillTrustLevel::Trusted),
+        );
+        trust_map.insert(
+            "quarantined-skill".to_string(),
+            trust_snapshot(zeph_common::SkillTrustLevel::Quarantined),
+        );
+        trust_map.insert(
+            "blocked-skill".to_string(),
+            trust_snapshot(zeph_common::SkillTrustLevel::Blocked),
+        );
+        // "unclassified-skill" intentionally absent — missing entry keeps the Trusted fallback
+        // and must NOT be filtered.
+
+        let filtered = Agent::<MockChannel>::filter_active_skills_by_trust(
+            &all_meta,
+            vec![0, 1, 2, 3],
+            &trust_map,
+            false,
+        );
+
+        let filtered_names: Vec<&str> = filtered
+            .iter()
+            .map(|&i| all_meta[i].name.as_str())
+            .collect();
+        assert_eq!(
+            filtered_names,
+            vec!["trusted-skill", "unclassified-skill"],
+            "Quarantined and Blocked matches must be dropped from the active set, \
+             Trusted and unclassified must remain"
+        );
+    }
+
+    #[test]
+    fn filter_active_skills_by_trust_skipped_entirely_in_fallback_mode() {
+        let quarantined = skill_meta_named("quarantined-skill");
+        let all_meta: Vec<&SkillMeta> = vec![&quarantined];
+        let mut trust_map = std::collections::HashMap::new();
+        trust_map.insert(
+            "quarantined-skill".to_string(),
+            trust_snapshot(zeph_common::SkillTrustLevel::Quarantined),
+        );
+
+        let filtered = Agent::<MockChannel>::filter_active_skills_by_trust(
+            &all_meta,
+            vec![0],
+            &trust_map,
+            true,
+        );
+        assert_eq!(
+            filtered,
+            vec![0],
+            "skill_fallback_mode must bypass the D1 filter (effective_trust's own fallback \
+             guard is what actually matters for D4, see compute_effective_trust tests)"
+        );
+    }
+
+    #[test]
+    fn filter_active_skills_by_trust_index_out_of_bounds_is_dropped_not_panicked() {
+        let only = skill_meta_named("only-skill");
+        let all_meta: Vec<&SkillMeta> = vec![&only];
+        let trust_map = std::collections::HashMap::new();
+
+        let filtered = Agent::<MockChannel>::filter_active_skills_by_trust(
+            &all_meta,
+            vec![0, 5],
+            &trust_map,
+            false,
+        );
+        assert_eq!(filtered, vec![0]);
+    }
+
+    // ── filter_skills_to_record (S7) ──────────────────────────────────────────
+
+    #[test]
+    fn filter_skills_to_record_drops_names_absent_from_active_set() {
+        let mut skills_to_record =
+            vec!["trusted-skill".to_string(), "quarantined-skill".to_string()];
+        let active_names = vec!["trusted-skill".to_string()];
+
+        Agent::<MockChannel>::filter_skills_to_record(&mut skills_to_record, &active_names);
+
+        assert_eq!(
+            skills_to_record,
+            vec!["trusted-skill".to_string()],
+            "a skill dropped from active_skill_names by the D1 filter must not be recorded as \
+             usage — it was never actually activated this turn"
+        );
+    }
+
+    #[test]
+    fn filter_skills_to_record_keeps_all_when_all_are_active() {
+        let mut skills_to_record = vec!["a".to_string(), "b".to_string()];
+        let active_names = vec!["a".to_string(), "b".to_string()];
+
+        Agent::<MockChannel>::filter_skills_to_record(&mut skills_to_record, &active_names);
+
+        assert_eq!(skills_to_record, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn filter_skills_to_record_empty_active_set_drops_everything() {
+        let mut skills_to_record = vec!["a".to_string()];
+
+        Agent::<MockChannel>::filter_skills_to_record(&mut skills_to_record, &[]);
+
+        assert!(skills_to_record.is_empty());
+    }
 
     // ── effective_recall_timeout_ms tests (#2514) ────────────────────────────
 

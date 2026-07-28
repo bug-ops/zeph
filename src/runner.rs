@@ -189,6 +189,7 @@ where
     trust_snapshot: std::sync::Arc<
         RwLock<std::collections::HashMap<String, zeph_core::skill_invoker::SkillTrustSnapshot>>,
     >,
+    turn_trust_floor: zeph_common::TurnTrustFloor,
     memory: std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
     conversation_id: zeph_memory::ConversationId,
     session_sink: Option<std::sync::Arc<zeph_agent_persistence::SessionSink>>,
@@ -240,6 +241,7 @@ where
     )
     .with_trust_config(config.skills.trust.clone())
     .with_trust_snapshot(deps.trust_snapshot)
+    .with_turn_trust_floor(deps.turn_trust_floor)
     .with_memory(
         deps.memory,
         deps.conversation_id,
@@ -2399,7 +2401,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         std::sync::Arc::new(memory.sqlite().clone()),
     )
     .with_conversation(conversation_id.0);
-    let (skill_loader_executor, skill_invoke_executor, trust_snapshot) =
+    let (skill_loader_executor, skill_invoke_executor, trust_snapshot, turn_trust_floor) =
         agent_setup::build_skill_executors(&registry);
     let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> =
         std::sync::Arc::new(tool_setup.executor);
@@ -2431,8 +2433,11 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // #5610/#5886: shared TrustGateExecutor wrap, also used by ACP (`src/acp.rs`) and the
     // daemon (`src/daemon.rs`) so all three entry points gate the full executor tree through
     // one code path.
-    let (trust_gated, mcp_ids_handle) =
-        crate::agent_setup::apply_common_tool_gating(inner_executor, &permission_policy);
+    let (trust_gated, mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
+        inner_executor,
+        &permission_policy,
+        turn_trust_floor.clone(),
+    );
     let policy_gate_pieces = crate::agent_setup::build_policy_gate_pieces(config, &provider).await;
     let tool_executor = crate::agent_setup::apply_policy_gate_chain(
         trust_gated,
@@ -2713,6 +2718,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             reload_rx,
             plugin_dirs_supplier,
             trust_snapshot,
+            turn_trust_floor,
             memory: std::sync::Arc::clone(&memory),
             conversation_id,
             session_sink: session_sink.clone(),
@@ -5068,6 +5074,7 @@ mod tests {
             reload_rx,
             plugin_dirs_supplier: || Vec::<std::path::PathBuf>::new(),
             trust_snapshot: std::sync::Arc::new(RwLock::new(std::collections::HashMap::new())),
+            turn_trust_floor: zeph_common::TurnTrustFloor::default(),
             memory: std::sync::Arc::clone(&memory),
             conversation_id,
             session_sink: None,
@@ -5160,6 +5167,7 @@ mod tests {
             reload_rx,
             plugin_dirs_supplier: || Vec::<std::path::PathBuf>::new(),
             trust_snapshot: std::sync::Arc::new(RwLock::new(std::collections::HashMap::new())),
+            turn_trust_floor: zeph_common::TurnTrustFloor::default(),
             memory: std::sync::Arc::clone(&memory),
             conversation_id,
             session_sink: None,
