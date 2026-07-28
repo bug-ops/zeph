@@ -375,6 +375,35 @@ pub fn migrate_shell_checkpoints_config(toml_src: &str) -> Result<MigrationResul
     })
 }
 
+/// Add `risk_chain_window_turns` to `[tools.shell]` as a commented-out default (#6603).
+///
+/// # Errors
+///
+/// Returns [`MigrateError::Parse`] when `toml_src` is not valid TOML.
+pub fn migrate_shell_risk_chain_window_turns(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    if toml_src.contains("risk_chain_window_turns") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Turns a recorded tool call stays \"live\" for RiskChainAccumulator's\n\
+         # multi-step attack-chain detection (#6603). Narrower than [security.trajectory]\n\
+         # window_turns (8) because this window feeds a hard block, not a soft risk score.\n\
+         # [tools.shell]\n\
+         # risk_chain_window_turns = 3\n";
+
+    Ok(MigrationResult {
+        output: format!("{toml_src}{comment}"),
+        changed_count: 1,
+        sections_changed: vec!["tools.shell".to_owned()],
+    })
+}
+
 /// Add a commented-out `max_per_call_override` hint under `[tools.overflow]` when absent.
 ///
 /// Introduced alongside `OverflowConfig::max_per_call_override` (#3079): a hard ceiling on a

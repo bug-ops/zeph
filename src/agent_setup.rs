@@ -646,7 +646,7 @@ pub(crate) async fn build_tool_setup(
         mcp_executor = mcp_executor.with_audit(Arc::clone(logger));
     }
     let (shell_executor, risk_chain_accumulator) =
-        wire_risk_chain(shell_executor, trajectory_signal_queue);
+        wire_risk_chain(shell_executor, trajectory_signal_queue, &config.tools.shell);
     let shell_policy_handle = shell_executor.policy_handle();
     let shell_executor = Arc::new(shell_executor);
     let shell_executor_handle = Some(Arc::clone(&shell_executor));
@@ -722,16 +722,38 @@ pub(crate) async fn build_tool_setup(
 /// `TrajectorySentinel`/MAGE too (#6561). The queue push is not what makes cross-turn detection
 /// possible — `advance_turn()`'s prune-and-recompute (instead of a full reset) is — the queue is
 /// a secondary reporting channel; see the `risk_chain` module docs for the full mechanism.
+///
+/// `shell_config` — the same `ShellConfig` the caller used to build `shell_executor`.
+/// `risk_chain_window_turns` (#6603) is resolved from it internally by
+/// [`RiskChainAccumulator::new`](zeph_tools::RiskChainAccumulator::new) (`None` resolves to
+/// [`zeph_tools::risk_chain::DEFAULT_CROSS_TURN_WINDOW_TURNS`]) — passing the config directly,
+/// rather than requiring each of the 4 call sites to extract and forward the raw field, removes a
+/// class of silent-default bug where a call site could pass the wrong value (or forget to look
+/// one up at all) and get an unannounced default instead of a compile-time-visible mismatch; see
+/// that module's docs for why the default is narrower than the sibling
+/// `[security.trajectory] window_turns`.
 pub(crate) fn wire_risk_chain(
     shell_executor: zeph_tools::ShellExecutor,
     queue: zeph_tools::RiskSignalQueue,
+    shell_config: &zeph_config::tools::ShellConfig,
 ) -> (
     zeph_tools::ShellExecutor,
     Arc<zeph_tools::RiskChainAccumulator>,
 ) {
-    let risk_chain_accumulator = Arc::new(zeph_tools::RiskChainAccumulator::new(Some(queue)));
+    let risk_chain_accumulator = Arc::new(zeph_tools::RiskChainAccumulator::new(
+        Some(queue),
+        shell_config,
+    ));
     let shell_executor = shell_executor.with_risk_chain(Arc::clone(&risk_chain_accumulator));
+    let window_turns = risk_chain_accumulator.window_turns();
+    if window_turns == 0 {
+        tracing::warn!(
+            "security.risk_chain: risk_chain_window_turns = 0 disables cross-turn multi-step \
+             attack-chain detection (#6561) — only same-turn chains will be caught"
+        );
+    }
     tracing::info!(
+        window_turns,
         "security.risk_chain: RiskChainAccumulator wired to ShellExecutor with cross-turn signal queue"
     );
     (shell_executor, risk_chain_accumulator)
@@ -3449,7 +3471,7 @@ mod tests {
             vec![10u8],
             "expected the exfil_read_then_send signal code (10) to be pushed into the shared \
              trajectory signal queue (#6561), proving build_tool_setup wires \
-             RiskChainAccumulator::new(Some(queue)) instead of None"
+             RiskChainAccumulator::new with Some(queue) as the signal_queue argument, not None"
         );
     }
 
@@ -4607,7 +4629,11 @@ mod tests {
     fn wire_risk_chain_attaches_the_returned_accumulator_to_the_executor() {
         let shell_executor = zeph_tools::ShellExecutor::new(&zeph_tools::ShellConfig::default());
         let queue: zeph_tools::RiskSignalQueue = Arc::new(parking_lot::Mutex::new(Vec::new()));
-        let (shell_executor, accumulator) = wire_risk_chain(shell_executor, queue);
+        let (shell_executor, accumulator) = wire_risk_chain(
+            shell_executor,
+            queue,
+            &zeph_config::tools::ShellConfig::default(),
+        );
         assert_eq!(
             Arc::strong_count(&accumulator),
             2,
@@ -4704,7 +4730,10 @@ mod tests {
     async fn apply_security_pipeline_wires_every_field() {
         let agent = make_agent();
 
-        let risk_chain_accumulator = Arc::new(zeph_tools::RiskChainAccumulator::new(None));
+        let risk_chain_accumulator = Arc::new(zeph_tools::RiskChainAccumulator::new(
+            None,
+            &zeph_config::tools::ShellConfig::default(),
+        ));
         let typed_pages_state = Arc::new(zeph_context::typed_page::TypedPagesState {
             registry: zeph_context::typed_page::InvariantRegistry::default(),
             audit_sink: None,

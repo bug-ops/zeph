@@ -1813,8 +1813,11 @@ async fn spawn_acp_agent(
     if let Some(ref logger) = d.audit_logger {
         session_shell_executor = session_shell_executor.with_audit(Arc::clone(logger));
     }
-    let (session_shell_executor, risk_chain_accumulator) =
-        agent_setup::wire_risk_chain(session_shell_executor, Arc::clone(&trajectory_signal_queue));
+    let (session_shell_executor, risk_chain_accumulator) = agent_setup::wire_risk_chain(
+        session_shell_executor,
+        Arc::clone(&trajectory_signal_queue),
+        &d.shell_config,
+    );
     let tool_executor: Arc<dyn ErasedToolExecutor> = Arc::new(zeph_tools::CompositeExecutor::new(
         session_shell_executor,
         zeph_tools::DynExecutor(tool_executor),
@@ -4203,9 +4206,10 @@ mod tests {
             .collect();
         let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
             Arc::new(parking_lot::Mutex::new(Vec::new()));
-        let risk_chain_accumulator = Arc::new(zeph_tools::RiskChainAccumulator::new(Some(
-            Arc::clone(&trajectory_signal_queue),
-        )));
+        let risk_chain_accumulator = Arc::new(zeph_tools::RiskChainAccumulator::new(
+            Some(Arc::clone(&trajectory_signal_queue)),
+            &zeph_config::tools::ShellConfig::default(),
+        ));
         let session_shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
             .with_risk_chain(Arc::clone(&risk_chain_accumulator));
         let file_executor = zeph_tools::FileExecutor::new(vec![]);

@@ -197,6 +197,24 @@ fn prompt_abs_paths(label: &str) -> anyhow::Result<Vec<String>> {
     }
 }
 
+/// Prompt for `[tools.shell] risk_chain_window_turns` (#6603): the number of turns a recorded
+/// tool call stays "live" for `RiskChainAccumulator` cross-turn multi-step chain detection.
+///
+/// Falls back to [`zeph_tools::risk_chain::DEFAULT_CROSS_TURN_WINDOW_TURNS`] on unparseable
+/// input, matching the pre-filled default shown in the prompt.
+fn prompt_risk_chain_window_turns() -> anyhow::Result<u64> {
+    let default_window = zeph_tools::risk_chain::DEFAULT_CROSS_TURN_WINDOW_TURNS;
+    let window_str: String = Input::new()
+        .with_prompt(
+            "Multi-step attack-chain detection window, in turns? (how long a sensitive read \
+             stays \"live\" before a later network egress call is still blocked as a chain; \
+             narrower than [security.trajectory] window_turns because this feeds a hard block)",
+        )
+        .default(default_window.to_string())
+        .interact_text()?;
+    Ok(window_str.trim().parse::<u64>().unwrap_or(default_window))
+}
+
 /// Parse a wizard-entered USD amount into cents, clamped to `[0, u32::MAX]`.
 ///
 /// Non-numeric input falls back to the wizard's suggested default (2500 cents = $25.00),
@@ -302,6 +320,7 @@ pub(super) fn step_security(state: &mut WizardState) -> anyhow::Result<()> {
             .interact_text()?;
         state.shell_max_checkpoints = max_str.trim().parse::<usize>().unwrap_or(20);
     }
+    state.risk_chain_window_turns = prompt_risk_chain_window_turns()?;
 
     let deny_raw: String = dialoguer::Input::new()
         .with_prompt(

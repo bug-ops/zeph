@@ -284,6 +284,8 @@ pub(crate) struct WizardState {
     // Undo/redo checkpoints (#4990)
     pub(crate) shell_checkpoints_enabled: bool,
     pub(crate) shell_max_checkpoints: usize,
+    // RiskChainAccumulator cross-turn window (#6603)
+    pub(crate) risk_chain_window_turns: u64,
     // File read sandbox (#2525)
     pub(crate) file_deny_read: Vec<String>,
     pub(crate) file_allow_read: Vec<String>,
@@ -565,6 +567,7 @@ impl Default for WizardState {
             shell_auto_rollback: false,
             shell_checkpoints_enabled: false,
             shell_max_checkpoints: 20,
+            risk_chain_window_turns: zeph_tools::risk_chain::DEFAULT_CROSS_TURN_WINDOW_TURNS,
             file_deny_read: Vec::new(),
             file_allow_read: Vec::new(),
             sandbox_enabled: false,
@@ -1320,6 +1323,12 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.tools.shell.auto_rollback = state.shell_auto_rollback;
     config.tools.shell.checkpoints_enabled = state.shell_checkpoints_enabled;
     config.tools.shell.max_checkpoints = state.shell_max_checkpoints;
+    // Write None (not an explicit Some(default)) when the user kept the pre-filled default —
+    // keeps a freshly generated config.toml free of redundant explicit values and lets a future
+    // change to DEFAULT_CROSS_TURN_WINDOW_TURNS take effect for wizard-generated configs too.
+    config.tools.shell.risk_chain_window_turns = (state.risk_chain_window_turns
+        != zeph_tools::risk_chain::DEFAULT_CROSS_TURN_WINDOW_TURNS)
+        .then_some(state.risk_chain_window_turns);
     config
         .tools
         .file

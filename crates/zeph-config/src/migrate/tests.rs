@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        105,
-        "MIGRATIONS registry must contain all 105 sequential steps"
+        106,
+        "MIGRATIONS registry must contain all 106 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -2124,7 +2124,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 105);
+    assert_eq!(MIGRATIONS.len(), 106);
 }
 
 /// SC-003 (issue #6545): the isolated `migrate_agents_max_spawns_per_session` tests in
@@ -2306,6 +2306,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_memory_consent_gate_config",
         "migrate_telegram_expandable_blockquote_config",
         "migrate_agents_max_spawns_per_session",
+        "migrate_shell_risk_chain_window_turns",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -5144,5 +5145,43 @@ fn migrate_search_config_is_idempotent() {
     assert_eq!(
         second.output, first.output,
         "output unchanged on second run"
+    );
+}
+
+// ── Step 106 — migrate_shell_risk_chain_window_turns (#6603) ──────────────────
+
+#[test]
+fn step_106_adds_risk_chain_window_turns_block_when_absent() {
+    let src = "[agent]\nname = \"Zeph\"\n";
+    let result = migrate_shell_risk_chain_window_turns(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert!(
+        result.sections_changed.contains(&"tools.shell".to_owned()),
+        "sections_changed must include 'tools.shell'"
+    );
+    assert!(
+        result.output.contains("risk_chain_window_turns"),
+        "output must contain risk_chain_window_turns"
+    );
+}
+
+#[test]
+fn step_106_noop_when_risk_chain_window_turns_present() {
+    let src = "[tools.shell]\nrisk_chain_window_turns = 5\n";
+    let result = migrate_shell_risk_chain_window_turns(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_106_idempotent_on_own_output() {
+    let src = "[agent]\nname = \"Zeph\"\n";
+    let first = migrate_shell_risk_chain_window_turns(src).expect("migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_shell_risk_chain_window_turns(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0, "second run must be a no-op");
+    assert_eq!(
+        second.output, first.output,
+        "output must be unchanged on second run"
     );
 }

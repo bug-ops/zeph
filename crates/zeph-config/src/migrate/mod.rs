@@ -636,12 +636,13 @@ use steps::{
     MigrateSecretMaskingConfig, MigrateServeConfig, MigrateSessionPersistProviderOverrides,
     MigrateSessionPersistenceConfig, MigrateSessionProviderPersistence, MigrateSessionRecapConfig,
     MigrateSessionResumeConfig, MigrateShadowSentinelConfig, MigrateShellCheckpointsConfig,
-    MigrateShellTransactional, MigrateSkillTrustRequireCheck, MigrateSkillsRegistry,
-    MigrateSttToProvider, MigrateSupervisorConfig, MigrateTelegramExpandableBlockquoteConfig,
-    MigrateTelemetryConfig, MigrateToolsCompressionConfig, MigrateTraceMetadata,
-    MigrateTuiDelights, MigrateTuiMouse, MigrateTuiThemeConfig, MigrateTuiThemeDefaults,
-    MigrateUtilityHighGainTools, MigrateVigilConfig, MigrateWorktreeConfig,
-    MigrateWorktreeGitTimeout, MigrateWorktreeQuotaFields,
+    MigrateShellRiskChainWindowTurns, MigrateShellTransactional, MigrateSkillTrustRequireCheck,
+    MigrateSkillsRegistry, MigrateSttToProvider, MigrateSupervisorConfig,
+    MigrateTelegramExpandableBlockquoteConfig, MigrateTelemetryConfig,
+    MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse,
+    MigrateTuiThemeConfig, MigrateTuiThemeDefaults, MigrateUtilityHighGainTools,
+    MigrateVigilConfig, MigrateWorktreeConfig, MigrateWorktreeGitTimeout,
+    MigrateWorktreeQuotaFields,
 };
 
 /// Ordered registry of all sequential migration steps (steps 1–99).
@@ -863,6 +864,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 105 — insert active max_spawns_per_session = 100 into an existing
             // [agents] table with enabled = true and no max_spawns_per_session key (#6545)
             Box::new(MigrateAgentsMaxSpawnsPerSession),
+            // Step 106 — add risk_chain_window_turns advisory comment to [tools.shell]
+            // for RiskChainAccumulator's cross-turn multi-step chain detection (#6603)
+            Box::new(MigrateShellRiskChainWindowTurns),
         ]
     });
 

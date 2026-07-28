@@ -752,6 +752,7 @@ pub(crate) async fn run_daemon(
     let (shell_executor, risk_chain_accumulator) = agent_setup::wire_risk_chain(
         shell_executor,
         std::sync::Arc::clone(&trajectory_signal_queue),
+        &config.tools.shell,
     );
     let file_executor = zeph_tools::FileExecutor::new(
         config
@@ -1834,9 +1835,10 @@ mod tests {
         config.tools.shell.allowed_paths = vec!["/".to_owned()];
         let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
             Arc::new(parking_lot::Mutex::new(Vec::new()));
-        let risk_chain_accumulator = Arc::new(zeph_tools::RiskChainAccumulator::new(Some(
-            Arc::clone(&trajectory_signal_queue),
-        )));
+        let risk_chain_accumulator = Arc::new(zeph_tools::RiskChainAccumulator::new(
+            Some(Arc::clone(&trajectory_signal_queue)),
+            &zeph_config::tools::ShellConfig::default(),
+        ));
         let file_executor = zeph_tools::FileExecutor::new(vec![]);
         let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
             .with_risk_chain(Arc::clone(&risk_chain_accumulator));
@@ -1897,9 +1899,10 @@ mod tests {
         config.tools.shell.allowed_paths = vec!["/".to_owned()];
         let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
             Arc::new(parking_lot::Mutex::new(Vec::new()));
-        let risk_chain_accumulator = Arc::new(zeph_tools::RiskChainAccumulator::new(Some(
-            Arc::clone(&trajectory_signal_queue),
-        )));
+        let risk_chain_accumulator = Arc::new(zeph_tools::RiskChainAccumulator::new(
+            Some(Arc::clone(&trajectory_signal_queue)),
+            &zeph_config::tools::ShellConfig::default(),
+        ));
         let file_executor = zeph_tools::FileExecutor::new(vec![]);
         let shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
             .with_risk_chain(Arc::clone(&risk_chain_accumulator));

@@ -207,6 +207,7 @@ pub(crate) async fn build_agent_factory(
     let (session_shell_executor, risk_chain_accumulator) = crate::agent_setup::wire_risk_chain(
         session_shell_executor,
         Arc::clone(&trajectory_signal_queue),
+        &deps.shell_ingredients.config,
     );
     let session_tool_executor: Arc<dyn ErasedToolExecutor> =
         Arc::new(zeph_tools::CompositeExecutor::new(
@@ -2103,9 +2104,10 @@ mod tests {
         config.tools.shell.allowed_paths = allowed_paths;
         let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
             Arc::new(parking_lot::Mutex::new(Vec::new()));
-        let risk_chain_accumulator = Arc::new(zeph_tools::RiskChainAccumulator::new(Some(
-            Arc::clone(&trajectory_signal_queue),
-        )));
+        let risk_chain_accumulator = Arc::new(zeph_tools::RiskChainAccumulator::new(
+            Some(Arc::clone(&trajectory_signal_queue)),
+            &zeph_config::tools::ShellConfig::default(),
+        ));
         let session_shell_executor = zeph_tools::ShellExecutor::new(&config.tools.shell)
             .with_risk_chain(Arc::clone(&risk_chain_accumulator));
         let file_executor = zeph_tools::FileExecutor::new(

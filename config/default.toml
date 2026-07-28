@@ -728,6 +728,11 @@ confirm_patterns = ["rm ", "git push -f", "git push --force", "drop table", "dro
 # max_background_runs = 8
 # Timeout for background runs in seconds (30 min default)
 # background_timeout_secs = 1800
+# Number of turns a recorded tool call stays "live" for RiskChainAccumulator's multi-step
+# attack-chain detection (e.g. sensitive read -> network egress split across turns, #6603).
+# Narrower than [security.trajectory] window_turns (8) because this window feeds a hard
+# block decision, not a soft risk score — see zeph_tools::risk_chain module docs.
+# risk_chain_window_turns = 3
 
 # [tools.file]
 # Per-path read sandbox using glob patterns. Evaluation: deny first, then allow overrides.

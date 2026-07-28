@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `zeph-config`, `zeph-tools`: `RiskChainAccumulator`'s cross-turn multi-step attack-chain
+  detection window is now configurable via `[tools.shell] risk_chain_window_turns` (issue
+  #6603), replacing the previously hardcoded `CROSS_TURN_WINDOW_TURNS = 3` constant. Default
+  unchanged at `3` turns when unset — narrower than the sibling `[security.trajectory]
+  window_turns` default of `8` because this window feeds a hard block decision, not a soft
+  risk score (see `zeph_tools::risk_chain` module docs for the full rationale and the accepted,
+  bounded residual-evasion risk). Added `--init` wizard support and `--migrate-config` support
+  (step 106).
+
 - `zeph-tui`: inline, non-modal `@` mention picker (issues #6647, #6648), replacing the
   old modal file picker. Typing `@` at word-start inserts the character and opens a popup
   with `All | Files | Skills | Agents` category tabs (Left/Right to cycle, Up/Down to

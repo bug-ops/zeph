@@ -1078,6 +1078,12 @@ pub struct ShellConfig {
     /// the command is blocked. Set to `None` to use the built-in default of `0.7`.
     #[serde(default)]
     pub risk_chain_threshold: Option<f32>,
+    /// Number of turns a recorded tool call stays "live" for `RiskChainAccumulator` cross-turn
+    /// multi-step chain detection (#6603). Set to `None` to use the built-in default of `3`
+    /// (see `zeph_tools::risk_chain` module docs for the rationale behind that default, and
+    /// why it is narrower than `[security.trajectory] window_turns`'s default of `8`).
+    #[serde(default)]
+    pub risk_chain_window_turns: Option<u64>,
     /// Enable session-scoped checkpoint history for `/undo` and `/redo`. Default: `false`.
     ///
     /// When `true`, file snapshots are captured before each write command and stored
@@ -1112,6 +1118,7 @@ impl Default for ShellConfig {
             max_background_runs: default_max_background_runs(),
             background_timeout_secs: default_background_timeout_secs(),
             risk_chain_threshold: None,
+            risk_chain_window_turns: None,
             checkpoints_enabled: false,
             max_checkpoints: default_max_checkpoints(),
         }

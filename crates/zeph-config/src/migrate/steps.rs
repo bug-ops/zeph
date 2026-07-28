@@ -122,11 +122,12 @@ use super::{
     migrate_serve_config, migrate_session_persist_provider_overrides,
     migrate_session_persistence_config, migrate_session_provider_persistence,
     migrate_session_recap_config, migrate_session_resume_config, migrate_shadow_sentinel_config,
-    migrate_shell_checkpoints_config, migrate_shell_transactional,
-    migrate_skill_trust_require_check, migrate_skills_registry, migrate_stt_to_provider,
-    migrate_supervisor_config, migrate_telegram_expandable_blockquote_config,
-    migrate_telemetry_config, migrate_tools_compression_config, migrate_trace_metadata,
-    migrate_tui_delights, migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults,
+    migrate_shell_checkpoints_config, migrate_shell_risk_chain_window_turns,
+    migrate_shell_transactional, migrate_skill_trust_require_check, migrate_skills_registry,
+    migrate_stt_to_provider, migrate_supervisor_config,
+    migrate_telegram_expandable_blockquote_config, migrate_telemetry_config,
+    migrate_tools_compression_config, migrate_trace_metadata, migrate_tui_delights,
+    migrate_tui_mouse, migrate_tui_theme_config, migrate_tui_theme_defaults,
     migrate_utility_high_gain_tools, migrate_vigil_config, migrate_worktree_config,
     migrate_worktree_git_timeout, migrate_worktree_quota_fields,
 };
@@ -1353,5 +1354,16 @@ impl Migration for MigrateAgentsMaxSpawnsPerSession {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_agents_max_spawns_per_session(toml_src)
+    }
+}
+
+pub(super) struct MigrateShellRiskChainWindowTurns;
+impl Migration for MigrateShellRiskChainWindowTurns {
+    fn name(&self) -> &'static str {
+        "migrate_shell_risk_chain_window_turns"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_shell_risk_chain_window_turns(toml_src)
     }
 }
