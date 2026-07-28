@@ -186,17 +186,13 @@ async fn agent_integration_no_bash_blocks() {
         executor.clone(),
     );
 
-    let start = Instant::now();
     let _ = agent.run().await;
-    let elapsed = start.elapsed();
 
-    // Should complete within a generous bound; the agent uses mocks with no real I/O.
-    // 2 s accounts for slow CI runners while still catching genuine regressions.
-    assert!(
-        elapsed.as_millis() < 2000,
-        "Agent run should be fast for non-bash response: {elapsed:?}",
-    );
-
+    // No wall-clock budget here (see #6687): this class of assertion already flaked once at
+    // 500ms and again at the widened 2000ms (observed 1.247s/1.610s on PR #6678, ~24% headroom
+    // under CI load) — widening is a proven non-fix, so it's dropped rather than widened again.
+    // A genuine hang is caught only coarsely, at the shard level, by CI's job-level
+    // `timeout-minutes: 10` (.github/workflows/ci.yml).
     // Plain text response doesn't trigger tool execution (native tool_use path)
     assert_eq!(executor.get_call_count(), 0);
 
@@ -223,18 +219,20 @@ async fn agent_integration_with_safe_bash_blocks() {
         executor.clone(),
     );
 
-    let start = Instant::now();
     let _ = agent.run().await;
-    let elapsed = start.elapsed();
 
-    // Should complete reasonably
-    assert!(
-        elapsed.as_millis() < 1000,
-        "Agent run should complete: {elapsed:?}",
-    );
+    // No wall-clock budget here (see #6687): the test's real assertion of value is that the
+    // native tool_use path was taken. A genuine hang is caught only coarsely, at the shard
+    // level, by CI's job-level `timeout-minutes: 10` (.github/workflows/ci.yml) — nextest's
+    // `slow-timeout` is warn-only with no `terminate-after` configured, so it never kills a
+    // hung test.
+    // Native tool_use path calls execute_tool_call exactly once (one scripted ToolUse response
+    // followed by Text, one channel input).
+    assert_eq!(executor.get_call_count(), 1);
 
-    // Native tool_use path calls execute_tool_call at least once
-    assert!(executor.get_call_count() >= 1);
+    // The tool result was fed back and the turn completed.
+    let outputs = output_sent.lock().unwrap();
+    assert!(outputs.iter().any(|m| m.contains("Done.")));
 }
 
 #[tokio::test]

@@ -210,6 +210,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `TestWriteGate` channel handshake (with a 30s bound so a regression to an inline write path
   fails with a clear panic instead of hanging the CI shard) to prove `dump_request` returns
   before its `spawn_blocking` write completes, with no timing race window at all.
+- top-level integration tests: removed flaky wall-clock budgets from
+  `agent_integration_with_safe_bash_blocks` and `agent_integration_no_bash_blocks`
+  (`tests/performance_agent_integration.rs`, issue #6687), the same defect class as issue
+  #6679/#6685 but in a different crate/file that PR didn't touch. Both assertions raced a
+  fully-mocked `Agent::run()` call against a fixed threshold and intermittently failed under
+  CI load (observed 1.247s and 1.610s on PR #6678 against `agent_integration_with_safe_bash_blocks`'s
+  1000ms budget); `agent_integration_no_bash_blocks`'s 2000ms budget had already been widened
+  once for this exact class (500ms -> 2000ms, issue #3649) and was left with only ~24% headroom
+  against those same observed elapsed times, so it was dropped rather than widened again.
+  Dropped the timing checks entirely: the tests' real assertions of value —
+  `executor.get_call_count()` proving whether the native `tool_use` path was taken, plus
+  asserting the response/tool-result actually reached the output channel — are unaffected.
+  A genuine hang is not caught by nextest's `slow-timeout` (warn-only, no `terminate-after`
+  configured); it surfaces only coarsely, as CI's job-level `timeout-minutes: 10` killing the
+  whole shard.
 - `zeph-acp`: fixed a session-turn race where a closed/deleted session's agent-loop task could
   keep running and emit events/notifications under a `SessionId` reused by a later
   `session/load`/`session/resume` (issue #6674). `do_close_session`/`do_delete_session` previously
