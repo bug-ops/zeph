@@ -35,7 +35,7 @@ pub(crate) async fn handle_agents_command(
 
 fn load_all_defs(config_path: Option<&Path>) -> anyhow::Result<Vec<SubAgentDef>> {
     let config_file = resolve_config_path(config_path);
-    let config = load_config_or_default(&config_file);
+    let config = load_config_or_default(&config_file)?;
     let paths = resolve_agent_paths(
         &[],
         config.agents.user_agents_dir.as_ref(),
@@ -234,7 +234,7 @@ async fn handle_fleet(
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     let config_file = resolve_config_path(config_path);
-    let config = load_config_or_default(&config_file);
+    let config = load_config_or_default(&config_file)?;
     let db_path = &config.memory.sqlite_path;
     let store = zeph_memory::store::SqliteStore::new(db_path)
         .await

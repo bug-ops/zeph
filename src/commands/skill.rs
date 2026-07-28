@@ -16,7 +16,7 @@ pub(crate) async fn handle_skill_command(
     use zeph_skills::manager::SkillManager;
 
     let config_file = resolve_config_path(config_path);
-    let config = load_config_or_default(&config_file);
+    let config = load_config_or_default(&config_file)?;
 
     let managed_dir = managed_skills_dir();
     std::fs::create_dir_all(&managed_dir)

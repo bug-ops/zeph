@@ -109,9 +109,9 @@ async fn handle_run_baseline(
         }
     }
 
-    let data_path = resolve_data_path(dataset, data_file);
+    let data_path = resolve_data_path(dataset, data_file)?;
     let path = resolve_config_path(config_path);
-    let mut config = load_config_or_default(&path);
+    let mut config = load_config_or_default(&path)?;
 
     let vault_args = parse_vault_args(
         &config,
@@ -284,14 +284,14 @@ fn handle_download(dataset: &str) -> anyhow::Result<()> {
     }
     let reg = DatasetRegistry::new();
     if reg.get(dataset).is_none() {
-        eprintln!(
-            "error: unknown dataset '{dataset}'. Run `zeph bench list` to see available datasets."
+        anyhow::bail!(
+            "unknown dataset '{dataset}'. Run `zeph bench list` to see available datasets."
         );
-        std::process::exit(1);
     }
-    eprintln!("Dataset download is not yet implemented for '{dataset}'.");
-    eprintln!("See the dataset URL in `zeph bench list` output for manual download instructions.");
-    std::process::exit(1);
+    anyhow::bail!(
+        "Dataset download is not yet implemented for '{dataset}'. \
+         See the dataset URL in `zeph bench list` output for manual download instructions."
+    );
 }
 
 /// Clone `sierra-research/tau2-bench` and copy the JSON data files for retail and airline.
@@ -363,11 +363,7 @@ fn download_tau2_bench() -> anyhow::Result<()> {
 
 fn handle_show(results: &std::path::Path) -> anyhow::Result<()> {
     if !results.exists() {
-        eprintln!(
-            "error: results file '{}' does not exist.",
-            results.display()
-        );
-        std::process::exit(1);
+        anyhow::bail!("results file '{}' does not exist.", results.display());
     }
     let data = std::fs::read_to_string(results)?;
     println!("{data}");
@@ -390,16 +386,15 @@ async fn handle_run(
 ) -> anyhow::Result<()> {
     let reg = DatasetRegistry::new();
     if reg.get(dataset).is_none() {
-        eprintln!(
-            "error: unknown dataset '{dataset}'. Run `zeph bench list` to see available datasets."
+        anyhow::bail!(
+            "unknown dataset '{dataset}'. Run `zeph bench list` to see available datasets."
         );
-        std::process::exit(1);
     }
 
-    let data_path = resolve_data_path(dataset, data_file);
+    let data_path = resolve_data_path(dataset, data_file)?;
 
     let path = resolve_config_path(config_path);
-    let mut config = load_config_or_default(&path);
+    let mut config = load_config_or_default(&path)?;
 
     // Resolve vault secrets before building the provider.
     // The bench command is dispatched before AppBuilder runs, so we must
@@ -460,19 +455,20 @@ async fn handle_run(
 }
 
 /// Resolve the dataset file path from `--data-file` or exit with a clear error.
-fn resolve_data_path(dataset: &str, data_file: Option<&std::path::Path>) -> std::path::PathBuf {
+fn resolve_data_path(
+    dataset: &str,
+    data_file: Option<&std::path::Path>,
+) -> anyhow::Result<std::path::PathBuf> {
     if let Some(p) = data_file {
         if !p.exists() {
-            eprintln!("error: data file '{}' does not exist.", p.display());
-            std::process::exit(1);
+            anyhow::bail!("data file '{}' does not exist.", p.display());
         }
-        return p.to_path_buf();
+        return Ok(p.to_path_buf());
     }
-    eprintln!("error: --data-file <path> is required until automatic download is implemented.");
-    eprintln!(
-        "Obtain the dataset file from the URL shown by `zeph bench list --dataset {dataset}`."
+    anyhow::bail!(
+        "--data-file <path> is required until automatic download is implemented. \
+         Obtain the dataset file from the URL shown by `zeph bench list --dataset {dataset}`."
     );
-    std::process::exit(1);
 }
 
 /// Dispatch to the correct loader/evaluator pair based on dataset name.
@@ -519,13 +515,10 @@ async fn dispatch_run(
                 )
                 .await?)
         }
-        other => {
-            eprintln!(
-                "error: no built-in runner for dataset '{other}'. \
-                 Supported: locomo, gaia, frames, longmemeval, tau2-bench-retail, tau2-bench-airline."
-            );
-            std::process::exit(1);
-        }
+        other => anyhow::bail!(
+            "no built-in runner for dataset '{other}'. \
+             Supported: locomo, gaia, frames, longmemeval, tau2-bench-retail, tau2-bench-airline."
+        ),
     }
 }
 
@@ -629,6 +622,89 @@ mod tests {
 
         assert!(
             err.to_string().contains("unknown vault backend"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // Regression tests for #6709: these sites used to call `std::process::exit(1)` directly,
+    // bypassing `TracingGuards::drop`'s flush logic. They now report failure via
+    // `anyhow::bail!`/`?`, which is unit-testable for the first time (the old behavior killed
+    // the test process).
+
+    #[test]
+    fn handle_download_rejects_unknown_dataset() {
+        let err = handle_download("not-a-real-dataset").expect_err("unknown dataset must error");
+        assert!(
+            err.to_string().contains("unknown dataset"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn handle_download_reports_not_yet_implemented_for_known_dataset() {
+        // "gaia" is a real, registered dataset with no download support yet.
+        let err = handle_download("gaia").expect_err("unimplemented download must error");
+        assert!(
+            err.to_string().contains("not yet implemented"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn handle_show_rejects_missing_results_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist.json");
+        let err = handle_show(&missing).expect_err("missing results file must error");
+        assert!(
+            err.to_string().contains("does not exist"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_data_path_rejects_nonexistent_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist.jsonl");
+        let err = resolve_data_path("longmemeval", Some(&missing))
+            .expect_err("nonexistent data file must error");
+        assert!(
+            err.to_string().contains("does not exist"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_data_path_rejects_missing_data_file_flag() {
+        let err =
+            resolve_data_path("longmemeval", None).expect_err("missing --data-file must error");
+        assert!(
+            err.to_string().contains("--data-file"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_run_rejects_unsupported_dataset() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        let provider = AnyProvider::Mock(MockProvider::with_responses(vec![]));
+        let runner = BenchRunner::new(provider);
+        let opts = RunOptions {
+            scenario_filter: None,
+            completed_ids: std::collections::HashSet::new(),
+            memory_mode: MemoryMode::Off,
+        };
+        let err = dispatch_run(
+            &runner,
+            "not-a-supported-dataset",
+            std::path::Path::new("x"),
+            opts,
+        )
+        .await
+        .expect_err("unsupported dataset must error");
+        assert!(
+            err.to_string().contains("no built-in runner"),
             "unexpected error: {err}"
         );
     }

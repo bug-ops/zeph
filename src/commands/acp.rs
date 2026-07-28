@@ -69,7 +69,7 @@ pub(crate) async fn handle_acp_command(
             command: AcpModelConfigCommand::Show,
         } => {
             let config_file = resolve_config_path(config_path);
-            let config = load_config_or_default(&config_file);
+            let config = load_config_or_default(&config_file)?;
             print!("{}", render_model_config_table(&config, &config_file));
             Ok(())
         }

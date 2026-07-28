@@ -13,7 +13,7 @@ pub(crate) async fn handle_sessions_command(
     use zeph_memory::store::SqliteStore;
 
     let config_file = resolve_config_path(config_path);
-    let config = load_config_or_default(&config_file);
+    let config = load_config_or_default(&config_file)?;
     let store = SqliteStore::new(crate::db_url::resolve_db_url(&config))
         .await
         .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;

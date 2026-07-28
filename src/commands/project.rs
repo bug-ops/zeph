@@ -33,7 +33,7 @@ pub(crate) async fn handle_project_command(
 
             let effective_path = purge_config.as_deref().or(global_config_path);
             let config_file = resolve_config_path(effective_path);
-            let config = load_config_or_default(&config_file);
+            let config = load_config_or_default(&config_file)?;
 
             run_purge(&config, dry_run, yes).await
         }

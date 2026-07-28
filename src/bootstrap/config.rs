@@ -7,26 +7,59 @@ use crate::bootstrap::VaultArgs;
 use zeph_config::VaultBackend;
 use zeph_core::config::Config;
 
+/// Error returned by [`load_config_or_default`] when the config file exists but fails to parse.
+///
+/// Deliberately does *not* print anything itself (unlike the old inline `eprintln!` +
+/// `std::process::exit`) — every caller already returns `anyhow::Result<...>`, so the standard
+/// `?` operator propagates this up to `main()`, which prints it once via its default `Error:
+/// {e:?}` handler and exits non-zero. This is flush-safe by construction: propagating an `Err`
+/// unwinds the stack normally, so any `TracingGuards` local (e.g. in `run()`) still drops and
+/// flushes before `main()` ever sees the error — no `std::process::exit` call sits between the
+/// failure and `?`'s propagation up through `run()`, unlike the pre-#6709 code (#6709).
+#[derive(Debug)]
+pub struct ConfigLoadError {
+    path: PathBuf,
+    source: zeph_config::ConfigError,
+}
+
+impl std::fmt::Display for ConfigLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The source (`self.source`) is intentionally omitted here — it is exposed via
+        // `Error::source()` below, which anyhow's chain rendering already walks and prints once;
+        // including it in both places produced a doubled "failed to parse ...: TOML parse
+        // error..." followed by a "Caused by:" section repeating the same detail.
+        write!(f, "failed to parse config at {}", self.path.display())
+    }
+}
+
+impl std::error::Error for ConfigLoadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
 /// Load config from `path`, falling back to defaults with a notice when the file is absent.
 ///
-/// When the file does **not exist**, prints a notice to stderr and returns [`Config::default()`].
-/// When the file exists but fails to parse, prints the error to stderr and exits non-zero.
-pub fn load_config_or_default(path: &Path) -> Config {
+/// When the file does **not exist**, prints a notice to stderr and returns
+/// `Ok(Config::default())`. When the file exists but fails to parse, returns
+/// [`ConfigLoadError`] — propagate it with `?` from any `anyhow::Result`-returning caller.
+///
+/// # Errors
+///
+/// Returns [`ConfigLoadError`] when the file exists but its contents fail to parse.
+pub fn load_config_or_default(path: &Path) -> Result<Config, ConfigLoadError> {
     if !path.exists() {
         eprintln!(
             "Config file not found at {} — running with defaults. \
              Run 'zeph init' to create one.",
             path.display()
         );
-        return Config::default();
+        return Ok(Config::default());
     }
-    match zeph_config::Config::load(path) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            eprintln!("Failed to parse config at {}: {e}", path.display());
-            std::process::exit(1);
-        }
-    }
+    zeph_config::Config::load(path).map_err(|source| ConfigLoadError {
+        path: path.to_owned(),
+        source,
+    })
 }
 
 pub fn resolve_config_path(cli_override: Option<&Path>) -> PathBuf {
@@ -249,9 +282,21 @@ mod tests {
         // Drop the file so the path no longer exists.
         drop(tmp);
         assert!(!path.exists(), "temp file must be gone before the test");
-        let cfg = load_config_or_default(&path);
+        let cfg = load_config_or_default(&path).expect("missing file falls back to defaults");
         // A default config has the expected default agent name.
         let default_cfg = zeph_core::config::Config::default();
         assert_eq!(cfg.agent.name, default_cfg.agent.name);
+    }
+
+    #[test]
+    fn load_config_or_default_parse_failure_returns_err() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "this is not valid = = toml").unwrap();
+        let err = load_config_or_default(tmp.path())
+            .expect_err("malformed TOML must be reported, not silently defaulted");
+        assert!(
+            err.to_string().contains("failed to parse config at"),
+            "unexpected error message: {err}"
+        );
     }
 }

@@ -15,7 +15,7 @@ use zeph_db::{DbConfig, redact_url};
 /// the database connection / migration fails.
 pub(crate) async fn handle_db_migrate(config_path: Option<&std::path::Path>) -> anyhow::Result<()> {
     let config_path = resolve_config_path(config_path);
-    let config = load_config_or_default(&config_path);
+    let config = load_config_or_default(&config_path)?;
 
     let db_url = crate::db_url::resolve_db_url(&config);
 

@@ -116,7 +116,7 @@ pub(crate) async fn handle_serve_sessions_command(
     use crate::bootstrap::{load_config_or_default, resolve_config_path};
 
     let config_file = resolve_config_path(config_path);
-    let config = load_config_or_default(&config_file);
+    let config = load_config_or_default(&config_file)?;
     let serve_config = &config.serve;
 
     let http_addr: SocketAddr = args

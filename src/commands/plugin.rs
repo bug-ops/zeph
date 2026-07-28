@@ -65,7 +65,7 @@ pub(crate) async fn handle_plugin_command(
     use crate::bootstrap::{load_config_or_default, resolve_config_path};
 
     let config_file = resolve_config_path(config_path);
-    let config = load_config_or_default(&config_file);
+    let config = load_config_or_default(&config_file)?;
 
     let plugins_dir = crate::bootstrap::plugins_dir();
     std::fs::create_dir_all(&plugins_dir)

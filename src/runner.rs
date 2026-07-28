@@ -814,7 +814,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
 
     // Load logging config early (sync, cheap) so every code path gets file logging.
     let config_path = resolve_config_path(cli.config.as_deref());
-    let base_config = load_config_or_default(&config_path);
+    let base_config = load_config_or_default(&config_path)?;
     let logging_config =
         resolve_logging_config(base_config.logging.clone(), cli.log_file.as_deref());
     let telemetry_config = &base_config.telemetry;
@@ -1059,7 +1059,11 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         }
         Some(Command::Classifiers { command: clf_cmd }) => {
             let config_path = resolve_config_path(cli.config.as_deref());
-            let config = load_config_or_default(&config_path);
+            // A parse failure here returns `Err` and propagates via `?`, which drops (and
+            // flushes) `tracing_guards` through ordinary stack unwind — no explicit
+            // `exit_with_flush` call needed, since only a bare `std::process::exit` (which
+            // this deliberately avoids) would skip that drop (#6709).
+            let config = load_config_or_default(&config_path)?;
             return handle_classifiers_command(&clf_cmd, &config);
         }
         Some(Command::Db { command: db_cmd }) => {
@@ -1083,6 +1087,10 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         }
         #[cfg(feature = "bench")]
         Some(Command::Bench { command: bench_cmd }) => {
+            // `handle_bench_command`'s early-exit paths (unknown dataset, missing data file,
+            // unparseable config, ...) all report failure via `anyhow::bail!`/`?` rather than
+            // calling `std::process::exit` directly, so an ordinary `Err` return here already
+            // drops (and flushes) `tracing_guards` through normal stack unwind (#6709).
             return crate::commands::bench::handle_bench_command(
                 &bench_cmd,
                 cli.config.as_deref(),
@@ -4508,7 +4516,13 @@ fn handle_url_open(
 
     // Load config once; all subsequent validations reference the same instance.
     let config_path = resolve_config_path(config_override);
-    let config = load_config_or_default(&config_path);
+    let config = match load_config_or_default(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("zeph url-open: {e}");
+            return Some(1);
+        }
+    };
 
     // Validate CWD and change working directory.
     if let Some(ref cwd) = params.cwd {
@@ -4726,6 +4740,27 @@ mod deep_link_tests {
         assert!(
             matches!(result, Some(1)),
             "expected Some(1) for an invalid URI, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn handle_url_open_returns_exit_code_for_unparseable_config() {
+        // Regression test for #6709: `load_config_or_default`'s parse-failure branch used to
+        // call `std::process::exit(1)` directly inside `handle_url_open`, bypassing
+        // `TracingGuards::drop`. It now returns `Err`, which this call site converts to
+        // `Some(1)` like every other validation failure in this function.
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let config_path = tmp.path().join("malformed-config.toml");
+        std::fs::write(&config_path, "this is not valid = = toml").expect("write fixture");
+        let mut cli = crate::cli::Cli::default();
+        let result = super::handle_url_open(
+            "zeph://new-session".to_owned(),
+            Some(&config_path),
+            &mut cli,
+        );
+        assert!(
+            matches!(result, Some(1)),
+            "expected Some(1) for an unparseable config file, got {result:?}"
         );
     }
 

@@ -514,7 +514,7 @@ async fn handle_durable_command_inner(
     vault_path_override: Option<&Path>,
 ) -> anyhow::Result<()> {
     let config_file = crate::bootstrap::resolve_config_path(config_path);
-    let config = load_config_or_default(&config_file);
+    let config = load_config_or_default(&config_file)?;
     // CLI-resolved vault key/secrets-file paths (--vault-key/--vault-path overrides, falling
     // back to default_vault_dir()) — see `crate::bootstrap::resolve_vault_paths` (#6548). Shared
     // by every key-material loader this command dispatches to below.
@@ -1937,7 +1937,7 @@ mod tests {
     async fn handle_durable_command_cancel_marks_a_running_execution_canceled() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = write_config_toml(dir.path());
-        let config = load_config_or_default(&config_path);
+        let config = load_config_or_default(&config_path).unwrap();
 
         let exec = ExecutionId::new();
         {
@@ -2015,7 +2015,7 @@ mod tests {
     async fn handle_durable_command_resume_on_canceled_execution_refuses_distinctly() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = write_config_toml(dir.path());
-        let config = load_config_or_default(&config_path);
+        let config = load_config_or_default(&config_path).unwrap();
 
         let exec = ExecutionId::new();
         {
@@ -2369,7 +2369,10 @@ mod tests {
             "rotate-key must resolve the vault from the explicit --vault-key/--vault-path \
              override, not default_vault_dir() (which is empty in this test): {result:?}"
         );
-        assert_eq!(load_config_or_default(&config_path).durable.key_id, 1);
+        assert_eq!(
+            load_config_or_default(&config_path).unwrap().durable.key_id,
+            1
+        );
 
         // The rotated ZEPH_DURABLE_KEY_PREVIOUS must land in the OVERRIDE vault, not the
         // (empty) default_vault_dir().
@@ -2467,7 +2470,7 @@ mod tests {
         .await;
         assert!(result.is_ok(), "rotate-key must succeed: {result:?}");
 
-        let config = load_config_or_default(&config_path);
+        let config = load_config_or_default(&config_path).unwrap();
         assert_eq!(config.durable.key_id, 1);
         assert_eq!(config.durable.previous_key_id, Some(0));
 
@@ -2506,7 +2509,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let after_first = load_config_or_default(&config_path);
+        let after_first = load_config_or_default(&config_path).unwrap();
         assert_eq!(after_first.durable.previous_key_id, Some(0));
 
         let result = handle_durable_command(
@@ -2526,7 +2529,7 @@ mod tests {
             "a second rotation while a window is open must be refused"
         );
 
-        let after_second = load_config_or_default(&config_path);
+        let after_second = load_config_or_default(&config_path).unwrap();
         assert_eq!(
             after_second.durable, after_first.durable,
             "the refused second rotation must not mutate config"
@@ -2635,7 +2638,7 @@ mod tests {
         // Seal a payload directly under key-id 0 (the now-previous key) by writing through a
         // no-cipher backend with a byte-0-prefixed plaintext payload — this exercises the scan
         // predicate itself without depending on the real AEAD cipher's on-disk framing.
-        let config = load_config_or_default(&config_path);
+        let config = load_config_or_default(&config_path).unwrap();
         let url = resolve_durable_db_url(&config);
         let backend = LocalBackend::open(&url, config.durable.max_payload_bytes)
             .await
@@ -2681,7 +2684,10 @@ mod tests {
             "drop-previous must refuse while a matching sealed payload remains"
         );
         assert_eq!(
-            load_config_or_default(&config_path).durable.previous_key_id,
+            load_config_or_default(&config_path)
+                .unwrap()
+                .durable
+                .previous_key_id,
             Some(0),
             "the refused drop must not clear previous_key_id"
         );
@@ -2700,7 +2706,10 @@ mod tests {
         .await;
         assert!(forced.is_ok(), "--force must skip the scan: {forced:?}");
         assert_eq!(
-            load_config_or_default(&config_path).durable.previous_key_id,
+            load_config_or_default(&config_path)
+                .unwrap()
+                .durable
+                .previous_key_id,
             None,
             "--force must still clear previous_key_id once it proceeds"
         );
@@ -2775,9 +2784,15 @@ mod tests {
             "a shared database must rotate without any acknowledgement flag now that the \
              control-entry HMAC key has its own rotation window: {result:?}"
         );
-        assert_eq!(load_config_or_default(&config_path).durable.key_id, 1);
         assert_eq!(
-            load_config_or_default(&config_path).durable.previous_key_id,
+            load_config_or_default(&config_path).unwrap().durable.key_id,
+            1
+        );
+        assert_eq!(
+            load_config_or_default(&config_path)
+                .unwrap()
+                .durable
+                .previous_key_id,
             Some(0)
         );
     }
@@ -2967,7 +2982,7 @@ mod tests {
         .await
         .unwrap();
 
-        let final_config = load_config_or_default(&config_path);
+        let final_config = load_config_or_default(&config_path).unwrap();
         assert_eq!(final_config.durable.previous_key_id, None);
         let backend = open_backend(
             &final_config,
@@ -3017,7 +3032,7 @@ mod tests {
         .await
         .unwrap();
 
-        let config = load_config_or_default(&config_path);
+        let config = load_config_or_default(&config_path).unwrap();
         let url = resolve_durable_db_url(&config);
         let backend = LocalBackend::open(&url, config.durable.max_payload_bytes)
             .await
@@ -3073,7 +3088,10 @@ mod tests {
             "--drop-previous --dry-run must still refuse when a matching sealed payload remains"
         );
         assert_eq!(
-            load_config_or_default(&config_path).durable.previous_key_id,
+            load_config_or_default(&config_path)
+                .unwrap()
+                .durable
+                .previous_key_id,
             Some(0),
             "the refused dry-run drop must not clear previous_key_id"
         );
@@ -3168,7 +3186,7 @@ mod tests {
         .await
         .unwrap();
 
-        let rotated_config = load_config_or_default(&config_path);
+        let rotated_config = load_config_or_default(&config_path).unwrap();
         assert_eq!(rotated_config.durable.key_id, 1);
         assert_eq!(rotated_config.durable.previous_key_id, Some(0));
 
@@ -3267,7 +3285,7 @@ mod tests {
         .await
         .unwrap();
 
-        let rotated = load_config_or_default(&config_path);
+        let rotated = load_config_or_default(&config_path).unwrap();
         let url = resolve_durable_db_url(&rotated);
         let vault_root = zeph_core::vault::default_vault_dir();
         let previous_hmac = load_control_hmac_key(
@@ -3364,7 +3382,7 @@ mod tests {
         .await
         .unwrap();
 
-        let rotated = load_config_or_default(&config_path);
+        let rotated = load_config_or_default(&config_path).unwrap();
         let url = resolve_durable_db_url(&rotated);
         let vault_root = zeph_core::vault::default_vault_dir();
         let previous_hmac = load_control_hmac_key(
@@ -3425,7 +3443,10 @@ mod tests {
              the previous control-entry HMAC key"
         );
         assert_eq!(
-            load_config_or_default(&config_path).durable.previous_key_id,
+            load_config_or_default(&config_path)
+                .unwrap()
+                .durable
+                .previous_key_id,
             Some(0),
             "the refused drop must not clear previous_key_id"
         );
@@ -3479,7 +3500,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let rotated = load_config_or_default(&config_path);
+        let rotated = load_config_or_default(&config_path).unwrap();
         assert_eq!(rotated.durable.previous_key_id, Some(0));
 
         let url = resolve_durable_db_url(&rotated);
@@ -3528,7 +3549,10 @@ mod tests {
              even with no payload or control-entry evidence"
         );
         assert_eq!(
-            load_config_or_default(&config_path).durable.previous_key_id,
+            load_config_or_default(&config_path)
+                .unwrap()
+                .durable
+                .previous_key_id,
             Some(0),
             "the refused drop must not clear previous_key_id"
         );
@@ -3568,7 +3592,7 @@ mod tests {
 
         let exec = ExecutionId::new();
         {
-            let config = load_config_or_default(&config_path);
+            let config = load_config_or_default(&config_path).unwrap();
             let vault_root = zeph_core::vault::default_vault_dir();
             let hwm_keys = load_write_hwm_key(
                 &config,
@@ -3627,7 +3651,7 @@ mod tests {
         .await
         .unwrap();
 
-        let rotated = load_config_or_default(&config_path);
+        let rotated = load_config_or_default(&config_path).unwrap();
         assert_eq!(rotated.durable.key_id, 1);
         assert_eq!(rotated.durable.previous_key_id, Some(0));
         let vault_root = zeph_core::vault::default_vault_dir();

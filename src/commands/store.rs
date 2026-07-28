@@ -14,7 +14,7 @@ pub(crate) async fn handle_store_command(
     use zeph_memory::store::SqliteStore;
 
     let config_file = resolve_config_path(config_path);
-    let config = load_config_or_default(&config_file);
+    let config = load_config_or_default(&config_file)?;
     if !config.memory.store.enabled {
         anyhow::bail!(
             "cross-thread store is disabled ([memory.store].enabled = false in {}); \

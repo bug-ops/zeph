@@ -148,6 +148,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph` (binary): closed every remaining `std::process::exit` call site reachable from `run()`
+  after `init_tracing` (issue #6709, follow-up to #6708/#6698) — the last of the guard-flush-
+  bypass bug class where a direct `exit()` skips `TracingGuards::drop`'s flush and can truncate
+  the log file or local trace. `load_config_or_default` (`src/bootstrap/config.rs`) no longer
+  exits internally on a config parse failure; it returns `Result<Config, ConfigLoadError>` and
+  every one of its 18 callers propagates the failure via `?`, which unwinds normally and flushes
+  `tracing_guards` before `main()` ever sees the error — no explicit flush call needed, since the
+  bug was always the bare `exit()`, not the absence of a signal-passing mechanism. Applied the
+  same treatment to `commands/bench.rs`'s 7 `std::process::exit` sites (`handle_download`,
+  `handle_show`, `handle_run`, `resolve_data_path`, `dispatch_run`), converting them to
+  `anyhow::bail!`/`?`. `handle_url_open`'s own config-load call (a latent instance of the same
+  bug left behind by #6708) is fixed too. Zero application-level `std::process::exit` calls
+  remain in `src/` outside `tracing_init.rs`'s own sanctioned flush-then-exit primitives.
 - `zeph-skills`, `zeph-core`: `SkillGenerator::write_quarantined` wrote an AutoSkill draft's
   `SKILL.md` to `_quarantine/<name>/` but never persisted a `skill_trust` DB row (issue #6702).
   The doc comment claimed the `_quarantine` directory prefix kept the registry from ever loading

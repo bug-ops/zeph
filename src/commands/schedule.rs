@@ -109,7 +109,7 @@ pub(crate) async fn handle_schedule_command(
     use zeph_scheduler::JobStore;
 
     let config_file = resolve_config_path(config_path);
-    let config = load_config_or_default(&config_file);
+    let config = load_config_or_default(&config_file)?;
     let db_url = crate::db_url::resolve_db_url(&config);
     let store = JobStore::open(db_url)
         .await
