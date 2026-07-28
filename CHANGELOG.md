@@ -161,6 +161,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `anyhow::bail!`/`?`. `handle_url_open`'s own config-load call (a latent instance of the same
   bug left behind by #6708) is fixed too. Zero application-level `std::process::exit` calls
   remain in `src/` outside `tracing_init.rs`'s own sanctioned flush-then-exit primitives.
+- `zeph-subagent`, `zeph-core`: `zeph_subagent::filter_skills` performed no trust-level
+  filtering at all (issue #6713) — `Quarantined` and `Blocked` skills were returned
+  identically to `Trusted`/`Verified` ones, and `filtered_skills_for` injects those bodies
+  directly and unconditionally into a freshly-spawned sub-agent's one-shot system prompt with
+  no later catalog/annotation surface. `filter_skills` now takes a
+  `&HashMap<String, zeph_common::SkillTrustLevel>` and drops any skill whose resolved trust
+  level is `Quarantined` or `Blocked` (logging a `tracing::warn!` per excluded skill, matching
+  the main agent's D1 activation filter), mirroring `filter_active_skills_by_trust` (#6701); a
+  skill absent from the map still falls back to `Trusted`
+  (`SkillTrustLevel::MISSING_ENTRY_FALLBACK`). `filtered_skills_for` is now `async` and resolves
+  the trust map fresh via `build_skill_trust_map` on every call (same Fresh/`LoadFailed`
+  fallback policy as `reload_skills`) instead of reading the cached `trust_snapshot` directly —
+  on the slash-command/@mention spawn path nothing populates that cache beforehand, so the
+  fix was otherwise inert there. Breaking change for external callers: `filter_skills` (a
+  `pub` crate-root re-export of `zeph-subagent`) gained a required third parameter.
 - `zeph-skills`, `zeph-core`: `SkillGenerator::write_quarantined` wrote an AutoSkill draft's
   `SKILL.md` to `_quarantine/<name>/` but never persisted a `skill_trust` DB row (issue #6702).
   The doc comment claimed the `_quarantine` directory prefix kept the registry from ever loading

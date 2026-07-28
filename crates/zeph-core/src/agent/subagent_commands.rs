@@ -473,7 +473,7 @@ impl<C: Channel> Agent<C> {
     async fn handle_agent_background(&mut self, name: &str, prompt: &str) -> Option<String> {
         let provider = self.provider.clone();
         let tool_executor = Arc::clone(&self.tool_executor);
-        let skills = self.filtered_skills_for(name);
+        let skills = self.filtered_skills_for(name).await;
         let cfg = self.services.orchestration.subagent_config.clone();
         let mut spawn_ctx = self.build_spawn_context(&cfg);
         // Background durable: seat wired so child can resolve; on a fresh run the promise
@@ -584,7 +584,7 @@ impl<C: Channel> Agent<C> {
     async fn handle_agent_spawn_foreground(&mut self, name: &str, prompt: &str) -> Option<String> {
         let provider = self.provider.clone();
         let tool_executor = Arc::clone(&self.tool_executor);
-        let skills = self.filtered_skills_for(name);
+        let skills = self.filtered_skills_for(name).await;
         let cfg = self.services.orchestration.subagent_config.clone();
         let mut spawn_ctx = self.build_spawn_context(&cfg);
         // Wire the durable resolver seat so the child can resolve its promise on exit. On a
@@ -682,7 +682,7 @@ impl<C: Channel> Agent<C> {
                 Err(e) => return Some(format!("Failed to resume sub-agent: {e}")),
             }
         };
-        let skills = self.filtered_skills_for(&def_name);
+        let skills = self.filtered_skills_for(&def_name).await;
         let provider = self.provider.clone();
         let tool_executor = Arc::clone(&self.tool_executor);
         // Built before borrowing `subagent_manager` mutably below (build_spawn_context takes
@@ -761,11 +761,39 @@ impl<C: Channel> Agent<C> {
     /// included even if it alone exceeds the budget, so a single oversized skill never starves
     /// the whole set. Any skills left out are surfaced via a synthetic marker entry rather than
     /// silently dropped.
-    pub(super) fn filtered_skills_for(&self, agent_name: &str) -> Option<Vec<String>> {
-        let mgr = self.services.orchestration.subagent_manager.as_ref()?;
-        let def = mgr.definitions().iter().find(|d| d.name == agent_name)?;
+    pub(super) async fn filtered_skills_for(&mut self, agent_name: &str) -> Option<Vec<String>> {
+        let def_skills = {
+            let mgr = self.services.orchestration.subagent_manager.as_ref()?;
+            mgr.definitions()
+                .iter()
+                .find(|d| d.name == agent_name)?
+                .skills
+                .clone()
+        };
+
+        // #6713 (S1): this must resolve the trust map fresh rather than reading the cached
+        // `trust_snapshot` directly — on the slash-command/@mention spawn path, nothing has
+        // run `resolve_trust_map` (or any per-turn trust load) before a sub-agent is spawned,
+        // so the cached snapshot can be stale or (on a fresh session) still empty. Same
+        // Fresh/LoadFailed fallback policy as `reload_skills` (skill_reload.rs): a load
+        // failure reuses the last-known snapshot instead of failing open to Trusted.
+        let trust_map = match self.build_skill_trust_map().await {
+            crate::agent::trust_commands::SkillTrustMapLoad::Fresh(map) => {
+                self.services.skill.trust_snapshot.write().clone_from(&map);
+                map
+            }
+            crate::agent::trust_commands::SkillTrustMapLoad::LoadFailed => {
+                tracing::warn!(
+                    "filtered_skills_for: trust snapshot load failed, reusing previous \
+                     snapshot for sub-agent skill filtering"
+                );
+                self.services.skill.trust_snapshot.read().clone()
+            }
+        };
+        let trust_levels = crate::skill_invoker::snapshot_map_to_trust_levels(&trust_map);
+
         let reg = self.services.skill.registry.read();
-        let skills = match zeph_subagent::filter_skills(&reg, &def.skills) {
+        let skills = match zeph_subagent::filter_skills(&reg, &def_skills, &trust_levels) {
             Ok(skills) => skills,
             Err(e) => {
                 tracing::warn!(error = %e, "skill filtering failed for sub-agent");
@@ -778,7 +806,7 @@ impl<C: Channel> Agent<C> {
 
         // #6421 scope: only the empty-include "inherit everything" case is capped. An explicit,
         // hand-curated include list is trusted as-is (see doc comment above).
-        if !def.skills.include.is_empty() {
+        if !def_skills.include.is_empty() {
             return Some(skills.into_iter().map(|s| s.body).collect());
         }
 
@@ -2203,15 +2231,26 @@ mod tests {
         agent.services.orchestration.subagent_manager = Some(mgr);
 
         // Parent's own current trust is restricted this turn by an active Quarantined skill.
+        // The row is persisted through a real (in-memory) `SemanticMemory` store rather than
+        // written directly to `trust_snapshot`, because `handle_agent_background` now calls
+        // `filtered_skills_for`, which resolves the trust map fresh from the store on every
+        // spawn (#6713 S1) — a direct write to the cache would just be clobbered by that fresh
+        // (and, with no memory attached, empty) load before `build_spawn_context` reads it.
+        let memory = test_memory_for_trust().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "evil-skill",
+                zeph_common::SkillTrustLevel::Quarantined,
+                zeph_memory::store::SourceKind::Local,
+                None,
+                None,
+                "hash-evil",
+            )
+            .await
+            .unwrap();
+        agent = agent.with_memory(memory, zeph_memory::ConversationId(1), 50, 5, 50);
         agent.services.skill.active_skill_names = vec!["evil-skill".into()];
-        agent.services.skill.trust_snapshot.write().insert(
-            "evil-skill".into(),
-            crate::skill_invoker::SkillTrustSnapshot {
-                trust_level: zeph_common::SkillTrustLevel::Quarantined,
-                requires_trust_check: false,
-                blake3_hash: String::new(),
-            },
-        );
 
         let resp = agent.handle_agent_background("helper", "do work").await;
         assert!(
@@ -2477,8 +2516,8 @@ mod tests {
         agent_with_skill_registry_and_def(registry, subagent_def("helper"))
     }
 
-    #[test]
-    fn filtered_skills_for_under_budget_returns_all_bodies_no_marker() {
+    #[tokio::test]
+    async fn filtered_skills_for_under_budget_returns_all_bodies_no_marker() {
         // Default `SkillFilter` (empty include/exclude) inherits every registry skill —
         // the #6421 scenario — but the budget here is generous enough that nothing is cut.
         let (registry, _temp_dir) = registry_with_skills(3, 20);
@@ -2487,6 +2526,7 @@ mod tests {
 
         let bodies = agent
             .filtered_skills_for("helper")
+            .await
             .expect("3 skills with a huge budget must return Some");
 
         assert_eq!(
@@ -2502,8 +2542,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn filtered_skills_for_over_budget_truncates_with_marker() {
+    #[tokio::test]
+    async fn filtered_skills_for_over_budget_truncates_with_marker() {
         // 5 skills, each with a large body; a tiny budget forces truncation well before the
         // full set is accumulated.
         let (registry, _temp_dir) = registry_with_skills(5, 500);
@@ -2512,6 +2552,7 @@ mod tests {
 
         let bodies = agent
             .filtered_skills_for("helper")
+            .await
             .expect("at least the first skill must always be included");
 
         let marker_count = bodies
@@ -2551,8 +2592,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn filtered_skills_for_mid_budget_greedily_fills_multiple_fitting_skills() {
+    #[tokio::test]
+    async fn filtered_skills_for_mid_budget_greedily_fills_multiple_fitting_skills() {
         // 5 identical-body skills so each costs exactly the same token count T (computed via the
         // same TokenCounter the fix uses). A budget of `2*T + 1` fits skill-0 and skill-1 exactly
         // (running total 2T <= budget) but not a 3rd (3T > budget) — this exercises the greedy
@@ -2573,6 +2614,7 @@ mod tests {
 
         let bodies = agent
             .filtered_skills_for("helper")
+            .await
             .expect("at least the first skill must always be included");
 
         let marker = bodies
@@ -2605,8 +2647,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn filtered_skills_for_explicit_include_is_never_capped() {
+    #[tokio::test]
+    async fn filtered_skills_for_explicit_include_is_never_capped() {
         // S1 (scope decision): the budget cap applies only to the empty-include "inherit
         // everything" case #6421 is about. A definition with an explicit, hand-curated
         // `skills.include` list must be returned uncapped even when its total size would
@@ -2639,6 +2681,7 @@ mod tests {
 
         let bodies = agent
             .filtered_skills_for("curated")
+            .await
             .expect("explicit include must still match all 5 skill-* skills");
 
         assert_eq!(
@@ -2649,6 +2692,100 @@ mod tests {
         assert!(
             bodies.iter().all(|b| b.contains("lorem")),
             "every entry must be a real skill body, not a truncation marker: {bodies:?}"
+        );
+    }
+
+    /// In-memory SQLite-backed `SemanticMemory` for tests exercising `build_skill_trust_map`'s
+    /// real DB read path (mirrors `trust_commands::tests::test_memory`).
+    async fn test_memory_for_trust() -> Arc<zeph_memory::semantic::SemanticMemory> {
+        let provider = zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default());
+        Arc::new(
+            zeph_memory::semantic::SemanticMemory::new(
+                ":memory:",
+                "http://127.0.0.1:1",
+                None,
+                provider,
+                "test-model",
+            )
+            .await
+            .unwrap(),
+        )
+    }
+
+    /// End-to-end regression for #6713: `filter_skills` (called via `filtered_skills_for`)
+    /// previously had no trust filtering at all, so a Quarantined or Blocked skill's body was
+    /// injected directly into a freshly-spawned sub-agent's system prompt unconditionally.
+    ///
+    /// Trust rows are persisted through a real (in-memory) `SemanticMemory` store rather than
+    /// written directly to `trust_snapshot`, because `filtered_skills_for` now resolves the
+    /// trust map fresh from the store on every call (#6713 S1) — writing straight to the cache
+    /// would just be clobbered by that fresh load.
+    #[tokio::test]
+    async fn filtered_skills_for_excludes_quarantined_and_blocked_skill_bodies() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        for (name, body) in [
+            ("trusted-skill", "TRUSTED_BODY_MARKER"),
+            ("quarantined-skill", "QUARANTINED_BODY_MARKER"),
+            ("blocked-skill", "BLOCKED_BODY_MARKER"),
+        ] {
+            let skill_dir = temp_dir.path().join(name);
+            std::fs::create_dir(&skill_dir).unwrap();
+            std::fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: test skill\n---\n{body}"),
+            )
+            .unwrap();
+        }
+        let registry = SkillRegistry::load(&[temp_dir.path().to_path_buf()]);
+        let memory = test_memory_for_trust().await;
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "quarantined-skill",
+                zeph_common::SkillTrustLevel::Quarantined,
+                zeph_memory::store::SourceKind::Local,
+                None,
+                None,
+                "hash-quarantined",
+            )
+            .await
+            .unwrap();
+        memory
+            .sqlite()
+            .upsert_skill_trust(
+                "blocked-skill",
+                zeph_common::SkillTrustLevel::Blocked,
+                zeph_memory::store::SourceKind::Local,
+                None,
+                None,
+                "hash-blocked",
+            )
+            .await
+            .unwrap();
+        let mut agent = agent_with_skill_registry_and_helper_def(registry).with_memory(
+            memory,
+            zeph_memory::ConversationId(1),
+            50,
+            5,
+            50,
+        );
+        agent.services.skill.subagent_skill_token_budget = 1_000_000;
+
+        let bodies = agent
+            .filtered_skills_for("helper")
+            .await
+            .expect("the Trusted skill alone must still be returned");
+
+        assert_eq!(
+            bodies.len(),
+            1,
+            "only the Trusted skill's body may be injected, got: {bodies:?}"
+        );
+        assert!(bodies[0].contains("TRUSTED_BODY_MARKER"));
+        assert!(
+            !bodies.iter().any(|b| b.contains("QUARANTINED_BODY_MARKER")
+                || b.contains("BLOCKED_BODY_MARKER")),
+            "Quarantined and Blocked skill bodies must never be injected, got: {bodies:?}"
         );
     }
 }

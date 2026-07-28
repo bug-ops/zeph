@@ -9,7 +9,8 @@
 //! [`PlanModeExecutor`] wraps any executor to allow catalog inspection while blocking all
 //! execution — implementing the read-only planning permission mode.
 //!
-//! [`filter_skills`] applies glob-based include/exclude patterns against a skill registry.
+//! [`filter_skills`] applies glob-based include/exclude patterns and trust-level gating
+//! against a skill registry.
 
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -474,7 +475,7 @@ impl ErasedToolExecutor for NetworkDenyToolExecutor {
 
 // ── Skill filtering ───────────────────────────────────────────────────────────
 
-/// Filter skills from a registry according to a [`SkillFilter`].
+/// Filter skills from a registry according to a [`SkillFilter`] and trust levels.
 ///
 /// Include patterns are glob-matched against skill names. If `include` is empty,
 /// all skills pass (unless excluded). Exclude patterns always take precedence.
@@ -484,6 +485,16 @@ impl ErasedToolExecutor for NetworkDenyToolExecutor {
 /// - Literal strings — exact match only
 /// - `**` is **not** supported and returns [`SubAgentError::Invalid`]
 ///
+/// A skill whose resolved trust level (via `trust_levels`) is `Quarantined` or `Blocked` is
+/// dropped regardless of the glob filter. This is the sub-agent counterpart of the main agent's
+/// D1 activation filter (`filter_active_skills_by_trust` in
+/// `crates/zeph-core/src/agent/context/assembly.rs`, #6701): unlike the main agent's
+/// `<other_skills>` catalog, which can annotate an untrusted skill instead of dropping it,
+/// [`filter_skills`]'s return value is injected directly and unconditionally into a
+/// freshly-spawned sub-agent's one-shot system prompt, so an untrusted skill must never be
+/// returned at all. A skill absent from `trust_levels` falls back to `Trusted`
+/// (`SkillTrustLevel::MISSING_ENTRY_FALLBACK`), matching the same sibling pattern.
+///
 /// # Errors
 ///
 /// Returns [`SubAgentError::Invalid`] if any glob pattern is syntactically invalid.
@@ -491,18 +502,23 @@ impl ErasedToolExecutor for NetworkDenyToolExecutor {
 /// # Examples
 ///
 /// ```rust,no_run
+/// use std::collections::HashMap;
+///
 /// use zeph_skills::registry::SkillRegistry;
 /// use zeph_subagent::filter_skills;
 /// use zeph_subagent::SkillFilter;
 ///
 /// let registry = SkillRegistry::load(&[] as &[&str]);
 /// let filter = SkillFilter { include: vec![], exclude: vec![] };
-/// let skills = filter_skills(&registry, &filter).unwrap();
+/// let trust_levels = HashMap::new();
+/// let skills = filter_skills(&registry, &filter, &trust_levels).unwrap();
 /// assert!(skills.is_empty());
 /// ```
+#[allow(clippy::implicit_hasher)]
 pub fn filter_skills(
     registry: &SkillRegistry,
     filter: &SkillFilter,
+    trust_levels: &HashMap<String, zeph_common::SkillTrustLevel>,
 ) -> Result<Vec<Skill>, SubAgentError> {
     let compiled_include = compile_globs(&filter.include)?;
     let compiled_exclude = compile_globs(&filter.exclude)?;
@@ -516,6 +532,25 @@ pub fn filter_skills(
                 compiled_include.is_empty() || compiled_include.iter().any(|p| glob_match(p, name));
             let excluded = compiled_exclude.iter().any(|p| glob_match(p, name));
             included && !excluded
+        })
+        .filter(|meta| {
+            let level = trust_levels
+                .get(&meta.name)
+                .copied()
+                .unwrap_or(zeph_common::SkillTrustLevel::MISSING_ENTRY_FALLBACK);
+            if level.is_hidden_from_catalog() {
+                tracing::warn!(
+                    skill = %meta.name,
+                    trust = %level,
+                    "skill excluded from sub-agent injection (trust={}); promote with \
+                     `zeph skill trust {} trusted` if this skill is safe",
+                    level,
+                    meta.name
+                );
+                false
+            } else {
+                true
+            }
         })
         .filter_map(|meta| registry.skill(&meta.name).ok())
         .collect();
@@ -1674,7 +1709,7 @@ mod tests {
     fn filter_skills_empty_registry_returns_empty() {
         let registry = zeph_skills::registry::SkillRegistry::load(&[] as &[&str]);
         let filter = SkillFilter::default();
-        let result = filter_skills(&registry, &filter).unwrap();
+        let result = filter_skills(&registry, &filter, &HashMap::new()).unwrap();
         assert!(result.is_empty());
     }
 
@@ -1687,7 +1722,7 @@ mod tests {
             include: vec![],
             exclude: vec![],
         };
-        let result = filter_skills(&registry, &filter).unwrap();
+        let result = filter_skills(&registry, &filter, &HashMap::new()).unwrap();
         assert!(result.is_empty());
     }
 
@@ -1698,8 +1733,61 @@ mod tests {
             include: vec!["**".into()],
             exclude: vec![],
         };
-        let err = filter_skills(&registry, &filter).unwrap_err();
+        let err = filter_skills(&registry, &filter, &HashMap::new()).unwrap_err();
         assert_matches!(err, SubAgentError::Invalid(_));
+    }
+
+    /// Builds a `SkillRegistry` with fixture skills "trusted-skill", "quarantined-skill",
+    /// "blocked-skill", "unclassified-skill" backed by a temp dir. The `TempDir` guard must be
+    /// kept alive for as long as the registry is used — skill bodies load lazily from disk.
+    fn trust_fixture_registry() -> (tempfile::TempDir, zeph_skills::registry::SkillRegistry) {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "trusted-skill",
+            "quarantined-skill",
+            "blocked-skill",
+            "unclassified-skill",
+        ] {
+            let skill_dir = dir.path().join(name);
+            std::fs::create_dir(&skill_dir).unwrap();
+            std::fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: test skill\n---\nbody"),
+            )
+            .unwrap();
+        }
+        let registry = zeph_skills::registry::SkillRegistry::load(&[dir.path().to_path_buf()]);
+        (dir, registry)
+    }
+
+    #[test]
+    fn filter_skills_excludes_quarantined_and_blocked_includes_trusted_and_unclassified() {
+        let (_dir, registry) = trust_fixture_registry();
+        let filter = SkillFilter::default();
+        let mut trust_levels = HashMap::new();
+        trust_levels.insert(
+            "trusted-skill".to_string(),
+            zeph_common::SkillTrustLevel::Trusted,
+        );
+        trust_levels.insert(
+            "quarantined-skill".to_string(),
+            zeph_common::SkillTrustLevel::Quarantined,
+        );
+        trust_levels.insert(
+            "blocked-skill".to_string(),
+            zeph_common::SkillTrustLevel::Blocked,
+        );
+        // "unclassified-skill" intentionally absent — missing entry must fall back to Trusted.
+
+        let result = filter_skills(&registry, &filter, &trust_levels).unwrap();
+        let mut names: Vec<&str> = result.iter().map(|s| s.meta.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec!["trusted-skill", "unclassified-skill"],
+            "Quarantined and Blocked skills must be dropped; Trusted and unclassified \
+             (fallback-to-Trusted) skills must pass through"
+        );
     }
 
     mod proptest_glob {

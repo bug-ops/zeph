@@ -549,7 +549,7 @@ impl<C: crate::channel::Channel> Agent<C> {
 
         let provider = self.provider.clone();
         let tool_executor = Arc::clone(&self.tool_executor);
-        let skills = self.filtered_skills_for(&agent_def_name);
+        let skills = self.filtered_skills_for(&agent_def_name).await;
         let cfg = self.services.orchestration.subagent_config.clone();
         let event_tx = scheduler.event_sender();
         let task_supervisor = Arc::clone(&self.runtime.lifecycle.task_supervisor);
