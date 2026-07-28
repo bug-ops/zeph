@@ -33,9 +33,9 @@ use super::elicitation;
 #[cfg(test)]
 use super::{AgentSpawner, ZephAcpAgent};
 use super::{
-    DEFAULT_MODE_ID, NotifyReceiver, NotifySender, SessionConfigSeed, SessionContext, SessionEntry,
-    ZephAcpAgentState, build_config_options, build_mode_state, model_meta,
-    session_event_to_updates,
+    DEFAULT_MODE_ID, NotifyReceiver, NotifySender, SESSION_ENTRY_GENERATION, SessionConfigSeed,
+    SessionContext, SessionEntry, ZephAcpAgentState, build_config_options, build_mode_state,
+    model_meta, session_event_to_updates,
 };
 
 const LOOPBACK_CHANNEL_CAPACITY: usize = 64;
@@ -1255,6 +1255,7 @@ impl ZephAcpAgentState {
         SessionEntry {
             input_tx: handle.input_tx,
             output_rx: Mutex::new(Some(handle.output_rx)),
+            generation: SESSION_ENTRY_GENERATION.fetch_add(1, Ordering::Relaxed),
             cancel_signal: handle.cancel_signal,
             last_active_ms: AtomicU64::new(now_ms),
             created_at: chrono::Utc::now(),

@@ -134,6 +134,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   strings that enable both `session` and `acp-http` together, so a narrower single bundle like
   `ide` was never checked with `--all-targets` anywhere, letting test-only `#[cfg(...)]` gates
   narrower than the production code they exercise ship and pass CI indefinitely.
+- `zeph-acp`: fixed two follow-on hazards in `PromptChannelGuard` (issues #6666, #6667,
+  discovered while reviewing #6661's fix). First, `do_close_session`/`do_delete_session` remove
+  a session's entry without waiting for or aborting any turn still in flight on it; if that
+  session is then reloaded/resumed under the same `SessionId` before the stale guard is dropped,
+  the guard's `Drop` would find the fresh entry and overwrite its new, live `output_rx` with the
+  old, now-dead receiver from the turn that predated the close. `SessionEntry` now carries a
+  `generation` stamp assigned at construction; the guard captures it at acquisition time and
+  skips the restore if the entry's current generation no longer matches. Second, a receiver
+  restored after the enclosing task was aborted mid-`drain_agent_events` could carry over
+  `LoopbackEvent`s the still-running agent loop had already queued (including a legitimate
+  `Flush`), so the next `session/prompt` call on that session could receive one of these stale
+  events as its first `rx.recv()` instead of a genuinely new one — and since `drain_agent_events`
+  returns on the turn's first `Flush` while the agent loop can keep running and queue further
+  events afterward (e.g. a second `Flush` from a post-response self-check), draining once at
+  `Drop` time only caught the events queued by that instant. `acquire_prompt_channels` now also
+  drains under the sessions lock, right after confirming no turn is currently in flight on that
+  session — every event still queued at that point is provably an orphan from a prior turn —
+  closing the whole inter-turn window instead of one snapshot; `Drop`'s drain remains as a cheap
+  early filter.
 
 ## [0.22.3] - 2026-07-22
 ### Fixed

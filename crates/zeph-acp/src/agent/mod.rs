@@ -265,11 +265,28 @@ pub(crate) struct SessionConfigSeed {
     temperature_preset: zeph_config::AcpTemperaturePreset,
 }
 
+/// Monotonic counter assigned to every `SessionEntry` at construction (`make_session_entry`).
+///
+/// Lets `turn::PromptChannelGuard`, captured at the start of a turn, detect at restore time
+/// whether the session map still holds the *same* entry it started with. `do_load_session` /
+/// `do_resume_session` both early-return without inserting anything if the `SessionId` is
+/// already present in the map — so a fresh `SessionEntry` only ever lands under an id that a
+/// prior `do_close_session`/`do_delete_session` has already `remove()`-d. Neither of those
+/// removals waits for or aborts any turn still in flight on that session, so a
+/// `PromptChannelGuard` acquired before the close can outlive it and still be holding the
+/// (now orphaned) receiver when the id is reloaded/resumed (#6666). The fresh entry gets a new
+/// generation, so the stale guard's later `Drop` can tell its receiver is no longer the live
+/// one and skip clobbering the reloaded session's `output_rx`.
+static SESSION_ENTRY_GENERATION: AtomicU64 = AtomicU64::new(0);
+
 pub(crate) struct SessionEntry {
     pub(crate) input_tx: mpsc::Sender<ChannelMessage>,
     /// Receiver is owned solely by the `prompt()` handler.
     /// `Mutex` instead of `RefCell` so `SessionEntry` is `Send`.
     pub(crate) output_rx: Mutex<Option<mpsc::Receiver<LoopbackEvent>>>,
+    /// Identity stamp from [`SESSION_ENTRY_GENERATION`], assigned once at construction.
+    /// See that constant's doc for why this exists.
+    pub(crate) generation: u64,
     pub(crate) cancel_signal: Arc<tokio::sync::Notify>,
     /// Epoch milliseconds; updated on every prompt.
     pub(crate) last_active_ms: AtomicU64,

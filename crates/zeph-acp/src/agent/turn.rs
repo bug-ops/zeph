@@ -230,10 +230,32 @@ struct DrainResult {
 /// session (#6661). There is deliberately no explicit "restore now" method: the guard
 /// always holds a valid receiver from construction until it is dropped, so `Drop` is the
 /// single place that writes it back.
+///
+/// Two more hazards `Drop` closes before restoring:
+///
+/// - **Stale-generation clobber (#6666)**: `do_load_session`/`do_resume_session` early-return
+///   without inserting anything if the `SessionId` is already in the map, so a fresh
+///   `SessionEntry` only ever lands under an id a prior `do_close_session`/`do_delete_session`
+///   already removed — and neither removal waits for or aborts a turn still in flight on that
+///   session. A guard acquired before the close can therefore outlive it and still be holding
+///   the (now orphaned) receiver when the id is reloaded/resumed, which already owns its own
+///   live `output_rx`. The guard captures the entry's `generation` (`SESSION_ENTRY_GENERATION`)
+///   at construction and skips the restore if the entry's current generation no longer
+///   matches, so it never clobbers a reloaded session's fresh channel with its own now-stale
+///   receiver.
+/// - **Stale queued events (#6667)**: if the turn is aborted mid-drain, the still-running
+///   agent loop may have already queued further `LoopbackEvent`s (including a legitimate
+///   `Flush`) into the receiver. `Drop` discards anything left in the channel at this instant
+///   before restoring it — a cheap early filter, but only a point-in-time snapshot: the agent
+///   loop can keep running after `Drop` returns (nothing joins/aborts it on abort or cancel)
+///   and queue further events before the *next* `acquire_prompt_channels` call, which is why
+///   that call also drains under the sessions lock (see its doc) to close the rest of the
+///   window.
 #[must_use = "dropping this immediately clears the session's prompt-in-progress state"]
 struct PromptChannelGuard<'a> {
     state: &'a ZephAcpAgentState,
     session_id: acp::schema::v1::SessionId,
+    generation: u64,
     rx: mpsc::Receiver<LoopbackEvent>,
 }
 
@@ -241,11 +263,13 @@ impl<'a> PromptChannelGuard<'a> {
     fn new(
         state: &'a ZephAcpAgentState,
         session_id: acp::schema::v1::SessionId,
+        generation: u64,
         rx: mpsc::Receiver<LoopbackEvent>,
     ) -> Self {
         Self {
             state,
             session_id,
+            generation,
             rx,
         }
     }
@@ -261,10 +285,28 @@ impl Drop for PromptChannelGuard<'_> {
         // Swap in a throwaway closed channel so the real receiver can be moved out of
         // `&mut self` and handed back to the session.
         let (_, dummy_rx) = mpsc::channel(1);
-        let rx = std::mem::replace(&mut self.rx, dummy_rx);
-        if let Some(entry) = self.state.sessions.lock().get(&self.session_id) {
-            *entry.output_rx.lock() = Some(rx);
+        let mut rx = std::mem::replace(&mut self.rx, dummy_rx);
+
+        // #6667: discard anything the agent loop already queued (e.g. a `Flush` left over
+        // from an aborted drain) so far. A no-op on the normal completion path, since
+        // `drain_agent_events` already consumed everything up to its own terminating
+        // `Flush`/close before returning. This is only a point-in-time snapshot — the agent
+        // loop may still be running and queue more after this — so it is a cheap early filter,
+        // not the guarantee; `acquire_prompt_channels`'s own drain (see its doc) is what
+        // actually closes the window before the next turn starts.
+        while rx.try_recv().is_ok() {}
+
+        let sessions = self.state.sessions.lock();
+        let Some(entry) = sessions.get(&self.session_id) else {
+            return;
+        };
+        // #6666: the session was reloaded/resumed while this turn was in flight — the fresh
+        // entry already owns its own live output_rx, so skip the restore rather than
+        // clobbering it with this now-stale receiver.
+        if entry.generation != self.generation {
+            return;
         }
+        *entry.output_rx.lock() = Some(rx);
     }
 }
 
@@ -272,21 +314,46 @@ impl ZephAcpAgentState {
     /// Take the `input_tx` / `output_rx` pair for a session and mark it as active.
     ///
     /// Returns an error when the session does not exist or a prompt is already in flight.
+    /// The returned `u64` is the entry's `generation`, captured for
+    /// [`PromptChannelGuard`]'s stale-generation check (#6666).
+    ///
+    /// Drains and discards anything already queued on the receiver before returning it
+    /// (#6667). `PromptChannelGuard::drop` also drains at restore time, but that is only a
+    /// point-in-time snapshot: `drain_agent_events` returns on the turn's *first* `Flush`, yet
+    /// the agent loop can keep running afterward and emit more events — a second `Flush` from
+    /// a post-response self-check, or anything left running because nothing joins/aborts the
+    /// loop on cancel — which would queue *after* `Drop`'s drain already ran. This call is the
+    /// one point every subsequent turn on this session must pass through, so draining here
+    /// (under the sessions lock, right after confirming `output_rx` was `Some` — i.e. no turn
+    /// is currently in flight) closes the whole inter-turn window instead of one instant: every
+    /// event still queued at this point is provably an orphan left over from a prior turn, not
+    /// something the turn about to start could have produced yet. A late post-flush `Usage`
+    /// event discarded this way is intentional, not a bug: attributing it to the *next* turn's
+    /// accounting would misattribute cost/tokens to the wrong prompt. Note this drain is not
+    /// side-effect-free in every case: `/review` (`handle_review_command`) dispatches via
+    /// `input_tx.try_send` and returns `EndTurn` immediately without ever calling this method,
+    /// so its live output events — not leftovers from an aborted turn, but genuine outputs of
+    /// a fire-and-forget prompt that never had a reader — are silently discarded here too.
     fn acquire_prompt_channels(
         &self,
         session_id: &acp::schema::v1::SessionId,
-    ) -> acp::Result<(mpsc::Sender<ChannelMessage>, mpsc::Receiver<LoopbackEvent>)> {
+    ) -> acp::Result<(
+        mpsc::Sender<ChannelMessage>,
+        mpsc::Receiver<LoopbackEvent>,
+        u64,
+    )> {
         let sessions = self.sessions.lock();
         let entry = sessions
             .get(session_id)
             .ok_or_else(|| acp::Error::internal_error().data("session not found"))?;
-        let rx = entry
+        let mut rx = entry
             .output_rx
             .lock()
             .take()
             .ok_or_else(|| acp::Error::internal_error().data("prompt already in progress"))?;
+        while rx.try_recv().is_ok() {}
         entry.touch();
-        Ok((entry.input_tx.clone(), rx))
+        Ok((entry.input_tx.clone(), rx, entry.generation))
     }
 
     // `persist_user_message_async` (an unsupervised fire-and-forget `tokio::spawn` writing
@@ -325,8 +392,9 @@ impl ZephAcpAgentState {
                 .await;
         }
 
-        let (input_tx, output_rx) = self.acquire_prompt_channels(&args.session_id)?;
-        let mut channel_guard = PromptChannelGuard::new(self, args.session_id.clone(), output_rx);
+        let (input_tx, output_rx, generation) = self.acquire_prompt_channels(&args.session_id)?;
+        let mut channel_guard =
+            PromptChannelGuard::new(self, args.session_id.clone(), generation, output_rx);
 
         // Advisory injection scan: detect patterns and log, but do NOT modify the
         // prompt text. Operator-typed prompts are direct user input and must not be
@@ -857,5 +925,206 @@ mod output_rx_leak_regression_tests {
                 result.err()
             );
         }
+    }
+
+    /// #6666: if a `PromptChannelGuard` from an earlier turn is still holding a session's
+    /// receiver when that session is closed/deleted and then reloaded/resumed under the same
+    /// `SessionId` (neither `do_close_session`/`do_delete_session` waits for or aborts an
+    /// in-flight turn), the guard must not clobber the reloaded session's own live
+    /// `output_rx` with its now-stale receiver when it is later dropped. Constructs the guard
+    /// directly (bypassing `do_prompt`/task-abort) so the close-then-reload can be interleaved
+    /// at an exact, deterministic point instead of racing real task abort/close timing.
+    #[tokio::test]
+    async fn drop_skips_restore_when_session_was_reloaded_mid_turn() {
+        let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
+        let agent = ZephAcpAgent::new(spawner, 4, 1800, None);
+        let (session_id, _stale_channel) = register_test_session(&agent, "reload-session");
+
+        let (_input_tx, rx, generation) = agent.acquire_prompt_channels(&session_id).unwrap();
+        let guard = PromptChannelGuard::new(&agent, session_id.clone(), generation, rx);
+
+        // Simulate `do_close_session`/`do_delete_session` removing the entry (freeing the id)
+        // while the guard's turn is still "in flight", followed by `do_load_session`/
+        // `do_resume_session` inserting a fresh `SessionEntry` under the same, now-free
+        // `SessionId` — the only way a fresh entry can land under a live id, since both
+        // load/resume early-return without inserting if the id is still present. The fresh
+        // entry gets a new generation and owns its own live channel.
+        let (mut new_channel, new_handle) = LoopbackChannel::pair(4);
+        let provider_override = Arc::new(RwLock::new(None::<AnyProvider>));
+        let (notify_tx, notify_rx) = mpsc::channel(256);
+        let fresh_entry = ZephAcpAgent::make_session_entry(
+            new_handle,
+            "claude:opus".to_owned(),
+            std::path::PathBuf::from("."),
+            None,
+            provider_override,
+            SessionConfigSeed {
+                thinking_enabled: false,
+                auto_approve_level: "manual".to_owned(),
+                temperature_preset: zeph_config::AcpTemperaturePreset::Balanced,
+            },
+            notify_tx,
+            notify_rx,
+        );
+        agent
+            .sessions
+            .lock()
+            .insert(session_id.clone(), fresh_entry);
+
+        // Before the #6666 fix, this unconditionally overwrote the reloaded entry's
+        // output_rx with the old, now-dead receiver from the pre-reload turn.
+        drop(guard);
+
+        let (_, mut rx_after, _) = agent.acquire_prompt_channels(&session_id).unwrap();
+
+        // Tag the reloaded session's own channel with a marker event, sent only *after*
+        // acquiring — `acquire_prompt_channels` now also drains anything already queued
+        // (S1, closing the inter-turn window described in its doc), so sending the marker
+        // any earlier would make this test indistinguishable from that intentional drain
+        // instead of proving the reloaded session's own live channel wasn't clobbered.
+        new_channel.send_status("fresh marker").await.unwrap();
+
+        let event = tokio::time::timeout(std::time::Duration::from_millis(200), rx_after.recv())
+            .await
+            .expect("reloaded session's output_rx must not have been clobbered by the stale guard")
+            .expect("reloaded session's channel must not be closed");
+        assert!(
+            matches!(event, LoopbackEvent::Status(ref s) if s == "fresh marker"),
+            "expected the reloaded session's own event, got: {event:?}"
+        );
+    }
+
+    /// #6667: `Drop` must discard any `LoopbackEvent`s already queued on the receiver
+    /// before restoring it — otherwise a receiver restored after an aborted turn can leak
+    /// stale events (including a legitimate `Flush`) into the next, unrelated prompt turn.
+    #[tokio::test]
+    async fn drop_drains_stale_queued_events_before_restoring_receiver() {
+        let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
+        let agent = ZephAcpAgent::new(spawner, 4, 1800, None);
+        let (session_id, mut channel) = register_test_session(&agent, "stale-events-session");
+
+        let (_input_tx, rx, generation) = agent.acquire_prompt_channels(&session_id).unwrap();
+        let guard = PromptChannelGuard::new(&agent, session_id.clone(), generation, rx);
+
+        // Simulate the still-running agent loop queuing further events (including a
+        // legitimate `Flush`) into the channel before the guard is dropped — exactly what
+        // an abort mid-`drain_agent_events` leaves behind.
+        channel.send_status("stale status").await.unwrap();
+        channel.flush_chunks().await.unwrap();
+
+        drop(guard);
+
+        // Before the #6667 fix, this would immediately observe the stale `Status`/`Flush`
+        // events left over from the aborted turn instead of an empty channel.
+        let (_, mut restored_rx, _) = agent.acquire_prompt_channels(&session_id).unwrap();
+        assert!(
+            restored_rx.try_recv().is_err(),
+            "restored receiver must not carry over stale queued events"
+        );
+    }
+
+    /// #6667 (extended): `Drop`'s own drain is only a point-in-time snapshot —
+    /// `drain_agent_events` returns on a turn's *first* `Flush`, but the agent loop can keep
+    /// running afterward (e.g. a post-response self-check) and queue a *second* `Flush` only
+    /// after `Drop` has already restored the receiver. That event lands in the gap between one
+    /// turn's `Drop` and the next turn's `acquire_prompt_channels` call, so `Drop`'s drain alone
+    /// cannot see it — unlike [`drop_drains_stale_queued_events_before_restoring_receiver`],
+    /// which queues its stale event *before* `Drop` runs and so would still pass without this
+    /// fix. `acquire_prompt_channels` must drain again, right before handing the receiver to
+    /// the next turn, to close this window too.
+    #[tokio::test]
+    async fn acquire_prompt_channels_drains_events_queued_after_prior_turns_drop() {
+        let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
+        let agent = ZephAcpAgent::new(spawner, 4, 1800, None);
+        let (session_id, mut channel) =
+            register_test_session(&agent, "post-drop-second-flush-session");
+
+        // First turn: acquire, then drop immediately with nothing queued yet — mirrors a
+        // normal completion where `drain_agent_events` already consumed the turn's own
+        // terminating `Flush` before returning.
+        let (_input_tx, rx, generation) = agent.acquire_prompt_channels(&session_id).unwrap();
+        let guard = PromptChannelGuard::new(&agent, session_id.clone(), generation, rx);
+        drop(guard);
+
+        // The agent loop keeps running past the turn's own completion and queues a second
+        // `Flush` *after* the guard already restored the receiver — outside the window
+        // `Drop`'s own drain could ever see.
+        channel.flush_chunks().await.unwrap();
+
+        // Before the S1 fix, the next turn's `acquire_prompt_channels` would hand back this
+        // leftover `Flush` as-is, so `drain_agent_events` would treat it as the very first
+        // event of the *new* turn and stop immediately.
+        let (_, mut rx_next, _) = agent.acquire_prompt_channels(&session_id).unwrap();
+        assert!(
+            rx_next.try_recv().is_err(),
+            "next turn's receiver must not carry over a Flush queued after the prior turn's Drop"
+        );
+    }
+
+    /// `Drop` builds a throwaway `dummy_rx` purely so the real receiver can be moved out of
+    /// `&mut self` via `mem::replace`; the drained real receiver, not the dummy, must be what
+    /// ends up back in `entry.output_rx`. An empty `try_recv()` on its own (as asserted by
+    /// [`drop_drains_stale_queued_events_before_restoring_receiver`]) cannot tell the two
+    /// apart — a disconnected dummy also reports `try_recv() == Err`. This test sends a fresh
+    /// event on the *original* channel after reacquiring and asserts it is observed on the
+    /// reacquired receiver, proving the restored receiver is still the live one. The send must
+    /// happen after `acquire_prompt_channels`, not before: that call now also drains anything
+    /// already queued (S1), so a probe event sent earlier would be indistinguishable from that
+    /// intentional drain instead of proving liveness.
+    #[tokio::test]
+    async fn drop_restores_the_live_receiver_not_a_disconnected_stand_in() {
+        let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
+        let agent = ZephAcpAgent::new(spawner, 4, 1800, None);
+        let (session_id, mut channel) = register_test_session(&agent, "live-receiver-session");
+
+        let (_input_tx, rx, generation) = agent.acquire_prompt_channels(&session_id).unwrap();
+        let guard = PromptChannelGuard::new(&agent, session_id.clone(), generation, rx);
+
+        // A stale event to be drained, same setup as the sibling test above.
+        channel.send_status("stale status").await.unwrap();
+
+        drop(guard);
+
+        let (_, mut restored_rx, _) = agent.acquire_prompt_channels(&session_id).unwrap();
+
+        // Sent on the original sender *after* reacquiring — only observable if the receiver
+        // handed back is still wired to this channel's sender.
+        channel.send_status("fresh after restore").await.unwrap();
+
+        let event = tokio::time::timeout(std::time::Duration::from_millis(200), restored_rx.recv())
+            .await
+            .expect("restored receiver must still be connected to the live channel")
+            .expect("restored receiver's channel must not be closed");
+        assert!(
+            matches!(event, LoopbackEvent::Status(ref s) if s == "fresh after restore"),
+            "expected the post-restore event, got: {event:?}"
+        );
+    }
+
+    /// If the session entry is removed from the map entirely while a turn is still in flight
+    /// (e.g. a `session/close` or `session/delete` racing the in-flight turn), `Drop` must not
+    /// panic — it should simply discard the now-orphaned receiver. Exercises the
+    /// `let Some(entry) = sessions.get(...) else { return; }` branch (turn.rs), which none of
+    /// the other regression tests reach since they all leave the entry in place.
+    #[tokio::test]
+    async fn drop_is_a_no_op_when_session_entry_was_removed() {
+        let spawner: AgentSpawner = Arc::new(|_ch, _ctx, _sc| Box::pin(async {}));
+        let agent = ZephAcpAgent::new(spawner, 4, 1800, None);
+        let (session_id, _channel) = register_test_session(&agent, "removed-entry-session");
+
+        let (_input_tx, rx, generation) = agent.acquire_prompt_channels(&session_id).unwrap();
+        let guard = PromptChannelGuard::new(&agent, session_id.clone(), generation, rx);
+
+        // Simulate `do_close_session`/`do_delete_session` racing the in-flight turn.
+        agent.sessions.lock().remove(&session_id);
+
+        drop(guard); // must not panic
+
+        // `Drop` must not resurrect the removed entry by inserting its stale receiver
+        // under the same id.
+        assert!(
+            !agent.sessions.lock().contains_key(&session_id),
+            "Drop must not re-insert a session entry that was removed while the turn was in flight"
+        );
     }
 }
