@@ -123,6 +123,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `.claude/rules/continuous-improvement.md`: fixed the "Local Trace Analysis" jq recipes, which
+  matched zero events against every real local trace file (issue #6676). `tracing-chrome` 0.7.2
+  writes a bare top-level JSON array (not `{"traceEvents": [...]}`) and never emits `ph:"X"`
+  complete events with a `dur` field under either `TraceStyle` — verified against the crate
+  source, ruling out switching `build_chrome_layer` to `TraceStyle::Async` as a fix, since that
+  style still only emits paired `ph:"b"`/`"e"` duration events, not `"X"`. The recipes now
+  reconstruct synthetic complete events by pairing `ph:"B"`/`"E"` per-thread with a stack-based
+  jq helper (the same LIFO matching Perfetto/`chrome://tracing` use internally) and no longer
+  assume the `.traceEvents` wrapper. Also fixed an unrelated pre-existing jq syntax error in the
+  "total time per span name" recipe (`{total_ms: (map(.dur) | add) / 1000, ...}` — jq's grammar
+  requires the division parenthesized inside an object literal). Documented two further caveats
+  found in review: reconstructed `dur` is per-poll on-CPU time rather than wall-clock span
+  lifetime for any span with an internal `.await` (`TraceStyle::Threaded` re-fires enter/exit on
+  every poll — confirmed on a real 127s session where the top-level span fragmented into 209
+  pieces totalling 234ms), so the "spans > 500ms" recipe only reliably catches spans with no
+  internal await; and a trace file left open when the process was killed (e.g. via `pkill`, which
+  skips `FlushGuard`'s closing write) fails to parse outright, with a one-line recovery command
+  now documented. No source code change; the trace format was already correct for
+  Perfetto/`chrome://tracing` and the OTLP/Jaeger backend.
 - `zeph-acp`: fixed a deadlock on every permission-gated tool call (issue #6656). `handle_prompt`
   awaited the entire agent turn inline inside the ACP SDK's `on_receive_request` callback, holding
   the SDK's strictly serial dispatch loop for the whole turn; since that same loop demultiplexes
