@@ -15,10 +15,15 @@ use zeph_core::config::{LogRotation, LoggingConfig, TelemetryConfig};
 // All fields intentionally share the `_guard` postfix to reflect their shared purpose.
 #[allow(clippy::struct_field_names)]
 pub(crate) struct TracingGuards {
-    /// Async file-writer guard for the rolling log file. `None` when file logging is disabled.
-    /// Held for its `Drop` side-effect (flushes the async file writer).
-    #[allow(dead_code)]
-    pub(crate) log_guard: Option<WorkerGuard>,
+    /// Async file-writer guard for the rolling log file, held in a shared take-once cell.
+    /// `None` when file logging is disabled.
+    ///
+    /// The cell is shared with [`spawn_sigterm_flush_task`] so that whichever of the two paths
+    /// runs first — normal `TracingGuards` drop, or a SIGTERM arriving mid-session — flushes
+    /// the guard; the other finds `None` and no-ops. This is unconditional (unlike
+    /// `chrome_guard`) because file logging is not gated behind the `profiling` feature
+    /// (generalizes the `chrome_guard` pattern from #6683; see #6693).
+    pub(crate) log_guard: Option<LogGuardCell>,
     /// Chrome trace flush guard, held in a shared take-once cell. `None` when the `profiling`
     /// feature is absent or telemetry is disabled. Dropping the inner guard writes the final
     /// `]` to the JSON trace file.
@@ -41,12 +46,13 @@ pub(crate) struct TracingGuards {
     pub(crate) otel_provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
 }
 
-// Drop order: otel_provider shuts down first (flushes pending spans), then chrome_guard is
-// taken from its shared cell and flushed explicitly (rather than relying on Arc refcounting,
-// since the SIGTERM task in spawn_sigterm_flush_task holds a second clone of the same cell),
-// then log_guard drops via the normal field-declaration-order glue. Rust drops struct fields in
-// declaration order, so otel_provider must be declared last.
-#[cfg(any(feature = "otel", feature = "profiling"))]
+// Drop order: otel_provider shuts down first (flushes pending spans), then chrome_guard, then
+// log_guard — each of the latter two taken from its shared cell and flushed explicitly (rather
+// than relying on Arc refcounting or struct-field-declaration-order drop glue, since
+// spawn_sigterm_flush_task holds a second clone of each cell). This explicit take-and-drop is
+// load-bearing for log_guard too (not just chrome_guard): once a SIGTERM-flush task is spawned,
+// it holds a second `Arc` clone of `log_guard`'s cell, so merely dropping `TracingGuards`'s own
+// clone would not run `WorkerGuard::drop` (the refcount would still be nonzero) — see #6693.
 impl Drop for TracingGuards {
     fn drop(&mut self) {
         #[cfg(feature = "otel")]
@@ -65,6 +71,14 @@ impl Drop for TracingGuards {
             // observe (or race) a half-flushed trace file. Do NOT split this into two statements
             // (`let taken = cell.lock().take(); drop(taken);`) — that releases the lock before
             // the flush runs and reintroduces the truncation bug #6683 fixes (critic finding S2).
+            let mut locked = cell.lock();
+            if let Some(guard) = locked.take() {
+                drop(guard);
+            }
+        }
+        // Same load-bearing take-and-drop pattern as chrome_guard above, generalized to the
+        // file-log writer (#6693) — see this field's doc comment on `TracingGuards::log_guard`.
+        if let Some(cell) = self.log_guard.take() {
             let mut locked = cell.lock();
             if let Some(guard) = locked.take() {
                 drop(guard);
@@ -121,9 +135,10 @@ fn resolve_log_path(
 /// `src/serve/mod.rs`, `src/commands/scheduler_daemon.rs`). The caller computes this from
 /// already-parsed CLI/config state before dispatch, since `init_tracing` runs before the
 /// subcommand match. Passing `false` for a path that in fact owns SIGTERM itself would let the
-/// local-trace flush task (installed by `build_chrome_layer`, `profiling`-feature-gated) race
-/// and beat that path's graceful drain with a hard exit — this is exactly critic finding C1 for
-/// #6683.
+/// SIGTERM flush task (installed by [`spawn_sigterm_flush_task`] — covers the file-log writer
+/// unconditionally, plus the local Chrome trace writer when the `profiling` feature is enabled)
+/// race and beat that path's graceful drain with a hard exit — this is exactly critic finding
+/// C1 for #6683, and the same hazard applies to the file-log writer (#6693).
 #[allow(clippy::too_many_lines)]
 pub(crate) fn init_tracing(
     logging: &LoggingConfig,
@@ -133,7 +148,7 @@ pub(crate) fn init_tracing(
     // When true (`--json` mode), the stderr fmt layer is suppressed so no human-readable
     // text can interleave with the machine-readable JSONL stream on stdout.
     json_mode: bool,
-    #[cfg(feature = "profiling")] owns_sigterm_elsewhere: bool,
+    owns_sigterm_elsewhere: bool,
     #[cfg(feature = "profiling")] metrics_collector: Option<
         std::sync::Arc<zeph_core::metrics::MetricsCollector>,
     >,
@@ -261,14 +276,28 @@ pub(crate) fn init_tracing(
     // Optional Chrome JSON trace layer (compiled in only with the profiling feature).
     #[cfg(feature = "profiling")]
     let chrome_guard = build_chrome_layer(telemetry, &mut layers);
+
+    // Wrap log_guard in a shared take-once cell so the SIGTERM flush task below and the normal
+    // `TracingGuards::drop` path can race safely for the file-log writer, mirroring
+    // `chrome_guard`'s `ChromeGuardCell` pattern (see `TracingGuards::drop`'s doc comment).
+    let log_guard: Option<LogGuardCell> =
+        log_guard.map(|guard| std::sync::Arc::new(parking_lot::Mutex::new(Some(guard))));
+
     // Installing the SIGTERM flush task is a process-global side effect (it registers a signal
     // listener that overrides SIGTERM's default disposition for the whole process) — kept
-    // visible here at the process-level function rather than buried inside `build_chrome_layer`
-    // (critic finding M2). Only installed when nothing else on this invocation's path already
-    // owns SIGTERM (see `owns_sigterm_elsewhere`'s doc comment above — critic finding C1).
+    // visible here at the process-level function rather than buried inside a helper (critic
+    // finding M2). See `should_install_sigterm_flush_task`'s doc comment for the decision logic
+    // (critic finding S3: this gate is unconditional, not `profiling`-gated, so it is unit-tested).
     #[cfg(feature = "profiling")]
-    if !owns_sigterm_elsewhere && let Some(cell) = chrome_guard.as_ref() {
-        spawn_sigterm_flush_task(std::sync::Arc::clone(cell));
+    let has_guard_to_flush = log_guard.is_some() || chrome_guard.is_some();
+    #[cfg(not(feature = "profiling"))]
+    let has_guard_to_flush = log_guard.is_some();
+    if should_install_sigterm_flush_task(owns_sigterm_elsewhere, has_guard_to_flush) {
+        spawn_sigterm_flush_task(
+            log_guard.clone(),
+            #[cfg(feature = "profiling")]
+            chrome_guard.clone(),
+        );
     }
 
     // Optional OTLP gRPC trace layer — active only when the `otel` feature is compiled in
@@ -326,6 +355,17 @@ pub(crate) fn init_tracing(
         otel_provider,
     }
 }
+
+/// Shared take-once cell holding the file-log [`WorkerGuard`].
+///
+/// Cloned between [`TracingGuards::log_guard`](TracingGuards) and, when nothing else on the
+/// current invocation's path already owns SIGTERM, the task spawned by
+/// [`spawn_sigterm_flush_task`] — whichever path runs first takes the guard and drops it,
+/// flushing pending log lines to the file; the other finds `None` and no-ops. Mirrors
+/// `ChromeGuardCell` but is unconditional: file logging is not gated behind the `profiling`
+/// feature (see #6693). Not an intra-doc link because `ChromeGuardCell` is itself
+/// `#[cfg(feature = "profiling")]`-gated and the default/CI feature set does not enable it.
+type LogGuardCell = std::sync::Arc<parking_lot::Mutex<Option<WorkerGuard>>>;
 
 /// Shared take-once cell holding the Chrome trace [`FlushGuard`](tracing_chrome::FlushGuard).
 ///
@@ -401,21 +441,43 @@ fn build_chrome_layer(
     Some(guard_cell)
 }
 
-/// Installs a SIGTERM handler that flushes the Chrome trace file and then re-raises SIGTERM.
+/// Decides whether `init_tracing` should call [`spawn_sigterm_flush_task`].
+///
+/// `true` only when both hold: nothing else on this invocation's path already owns SIGTERM
+/// (`owns_sigterm_elsewhere` is `false` — see [`init_tracing`]'s parameter doc, critic finding
+/// C1), and there is at least one guard cell worth flushing (`has_guard_to_flush`) — installing
+/// the task when neither cell holds a guard would needlessly override SIGTERM's default
+/// disposition for no benefit. Extracted as a pure function (critic finding S3) because this gate
+/// is unconditional (not `profiling`-gated) as of #6693, so a mis-wire would silently regress
+/// graceful shutdown in every default/CI build, not just `profiling` builds.
+fn should_install_sigterm_flush_task(
+    owns_sigterm_elsewhere: bool,
+    has_guard_to_flush: bool,
+) -> bool {
+    !owns_sigterm_elsewhere && has_guard_to_flush
+}
+
+/// Installs a SIGTERM handler that flushes pending log/trace writers and then re-raises SIGTERM.
 ///
 /// Registering a `tokio::signal::unix::signal` listener replaces SIGTERM's default
 /// terminate-immediately disposition, so once installed, this task becomes responsible for
-/// actually ending the process. It does so by flushing the trace file (bounded: `FlushGuard`'s
-/// `Drop` blocks briefly on the writer thread's join) and then calling
-/// [`signal_hook::low_level::emulate_default_handler`], which resets SIGTERM's disposition back
-/// to `SIG_DFL` and re-raises it — the process therefore still dies *by the signal*
-/// (`WIFSIGNALED`, `WTERMSIG == SIGTERM`), matching what external supervisors (systemd
-/// `SuccessExitStatus`/`Restart=on-failure`, launchd, container runtimes, `zeph scheduler
-/// stop`'s wait loop) expect from an unhandled `SIGTERM`, rather than a plain `exit(143)`
-/// (`WIFEXITED`) that reads identically via `$?` but is distinguishable via `wait`/`waitpid`
-/// (critic finding S3, point 1). If `emulate_default_handler` itself errors (documented as
-/// occurring only for an unrecognized signal, which `SIGTERM` never is), `std::process::exit`
-/// is used as a fallback so the process still terminates rather than hanging forever.
+/// actually ending the process. It does so by flushing whichever of `log_guard_cell` /
+/// `chrome_guard_cell` still holds a guard (bounded: each guard's `Drop` blocks briefly on its
+/// writer thread's join) and then calling [`signal_hook::low_level::emulate_default_handler`],
+/// which resets SIGTERM's disposition back to `SIG_DFL` and re-raises it — the process therefore
+/// still dies *by the signal* (`WIFSIGNALED`, `WTERMSIG == SIGTERM`), matching what external
+/// supervisors (systemd `SuccessExitStatus`/`Restart=on-failure`, launchd, container runtimes,
+/// `zeph scheduler stop`'s wait loop) expect from an unhandled `SIGTERM`, rather than a plain
+/// `exit(143)` (`WIFEXITED`) that reads identically via `$?` but is distinguishable via
+/// `wait`/`waitpid` (critic finding S3, point 1, originally for #6683). If
+/// `emulate_default_handler` itself errors (documented as occurring only for an unrecognized
+/// signal, which `SIGTERM` never is), `std::process::exit` is used as a fallback so the process
+/// still terminates rather than hanging forever.
+///
+/// `log_guard_cell` covers the file-log writer unconditionally (#6693); `chrome_guard_cell` is
+/// only present when the `profiling` feature is enabled. Both cells use `Mutex<Option<_>>::take`,
+/// which is idempotent, so this task and `TracingGuards::drop` racing on the same cell(s) can
+/// never double-flush or observe a half-flushed state.
 ///
 /// **Caller must not install this task for a path that owns SIGTERM itself** — see
 /// [`init_tracing`]'s `owns_sigterm_elsewhere` parameter (critic finding C1).
@@ -428,11 +490,21 @@ fn build_chrome_layer(
 /// This directly affects the project's own `pkill -f "target/.*zeph"` live-testing teardown habit
 /// (`.claude/rules/continuous-improvement.md`) in that specific pathological case.
 ///
-/// Unix only: `pkill`'s default signal (the reproduction path for #6683) is a Unix concept: on
-/// non-Unix platforms this is a no-op and the previous (correct, non-truncating) `Ctrl-C`-only
-/// behavior is unchanged.
-#[cfg(all(feature = "profiling", unix))]
-fn spawn_sigterm_flush_task(guard_cell: ChromeGuardCell) {
+/// Unix only: `pkill`'s default signal (the reproduction path for #6683/#6693) is a Unix concept:
+/// on non-Unix platforms this is a no-op.
+///
+/// Known gap, not addressed by this task (critic finding S2): Ctrl-C is handled separately by
+/// `early_ctrlc` (`src/runner.rs`), which calls `std::process::exit(130)` directly — that runs no
+/// destructors, so it does not flush `TracingGuards` either, and is live for nearly all of
+/// bootstrap and dispatch (until `early_ctrlc.abort()`). On non-Unix platforms, where this task is
+/// a no-op, Ctrl-C's `process::exit` path is the *only* termination route, so the truncation this
+/// task fixes for `SIGTERM` on Unix is not fixed for Ctrl-C anywhere. Tracked as a follow-up, not
+/// fixed here (#6693 is SIGTERM-only in scope).
+#[cfg(unix)]
+fn spawn_sigterm_flush_task(
+    log_guard_cell: Option<LogGuardCell>,
+    #[cfg(feature = "profiling")] chrome_guard_cell: Option<ChromeGuardCell>,
+) {
     let fut = async move {
         let Ok(mut sigterm) =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -440,15 +512,27 @@ fn spawn_sigterm_flush_task(guard_cell: ChromeGuardCell) {
             return;
         };
         sigterm.recv().await;
-        {
+        let mut flushed_something = false;
+        if let Some(cell) = log_guard_cell {
             // `locked` is an explicit binding for the same load-bearing reason described in
             // `TracingGuards::drop`'s matching comment: it must be held across the flush so
             // that path (racing on the same cell) can never observe a half-flushed state.
-            let mut locked = guard_cell.lock();
+            let mut locked = cell.lock();
             if let Some(guard) = locked.take() {
                 drop(guard);
-                eprintln!("[zeph] received SIGTERM: flushed local trace file before exit");
+                flushed_something = true;
             }
+        }
+        #[cfg(feature = "profiling")]
+        if let Some(cell) = chrome_guard_cell {
+            let mut locked = cell.lock();
+            if let Some(guard) = locked.take() {
+                drop(guard);
+                flushed_something = true;
+            }
+        }
+        if flushed_something {
+            eprintln!("[zeph] received SIGTERM: flushed pending log/trace writers before exit");
         }
         if let Err(e) =
             signal_hook::low_level::emulate_default_handler(signal_hook::consts::SIGTERM)
@@ -462,8 +546,12 @@ fn spawn_sigterm_flush_task(guard_cell: ChromeGuardCell) {
     tokio::spawn(fut); // EXEMPT(#5143): TaskSupervisor is not yet constructed at tracing-init time
 }
 
-#[cfg(all(feature = "profiling", not(unix)))]
-fn spawn_sigterm_flush_task(_guard_cell: ChromeGuardCell) {}
+#[cfg(not(unix))]
+fn spawn_sigterm_flush_task(
+    _log_guard_cell: Option<LogGuardCell>,
+    #[cfg(feature = "profiling")] _chrome_guard_cell: Option<ChromeGuardCell>,
+) {
+}
 
 /// Build the OTLP gRPC trace layer and append it to `layers`.
 ///
@@ -661,6 +749,30 @@ fn build_otlp_layer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Verify the full truth table of `should_install_sigterm_flush_task` (critic finding S3):
+    /// the gate is now unconditional (not `profiling`-gated), so a mis-wire here would silently
+    /// regress graceful shutdown in every default/CI build. The task must be installed if and
+    /// only if nothing else owns SIGTERM AND there is at least one guard cell to flush.
+    #[test]
+    fn should_install_sigterm_flush_task_truth_table() {
+        assert!(
+            should_install_sigterm_flush_task(false, true),
+            "must install: nothing else owns SIGTERM, and there is a guard to flush"
+        );
+        assert!(
+            !should_install_sigterm_flush_task(true, true),
+            "must not install: another path (e.g. --daemon) already owns SIGTERM"
+        );
+        assert!(
+            !should_install_sigterm_flush_task(false, false),
+            "must not install: nothing to flush, no need to override SIGTERM's disposition"
+        );
+        assert!(
+            !should_install_sigterm_flush_task(true, false),
+            "must not install: neither condition is met"
+        );
+    }
 
     #[test]
     fn resolve_log_path_no_cli_empty_config_returns_none() {
@@ -1076,9 +1188,78 @@ mod tests {
         );
     }
 
+    /// Verify that `TracingGuards::drop` takes and flushes the log guard from its shared cell,
+    /// persisting pending log lines to disk, even while a second clone of the cell (standing in
+    /// for the SIGTERM task's clone in [`spawn_sigterm_flush_task`]) is still alive. Generalizes
+    /// `tracing_guards_drop_flushes_chrome_guard_cell` to the unconditional file-log cell (#6693).
+    #[test]
+    fn tracing_guards_drop_flushes_log_guard_cell() {
+        use std::io::Write as _;
+
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let appender = tracing_appender::rolling::never(dir.path(), "test.log");
+        let (mut non_blocking, guard) = tracing_appender::non_blocking(appender);
+        non_blocking
+            .write_all(b"hello from tracing_guards_drop_flushes_log_guard_cell\n")
+            .expect("write to non-blocking log writer");
+
+        let cell: LogGuardCell = std::sync::Arc::new(parking_lot::Mutex::new(Some(guard)));
+        let cell_clone = std::sync::Arc::clone(&cell);
+
+        let guards = TracingGuards {
+            log_guard: Some(cell),
+            #[cfg(feature = "profiling")]
+            chrome_guard: None,
+            #[cfg(feature = "profiling-pyroscope")]
+            pyroscope_guard: None,
+            #[cfg(feature = "otel")]
+            otel_provider: None,
+        };
+        drop(guards);
+
+        assert!(
+            cell_clone.lock().is_none(),
+            "TracingGuards::drop must take the guard out of the shared cell"
+        );
+        let contents = std::fs::read_to_string(dir.path().join("test.log")).expect("read log file");
+        assert!(
+            contents.contains("hello from tracing_guards_drop_flushes_log_guard_cell"),
+            "flushed log file must contain the written line: {contents}"
+        );
+    }
+
+    /// Verify the core race invariant behind #6693 under genuine OS-thread concurrency (not just
+    /// sequential simulation), mirroring `chrome_guard_cell_take_is_idempotent_under_concurrent_access`
+    /// for the unconditional log guard cell: two threads race to take the guard out of the shared
+    /// cell at the same instant, and exactly one of them must retrieve it.
+    #[test]
+    fn log_guard_cell_take_is_idempotent_under_concurrent_access() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let appender = tracing_appender::rolling::never(dir.path(), "test.log");
+        let (_non_blocking, guard) = tracing_appender::non_blocking(appender);
+        let cell: LogGuardCell = std::sync::Arc::new(parking_lot::Mutex::new(Some(guard)));
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let cell_a = std::sync::Arc::clone(&cell);
+        let barrier_a = std::sync::Arc::clone(&barrier);
+        let racer = std::thread::spawn(move || {
+            barrier_a.wait();
+            cell_a.lock().take()
+        });
+        barrier.wait();
+        let here = cell.lock().take();
+        let there = racer.join().expect("racer thread panicked");
+
+        let taken_count = usize::from(here.is_some()) + usize::from(there.is_some());
+        assert_eq!(
+            taken_count, 1,
+            "exactly one of two concurrent takers must retrieve the guard, never zero or both"
+        );
+    }
+
     /// Verify that `spawn_sigterm_flush_task` installs its listener without panicking and
-    /// without touching the guard cell before an actual signal arrives — the normal flush path
-    /// (`TracingGuards::drop`) must still work undisturbed while the task is parked waiting.
+    /// without touching the chrome guard cell before an actual signal arrives — the normal flush
+    /// path (`TracingGuards::drop`) must still work undisturbed while the task is parked waiting.
     ///
     /// This necessarily registers a real, process-wide SIGTERM listener for the remainder of
     /// the test process (critic finding M3: unavoidable for testing installation at all — the
@@ -1086,7 +1267,7 @@ mod tests {
     /// affect other tests in the same nextest-per-process test binary).
     #[cfg(feature = "profiling")]
     #[tokio::test]
-    async fn spawn_sigterm_flush_task_does_not_touch_guard_before_signal() {
+    async fn spawn_sigterm_flush_task_does_not_touch_chrome_guard_before_signal() {
         use zeph_core::config::{TelemetryBackend, TelemetryConfig};
         let dir = tempfile::TempDir::new().expect("tempdir");
         let telemetry = TelemetryConfig {
@@ -1099,7 +1280,29 @@ mod tests {
             Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>,
         > = Vec::new();
         let cell = build_chrome_layer(&telemetry, &mut layers).expect("guard cell");
-        spawn_sigterm_flush_task(std::sync::Arc::clone(&cell));
+        spawn_sigterm_flush_task(None, Some(std::sync::Arc::clone(&cell)));
+        // Give the spawned listener task a chance to register before this test ends.
+        tokio::task::yield_now().await;
+        let taken = cell.lock().take();
+        assert!(
+            taken.is_some(),
+            "normal flush path must still work with the SIGTERM task installed"
+        );
+    }
+
+    /// Verify that `spawn_sigterm_flush_task` installs its listener without panicking and
+    /// without touching the log guard cell before an actual signal arrives — mirrors
+    /// `spawn_sigterm_flush_task_does_not_touch_chrome_guard_before_signal` but for the
+    /// unconditional file-log cell (#6693).
+    #[tokio::test]
+    async fn spawn_sigterm_flush_task_does_not_touch_log_guard_before_signal() {
+        let (_non_blocking, log_guard) = tracing_appender::non_blocking(std::io::sink());
+        let cell: LogGuardCell = std::sync::Arc::new(parking_lot::Mutex::new(Some(log_guard)));
+        spawn_sigterm_flush_task(
+            Some(std::sync::Arc::clone(&cell)),
+            #[cfg(feature = "profiling")]
+            None,
+        );
         // Give the spawned listener task a chance to register before this test ends.
         tokio::task::yield_now().await;
         let taken = cell.lock().take();

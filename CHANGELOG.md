@@ -148,6 +148,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `src/tracing_init.rs`: `log_guard` (the `WorkerGuard` for the rolling file appender) had the
+  same SIGTERM-flush gap as `chrome_guard` before #6683/#6692 fixed it (issue #6693) — a `SIGTERM`
+  killed the process before Rust's normal `Drop` glue ran, discarding whatever log lines were
+  still buffered in the async writer's channel (repro: a tight-race self-kill lost 127-939
+  genuinely-emitted lines per run). Generalized the `ChromeGuardCell` take-once-cell pattern to a
+  new unconditional `LogGuardCell` (`log_guard` is not gated behind the `profiling` feature, unlike
+  `chrome_guard`): `TracingGuards::drop` now explicitly takes and flushes both cells, and
+  `spawn_sigterm_flush_task` now flushes whichever of the log/chrome cells is `Some` before
+  re-raising `SIGTERM`. `owns_sigterm_elsewhere` (previously `profiling`-feature-gated) is now
+  always computed and passed to `init_tracing`, since the file-log flush task must run under the
+  same "don't race a graceful shutdown path" guard that already covered the Chrome trace flush.
+  **Behavior change**, not purely internal: because `logging.file` defaults to a non-empty path,
+  this SIGTERM flush task now installs in effectively every build and invocation (previously it
+  only installed under `profiling` + `telemetry.enabled` + `backend = "local"`), overriding
+  SIGTERM's default terminate-immediately disposition process-wide. This adds a bounded delay
+  between receiving SIGTERM and process exit — up to ~1.1s in the worst case (a 100ms enqueue
+  timeout plus a 1000ms worker-shutdown timeout per guard, log and chrome) — worth knowing for
+  process supervisors with sub-second stop windows and for this project's own
+  `pkill -f "target/.*zeph"` live-testing teardown habit. Known residual gap (tracked as a
+  follow-up, out of scope here since #6693 is SIGTERM-only): Ctrl-C is handled separately by
+  `early_ctrlc` (`src/runner.rs`) via `std::process::exit(130)`, which still bypasses
+  `TracingGuards::drop` entirely and remains truncating on both Unix and non-Unix.
 - `.claude/rules/continuous-improvement.md`: fixed the "Local Trace Analysis" jq recipes, which
   matched zero events against every real local trace file (issue #6676). `tracing-chrome` 0.7.2
   writes a bare top-level JSON array (not `{"traceEvents": [...]}`) and never emits `ph:"X"`

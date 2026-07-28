@@ -842,12 +842,13 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     let json_mode_early = cli.json || base_config.cli.json;
 
     // Whether some other code path reached by this invocation will install its own SIGTERM
-    // handler and own graceful shutdown once dispatch proceeds below — `init_tracing`'s local
-    // trace flush task must not compete with those for the same signal (critic finding C1,
-    // #6683: a naive `!daemon_mode` gate let the flush task's hard exit race and beat
-    // `serve-sessions`'/`scheduler serve`'s graceful drain). `cli.command` is already fully
-    // parsed at this point, decidable without executing any of the async dispatch logic below.
-    #[cfg(feature = "profiling")]
+    // handler and own graceful shutdown once dispatch proceeds below — `init_tracing`'s SIGTERM
+    // flush task (file-log writer unconditionally, plus the local trace writer when `profiling`
+    // is enabled) must not compete with those for the same signal (critic finding C1, #6683: a
+    // naive `!daemon_mode` gate let the flush task's hard exit race and beat
+    // `serve-sessions`'/`scheduler serve`'s graceful drain; the same hazard applies to the
+    // file-log writer, #6693). `cli.command` is already fully parsed at this point, decidable
+    // without executing any of the async dispatch logic below.
     let owns_sigterm_elsewhere = {
         #[cfg(feature = "session")]
         let owns_serve_sessions =
@@ -869,7 +870,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         telemetry_config,
         redact_secrets,
         json_mode_early,
-        #[cfg(feature = "profiling")]
         owns_sigterm_elsewhere,
         #[cfg(feature = "profiling")]
         Some(std::sync::Arc::clone(&metrics_collector_arc)),
