@@ -532,7 +532,7 @@ jobs:
     needs: detect-changes
     if: needs.detect-changes.outputs.run-full-ci == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -548,9 +548,12 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           shared-key: "ci"
+      # --all-targets compiles test/bench/example targets too, so per-bundle
+      # test-cfg-gate mismatches (e.g. #6607) are caught here, not just by the
+      # broader combined-feature jobs above (lint-clippy, msrv, release-build).
       - name: Check bundle
         continue-on-error: ${{ matrix.allow_failure == true }}
-        run: cargo check --features ${{ matrix.bundle }}
+        run: cargo check --all-targets --features ${{ matrix.bundle }}
 
   release-build:
     name: Release Build Check

@@ -128,6 +128,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   restores it into the session on `Drop`, covering every exit path; `drain_agent_events` borrows
   the receiver instead of consuming it so the guard never loses ownership across the drain loop's
   await points.
+- `ci`: the per-bundle `bundle-check` job in `ci.yml` now runs `cargo check --all-targets`
+  instead of a lib/bin-only check (issue #6609, follow-up to #6607/#6608). Every other
+  `--all-targets` job in CI (`lint-clippy`, `msrv`, `release-build`) always combines feature
+  strings that enable both `session` and `acp-http` together, so a narrower single bundle like
+  `ide` was never checked with `--all-targets` anywhere, letting test-only `#[cfg(...)]` gates
+  narrower than the production code they exercise ship and pass CI indefinitely.
 
 ## [0.22.3] - 2026-07-22
 ### Fixed
