@@ -1183,7 +1183,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 }
                 Err(e) => {
                     eprintln!("Notification test failed: {e}");
-                    std::process::exit(1);
+                    crate::tracing_init::exit_with_flush(tracing_guards, 1);
                 }
             }
             return Ok(());
@@ -1228,7 +1228,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 UrlSchemeCommand::Status { check } => {
                     let stale = register::handle_url_scheme_status();
                     if check && stale {
-                        std::process::exit(1);
+                        crate::tracing_init::exit_with_flush(tracing_guards, 1);
                     }
                     Ok(())
                 }
@@ -1241,9 +1241,13 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             let uri_owned = uri.clone();
             let config_path_owned = cli.config.clone();
             cli.command = None;
-            // Use `?` (not `return`) so that a successful validation falls through to the
-            // normal agent bootstrap path below; only fatal errors propagate out of run().
-            handle_url_open(uri_owned, config_path_owned.as_deref(), &mut cli)?;
+            // `handle_url_open` returns `Some(code)` instead of calling `std::process::exit`
+            // itself, since `tracing_guards` lives on this function's stack, not its own —
+            // exiting directly there would bypass `TracingGuards::drop`'s flush (#6698).
+            // `None` falls through to the normal agent bootstrap path below.
+            if let Some(code) = handle_url_open(uri_owned, config_path_owned.as_deref(), &mut cli) {
+                crate::tracing_init::exit_with_flush(tracing_guards, code);
+            }
         }
         None => {}
     }
@@ -4455,31 +4459,29 @@ fn parse_plugin_url_arg(raw: &str) -> (&str, Option<&str>) {
 /// - Mutation of `cli` so that subsequent bootstrap code picks up the right working directory,
 ///   active provider name, and pre-queued prompt.
 ///
-/// On success, `cli.command` is set to `None` so the normal agent bootstrap path runs.
-/// On any fatal validation error, the process exits with code 1 (matching `url-open` UX contract).
-///
-/// # Errors
-///
-/// Returns an error only for unexpected I/O failures (e.g. `set_current_dir` failing for a
-/// reason other than the path not existing — which is caught earlier by `validate_deep_link_cwd`).
+/// On success, `cli.command` is set to `None` so the normal agent bootstrap path runs and
+/// `None` is returned. On any fatal validation error (including `set_current_dir` failing),
+/// `Some(1)` is returned so the caller can exit with code 1 (matching `url-open` UX contract) —
+/// this function does not call `std::process::exit` itself because the caller's `tracing_guards`
+/// value is not in scope here, and exiting directly would bypass `TracingGuards::drop`'s flush
+/// logic (#6698). All validation failures are reported to the caller through this return value
+/// rather than `Err`, since none of them are unexpected I/O errors.
 // SAFETY: set_var is called synchronously during single-threaded startup, before
 // any spawned task reads ZEPH_URL_OPEN_DEPTH. The tokio runtime is active at this
 // point, but no spawned tasks read this env var on this call path — the guard is
 // a one-time write.
-// On some target platforms the function body always succeeds; Result is kept to
-// propagate set_current_dir failures.
-#[allow(unsafe_code, clippy::unnecessary_wraps)]
+#[allow(unsafe_code)]
 #[cfg(feature = "deep-link")]
 fn handle_url_open(
     uri: String,
     config_override: Option<&std::path::Path>,
     cli: &mut crate::cli::Cli,
-) -> anyhow::Result<()> {
+) -> Option<i32> {
     use crate::url_scheme::prompt::ConfirmResult;
     // INV-LOOP: prevent re-entrant dispatch.
     if std::env::var("ZEPH_URL_OPEN_DEPTH").as_deref() == Ok("1") {
         eprintln!("deep-link dispatch loop detected; exiting");
-        std::process::exit(1);
+        return Some(1);
     }
     // Set the depth marker before any child process is launched.
     #[allow(clippy::disallowed_methods)]
@@ -4492,7 +4494,7 @@ fn handle_url_open(
         Ok(dl) => dl,
         Err(e) => {
             eprintln!("zeph url-open: invalid URI: {e}");
-            std::process::exit(1);
+            return Some(1);
         }
     };
 
@@ -4511,13 +4513,13 @@ fn handle_url_open(
                         "zeph url-open: cannot change to cwd '{}': {e}",
                         canonical.display()
                     );
-                    std::process::exit(1);
+                    return Some(1);
                 }
                 tracing::debug!(path = %canonical.display(), "deep-link: cwd set");
             }
             Err(e) => {
                 eprintln!("zeph url-open: rejected cwd '{}': {e}", cwd.display());
-                std::process::exit(1);
+                return Some(1);
             }
         }
     }
@@ -4544,7 +4546,7 @@ fn handle_url_open(
                     known.join(", ")
                 }
             );
-            std::process::exit(1);
+            return Some(1);
         }
         tracing::warn!(
             model = %model_name,
@@ -4584,7 +4586,7 @@ fn handle_url_open(
     // Clear the command so the normal bootstrap path runs.
     cli.command = None;
 
-    Ok(())
+    None
 }
 
 #[cfg(feature = "deep-link")]
@@ -4674,6 +4676,135 @@ mod deep_link_tests {
             known.join(", ")
         };
         assert_eq!(msg, "(none configured)");
+    }
+
+    // --- handle_url_open Option<i32> contract (#6698) ---
+    //
+    // `handle_url_open` used to call `std::process::exit(1)` directly on every fatal
+    // validation branch; it now returns `Some(1)` so the caller in `run()` can flush
+    // tracing guards before exiting. These tests exercise each branch directly and assert
+    // on the return value rather than process exit code, since the old behavior was
+    // inherently untestable in-process.
+
+    /// A nonexistent config path so `load_config_or_default` deterministically falls back
+    /// to `Config::default()`, independent of any ambient config file or `ZEPH_CONFIG`.
+    fn missing_config_path(tmp: &std::path::Path) -> std::path::PathBuf {
+        tmp.join("missing-config.toml")
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn handle_url_open_returns_exit_code_on_reentrant_dispatch() {
+        // SAFETY: nextest runs each test in its own process, so this env mutation cannot
+        // race with another test.
+        #[allow(clippy::disallowed_methods)]
+        unsafe {
+            std::env::set_var("ZEPH_URL_OPEN_DEPTH", "1");
+        }
+        let mut cli = crate::cli::Cli::default();
+        let result = super::handle_url_open("zeph://new-session".to_owned(), None, &mut cli);
+        #[allow(clippy::disallowed_methods)]
+        unsafe {
+            std::env::remove_var("ZEPH_URL_OPEN_DEPTH");
+        }
+        assert!(
+            matches!(result, Some(1)),
+            "expected Some(1) on re-entrant dispatch (INV-LOOP), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn handle_url_open_returns_exit_code_for_invalid_uri() {
+        let mut cli = crate::cli::Cli::default();
+        let result = super::handle_url_open("not-a-zeph-uri".to_owned(), None, &mut cli);
+        assert!(
+            matches!(result, Some(1)),
+            "expected Some(1) for an invalid URI, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn handle_url_open_returns_exit_code_for_nonexistent_cwd() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let mut uri = url::Url::parse("zeph://new-session").expect("valid base URI");
+        uri.query_pairs_mut().append_pair(
+            "cwd",
+            "/this/path/definitely/does/not/exist/zeph_handle_url_open_test",
+        );
+        let mut cli = crate::cli::Cli::default();
+        let config_path = missing_config_path(tmp.path());
+        let result = super::handle_url_open(uri.to_string(), Some(&config_path), &mut cli);
+        assert!(
+            matches!(result, Some(1)),
+            "expected Some(1) when cwd canonicalization fails, got {result:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn handle_url_open_returns_exit_code_when_set_current_dir_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let target = tmp.path().join("unreadable");
+        std::fs::create_dir(&target).expect("create target dir");
+        // `validate_deep_link_cwd` only needs search permission on the *parent* to
+        // canonicalize and stat the target, not on the target itself, so stripping all
+        // permissions here isolates the later `set_current_dir` failure from the earlier
+        // validation step.
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o000))
+            .expect("chmod 000 on target dir");
+
+        let mut uri = url::Url::parse("zeph://new-session").expect("valid base URI");
+        uri.query_pairs_mut()
+            .append_pair("cwd", &target.to_string_lossy());
+        let mut cli = crate::cli::Cli::default();
+        let config_path = missing_config_path(tmp.path());
+        let result = super::handle_url_open(uri.to_string(), Some(&config_path), &mut cli);
+
+        // Restore permissions so `tempfile::TempDir`'s drop-time cleanup can remove it.
+        let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755));
+
+        match result {
+            // `None` covers a container running as root, which bypasses directory
+            // permission checks entirely, so `set_current_dir` would unexpectedly succeed
+            // there — inconclusive, not a failure of the code under test.
+            Some(1) | None => {}
+            other => panic!("expected Some(1) when set_current_dir fails, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_url_open_returns_exit_code_for_unknown_model() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let mut uri = url::Url::parse("zeph://new-session").expect("valid base URI");
+        uri.query_pairs_mut()
+            .append_pair("model", "definitely-not-a-configured-provider");
+        let mut cli = crate::cli::Cli::default();
+        let config_path = missing_config_path(tmp.path());
+        let result = super::handle_url_open(uri.to_string(), Some(&config_path), &mut cli);
+        assert!(
+            matches!(result, Some(1)),
+            "expected Some(1) for an unknown model name, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn handle_url_open_returns_none_and_prepares_bootstrap_on_success() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let config_path = missing_config_path(tmp.path());
+        let mut cli = crate::cli::Cli::default();
+        let uri = "zeph://new-session".to_owned();
+        let result = super::handle_url_open(uri.clone(), Some(&config_path), &mut cli);
+        assert!(
+            result.is_none(),
+            "expected None on a successful new-session URI, got {result:?}"
+        );
+        assert!(
+            cli.command.is_none(),
+            "command must be cleared for normal bootstrap"
+        );
+        assert_eq!(cli.deep_link_uri.as_deref(), Some(uri.as_str()));
     }
 }
 
