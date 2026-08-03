@@ -1,6 +1,6 @@
 # Stage 1: prepare writable runtime directories with correct ownership.
 # busybox is used only to run mkdir/chown; it is not present in the final image.
-FROM busybox:1.38-musl@sha256:8635836765b0c4c43970660219739baa58b0883c2e429e4b8918f7dd1519455c AS setup
+FROM busybox:1.38-musl@sha256:32b5cdad7cce41dfd53d0ae06baebcf8357a147ee7694dc706911c373bc30c37 AS setup
 
 ARG TARGETARCH
 
@@ -13,7 +13,7 @@ RUN mkdir -p /app/.zeph/data && \
     chown -R 65532:65532 /app
 
 # Stage 2: minimal distroless runtime — no shell, no package manager, zero CVEs.
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35
 
 COPY --from=setup /app /app
 
