@@ -23,7 +23,7 @@ services:
       - cpu
 
   zeph:
-    image: ${ZEPH_IMAGE:-ghcr.io/bug-ops/zeph:latest@sha256:ad524238432d778a41fe9b49ee4f5b15440ef5f3226371d734e0df142a2e2a2e}
+    image: ${ZEPH_IMAGE:-ghcr.io/bug-ops/zeph:latest@sha256:abef4488efa181a10375b7c0b20b7abe0d4ba80e67b893b47ec78ffa6036f126}
     pull_policy: always
     depends_on:
       ollama:
