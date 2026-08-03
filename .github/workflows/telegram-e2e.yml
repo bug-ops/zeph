@@ -89,7 +89,7 @@ jobs:
       # sccache caches per-crate compilation results in GHA cache.
       # telegram-e2e uses --profile ci (same as CI lint/build jobs) so sccache
       # entries built by CI are reused here, making reruns nearly instant.
-      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
         if: steps.secrets-check.outputs.skip == 'false'
 
       - name: Set up Python
