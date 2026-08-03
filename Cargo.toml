@@ -19,25 +19,25 @@ publish = true
 [workspace.dependencies]
 age = { version = "0.12.1", default-features = false }
 agent-client-protocol = "2.0.0"
-agent-client-protocol-schema = "=1.5.0"
-anyhow = "1.0.103"
+agent-client-protocol-schema = "=1.6.0"
+anyhow = "1.0.104"
 arboard = "3.6.1"
 arc-swap = "1.9.2"
 async-stream = "0.3.6"
-async-trait = "0.1.89"
+async-trait = "0.1.91"
 audioadapter-buffers = "4.0"
 axum = "0.8.9"
-base64 = "0.22.1"
+base64 = "0.23.0"
 bech32 = "0.12.0"
 blake3 = "1.8.5"
-bytemuck = "1.25.1"
+bytemuck = "1.25.2"
 bytes = "1.12.1"
 candle-core = { version = "0.11.0", default-features = false }
 candle-nn = { version = "0.11.0", default-features = false }
 candle-transformers = { version = "0.11.0", default-features = false }
 chacha20poly1305 = "0.11.0"
 chrono = { version = "0.4.45", default-features = false }
-clap = "4.6.2"
+clap = "4.6.4"
 cpu-time = "1.0"
 criterion = "0.8.2"
 cron = "0.17.0"
@@ -50,21 +50,21 @@ expectrl = "0.9.0"
 flate2 = "1.1.9"
 futures = "0.3.33"
 futures-core = "0.3.33"
-glob = "0.3.3"
+glob = "0.3.4"
 globset = "0.4.19"
 hex = "0.4.3"
 hf-hub = { version = "1.0.0", default-features = false }
 hmac = "0.13"
-http = "1.4.2"
+http = "1.5.0"
 http-body-util = "0.1.4"
-ignore = "0.4.30"
+ignore = "0.4.31"
 image = { version = "0.25.10", default-features = false }
 include_dir = "0.7.4"
 indexmap = "2.14.0"
 indoc = "2.0.7"
 insta = "1.48.0"
 k256 = { version = "0.14.0", default-features = false }
-landlock = "0.4.5"
+landlock = "0.4.7"
 libsqlite3-sys = "0.38.1"
 lru = "0.18.1"
 metrics = "0.24.6"
@@ -73,7 +73,7 @@ nix = { version = "0.31.3", default-features = false }
 notify = "8.2.0"
 notify-debouncer-mini = "0.7"
 nucleo-matcher = "0.3.1"
-ollama-rs = { version = "0.3.5", default-features = false }
+ollama-rs = { version = "0.3.6", default-features = false }
 open = "5.4.0"
 opentelemetry = "0.32.0"
 opentelemetry-otlp = { version = "0.32.0", default-features = false }
@@ -97,8 +97,8 @@ ripemd = "0.2"
 rmcp = "2.2.0"
 rubato = "4.0.0"
 rustix = { version = "1.1.4", default-features = false }
-schemars = "1.2.1"
-scrape-core = "0.2.9"
+schemars = "1.2.2"
+scrape-core = "0.2.10"
 seccompiler = "0.5.0"
 semver = "1.0.28"
 serde = "1.0.228"
@@ -119,7 +119,7 @@ tempfile = "3.27"
 testcontainers = "0.27.3"
 tar = "0.4.46"
 testcontainers-modules = { version = "0.15", default-features = false }
-thiserror = "2.0.18"
+thiserror = "2.0.19"
 throbber-widgets-tui = "0.11.1"
 tiktoken-rs = "0.12.0"
 tokenizers = { version = "0.23.1", default-features = false }
@@ -127,7 +127,7 @@ tokio = "1.53.0"
 tokio-stream = "0.1.18"
 tokio-tungstenite = { version = "0.30.0", default-features = false }
 tokio-util = "0.7.18"
-toml = "1.1.3"
+toml = "1.1.4"
 toml_edit = "0.25.13"
 tower = "0.5.3"
 tower-http = { version = "0.7.0", default-features = false }
