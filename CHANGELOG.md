@@ -148,6 +148,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-memory`, `zeph-mcp`, `zeph-skills`: bumped `qdrant-client` from `1.18` to `1.19`
+  (issue #3772), pulling in `tonic` `0.14.6` in place of `0.12.3` and removing the unmaintained
+  `rustls-pemfile` `2.2.0` from the dependency tree (RUSTSEC-2025-0134). This also unifies the
+  workspace onto a single `tonic` version — `opentelemetry-otlp`'s `grpc-tonic` feature already
+  pulled in `tonic` `0.14.x` separately, so the two coexisting copies noted in the removed
+  `Cargo.toml` comment (tracked in #2347) no longer apply. No source changes were required: the
+  `qdrant-client` 1.18 → 1.19 API surface is additive-only for the subset used here, and the
+  codebase has no direct `tonic::` imports. `.github/deny.toml`'s stale `RUSTSEC-2025-0134`
+  ignore entry was removed now that the advisory no longer matches any package in the tree.
+  This also fixes a latent panic: on `tonic` `0.12.3`, TLS setup resolved the rustls
+  `CryptoProvider` via the ambiguous `ClientConfig::builder()`, which `.expect()`-panics
+  whenever more than one crypto backend feature is enabled workspace-wide (both `ring`, via
+  `sqlx`, and `aws-lc-rs`, via `reqwest`, already were) and nothing calls
+  `CryptoProvider::install_default()`. In practice this meant pointing `memory.qdrant_url` at
+  an `https://` endpoint (e.g. Qdrant Cloud) panicked at client construction — a configuration
+  the project actively documents as supported. `tonic` `0.14.6` selects
+  `crypto::ring::default_provider()` explicitly, resolving the panic.
 - `zeph` (binary): closed every remaining `std::process::exit` call site reachable from `run()`
   after `init_tracing` (issue #6709, follow-up to #6708/#6698) — the last of the guard-flush-
   bypass bug class where a direct `exit()` skips `TracingGuards::drop`'s flush and can truncate

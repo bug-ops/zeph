@@ -87,7 +87,7 @@ pprof = { version = "0.15.0", default-features = false }
 prometheus-client = "0.25.0"
 proptest = "1.11"
 pulldown-cmark = "0.13.4"
-qdrant-client = { version = "1.18", default-features = false }
+qdrant-client = { version = "1.19", default-features = false }
 rand = "0.10.2"
 rand_distr = "0.6"
 ratatui = "0.30.2"
@@ -364,8 +364,6 @@ futures.workspace = true
 glob.workspace = true
 metrics.workspace = true
 opentelemetry = { workspace = true, optional = true }
-# NOTE: grpc-tonic pulls tonic ^0.14 which coexists with qdrant-client's tonic 0.12.
-# Binary bloat is acceptable until qdrant-client upgrades (tracked in #2347).
 opentelemetry-otlp = { workspace = true, optional = true, features = ["grpc-tonic", "trace"] }
 opentelemetry_sdk = { workspace = true, optional = true, features = ["trace"] }
 parking_lot.workspace = true
