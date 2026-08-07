@@ -94,7 +94,7 @@ ratatui = "0.30.2"
 regex = "1.13.1"
 reqwest = { version = "0.13.4", default-features = false }
 ripemd = "0.2"
-rmcp = "2.2.0"
+rmcp = "3.1.0"
 rubato = "4.0.0"
 rustix = { version = "1.1.4", default-features = false }
 schemars = "1.2.2"
