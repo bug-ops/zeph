@@ -134,7 +134,7 @@ impl PinningOAuthHttpClient {
                     error = %e,
                     "oauth http client: blocked SSRF-unsafe request target"
                 );
-                OAuthHttpClientError::new(e.to_string())
+                OAuthHttpClientError::from(e.to_string())
             })?;
             tracing::debug!(
                 server_id = %self.server_id,
@@ -146,7 +146,7 @@ impl PinningOAuthHttpClient {
         }
 
         builder.build().map_err(|e| {
-            OAuthHttpClientError::new(format!("failed to build OAuth HTTP client: {e}"))
+            OAuthHttpClientError::from(format!("failed to build OAuth HTTP client: {e}"))
         })
     }
 
@@ -161,7 +161,7 @@ impl PinningOAuthHttpClient {
         let uri = request.uri();
         let host = uri
             .host()
-            .ok_or_else(|| OAuthHttpClientError::new("OAuth request URI missing host"))?
+            .ok_or_else(|| OAuthHttpClientError::from("OAuth request URI missing host"))?
             .to_owned();
         let port = uri
             .port_u16()
@@ -182,7 +182,7 @@ impl PinningOAuthHttpClient {
         let response = builder
             .send()
             .await
-            .map_err(|e| OAuthHttpClientError::new(e.to_string()))?;
+            .map_err(|e| OAuthHttpClientError::from(e.to_string()))?;
 
         let mut resp_builder = http::Response::builder()
             .status(response.status())
@@ -194,9 +194,9 @@ impl PinningOAuthHttpClient {
         let mut body = Vec::new();
         let mut body_stream = response.bytes_stream();
         while let Some(chunk) = body_stream.next().await {
-            let chunk = chunk.map_err(|e| OAuthHttpClientError::new(e.to_string()))?;
+            let chunk = chunk.map_err(|e| OAuthHttpClientError::from(e.to_string()))?;
             if chunk.len() > MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES.saturating_sub(body.len()) {
-                return Err(OAuthHttpClientError::new(format!(
+                return Err(OAuthHttpClientError::from(format!(
                     "OAuth HTTP response body exceeds {MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES} bytes"
                 )));
             }
@@ -205,7 +205,7 @@ impl PinningOAuthHttpClient {
 
         resp_builder
             .body(body)
-            .map_err(|e| OAuthHttpClientError::new(e.to_string()))
+            .map_err(|e| OAuthHttpClientError::from(e.to_string()))
     }
 
     /// Build the request for the next redirect hop from the previous request/response
@@ -228,14 +228,14 @@ impl PinningOAuthHttpClient {
         let location = response
             .headers()
             .get(http::header::LOCATION)
-            .ok_or_else(|| OAuthHttpClientError::new("redirect response missing Location header"))?
+            .ok_or_else(|| OAuthHttpClientError::from("redirect response missing Location header"))?
             .to_str()
-            .map_err(|e| OAuthHttpClientError::new(format!("invalid Location header: {e}")))?;
+            .map_err(|e| OAuthHttpClientError::from(format!("invalid Location header: {e}")))?;
 
         let base = Url::parse(&prev.uri().to_string())
-            .map_err(|e| OAuthHttpClientError::new(format!("invalid request URI: {e}")))?;
+            .map_err(|e| OAuthHttpClientError::from(format!("invalid request URI: {e}")))?;
         let next_url = base.join(location).map_err(|e| {
-            OAuthHttpClientError::new(format!("invalid redirect target '{location}': {e}"))
+            OAuthHttpClientError::from(format!("invalid redirect target '{location}': {e}"))
         })?;
 
         let downgrade_to_get = response.status() == http::StatusCode::SEE_OTHER
@@ -270,7 +270,7 @@ impl PinningOAuthHttpClient {
         }
         builder
             .body(body)
-            .map_err(|e| OAuthHttpClientError::new(e.to_string()))
+            .map_err(|e| OAuthHttpClientError::from(e.to_string()))
     }
 
     /// Redirect-following loop shared by [`OAuthHttpClient::execute`] and tests.
@@ -295,7 +295,7 @@ impl PinningOAuthHttpClient {
 
             hops += 1;
             if hops > MAX_OAUTH_REDIRECT_HOPS {
-                return Err(OAuthHttpClientError::new(format!(
+                return Err(OAuthHttpClientError::from(format!(
                     "OAuth request exceeded max redirect hops ({MAX_OAUTH_REDIRECT_HOPS})"
                 )));
             }
@@ -466,7 +466,7 @@ fn hex_val(b: u8) -> Option<u8> {
 /// Fail-fast pre-check: validate that OAuth metadata endpoints don't resolve to
 /// private IPs before starting the (user-interactive) authorization flow.
 ///
-/// Called after `discover_metadata()`, before using any of the discovered URLs.
+/// Called after `resolve_metadata()`, before using any of the discovered URLs.
 ///
 /// This is no longer the security boundary for SSRF on these endpoints — every
 /// actual OAuth HTTP request (token exchange, refresh, dynamic client registration)

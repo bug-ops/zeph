@@ -17,7 +17,8 @@ use rmcp::service::{ClientInitializeError, NotificationContext, RoleClient, Runn
 use rmcp::transport::IntoTransport;
 use rmcp::transport::TokioChildProcess;
 use rmcp::transport::auth::{
-    AuthClient, AuthError, CredentialStore, InMemoryStateStore, OAuthState, StoredCredentials,
+    AuthClient, AuthError, AuthorizationRequest, CredentialStore, InMemoryStateStore, OAuthState,
+    StoredCredentials,
 };
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig, StreamableHttpError,
@@ -730,21 +731,24 @@ impl McpClient {
 
         // Step 5: discover metadata and validate endpoints
         if let OAuthState::Unauthorized(ref manager) = state {
-            let metadata = manager
-                .discover_metadata()
-                .await
-                .map_err(|e| McpError::OAuthError {
-                    server_id: server_id.into(),
-                    message: format!("metadata discovery failed: {e}"),
-                })?;
+            let resolution =
+                manager
+                    .resolve_metadata()
+                    .await
+                    .map_err(|e| McpError::OAuthError {
+                        server_id: server_id.into(),
+                        message: format!("metadata discovery failed: {e}"),
+                    })?;
 
-            crate::oauth::validate_oauth_metadata_urls(server_id, &metadata).await?;
+            crate::oauth::validate_oauth_metadata_urls(server_id, &resolution.metadata).await?;
         }
 
         // Step 6: start authorization
-        let scope_refs: Vec<&str> = scopes.iter().map(String::as_str).collect();
+        let request = AuthorizationRequest::new(redirect_uri.clone())
+            .with_scopes(scopes.iter().cloned())
+            .with_client_name(client_name);
         state
-            .start_authorization(&scope_refs, &redirect_uri, Some(client_name))
+            .start_authorization(request)
             .await
             .map_err(|e| McpError::OAuthError {
                 server_id: server_id.into(),
@@ -2221,7 +2225,7 @@ mod tests {
             &self,
             request: CallToolRequestParams,
             _context: rmcp::service::RequestContext<rmcp::RoleServer>,
-        ) -> Result<CallToolResult, rmcp::model::ErrorData> {
+        ) -> Result<rmcp::model::CallToolResponse, rmcp::model::ErrorData> {
             if request.name.as_ref() != DUPLEX_TEST_TOOL_NAME {
                 return Err(rmcp::model::ErrorData::invalid_params(
                     format!("unknown tool: {}", request.name),
@@ -2249,7 +2253,8 @@ mod tests {
                     "file:///report.pdf",
                     "report.pdf",
                 )),
-            ]))
+            ])
+            .into())
         }
     }
 

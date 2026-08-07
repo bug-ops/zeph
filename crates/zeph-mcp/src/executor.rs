@@ -1040,20 +1040,20 @@ mod tests {
     // to close this gap (extend `client.rs`'s `DuplexTestServer` harness to emit `_meta`,
     // and route it through `McpManager`/`McpToolExecutor`).
     mod meta_max_result_size_chars_parsing {
-        use rmcp::model::Meta;
+        use rmcp::model::MetaObject;
         use serde_json::Value;
 
         /// Mirrors executor.rs:333-338 exactly.
-        fn extract_max_result_size_chars(meta: Option<&Meta>) -> Option<usize> {
+        fn extract_max_result_size_chars(meta: Option<&MetaObject>) -> Option<usize> {
             meta.and_then(|m| m.0.get("zeph/maxResultSizeChars"))
                 .and_then(Value::as_u64)
                 .and_then(|n| usize::try_from(n).ok())
         }
 
-        fn meta_with(key: &str, value: Value) -> Meta {
+        fn meta_with(key: &str, value: Value) -> MetaObject {
             let mut map = serde_json::Map::new();
             map.insert(key.to_owned(), value);
-            Meta(map)
+            MetaObject(map)
         }
 
         #[test]

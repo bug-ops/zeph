@@ -148,6 +148,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-mcp`: bumped `rmcp` from `2.2.0` to `3.1.0`, fixing the following breaking API
+  changes in `rmcp`'s `transport::auth` and `model` modules so the workspace builds again:
+  - `OAuthHttpClientError` became a type alias for `Box<dyn Error + Send + Sync>` (previously
+    a concrete struct with an inherent `::new()` constructor) — every construction site in
+    `oauth.rs`'s `PinningOAuthHttpClient` now uses `OAuthHttpClientError::from(..)`, which
+    resolves through std's `From<String>`/`From<&str>` impls for the boxed trait object.
+  - `AuthorizationManager::discover_metadata()` was replaced by `resolve_metadata()`, which
+    returns an `AuthorizationMetadataResolution { metadata, source }` instead of the bare
+    metadata; the SSRF pre-check in `client.rs`'s `connect_url_oauth` now reads
+    `resolution.metadata`.
+  - `OAuthState::start_authorization` now takes a single `AuthorizationRequest` builder value
+    instead of three positional arguments (`&[&str]` scopes, `&str` redirect URI, `Option<&str>`
+    client name); `connect_url_oauth` now builds one via
+    `AuthorizationRequest::new(redirect_uri).with_scopes(..).with_client_name(..)`.
+  - `rmcp::model::Meta` was renamed to `MetaObject`; updated the `_meta["zeph/maxResultSizeChars"]`
+    parsing unit tests in `executor.rs` accordingly (the production call site was unaffected,
+    since it never named the type directly).
+  - `ServerHandler::call_tool` now returns `CallToolResponse` instead of `CallToolResult`;
+    the in-process `DuplexTestServer` test harness in `client.rs` converts via
+    `CallToolResult::into()`.
+  No behavior changes beyond tracking the upstream API — SSRF pinning, redirect handling, and
+  the OAuth callback flow are unchanged.
 - `zeph-memory`, `zeph-mcp`, `zeph-skills`: bumped `qdrant-client` from `1.18` to `1.19`
   (issue #3772), pulling in `tonic` `0.14.6` in place of `0.12.3` and removing the unmaintained
   `rustls-pemfile` `2.2.0` from the dependency tree (RUSTSEC-2025-0134). This also unifies the
