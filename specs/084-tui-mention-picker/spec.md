@@ -27,7 +27,7 @@ related:
 > **Author**: Andrei G.
 > **Date**: 2026-07-22
 > **Branch**: ux-search-status-improvements-bdc0d7
-> **GitHub Issues**: #6647 (inline picker), #6648 (skill/agent categories); follow-ups #6650 (fuzzy-engine unification), #6651 (empty-query ordering)
+> **GitHub Issues**: #6647 (inline picker), #6648 (skill/agent categories); follow-ups #6650 (fuzzy-engine unification, implemented), #6651 (empty-query ordering, implemented)
 
 ---
 
@@ -341,7 +341,11 @@ On every character typed (while the popup is open):
    reducer arm (never a separate `query` field — see §6)
 2. `sync_mention_picker` re-derives the query from the buffer and calls
    `refilter(&query)`, which re-computes `filtered` for the active tab using
-   `nucleo_matcher::Matcher`
+   `nucleo_matcher::Matcher` constructed via the shared `crate::fuzzy::matcher`/
+   `crate::fuzzy::pattern` helpers (#6650) — the same helpers back `/` slash
+   autocomplete's matcher (`command.rs`), so both pickers share one fuzzy-scoring
+   configuration and separator-equivalence (`:`/`-`/space) normalization instead of
+   the previous hand-rolled `fuzzy_score`/`fuzzy_chars_equivalent` scorer
 3. `selected` resets to 0 inside `refilter`
 4. The popup re-renders with highlighted match indices and result count
 

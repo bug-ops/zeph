@@ -575,9 +575,9 @@ intended posture: an accidentally-matched `Quarantined` skill (never requested b
 merely scoring above `min_injection_score`) silently dropped the whole turn's trust floor
 (denying every `QUARANTINE_DENIED` tool and all MCP tools), while a deliberately-invoked
 `Quarantined` skill's body entered the context with no consequence. This section documents
-the corrected invariants; #6702 tracks a related but lower-priority follow-up (AutoSkill
-draft names shadowing native tool IDs, and `sync_skill_trust` silently re-promoting
-operator-moved-aside drafts) and is intentionally out of scope here.
+the corrected invariants. #6702 (AutoSkill draft names shadowing native tool IDs, and
+missing quarantine persistence at generation time) was tracked as a lower-priority follow-up
+here and has since been closed by #6705 — see § AutoSkill Draft Quarantine Persistence below.
 
 ### Proactive/Implicit Activation Excludes Quarantined and Blocked (D1)
 
@@ -641,6 +641,115 @@ downgrade — `min` against the current value, never an upgrade), and `get()`.
 - NEVER remove the weakest-link fold for skills whose bodies were actually
   injected/invoked — it remains defense-in-depth against a prompt-injected skill body
   steering the model into other tools; D1 narrows the fold's *input*, never its strength
+
+---
+
+## AutoSkill Draft Quarantine Persistence (#6702, #6705)
+
+`SkillGenerator::write_quarantined` writes an AutoSkill draft's `SKILL.md` under
+`<output_dir>/_quarantine/<name>/` but performs no database write itself — the `_quarantine`
+directory prefix is a human-readable convention only, not an enforcement boundary (the
+registry's directory scanner applies no path-based filtering). Enforcement is solely the
+`skill_trust` row. Previously the caller relied on the skill's *first hot-reload* to create
+that row, which had nothing to preserve and fell through to `skills.trust.default_level` —
+silently trusting an unreviewed draft whenever an operator set `default_level = "trusted"`.
+
+`log_and_persist` (the shared caller in `crates/zeph-core/src/agent/trace_extraction.rs` and
+`crates/zeph-skills/src/trace_extractor.rs`) now eagerly writes a `Quarantined` `skill_trust`
+row immediately after `write_quarantined` returns, keyed on the name actually written to
+disk. A guard skips (and warns on) writing over an unrelated skill's existing trust row when
+a merge targets an existing `Bundled` or `Trusted` skill under a different path — the eager
+write must never clobber an already-vetted skill's trust level.
+
+The native-tool-ID collision warning (an AutoSkill draft name colliding with a native tool ID
+after `-`/`_` normalization) is extracted into a shared helper,
+`Agent::warn_on_tool_id_collisions`, called from `skill_catalog_items` — the one call site
+that fires on both startup and every hot-reload, independent of trust-DB/`memory`
+availability. It no longer depends on `SemanticMemory` being configured (the previous
+call site, `update_trust_for_reloaded_skills`, early-returns when `memory` is `None` and only
+runs on the hot-reload path, so a collision present at startup went unwarned).
+
+### Key Invariants
+
+- `write_quarantined` MUST NOT be treated as trust enforcement by itself — the caller MUST
+  write a `Quarantined` `skill_trust` row immediately after, not defer to the next hot-reload
+- An eager quarantine-row write MUST NOT overwrite an existing `Bundled`/`Trusted` skill's
+  trust row on a merge — guard by name/path before writing
+- Native-tool-ID collision detection MUST run independent of `memory`/trust-DB availability
+  and on both the startup and hot-reload paths — single-path warning is incomplete
+
+---
+
+## Trust Escalation Clamping on Relocation and Hash Mismatch (#6706, #6707, #6712)
+
+`update_trust_for_reloaded_skills` (`crates/zeph-core/src/agent/skill_reload.rs`) computes a
+reloaded skill's trust from its stored row plus two change signals — a content hash mismatch
+and a `source_kind` change (e.g. `Hub` → `Local` on relocation out of `managed_dir`). Both
+branches previously assigned the new signal's default level unconditionally whenever the
+stored level was merely "active" (not `Blocked`):
+
+- **Hash-mismatch branch**: any content hash mismatch unconditionally adopted
+  `trust_cfg.hash_mismatch_level` (default `Quarantined`), even when the existing row was an
+  explicit operator `Blocked` — a one-byte edit to a `Blocked` skill silently un-blocked it.
+- **`source_kind`-mismatch branch**: a `source_kind` change adopted the new kind's default
+  level whenever the stored level was `Quarantined` (which `is_active()`s true) — since
+  `[skills.trust] local_level` defaults to `Trusted`, relocating a `Quarantined` skill's
+  unchanged-content directory out of `managed_dir` (Hub → Local) silently promoted it to
+  `Trusted` on the next reload, with no review step.
+
+Both branches now take `SkillTrustLevel::min_trust` of the stored level and the new signal's
+candidate level, so neither a hash mismatch nor a `source_kind` change can ever move a
+skill's effective trust *higher* than it already had — only equal or more restrictive. A
+symmetric, intentional side effect: moving a `Trusted` skill into a source kind with a
+stricter default now also correctly demotes it.
+
+`skill_catalog_items` (feeds the TUI `@` mention picker via `SkillCatalogItem`, which carries
+no trust field) previously filtered out only `Blocked` skills via a direct trust-level check.
+It now uses `SkillTrustLevel::is_hidden_from_catalog()` (true for both `Blocked` and
+`Quarantined`), so a `Quarantined` skill no longer appears there as a normal, invocable name.
+This is the *hide* strategy, distinct from the *annotate* strategy the XML skill-prompt
+catalog (`format_skills_prompt`'s `trust_levels` parameter, § Trust-Aware Skill Activation
+above) uses to keep a `Quarantined`/`Blocked` skill nameable with a `trust="..."` attribute —
+`SkillCatalogItem` has no field for that, so hiding is the only option on this surface.
+
+### Key Invariants
+
+- A hash-mismatch trust update MUST clamp through `min_trust` against the stored level —
+  NEVER let a content edit un-block an operator-`Blocked` skill
+- A `source_kind`-mismatch trust update MUST clamp through `min_trust` against the stored
+  level — NEVER let a relocation (e.g. Hub → Local) escalate a `Quarantined` skill to
+  `Trusted` with no review step
+- `skill_catalog_items`/mention-picker catalog MUST hide both `Blocked` and `Quarantined`
+  skills (`is_hidden_from_catalog`) — hiding only `Blocked` is incomplete
+
+---
+
+## Sub-Agent Skill Trust Gate (#6713, #6715)
+
+`zeph_subagent::filter_skills` (see `specs/044-subagent-lifecycle/spec.md`) previously applied
+only glob include/exclude patterns to the skills passed into a freshly-spawned sub-agent's
+system prompt, returning `Quarantined` and `Blocked` skills identically to `Trusted` ones.
+Unlike the main agent's `<other_skills>` catalog, this surface has no annotate-not-hide
+fallback — `filtered_skills_for` (`crates/zeph-core/src/agent/subagent_commands.rs`) injects
+returned bodies directly and unconditionally into the sub-agent's one-shot prompt, so an
+untrusted skill's body reached the sub-agent verbatim with no consequence.
+
+`filter_skills` now mirrors the main agent's D1 activation filter (§ Trust-Aware Skill
+Activation above): it drops any skill whose resolved trust is `Quarantined` or `Blocked`
+before returning, logging a warning per exclusion naming the promotion command. A skill
+absent from the trust map still falls back to `SkillTrustLevel::MISSING_ENTRY_FALLBACK`
+(`Trusted`). `filtered_skills_for` now resolves the trust map fresh on every call instead of
+reading a cache that was never populated on the slash-command/`@`-mention spawn path — without
+that fix the filter would have been inert on that path.
+
+### Key Invariants
+
+- `filter_skills` MUST drop `Quarantined`/`Blocked` skills before returning — this surface has
+  no annotate/catalog fallback, so a filtered-but-injected skill is a direct policy bypass
+- `filtered_skills_for` MUST resolve a fresh trust map on every call — a stale/never-populated
+  cache silently defeats the filter regardless of `filter_skills`'s own correctness
+- A skill absent from `trust_levels` falls back to `Trusted`
+  (`SkillTrustLevel::MISSING_ENTRY_FALLBACK`), matching the main agent's fallback
 
 ---
 

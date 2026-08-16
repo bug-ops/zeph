@@ -150,7 +150,7 @@ implementation's rustdoc and into `.local/testing/playbooks/vigil.md`:
 ```rust
 pub struct VigilGate {
     config: VigilConfig,
-    patterns: Vec<CompiledPattern>, // RAW_INJECTION_PATTERNS + validated extras
+    patterns: Vec<CompiledPattern>, // BUNDLED_PATTERNS (process-wide LazyLock cache) + validated extras
     exempt: HashSet<String>,
 }
 
@@ -420,6 +420,15 @@ Error propagation:
 - `run_vigil_gate` never returns `Result` — `Clean` is the safe default on any
   internal failure (fail-open for this pre-sanitizer; `ContentSanitizer`
   downstream remains the actual defense).
+
+Bundled-pattern compile cost (#6699, #6711): the bundled bank (`RAW_INJECTION_PATTERNS`)
+MUST be regex-compiled once per process via a `LazyLock` (`BUNDLED_PATTERNS` in
+`crates/zeph-core/src/agent/vigil.rs`), matching every other consumer of that constant.
+`VigilGate::try_new` only `Regex::clone`s (a cheap `Arc` bump) from the cached bank —
+recompiling the bank per construction previously overflowed the default test-thread stack
+under `--features full` (one bundled pattern's `regex_automata` Teddy prefilter build, ~25
+frames deep through a two-agent construction chain), since `VigilGate` is constructed at
+least once per `Agent` (main session plus every subagent spawn).
 
 ---
 

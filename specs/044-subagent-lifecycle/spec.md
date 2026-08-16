@@ -717,7 +717,69 @@ field's section silently reset to its default.
 
 ---
 
-## 19. See Also
+## 19. Session-Wide Cumulative Spawn Cap (issue #6545)
+
+### Problem
+
+The existing guardrails bound recursion depth (`max_spawn_depth`) and in-flight concurrency
+(`max_concurrent`), but neither bounds the *cumulative total* of sub-agents spawned over a
+session's lifetime. A shallow, low-concurrency but high-frequency sequential delegation loop
+(spawn, await completion, spawn again, repeat) trips neither existing guardrail.
+
+### Mechanism
+
+`SessionSpawnBudget` (`crates/zeph-subagent/src/budget.rs`) is a plain `AtomicUsize` newtype —
+deliberately no `Arc`, no `Clone`. `SubAgentManager` owns one instance as the origin of truth
+(`SubAgentManager::session_budget()` returns `&SessionSpawnBudget`); `zeph-core`'s
+`OrchestrationState` owns an independent fallback instance used only when no manager is wired
+(serve/daemon/ACP bootstrap paths, or a bare test harness). `Agent::session_budget()`
+(`crates/zeph-core/src/agent/subagent_commands.rs`) resolves whichever instance applies for the
+session, so a manager-side spawn and the ACP `/subagent spawn` chokepoint (which never touches
+`SubAgentManager` at all) observe and contribute to the exact same cumulative count — resolved
+fresh via accessor on every call, never a copied handle, so a future direct
+`subagent_manager = Some(...)` assignment cannot desynchronize two independent budgets.
+
+Two operations, both taking `&self` (never `&mut self`) since every call path is serialized
+behind `&mut Agent` on the single agent task, making `Relaxed` atomic ordering sufficient:
+
+- `check(max)` — read-only; `Err(SubAgentError::SessionSpawnLimit { spawned, max })` once the
+  cumulative count has reached `max`. `max == 0` is the unlimited sentinel and always succeeds.
+- `record_spawn()` — increments the cumulative count by one. Must be called only at a spawn's
+  true commit point (`SubAgentManager::spawn`/`resume` in `crates/zeph-subagent/src/manager/spawn.rs`,
+  and the ACP path in `crates/zeph-core/src/agent/slash_commands.rs`) — the check/consume split
+  means a spawn rejected by a later check (`NotFound`, `ConcurrencyLimit`, `MaxDepthExceeded`)
+  never burns budget it never used.
+
+`SubAgentConfig.max_spawns_per_session: usize` (`[agents]` in TOML, default `100`, `0` =
+unlimited) configures the cap. `SubAgentManager::spawn`/`resume` check it immediately after the
+`delegation_mode` gate (§15) and before the `max_spawn_depth` check — one step earlier than
+strictly required by the issue (only priority over `ConcurrencyLimit` was mandated), kept
+adjacent to the delegation gate since both are "no resources allocated yet" checks. The counter
+resets at session start and is never persisted across sessions.
+
+`Agent::format_session_spawns_line()` renders `Session spawns: N/max` (or `N/unlimited` when
+`max == 0`) for `/agent status` and `/agent list`.
+
+### Key Invariants
+
+- The session-wide cap is independent of `max_concurrent` (in-flight) and `max_spawn_depth`
+  (recursion) — none of the three subsumes another; all three must be checked.
+- `check()` MUST be read-only; `record_spawn()` MUST fire only at the true spawn commit point —
+  a spawn later rejected by `ConcurrencyLimit`/`MaxDepthExceeded`/`NotFound` must not have
+  consumed budget.
+- The manager-side budget and the ACP `/subagent spawn` chokepoint MUST observe the same
+  cumulative count for a given session — resolve via `Agent::session_budget()`, never a second,
+  independently-constructed `SessionSpawnBudget`.
+- `max_spawns_per_session = 0` is the unlimited sentinel — `check()` always succeeds regardless
+  of cumulative count.
+- `SessionSpawnBudget` MUST NOT be `Clone`/`Arc`-wrapped — sharing is achieved via the
+  accessor pattern (`&self` reference), not by cloning the counter, so a future refactor that
+  needs a truly shared handle across concurrent tasks is a reviewable, deliberate change rather
+  than an incidental `.clone()`.
+
+---
+
+## 20. See Also
 
 - [[constitution]] — project principles
 - [[002-agent-loop/spec]] — parent agent loop that uses `SubAgentManager`

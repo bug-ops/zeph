@@ -397,3 +397,22 @@ treating a hostile/malformed value exactly like an absent or unparseable one.
   unparseable one — fall through to the next source, then the 1 s default
 - This validation applies uniformly to Discord, Slack, and Telegram, since all three share
   `send_with_retry`
+
+### MAX_RETRY_SECS Compile-Time Bound (#6703, #6517)
+
+`send_with_retry` clamps every resolved delay to `MAX_RETRY_SECS` (currently `60.0`) via
+`delay_secs.min(MAX_RETRY_SECS)` before it reaches `Duration::from_secs_f64`. The clamp itself
+guarantees nothing about `MAX_RETRY_SECS` staying finite, non-negative, and `Duration`-safe — a
+future edit to the constant (e.g. `f64::MAX`, the idiomatic-looking way to "disable the cap")
+would silently reintroduce the panic that the Retry-After Clamp fix above closed for the
+Retry-After *input* side. A `const _: () = assert!(...)` compile-time check in `http_retry.rs`
+now bounds `MAX_RETRY_SECS` to `[0.0, 3600.0]` (finite, non-negative, at most one hour).
+
+#### Key Invariants
+
+- `MAX_RETRY_SECS` MUST stay finite, non-negative, and `<= 3600.0` — enforced by a
+  `const _: () = assert!(...)` in `crates/zeph-channels/src/common/http_retry.rs`, so any future
+  edit violating the bound fails the build instead of panicking at runtime inside
+  `send_with_retry`
+- The compile-time guard is independent of, and complementary to, the runtime
+  `valid_retry_secs()` validation above — one bounds the constant, the other bounds the input

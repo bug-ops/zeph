@@ -529,16 +529,27 @@ provider = ""   # [[llm.providers]] name; empty = primary provider fallback
 
 ---
 
-## Generic Secret-Shape Masking (#6593)
+## Generic Secret-Shape Masking (#6593, #6592)
 
 `SecretMaskRegistry` only masks literal secret *values* explicitly registered at runtime
 (actual vault-loaded secrets) — a secret-shaped string a subagent invents, fabricates, or
 echoes in its own generated text (e.g. an `sk-`-prefixed API key it hallucinates) is invisible
 to it. `zeph_sanitizer::secret_shape::scrub_secret_shapes` closes this gap by pattern-matching
-known secret *shapes* (API-key prefixes from `zeph_common::secrets`, `Authorization: Bearer`
-headers, standalone JWTs) regardless of registration. Wired into the sub-agent live-transcript
-forward pipeline and the background sub-agent completion notice; `zeph-core::redact::redact_secrets`
-delegates to the same function rather than duplicating the regex logic.
+known secret *shapes* — API-key prefixes from `zeph_common::secrets`, `Authorization: Bearer`
+headers, standalone JWTs, PEM/SSH2 private-key blocks (`PEM_PRIVATE_KEY_PATTERN` +
+`PEM_PRIVATE_KEY_UNTERMINATED_PATTERN` fallback, body bounded to `PEM_BODY_CAP` = 8192 chars),
+and marker-anchored AWS secret access keys (`AWS_SECRET_KEY_PATTERN` — requires a nearby
+`aws_secret_access_key`/`aws_session_token`-style key name, not a bare base64-ish token, to
+avoid false positives on unrelated 40-char strings) — regardless of registration. Wired into
+the sub-agent live-transcript forward pipeline and the background sub-agent completion notice;
+`zeph-core::redact::redact_secrets` and `zeph-memory`'s `compression_guidelines` both delegate
+to the same function rather than duplicating the regex logic.
+
+The two PEM passes run before the prefix/JWT/AWS passes: the terminated pattern first, then the
+unterminated-header fallback (matched against the terminated pass's already-redacted output, so
+a properly-closed block is never double-matched). No single-line pattern can span a PEM key's
+multi-line body, so both passes use `(?s)` and are bounded by `PEM_BODY_CAP` to keep worst-case
+match cost linear on adversarially large input.
 
 ### Key Invariants
 
@@ -548,6 +559,17 @@ delegates to the same function rather than duplicating the regex logic.
 - Any operator-visible surface that displays raw or lightly-processed sub-agent output
   (transcript forwarding, completion notices) MUST pass through shape-based masking, not only
   `SecretMaskRegistry`
+- A PEM/SSH2 private-key body MUST be redacted as a whole span, not just its `-----BEGIN`/
+  `-----END` markers — the unterminated-header fallback exists precisely because a body-only
+  match on the terminated pattern misses truncated or adversarially-unterminated input
+- AWS secret detection is marker-anchored (requires a recognizable key-name prefix), not
+  shape-only — an unqualified 40-char base64-ish string is NOT redacted, to avoid mass false
+  positives on unrelated tokens
+- The sub-agent live-transcript streaming path (`zeph-subagent::forward`) uses a fixed-size
+  holdback window to sanitize streamed deltas incrementally; the window MUST widen for an
+  unterminated PEM header and extend past an already-closed block's footer, so a PEM header/body/
+  footer split across separately-sanitized deltas always flushes as one unit — a naive
+  fixed-width holdback can let an unmarked middle slice of key body through
 
 ## JSON Recursion Depth Guard (#6551, #6554, #6594, #6595, #6605)
 

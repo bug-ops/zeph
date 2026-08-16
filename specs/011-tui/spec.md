@@ -174,7 +174,7 @@ Where:
 - `you ▸` — prompt glyph; mode hint, `~N tokens` context estimate, and queue badges are the row's existing elements, unchanged
 - `▸▸▹` — animated breeze spinner (constant 3-cell width; rendered as a static `·` when motion is off)
 - `{verb}` — humanized present-continuous status (e.g., `searching · memory`), truncated before the hint under width pressure
-- `{interrupt-hint}` — interrupt instruction; its key/text is owned by #6646 (`esc to interrupt` today, `ctrl+c` once #6646 lands)
+- `{interrupt-hint}` — interrupt instruction, `"  ctrl+c to interrupt"` (`INTERRUPT_HINT`, `widgets/input.rs`); `esc` was replaced by `ctrl+c` when #6646/#6653 landed unified Ctrl+C semantics (see "Ctrl+C Interrupt & Double-Press Quit Semantics" below)
 
 Examples of `{verb}`:
 - `Searching memory…`
