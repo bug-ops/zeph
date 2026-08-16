@@ -23,6 +23,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (LRU + 7-day unused-entry eviction) by the time the next release runs, making the cache a
   cold miss anyway — while still costing multi-GB writes against the shared cache quota that
   `ci.yml` depends on for its frequent, cache-effective runs.
+- `release.yml`: `build-binaries` job timeout raised from 30 to 60 minutes. The `aarch64-apple-darwin`
+  build hit the 30-minute limit and was cancelled — a direct consequence of the sccache removal
+  above, since a cold `--features full` build (including the heavier candle/ML dependencies) now
+  compiles from scratch on every release instead of reusing a warm cache.
 
 ## [0.22.4] - 2026-08-16
 
