@@ -142,7 +142,7 @@ impl Drop for InflightGuard {
     fn drop(&mut self) {
         // Saturating: avoids underflow if somehow called more than once.
         self.0
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 Some(v.saturating_sub(1))
             })
             .ok();

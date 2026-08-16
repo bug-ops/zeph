@@ -71,6 +71,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-llm`, `zeph-channels`, `zeph-orchestration`: converted retry/backoff/timeout unit
+  tests that previously slept on real wall-clock time to `#[tokio::test(start_paused = true)]`
+  (issue #6737, CI wall-clock reduction). Affects
+  `zeph-llm::router::tests::{embed,embed_batch}_{retries_on_rate_limited_then_succeeds,falls_back_after_all_retries_exhausted}`,
+  `zeph-channels::common::http_retry::tests::send_with_retry_ignores_negative_retry_after_{header,body}`,
+  and `zeph-orchestration::scheduler::tick::tests::test_exponential_backoff_duration` — 7 tests
+  total. Each exercises a `tokio::time::sleep`-based backoff path measured via
+  `tokio::time::Instant` (never `std::time::Instant`) with no other real-timeout-bearing I/O in
+  the timed window, so the paused virtual clock preserves every assertion while collapsing
+  ~17.6s of real sleep time to sub-millisecond execution. `zeph-orchestration`'s dev-dependency
+  `tokio` gained the `test-util` feature to support this. Verified stable over 50 repeated runs
+  of the full set (0 failures).
+
+  Three other candidates were tried and reverted after review caught real correctness gaps:
+  - `zeph-llm::retry::tests::send_with_retry_ttft_reflects_final_attempt_not_backoff_delay` —
+    the ttft measurement inside `send_with_retry` uses `std::time::Instant`, which does not
+    track the paused clock; under pause the 1s backoff costs ~0 real time regardless of whether
+    the #6549 D-S2 regression it exists to catch is present, making the assertion vacuous.
+  - `zeph-llm::openai::tests::chat_429_rate_limit_propagates` — its client
+    (`llm_client(600)`) arms a real `connect_timeout(30s)`/`timeout(600s)`; under the paused
+    clock those become the next timer tokio can auto-advance to whenever the wiremock response
+    doesn't land inside a given zero-duration I/O poll, racing a spurious `Http` timeout against
+    the intended `RateLimited` path. Confirmed empirically (failed on the first paused run with
+    `ConnectError(..., TimedOut)`). Its assertion was tightened from a bare `is_err()` to
+    `matches!(result, Err(LlmError::RateLimited))` regardless of the revert — a real improvement
+    kept from the exercise.
+  - `zeph-memory::tiered_retrieval::tests::validate_evidence_timeout_is_fail_open` — its
+    `mock_semantic_memory` SQLite pool setup races against the paused clock's idle-task
+    auto-advance and fails nondeterministically with `PoolTimedOut`.
+
+  All three are left on real time with an inline comment explaining why, to prevent re-attempting
+  the same conversion without addressing the underlying issue.
+- `.github/workflows/ci.yml`: `build-tests` — the job that gates every PR merge by archiving
+  all workspace test binaries — now builds on the **nightly** toolchain with the unstable
+  parallel frontend (`-Z threads=4`) instead of stable (issue #6737, CI wall-clock reduction).
+  This is a permanent toolchain change to the gating job, not an experiment — an accepted,
+  deliberate risk. Toolchain is pinned to `nightly-2026-08-07` (not a floating `nightly`)
+  specifically because the project's `build.warnings = "deny"` (`.cargo/config.toml`) turns
+  every `cargo`-invoked `rustc` warning into a hard error: a floating nightly would let any new
+  nightly-only lint added upstream, in any of the 30+ workspace crates, fail this gate on a day
+  nobody touched the code (the dominant real risk here, not the rarer ICE/regression case).
+  Bumping the pin is now a deliberate, reviewable action instead of a silent daily drift.
+  `MSRV check` (stable 1.97, `cargo check`) is untouched and remains the project's
+  minimum-supported-version guarantee. `RUSTFLAGS` is set as a step-level env var on the build
+  step only, not committed to `.cargo/config.toml` (see `.claude/rules/branching.md` on commit
+  `af1be7ba`/`cf75b63f`); the rust-cache key changed from `ci` to `ci-nightly-threads` to avoid
+  mixing stable and nightly sccache objects, and `timeout-minutes` raised from 25 to 45 to give
+  the first fully-cold nightly build room to complete and warm that cache. The earlier
+  non-gating `build-tests-nightly-threads-experiment` job (which measured this in isolation
+  before the toolchain switch was made permanent) has been removed.
+- `test` job: shard count increased from 8 to 12 (issue #6737) — real per-shard timing across
+  multiple CI runs showed hash-partitioning's execution-time tail was ~23% avoidable (90s actual
+  vs. 73s ideal-balanced max in one sampled run).
 - `specs/010-security` and `specs/008-mcp`: rewrote all seven sub-specs
   (`010-1-vault`, `010-2-injection-defense`, `010-3-authorization`, `010-4-audit`,
   `008-1-lifecycle`, `008-2-discovery`, `008-3-security`) to describe the actual

@@ -1814,7 +1814,11 @@ fn test_consecutive_spawn_failures_resets_on_success() {
     );
 }
 
-#[tokio::test]
+// #6737: wait_event's deferral backoff is a real tokio::time::sleep; the test measures it via
+// tokio::time::Instant (not std::time::Instant), so its elapsed() readings track the paused
+// virtual clock exactly — start_paused fast-forwards ~1.9s of real sleeping without changing
+// what the assertions observe. tokio-orchestration's dev-deps needed "test-util" added for this.
+#[tokio::test(start_paused = true)]
 async fn test_exponential_backoff_duration() {
     let graph = graph_from_nodes(vec![make_node(0, &[])]);
     let config = zeph_config::OrchestrationConfig {

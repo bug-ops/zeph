@@ -830,7 +830,11 @@ async fn cascade_chat_with_tools_unaffected_by_cost_tiers() {
 
 /// Provider returns `RateLimited` twice then succeeds on the third attempt.
 /// The router must retry and return the successful embedding.
-#[tokio::test]
+///
+/// #6737: `start_paused` fast-forwards the real backoff sleeps in `provider_impl.rs`'s retry
+/// loop (`tokio::time::sleep`) — `MockProvider` does no real network I/O, so nothing else here
+/// depends on wall-clock time.
+#[tokio::test(start_paused = true)]
 async fn embed_retries_on_rate_limited_then_succeeds() {
     use crate::mock::MockProvider;
 
@@ -849,7 +853,9 @@ async fn embed_retries_on_rate_limited_then_succeeds() {
 
 /// When all retries (3) are exhausted on the first provider, the router falls
 /// back to the second provider and returns its embedding.
-#[tokio::test]
+///
+/// #6737: see `embed_retries_on_rate_limited_then_succeeds` for why `start_paused` is safe here.
+#[tokio::test(start_paused = true)]
 async fn embed_falls_back_after_all_retries_exhausted() {
     use crate::mock::MockProvider;
 
@@ -964,7 +970,9 @@ fn embed_candidates_prepends_and_dedupes_dedicated_provider() {
 }
 
 /// Provider returns `RateLimited` twice then succeeds via `embed_batch`.
-#[tokio::test]
+///
+/// #6737: see `embed_retries_on_rate_limited_then_succeeds` for why `start_paused` is safe here.
+#[tokio::test(start_paused = true)]
 async fn embed_batch_retries_on_rate_limited_then_succeeds() {
     use crate::mock::MockProvider;
 
@@ -983,7 +991,9 @@ async fn embed_batch_retries_on_rate_limited_then_succeeds() {
 
 /// When all `embed_batch` retries are exhausted on the first provider, falls back
 /// to the second provider.
-#[tokio::test]
+///
+/// #6737: see `embed_retries_on_rate_limited_then_succeeds` for why `start_paused` is safe here.
+#[tokio::test(start_paused = true)]
 async fn embed_batch_falls_back_after_all_retries_exhausted() {
     use crate::mock::MockProvider;
 

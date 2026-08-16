@@ -1179,6 +1179,12 @@ mod tests {
     ///
     /// Uses `with_delay` to force the validator past the configured timeout threshold.
     /// The pipeline must treat a timed-out validator as sufficient (fail-open) and not escalate.
+    ///
+    /// #6737: tried `start_paused = true` here to fast-forward the mock's 6s delay — reverted:
+    /// `mock_semantic_memory`'s `SQLite` pool setup races against the paused clock's auto-advance
+    /// (idle-async-task detection fires while pool connection setup is still in flight on a
+    /// blocking thread) and fails nondeterministically with `Db(Sqlx(PoolTimedOut))`. Left on
+    /// real time; not safe to relocate without touching pool-setup internals out of scope here.
     #[tokio::test]
     async fn validate_evidence_timeout_is_fail_open() {
         use zeph_llm::mock::MockProvider;

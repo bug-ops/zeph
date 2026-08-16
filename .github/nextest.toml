@@ -66,7 +66,7 @@ path = "target/nextest/ci/junit.xml"
 
 [profile.ci-partition]
 # Used by the partitioned test matrix in CI (unit tests only).
-# Each shard receives --partition hash:K/8 on the command line.
+# Each shard receives --partition hash:K/12 on the command line (issue #6737).
 test-threads = 8
 # Blanket bump from nextest's 100ms default to tolerate process-teardown
 # latency under concurrent load (see #5617).

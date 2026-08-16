@@ -208,7 +208,15 @@ mod tests {
         assert_eq!(resp.status(), 200);
     }
 
-    #[tokio::test]
+    // #6737: negative/invalid Retry-After falls back to a real 1s default sleep in
+    // send_with_retry; start_paused fast-forwards it. Safe specifically because `client`
+    // below is `reqwest::Client::new()`, which arms no connect/request timeout — there is no
+    // competing timer for tokio's paused-clock auto-advance to race against while this test
+    // waits on the real (loopback) wiremock response. This does NOT generalize to any client
+    // configured with a real timeout (see chat_429_rate_limit_propagates in zeph-llm's
+    // openai/tests.rs, which arms connect_timeout(30s)/timeout(600s) and is exposed to exactly
+    // that race).
+    #[tokio::test(start_paused = true)]
     async fn send_with_retry_ignores_negative_retry_after_header() {
         let server = MockServer::start().await;
 
@@ -233,7 +241,9 @@ mod tests {
         assert_eq!(resp.status(), 200);
     }
 
-    #[tokio::test]
+    // #6737: see send_with_retry_ignores_negative_retry_after_header for why start_paused
+    // is safe here (no-timeout client, not a general wiremock property).
+    #[tokio::test(start_paused = true)]
     async fn send_with_retry_ignores_negative_retry_after_body() {
         let server = MockServer::start().await;
 

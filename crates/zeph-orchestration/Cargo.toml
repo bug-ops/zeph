@@ -39,7 +39,7 @@ zeph-subagent.workspace = true
 [dev-dependencies]
 futures.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 tracing-test.workspace = true
 zeph-llm = { workspace = true, features = ["testing"] }
 zeph-memory.workspace = true

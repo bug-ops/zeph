@@ -65,7 +65,7 @@ impl TurnTrustFloor {
     pub fn fold(&self, level: SkillTrustLevel) {
         let _ = self
             .0
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
                 let current = SkillTrustLevel::from_severity(cur);
                 Some(current.min_trust(level).severity())
             });

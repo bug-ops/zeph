@@ -2152,6 +2152,15 @@ async fn chat_with_tools_reasoning_effort_none_400_passes_through_raw_message() 
     }
 }
 
+// #6737: tried `start_paused = true` here (real backoff sleeps in send_with_retry made this
+// test take ~7s wall-clock) — reverted. This test's client is `llm_client(600)`, which arms a
+// real connect_timeout(30s) + timeout(600s); under the paused clock those become the "next
+// armed timer" tokio auto-advances to whenever the wiremock response doesn't land inside a
+// given zero-duration I/O poll, racing a spurious `Http`/timeout error against the intended
+// `RateLimited` retry-exhaustion path. Confirmed empirically: paused, this test fails
+// nondeterministically with a `ConnectError(..., TimedOut)` instead of `RateLimited`. Left on
+// real time. The assertion below is still tightened (was a bare `is_err()`), which is worth
+// keeping regardless.
 #[tokio::test]
 async fn chat_429_rate_limit_propagates() {
     use wiremock::matchers::{method, path};
@@ -2184,7 +2193,10 @@ async fn chat_429_rate_limit_propagates() {
         metadata: MessageMetadata::default(),
     }];
     let result = p.chat(&messages).await;
-    assert!(result.is_err());
+    assert!(
+        matches!(result, Err(LlmError::RateLimited)),
+        "expected RateLimited (429 propagated through retry exhaustion), got: {result:?}"
+    );
 }
 
 #[tokio::test]

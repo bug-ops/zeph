@@ -309,6 +309,12 @@ mod tests {
     /// attempt's send time, never the earlier failed attempt plus the backoff sleep between
     /// them. Uses a 1-second `Retry-After` so a caller-side (outside-the-loop) measurement
     /// would be forced to at least ~1000ms; the fix must stay far below that.
+    ///
+    /// #6737: NOT converted to `start_paused` — `send_start` in `send_with_retry` (this file,
+    /// above) is `std::time::Instant`, which does not track the paused virtual clock. Under a
+    /// paused clock the 1s backoff costs ~0 real time regardless of whether ttft is measured
+    /// inside or outside the retry loop, so a reintroduction of the #6549 bug would still read
+    /// `ttft < 500` and this assertion would pass either way — vacuous. Left on real time.
     #[tokio::test]
     async fn send_with_retry_ttft_reflects_final_attempt_not_backoff_delay() {
         let rate_limit_response =
