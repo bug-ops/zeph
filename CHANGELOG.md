@@ -240,6 +240,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   an `https://` endpoint (e.g. Qdrant Cloud) panicked at client construction — a configuration
   the project actively documents as supported. `tonic` `0.14.6` selects
   `crypto::ring::default_provider()` explicitly, resolving the panic.
+- `zeph-llm`: fixed a `full`/`ml`-only build breakage from the `audioadapter-buffers`
+  `4.0` → `5.1.0` Renovate major bump (PR #6736) — the same defect class as the `rubato`
+  `3.0.0` → `4.0.0` break fixed previously (`audioadapter-buffers` `3.0` → `4.0`): Renovate
+  bumped the workspace's direct `audioadapter-buffers` pin without also bumping `rubato`,
+  whose `4.0.0` release still depends on `audioadapter-buffers` `4.0`, so two incompatible
+  versions of `audioadapter-buffers` coexisted in the dependency graph and
+  `InterleavedSlice<&[f32]>` (built from the workspace's `5.1.0` copy) again failed the
+  `Adapter<f32>` bound `resample()` needs from `rubato`'s `4.0` copy. Bumped `rubato` to
+  `5.0.0` in lockstep, which depends on `audioadapter-buffers` `5.1`; no source changes were
+  needed in `crates/zeph-llm/src/candle_whisper.rs` since `rubato` 5.0's `Resampler::process`
+  signature and `SincInterpolationParameters` fields are unchanged from 4.0.
 - `zeph` (binary): closed every remaining `std::process::exit` call site reachable from `run()`
   after `init_tracing` (issue #6709, follow-up to #6708/#6698) — the last of the guard-flush-
   bypass bug class where a direct `exit()` skips `TracingGuards::drop`'s flush and can truncate
