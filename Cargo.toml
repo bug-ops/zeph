@@ -19,7 +19,7 @@ publish = true
 [workspace.dependencies]
 age = { version = "0.12.1", default-features = false }
 agent-client-protocol = "2.0.0"
-agent-client-protocol-schema = "=1.6.0"
+agent-client-protocol-schema = "=1.5.0"
 anyhow = "1.0.104"
 arboard = "3.6.1"
 arc-swap = "1.9.2"
@@ -116,7 +116,7 @@ symphonia = { version = "0.6.0", default-features = false }
 sysinfo = { version = "0.39.6", default-features = false }
 teloxide = { version = "0.17", default-features = false }
 tempfile = "3.27"
-testcontainers = "0.28.0"
+testcontainers = "0.27.3"
 tar = "0.4.46"
 testcontainers-modules = { version = "0.15", default-features = false }
 thiserror = "2.0.20"
