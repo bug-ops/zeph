@@ -15,7 +15,7 @@ Defines the `LlmProvider` trait and ships concrete backends for Ollama, Claude, 
 
 | Module | Description |
 |--------|-------------|
-| `provider` | `LlmProvider` trait — unified inference interface; `name()` returns `&str` (no longer `&'static str`); `Message` carries `MessageMetadata` with `agent_visible`/`user_visible` flags for dual-visibility control |
+| `provider` | `LlmProvider` trait — unified inference interface; `name()` returns `&str` (no longer `&'static str`); `Message` carries `MessageMetadata`, whose `visibility: MessageVisibility` enum (`Both` / `AgentOnly` / `UserOnly`) replaces the former `(agent_visible, user_visible)` bool pair so the invalid "visible to nobody" state is unrepresentable |
 | `ollama` | Ollama HTTP backend |
 | `claude` | Anthropic Claude backend with `with_client()` builder for shared `reqwest::Client` |
 | `openai` | OpenAI backend with `with_client()` builder for shared `reqwest::Client` |
@@ -255,7 +255,7 @@ All backends (Ollama, Claude, OpenAI, Gemini, compatible) and the OpenAI Whisper
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `candle` | off | Local inference via Candle; pulls in `candle-core`, `candle-nn`, `candle-transformers`, `hf-hub`, `tokenizers`, `symphonia`, `rubato`. Enables `candle_provider` and `candle_whisper` |
+| `candle` | off | Local inference via Candle; pulls in `candle-core`, `candle-nn`, `candle-transformers`, `hf-hub`, `tokenizers`, and the audio-decode/resample stack used by local Whisper (`symphonia`, `rubato` 5.x, `audioadapter-buffers` 5.x). Enables `candle_provider` and `candle_whisper` |
 | `classifiers` | off | Candle-backed classifiers (implies `candle`) |
 | `cuda` | off | CUDA backend for Candle (implies `candle`) |
 | `metal` | off | Metal backend for Candle on Apple Silicon (implies `candle`) |

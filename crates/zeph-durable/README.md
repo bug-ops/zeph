@@ -57,8 +57,10 @@ a dedicated `durable.db` (SQLite) or a feature-gated Restate backend.
 - **cipher** — the `PayloadCipher` AEAD seal/open contract, the `PayloadAad` location binding, and
   the read-side `ensure_payload_within_limit` guard. The concrete cipher lives in a consuming crate
   (INV-1).
-- **config** — pure-data `DurableConfig` and `RetentionPolicy` mirroring the `[durable]` TOML
-  section, with spec defaults applied on deserialization.
+- **config** — re-exports the pure-data `DurableConfig`, `RetentionPolicy`, and `DurableBackend`
+  types (defined in `zeph-config`, mirroring the `[durable]` TOML section with spec defaults
+  applied on deserialization) and adds `encryption_gate` / `EncryptionGate`, which resolves whether
+  payload encryption is optional, required, or unavailable for a given backend + config pair.
 - **backend** — the sealed `ExecutionBackend` trait, `BackendCapabilities`, the `DurableBackendEnum`
   enum dispatcher, and `LocalBackend` (a dedicated `durable.db` pool implementing `Journal`, sealing
   payloads through the injected cipher). Includes `open_execution_exclusive`, a `flock(2)`-backed

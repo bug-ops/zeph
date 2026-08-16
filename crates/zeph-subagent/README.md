@@ -29,6 +29,7 @@ Manages the full lifecycle of sub-agents: loading YAML definitions from disk, sp
 | `fleet` | `FleetRegistry`, `SharedFleetRegistry`, `FleetSessionInfo`, `FleetSessionStatus` — live registry of running sub-agent sessions |
 | `durable` | `DurableResolverSeat`, `SubagentResult`, `make_durable_promise`/`resolve_durable_promise`/`await_durable_subagent` — durable promises for crash-resumable spawns via `zeph-durable` |
 | `cwd_guard` | `CwdLock` — process-wide working-directory lock for sub-agents that run without a dedicated worktree |
+| `budget` | `SessionSpawnBudget` — session-wide cumulative spawn counter behind `max_spawns_per_session` (see [Session-wide spawn cap](#session-wide-spawn-cap)) |
 
 ## Usage
 
@@ -40,6 +41,8 @@ Sub-agents are managed via chat commands and the `zeph agents` CLI:
 /agent bg worker "run tests"   # background execution
 /agent status                  # show active agents
 /agent cancel <id>             # cancel by ID prefix
+/agent approve <id>            # approve a pending confirmation
+/agent deny <id>               # deny a pending confirmation
 /agent resume <id> "continue"  # resume session with transcript
 @researcher "what is Rust?"    # mention shorthand
 ```
@@ -52,6 +55,7 @@ zeph agents create researcher --description "Web researcher"
 zeph agents show researcher
 zeph agents edit researcher
 zeph agents delete researcher
+zeph agents fleet --status running --limit 20   # sessions recorded in the fleet database
 ```
 
 ## Sub-agent definition format

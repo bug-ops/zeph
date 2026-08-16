@@ -22,6 +22,9 @@ The crate is intentionally narrow in scope — it wraps `git worktree` subproces
 | `WorktreeHandle` | Live record of one managed worktree (path, branch, subagent ID, creation time) |
 | `DefaultGitRunner` | Production git invocation backend with configurable timeout |
 | `GitRunner` | Trait for abstracting git subprocess calls |
+| `StaleWorktree` | One entry reported by `reconcile()` — a registered worktree git considers `prunable` |
+| `CleanOutcome` | Result of `clean()`; render with `format_clean_summary` |
+| `WorktreeDiskUsage` / `QuotaStatus` | Disk accounting from `disk_usage()` and the `sweep()` quota verdict; render with `format_usage_summary` |
 | `WorktreeError` | All errors this crate can produce |
 
 ## Usage
@@ -54,7 +57,8 @@ async fn main() -> Result<(), zeph_worktree::WorktreeError> {
     let all = mgr.list();
     println!("{} active worktrees", all.len());
 
-    // Remove the worktree (force = false).
+    // Remove the worktree. The second argument is `prune_branch`, not `force`:
+    // the underlying `git worktree remove` is always issued with `--force`.
     mgr.remove(&handle, false).await?;
 
     Ok(())
@@ -73,6 +77,10 @@ async fn main() -> Result<(), zeph_worktree::WorktreeError> {
 enabled = true
 bg_isolation = "worktree"   # "none" | "worktree"
 base_ref = "head"           # "head" | "fresh"
+default_branch = "main"     # remote branch used when base_ref = "fresh"; "" auto-detects origin/HEAD
+root = ".claude/worktrees"  # worktree root, relative to the repository root
+branch_prefix = "agent/"    # full branch name is "{branch_prefix}{subagent_id}"
+prune_branch_on_remove = false
 git_timeout_secs = 30       # clamped to max(1, value)
 cleanup_on_completion = true
 # max_worktrees = 20        # optional admission cap; None = unlimited
@@ -86,6 +94,10 @@ reconcile_on_startup = true
 | `enabled` | `false` | Enable worktree isolation for background subagents |
 | `bg_isolation` | `"none"` | `"worktree"` creates a dedicated worktree; `"none"` only holds the CWD lock |
 | `base_ref` | `"head"` | `"head"` branches off current HEAD; `"fresh"` fetches and branches off `origin/<default>` |
+| `default_branch` | `"main"` | Remote branch used when `base_ref = "fresh"`. An empty string triggers auto-detection of `origin/HEAD` |
+| `root` | `".claude/worktrees"` | Worktree root directory, relative to the repository root. Each worktree is a subdirectory named after the subagent ID |
+| `branch_prefix` | `"agent/"` | Branch name prefix; the full branch name is `"{branch_prefix}{subagent_id}"` |
+| `prune_branch_on_remove` | `false` | Delete the worktree branch after removal. When `false`, the branch persists so the agent's work can be reviewed, merged, or discarded manually |
 | `git_timeout_secs` | `30` | Per-command timeout for all git subprocess calls |
 | `cleanup_on_completion` | `true` | Remove the worktree when the subagent finishes |
 | `max_worktrees` | `None` (unlimited) | Creation-time admission cap on concurrent git-registered worktrees under `root`. Counts worktrees from other concurrently running Zeph sessions over the same `root`, not just this session's own. `Some(0)` is rejected at config-validation time |

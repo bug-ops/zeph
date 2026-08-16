@@ -185,8 +185,11 @@ The `zeph schedule` subcommand (requires the `scheduler` feature) manages schedu
 # List all active jobs
 zeph schedule list
 
-# Add a periodic job (5-field or 6-field cron expression)
-zeph schedule add "0 3 * * *" "run memory cleanup" --name daily-cleanup --kind memory_cleanup
+# Add a periodic job — positional order is <PROMPT> then <CRON> (5- or 6-field)
+zeph schedule add "run memory cleanup" "0 3 * * *" --name daily-cleanup --kind memory_cleanup
+
+# Add a one-shot job with --run-at instead of a cron expression
+zeph schedule add "post the release notes" --run-at 2026-09-01T14:30:00Z --name release-notes
 
 # Show details for a single job
 zeph schedule show daily-cleanup
@@ -195,12 +198,16 @@ zeph schedule show daily-cleanup
 zeph schedule remove daily-cleanup
 ```
 
+> [!IMPORTANT]
+> The positional order is `<PROMPT> [CRON]` — the prompt comes **first**. This is a breaking change from the pre-#6361 `<CRON> <PROMPT>` order: clap does not allow a required positional to follow an optional one by index, and `CRON` became optional once `--run-at` was introduced.
+
 `schedule add` options:
 
 | Flag | Description |
 |------|-------------|
 | `--name <NAME>` | Job name — auto-generated from BLAKE3 hash of prompt if omitted |
 | `--kind <KIND>` | Task kind string — defaults to `custom` |
+| `--run-at <TIMESTAMP>` | Run once at this wall-clock time instead of on a cron schedule. RFC3339 with an explicit UTC offset (e.g. `2026-09-01T14:30:00Z`) and must be in the future. Mutually exclusive with the positional `CRON`; exactly one of the two is required |
 
 The cron expression is validated via `normalize_cron_expr` before insertion. Invalid expressions are rejected immediately. The prompt is sanitized via `sanitize_task_prompt` (same rules as the LLM tool path).
 

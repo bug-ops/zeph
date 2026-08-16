@@ -50,17 +50,24 @@ if let Some(key) = vault.get("ZEPH_CLAUDE_API_KEY") {
 CLI usage:
 
 ```bash
+zeph vault init                                        # generate keypair + empty encrypted vault
 zeph vault set ZEPH_CLAUDE_API_KEY sk-ant-...
 zeph vault set ZEPH_CLAUDE_API_KEY sk-ant-... --force  # overwrite an existing key
 zeph vault get ZEPH_CLAUDE_API_KEY
 zeph vault list
-zeph vault delete ZEPH_CLAUDE_API_KEY
+zeph vault rm ZEPH_CLAUDE_API_KEY
 ```
 
 > [!NOTE]
-> `zeph vault set` refuses to overwrite an existing key unless `--force` is passed — mirrored at
-> the library level by `AgeVaultProvider::set_secret_mut`'s `overwrite` parameter, which returns
+> Both `zeph vault init` and `zeph vault set` refuse to clobber existing state unless `--force` is
+> passed — `init` will not replace an existing `vault-key.txt`/`secrets.age` pair, and `set` will not
+> replace a key already present. The `set` behaviour is mirrored at the library level by
+> `AgeVaultProvider::set_secret_mut`'s `overwrite` parameter, which returns
 > `AgeVaultError::AlreadyExists` instead of silently replacing the value.
+
+> [!CAUTION]
+> `zeph vault init --force` destroys the existing identity key, making every secret in the current
+> `secrets.age` permanently unrecoverable.
 
 ## Configuration
 
@@ -69,7 +76,7 @@ zeph vault delete ZEPH_CLAUDE_API_KEY
 backend = "age"   # "env" or "age"; default is "age"
 ```
 
-The `age` backend resolves secrets from an age-encrypted file on disk and is the default, recommended for all deployments. The `env` backend resolves `ZEPH_SECRET_`-prefixed secrets directly from environment variables — no file needed, but weaker (see `specs/010-security/spec.md`). The age backend keeps its identity and encrypted store under `~/.config/zeph/` (`vault-key.txt` and `secrets.age`).
+The `age` backend resolves secrets from an age-encrypted file on disk and is the default, recommended for all deployments. The `env` backend resolves `ZEPH_SECRET_`-prefixed secrets directly from environment variables — no file needed, but weaker (see `specs/010-security/spec.md`). The age backend keeps its identity and encrypted store as `vault-key.txt` and `secrets.age` inside the directory returned by `default_vault_dir()`: `$XDG_CONFIG_HOME/zeph` if set, else `%APPDATA%\zeph` on Windows, else `~/.config/zeph`.
 
 > [!IMPORTANT]
 > The age identity key file (`~/.config/zeph/vault-key.txt`) is created with Unix `0o600` permissions (owner read/write only). Vault writes are atomic — a temporary file is written and renamed, so a crash during write never corrupts `secrets.age`. Keep the key file secure: losing it makes the vault unrecoverable.

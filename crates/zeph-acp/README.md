@@ -444,6 +444,7 @@ During orchestrator runs `ZephAcpAgent` emits `SessionUpdate::Plan` events as th
 | `/mode` | Change the session mode (`ask` / `code` / `architect`) |
 | `/clear` | Clear the current conversation history |
 | `/compact` | Trigger a manual context compaction |
+| `/review` | Review recent changes (read-only); takes an optional path argument |
 
 User input that begins with `/` is matched against this list and dispatched to the corresponding handler before the message reaches the agent loop.
 

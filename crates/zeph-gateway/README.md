@@ -14,9 +14,19 @@ Exposes an axum 0.8 HTTP server that accepts incoming webhooks, validates bearer
 ## Key Modules
 
 - **server** — `GatewayServer` startup and graceful shutdown
-- **handlers** — request handlers for webhook and health routes
+- **handlers** — request handlers for webhook and health routes; `WebhookMessage` (the
+  `{ sender, channel, body }` payload forwarded into the agent)
 - **router** — axum router construction with auth middleware
 - **error** — `GatewayError` error types
+
+**Public API:** `GatewayServer`, `WebhookMessage`, `GatewayError`.
+
+Endpoints:
+
+| Endpoint | Method | Auth required | Purpose |
+|---|---|---|---|
+| `/health` | GET | No | Liveness check; returns uptime in seconds |
+| `/webhook` | POST | Yes | Ingest external events into the agent |
 
 ## Activation
 
@@ -25,7 +35,7 @@ Exposes an axum 0.8 HTTP server that accepts incoming webhooks, validates bearer
 ```toml
 [gateway]
 bind = "0.0.0.0:8090"
-auth_token = "your-secret-token"   # optional, see authentication below
+auth_token = "your-secret-token"   # mandatory, see authentication below
 ```
 
 ```bash
@@ -36,23 +46,33 @@ The gateway is wired via `src/gateway_spawn.rs` into both `daemon.rs` and `runne
 
 ## Authentication
 
-`GatewayServer` supports bearer token authentication via the `with_auth()` builder method. When `auth_token` is `None`, the server emits a `tracing::warn!` at startup indicating that the endpoint is unauthenticated.
+`GatewayServer` requires bearer token authentication, configured via the `with_auth()` builder method.
 
-```rust
+```rust,no_run
 use tokio::sync::{mpsc, watch};
-use zeph_gateway::GatewayServer;
+use zeph_gateway::{GatewayServer, WebhookMessage};
 
-let (webhook_tx, _webhook_rx) = mpsc::channel::<String>(64);
+let (webhook_tx, _webhook_rx) = mpsc::channel::<WebhookMessage>(64);
 let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 
 GatewayServer::new("127.0.0.1", 8080, webhook_tx, shutdown_rx)
     .with_auth(Some("secret-token".to_string()))
-    .with_rate_limit(120)   // requests per 60s window per IP; 0 disables
+    .with_rate_limit(120)              // requests per 60s window per IP; 0 disables
+    .with_max_body_size(1_048_576)     // reject larger POST /webhook bodies
+    .with_webhook_timeout(std::time::Duration::from_secs(5))   // else 503 Service Unavailable
+    .with_trusted_proxy_cidrs(vec!["10.0.0.0/8".to_string()])  // rate-limit by X-Forwarded-For
     .serve()
     .await?;
 ```
 
+Middleware order is body-size limit → auth → rate limiting. When `with_trusted_proxy_cidrs` is non-empty, the rate limiter resolves the real client IP from `X-Forwarded-For` using the rightmost-untrusted algorithm; otherwise it keys on the raw TCP peer address.
+
+> [!IMPORTANT]
+> A bearer token is mandatory. `serve()` refuses to start and returns `GatewayError::MissingAuthToken` when no non-empty token is configured, since `/webhook` forwards its body directly into the agent's turn loop.
+
 Token comparison uses BLAKE3 + `subtle::ConstantTimeEq` to prevent timing attacks. The rate limiter wraps the auth check (not the reverse), so requests with a missing or invalid bearer token still count against the per-IP limit — a brute-force attempt against the token cannot bypass rate limiting.
+
+With the `prometheus` feature, `with_metrics_registry(registry, path)` mounts an extra route that renders the registry as OpenMetrics 1.0.0 text. That endpoint is unauthenticated and bypasses rate limiting — do not expose it publicly.
 
 ## Features
 

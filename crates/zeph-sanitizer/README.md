@@ -28,7 +28,9 @@ Implements a multi-stage security pipeline that processes all external data befo
 | `memory_validation::MemoryWriteValidator` | Structural write guards for the memory store |
 | `causal_ipi::TurnCausalAnalyzer` | Behavioral deviation detection at tool-return boundaries |
 | `nli::NliSanitizer` | Probabilistic NLI entailment check for injected instructions |
-| `secret_mask::SecretMaskRegistry` | Vault-secret placeholder masking at the LLM boundary |
+| `secret_mask::SecretMaskRegistry` | Vault-secret placeholder masking at the LLM boundary — masks *registered* secret values |
+| `secret_shape::scrub_secret_shapes` | Shape-based redaction — catches strings that merely *look* like a secret (known API-key prefix, `Authorization: Bearer` header, standalone JWT, PEM private-key body, prefix-less AWS secret keys) even when the value was never registered with `SecretMaskRegistry` |
+| `shadow_memory::ShadowMemory` | Goal-drift tracking (`GoalDriftResult`, `ShadowEvent`, `classify_tool_permission`) |
 | `ipi_filter::IpiFilter` / `IpiVerdict` | Indirect prompt injection filter and verdict type |
 | `ContentSource` | Source metadata with `ContentSourceKind` and optional `MemorySourceHint` for memory retrieval classification |
 | `MemorySourceHint` | `ConversationHistory` / `LlmSummary` / `ExternalContent` — classifies memory retrieval sources to suppress false positive injection flags on recalled user text and LLM-generated summaries |
@@ -55,13 +57,20 @@ The crate is a layered defense-in-depth pipeline; each layer is independently co
 > [!NOTE]
 > `media::MediaSanitizer` is a separate, image-specific validation pipeline for MCP tool-result passthrough (`[mcp.media]`) — it does not sit in the text-content layer chain above and is invoked directly by `zeph-mcp`'s tool executor when a server has `media_passthrough` enabled.
 
+> [!NOTE]
+> `secret_shape::scrub_secret_shapes` is likewise outside the layer chain — a stateless function
+> called at the boundaries where secret-shaped text can appear without ever having been
+> registered as a vault value (subagent result forwarding, compression guidelines, debug
+> redaction). It complements layer 10: `SecretMaskRegistry` masks *known* secret values,
+> `scrub_secret_shapes` catches anything merely *shaped* like one.
+
 ### Sanitization pipeline (layer 1 detail)
 
 ```
 External data
     ↓ 1. Truncate to max_content_size
     ↓ 2. Strip null bytes and control characters
-    ↓ 3. Detect 17 injection patterns (OWASP variants + encoding)
+    ↓ 3. Detect 27 injection patterns (OWASP variants + encoding + exfiltration)
     ↓ 4. Wrap in spotlighting XML delimiters
         <tool-output>…</tool-output>       (local sources)
         <external-data>…</external-data>   (external sources)
@@ -94,23 +103,28 @@ enabled = true
 max_content_size = 65536     # bytes; content truncated before injection detection
 
 [security.content_isolation.quarantine]
-enabled = true
-sources = ["web_scrape", "a2a_message"]  # source kinds routed through quarantine
-model = "claude-haiku-4-5-20251001"   # optional; defaults to primary provider
-max_tokens = 2048
+enabled       = false   # default: false — opt-in
+sources       = ["web_scrape", "a2a_message"]  # source kinds routed through quarantine
+model         = "claude-haiku-4-5-20251001"    # optional; defaults to primary provider
+timeout_ms    = 30000
+fail_strategy = "closed"   # "closed" (default, block on error) or "open" (allow)
 
 [security.exfiltration_guard]
-enabled = true
-block_markdown_images = true
-validate_tool_urls = true
-block_injection_flagged_memory_writes = true
+block_markdown_images = true   # default: true
+validate_tool_urls    = true   # default: true
+guard_memory_writes   = true   # default: true
 
 [security.pii_filter]
-enabled = true    # default: true — scrubs email/phone/SSN/credit-card before LLM context and debug dumps
-filter_names = false  # opt-in: higher-recall, lower-precision name heuristic
+enabled            = true   # default: true — scrubs before LLM context and debug dumps
+filter_email       = true
+filter_phone       = true
+filter_ssn         = true
+filter_credit_card = true
+filter_names       = false  # opt-in: higher-recall, lower-precision name heuristic
 
 [security.content_isolation.secret_masking]
-enabled = true    # default: true — vault-resolved secrets replaced with placeholders before outbound LLM calls
+enabled        = true   # default: true — vault-resolved secrets replaced with placeholders before outbound LLM calls
+min_secret_len = 8      # values shorter than this are not masked (too collision-prone)
 ```
 
 > [!NOTE]

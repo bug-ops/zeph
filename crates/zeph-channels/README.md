@@ -17,12 +17,14 @@ Implements I/O channel adapters that connect the agent to different frontends. S
 |--------|-------------|
 | `cli` | `CliChannel` — interactive terminal I/O with persistent input history (rustyline), prefix search, and `/image` command for vision input |
 | `json_cli` | `JsonCliChannel` — active under `--json`; emits JSONL events to stdout and reads prompts from stdin for programmatic/embedding use (logs forced to stderr) |
-| `telegram` | Telegram adapter via teloxide with streaming; voice/audio message detection and file download; photo message support for vision input; configurable streaming edit interval (`stream_interval_ms`, default 3000 ms, minimum 500 ms); send/edit paths retry on HTTP 429 with backoff (mirroring Discord/Slack) |
-| `telegram::guest` | Guest Mode — transparent local axum HTTP proxy that intercepts `getUpdates` responses and surfaces `guest_message` entries (Bot API 10.0) without a second `getUpdates` connection |
-| `telegram::bot_to_bot` | Bot-to-Bot communication — registers via `setManagedBotAccessSettings` on startup; per-chat reply-depth tracking via `BotReplyCounters`; configurable `max_bot_chain_depth` |
-| `telegram::api` | `TelegramApiClient` — raw HTTP wrapper for Bot API 10.0 methods unavailable in teloxide 0.17: `answer_guest_query`, `get/set_managed_bot_access_settings`, `delete_message_reaction`, `delete_all_message_reactions` |
+| `telegram` | Telegram adapter via teloxide 0.17 with streaming; voice/audio message detection and file download; photo message support for vision input; configurable streaming edit interval (`stream_interval_ms`, default 3000 ms, minimum 500 ms); send/edit paths retry on HTTP 429 with backoff (mirroring Discord/Slack). Also hosts Guest Mode — a transparent local axum HTTP proxy that intercepts `getUpdates` responses and surfaces `guest_message` entries (Bot API 10.0) without a second `getUpdates` connection — and Bot-to-Bot support with per-chat reply-depth tracking |
+| `telegram_api_ext` | `TelegramApiClient` — raw HTTP wrapper for Bot API 10.0 methods unavailable in teloxide 0.17: `answer_guest_query`, `get`/`set_managed_bot_access_settings`, `delete_message_reaction`, `delete_all_message_reactions` |
+| `telegram_moderation` | Telegram-side moderation helpers |
 | `discord` | Discord adapter (optional feature) |
 | `slack` | Slack adapter (optional feature); audio file detection and download with Bearer auth |
+| `streaming` | Shared chunking/flush logic used by the streaming-capable adapters |
+| `confirm` | Interactive tool-confirmation prompt shared across channels |
+| `auth` | Per-channel sender authorization |
 | `any` | `AnyChannel` — enum dispatch over all channels |
 | `markdown` | `markdown_to_telegram` renders CommonMark to Telegram `MarkdownV2` (Bot API 10.1 rich text); multi-line blockquotes prefix every line with `>`, nested quotes flatten to a single level (MarkdownV2 has no nested-quote grammar), and long quotes render as Bot API 10.1 expandable (collapsed-by-default) blockquotes at or above `expandable_blockquote_min_lines` |
 
@@ -41,8 +43,8 @@ Key fields in the `[telegram]` config section:
 | `expandable_blockquote_min_lines` | u32 | `10` | Blockquotes with at least this many lines render as Bot API 10.1 expandable (collapsed-by-default) quotes; `0` disables the expandable form |
 | `guest_mode` | bool | `false` | Enable Bot API 10.0 Guest Mode — surfaces guest messages via a local proxy |
 | `bot_to_bot` | bool | `false` | Enable Bot-to-Bot communication via `setManagedBotAccessSettings` |
-| `allowed_bots` | `Vec<String>` | `[]` | Telegram user IDs of bots allowed to interact with this agent |
-| `max_bot_chain_depth` | usize | `3` | Max consecutive bot replies before the chain is suppressed |
+| `allowed_bots` | `Vec<String>` | `[]` | Bot usernames (with the `@` prefix, e.g. `"@my_bot"`) allowed to interact when `bot_to_bot = true`. **Empty means all bots are allowed**, not none |
+| `max_bot_chain_depth` | u32 | `1` | Max reply chain depth before Zeph stops responding to bot messages |
 
 ```toml
 [telegram]
@@ -50,19 +52,28 @@ stream_interval_ms              = 3000
 expandable_blockquote_min_lines = 10
 guest_mode                      = false
 bot_to_bot                      = false
-allowed_bots                    = []
-max_bot_chain_depth             = 3
+allowed_bots                    = ["@my_bot"]
+max_bot_chain_depth             = 1
 ```
+
+> [!NOTE]
+> Telegram payloads expose only one level of `reply_to_message` nesting, so
+> `max_bot_chain_depth` values above `1` add nothing to structural depth checking. The
+> consecutive-reply counter provides the secondary loop prevention across multiple top-level
+> exchanges.
 
 > [!NOTE]
 > Guest Mode spawns a local axum HTTP proxy on an ephemeral port. Bot API 10.0 is required; ensure your bot account has access to guest message updates.
 
 ## Features
 
-| Feature | Description |
-|---------|-------------|
-| `discord` | Discord WebSocket adapter via tokio-tungstenite |
-| `slack` | Slack Events API adapter via axum with HMAC-SHA256 signature verification |
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `sqlite` | yes | SQLite backend (via `zeph-core`, `zeph-tools`) — one backend must be selected for the crate to compile |
+| `postgres` | no | PostgreSQL backend |
+| `discord` | no | Discord WebSocket adapter via tokio-tungstenite |
+| `slack` | no | Slack Events API adapter via axum with HMAC-SHA256 signature verification |
+| `profiling` | no | Extra `tracing` instrumentation spans |
 
 ## Installation
 

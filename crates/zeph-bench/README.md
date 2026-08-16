@@ -8,9 +8,11 @@
 
 Benchmark harness for evaluating Zeph agent performance on standardized datasets.
 
-Feeds LOCOMO, GAIA, FRAMES, LongMemEval, and tau-bench tasks through the full Zeph agent
-loop and records correctness, latency, and token usage. Designed for reproducible baseline
-evaluation: no tools, no memory, no MCP — raw model capability only.
+Feeds LOCOMO, GAIA, FRAMES, LongMemEval, and tau2-bench tasks through the full Zeph agent
+loop and records correctness, latency, and token usage. The default run is a reproducible
+baseline — no tools, no memory, no MCP, temperature pinned to `0.0` — measuring raw model
+capability; `SemanticMemory` can be wired in per run to measure what memory adds
+(see [Memory A/B mode](#memory-ab-mode---baseline)).
 
 ## Baseline Results
 
@@ -22,7 +24,7 @@ evaluation: no tools, no memory, no MCP — raw model capability only.
 | GAIA | GAIA normalized exact | 8 | **1.0000** | 8/8 |
 | FRAMES | Normalized exact match | 7 | **1.0000** | 7/7 |
 | LongMemEval | Exact match + Token F1 | 6 | **1.0000** | 6/6 |
-| tau-bench | Task completion (exact) | 5 | **1.0000** | 5/5 |
+| tau2-bench | Task completion (exact) | 5 | **1.0000** | 5/5 |
 
 > [!NOTE]
 > Baseline mode injects a concise-answer system prompt and post-processes responses
@@ -34,8 +36,12 @@ evaluation: no tools, no memory, no MCP — raw model capability only.
 `zeph-bench` is invoked through the main `zeph` binary (requires the `bench` feature):
 
 ```bash
-# List available datasets
+# List available datasets and their cache status
 zeph bench list
+
+# Download tau2-bench into the local cache (other datasets must be fetched manually —
+# `zeph bench list` prints their source URLs)
+zeph bench download --dataset tau2-bench
 
 # Run GAIA sample
 zeph bench run \
@@ -57,14 +63,41 @@ zeph bench run \
   --data-file path/to/gaia.jsonl \
   --resume \
   --output results/
+
+# Print a summary of a previous run
+zeph bench show --results results/results.json
 ```
 
 > [!TIP]
 > `--provider` references a named entry from `[[llm.providers]]` in your config.
 > If omitted, the default provider is used. Use a fast, cheap model for large evaluation runs.
 
+Additional `run` flags:
+
+| Flag | Effect |
+|------|--------|
+| `--scenario <id>` | Run a single scenario instead of the whole dataset |
+| `--resume` | Skip scenarios already completed in a prior run in the same output directory |
+| `--baseline` | Run the memory-off/memory-on A/B pair (see below) |
+| `--no-deterministic` | Use the provider's configured temperature; by default temperature is forced to `0.0` for reproducibility |
+
 Output directory receives two files: `results.json` (machine-readable) and `summary.md`
 (human-readable markdown table).
+
+### Memory A/B mode (`--baseline`)
+
+`--baseline` runs the dataset twice — once with `MemoryMode::Off` and once with a per-scenario
+SQLite-backed `SemanticMemory` (`MemoryMode::On`) — and writes each pass to its own subdirectory
+plus a delta report:
+
+```
+<output>/baseline/memory-off/{results.json,summary.md}
+<output>/baseline/memory-on/{results.json,summary.md}
+<output>/baseline/comparison.json
+```
+
+`comparison.json` is a `BaselineComparison`: per-scenario `ScenarioDelta` records plus the
+aggregate score difference between the two passes.
 
 ## Library Usage
 
@@ -120,13 +153,18 @@ impl Evaluator for MyEvaluator {
 
 ## Supported Datasets
 
-| Dataset | Format | Scorer | Status |
+| Dataset (`--dataset` name) | Format | Scorer | Loader / Evaluator |
 |---------|--------|--------|--------|
-| [LOCOMO](https://github.com/snap-research/locomo) | JSON | Token F1 ≥ 0.5 | Ready |
-| [GAIA](https://huggingface.co/datasets/gaia-benchmark/GAIA) | JSONL | Normalized exact match | Ready |
-| [FRAMES](https://huggingface.co/datasets/google/frames-benchmark) | JSONL | Normalized exact match | Ready |
-| LongMemEval | JSONL | Exact match + Token F1 | Ready |
-| tau-bench | JSON | Task completion (exact) | Ready |
+| `locomo` — [LOCOMO](https://github.com/snap-research/locomo) | JSON | Token F1 ≥ 0.5 | `LocomoLoader` / `LocomoEvaluator` |
+| `gaia` — [GAIA](https://huggingface.co/datasets/gaia-benchmark/GAIA) | JSONL | Normalized exact match | `GaiaLoader` / `GaiaEvaluator` |
+| `frames` — [FRAMES](https://huggingface.co/datasets/google/frames-benchmark) | JSONL | Normalized exact match | `FramesLoader` / `FramesEvaluator` |
+| `longmemeval` — LongMemEval | JSONL | Exact match + Token F1 | `LongMemEvalLoader` / `LongMemEvalEvaluator` |
+| `tau2-bench-retail`, `tau2-bench-airline` | JSON | Task completion (exact) | `Tau2BenchLoader` / `TauBenchEvaluator` |
+
+> [!NOTE]
+> tau2-bench is tool-use, not knowledge retrieval: it runs under `ResponseMode::ToolUse` against a
+> simulated environment (`RetailEnv` / `AirlineEnv`) and is scored on the action trace rather than
+> the response text. Every other dataset runs under `ResponseMode::TerseAnswer`.
 
 > [!IMPORTANT]
 > Requires Rust 1.97 or later.
@@ -141,6 +179,11 @@ The harness is built on three composable traits:
 
 `BenchRunner` wires them together: one fresh `Agent<BenchmarkChannel>` per scenario, no shared
 state between runs. Results accumulate into a `BenchRun` and are persisted by `ResultWriter`.
+
+`RunOptions` controls each run: `scenario_filter` (single-scenario debugging), `completed_ids`
+(resume), and `memory_mode`. With `MemoryMode::On`, `BenchRunner::with_memory_params` supplies the
+`BenchMemoryParams` (data dir, embedding model, run ID, dataset) used to build a per-scenario
+SQLite-backed `SemanticMemory`; `MemoryMode::Off` is the default.
 
 ## Features
 

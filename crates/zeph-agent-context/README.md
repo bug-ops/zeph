@@ -79,12 +79,18 @@ Views hold `&`/`&mut` references to field types from lower-level crates. No view
 ```rust,no_run
 // Constructed once per call site in zeph-core's shim; all borrows are disjoint.
 let window = MessageWindowView {
-    messages:                    &mut self.msg.messages,
-    last_persisted_message_id:   &mut self.msg.last_persisted_message_id,
-    deferred_db_hide_ids:        &mut self.msg.deferred_db_hide_ids,
-    deferred_db_summaries:       &mut self.msg.deferred_db_summaries,
+    messages:                  &mut self.msg.messages,
+    last_persisted_message_id: &mut self.msg.last_persisted_message_id,
+    deferred_db_hide_ids:      &mut self.msg.deferred_db_hide_ids,
+    deferred_db_summaries:     &mut self.msg.deferred_db_summaries,
+    cached_prompt_tokens:      &mut self.runtime.providers.cached_prompt_tokens,
+    token_counter:             self.runtime.metrics.token_counter.clone(),
+    completed_tool_ids:        &mut self.services.tool_state.completed_tool_ids,
 };
 ```
+
+`token_counter` is the one non-reference field — a cheap `Arc<TokenCounter>` clone, so every message-list
+mutation can keep `cached_prompt_tokens` accurate without re-borrowing the agent.
 
 > [!NOTE]
 > External callers cannot meaningfully construct views without access to `Agent<C>` internals, which acts as a soft seal without requiring a sealed trait.

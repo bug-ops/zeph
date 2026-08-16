@@ -22,43 +22,44 @@ Database abstraction layer for [Zeph](https://github.com/bug-ops/zeph) — unifi
 - **Safe URL logging** — `redact_url` strips credentials from connection strings before they appear in logs
 - **Write transactions** — `begin_write` issues `BEGIN IMMEDIATE` on SQLite (prevents `SQLITE_BUSY`); falls back to standard `BEGIN` on PostgreSQL
 
-## Runtime backend selection
+## Connection URL configuration
 
-The active backend is determined at compile time by feature flag. For deployments that need to switch between SQLite and PostgreSQL without recompiling, set `ZEPH_DATABASE_URL` or `database_url` in `config.toml`:
+The active backend is chosen at compile time by feature flag; the connection URL is resolved at runtime. Set `database_url` under the `[memory]` section of `config.toml`:
 
 ```toml
-[database]
+[memory]
 database_url = "postgres://user:pass@localhost/zeph"
 ```
 
+Because the URL usually embeds credentials, it is also resolvable from the age vault, which takes precedence over the config file:
+
 ```bash
-ZEPH_DATABASE_URL=postgres://user:pass@localhost/zeph zeph
+zeph vault set ZEPH_DATABASE_URL "postgres://user:pass@localhost:5432/zeph"
 ```
 
 **Important:**
-> The URL scheme (`sqlite:` / `postgres:`) must match the compiled feature. A `postgres://` URL with the `sqlite` feature (or vice versa) will fail at startup with a clear error.
+> The URL scheme must match the compiled feature. A `postgres://` URL on a `sqlite` build (or a non-postgres URL on a `postgres` build) fails at startup with an explicit error; the URL is redacted before it reaches the message.
 
 ## CLI migrations
 
 Run pending migrations without starting the agent:
 
 ```bash
-zeph db migrate                               # apply pending migrations using config database_url
-zeph db migrate --url postgres://user:pass@localhost/zeph
+zeph db migrate                         # apply pending migrations using the resolved database_url
+zeph --config path/to/config.toml db migrate
 ```
-
-**Tip:**
-> Use `zeph db migrate --dry-run` to print the SQL that would be applied without executing it.
 
 ## Installation
 
-This crate is an internal workspace member of Zeph. To use it in a workspace crate:
+```bash
+cargo add zeph-db
+```
+
+For a PostgreSQL build, the default `sqlite` feature must be disabled explicitly — the two backends are mutually exclusive, so postgres cannot be requested additively on top of the default:
 
 ```toml
 [dependencies]
-zeph-db = { path = "../zeph-db" }
-# or with postgres backend:
-zeph-db = { path = "../zeph-db", default-features = false, features = ["postgres"] }
+zeph-db = { version = "0.22", default-features = false, features = ["postgres"] }
 ```
 
 ## Feature Flags

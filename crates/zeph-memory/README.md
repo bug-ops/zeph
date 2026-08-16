@@ -56,28 +56,27 @@ let memory = SemanticMemory::new(
 
 | Module | Description |
 |--------|-------------|
-| `sqlite` | SQLite storage for conversations, messages, and user corrections (`zeph_corrections` table, migration 018 adds `outcome_detail` column); visibility-aware queries (`load_history_filtered` via CTE, `messages_by_ids`, `keyword_search`); durable compaction via `replace_conversation()`; composite covering index `(conversation_id, id)` on messages for efficient history reads |
-| `sqlite::history` | Input history persistence for CLI channel |
-| `sqlite::acp_sessions` | ACP session and event persistence for session resume, lifecycle tracking, and per-session conversation isolation (migration 026 adds `conversation_id` column) |
-| `qdrant` | Qdrant client for vector upsert and search |
-| `qdrant_ops` | `QdrantOps` — high-level Qdrant operations |
+| `store` | `SqliteStore` — relational storage for conversations, messages, and user corrections (`zeph_corrections` table, migration 018 adds `outcome_detail` column); visibility-aware queries (`load_history_filtered` via CTE, `messages_by_ids`, `keyword_search`); durable compaction via `replace_conversation()`; composite covering index `(conversation_id, id)` on messages for efficient history reads |
+| `store::history` | Input history persistence for CLI channel |
+| `store::acp_sessions` | ACP session and event persistence for session resume, lifecycle tracking, and per-session conversation isolation (migration 026 adds `conversation_id` column) |
+| `qdrant_ops` | `QdrantOps` — high-level Qdrant operations (vector upsert and search) |
 | `semantic` | `SemanticMemory` — orchestrates SQLite + Qdrant |
 | `document` | Document loading, splitting, and ingestion pipeline |
 | `document::loader` | `TextLoader` (.txt/.md), `PdfLoader` (feature-gated: `pdf`) |
 | `document::splitter` | `TextSplitter` with configurable chunking |
 | `document::pipeline` | `IngestionPipeline` — load, split, embed, store via Qdrant |
 | `vector_store` | `VectorStore` trait and `VectorPoint` types |
-| `sqlite_vector` | `SqliteVectorStore` — embedded SQLite-backed vector search as zero-dependency Qdrant alternative |
+| `db_vector_store` | `DbVectorStore` (alias `SqliteVectorStore`) — embedded database-backed vector search as zero-dependency Qdrant alternative |
 | `snapshot` | `MemorySnapshot`, `export_snapshot()`, `import_snapshot()` — portable memory export/import |
 | `response_cache` | `ResponseCache` — SQLite-backed LLM response cache with blake3 key hashing and TTL expiry |
 | `semantic::importance` | `compute_importance` — write-time importance scoring for messages; scores are blended into recall ranking when `importance_enabled = true` |
 | `embedding_store` | `EmbeddingStore` — high-level embedding CRUD |
-| `embeddable` | `Embeddable` trait and `EmbeddingRegistry<T>` — generic Qdrant sync/search for any embeddable type |
+| `embedding_registry` | `Embeddable` trait and `EmbeddingRegistry` — Qdrant sync/search for any embeddable type |
 | `types` | `ConversationId`, `MessageId`, shared types |
 | `token_counter` | `TokenCounter` — tiktoken-based (cl100k_base) token counting with DashMap cache (10k cap), OpenAI tool schema formula, 64KB input guard with chars/4 fallback |
-| `routing` | `MemoryRouter` trait and `HeuristicRouter` — query-aware routing to Keyword, Semantic, or Hybrid backends |
-| `sqlite::overflow` | `tool_overflow` SQLite table (migration 031) — stores large tool outputs keyed by UUID; `SqliteStore::save_overflow` / `SqliteStore::cleanup_overflow` replace the old filesystem backend; `ON DELETE CASCADE` removes overflow rows when the parent conversation is deleted |
-| `sqlite::graph_store` | `RawGraphStore` trait and `TaskGraphStore` — raw JSON-blob persistence for task orchestration graphs (save/load/list/delete); `GraphSummary` metadata type; used by `zeph-core::orchestration::GraphPersistence` for typed serialization |
+| `router` | `MemoryRouter` trait and `HeuristicRouter` — query-aware routing to Keyword, Semantic, or Hybrid backends |
+| `store::overflow` | `tool_overflow` table (migration 031) — stores large tool outputs keyed by UUID; `SqliteStore::save_overflow` / `SqliteStore::cleanup_overflow` replace the old filesystem backend; `ON DELETE CASCADE` removes overflow rows when the parent conversation is deleted |
+| `store::graph_store` | `TaskGraphStore` — raw JSON-blob persistence for task orchestration graphs (save/load/list/delete); re-exports the `RawGraphStore` trait and `GraphSummary` metadata type from `zeph-db`; wrapped by `zeph_orchestration::graph::GraphPersistence` for typed serialization |
 | `graph` | `GraphStore`, `Entity`, `EntityAlias`, `Edge`, `Community`, `GraphFact`, `EntityType` — knowledge graph with BFS traversal, entity canonicalization, community detection via label propagation, and graph eviction |
 | `graph::activation` | `SpreadingActivation` — SYNAPSE spreading activation engine: hop-by-hop energy decay (lambda), edge-type filtering, lateral inhibition, configurable timeout; `ActivatedNode`, `ActivatedFact`, `SpreadingActivationParams` |
 | `graph::extractor` | `GraphExtractor` — LLM-powered entity/relation extraction via structured output; `EntityResolver` for dedup and supersession |
@@ -92,7 +91,7 @@ let memory = SemanticMemory::new(
 | `eviction` | Graph eviction — cleanup of expired edges, orphan entities, and entity cap enforcement |
 | `error` | `MemoryError` — unified error type |
 
-**Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`, `UserCorrection`, `FeedbackDetector`, `AnchoredSummary`, `CompactionProbeConfig`, `validate_compaction`, `FunctionalType` (from `zeph-common`), `TypeAwareComposeConfig`
+**Re-exports:** `MemoryError`, `QdrantOps`, `ConversationId`, `MessageId`, `UsageRecord`, `UsageSource`, `Document`, `DocumentLoader`, `TextLoader`, `TextSplitter`, `IngestionPipeline`, `Chunk`, `SplitterConfig`, `DocumentError`, `DocumentMetadata`, `PdfLoader` (behind `pdf` feature), `Embeddable`, `EmbeddingRegistry`, `ResponseCache`, `MemorySnapshot`, `TokenCounter`, `UserCorrectionRow`, `AnchoredSummary`, `CompactionProbeConfig`, `validate_compaction`, `VectorStore`, `VectorPoint`, `FunctionalType` (from `zeph-common`), `TypeAwareComposeConfig`
 
 ## Breaking changes in v0.18.2
 
@@ -310,7 +309,7 @@ zeph memory import backup.json
 
 ## User corrections and cross-session personalization
 
-`FeedbackDetector` analyzes each user message for implicit correction signals ("actually", "that's wrong", "no, I meant") and extracts a `UserCorrection` when confidence meets `correction_confidence_threshold`. Corrections are stored in both the `zeph_corrections` SQLite table and the `zeph_corrections` Qdrant collection.
+`FeedbackDetector` (in `zeph-agent-feedback`) analyzes each user message for implicit correction signals ("actually", "that's wrong", "no, I meant") and extracts a correction when confidence meets `correction_confidence_threshold`. Corrections are persisted here as `UserCorrectionRow` in both the `zeph_corrections` SQLite table and the `zeph_corrections` Qdrant collection.
 
 At context-build time, the top-K most similar corrections are retrieved by embedding and injected into the agent context, enabling cross-session personalization without explicit user re-stating preferences.
 

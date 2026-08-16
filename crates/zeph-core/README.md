@@ -9,57 +9,73 @@ Core agent loop, configuration, context builder, metrics, vault, and sub-agent o
 
 ## Overview
 
-Core orchestration crate for the Zeph agent. Manages the main agent loop, bootstraps the application from TOML configuration with environment variable overrides, and assembles the LLM context from conversation history, skills, and memory. Includes sub-agent orchestration with zero-trust permission grants, background execution, filtered tool/skill access, persistent memory scopes, lifecycle hooks, persistent JSONL transcript storage with resume-by-ID, A2A-based in-process communication channels, and `/agent` CLI commands for runtime management. All other workspace crates are coordinated through `zeph-core`.
+Core orchestration crate for the Zeph agent. It owns the main agent turn loop, resolves TOML configuration
+with `ZEPH_*` environment overrides and vault-backed secrets, and drives context assembly, tool dispatch,
+skill trust gating, and metrics. Most subsystems — sub-agents, orchestration, sanitization, memory,
+persistence, experiments — are implemented in dedicated sibling crates and *wired together* here; see
+[Subsystems that live in sibling crates](#subsystems-that-live-in-sibling-crates) for the map.
 
 ## Key modules
 
 | Module | Description |
 |--------|-------------|
-| `agent` | `Agent<C>` — main loop driving inference and tool execution; ToolExecutor erased via `Box<dyn ErasedToolExecutor>`; supports external cancellation via `with_cancel_signal()`; `EnvironmentContext` cached at bootstrap and partially refreshed (git branch, model name) on skill reload only |
-| `agent::context_manager` | `ContextManager` — owns token budget, compaction threshold, and safety margin; `should_compact()` is O(1) — reads `cached_prompt_tokens` set by the LLM response rather than scanning the message list |
-| `agent::tool_orchestrator` | `ToolOrchestrator` — owns max iteration limit, doom-loop detection (rolling hash window with in-place hashing, no intermediate `String` allocation), summarization flag, and overflow config |
-| `agent::learning_engine` | `LearningEngine` — owns `LearningConfig`, tracks per-turn reflection state; delegates self-learning decisions to `is_enabled()` / `mark_reflection_used()` |
-| `agent::feedback_detector` | `FeedbackDetector` (regex) and `JudgeDetector` (LLM-backed) — implicit correction detection from user messages with multi-language support (7 languages: English, Russian, Spanish, German, French, Portuguese, Chinese); `JudgeDetector` runs in background via `tokio::spawn` with sliding-window rate limiter (5 calls / 60 s) and XML-escaped adversarial-defense prompt; adaptive threshold gates judge invocation to the regex uncertainty zone |
-| `agent::persistence` | Message persistence and background graph extraction integration; `maybe_spawn_graph_extraction` fires a `SemanticMemory::spawn_graph_extraction` task per user turn with injection-flag guard and last-4-user-messages context window |
-| `agent::tool_execution` | Tool call handling, redaction, result processing; the structured tool-call path unconditionally emits `LoopbackEvent::ToolStart` (UUID generated per call, via `stamp_and_send_tier_start`) before execution and `LoopbackEvent::ToolOutput` (matching UUID, `is_error` flag, via `process_one_tool_result`) after; `call_chat_with_tools_retry()` — auto-detects `ContextLengthExceeded`, compacts context, and retries (max 2 attempts); `prune_stale_tool_outputs` invokes `count_tokens` once per `ToolResult` part |
-| `agent::message_queue` | Message queue management |
-| `agent::builder` | Agent builder API |
-| `agent::commands` | Chat command dispatch (skills, feedback, skill management via `/skill install`, `/skill remove`, `/skill reject <name> <reason>`, sub-agent management via `/agent`, etc.) |
-| `agent::utils` | Shared agent utilities |
-| `bootstrap` | `AppBuilder` — fluent builder for application startup; split into submodules: `config` (config resolution, vault arg parsing), `health` (health check, provider warmup), `mcp` (MCP manager and registry), `provider` (provider factory functions), `skills` (skill matcher, embedding model helpers) |
-| `channel` | `Channel` trait defining I/O adapters; `LoopbackChannel` / `LoopbackHandle` for headless daemon I/O (`LoopbackHandle` exposes `cancel_signal: Arc<Notify>` for session cancellation); `LoopbackEvent::ToolStart` / `LoopbackEvent::ToolOutput` carry per-tool UUIDs and `is_error` flag for ACP lifecycle notifications; `Attachment` / `AttachmentKind` for multimodal inputs |
-| `config` | TOML config with `ZEPH_*` env overrides; typed `ConfigError` (Io, Parse, Validation, Vault) |
-| `config::migrate` | `ConfigMigrator` — lossless TOML migration using `toml_edit`; compares user config against the embedded canonical `default.toml`, appends missing sections as commented-out blocks with documentation, reorders top-level sections by canonical group order, and deduplicates on re-run (idempotent). `MigrationResult` carries `output`, `changed_count`, and `sections_changed`. Exposed via `zeph migrate-config [--in-place] [--diff]`. |
-| `context` | LLM context assembly from history, skills, memory; three-tier compaction pipeline: (1) deferred summary application at `deferred_apply_threshold` (default 70%) — applies pre-computed tool-pair summaries lazily to stabilize the Claude API prompt cache prefix; (2) stale tool output pruning at `compaction_threshold` (default 80%); (3) LLM middle-out compaction on overflow with reactive retry (max 2 attempts), 10/20/50/100% progressive removal tiers, 9-section structured compaction prompt, and LLM-free metadata fallback via `build_metadata_summary()` with safe UTF-8 truncation; parallel chunked summarization; tool-pair summarization via `maybe_summarize_tool_pair()` — when visible pairs exceed `tool_call_cutoff`, oldest pair is LLM-summarized with XML-delimited prompt and originals hidden via `agent_visible=false`; visibility-aware history loading (agent-only vs user-visible messages); durable compaction via `replace_conversation()`; active context compression via `CompressionStrategy` (reactive/proactive) compresses before capacity limits are hit; uses shared `Arc<TokenCounter>` for accurate tiktoken-based budget tracking; `BudgetAllocation.graph_facts` reserves tokens for graph-aware retrieval (4% of remaining budget when graph memory is enabled, 0 otherwise); `ContextSlot::GraphFacts` concurrent fetch slot; `fetch_graph_facts` calls `graph_recall` in parallel with other memory fetchers and injects the resulting facts as a system message; task-aware pruning via `CompactionState` enum for type-safe compaction lifecycle |
-| `agent::compaction_strategy` | HiAgent subgoal-aware compaction: `SubgoalRegistry` tracks active and completed subgoals with message spans; `score_blocks_subgoal()` scores tool-output blocks by subgoal tier membership (active=1.0, completed=0.3, untagged=0.1); `score_blocks_subgoal_mig()` combines subgoal relevance with pairwise MIG redundancy scoring; active subgoal messages are protected from eviction |
-| `cost` | Token cost tracking and budgeting |
-| `daemon` | Background daemon mode with PID file lifecycle (optional feature) |
-| `metrics` | Runtime metrics collection; `SecurityEvent` ring buffer (capped at 100) with `SecurityEventCategory` variants (`InjectionFlag`, `ExfiltrationBlock`, `Quarantine`, `Truncation`) for TUI security panel |
-| `project` | Project-level context detection |
-| `sanitizer` | `ContentSanitizer` — untrusted content isolation pipeline applied to all external data before it enters the LLM context; 4-step pipeline: truncate to `max_content_size`, strip null bytes and control characters, detect 17 injection patterns (OWASP cheat sheet + encoding variants), wrap in spotlighting XML delimiters (`<tool-output>` for local, `<external-data>` for external); `TrustLevel` enum (`Trusted`/`LocalUntrusted`/`ExternalUntrusted`), `ContentSourceKind` enum (with `FromStr`), `SanitizedContent` with `InjectionFlag` list; `ContentIsolationConfig` under `[security.content_isolation]`; optional `QuarantinedSummarizer` (Dual LLM pattern) routes high-risk sources through an isolated, tool-less LLM extraction call — re-sanitizes output via `detect_injections` + `escape_delimiter_tags` before spotlighting; `QuarantineConfig` under `[security.content_isolation.quarantine]`; `ExfiltrationGuard` — 3 outbound guards: markdown image pixel-tracking detection (inline + reference-style), tool URL cross-validation against flagged untrusted sources, memory write suppression for injection-flagged content; `ExfiltrationGuardConfig` under `[security.exfiltration_guard]`; metrics: `sanitizer_runs`, `sanitizer_injection_flags`, `sanitizer_truncations`, `quarantine_invocations`, `quarantine_failures`, `exfiltration_images_blocked`, `exfiltration_tool_urls_flagged`, `exfiltration_memory_guards` |
-| `redact` | Regex-based secret redaction (AWS, OpenAI, Anthropic, Google, GitLab, HuggingFace, npm, Docker) |
-| `vault` | Secret storage and resolution via vault providers (age-encrypted read/write); secrets stored as `BTreeMap` for deterministic JSON serialization on every `vault.save()` call; scans `ZEPH_SECRET_*` keys to build the custom-secrets map used by skill env injection; all secret values are held as `Zeroizing<String>` (zeroize-on-drop) and are not `Clone` |
-| `instructions` | `load_instructions()` — auto-detects and loads provider-specific instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `zeph.md`) from the working directory; injects content into the volatile system prompt section with symlink boundary check, null byte guard, and 256 KiB per-file size cap. `InstructionWatcher` subscribes to filesystem events via `notify-debouncer-mini` (500 ms debounce) and reloads `instruction_blocks` in-place on any `.md` change — no agent restart required |
-| `skill_loader` | `SkillLoaderExecutor` — `ToolExecutor` that exposes the `load_skill` tool to the LLM; accepts a skill name, looks it up in the shared `Arc<RwLock<SkillRegistry>>`, and returns the full SKILL.md body (truncated to `MAX_TOOL_OUTPUT_CHARS`); skill name is capped at 128 characters; unknown names return a human-readable error message rather than a hard error |
-| `skill_invoke` | `SkillInvokeExecutor` — `ToolExecutor` that exposes the `invoke_skill` tool with trust-aware sanitization; Blocked skills are refused; non-Trusted bodies pass through `sanitize_skill_text`; Quarantined bodies are additionally wrapped with `wrap_quarantined`; exempt from adversarial policy, VIGIL gate, and tool-schema filter |
-| `vigil` | `VigilGate` — regex tripwire that runs before `ContentSanitizer` on every tool output; configurable via `[security.vigil]`; `VigilRiskLevel` recorded in audit entries; `vigil_flags_total` / `vigil_blocks_total` counters in `MetricsSnapshot`; fail-open on invalid config; subagent sessions exempt |
-| `security::shadow_sentinel` | ShadowSentinel Phase 2 — `ShadowProbeExecutor` wraps the tool executor chain between `ScopedToolExecutor` and `PolicyGateExecutor`; issues pre-execution LLM probes (`SafetyProbe` trait, `LlmSafetyProbe` impl) before high-risk tool categories (shell, file write, exfil-capable MCP); results persisted in `safety_shadow_events` SQLite table (migration 085) for cross-session safety audit; fail-open by default; bounded by `max_probes_per_turn` and `probe_timeout_ms`; enabled via `[security.shadow_sentinel]` |
-| `scheduler_executor` | `SchedulerExecutor` — `ToolExecutor` that exposes three LLM-callable tools: `schedule_periodic` (add a recurring cron task), `schedule_deferred` (add a one-shot task at a specific ISO 8601 UTC time), and `cancel_task` (remove a task by name); communicates with the scheduler via `mpsc::Sender<SchedulerMessage>` and validates input lengths and cron expressions before forwarding; only present when the `scheduler` feature is enabled |
-| `debug_dump` | `DebugDumper` — writes numbered `{id:04}-request.json`, `{id:04}-response.txt`, and `{id:04}-tool-{name}.txt` files to a timestamped session directory; request dumps include model, token limit, tools, temperature, cache metadata, and message payloads in both `json` and `raw` formats; enabled via `--debug-dump [PATH]` CLI flag, `[debug] enabled = true` config, or `/debug-dump [path]` slash command; hooks into both streaming and non-streaming LLM paths and before `maybe_summarize_tool_output` |
-| `agent::log_commands` | `/log` slash command handler — displays current `LoggingConfig` (file path, level, rotation, max files) and tails the last 20 lines from the active log file |
-| `hash` | `content_hash` — BLAKE3 hex digest utility |
-| `history_integrity` | Concrete vault-key resolution for the transcript/session-log hash-chain (`zeph-subagent`/`zeph-session` stay vault-free by design); derives history-chain subkeys from `ZEPH_HISTORY_KEY`, decoupled from `ZEPH_DURABLE_KEY` |
+| `agent` | `Agent<C>` — main loop driving inference and tool execution; `ToolExecutor` erased via `Box<dyn ErasedToolExecutor>`; supports external cancellation via `AgentBuilder::with_cancel_signal()`. Internal submodules (`context_manager`, `tool_orchestrator`, `learning_engine`, `tool_execution`, `persistence`, `message_queue`, `vigil`, …) are crate-private; the public surface is `agent::error`, `agent::session_config`, `agent::shadow_sentinel`, `agent::slash_commands`, `agent::speculative`, `agent::trajectory`, and `agent::turn` |
 | `anchor_store` | `AgeVaultAnchorStore` — concrete `AnchorStore` implementation backing vault-anchor downgrade resistance for transcripts and sessions (`[integrity]`); `run_anchor_sweep` bounds vault growth to `O(max_session_anchors + max_transcript_files)`, evicting oldest anchors by their embedded `written_at`, never filesystem mtime |
-| `pipeline` | Composable, type-safe step chains for multi-stage workflows |
-| `subagent` | Sub-agent orchestration: `SubAgentManager` lifecycle with background execution, `SubAgentDef` YAML definitions with 4-level resolution priority (CLI > project > user > config) and scope labels, `PermissionGrants` zero-trust delegation, `FilteredToolExecutor` scoped tool access (with `tools.except` additional denylist), `PermissionMode` enum (`Default`, `AcceptEdits`, `DontAsk`, `BypassPermissions`, `Plan`), `max_turns` turn cap, A2A in-process channels, `SubAgentState` lifecycle enum (`Submitted`, `Working`, `Completed`, `Failed`, `Canceled`), real-time status tracking, persistent JSONL transcript storage with resume-by-ID (`TranscriptWriter`/`TranscriptReader`, `TranscriptMeta` sidecar, prefix-based ID lookup, automatic old transcript sweep); CRUD helpers: `serialize_to_markdown()` (round-trip Markdown serialization), `save_atomic()` (write-rename with parent-dir creation and name validation), `delete_file()`, `default_template()` (scaffold for new definitions); `AgentsCommand` enum drives the `zeph agents` CLI subcommands |
-| `subagent::hooks` | Lifecycle hooks for sub-agents: `HookDef` (shell command with timeout and fail-open/closed policy), `HookMatcher` (pipe-separated tool-name patterns), `SubagentHooks` (per-agent `PreToolUse`/`PostToolUse` from YAML frontmatter); config-level `SubagentStart`/`SubagentStop` events; `fire_hooks()` executes sequentially with env-cleared sandbox and child kill on timeout |
-| `subagent::memory` | Persistent memory scopes for sub-agents: `MemoryScope` enum (`User`, `Project`, `Local`), `resolve_memory_dir()` / `ensure_memory_dir()` for directory lifecycle, `load_memory_content()` reads MEMORY.md (first 200 lines, 256 KiB cap, symlink boundary check, null byte guard), `escape_memory_content()` prevents prompt injection via `<agent-memory>` tag escaping. Memory is auto-injected into the sub-agent system prompt and Read/Write/Edit tools are auto-enabled |
-| `experiments` | Autonomous self-experimentation engine (integrates `zeph-experiments`): `Variation` config mutations (temperature, top-p, top-k, frequency/presence penalty, system prompt), `ExperimentResult` with LLM-as-judge scoring, `ExperimentStatus` lifecycle; `ExperimentConfig` under `[experiments]` with `max_experiments`, `max_wall_time_secs`, `eval_budget_tokens`, `min_improvement`, optional `eval_model` and `benchmark_file`; `ExperimentSchedule` for cron-based periodic runs (`cron`, `max_experiments_per_run`, `max_wall_time_secs`); the scheduler registers a `TaskKind::Experiment` handler when the `scheduler` feature is active; `BenchmarkSet` / `BenchmarkCase` loaded from TOML files via `from_file()` with path traversal protection and file size limit; `Evaluator` with parallel judge scoring via `FuturesUnordered`, per-invocation token budget enforcement via `AtomicU64`, XML boundary tags for prompt injection defense; `EvalReport` with mean score, p50/p95 latency, partial-run detection, error count; **Parameter variation engine**: `SearchSpace` with `ParameterRange` (min/max/step/default per parameter kind), `ConfigSnapshot` for baseline capture and rollback, `VariationGenerator` trait with three strategies — `GridStep` (exhaustive sweep), `Random` (uniform sampling), `Neighborhood` (local search around current best); one-at-a-time constraint isolates each parameter change, `OrderedFloat`-based `HashSet<Variation>` deduplication prevents retesting; **`experiment_cmd`** sub-module dispatches `/experiment` slash commands (`start`, `stop`, `status`, `report`, `best`) with `CancellationToken`-based concurrent session guard |
-| `orchestration` | DAG-based task orchestration: `TaskGraph` with `TaskNode` dependency tracking, `GraphId`/`TaskId` typed identifiers, `FailureStrategy` (abort/retry/skip/ask), `GraphStatus`/`TaskStatus` lifecycle enums, `GraphPersistence<S>` typed wrapper over `RawGraphStore`, DAG validation (cycle detection, structural invariants via topological sort), `OrchestrationConfig` under `[orchestration]`; `Planner` trait for goal decomposition with `LlmPlanner<P>` implementation — uses `chat_typed` for structured JSON output, maps string task IDs to `TaskId`, validates agent hints against available `SubAgentDef` set; tick-based `DagScheduler` execution engine with command pattern (`SchedulerAction`), `AgentRouter` trait + `RuleBasedRouter` for task-to-agent routing, `spawn_for_task()` on `SubAgentManager` for orchestrated task spawning, cross-task context injection with `ContentSanitizer` integration, stale event guard preventing timed-out agent completions from corrupting retry state; `Aggregator` trait + `LlmAggregator<P>` — synthesizes completed task outputs into a coherent response via a single LLM call; per-task character budget derived from `aggregator_max_tokens` (default 4096), task results spotlighted via `ContentSanitizer` before inclusion, raw-concatenation fallback on LLM failure; `PlanCommand` enum with `/plan` CLI commands (goal, status, list, cancel, confirm, resume, retry) integrated into the agent loop; `OrchestrationMetrics` (plans_total, tasks_total/completed/failed/skipped) always present in `MetricsSnapshot`; pending-plan confirmation flow with `confirm_before_execute` config |
-| `hooks` | `[hooks]` config with `[[hooks.cwd_changed]]` and `[[hooks.file_changed]]` event hooks; `set_working_directory` tool allows the LLM to change the agent's working directory, emitting a `CwdChanged` event; `FileChangeWatcher` via `notify-debouncer-mini` emits `FileChanged` events for watched paths; hook shell commands receive `ZEPH_OLD_CWD` / `ZEPH_NEW_CWD` (cwd hooks) and `ZEPH_CHANGED_PATH` (file hooks) environment variables |
-| `lsp_hooks` | LSP context injection hooks: `LspHookRunner` integrates with the agent tool loop to automatically inject LSP-derived context before each LLM call; `LspNote` type carries formatted content with estimated token counts; `DiagnosticsOnSave` hook fetches compiler diagnostics from mcpls after `write_file` completes; `HoverOnRead` hook pre-fetches hover info for key symbols (function/struct/enum/trait definitions) after `read_file` completes using concurrent `join_all` MCP calls; `ReferencesOnRename` hook fetches all reference sites before `rename_symbol` executes so the model sees the full impact; notes are injected as `Role::User` messages with `[lsp ...]` prefix, following the established pattern of `[semantic recall]`, `[known facts]`, and `[code context]`; per-turn token budget enforced in `drain_notes()` — notes exceeding the budget are dropped with a debug log; graceful degradation when mcpls is unavailable: `is_available()` checks the `McpManager` client list, individual MCP call failures are swallowed at `debug` level, and the agent loop continues normally |
+| `channel` | `Channel` trait defining I/O adapters; `LoopbackChannel` / `LoopbackHandle` for headless daemon I/O; `LoopbackEvent` carries streaming chunks, status, tool lifecycle (`ToolStart` / `ToolOutput` with per-tool UUIDs and an `is_error` flag), usage, plan state, and `Stop(StopHint)`; `SkillCatalogItem` + `Channel::send_skill_catalog` push the trust-annotated skill catalog to the UI (spec 084); `Attachment` / `AttachmentKind` for multimodal inputs |
+| `config` | Re-exports the `zeph-config` data types plus the `SecretResolver` extension trait (vault resolution lives here because `VaultProvider` does). TOML config with `ZEPH_*` env overrides; typed `ConfigError` (Io, Parse, Validation, Vault) |
+| `config::migrate` | Re-export of `zeph_config::migrate` — `ConfigMigrator` performs lossless TOML migration using `toml_edit`: compares user config against the embedded canonical `default.toml`, appends missing sections as commented-out documented blocks, reorders top-level sections by canonical group order, and deduplicates on re-run (idempotent). `MigrationResult` carries `output`, `changed_count`, and `sections_changed`. Exposed via `zeph migrate-config [--in-place] [--diff]` |
+| `config_watcher` | Filesystem watcher (`notify-debouncer-mini`) that reloads `config.toml` in place without an agent restart |
+| `context` | Agent-side context assembly glue over `zeph-context`: re-exports `ContextBudget` / `BudgetAllocation` and layers instruction blocks on top. The stateless budget, assembler, and typed-page machinery live in `zeph-context`; the assembly service itself lives in `zeph-agent-context` |
+| `cost` | Token cost tracking and budgeting |
+| `daemon` | Background daemon mode with PID file lifecycle |
+| `debug_dump` | `DebugDumper` — writes numbered `{id:04}-request.json`, `{id:04}-response.txt`, and `{id:04}-tool-{name}.txt` files to a timestamped session directory; request dumps include model, token limit, tools, temperature, cache metadata, and message payloads. Enabled via `--debug-dump [PATH]` CLI flag, `[debug] enabled = true`, or the `/debug-dump [path]` slash command; hooks into both streaming and non-streaming LLM paths |
+| `durable` | Concrete cryptographic backing (key material resolution) for the `zeph-durable` execution layer |
+| `file_watcher` | `FileChangeWatcher` — debounced (`notify-debouncer-mini`) path watcher feeding `[hooks.file_changed]` events |
+| `goal` | Long-horizon goal lifecycle subsystem: `Goal`, `GoalSnapshot`, `GoalStatus`, `GoalStore`, `GoalAccounting`, `GoalSupervisor`, and the `AutonomousDriver` / `AutonomousRegistry` pair backing autonomous sessions |
+| `history_integrity` | Concrete vault-key resolution for the transcript/session-log hash-chain (`zeph-subagent`/`zeph-session` stay vault-free by design); derives history-chain subkeys from `ZEPH_HISTORY_KEY`, decoupled from `ZEPH_DURABLE_KEY` |
+| `http` | Shared HTTP client construction for consistent timeout and TLS configuration |
+| `instructions` | `load_instructions()` — auto-detects and loads provider-specific instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `zeph.md`) from the working directory; injects content into the volatile system prompt section with symlink boundary check, null byte guard, and 256 KiB per-file size cap. `InstructionWatcher` reloads `instruction_blocks` in place on any `.md` change (500 ms debounce) — no agent restart required |
+| `instrumented_channel` | Instrumented wrappers around tokio channels for queue-depth metrics |
+| `json_event_sink` / `json_event_layer` | Single stdout writer and tracing layer backing `--json` mode |
+| `lsp_hooks` | LSP context injection hooks: `LspHookRunner` accumulates `LspNote` entries after native tool execution and formats them into the next LLM call. Two hooks ship today — diagnostics-on-write (compiler diagnostics from mcpls) and hover-on-read (hover info for key symbols, concurrent MCP calls). Notes are injected as `Role::User` messages with an `[lsp …]` prefix, matching `[semantic recall]` / `[known facts]` / `[code context]`. Per-turn token budget enforced in `drain_notes()`; degrades silently when mcpls is unavailable (`is_available()` is itself timeout-bounded) |
+| `memory_tools` | `ToolExecutor` exposing memory search/recall tools to the LLM |
+| `metrics` | Runtime metrics collection; `SecurityEvent` ring buffer (`SECURITY_EVENT_CAP = 100`, FIFO eviction) for the TUI security panel. `SecurityEventCategory` itself lives in `zeph-common` and covers injection flags/blocks, exfiltration, quarantine, truncation, rate limiting, memory validation, pre-execution block/warn, response verification, causal IPI, cross-boundary MCP→ACP, VIGIL flags, and goal drift |
+| `metrics_bridge` | Tracing layer that derives `metrics::TurnTimings` from span durations |
+| `notifications` | Best-effort per-turn completion notifier |
+| `overflow_tools` | `ToolExecutor` for retrieving archived/overflowed tool output bodies from SQLite |
+| `pipeline` | Composable, type-safe step chains for multi-stage workflows (`builder`, `builtin`, `parallel`, `step`) |
+| `project` | Project-level context detection |
+| `provider_factory` | Pure factory helpers building `AnyProvider` instances from config entries |
+| `redact` | Regex-based secret redaction (AWS, OpenAI, Anthropic, Google, GitLab, HuggingFace, npm, Docker) |
+| `runtime_context` | `RuntimeContext` — `Copy` struct of startup mode flags passed by value to subsystem initializers |
+| `runtime_layer` | `RuntimeLayer` trait — observe-only middleware hooks around LLM calls and tool dispatch |
+| `serve` | `SessionActor` and `LiveSessionRegistry` backing `zeph serve` |
+| `session_resume` | Resume-visibility presentation primitive (resume banner content) |
+| `skill_loader` | `SkillLoaderExecutor` — `ToolExecutor` exposing the `load_skill` tool; looks a skill name up in the shared `Arc<RwLock<SkillRegistry>>` and returns the SKILL.md body (truncated to `MAX_TOOL_OUTPUT_CHARS`); name capped at 128 characters; unknown names return a human-readable error rather than a hard failure |
+| `skill_invoker` | `SkillInvokeExecutor` — `ToolExecutor` exposing the `invoke_skill` tool with trust-aware sanitization; `Blocked` skills are refused, non-`Trusted` bodies pass through `sanitize_skill_text`, `Quarantined` bodies are additionally wrapped with `wrap_quarantined`; exempt from adversarial policy, VIGIL gate, and tool-schema filter |
+| `skill_trust_gate` | `SkillTrustGate` / `SkillBodyResolution` — the shared trust-gating pipeline both skill-body executors above run through, so a quarantined or blocked skill is resolved identically on either path |
+| `system_metrics` | Periodic system-metrics background task (feature `sysinfo`) |
+| `vault` | Re-export facade over `zeph-vault`: `AgeVaultProvider` (age-encrypted read/write), `EnvVaultProvider` (dev/test only), `VaultProvider` trait, `Secret`. Secret values are `Zeroizing<String>` (zeroize-on-drop) and are not `Clone` |
 
-**Re-exports:** `Agent`, `content_hash`, `DiffData`
+**Re-exports at the crate root:** `Agent`, `AgentError`, `AgentSessionConfig`, `CONTEXT_BUDGET_RESERVE_RATIO`, `DurableKeyMaterial`, `SecurityWiringSnapshot`, `SkillConfigParams`, `AdversarialPolicyInfo`, `ProviderConfigSnapshot`, `ShellOverlaySnapshot`, `Attachment`, `AttachmentKind`, `Channel`, `ChannelError`, `ChannelMessage`, `LoopbackChannel`, `LoopbackEvent`, `LoopbackHandle`, `StopHint`, `ToolStartData`, `ToolStartEvent`, `ToolOutputData`, `ToolOutputEvent`, `Config`, `ConfigError`, `RuntimeContext`, `InvokeSkillParams`, `SkillInvokeExecutor`, `SkillTrustSnapshot`, `SkillLoaderExecutor`, `SkillBodyResolution`, `SkillTrustGate`, `resolve_require_check`, `content_hash` (from `zeph-common`), `DiffData` (from `zeph-tools`), plus the sanitizer and exfiltration-guard types re-exported from `zeph-sanitizer`.
+
+### Subsystems that live in sibling crates
+
+`zeph-core` wires these together but does not define them. Look in the owning crate for their types and config:
+
+| Subsystem | Crate |
+|---|---|
+| Application bootstrap (`AppBuilder`), `SchedulerExecutor`, `zeph agents` CLI wiring | `zeph` (binary, `src/`) |
+| Context budget, assembler, typed-page compaction | `zeph-context` |
+| `ContextService`, subgoal-aware compaction (`SubgoalRegistry`, `score_blocks_subgoal*`) | `zeph-agent-context` |
+| History load / message persistence / graph extraction | `zeph-agent-persistence` |
+| `FeedbackDetector`, `JudgeDetector`, implicit-correction detection | `zeph-agent-feedback` |
+| `doom_loop_hash` | `zeph-agent-tools` |
+| `ContentSanitizer`, `ExfiltrationGuard`, `QuarantinedSummarizer` | `zeph-sanitizer` |
+| `SubAgentManager`, `PermissionGrants`, transcripts, subagent hooks and memory scopes | `zeph-subagent` |
+| `TaskGraph`, `Planner`, `DagScheduler`, `LlmAggregator` | `zeph-orchestration` |
+| Experiment engine (`Variation`, `Evaluator`, `SearchSpace`) | `zeph-experiments` |
+| `SecurityEventCategory`, task supervision, shared text/hash utilities | `zeph-common` |
 
 ## Configuration
 
@@ -67,20 +83,21 @@ Key `AgentConfig` fields (TOML section `[agent]`):
 
 | Field | Type | Default | Env override | Description |
 |-------|------|---------|--------------|-------------|
-| `name` | string | `"zeph"` | — | Agent display name |
-| `max_tool_iterations` | usize | `10` | — | Max tool calls per turn |
+| `name` | string | `"Zeph"` | — | Agent display name |
+| `max_tool_iterations` | usize | `10` | — | Max tool-call iterations per turn (validated: must be <= 100) |
 | `auto_update_check` | bool | `true` | `ZEPH_AUTO_UPDATE_CHECK` | Check GitHub releases for a newer version on startup / via scheduler |
 
-Key `InstructionConfig` fields (TOML section `[agent.instructions]`):
+Instruction loading is configured with two flat fields in the same `[agent]` section:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `auto_detect` | bool | `true` | Auto-detect provider-specific files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) |
-| `extra_files` | `Vec<PathBuf>` | `[]` | Additional instruction files (absolute or relative to cwd) |
-| `max_size_bytes` | u64 | `262144` | Per-file size cap (256 KiB); files exceeding this are skipped |
+| `instruction_auto_detect` | bool | `true` | Auto-detect provider-specific files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) |
+| `instruction_files` | `Vec<PathBuf>` | `[]` | Additional instruction files always loaded (absolute or relative to cwd) |
 
 > [!NOTE]
-> `zeph.md` and `.zeph/zeph.md` are always loaded regardless of `auto_detect`. Use `--instruction-file <path>` at the CLI to supply extra files at startup without modifying the config file.
+> `zeph.md` and `.zeph/zeph.md` are always loaded regardless of `instruction_auto_detect`. Each file is capped at
+> 256 KiB by `load_instructions()`; larger files are skipped. Use `--instruction-file <path>` at the CLI to supply
+> extra files at startup without modifying the config file.
 
 > [!TIP]
 > Instruction files support hot reload — edit any watched `.md` file while the agent is running and the updated content is applied within 500 ms on the next inference turn. The watcher starts automatically when at least one instruction path is resolved.
@@ -92,34 +109,28 @@ Key `LspConfig` fields (TOML section `[agent.lsp]`):
 | `enabled` | bool | `false` | Enable LSP context injection hooks |
 | `mcp_server_id` | string | `"mcpls"` | MCP server ID to use for LSP calls |
 | `token_budget` | usize | `2000` | Maximum tokens spent on LSP-injected context per turn |
-| `diagnostics.enabled` | bool | `true` | Fetch compiler diagnostics after `write_file` |
+| `call_timeout_secs` | u64 | `5` | Per-MCP-call timeout; an expired call is dropped and the turn continues |
+| `diagnostics.enabled` | bool | `true` | Fetch compiler diagnostics after a write tool completes |
 | `diagnostics.max_per_file` | usize | `20` | Maximum diagnostics per file |
-| `diagnostics.max_files` | usize | `5` | Maximum files per diagnostic batch |
 | `diagnostics.min_severity` | string | `"error"` | Minimum severity to include: `"error"`, `"warning"`, `"info"`, `"hint"` |
-| `hover.enabled` | bool | `false` | Pre-fetch hover info for key symbols after `read_file` |
+| `hover.enabled` | bool | `false` | Pre-fetch hover info for key symbols after a read tool completes |
 | `hover.max_symbols` | usize | `5` | Maximum hover entries per file |
-| `references.enabled` | bool | `true` | Fetch reference sites before `rename_symbol` |
-| `references.max_refs` | usize | `50` | Maximum references to show per symbol |
 
 ```toml
 [agent.lsp]
 enabled = true
 mcp_server_id = "mcpls"
 token_budget = 2000
+call_timeout_secs = 5
 
 [agent.lsp.diagnostics]
 enabled = true
 max_per_file = 20
-max_files = 5
 min_severity = "error"
 
 [agent.lsp.hover]
 enabled = false
 max_symbols = 5
-
-[agent.lsp.references]
-enabled = true
-max_refs = 50
 ```
 
 > [!NOTE]
@@ -130,8 +141,8 @@ Key `DocumentConfig` fields (TOML section `[memory.documents]`):
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `collection` | string | `"zeph_documents"` | Qdrant collection for document chunks |
-| `chunk_size` | usize | `512` | Target tokens per chunk |
-| `chunk_overlap` | usize | `64` | Overlap between chunks |
+| `chunk_size` | usize | `1000` | Target characters per chunk |
+| `chunk_overlap` | usize | `100` | Overlap between chunks |
 | `top_k` | usize | `3` | Max chunks injected per context-build turn |
 | `rag_enabled` | bool | `false` | Enable automatic RAG context injection from `zeph_documents` |
 
@@ -145,10 +156,9 @@ Key `MemoryConfig` fields (TOML section `[memory]`):
 | `autosave_assistant` | bool | `false` | Persist assistant responses to semantic memory automatically |
 | `autosave_min_length` | usize | `20` | Minimum response length (chars) to trigger autosave |
 | `tool_call_cutoff` | usize | `6` | Max visible tool call/response pairs before oldest is summarized via LLM |
-| `deferred_apply_threshold` | f32 | `0.70` | Context usage ratio at which deferred tool-pair summaries are applied (must be < `compaction_threshold`) |
+| `soft_compaction_threshold` | f32 | `0.60` | Context usage ratio at which soft compaction (stale tool-output pruning) begins |
+| `hard_compaction_threshold` | f32 | `0.90` | Context usage ratio at which LLM middle-out compaction is forced |
 | `sqlite_pool_size` | u32 | `5` | SQLite connection pool size for memory storage |
-| `response_cache_cleanup_interval_secs` | u64 | `3600` | Interval for expiring stale response cache entries |
-| `embed_concurrency` | u32 | `4` | Max concurrent embedding requests (0 = unlimited); shared across indexer, backfill, and graph extraction |
 
 Key `CompressionConfig` fields (TOML section `[memory.compression]`):
 
@@ -176,13 +186,17 @@ Key `SessionConfig.recap` fields (TOML section `[session.recap]`):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | bool | `true` | Show a recap of the previous session on resume when a digest is available |
+| `on_resume` | bool | `true` | Show a recap of the previous session on resume when a digest is available |
+| `max_tokens` | usize | `200` | Maximum tokens for the recap text |
 | `provider` | string | `""` | Provider name (references `[[llm.providers]]`) for recap generation; empty = primary provider |
+| `max_input_messages` | usize | `20` | Recent messages included when generating a fresh recap (no cached digest) |
 
 ```toml
 [session.recap]
-enabled  = true
-provider = "fast"   # optional; references [[llm.providers]] name
+on_resume          = true
+max_tokens         = 200
+provider           = "fast"   # optional; references [[llm.providers]] name
+max_input_messages = 20
 ```
 
 > [!TIP]
@@ -239,13 +253,17 @@ max_files = 7
 
 | Command | Description |
 |---------|-------------|
-| `/skill list` | List loaded skills with trust level and match count |
-| `/skill install <url>` | Install a skill from a remote URL |
-| `/skill remove <name>` | Remove an installed skill |
-| `/skill reject <name> <reason>` | Record a typed rejection and trigger immediate skill improvement |
+| `/skills` | List loaded skills, grouped by category when available |
+| `/skills confusability` | Show skill pairs with high embedding similarity (potential disambiguation failures) |
+| `/skills injection` | Show skills flagged by the injection scanner |
+| `/skills trust` | Show the current trust level of every loaded skill |
+| `/skill <name>` | Load and display a skill body |
+| `/skill create <description>` | Generate a `SKILL.md` from a natural-language description via LLM |
+| `/feedback <skill> <message>` | Submit feedback for a skill |
 
 > [!TIP]
-> `/skill reject` provides the strongest feedback signal. The rejection is persisted with a `FailureKind` discriminant to the `outcome_detail` column and immediately updates the Wilson score posterior for Bayesian re-ranking.
+> `/feedback` is the strongest supervision signal for skill ranking — the outcome is persisted and updates the
+> Wilson-score posterior used for Bayesian re-ranking on the next match.
 
 ## Self-learning configuration
 
@@ -254,13 +272,20 @@ Key `AgentConfig.learning` fields (TOML section `[agent.learning]`):
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `correction_detection` | bool | `true` | Enable `FeedbackDetector` implicit correction capture |
-| `correction_confidence_threshold` | f64 | `0.7` | Minimum detector confidence to persist a `UserCorrection` |
-| `correction_recall_limit` | usize | `5` | Max corrections retrieved per context-build turn |
-| `correction_min_similarity` | f64 | `0.75` | Minimum embedding similarity for correction recall |
-| `detector_mode` | `"regex"` / `"judge"` | `"regex"` | Detection strategy: regex-only or LLM-backed judge with adaptive regex fallback |
+| `correction_confidence_threshold` | f32 | `0.6` | Minimum detector confidence to persist a `UserCorrection` |
+| `correction_recall_limit` | u32 | `3` | Max corrections retrieved per context-build turn |
+| `correction_min_similarity` | f32 | `0.75` | Minimum embedding similarity for correction recall |
+| `detector_mode` | `"regex"` / `"judge"` / `"model"` | `"regex"` | Detection strategy: regex-only, LLM-backed judge with adaptive regex fallback, or `LlmClassifier`-backed classification |
 | `judge_model` | string | `""` | Model for the judge detector (e.g. `"claude-sonnet-5"`); empty = use primary provider |
+| `feedback_provider` | string | `""` | Provider name from `[[llm.providers]]` used by `detector_mode = "model"`; empty = primary provider |
 | `judge_adaptive_low` | f32 | `0.5` | Regex confidence below this value skips judge invocation (treated as "not a correction") |
 | `judge_adaptive_high` | f32 | `0.8` | Regex confidence above this value skips judge invocation (high-confidence regex match accepted) |
+
+> [!NOTE]
+> The detectors themselves live in [`zeph-agent-feedback`](../zeph-agent-feedback/README.md), which matches
+> patterns across 7 languages (English, Russian, Spanish, German, French, Chinese Simplified, Japanese).
+> `detector_mode = "model"` falls back to regex-only when the named provider cannot be resolved — it never
+> fails startup.
 
 Key `LlmConfig` fields (TOML section `[llm]`):
 
@@ -270,7 +295,7 @@ Key `LlmConfig` fields (TOML section `[llm]`):
 | `summary_provider` | table? | `null` | Structured summarization provider (takes precedence over `summary_model`). Same fields as `[llm.orchestrator.providers.*]`: `type`, `model`, `base_url`, `embedding_model`, `device`. For `compatible` type, `model` is the `[[llm.compatible]]` entry name. |
 | `router_ema_enabled` | bool | `false` | Enable per-provider EMA latency tracking and reordering |
 | `router_ema_alpha` | f64 | `0.1` | EMA smoothing factor (lower = slower adaptation) |
-| `router_reorder_interval` | u64 | `60` | Seconds between provider list reordering |
+| `router_reorder_interval` | u64 | `10` | Seconds between provider list reordering |
 
 ```toml
 # Example: use Claude Haiku for summarization, primary model for inference
@@ -353,15 +378,17 @@ In-session commands for autonomous self-experimentation (integrates `zeph-experi
 
 ## Agents management CLI
 
-`zeph agents` provides CRUD management of sub-agent definition files outside of a running session:
+`zeph agents` provides CRUD management of sub-agent definition files outside of a running session. The
+subcommands are declared in the `zeph` binary crate and back onto `zeph-subagent`'s `AgentsCommand`:
 
 | Command | Description |
 |---------|-------------|
 | `zeph agents list` | Print all discovered definitions with name, scope, description, and model |
 | `zeph agents show <name>` | Print full detail of a single definition |
-| `zeph agents create <name> --description <desc> [--dir <path>] [--model <id>]` | Scaffold a new `.md` definition via `default_template` + `save_atomic` |
+| `zeph agents create <name> --description <desc> [--dir <path>] [--model <id>]` | Scaffold a new `.md` definition (name must match `[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}`; default dir `.zeph/agents`) |
 | `zeph agents edit <name>` | Open the definition file in `$VISUAL` / `$EDITOR` (validates parse on exit) |
 | `zeph agents delete <name> [--yes]` | Delete a definition file with interactive confirmation |
+| `zeph agents fleet [--status <s>] [--limit <n>]` | List agent sessions recorded in the fleet database |
 
 > [!TIP]
 > The same CRUD operations are available interactively in the TUI agents panel — press `a` in the TUI to open the panel, then `c` (create), `e` (edit), `d` (delete), Enter (detail view).
@@ -379,17 +406,28 @@ Configure via `[tools.speculative]` in `config.toml`:
 
 ```toml
 [tools.speculative]
-mode               = "decoding"   # "off" | "decoding" | "pattern"
-confidence_threshold = 0.8
-timeout_ms         = 2000
+mode                  = "decoding"   # "off" | "decoding" | "pattern" | "both"
+max_in_flight         = 4            # concurrent speculative dispatches
+confidence_threshold  = 0.55         # minimum prediction confidence to dispatch
+max_wasted_per_minute = 100          # circuit breaker on discarded speculative work
+ttl_seconds           = 30           # how long a speculative result stays committable
+audit                 = true         # record every speculative dispatch
 ```
+
+Nested `[tools.speculative.pattern]` and `[tools.speculative.allowlist]` tables tune the PASTE
+pattern store and restrict which tools may ever be speculated on.
 
 > [!NOTE]
 > The speculation engine only runs when the agent is not in `--bare` mode. Committed speculative results that carry `ToolError::ConfirmationRequired` trigger a `tracing::error!` in debug builds, making the invariant machine-checkable at zero release cost.
 
 ## Goal lifecycle and TACO output compression
 
-`GoalLifecycle` tracks active goals across turns. Tool outputs for completed or stale goals are compressed by the TACO (Tool-Aware Compaction Optimization) pipeline, which archives bodies to SQLite before the LLM compaction call and injects UUID back-references into the resulting summary.
+The `goal` module tracks long-horizon goals across turns: `Goal` / `GoalSnapshot` / `GoalStatus` carry the
+state, `GoalStore` persists it, `GoalAccounting` meters spend against it, and `GoalSupervisor` +
+`AutonomousDriver` / `AutonomousRegistry` drive autonomous sessions. Tool outputs for completed or stale
+goals are compressed by the TACO (Tool-Aware Compaction Optimization) pipeline, which archives bodies to
+SQLite before the LLM compaction call and injects UUID back-references into the resulting summary — gated
+by `archive_tool_outputs` under `[memory.compression]`.
 
 ## ShadowSentinel safety probes
 
@@ -398,7 +436,7 @@ timeout_ms         = 2000
 ```toml
 [security.shadow_sentinel]
 enabled            = false   # opt-in (default: false)
-max_probes_per_turn = 5      # max LLM probes issued per agent turn
+max_probes_per_turn = 3      # max LLM probes issued per agent turn
 probe_timeout_ms   = 2000   # per-probe timeout; fail-open on expiry
 ```
 

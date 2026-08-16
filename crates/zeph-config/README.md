@@ -42,7 +42,7 @@ embedding_model = "qwen3-embedding"
 | `IntegrityConfig` | `[integrity]` | Vault-anchor downgrade-resistance for transcript/session integrity — anchor mode, LRU cap on retained session anchors (issue #6449) |
 | `DebugConfig` | `[debug]` | Debug dump path and format |
 | `LoggingConfig` | `[logging]` | Log file path, level, rotation, retention |
-| `VaultConfig` | `[vault]` | Vault backend (`env`, `age`) and key path |
+| `VaultConfig` | `[vault]` | Vault backend selection (`env` or `age`; defaults to `age`) |
 
 ## Usage
 
@@ -61,8 +61,9 @@ println!("Max tool iterations: {}", config.agent.max_tool_iterations);
 Config migration (add missing sections from the canonical default):
 
 ```bash
-zeph migrate-config            # print diff
-zeph migrate-config --in-place # update file in place
+zeph migrate-config            # print the migrated config to stdout
+zeph migrate-config --diff     # print a unified diff instead of the full output
+zeph migrate-config --in-place # rewrite the source file atomically
 ```
 
 ## Features

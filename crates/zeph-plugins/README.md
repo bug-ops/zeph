@@ -73,6 +73,10 @@ name        = "my-plugin"
 version     = "1.0.0"
 description = "Does something useful"
 auto_update = false
+# Optional: names of other installed plugins this one requires.
+# Install validates the count (max 64) and each name; the graph itself
+# is walked by enable/disable. See "Enable, disable, and dependencies".
+dependencies = ["my-base-plugin"]
 
 [[skills]]
 path = "skills/my-skill"
@@ -101,22 +105,29 @@ disambiguation_threshold = 0.25
 ### CLI
 
 ```bash
-# Install a plugin from a local path or URL
+# Install a plugin from a local directory (must contain plugin.toml)
 zeph plugin add ./path/to/my-plugin
-zeph plugin add https://example.com/my-plugin.tar.gz
 
 # List installed plugins
 zeph plugin list
+
+# List installed plugins plus the active config overlay (contributors and skip reasons)
+zeph plugin list --overlay
 
 # Remove a plugin
 zeph plugin remove my-plugin
 ```
 
+> [!NOTE]
+> `zeph plugin add` takes a **local directory path only** — a URL is rejected with `PluginError::InvalidSource`. Remote installs go through the marketplace (`zeph plugin get <registry-id>`, below) or the auto-update path, both of which run the archive through `extract_archive_safe` (size cap, symlink rejection, tar-slip checks). The crate API exposes `PluginManager::add_remote` / `add_remote_ephemeral` for embedders that need remote install directly.
+
 ### TUI slash commands
 
 ```text
-/plugins list            # list installed plugins
-/plugins add <path|url>  # install a plugin
+/plugins list            # list installed plugins (includes ephemeral ones)
+/plugins list --overlay  # show the active config overlay
+/plugins overlay         # same as above
+/plugins add <path>      # install a plugin from a local directory
 /plugins remove <name>   # uninstall a plugin
 ```
 
@@ -131,6 +142,25 @@ zeph plugin get <registry-id>
 Backed by the `marketplace` module's `RegistryClient` trait (default backend: `skills.sh`). Disabled
 by default (`FR-004`): when `skills.registry.enabled = false`, both subcommands print an actionable
 opt-in message and make zero network calls.
+
+## Enable, disable, and dependencies
+
+`PluginManager::enable` / `disable` toggle a `.disabled` marker file inside the installed plugin
+directory, keeping the package on disk. Both are crate-API only — there is no `zeph plugin
+enable`/`disable` subcommand or `/plugins` slash equivalent yet.
+
+The optional `[plugin] dependencies` list is the graph these two walk:
+
+- `enable(name)` recursively enables every declared dependency depth-first, rejecting an absent one
+  with `PluginError::MissingDependency` and a cyclic graph with `PluginError::DependencyCycle` —
+  both detected *before* any filesystem write. Enabling an already-enabled plugin is a no-op.
+- `disable(name, force)` refuses with `PluginError::DependencyRequired` when some other *enabled*
+  plugin still declares `name` as a dependency; `force = true` overrides that guard.
+
+> [!NOTE]
+> Dependencies are not resolved at install time — `zeph plugin add` never fetches a missing
+> dependency for you. The manifest is only bounded at install (at most 64 entries, per
+> `MAX_DEPENDENCIES`, to cap recursive `enable()` fan-out); the graph itself is walked on enable.
 
 ## Config overlay merge
 

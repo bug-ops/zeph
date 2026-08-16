@@ -21,26 +21,27 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 | `scrape` | Web scraping executor with SSRF protection: HTTPS-only, pre-DNS host blocklist, post-DNS private IP validation, pinned address client, and redirect chain defense (up to 3 hops each re-validated before following) |
 | `search` | `WebSearchExecutor` — the `web_search` tool: issues a natural-language query to an external search provider (Brave) and returns ranked `title`/`url`/`snippet` results without requiring a pre-known URL. Reuses `scrape`'s SSRF validation and IPI filtering; result URLs are never auto-fetched. Disabled by default, gated by `[tools.search]` |
 | `composite` | `CompositeExecutor` — chains executors with middleware |
-| `filter` | Output filtering pipeline — unified declarative TOML engine with 9 strategy types (`strip_noise`, `truncate`, `keep_matching`, `strip_annotated`, `test_summary`, `group_by_rule`, `git_status`, `git_diff`, `dedup`) and 19 embedded built-in rules; user-configurable via `filters.toml` |
+| `filter` | Output filtering pipeline — unified declarative TOML engine with 9 strategy types (`strip_noise`, `truncate`, `keep_matching`, `strip_annotated`, `test_summary`, `group_by_rule`, `git_status`, `git_diff`, `dedup`) and 25 embedded built-in rules; user-configurable via a `filters.toml` placed next to `config.toml` |
 | `permissions` | Permission checks for tool invocation |
 | `audit` | `AuditLogger` — tool execution audit trail; `EgressEvent` with per-hop emission for outbound network requests and JSONL egress records |
 | `registry` | Tool registry and discovery |
-| `trust_level` | `TrustLevel` enum — four-tier trust model (`Trusted`, `Verified`, `Quarantined`, `Blocked`) with severity ordering and `min_trust` helper |
+| `trust_level` | Re-exports `zeph_common::SkillTrustLevel` — four-tier trust model (`Trusted`, `Verified`, `Quarantined`, `Blocked`; `Quarantined` is the `Default`) |
+| `risk_chain` | `RiskChainAccumulator` — cross-turn attack-chain detection. Records each invocation's `RiskTag`s and returns a `RiskChainVerdict` when a sequence forms a known dangerous chain. Window configurable via `[tools.shell] risk_chain_window_turns` (falls back to `DEFAULT_CROSS_TURN_WINDOW_TURNS` = 3) |
+| `scope` | `ScopedToolExecutor` / `ToolScope` — task-type capability scoping over fully-qualified tool ids; built via `build_scoped_executor` from `[security.capability_scopes]` |
 | `trust_gate` | Trust-based tool access control |
-| `anomaly` | `AnomalyDetector` — sliding-window failure rate detection; integrated into the agent tool execution pipeline — records every tool outcome, emits `Severity::Critical` when the failure rate exceeds `failure_threshold` in the last `window_size` executions, and auto-blocks the tool via the trust system |
+| `anomaly` | `AnomalyDetector` — sliding-window error-rate detection over the last `window_size` tool outcomes. Emits `AnomalySeverity::Warning` at `error_threshold` and `AnomalySeverity::Critical` at `critical_threshold`; blocked executions count as errors. Reporting only — blocking is the trust/policy layer's job |
 | `schema_filter` | `ToolSchemaFilter` — dynamic tool schema filtering via embedding similarity; selects top-K relevant tools per query. `ToolDependencyGraph` — dependency graph with `requirements_met()` gate preventing tool execution until prerequisites are completed; `DependencyExclusion` marks tools excluded by unmet deps |
 | `cache` | `ToolResultCache` — in-memory LRU cache for deterministic tool results with TTL expiry; `CacheKey` hashes tool name + args; `is_cacheable()` whitelist for safe-to-cache tools |
 | `tool_filter` | `ToolFilter<E>` — executor wrapper that suppresses specified tools from the LLM tool set |
 | `executor_delegate` | Forwarding macros (`tool_executor_forward!`, `tool_executor_no_inner_defaults!`, and their `erased_*` counterparts) that implement the required `ToolExecutor`/`ErasedToolExecutor` methods for wrapper and leaf executors, respectively |
-| `overflow` | (removed — overflow storage migrated to SQLite in `zeph-memory`) |
 | `shell::transaction` | Transactional shell executor — snapshot/rollback filesystem state around shell commands; captures pre-execution state and reverts on failure or user request |
 | `adversarial_policy` | Adversarial policy agent — pre-execution LLM validation that evaluates tool calls for safety before dispatch |
 | `adversarial_gate` | `AdversarialPolicyGateExecutor` — executor wrapper that routes tool calls through the adversarial policy agent before execution |
 | `policy_gate` | Policy-based tool access control gate |
 | `error_taxonomy` | Tool invocation phase taxonomy — classifies errors by execution phase for structured diagnostics |
-| `config` | Per-tool TOML configuration; `OverflowConfig` for `[tools.overflow]` section (threshold, retention_days, max_overflow_bytes — note: `dir` field removed, overflow storage is now SQLite-backed); `AnomalyConfig` for `[tools.anomaly]` section (enabled, window_size, failure_threshold, auto_block); `TafcConfig` for `[tools.tafc]` section; `ResultCacheConfig` for `[tools.result_cache]`; `DependencyConfig` + `ToolDependency` for `[tools.dependencies]`; `FileConfig` for `[tools.file]` section (deny_read/allow_read glob lists); `AuthorizationConfig` for `[tools.authorization]` (OAP declarative authorization rules); `max_tool_calls_per_session: Option<u32>` on `ToolsConfig` |
+| `config` | Per-tool TOML configuration (types live in `zeph-config`, re-exported here). `OverflowConfig` for `[tools.overflow]` (`threshold`, `retention_days`, `max_overflow_bytes`, `max_per_call_override`; overflow storage is SQLite-backed in `zeph-memory`); `AnomalyConfig` for `[tools.anomaly]` (`enabled`, `window_size`, `error_threshold`, `critical_threshold`, `reasoning_model_warning`); `TafcConfig` for `[tools.tafc]`; `ResultCacheConfig` for `[tools.result_cache]` (`enabled`, `ttl_secs`); `DependencyConfig` + `ToolDependency` for `[tools.dependencies]` (`enabled`, `boost_per_dep`, `max_total_boost`, `rules`); `FileConfig` for `[tools.file]` (`deny_read`/`allow_read` glob lists); `AuthorizationConfig` for `[tools.authorization]` (OAP declarative rules); `SpeculativeConfig` for `[tools.speculative]`; `SearchConfig` for `[tools.search]`; `max_tool_calls_per_session: Option<u32>` on `ToolsConfig` |
 
-**Re-exports:** `CompositeExecutor`, `AuditLogger`, `AnomalyDetector`, `TrustLevel`, `ToolResultCache`, `CacheKey`, `ToolSchemaFilter`, `ToolDependencyGraph`, `ToolFilter`
+**Re-exports:** `CompositeExecutor`, `AuditLogger`, `AnomalyDetector`, `SkillTrustLevel`, `ToolResultCache`, `CacheKey`, `ToolSchemaFilter`, `ToolDependencyGraph`, `ToolFilter`, `RiskChainAccumulator`, `ScopedToolExecutor`, `ExecutionContext`
 
 ## Structured shell output
 
@@ -52,15 +53,17 @@ Defines the `ToolExecutor` trait for sandboxed tool invocation and ships concret
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `deny_read` | `Vec<String>` | `[]` | Glob patterns that always deny reads, evaluated first |
-| `allow_read` | `Vec<String>` | `[]` | Glob patterns that allow reads after deny check (empty = allow all) |
+| `deny_read` | `Vec<String>` | `[]` | Glob patterns denied for reading. Empty = the sandbox is inactive and every path inside `allowed_paths` is readable |
+| `allow_read` | `Vec<String>` | `[]` | Exception list — glob patterns re-allowed after a `deny_read` match |
 
-Deny takes precedence over allow (deny-then-allow evaluation). A path matching a deny glob is blocked even if it also matches an allow glob.
+`allow_read` is an **exception list layered on top of `deny_read`**, not an independent
+allowlist: a read is rejected only when the canonical path matches `deny_read` **and** does not
+match `allow_read`. With `deny_read` empty the sandbox never fires, whatever `allow_read` says.
 
 ```toml
 [tools.file]
-deny_read  = ["**/.env", "**/secrets/**"]
-allow_read = ["/home/user/projects/**"]
+deny_read  = ["**/*.env", "**/secrets/**"]
+allow_read = ["**/public.env"]   # carve-out from the deny above
 ```
 
 ## Security
@@ -111,41 +114,113 @@ per query while preserving SSRF address-pinning on every resolution change.
 
 ## Anomaly detection configuration
 
-`AnomalyDetector` is enabled by default when `tools.anomaly.enabled = true`. Configure via `[tools.anomaly]` in `config.toml`:
+`AnomalyDetector` is enabled by default. Configure via `[tools.anomaly]` in `config.toml`:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | bool | `false` | Activate anomaly detection in the tool execution pipeline |
-| `window_size` | usize | `20` | Rolling window of last N tool executions to evaluate |
-| `failure_threshold` | f64 | `0.7` | Fraction of failures in the window to trigger a Critical alert |
-| `auto_block` | bool | `true` | Automatically block a tool via trust system on Critical alert |
+| `enabled` | bool | `true` | Activate anomaly detection in the tool execution pipeline |
+| `window_size` | usize | `10` | Rolling window of last N tool executions to evaluate |
+| `error_threshold` | f64 | `0.5` | Error-rate fraction in the window that raises a WARN |
+| `critical_threshold` | f64 | `0.8` | Error-rate fraction in the window that raises a CRIT |
+| `reasoning_model_warning` | bool | `true` | Emit a WARN when a reasoning model produces a quality failure |
 
 ```toml
 [tools.anomaly]
-enabled = true
-window_size = 20
-failure_threshold = 0.7
-auto_block = true
+enabled                 = true
+window_size             = 10
+error_threshold         = 0.5
+critical_threshold      = 0.8
+reasoning_model_warning = true
 ```
 
-## TrajectorySentinel and ScopedToolExecutor
+## Cross-turn risk chains
 
-`TrajectorySentinel` monitors the sequence of tool calls across a session and flags anomalous capability escalation patterns — for example, when a tool chain attempts to access resources outside the declared project scope. Alerts are recorded as `SecurityEvent::Quarantine` entries in the metrics ring buffer.
+`RiskChainAccumulator` records the `RiskTag`s of each shell invocation and returns a
+`RiskChainVerdict` when a sequence of calls forms a known dangerous chain — an attack split
+across several turns that no single call would trip on its own. `advance_turn` is called at each
+turn boundary and prunes any recorded call older than the configured window.
 
-`ScopedToolExecutor` wraps any `ToolExecutor` and enforces a declared capability scope: a set of allowed filesystem paths and network hosts. Tool calls that would access resources outside the scope are blocked before execution, preventing lateral movement even when the underlying executor has broader permissions.
-
-Configure via `[tools.scoped]`:
+The window is configurable via `[tools.shell] risk_chain_window_turns`:
 
 ```toml
-[tools.scoped]
-enabled        = true
-allowed_paths  = ["/home/user/project", "/tmp/zeph"]
-allowed_hosts  = ["api.openai.com", "qdrant.example.com"]
+[tools.shell]
+risk_chain_window_turns = 3   # Option<u64>; omit to use DEFAULT_CROSS_TURN_WINDOW_TURNS (3)
 ```
 
-## Per-turn ExecutionContext
+A wider window catches slower-paced chains at the cost of holding more history and a higher
+false-positive rate; the default of `3` is deliberately narrow. `--migrate-config` adds the key
+to `[tools.shell]` as a commented-out default for existing configs.
 
-`ShellExecutor` receives a `ExecutionContext` on each turn that carries the active goal ID, the current skill name, and the sub-agent identity (if running inside a sub-agent). This context is recorded in every `AuditEntry`, enabling per-goal and per-skill attribution in the audit trail.
+## Capability scoping (`ScopedToolExecutor`)
+
+`ScopedToolExecutor` wraps any `ToolExecutor` and filters both `tool_definitions()` (the tool
+list surfaced to the LLM) and `execute_tool_call()` (the dispatch path) down to an
+operator-declared allow-list of **fully-qualified tool ids** — not filesystem paths or network
+hosts. It sits outermost in the wrapper chain, so an out-of-scope call short-circuits before
+policy evaluation:
+
+```text
+ScopedToolExecutor → PolicyGateExecutor → TrustGateExecutor → CompositeExecutor → …
+```
+
+Tool ids carry a namespace prefix before scope resolution: `builtin:`, `skill:<name>/`,
+`mcp:<server_id>/`, `acp:<peer>/`, `a2a:<peer>/`. Built-in executors register unqualified ids
+(`"bash"`, `"read"`) that are normalised to `builtin:<id>` at the scope boundary.
+
+Named scopes are keyed by task type and configured under `[security.capability_scopes]`
+(`CapabilityScopesConfig`), then compiled by `build_scoped_executor`:
+
+```toml
+[security.capability_scopes]
+default_scope = "general"
+strict        = false
+
+[security.capability_scopes.general]
+patterns = ["*"]
+
+[security.capability_scopes.research]
+patterns = ["builtin:fetch", "builtin:web_scrape", "builtin:search_*", "builtin:read"]
+
+[security.capability_scopes.code_edit]
+patterns = ["builtin:read", "builtin:edit", "builtin:write", "builtin:shell", "builtin:glob"]
+```
+
+Pattern strictness differs per namespace: a zero-match `builtin:`/`skill:` glob is a fatal
+`ScopeError::DeadPattern`, while `mcp:`/`acp:`/`a2a:` globs are provisional
+(`ScopeWarning::ProvisionalDeadPattern`) and re-resolved when tools register dynamically. A glob
+matching the entire registry without an explicit `general` opt-in is `ScopeError::AccidentallyFull`.
+
+> [!NOTE]
+> The session-wide trajectory risk level computed outside this crate (spec-050) reaches the tool
+> layer as `policy_gate::TrajectoryRiskSlot` — a shared `u8` (`0` Calm … `3` Critical). At `3`,
+> `check_policy` downgrades an `Allow` decision to `Deny`. `zeph-tools` only reads this slot; the
+> analysis itself lives in `zeph-memory`/`zeph-core`.
+
+## Per-call ExecutionContext
+
+`ExecutionContext` is attached to a `ToolCall` to override the **working directory and
+environment variables** for that specific call. When absent, `ShellExecutor` uses the process CWD
+and inherited process environment.
+
+```rust
+use zeph_tools::ExecutionContext;
+
+let ctx = ExecutionContext::new()
+    .with_name("repo")
+    .with_cwd("/workspace/myproject")
+    .with_env("CARGO_TARGET_DIR", "/tmp/cargo-target");
+```
+
+`name` matches an entry in the `[[execution.environments]]` config table, from which unspecified
+fields are looked up. Resolution precedence, highest first: the call's own `context`, the named
+registry entry, skill env (env only), the `default_env` registry entry, then the process CWD /
+inherited env minus the blocklist.
+
+> [!IMPORTANT]
+> Contexts built through the public API are **untrusted**: their env overrides are re-filtered
+> through the executor's `env_blocklist` after every merge step, so an LLM-controlled caller
+> cannot reintroduce a blocked variable. Only `ExecutionContext::trusted_from_parts` (crate-internal,
+> used for operator-authored TOML) produces a trusted context that bypasses that final filter.
 
 ## TAFC (Think-Augmented Function Calling)
 
@@ -187,15 +262,24 @@ Only the first attempt counts — retries of a failed call do not consume quota.
 enabled = true
 
 [[tools.authorization.rules]]
-action = "allow"
-tools  = ["read_file", "list_directory"]
+effect = "allow"
+tool   = "read_file"
 
 [[tools.authorization.rules]]
-action = "deny"
-tools  = ["shell"]
+effect = "allow"
+tool   = "list_*"          # `tool` is a glob over the tool id
+
+[[tools.authorization.rules]]
+effect = "deny"
+tool   = "shell"
 ```
 
-Rules are merged into `PolicyEnforcer` at startup. `[tools.policy]` rules always take precedence — use `policy` for safety-critical deny rules and `authorization` for capability grants.
+Each rule takes a single `tool` glob plus an `effect` of `"allow"` or `"deny"`; optional
+`paths`, `env`, `trust_level`, `args_match`, and `capabilities` narrow when it fires.
+
+Rules are appended to `PolicyEnforcer` after the `[tools.policy]` rules at startup, so
+`[tools.policy]` always takes precedence — use `policy` for safety-critical deny rules and
+`authorization` for capability grants.
 
 ## Caller identity
 
@@ -221,10 +305,10 @@ boundary (e.g. MCP `ContentBlock::Image` passthrough, spec-072), introducing a `
 `zeph-llm` dependency edge. `ImageData` has a redacting `Debug` impl so raw image bytes never
 reach logs or debug dumps.
 
-> [!NOTE]
-> As of this release `media` is never populated by any executor — this is foundational,
-> behavior-preserving plumbing only. Decode/validate/attach logic, the persistence strip,
-> vision-tier routing, and the config/CLI/TUI surface are deferred to follow-up work.
+`media` is populated by `zeph-mcp`'s `McpToolExecutor` when the server has
+`media_passthrough = true` and a `zeph_sanitizer::MediaSanitizer` is attached (`[mcp.media]`).
+Every other executor leaves it empty, and the rendered text placeholder always remains as a
+fallback regardless of whether an image is attached.
 
 ## Features
 

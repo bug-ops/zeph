@@ -44,7 +44,9 @@ println!("{}", body);
 | `prompt` | Skill-to-prompt formatting (`full`, `compact`, `auto` modes via `SkillPromptMode`); injects `reliability="N%"` and `uses="N"` health XML attributes |
 | `manager` | `SkillManager` — install, remove, verify, and list external skills; `install_from_path` / `install_from_url` copy packages with `SkillTrustLevel::Quarantined` default and strip `.bundled` markers to prevent trust escalation |
 | `rl_head` | `RoutingHead` — 2-layer MLP trained with REINFORCE for skill re-ranking; `ForwardCache` caches forward-pass activations for the gradient update; shared via `Arc<Mutex<_>>` and persisted to SQLite |
-| `generator` | `SkillGenerator` — LLM-powered natural language skill generation from user descriptions; `SkillGenerationRequest` / `GeneratedSkill` types |
+| `generator` | `SkillGenerator` — LLM-powered natural language skill generation from user descriptions; `SkillGenerationRequest` / `GeneratedSkill` types; `write_quarantined` stages a draft under `_quarantine/` (see [Quarantine enforcement](#quarantine-enforcement)) |
+| `trace_extractor` | Extracts reusable skills from completed execution traces; `TraceExtractionResult::saved_skill_paths` reports each draft under the name actually written to disk |
+| `proactive` | `ProactiveExplorer` / `DomainLabel` — proactive skill surfacing ahead of explicit invocation |
 | `miner` | `SkillMiner` — GitHub repository mining for skill discovery (feature `miner`) |
 | `stem` | STEM heuristic — detects repeated tool-call patterns and triggers automatic skill generation |
 | `erl` | Experiential Reflective Learning — extracts heuristics from completed execution traces |
@@ -74,7 +76,13 @@ Skills accumulate outcomes over time. After each use, the Wilson score lower-bou
 
 The `/skill reject <name> <reason>` command records a typed `FailureKind` rejection immediately, persisting it to the `outcome_detail` column (migration 018).
 
-Feedback signals are detected by `FeedbackDetector` in `zeph-core`, which now supports 7 languages (English, Russian, Spanish, German, French, Portuguese, Chinese). Multi-language implicit correction detection drives skill trust transitions regardless of the user's language.
+Feedback signals are detected by `FeedbackDetector` in `zeph-agent-feedback`, which supports 7 languages (English, Russian, Spanish, German, French, Chinese (Simplified), Japanese). Multi-language implicit correction detection drives skill trust transitions regardless of the user's language.
+
+## Quarantine enforcement
+
+Quarantine is enforced by the `skill_trust` database row, never by the `_quarantine/` directory name. The registry's directory scanner applies no path filtering — a `SKILL.md` under `_quarantine/` loads as an active skill like any other. `SkillGenerator::write_quarantined` therefore only writes the file; the caller MUST persist a `SkillTrustLevel::Quarantined` row for the name actually written to disk. Auto-generated drafts (STEM, ERL trace extraction, heuristic promotion) do this eagerly at generation time, so the first hot-reload finds an existing row to preserve instead of falling through to `skills.trust.default_level`.
+
+A Quarantined skill also never constrains a turn it was not explicitly invoked in: proactively matched Quarantined and Blocked skills are dropped from the active set before the weakest-link trust fold runs, so a merely-similar draft cannot deny tool access for the rest of the turn. Explicitly invoking a Quarantined skill does downgrade the turn's effective trust, as documented.
 
 ## Hybrid search configuration
 

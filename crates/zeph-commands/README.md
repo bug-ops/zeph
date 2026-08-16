@@ -19,6 +19,10 @@ startup.
 - `traits` — 15 per-domain subsystem-access sub-traits (`MemoryAccess`, `GraphAccess`, `ModelAccess`, `SkillAccess`, `PolicyAccess`, `SchedulerAccess`, `LspAccess`, `SessionControlAccess`, `McpAccess`, `OrchestrationAccess`, `SubagentAccess`, `IntegrationAccess`, `TrackingAccess`, `WorktreeAccess`, `MiscAccess`); `AgentAccess` is an empty marker supertrait over all 15 (blanket-impl'd) so `dyn AgentAccess` call sites are unchanged
 - `handlers` — concrete handler implementations (session, debug, skill, mcp, plan, …)
 - `commands` — static `COMMANDS` metadata table used by `/help`
+- `transcript` — [`TranscriptFormatter`] / [`TranscriptEntry`] / [`TranscriptRole`], the single
+  source of truth for rendering bounded conversation history into role-prefixed, tool-collapsed
+  text. Both the flat-text channels (CLI, Telegram, Discord, Slack) and the TUI backfill path
+  reuse it, so `/history` renders identically everywhere
 
 ## Design
 
@@ -123,6 +127,16 @@ Commands are grouped into categories for `/help` output:
 |---------|-------------|---------|
 | `cocoon` | Enables the `/cocoon` handler (Cocoon sidecar status and model listing) | No |
 | `profiling` | Extra `tracing` instrumentation spans for dispatch latency profiling | No |
+
+## Installation
+
+```bash
+cargo add zeph-commands
+```
+
+## Documentation
+
+Full documentation: <https://bug-ops.github.io/zeph/>
 
 ## License
 
