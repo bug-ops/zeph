@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `release.yml`: removed `Swatinem/rust-cache` and `sccache` from the `build-binaries` job.
+  Release builds only run on `v*` tag push, infrequently enough that any cache entry written
+  by the previous release has almost certainly been evicted from the shared 10 GiB GHA cache
+  (LRU + 7-day unused-entry eviction) by the time the next release runs, making the cache a
+  cold miss anyway — while still costing multi-GB writes against the shared cache quota that
+  `ci.yml` depends on for its frequent, cache-effective runs.
+
 ## [0.22.4] - 2026-08-16
 
 ### Added
