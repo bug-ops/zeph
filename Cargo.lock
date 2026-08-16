@@ -11104,7 +11104,7 @@ dependencies = [
 
 [[package]]
 name = "zeph"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -11190,7 +11190,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-a2a"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -11221,7 +11221,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-acp"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-schema",
@@ -11265,7 +11265,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-agent-context"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "chrono",
  "futures",
@@ -11290,7 +11290,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-agent-feedback"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "regex",
  "schemars 1.2.2",
@@ -11305,7 +11305,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-agent-persistence"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -11324,11 +11324,11 @@ dependencies = [
 
 [[package]]
 name = "zeph-agent-tools"
-version = "0.22.3"
+version = "0.22.4"
 
 [[package]]
 name = "zeph-bench"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "clap",
  "schemars 1.2.2",
@@ -11350,7 +11350,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-channels"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "axum",
  "criterion",
@@ -11379,7 +11379,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-commands"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
@@ -11390,7 +11390,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-common"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "axum",
  "blake3",
@@ -11429,7 +11429,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-config"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "dirs",
  "insta",
@@ -11450,7 +11450,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-context"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "blake3",
  "criterion",
@@ -11471,7 +11471,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-core"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "age",
  "base64 0.23.1",
@@ -11543,7 +11543,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-db"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "regex",
  "sqlx",
@@ -11560,7 +11560,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-durable"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "blake3",
  "bytes",
@@ -11586,7 +11586,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-experiments"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "futures",
  "ordered-float 5.3.0",
@@ -11610,7 +11610,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-gateway"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "axum",
  "http-body-util",
@@ -11627,7 +11627,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-index"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "futures",
  "ignore",
@@ -11660,7 +11660,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-llm"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "async-stream",
  "audioadapter-buffers",
@@ -11710,7 +11710,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-mcp"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -11751,7 +11751,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-memory"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "arc-swap",
  "blake3",
@@ -11793,7 +11793,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-orchestration"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "blake3",
  "chrono",
@@ -11824,7 +11824,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-plugins"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "dirs",
  "flate2",
@@ -11851,7 +11851,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-sanitizer"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "image",
  "parking_lot",
@@ -11874,7 +11874,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-scheduler"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "chrono",
  "cron",
@@ -11897,7 +11897,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-session"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "rustix",
  "serde",
@@ -11918,7 +11918,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-skills"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "anyhow",
  "blake3",
@@ -11955,7 +11955,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-subagent"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "dirs",
  "indoc",
@@ -11987,7 +11987,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-tools"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "arc-swap",
  "dashmap",
@@ -12032,7 +12032,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-tui"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "arboard",
  "base64 0.23.1",
@@ -12083,7 +12083,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-vault"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "age",
  "proptest",
@@ -12100,7 +12100,7 @@ dependencies = [
 
 [[package]]
 name = "zeph-worktree"
-version = "0.22.3"
+version = "0.22.4"
 dependencies = [
  "parking_lot",
  "serde",

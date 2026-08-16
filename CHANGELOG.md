@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.22.4] - 2026-08-16
+
 ### Added
 
 - `zeph-config`, `zeph-tools`: `RiskChainAccumulator`'s cross-turn multi-step attack-chain
@@ -201,6 +203,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `src/serve/agent_factory.rs`: `cargo nextest run --features full` could crash with a
+  stack overflow (`SIGABRT`) on
+  `serve::agent_factory::tests::build_combined_deps_wires_policy_gate_through_to_session_agent`
+  (found during v0.22.4 release-prep test run) — the same defect class already fixed once for
+  a sibling test in the same module (issue #6699): the test builds a full `Agent` via
+  `build_combined_deps` -> `build_agent_factory` under `--features full`'s unboxed
+  `AnyProvider` variants (`Candle`/`Gonka`/`Cocoon`), reaching the same `VigilGate::try_new`
+  stack depth that overflows the default 2 MiB test-thread stack in an unoptimized build.
+  #6699's fix only wrapped the one test it was filed against, leaving this one — added
+  earlier in PR #6007, unrelated to this release's own changes — unprotected; CI's `test` job
+  never caught it because it runs the curated feature set (`desktop,ide,server,chat,pdf,
+  scheduler`), not `full`, so the deeper `AnyProvider` frames never materialize there. Fixed
+  the same way as #6699: the test body now runs on a dedicated thread with a 32 MiB stack
+  (`TEST_THREAD_STACK_SIZE`, shared with the existing fix) instead of directly under
+  `#[tokio::test]`.
 - `zeph-mcp`: bumped `rmcp` from `2.2.0` to `3.1.0`, fixing the following breaking API
   changes in `rmcp`'s `transport::auth` and `model` modules so the workspace builds again:
   - `OAuthHttpClientError` became a type alias for `Box<dyn Error + Send + Sync>` (previously
@@ -18016,7 +18033,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 
 [0.16.0]: https://github.com/bug-ops/zeph/compare/v0.15.3...v0.16.0
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.22.3...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.22.4...HEAD
+[0.22.4]: https://github.com/bug-ops/zeph/compare/v0.22.3...v0.22.4
 [0.22.3]: https://github.com/bug-ops/zeph/compare/v0.22.2...v0.22.3
 [0.22.2]: https://github.com/bug-ops/zeph/compare/v0.22.1...v0.22.2
 [0.22.1]: https://github.com/bug-ops/zeph/compare/v0.22.0...v0.22.1
