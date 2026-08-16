@@ -2580,9 +2580,38 @@ mod tests {
     /// gated executor) with a `[tools.policy]` deny rule configured, and asserts a `shell` call
     /// is blocked — proving combined mode's `/sessions` agents get the same gate wrap as
     /// standalone serve (this test), not merely a code-sharing assertion in a doc comment.
+    ///
+    /// Runs on a dedicated large-stack thread, same fix and same root cause as
+    /// [`build_agent_factory_gates_trust_state_independently_per_session`] (#6699): this test
+    /// also builds a full `Agent` (via `build_combined_deps` -> `build_agent_factory`) under
+    /// `--features full`'s unboxed `AnyProvider` variants, reaching the same
+    /// `VigilGate::try_new` stack depth that overflows the default 2 MiB test-thread stack in
+    /// an unoptimized build. #6699's fix only wrapped the one test it was filed against; this
+    /// one hits the identical failure independently (confirmed via direct repro).
     #[cfg(all(feature = "acp-http", feature = "session"))]
-    #[tokio::test]
-    async fn build_combined_deps_wires_policy_gate_through_to_session_agent() {
+    #[test]
+    fn build_combined_deps_wires_policy_gate_through_to_session_agent() {
+        let result = std::thread::Builder::new()
+            .name("combined-deps-policy-gate-test".into())
+            .stack_size(TEST_THREAD_STACK_SIZE)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to build test runtime")
+                    .block_on(
+                        build_combined_deps_wires_policy_gate_through_to_session_agent_body(),
+                    );
+            })
+            .expect("failed to spawn test thread")
+            .join();
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    #[cfg(all(feature = "acp-http", feature = "session"))]
+    async fn build_combined_deps_wires_policy_gate_through_to_session_agent_body() {
         let mut config =
             zeph_core::config::Config::load(std::path::Path::new("/nonexistent")).unwrap();
         config.llm.providers = vec![zeph_core::config::ProviderEntry {
