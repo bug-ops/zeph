@@ -76,6 +76,7 @@ Note: Enabling this increases network traffic between parent and sub-agents. Onl
 
 - **Chat panel** (left 70%): bottom-up message feed with full markdown rendering (bold, italic, code blocks, lists, headings), scrollbar with proportional thumb, and scroll indicators (▲/▼). Mouse wheel scrolling supported
 - **Side panels** (right 30%): skills, memory, resources, and security metrics — hidden on terminals < 80 cols. The security panel replaces the sub-agents panel when recent events exist (see [Security Indicators](#security-indicators))
+- **Input separator row**: shows busy spinner and current activity verb (e.g., "Executing tool: shell", "Searching memory…") when the agent is busy; otherwise empty
 - **Input line**: always visible, supports multiline input via `Shift+Enter` or `Ctrl+J`, and expands up to 3 visible lines. Shows `[+N queued]` badge when messages are pending
 - **Status bar**: mode indicator, skill count, token usage, [security indicators](#security-indicators), uptime
 - **Splash screen**: colored block-letter "ZEPH" banner on startup
@@ -88,7 +89,7 @@ Note: Enabling this increases network traffic between parent and sub-agents. Onl
 |-----|--------|
 | `i` | Enter Insert mode (focus input) |
 | `q` | Quit application |
-| `Ctrl+C` | Quit application |
+| `Ctrl+C` | Cancel current agent turn if busy; when idle, requires double-press within ~500ms to quit (shows prompt: "Press Ctrl+C again to exit") |
 | `Up` / `k` | Scroll chat up |
 | `Down` / `j` | Scroll chat down |
 | `Page Up/Down` | Scroll chat one page |
@@ -111,10 +112,10 @@ Note: Enabling this increases network traffic between parent and sub-agents. Onl
 | `Shift+Enter` | Insert newline (multiline input) |
 | `Ctrl+J` | Insert newline (multiline input) |
 | `/` | Open slash-command autocomplete (when input is empty) |
-| `@` | Open file picker (fuzzy file search) |
+| `@` | Open mention picker (inline popup with category tabs: All, Files, Skills, Agents) |
 | `Ctrl+R` | Open reverse search in session prompt history |
 | `Escape` | Switch to Normal mode |
-| `Ctrl+C` | Quit application |
+| `Ctrl+C` | Cancel current agent turn if busy; when idle, requires double-press within ~500ms to quit |
 | `Ctrl+U` | Clear input line |
 | `Ctrl+K` | Clear message queue |
 | `Ctrl+P` | Open command palette |
@@ -140,17 +141,24 @@ Typing `/` on an empty input line opens an inline autocomplete dropdown above th
 
 The autocomplete reuses the same command registry as the command palette (`Ctrl+P`). All 51 slash commands are searchable by prefix or keyword.
 
-### File Picker
+### Mention Picker
 
-Typing `@` in Insert mode opens a fuzzy file search popup above the input area. The picker indexes all project files (respecting `.gitignore`) and filters them in real time as you type.
+Typing `@` in Insert mode opens an inline popup above the input area with four category tabs: **All**, **Files**, **Skills**, and **Agents**. This allows you to reference files, skills, and agent definitions without typing their full names.
 
 | Key | Action |
 |-----|--------|
-| Any character | Filter files by fuzzy match |
-| `Up` / `Down` | Navigate the result list |
-| `Enter` / `Tab` | Insert selected file path at cursor and close |
+| `Left` / `Right` | Cycle between category tabs (All → Files → Skills → Agents → All) |
+| `Up` / `Down` | Navigate entries within the current category |
+| `Enter` / `Tab` | Insert the selected reference at cursor and close |
+| Any character | Filter entries by fuzzy match (within the active tab) |
 | `Backspace` | Remove last query character (dismisses if query is empty) |
 | `Escape` | Close picker without inserting |
+
+**Tab contents:**
+- **All** — combined results from Files, Skills, and Agents (default category)
+- **Files** — project files respecting `.gitignore`, capped at 50,000 paths
+- **Skills** — loaded and available skills with descriptions
+- **Agents** — registered sub-agent definitions with routing hints
 
 All other keys are blocked while the picker is visible.
 

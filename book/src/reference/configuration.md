@@ -537,6 +537,8 @@ allowed_commands = []
 allowed_paths = []          # Directories shell can access (empty = cwd only)
 allow_network = true        # false blocks curl/wget/nc
 confirm_patterns = ["rm ", "git push -f", "git push --force", "drop table", "drop database", "truncate ", "$(", "`", "<(", ">(", "<<<", "eval "]
+risk_chain_window_turns = 3 # Turns a tool call stays "live" for multi-step attack-chain detection (default: 3)
+                            # Example: turn 1 → read sensitive file, turn 2 → network egress (both within 3 turns → blocked)
 
 [tools.file]
 allowed_paths = []          # Directories file tools can access (empty = cwd only)

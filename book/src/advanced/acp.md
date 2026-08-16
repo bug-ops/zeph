@@ -1486,4 +1486,4 @@ New read-only commands in TUI command palette:
 
 ## Protocol Version
 
-Zeph targets `agent-client-protocol` version 0.11.1 with schema version 0.11.3 and supports all ACP 0.11 builder API features.
+Zeph targets `agent-client-protocol` version 2.0.0 and supports all ACP 2.0 protocol features.

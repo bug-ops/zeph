@@ -215,7 +215,7 @@ Report findings as a structured list with severity (critical/warning/info).
 | `hooks.PreToolUse` | HookMatcher[] | `[]` | Hooks fired before tool execution (see [Hooks](#hooks)) |
 | `hooks.PostToolUse` | HookMatcher[] | `[]` | Hooks fired after tool execution (see [Hooks](#hooks)) |
 
-> **Breaking Change (v0.22.3):** Sub-agent frontmatter files with a misspelled key in the `tools:` or `permissions:` sections (e.g., `pemission_mode:`, `alow:`) now fail to load with a parse error instead of silently falling back to defaults. This is intentional to catch configuration errors early. Review and fix any typos in existing sub-agent definitions — keys are case-sensitive.
+> **Breaking Change (v0.22.4):** Sub-agent frontmatter files with a misspelled key in the `tools:` or `permissions:` sections (e.g., `pemission_mode:`, `alow:`) now fail to load with a parse error instead of silently falling back to defaults. This is intentional to catch configuration errors early. Review and fix any typos in existing sub-agent definitions — keys are case-sensitive.
 
 If neither `tools.allow` nor `tools.deny` is specified, the sub-agent inherits all tools from the main agent.
 
