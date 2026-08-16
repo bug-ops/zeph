@@ -82,6 +82,7 @@ Download from [GitHub Releases](https://github.com/bug-ops/zeph/releases/latest)
 | macOS | x86_64 | `zeph-x86_64-apple-darwin.tar.gz` |
 | macOS | aarch64 | `zeph-aarch64-apple-darwin.tar.gz` |
 | Windows | x86_64 | `zeph-x86_64-pc-windows-msvc.zip` |
+| Windows | aarch64 | `zeph-aarch64-pc-windows-msvc.zip` |
 
 ## Docker
 
