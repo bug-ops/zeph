@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(feature = "scheduler")]
+use crate::agent::tool_execution::summarize_tool_input;
 use crate::agent::tool_execution::{
-    normalize_for_doom_loop, summarize_tool_input, tool_def_to_definition, truncate_utf8,
+    normalize_for_doom_loop, tool_def_to_definition, truncate_utf8,
 };
 use zeph_agent_tools::doom_loop_hash;
 
@@ -155,12 +157,17 @@ fn doom_loop_hash_empty_string() {
 }
 
 // ── summarize_tool_input / collect_json_strings (grounding args_summary source) ────────
+// summarize_tool_input is `#[cfg(feature = "scheduler")]` (its sole caller is
+// scheduler-gated), so these tests are gated the same way rather than the whole module —
+// the module also covers other, unconditionally-compiled pure helpers above.
 
+#[cfg(feature = "scheduler")]
 #[test]
 fn summarize_tool_input_empty_object_returns_none() {
     assert_eq!(summarize_tool_input(&serde_json::json!({})), None);
 }
 
+#[cfg(feature = "scheduler")]
 #[test]
 fn summarize_tool_input_all_numeric_returns_none() {
     // Numeric/bool/null leaves are not strings — nothing to flatten.
@@ -168,12 +175,14 @@ fn summarize_tool_input_all_numeric_returns_none() {
     assert_eq!(summarize_tool_input(&input), None);
 }
 
+#[cfg(feature = "scheduler")]
 #[test]
 fn summarize_tool_input_realistic_command_shape() {
     let input = serde_json::json!({ "command": "cargo test" });
     assert_eq!(summarize_tool_input(&input), Some("cargo test".to_string()));
 }
 
+#[cfg(feature = "scheduler")]
 #[test]
 fn summarize_tool_input_flattens_nested_object_and_array_in_key_order() {
     // The workspace's serde_json build has `preserve_order` enabled (pulled in transitively),
@@ -189,6 +198,7 @@ fn summarize_tool_input_flattens_nested_object_and_array_in_key_order() {
     );
 }
 
+#[cfg(feature = "scheduler")]
 #[test]
 fn summarize_tool_input_deeply_nested_object_flattens_all_string_leaves() {
     let input = serde_json::json!({

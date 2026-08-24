@@ -773,6 +773,10 @@ pub(crate) fn tool_def_to_definition(def: &zeph_tools::registry::ToolDef) -> Too
 /// so [`zeph_orchestration::verifier`]'s substring matching isn't defeated by JSON punctuation
 /// wrapping an otherwise-verbatim command string. Returns `None` when `input` carries no string
 /// leaves (e.g. `{}` or all-numeric params) — treated as "args not captured" by grounding.
+///
+/// Gated on `scheduler`: the sole caller, `scheduler_loop`, is itself `#[cfg(feature =
+/// "scheduler")]` (`agent/mod.rs`).
+#[cfg(feature = "scheduler")]
 pub(crate) fn summarize_tool_input(input: &serde_json::Value) -> Option<String> {
     let mut parts = Vec::new();
     collect_json_strings(input, &mut parts);
@@ -783,6 +787,7 @@ pub(crate) fn summarize_tool_input(input: &serde_json::Value) -> Option<String> 
     }
 }
 
+#[cfg(feature = "scheduler")]
 fn collect_json_strings(value: &serde_json::Value, out: &mut Vec<String>) {
     match value {
         serde_json::Value::String(s) => out.push(s.clone()),
