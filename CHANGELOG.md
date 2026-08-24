@@ -43,6 +43,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to `"1.97"` (matches root `rust-version`). The rolling ref had silently picked up Rust
   1.98.0, whose new clippy lints broke ~105 pre-existing call sites across 8 crates,
   tracked in #6746.
+- `zeph-orchestration`: moved `ToolCallSummary` from the `llm-planning`-gated `verifier`
+  module into the always-compiled `scheduler` module — `TaskOutcome`/`SchedulerAction`
+  carry it unconditionally, so the crate failed to compile with `llm-planning` off.
+- `zeph-skills-miner`: wired `merge_threshold`/`merge_enabled` into `MiningConfig`'s
+  construction (previously missing entirely, failing to compile) and added the
+  corresponding fields to `SkillMiningConfig`.
+- `zeph-memory`: `sqlite`/`postgres` features now forward to the optional `zeph-scheduler`
+  dependency (`zeph-scheduler?/sqlite`, `zeph-scheduler?/postgres`) — `--features
+  sqlite,scheduler` previously failed to build in isolation.
+- `zeph` (binary): gated an unused `tracing::Instrument` import behind `tui+cocoon`
+  instead of `cocoon` alone — its only call site requires both.
+
+All four found and fixed via the new `feature-matrix` `cargo-hack` CI job (#6744) actually
+running for the first time, each masked previously by combined feature strings.
 
 ## [0.22.4] - 2026-08-16
 
