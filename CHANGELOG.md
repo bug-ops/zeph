@@ -37,6 +37,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Bumped `h2` 0.4.15 -> 0.4.19, resolving RUSTSEC-2026-0258 (unbounded empty DATA frames).
 
+### Fixed
+
+- `ci.yml`: pinned every `dtolnay/rust-toolchain` step's `toolchain:` from rolling `stable`
+  to `"1.97"` (matches root `rust-version`). The rolling ref had silently picked up Rust
+  1.98.0, whose new clippy lints broke ~105 pre-existing call sites across 8 crates,
+  tracked in #6746.
+
 ## [0.22.4] - 2026-08-16
 
 ### Added
