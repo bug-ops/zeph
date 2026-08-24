@@ -621,11 +621,27 @@ jobs:
     # crates/zeph-core/src/agent/tool_execution/mod.rs are dead code under a
     # sqlite-only/no-scheduler build, uncaught by every existing CI job.
     #
+    # Secondary, equally load-bearing benefit: cargo-hack invokes each workspace
+    # member via its own manifest path, so a crate is checked WITHOUT the feature
+    # unification that a `--workspace --features X` build applies across every
+    # sibling member. #3781 (a zeph-common test relied on tokio's rt-multi-thread
+    # flavor without declaring that tokio feature itself — it only compiled
+    # because the root `zeph` binary crate happened to enable it, and every CI
+    # job builds the whole workspace together) and #5838 ("zeph-orchestration:
+    # --features postgres never built in isolation in CI, feature-forward drift
+    # is structurally undetectable" — filed as a direct follow-up of #5596's
+    # postgres-forwarding bug) are both this same class, independent of leaf-
+    # feature isolation. #5838's own suggested fix ("a cheap loop/job that runs
+    # `cargo check -p <crate> --features postgres` for every crate... independent
+    # of the workspace-wide `full,postgres` build") describes cargo-hack's
+    # `--workspace --each-feature` mechanism without naming it.
+    #
     # This complements, not replaces, the curated-bundle jobs above: those verify
     # the *shipped* combinations (default, full, desktop/ide/server/chat/ml,
     # postgres/sqlite parity) build and pass tests; this verifies every declared
-    # leaf feature *individually* compiles — a combinatorial class the curated
-    # jobs cannot cover by construction.
+    # leaf feature *individually* compiles, in per-crate isolation from the rest
+    # of the workspace's feature declarations — a combinatorial class the
+    # curated jobs cannot cover by construction.
     #
     # Scope, deliberately bounded (verified empirically before adding this job):
     # - `check` only, not clippy/nextest/--all-targets — this is a compile-matrix
@@ -656,7 +672,7 @@ jobs:
     #   ~180 declared feature keys is not tractable.
     #
     # Partitioned 4-way via cargo-hack's native --partition (same pattern as the
-    # `test`/ci-non-linux.yml shards) — ~121 isolated checks total with the scope
+    # `test`/ci-non-linux.yml shards) — ~124 isolated checks total with the scope
     # above at the time this job was added. Re-tune the partition count from real
     # timing data the same way the `test` job went 8->12 (#6737) if wall-clock or
     # shard skew warrants it.
@@ -679,8 +695,14 @@ jobs:
           shared-key: "ci"
       - uses: taiki-e/install-action@d3ffff41d607059ff82b2330d913daf52a2eab5c # cargo-hack
       - name: cargo hack check (each leaf feature, isolated)
+        # --no-private is a no-op today (every workspace member currently has
+        # publish = true — this workspace has no publish = false crate to
+        # exclude) but documents intent and future-proofs the job if a crate is
+        # ever marked private: this gate exists to catch what a downstream
+        # `cargo add`/`cargo install` consumer of a *published* crate could hit,
+        # not internal-only scaffolding.
         run: |
-          cargo hack check --workspace --each-feature \
+          cargo hack check --workspace --each-feature --no-private \
             --ignore-unknown-features \
             --features sqlite \
             --exclude-features postgres,metal,cuda,default,full,desktop,ide,server,chat,ml,testing,sandbox,bench \
