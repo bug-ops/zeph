@@ -33,6 +33,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   above, since a cold `--features full` build (including the heavier candle/ML dependencies) now
   compiles from scratch on every release instead of reusing a warm cache.
 
+### Security
+
+- Bumped `h2` 0.4.15 -> 0.4.19, resolving RUSTSEC-2026-0258 (unbounded empty DATA frames).
+
 ## [0.22.4] - 2026-08-16
 
 ### Added
