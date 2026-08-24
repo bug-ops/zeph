@@ -49,7 +49,7 @@ jobs:
       - name: Fuzz ${{ matrix.target }}
         id: fuzz
         working-directory: fuzz
-        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=${{ matrix.budget }}
+        run: cargo +nightly fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=${{ matrix.budget }}
 
       - name: Minimize crash and file issue
         if: failure() && steps.fuzz.outcome == 'failure'
@@ -63,7 +63,7 @@ jobs:
             echo "no crash artifact found under artifacts/${FUZZ_TARGET}/, skipping issue filing"
             exit 0
           fi
-          cargo +nightly fuzz tmin "$FUZZ_TARGET" "$crash" || true
+          cargo +nightly fuzz tmin --target x86_64-unknown-linux-gnu "$FUZZ_TARGET" "$crash" || true
 
           title="fuzz: crash in ${FUZZ_TARGET}"
           existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
@@ -148,7 +148,7 @@ jobs:
         id: coverage
         continue-on-error: true
         working-directory: fuzz
-        run: cargo +nightly fuzz coverage ${{ matrix.target }}
+        run: cargo +nightly fuzz coverage --target x86_64-unknown-linux-gnu ${{ matrix.target }}
 
       # Uses `rust-cov` (the cargo-binutils-installed llvm-cov wrapper) directly rather than
       # the `cargo cov --` subcommand: cargo-binutils 0.4.0's `cargo cov`/`cargo profdata`

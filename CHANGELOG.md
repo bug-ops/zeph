@@ -57,6 +57,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 All four found and fixed via the new `feature-matrix` `cargo-hack` CI job (#6744) actually
 running for the first time, each masked previously by combined feature strings.
+- `fuzz.yml`: pinned `cargo fuzz run`/`tmin`/`coverage` to `--target x86_64-unknown-linux-gnu`.
+  `cargo-fuzz` defaults to `x86_64-unknown-linux-musl` even on a glibc host, and its AddressSanitizer
+  build is incompatible with the statically-linked musl libc, so every scheduled fuzz job failed
+  during the build step before any fuzzing ran.
 
 ## [0.22.4] - 2026-08-16
 
