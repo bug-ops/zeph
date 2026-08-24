@@ -113,7 +113,7 @@ pub use graph::{
 };
 pub use lineage::{ErrorLineage, LineageEntry, LineageKind, classify_error};
 pub use router::{AgentRouter, RuleBasedRouter};
-pub use scheduler::{DagScheduler, SchedulerAction, TaskEvent, TaskOutcome};
+pub use scheduler::{DagScheduler, SchedulerAction, TaskEvent, TaskOutcome, ToolCallSummary};
 pub use topology::{
     DispatchStrategy, Topology, TopologyAnalysis, TopologyClassifier, build_rev_adj,
 };
@@ -131,6 +131,6 @@ pub use plan_cache::{
 #[cfg(feature = "llm-planning")]
 pub use planner::{LlmPlanner, Planner};
 #[cfg(feature = "llm-planning")]
-pub use verifier::{Gap, GapSeverity, PlanVerifier, ToolCallSummary, VerificationResult};
+pub use verifier::{Gap, GapSeverity, PlanVerifier, VerificationResult};
 #[cfg(feature = "llm-planning")]
 pub use verify_predicate::PredicateEvaluator;

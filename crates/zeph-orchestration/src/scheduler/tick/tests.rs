@@ -6,8 +6,8 @@
 use std::time::Duration;
 
 use super::*;
+use crate::scheduler::ToolCallSummary;
 use crate::scheduler::tests::*;
-use crate::verifier::ToolCallSummary;
 
 #[test]
 fn test_tick_produces_spawn_for_ready() {

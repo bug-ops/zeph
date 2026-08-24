@@ -27,6 +27,48 @@ use std::sync::Arc;
 use zeph_common::OutputSanitizer;
 use zeph_config::OrchestrationConfig;
 
+/// A single real tool invocation recorded during a task's execution.
+///
+/// Built from `MessagePart::ToolUse`/`ToolResult` pairs — either read from the sub-agent
+/// transcript (spawn dispatch path) or collected in-loop (`RunInline` dispatch path). Consumed
+/// unconditionally by the scheduler's tool-outcome heuristics (`tick::counts_toward_completion_heuristic`,
+/// issue #6397) and, when the `llm-planning` feature is enabled, also fed to
+/// [`crate::verifier::PlanVerifier::verify`] as the ground truth a verify response's
+/// `claimed_executions` is checked against (`specs/009-orchestration/spec.md` § "Verifier
+/// Tool-Call Grounding"). Lives here rather than in `verifier` because the scheduler's own
+/// `TaskOutcome`/`SchedulerAction` variants carry it unconditionally — `llm-planning` off must
+/// still compile (issue #6744, cargo-hack `--each-feature` isolation).
+#[derive(Debug, Clone)]
+pub struct ToolCallSummary {
+    /// Tool name (matches `MessagePart::ToolUse::name`).
+    pub tool: String,
+    /// Normalized argument summary. `None` when args were not captured — treated as an
+    /// inconclusive match for a same-tool claim (never a mismatch; see the crate-internal
+    /// `ground()` grounding function).
+    pub args_summary: Option<String>,
+    /// Whether the tool execution succeeded. Not used by the grounding matching rule —
+    /// grounding checks claim *existence*, not claim *outcome* (a deliberate, documented
+    /// scope limitation; see spec's "Scope" subsection).
+    pub ok: bool,
+    /// Whether `tool` is a read-only tool (no durable state mutation), per
+    /// `zeph_common::tool_classification::is_readonly_tool` — the same allowlist
+    /// `zeph-tools` uses to gate `ReadOnly` autonomy mode. `false` covers both explicit
+    /// write/execute/network-type tools and any unclassified tool (the conservative
+    /// default: an unrecognized tool is treated as capable of producing durable side
+    /// effects).
+    ///
+    /// This field alone answers only the autonomy-gating question ("is this tool in the
+    /// `ReadOnly`-mode allowlist"), which is a **different** policy axis than "did this call
+    /// count as real work" — `READONLY_TOOLS` and `zeph_common::quarantine::QUARANTINE_DENIED`
+    /// are not complementary (`web_scrape`, `fetch`, `load_skill`, `invoke_skill` are in
+    /// both). The scheduler's mixed-trace failure heuristic (#6397,
+    /// `scheduler::tick::counts_toward_completion_heuristic`) therefore does **not** use
+    /// `!is_read_only` alone; it also treats a quarantine-denied call as counting even when
+    /// `is_read_only == true`, so a blocked `fetch`/`invoke_skill` is never masked by an
+    /// unrelated successful plain `read`.
+    pub is_read_only: bool,
+}
+
 /// Actions the scheduler requests the caller to perform.
 ///
 /// The scheduler never holds `&mut SubAgentManager` — it produces these
@@ -126,7 +168,7 @@ pub enum SchedulerAction {
         /// for spawn-path tasks — the caller must derive the trace from the sub-agent
         /// transcript in that case (spec 009 § Verifier Tool-Call Grounding, "Implementation
         /// Surface"). Transient: never persisted in `TaskResult`.
-        tool_trace: Option<Vec<crate::verifier::ToolCallSummary>>,
+        tool_trace: Option<Vec<ToolCallSummary>>,
     },
     /// Request a deterministic tool-outcome check for a just-completed task (issue #6380).
     ///
@@ -155,7 +197,7 @@ pub enum SchedulerAction {
         task_id: TaskId,
         /// Real tool-call trace collected in-loop for `RunInline` tasks (`Some`), or `None`
         /// for spawn-path tasks — same resolution contract as `Verify::tool_trace`.
-        tool_trace: Option<Vec<crate::verifier::ToolCallSummary>>,
+        tool_trace: Option<Vec<ToolCallSummary>>,
     },
 }
 
@@ -190,7 +232,7 @@ pub enum TaskOutcome {
         /// the spawn dispatch path — its trace is derived from the sub-agent transcript at
         /// `SchedulerAction::Verify` handling time instead (spec 009 § Verifier Tool-Call
         /// Grounding, "Implementation Surface").
-        tool_trace: Option<Vec<crate::verifier::ToolCallSummary>>,
+        tool_trace: Option<Vec<ToolCallSummary>>,
     },
     /// Agent failed.
     Failed {
@@ -215,7 +257,7 @@ pub enum TaskOutcome {
         /// for the spawn dispatch path — resolved from the sub-agent transcript at
         /// `SchedulerAction::CheckToolOutcome`/`SchedulerAction::Verify` handling time
         /// instead, same resolution contract as `Completed::tool_trace` (issue #6394).
-        tool_trace: Option<Vec<crate::verifier::ToolCallSummary>>,
+        tool_trace: Option<Vec<ToolCallSummary>>,
     },
 }
 

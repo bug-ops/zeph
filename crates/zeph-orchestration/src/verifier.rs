@@ -24,6 +24,7 @@ use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use super::error::OrchestrationError;
 use super::graph::{TaskGraph, TaskNode};
+pub use super::scheduler::ToolCallSummary;
 
 /// Maximum length (in Unicode scalar values) of a gap description included in
 /// the replan prompt. Truncated before sanitization to bound injection blast radius.
@@ -41,43 +42,6 @@ const NARRATIVE_HEAVY_OUTPUT_LEN_THRESHOLD: usize = 200;
 /// bounds the prompt's token footprint on large DAGs and can never cause a false-positive since
 /// grounding itself never sees a truncated slice.
 const MAX_WHOLE_PLAN_TRACE_ENTRIES: usize = 200;
-
-/// A single real tool invocation recorded during a task's execution.
-///
-/// Built from `MessagePart::ToolUse`/`ToolResult` pairs — either read from the sub-agent
-/// transcript (spawn dispatch path) or collected in-loop (`RunInline` dispatch path) — and fed
-/// to [`PlanVerifier::verify`] as the ground truth a verify response's `claimed_executions` is
-/// checked against. See `specs/009-orchestration/spec.md` § "Verifier Tool-Call Grounding".
-#[derive(Debug, Clone)]
-pub struct ToolCallSummary {
-    /// Tool name (matches `MessagePart::ToolUse::name`).
-    pub tool: String,
-    /// Normalized argument summary. `None` when args were not captured — treated as an
-    /// inconclusive match for a same-tool claim (never a mismatch; see the crate-internal
-    /// `ground()` grounding function).
-    pub args_summary: Option<String>,
-    /// Whether the tool execution succeeded. Not used by the grounding matching rule —
-    /// grounding checks claim *existence*, not claim *outcome* (a deliberate, documented
-    /// scope limitation; see spec's "Scope" subsection).
-    pub ok: bool,
-    /// Whether `tool` is a read-only tool (no durable state mutation), per
-    /// `zeph_common::tool_classification::is_readonly_tool` — the same allowlist
-    /// `zeph-tools` uses to gate `ReadOnly` autonomy mode. `false` covers both explicit
-    /// write/execute/network-type tools and any unclassified tool (the conservative
-    /// default: an unrecognized tool is treated as capable of producing durable side
-    /// effects).
-    ///
-    /// This field alone answers only the autonomy-gating question ("is this tool in the
-    /// `ReadOnly`-mode allowlist"), which is a **different** policy axis than "did this call
-    /// count as real work" — `READONLY_TOOLS` and `zeph_common::quarantine::QUARANTINE_DENIED`
-    /// are not complementary (`web_scrape`, `fetch`, `load_skill`, `invoke_skill` are in
-    /// both). The scheduler's mixed-trace failure heuristic (#6397,
-    /// `scheduler::tick::counts_toward_completion_heuristic`) therefore does **not** use
-    /// `!is_read_only` alone; it also treats a quarantine-denied call as counting even when
-    /// `is_read_only == true`, so a blocked `fetch`/`invoke_skill` is never masked by an
-    /// unrelated successful plain `read`.
-    pub is_read_only: bool,
-}
 
 /// Severity of a detected gap in task output.
 ///

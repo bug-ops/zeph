@@ -20,7 +20,7 @@ use zeph_subagent::SubAgentError;
 struct CompletedTaskData {
     output: String,
     artifacts: Vec<std::path::PathBuf>,
-    tool_trace: Option<Vec<crate::verifier::ToolCallSummary>>,
+    tool_trace: Option<Vec<crate::scheduler::ToolCallSummary>>,
 }
 
 /// Bundles the fields carried by `TaskOutcome::Handoff` (issue #6394 added `tool_trace`,
@@ -29,7 +29,7 @@ struct CompletedTaskData {
 struct HandoffTaskData {
     output: String,
     goto: TaskRef,
-    tool_trace: Option<Vec<crate::verifier::ToolCallSummary>>,
+    tool_trace: Option<Vec<crate::scheduler::ToolCallSummary>>,
 }
 
 /// `true` when a call counts toward the "did this task do work that matters" judgment used
@@ -62,7 +62,7 @@ struct HandoffTaskData {
 /// `ToolCallSummary` and into this heuristic would remove the imprecision but is a materially
 /// larger change (new field, new production call-site plumbing from the sub-agent's trust
 /// context) than this fix's scope — left as a conscious tradeoff, not silently accepted.
-fn counts_toward_completion_heuristic(call: &crate::verifier::ToolCallSummary) -> bool {
+fn counts_toward_completion_heuristic(call: &crate::scheduler::ToolCallSummary) -> bool {
     !call.is_read_only || zeph_common::quarantine::is_quarantine_denied(&call.tool)
 }
 
@@ -90,7 +90,7 @@ fn counts_toward_completion_heuristic(call: &crate::verifier::ToolCallSummary) -
 /// original "every call failed" rule, so a task that never attempted a mutating or
 /// quarantine-denied call is never flagged off a single blocked read — and the pre-existing
 /// full-failure case (#6380) is preserved exactly.
-fn all_tool_calls_failed(trace: &[crate::verifier::ToolCallSummary]) -> bool {
+fn all_tool_calls_failed(trace: &[crate::scheduler::ToolCallSummary]) -> bool {
     if trace.is_empty() {
         return false;
     }
@@ -811,7 +811,7 @@ impl DagScheduler {
     pub fn correct_completed_to_failed_if_all_tool_calls_failed(
         &mut self,
         task_id: TaskId,
-        tool_trace: Option<&[crate::verifier::ToolCallSummary]>,
+        tool_trace: Option<&[crate::scheduler::ToolCallSummary]>,
     ) -> bool {
         let Some(trace) = tool_trace else {
             return false;
