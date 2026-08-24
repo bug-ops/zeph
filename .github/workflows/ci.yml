@@ -674,6 +674,14 @@ jobs:
     #   a backend is forced back in (confirmed empirically: bare `--each-feature`
     #   fails immediately with E0432/E0308 without this). postgres already has
     #   dedicated workspace-wide coverage via the `build-postgres` job above.
+    # - `test-utils` is excluded for the same reason as `postgres`: it's a leaf
+    #   feature name reused across zeph-db/zeph-mcp/zeph-index/zeph-memory/
+    #   zeph-orchestration/zeph-session, and every one of those definitions
+    #   unconditionally requires `postgres` (testcontainers-backed integration
+    #   test fixtures need a real Postgres container), so `--features
+    #   sqlite,test-utils` hits the same compile_error! as bare `postgres` would
+    #   (confirmed empirically: shard 2/4 failed on zeph-index before this line
+    #   was added).
     # - cargo-hack's normal tools for exactly this kind of constraint
     #   (`--mutually-exclusive-features`/`--at-least-one-of`/`--group-features`)
     #   are NOT usable with `--each-feature` — cargo-hack restricts all three to
@@ -681,7 +689,7 @@ jobs:
     #   ~180 declared feature keys is not tractable.
     #
     # Partitioned 4-way via cargo-hack's native --partition (same pattern as the
-    # `test`/ci-non-linux.yml shards) — ~124 isolated checks total with the scope
+    # `test`/ci-non-linux.yml shards) — ~118 isolated checks total with the scope
     # above at the time this job was added. Re-tune the partition count from real
     # timing data the same way the `test` job went 8->12 (#6737) if wall-clock or
     # shard skew warrants it.
@@ -714,7 +722,7 @@ jobs:
           cargo hack check --workspace --each-feature --no-private \
             --ignore-unknown-features \
             --features sqlite \
-            --exclude-features postgres,metal,cuda,default,full,desktop,ide,server,chat,ml,testing,sandbox,bench \
+            --exclude-features postgres,test-utils,metal,cuda,default,full,desktop,ide,server,chat,ml,testing,sandbox,bench \
             --exclude-all-features \
             --partition ${{ matrix.partition }}
 
