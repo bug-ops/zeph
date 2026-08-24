@@ -715,6 +715,14 @@ fn default_rate_limit_rpm() -> u32 {
     25
 }
 
+fn default_mining_merge_threshold() -> f32 {
+    0.75
+}
+
+fn default_mining_merge_enabled() -> bool {
+    true
+}
+
 /// Configuration for the automated skill mining pipeline (`zeph-skills-miner` binary).
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SkillMiningConfig {
@@ -727,6 +735,15 @@ pub struct SkillMiningConfig {
     /// Cosine similarity threshold for dedup against existing skills. Default: 0.85.
     #[serde(default = "default_dedup_threshold")]
     pub dedup_threshold: f32,
+    /// Minimum similarity to trigger a merge with the nearest skill during mining. Default: 0.75.
+    ///
+    /// Must be strictly less than `dedup_threshold`.
+    #[serde(default = "default_mining_merge_threshold")]
+    pub merge_threshold: f32,
+    /// When `false`, the merge zone (`merge_threshold <= sim < dedup_threshold`) collapses to
+    /// discard during mining instead of merging into the nearest skill. Default: `true`.
+    #[serde(default = "default_mining_merge_enabled")]
+    pub merge_enabled: bool,
     /// Output directory for mined skills.
     #[serde(default)]
     pub output_dir: Option<String>,
@@ -750,6 +767,8 @@ impl Default for SkillMiningConfig {
             queries: Vec::new(),
             max_repos_per_query: default_max_repos_per_query(),
             dedup_threshold: default_dedup_threshold(),
+            merge_threshold: default_mining_merge_threshold(),
+            merge_enabled: default_mining_merge_enabled(),
             output_dir: None,
             generation_provider: ProviderName::default(),
             embedding_provider: ProviderName::default(),

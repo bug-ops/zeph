@@ -123,6 +123,8 @@ async fn main() -> anyhow::Result<()> {
         queries,
         max_repos_per_query: config.skills.mining.max_repos_per_query.min(100),
         dedup_threshold: config.skills.mining.dedup_threshold,
+        merge_threshold: config.skills.mining.merge_threshold,
+        merge_enabled: config.skills.mining.merge_enabled,
         output_dir: output_dir.clone(),
         rate_limit_rpm: config.skills.mining.rate_limit_rpm,
         dry_run: cli.dry_run,
