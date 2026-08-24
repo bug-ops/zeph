@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `ci.yml`: added `default-build-check` (plain `cargo check --workspace --all-targets`, no
+  `--features` flag) and `feature-matrix` (`cargo-hack`-based, 4-way partitioned isolation
+  check of every leaf feature flag) jobs, closing a gap where CI never built the bare-default
+  configuration and never verified individual feature flags compile outside the hand-curated
+  combined feature strings.
 - `release.yml`: added `aarch64-pc-windows-msvc` to the `build-binaries` matrix, built natively
   on GitHub's hosted `windows-11-arm` runner (generally available for public repositories since
   August 2025). This replaces the previous cross-compilation attempt from Linux, which failed
