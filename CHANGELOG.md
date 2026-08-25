@@ -23,7 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Raised the workspace MSRV to Rust 1.98 and resolved the new `clippy::unused_async_trait_impl` /
-  `clippy::chunks_exact_to_as_chunks` lints introduced by it (#6746, PR link pending).
+  `clippy::chunks_exact_to_as_chunks` lints introduced by it (#6746, #6748).
 - `release.yml`: removed `Swatinem/rust-cache` and `sccache` from the `build-binaries` job.
   Release builds only run on `v*` tag push, infrequently enough that any cache entry written
   by the previous release has almost certainly been evicted from the shared 10 GiB GHA cache
