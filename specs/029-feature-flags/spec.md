@@ -102,25 +102,25 @@ default = ["scheduler", "sqlite"]
 | `pdf` | `zeph-memory/pdf` | pdf-extract crate; large optional dep |
 | `postgres` | `zeph-db/postgres`, `zeph-memory/postgres` | Mutually exclusive with `sqlite` |
 | `sqlite` | `zeph-db/sqlite`, `zeph-memory/sqlite` | Mutually exclusive with `postgres` (also in default) |
-| `deep-link` | `zeph-common/deep-link`, `zeph-config/deep-link` | `zeph://` URI scheme registration/dispatch (spec #066); optional OS integration |
 | `session` | `dep:axum`, `dep:tokio-stream`, `zeph-common/http-middleware` | Session persistence + `zeph serve` mode (spec #068, new `zeph-session` crate); HTTP/SSE session API |
 | `profiling` | `dep:tracing-chrome`, `dep:sysinfo` (+ per-crate `profiling` propagation) | Diagnostic tracing spans and system metrics; zero overhead when not actively tracing |
 | `sandbox` | `zeph-tools/sandbox` (`dep:landlock`, `dep:seccompiler` on Linux; macOS Seatbelt compiles unconditionally) | Runtime-disabled by default (`tools.sandbox.enabled = false`) |
 | `prometheus` | `gateway`, `dep:prometheus-client`, `zeph-gateway/prometheus` | OpenMetrics `/metrics` endpoint (spec #036); requires `gateway` |
 | `gonka` | `zeph-llm/gonka`, `zeph-core/gonka` | gonka.ai inference provider (specs #051, #052) |
-| `cocoon` | `zeph-llm/cocoon`, `zeph-core/cocoon`, `zeph-tui?/cocoon` | Cocoon distributed compute provider (spec #055) |
-| `index` | `zeph-core/index` | AST-based code indexing (spec #017) |
-| `registry` | `zeph-plugins/registry` | Skill/plugin marketplace discovery client (spec #045) |
-| `testing` | `zeph-llm/testing` | Test-only provider harness helpers |
+| `index` | `zeph-core/index` → `zeph-agent-context/index` (`dep:zeph-index`, +43 packages) | AST-based code indexing (spec #017); in the `desktop` bundle |
+| `testing` | `zeph-llm/testing` (marker) | Test-double harness; exempt from §5.1 per the test-double clause. Not in `full` — see §4 |
 | `bench` | `dep:zeph-bench` | Benchmark harness CLI (spec #034) |
 
 > [!note]
-> `prometheus`, `gonka`, `cocoon`, `index`, `registry`, `testing`, and `bench` were backfilled above
+> `prometheus`, `gonka`, `index`, `testing`, and `bench` were backfilled above
 > (2026-07 reconciliation pass against `Cargo.toml`'s `[features]` block). `profiling-alloc` and
 > `profiling-pyroscope` are still not individually documented here — both are thin variants of
 > `profiling` (`profiling-alloc = ["profiling", "zeph-core/profiling-alloc"]`,
 > `profiling-pyroscope = ["profiling", "otel", "dep:pprof"]`) and are omitted as low-risk; add rows
 > for them if either gains independent justification beyond extending `profiling`.
+>
+> `deep-link`, `cocoon`, and `registry` were consolidated into always-on capabilities in the
+> 2026-08 feature-flag audit — see §3.3.
 
 ### 3.3 Always-On Capabilities (No Flag)
 
@@ -142,6 +142,12 @@ As of v0.18.0, they were consolidated into always-on capabilities per the Decisi
 | MARCH self-check pipeline | `self-check` | Consolidated v0.20.x |
 | Environment variable vault fallback | `env-vault` | Consolidated v0.20.x |
 | Per-task CPU/wall-time metrics | `task-metrics` | Consolidated v0.20.x |
+| `zeph://` deep-link URI dispatch | `deep-link` | Consolidated v0.22.x |
+| Cocoon inference provider | `cocoon` | Consolidated v0.22.x |
+| Skill/plugin registry marketplace | `registry` | Consolidated v0.22.x |
+| Orchestration LLM planning | `zeph-orchestration/llm-planning` | Consolidated v0.22.x |
+| Scheduler daemon mode | `zeph-scheduler/daemon` | Consolidated v0.22.x |
+| ACP stabilised unstable handlers | 5 × `zeph-acp/unstable-*` | Consolidated v0.22.x |
 
 **Why**: Each flag gated only behavioral code with no optional crate dependencies — they violated
 the Decision Rule (§2). All these subsystems are active by default and cannot be disabled at build time;
@@ -155,24 +161,24 @@ Bundles are the **only** mechanism for enabling groups of features. Do not instr
 
 | Bundle | Expands to | Target use case |
 |---|---|---|
-| `desktop` | `tui`, `deep-link`, `session` | Local developer workstation with terminal UI |
+| `desktop` | `tui`, `session`, `index` | Local developer workstation with terminal UI |
 | `ide` | `acp`, `acp-http` | IDE integration via Agent-Client Protocol |
 | `server` | `gateway`, `a2a`, `otel`, `prometheus`, `session` | Headless server: webhook ingestion, A2A, telemetry, metrics |
 | `chat` | `discord`, `slack` | Bot deployment on messaging platforms |
 | `ml` | `candle`, `pdf` | On-device ML inference and PDF memory |
-| `full` | `desktop`, `ide`, `server`, `chat`, `pdf`, `scheduler`, `classifiers`, `profiling`, `sandbox`, `gonka`, `cocoon`, `testing`, `registry` | CI, pre-merge checks, complete feature matrix |
+| `full` | `desktop`, `ide`, `server`, `chat`, `pdf`, `scheduler`, `classifiers`, `profiling`, `sandbox`, `gonka` | CI, pre-merge checks, complete feature matrix |
 
 Bundle invariants:
-- `full` must activate every flag that is safe to combine (excluding `metal`, `cuda`, `postgres` — platform/exclusive).
+- `full` must activate every flag that is safe to combine (excluding `metal`, `cuda`, `postgres` — platform/exclusive), and excluding dev-only harness features (`bench`, `testing`) — `release.yml` ships `full` to users, so benchmark harnesses and test doubles must not be in it. Each has its own CI leg (`bundle-check (bench)`; `testing` in the curated pre-merge string).
 - `default` must remain minimal: only features that gate real optional deps AND have `Tested` coverage status. See §3.1 for the current list.
-- CI MUST run with `--features full` for lint and tests. Partial-feature builds do not count as pre-merge validation.
+- The `full` configuration must be exercised by CI on every PR; this is satisfied by four independent legs — coverage (`ci.yml:507`), `bundle-check (full)`, `release-build-full`, and `ci-non-linux.yml:42` — while the hot `clippy`/`nextest` path runs a curated feature string. Moving the hot path to `full` would add candle's ~541 packages to every PR for no new coverage.
 - `--all-features` is **not a supported build mode**: `sqlite` and `postgres` are mutually exclusive and `--all-features` triggers a `compile_error!`.
 
 ---
 
 ## 5. Key Invariants
 
-1. **No pure-marker flags.** A flag that gates only behavioral code with no distinct optional dependency MUST NOT exist. Remove it and make the code unconditional.
+1. **No pure-marker flags.** A flag that gates only behavioral code with no distinct optional dependency MUST NOT exist. Remove it and make the code unconditional. A marker flag whose only effect is to **withhold** test-double or test-harness code from non-test builds is exempt from this rule; §5.1 governs markers that gate shipped behaviour. This covers `zeph-llm/testing`, `zeph-memory/testing`, and the five `mock` flags (`zeph-vault`, `zeph-mcp`, `zeph-plugins`, `zeph-experiments`, `zeph-core`).
 
 2. **Flags only for real optional deps or platform exclusives.** The gated content must be a crate or a transitive dependency that would otherwise link unconditionally.
 
@@ -182,7 +188,7 @@ Bundle invariants:
 
 5. **Mutual exclusion must be enforced at compile time.** The `sqlite` and `postgres` flags activate a `compile_error!` in `zeph-db` when both are set. This guard must never be removed.
 
-6. **`--features full` is the CI gate.** Pre-merge checks (`fmt`, `clippy`, `nextest`) run with `--features full`. This must match what CI runs exactly.
+6. **The `full` configuration must be exercised by CI on every PR.** This is satisfied by four independent legs — coverage (`ci.yml:507`), `bundle-check (full)`, `release-build-full`, and `ci-non-linux.yml:42` — rather than requiring a literal `--features full` on the hot `clippy`/`nextest` path. Moving that path to `full` would add candle's ~541 packages to every PR for no new coverage.
 
 7. **Flag names use kebab-case.** No underscores, no camelCase.
 
@@ -220,7 +226,7 @@ Before opening a PR that adds a new feature flag:
 
 ### Always (without asking)
 - Default features must satisfy §2 Decision Rule AND `Tested` coverage — verify both before adding
-- Run `--features full` for all pre-merge checks
+- Run the curated pre-merge feature string for `fmt`/`clippy`/`nextest`; ensure `full` stays covered by its four independent CI legs (§4, §5.6)
 - Use `dep:` prefix for all optional crate dependencies
 - Remove `#[cfg(feature = "...")]` gates for deleted flags
 

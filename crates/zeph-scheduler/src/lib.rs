@@ -90,9 +90,9 @@ mod store;
 mod task;
 pub mod update_check;
 
-#[cfg(all(unix, feature = "daemon"))]
+#[cfg(unix)]
 pub mod daemon;
-#[cfg(all(unix, feature = "daemon"))]
+#[cfg(unix)]
 pub mod pidfile;
 
 pub use durable::SchedulerDurableAdapter;
@@ -106,11 +106,11 @@ pub use task::{
     normalize_cron_expr,
 };
 
-#[cfg(all(unix, feature = "daemon"))]
+#[cfg(unix)]
 pub use daemon::{
     DaemonConfig, DaemonStatus, TaskRunSummary, daemon_status, detach_and_run, run_foreground,
     stop_daemon,
 };
-#[cfg(all(unix, feature = "daemon"))]
+#[cfg(unix)]
 pub use pidfile::PidFile;
 pub use update_check::UpdateCheckHandler;

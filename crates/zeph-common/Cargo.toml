@@ -14,7 +14,6 @@ description = "Shared utility functions and security primitives for Zeph crates"
 readme = "README.md"
 
 [features]
-deep-link = []
 http-middleware = ["dep:axum", "dep:subtle"]
 jsonschema = ["dep:schemars"]
 treesitter = [

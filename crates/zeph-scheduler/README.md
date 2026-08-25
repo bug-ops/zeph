@@ -20,7 +20,7 @@ Manages recurring and deferred background tasks. Periodic tasks run on a cron sc
 - **sanitize** — `sanitize_task_prompt` — strips control characters and truncates to 512 code points
 - **update_check** — `UpdateCheckHandler` for GitHub releases version check
 - **durable** — `SchedulerDurableAdapter` bridges scheduled runs onto the `zeph-durable` journaled execution layer for crash-resume
-- **daemon** / **pidfile** — `#[cfg(all(unix, feature = "daemon"))]` — `DaemonConfig`, `detach_and_run`, `run_foreground`, `daemon_status`, `stop_daemon`, and the `PidFile` `flock(2)` guard
+- **daemon** / **pidfile** — `#[cfg(unix)]` — `DaemonConfig`, `detach_and_run`, `run_foreground`, `daemon_status`, `stop_daemon`, and the `PidFile` `flock(2)` guard
 - **error** — `SchedulerError` error types
 
 ## Task Modes
@@ -228,7 +228,10 @@ Enabled via the `scheduler` feature flag on the root `zeph` crate.
 |---------|---------|-------------|
 | `sqlite` | yes | SQLite backend for `zeph-db` / `zeph-durable` job persistence |
 | `postgres` | no | PostgreSQL backend for `zeph-db` / `zeph-durable` |
-| `daemon` | no | Unix daemon lifecycle: `PidFile`, `detach_and_run`, `run_foreground`, `daemon_status`, `stop_daemon`. Pulls in `rustix` for advisory `flock(2)` pid-file locking; `#[cfg(unix)]`-gated |
+
+Unix daemon lifecycle (`PidFile`, `detach_and_run`, `run_foreground`, `daemon_status`,
+`stop_daemon`, `rustix`-backed advisory `flock(2)` pid-file locking) compiles unconditionally,
+`#[cfg(unix)]`-gated — the `daemon` feature was removed in the 2026-08 feature-flag audit.
 
 ## Documentation
 

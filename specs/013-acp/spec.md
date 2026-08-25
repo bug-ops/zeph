@@ -143,8 +143,8 @@ and `agent-client-protocol-tokio` was removed from both workspace `Cargo.toml` a
 `session/close`, `session/resume`, `session/delete`, and `session/logout` are unconditional in
 core 2.0.0 (unconditional since the 0.14.0 bump; unaffected by the 1.0.1 schema-path migration or
 the 2.0.0 crate-API migration). The corresponding `unstable-session-*` Zeph feature flags
-are tombstoned as no-op `= []` (retained only so root `Cargo.toml` forwarding resolves without
-changes).
+have been removed entirely (2026-08 feature-flag audit, spec 029 §3.3) — they are no longer
+present in `Cargo.toml` at all, not merely tombstoned.
 
 **Unchanged in 2.0.0**: the builder + `on_receive_request!`/`on_receive_notification!`/
 `on_receive_dispatch!` macros, `Responder`, `ConnectionTo`, `ByteStreams`, `.block_task()`, and the
@@ -295,15 +295,16 @@ string for diagnostics (e.g., `"user_initiated"`, `"timeout"`, `"error"`).
 Reconnect to an existing session by ID, restoring conversation history and tool context.
 Previously gated behind `unstable-session-resume` feature flag in Zeph.
 
-The `unstable-session-resume` Zeph feature flag is now a tombstone `= []`. All `#[cfg(feature =
-"unstable-session-resume")]` gates are removed; the resume handler runs unconditionally.
+The `unstable-session-resume` Zeph feature flag has been removed entirely (2026-08 audit, spec
+029 §3.3); the resume handler runs unconditionally.
 
 ### session/delete
 
 **Status: stable** (unconditional in core 2.0.0 (since the 0.14.0 bump; unaffected by the 2.0.0 crate-major migration))
 
 Remove a session from the `session/list` registry. Previously gated behind `unstable-session-delete`.
-The `unstable-session-delete` Zeph feature flag is now a tombstone `= []`. All cfg gates removed.
+The `unstable-session-delete` Zeph feature flag has been removed entirely (2026-08 audit, spec
+029 §3.3); all cfg gates removed.
 
 Custom `_session/delete` extension (backward compat) is retained alongside the standard method.
 
@@ -311,8 +312,8 @@ Custom `_session/delete` extension (backward compat) is retained alongside the s
 
 **Status: stable** (unconditional in core 2.0.0 (since the 0.14.0 bump; unaffected by the 2.0.0 crate-major migration))
 
-Previously gated behind `unstable-logout`. The `unstable-logout` Zeph feature flag is now a
-tombstone `= []`. All cfg gates removed; logout handler runs unconditionally.
+Previously gated behind `unstable-logout`. The `unstable-logout` Zeph feature flag has been
+removed entirely (2026-08 audit, spec 029 §3.3); logout handler runs unconditionally.
 
 ### Capability Negotiation
 
@@ -473,17 +474,19 @@ exposing tools over ACP.
 | `unstable-elicitation` | **active** | Now also adds `agent-client-protocol/unstable_elicitation` passthrough so core wires `elicitation/create` |
 | `unstable-llm-providers` | **active** | Still gated upstream (`unstable_llm_providers`); provider type renames apply here (see Providers API) |
 | `unstable-auth-methods` | **active** | Still gated upstream (`unstable_auth_methods`) |
-| `unstable-boolean-config` | **tombstone** `= []` | Stabilized — `SessionConfigOptionValue::Boolean` is unconditional since schema 1.1.0 (core 1.1.0 dropped its `unstable_boolean_config` forward). `do_set_session_config_option` always matches the enum; flag retained as no-op. |
-| `unstable-session-delete` | **tombstone** `= []` | Stabilized — `session/delete` handler is unconditional in core 2.0.0 (since the 0.14.0 bump). Flag retained as no-op for workspace forwarding (root `Cargo.toml` references it). |
-| `unstable-session-resume` | **tombstone** `= []` | Stabilized — `session/resume` handler is unconditional in core 2.0.0 (since the 0.14.0 bump). Flag retained as no-op. |
-| `unstable-logout` | **tombstone** `= []` | Stabilized — logout handler is unconditional in core 2.0.0 (since the 0.14.0 bump). Flag retained as no-op. |
-| `unstable-session-add-dirs` | **tombstone** `= []` | Stabilized — `additional_directories` field is plain `Vec<PathBuf>`, unconditional since schema 0.13.6 (currently schema 1.5.0; unaffected by the 2.0.0 migration). Flag retained as no-op. |
-| `unstable-message-id` | **tombstone** `= []` | Removed — `PromptRequest.message_id` and `PromptResponse.user_message_id` deleted upstream. Entire inbound echo feature removed. Flag retained as no-op for workspace forwarding. |
+| `unstable-boolean-config` | **DELETED** (2026-08 audit) | Stabilized — `SessionConfigOptionValue::Boolean` is unconditional since schema 1.1.0. Cargo feature removed entirely (spec 029 §3.3), not just tombstoned. |
+| `unstable-session-delete` | **DELETED** (2026-08 audit) | Stabilized — `session/delete` handler is unconditional. Cargo feature removed entirely, including its root `Cargo.toml` forward (spec 029 §3.3). |
+| `unstable-session-resume` | **DELETED** (2026-08 audit) | Stabilized — `session/resume` handler is unconditional. Cargo feature removed entirely (spec 029 §3.3). |
+| `unstable-logout` | **DELETED** (2026-08 audit) | Stabilized — logout handler is unconditional. Cargo feature removed entirely (spec 029 §3.3). |
+| `unstable-session-add-dirs` | **DELETED** (2026-08 audit) | Stabilized — `additional_directories` field is plain `Vec<PathBuf>`, unconditional since schema 0.13.6. Cargo feature removed entirely (spec 029 §3.3). |
+| `unstable-message-id` | **DELETED** (2026-08 audit) | Inbound message-id echo is unconditional; the previously-retained no-op Cargo feature has now been removed entirely (spec 029 §3.3). |
 | `unstable-cancel-request` | **active (local-only gate)** | Implemented (#5362). Core `1.1.0` made `$/cancel_request` unconditional and dropped the `unstable_cancel_request` feature entirely, so this Zeph flag no longer forwards to any upstream feature — it is now purely a local opt-in for the zeph-acp bridge itself. Not in `default`. The `session/prompt` handler (`agent/handlers/prompt.rs`) bridges `Responder::cancellation()`, scoped to that specific JSON-RPC request, onto the session's existing `cancel_signal: Arc<Notify>` (the same signal `session/cancel` notifies in `agent/handlers/cancel.rs`) via a short-lived watcher task that races cancellation against prompt completion. A low-level `CancelRequestNotification` handler is also registered in the `Agent.builder()` chain (`agent/mod.rs`) for tracing-only observability — the SDK updates per-request cancellation markers automatically regardless of whether a handler is registered. |
 | `unstable-session-model` | **DELETED** | Removed entirely — `session/set_model` RPC deleted upstream. Feature name removed from Cargo.toml and root `Cargo.toml`. Model switching survives via `set_config_option`. |
 
-> **Tombstone flags** are `= []` no-ops retained solely so root `Cargo.toml` feature forwarding
-> resolves without changes. They add zero behavior.
+> **DELETED flags** (2026-08 feature-flag audit): formerly `= []` no-op tombstones retained for
+> root `Cargo.toml` forwarding, now removed entirely — the Cargo feature no longer exists and all
+> `#[cfg(feature = "...")]` gates for it were stripped, so the previously-gated behavior compiles
+> unconditionally. See spec 029 §3.3.
 
 > **2.0.0 migration note**: all currently-forwarded unstable features (`unstable_session_fork`,
 > `unstable_end_turn_token_usage` / `unstable-session-usage`, `unstable_elicitation`,
@@ -600,7 +603,7 @@ schema 0.13.6. The entire inbound message-id echo feature is removed from Zeph:
 - `current_message_id` session slot removed
 - `build_prompt_response` no longer accepts or echoes a message ID
 - `apply_message_id_to_chunk` removed (no live data source)
-- `unstable-message-id` feature is a tombstone `= []`
+- `unstable-message-id` Cargo feature has been removed entirely (2026-08 audit, spec 029 §3.3)
 
 `ContentChunk.message_id` field still exists in schema 0.13.6 for potential future
 agent-generated per-chunk IDs, but Zeph does not inject it (no inbound source).

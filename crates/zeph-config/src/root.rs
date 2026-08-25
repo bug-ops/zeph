@@ -166,8 +166,7 @@ pub struct Config {
     /// name-similarity/typosquat check (spec-043, #5864).
     #[serde(default)]
     pub plugins: crate::plugins::PluginsConfig,
-    /// Deep-link scheme configuration (`[deep_link]`). Gated by the `deep-link` feature.
-    #[cfg(feature = "deep-link")]
+    /// Deep-link scheme configuration (`[deep_link]`).
     #[serde(default)]
     pub deep_link: crate::deep_link::DeepLinkConfig,
 }
@@ -404,7 +403,6 @@ impl Default for Config {
             caveman: crate::features::CavemanConfig::default(),
             knowledge: crate::knowledge::KnowledgeConfig::default(),
             plugins: crate::plugins::PluginsConfig::default(),
-            #[cfg(feature = "deep-link")]
             deep_link: crate::deep_link::DeepLinkConfig::default(),
         }
     }

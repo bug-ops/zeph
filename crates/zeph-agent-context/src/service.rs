@@ -2033,6 +2033,8 @@ mod tests {
                 skill_registry: registry,
                 skill_paths: &[],
                 correction_config: None,
+                #[cfg(feature = "index")]
+                index: None,
                 sidequest_turn_counter: 0,
                 proactive_explorer: None,
                 sanitizer: &sanitizer,
@@ -2177,6 +2179,8 @@ mod tests {
                 skill_registry: Arc::new(RwLock::new(SkillRegistry::default())),
                 skill_paths: &[],
                 correction_config: None,
+                #[cfg(feature = "index")]
+                index: None,
                 sidequest_turn_counter: 0,
                 proactive_explorer: None,
                 sanitizer,
@@ -2417,6 +2421,8 @@ mod tests {
                 skill_registry: registry,
                 skill_paths: &[],
                 correction_config: None,
+                #[cfg(feature = "index")]
+                index: None,
                 sidequest_turn_counter: 0,
                 proactive_explorer: None,
                 sanitizer: &sanitizer,
@@ -2499,6 +2505,8 @@ mod tests {
                 skill_registry: registry,
                 skill_paths: &[],
                 correction_config: None,
+                #[cfg(feature = "index")]
+                index: None,
                 sidequest_turn_counter: 0,
                 proactive_explorer: None,
                 sanitizer: &sanitizer,
@@ -2588,6 +2596,8 @@ mod tests {
                 skill_registry: registry,
                 skill_paths: &[],
                 correction_config: None,
+                #[cfg(feature = "index")]
+                index: None,
                 sidequest_turn_counter: 0,
                 proactive_explorer: None,
                 sanitizer: &sanitizer,
@@ -2828,6 +2838,8 @@ mod tests {
                 skill_registry: Arc::clone(&fixture.registry),
                 skill_paths: &fixture.skill_paths,
                 correction_config: None,
+                #[cfg(feature = "index")]
+                index: None,
                 sidequest_turn_counter: 0,
                 proactive_explorer: Some(Arc::clone(&fixture.explorer)),
                 sanitizer,

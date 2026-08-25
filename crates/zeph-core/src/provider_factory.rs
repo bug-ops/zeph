@@ -10,7 +10,6 @@
 
 use zeph_llm::any::AnyProvider;
 use zeph_llm::claude::ClaudeProvider;
-#[cfg(feature = "cocoon")]
 use zeph_llm::cocoon::{CocoonClient, CocoonProvider};
 use zeph_llm::compatible::CompatibleProvider;
 use zeph_llm::gemini::GeminiProvider;
@@ -156,12 +155,7 @@ fn build_provider_from_entry_inner(
         ProviderKind::Gonka => Err(BootstrapError::Provider(
             "gonka feature is not enabled; rebuild with --features gonka".into(),
         )),
-        #[cfg(feature = "cocoon")]
         ProviderKind::Cocoon => build_cocoon_provider(entry, config),
-        #[cfg(not(feature = "cocoon"))]
-        ProviderKind::Cocoon => Err(BootstrapError::Provider(
-            "cocoon feature is not enabled; rebuild with --features cocoon".into(),
-        )),
         _ => Err(BootstrapError::Provider(format!(
             "unknown provider kind: {:?}",
             entry.provider_type
@@ -533,7 +527,6 @@ fn build_gonka_provider(
 /// Resolved connection parameters for a `CocoonClient`, shared by the provider-build and
 /// health-check call sites so both derive `access_hash`/`base_url`/`timeout` with identical
 /// gating logic.
-#[cfg(feature = "cocoon")]
 struct CocoonClientParams {
     base_url: String,
     access_hash: Option<String>,
@@ -551,7 +544,6 @@ struct CocoonClientParams {
 ///
 /// Returns [`BootstrapError::Provider`] when the vault key `ZEPH_COCOON_ACCESS_HASH` is
 /// expected (field is `Some`) but not present in the resolved secrets.
-#[cfg(feature = "cocoon")]
 fn resolve_cocoon_client_params(
     entry: &ProviderEntry,
     config: &Config,
@@ -622,7 +614,6 @@ fn resolve_cocoon_client_params(
 ///
 /// Returns [`BootstrapError::Provider`] when the vault key `ZEPH_COCOON_ACCESS_HASH` is
 /// expected (field is `Some`) but not present in the resolved secrets.
-#[cfg(feature = "cocoon")]
 fn build_cocoon_provider(
     entry: &ProviderEntry,
     config: &Config,
@@ -658,9 +649,8 @@ fn build_cocoon_provider(
 /// path is advisory and runs after providers have already been built successfully.
 ///
 /// Call this once after [`build_provider_from_entry`] has succeeded for all providers, passing
-/// the session-level supervisor. The function is a no-op when `cocoon` feature is not enabled
-/// or no provider has `cocoon_health_check = true`.
-#[cfg(feature = "cocoon")]
+/// the session-level supervisor. The function is a no-op when no provider has
+/// `cocoon_health_check = true`.
 pub fn spawn_cocoon_health_checks(
     providers: &[&ProviderEntry],
     config: &Config,
@@ -938,7 +928,6 @@ mod tests {
         assert!(params.embedding_sha256.is_none());
     }
 
-    #[cfg(feature = "cocoon")]
     use super::spawn_cocoon_health_checks;
     use super::{build_provider_from_entry, resolve_named_provider};
     use crate::config::{Config, ProviderKind};
@@ -1242,7 +1231,6 @@ mod tests {
         assert_eq!(provider.name(), "claude");
     }
 
-    #[cfg(feature = "cocoon")]
     mod cocoon_tests {
         use super::*;
 

@@ -361,14 +361,12 @@ pub(crate) struct Cli {
     /// Initial prompt pre-queued from a deep-link URI (set by `handle_url_open` before bootstrap).
     ///
     /// Not a CLI flag — populated programmatically by the `url-open` dispatch arm.
-    #[cfg(feature = "deep-link")]
     #[arg(skip)]
     pub(crate) deep_link_prompt: Option<String>,
 
     /// URI that originated this session (emitted as a TUI status notification).
     ///
     /// Not a CLI flag — populated programmatically by the `url-open` dispatch arm.
-    #[cfg(feature = "deep-link")]
     #[arg(skip)]
     pub(crate) deep_link_uri: Option<String>,
 }
@@ -568,7 +566,6 @@ pub(crate) enum Command {
         command: GonkaCommand,
     },
     /// Cocoon sidecar diagnostics
-    #[cfg(feature = "cocoon")]
     Cocoon {
         #[command(subcommand)]
         command: CocoonCommand,
@@ -600,13 +597,11 @@ pub(crate) enum Command {
         command: KnowledgeCommand,
     },
     /// Open a session from a zeph:// URI dispatched by the OS scheme handler.
-    #[cfg(feature = "deep-link")]
     UrlOpen {
         /// The `zeph://` URI to dispatch (e.g. `zeph://new-session?prompt=Hello`)
         uri: String,
     },
     /// Manage OS-level `zeph://` scheme registration.
-    #[cfg(feature = "deep-link")]
     UrlScheme {
         #[command(subcommand)]
         command: UrlSchemeCommand,
@@ -1277,7 +1272,6 @@ pub(crate) enum GonkaCommand {
 }
 
 /// Cocoon sidecar subcommands.
-#[cfg(feature = "cocoon")]
 #[derive(Subcommand)]
 pub(crate) enum CocoonCommand {
     /// Run Cocoon sidecar connectivity and configuration diagnostics
@@ -1299,7 +1293,6 @@ pub(crate) enum NotifyCommand {
 }
 
 /// Subcommands for `zeph url-scheme`.
-#[cfg(feature = "deep-link")]
 #[derive(Subcommand)]
 pub(crate) enum UrlSchemeCommand {
     /// Register the `zeph://` URI scheme with the OS.
@@ -1733,7 +1726,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "deep-link")]
     #[test]
     fn cli_parses_url_open() {
         use super::Command;
@@ -1745,7 +1737,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "deep-link")]
     #[test]
     fn cli_parses_url_scheme_register() {
         use super::{Command, UrlSchemeCommand};
@@ -1758,7 +1749,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "deep-link")]
     #[test]
     fn cli_parses_url_scheme_status() {
         use super::{Command, UrlSchemeCommand};
@@ -1771,7 +1761,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "deep-link")]
     #[test]
     fn cli_parses_url_scheme_status_check_flag() {
         use super::{Command, UrlSchemeCommand};

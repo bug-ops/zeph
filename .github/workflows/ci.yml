@@ -156,7 +156,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - features: "desktop,ide,server,chat,pdf,scheduler,registry,testing,deep-link"
+          - features: "desktop,ide,server,chat,pdf,scheduler,testing"
             label: desktop-ide-server-chat-pdf-scheduler
           - features: bench
             label: bench
@@ -182,7 +182,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - features: "desktop,ide,server,chat,pdf,scheduler,registry,deep-link"
+          - features: "desktop,ide,server,chat,pdf,scheduler"
             label: desktop-ide-server-chat-pdf-scheduler
           - features: bench
             label: bench
@@ -226,7 +226,7 @@ jobs:
       - name: Build and archive tests
         env:
           RUSTFLAGS: "-Z threads=4"
-        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci --workspace --features "desktop,ide,server,chat,pdf,scheduler,registry,deep-link" --lib --bins --tests --archive-file nextest-archive.tar.zst
+        run: cargo nextest archive --config-file .github/nextest.toml --cargo-profile ci --workspace --features "desktop,ide,server,chat,pdf,scheduler" --lib --bins --tests --archive-file nextest-archive.tar.zst
       - name: Upload test archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -759,7 +759,7 @@ jobs:
         # `#![recursion_limit]` fix) because it skips codegen/LTO layout finalization. Only a
         # real `cargo build --release` with this workspace's `[profile.release]` (lto = true,
         # codegen-units = 1) exercises the same query depth CI is meant to gate on.
-        run: cargo build --release --workspace --all-targets --features "desktop,ide,server,chat,pdf,scheduler,registry,testing,deep-link"
+        run: cargo build --release --workspace --all-targets --features "desktop,ide,server,chat,pdf,scheduler,testing"
 
   release-build-full:
     name: Release Build Check (full)
@@ -859,9 +859,9 @@ jobs:
         with:
           shared-key: "ci"
       - name: Build docs (all features except candle)
-        run: cargo doc --no-deps --workspace --features "desktop,ide,server,chat,pdf,scheduler,registry,deep-link"
+        run: cargo doc --no-deps --workspace --features "desktop,ide,server,chat,pdf,scheduler"
       - name: Doc-tests
-        run: cargo test --doc --workspace --features "desktop,ide,server,chat,pdf,scheduler,registry,deep-link"
+        run: cargo test --doc --workspace --features "desktop,ide,server,chat,pdf,scheduler"
 
   validate-specs:
     name: Validate Specs

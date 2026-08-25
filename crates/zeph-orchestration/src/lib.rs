@@ -45,13 +45,6 @@
 //! - [`PlanCache`] — caches and reuses completed plan skeletons
 //! - [`PlanVerifier`] — post-task completeness verifier with targeted replan
 //!
-//! # Feature flags
-//!
-//! - `llm-planning`: enables LLM-dependent modules (`planner`, `aggregator`,
-//!   `verifier`, `verify_predicate`, `plan_cache`, `adaptorch`) and the `zeph-llm` dependency.
-//!   Not enabled by default (the crate's default feature set is `sqlite` only) — opt in
-//!   explicitly with `features = ["llm-planning"]` to use `LlmPlanner`/`LlmAggregator`.
-//!
 //! # Example: build a plan and run the scheduler
 //!
 //! ```rust,ignore
@@ -86,19 +79,12 @@ pub mod router;
 pub mod scheduler;
 pub mod topology;
 
-#[cfg(feature = "llm-planning")]
 pub mod adaptorch;
-#[cfg(feature = "llm-planning")]
 pub mod aggregator;
-#[cfg(feature = "llm-planning")]
 pub mod ensemble;
-#[cfg(feature = "llm-planning")]
 pub mod plan_cache;
-#[cfg(feature = "llm-planning")]
 pub mod planner;
-#[cfg(feature = "llm-planning")]
 pub mod verifier;
-#[cfg(feature = "llm-planning")]
 pub mod verify_predicate;
 
 pub use admission::AdmissionGate;
@@ -118,19 +104,12 @@ pub use topology::{
     DispatchStrategy, Topology, TopologyAnalysis, TopologyClassifier, build_rev_adj,
 };
 
-#[cfg(feature = "llm-planning")]
 pub use adaptorch::{AdaptOrchMetrics, AdvisorVerdict, TaskClass, TopologyAdvisor, TopologyHint};
-#[cfg(feature = "llm-planning")]
 pub use aggregator::{Aggregator, LlmAggregator};
-#[cfg(feature = "llm-planning")]
 pub use ensemble::{Ballot, EnsembleAttempt, EnsembleTracker, EnsembleVerifier, MergeOutcome};
-#[cfg(feature = "llm-planning")]
 pub use plan_cache::{
     PlanCache, PlanCacheError, PlanTemplate, TemplateTask, normalize_goal, plan_with_cache,
 };
-#[cfg(feature = "llm-planning")]
 pub use planner::{LlmPlanner, Planner};
-#[cfg(feature = "llm-planning")]
 pub use verifier::{Gap, GapSeverity, PlanVerifier, VerificationResult};
-#[cfg(feature = "llm-planning")]
 pub use verify_predicate::PredicateEvaluator;

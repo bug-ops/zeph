@@ -730,7 +730,7 @@ discovery_enabled = true           # Expose GET /.well-known/acp.json manifest e
 available_models = []              # Models advertised to IDE for switching: ["claude:claude-sonnet-5", "ollama:llama3"] (default: [])
 additional_directories = []        # Extra workspace directories ACP clients may reference (default: [])
 auth_methods = ["agent"]           # Auth methods advertised in initialize (currently only "agent" supported) (default: ["agent"])
-message_ids_enabled = true         # Echo PromptRequest.message_id onto responses (requires unstable-message-id feature) (default: true)
+message_ids_enabled = true         # Echo PromptRequest.message_id onto responses (default: true)
 
 [acp.model_config]
 default_temperature_preset = "balanced"  # Default sampling-temperature: "precise" (0.2), "balanced" (0.7), or "creative" (1.0) (default: "balanced")

@@ -8,7 +8,6 @@ use std::pin::Pin;
 use tracing::Instrument as _;
 use zeph_commands::{CommandError, IntegrationAccess};
 
-#[cfg(feature = "cocoon")]
 use super::command_macros::delegate_cmd;
 use super::{Agent, error::AgentError};
 use crate::channel::Channel;
@@ -323,18 +322,7 @@ impl<C: Channel + Send + 'static> IntegrationAccess for Agent<C> {
 
     // ----- /cocoon -----
 
-    #[cfg(feature = "cocoon")]
     delegate_cmd!(handle_cocoon, handle_cocoon_as_string, args: &'a str => String);
-
-    #[cfg(not(feature = "cocoon"))]
-    fn handle_cocoon<'a>(
-        &'a mut self,
-        _args: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        Box::pin(async {
-            Ok("Cocoon support is not compiled in. Rebuild with `--features cocoon`.".to_owned())
-        })
-    }
 }
 
 #[cfg(test)]

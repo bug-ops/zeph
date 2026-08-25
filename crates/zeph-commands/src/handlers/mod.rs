@@ -15,7 +15,6 @@ pub mod agents_fleet;
 pub mod caveman;
 pub mod cd;
 pub mod checkpoint;
-#[cfg(feature = "cocoon")]
 pub mod cocoon;
 pub mod compaction;
 pub mod conv;

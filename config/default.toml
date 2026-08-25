@@ -144,7 +144,7 @@ embedding_model = "qwen3-embedding"
 # max_tokens = 4096
 
 # Cocoon — decentralized AI inference via local TEE sidecar (https://cocoon.org)
-# Requires the Cocoon client runner at localhost:10000 (--features cocoon).
+# Requires the Cocoon client runner at localhost:10000.
 # Set access hash in vault: zeph vault set ZEPH_COCOON_ACCESS_HASH <hash>
 # [[llm.providers]]
 # name = "cocoon"
@@ -319,9 +319,7 @@ injection_patterns = true
 
 # External skill/plugin registry discovery (spec-045, #5869). Off by default — no network
 # call is ever made to any registry unless explicitly opted in below. See
-# `zeph skill search --help` / `zeph plugin search --help`. Requires building with
-# `--features registry` (included in `full`); a build without it prints an actionable
-# message instead of erroring.
+# `zeph skill search --help` / `zeph plugin search --help`.
 # [skills.registry]
 # enabled = false
 # backend_kind = "skills-sh"
@@ -1150,7 +1148,6 @@ additional_directories = []
 # MVP only accepts "agent"; unknown values fail startup rather than silently being skipped.
 auth_methods = ["agent"]
 # Echo PromptRequest.message_id onto PromptResponse.user_message_id and chunk events.
-# Requires the `unstable-message-id` feature.
 message_ids_enabled = true
 
 [acp.lsp]

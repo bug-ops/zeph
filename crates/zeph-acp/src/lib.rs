@@ -36,12 +36,12 @@
 //! | Flag | Description |
 //! |------|-------------|
 //! | `acp-http` | HTTP/SSE and WebSocket transports via axum |
-//! | `unstable-session-delete` | ACP `session/close` and `session/delete` handlers |
 //! | `unstable-session-fork` | ACP session fork extension |
-//! | `unstable-session-resume` | ACP session resume (stable since acp 0.12.1; no SDK gate needed) |
 //! | `unstable-session-usage` | ACP session token-usage extension |
 //! | `unstable-elicitation` | ACP elicitation schema types |
-//! | `unstable-logout` | ACP logout extension |
+//! | `unstable-llm-providers` | ACP LLM provider listing extension |
+//! | `unstable-auth-methods` | ACP auth-methods extension |
+//! | `unstable-cancel-request` | Wires `$/cancel_request` onto the internal cancel signal (#5362) |
 //!
 //! # Quick start (stdio)
 //!

@@ -203,13 +203,10 @@ pub enum AcpPreference {
 
 ## 8. Feature Flag
 
-Cargo feature: `deep-link`. Added in root `Cargo.toml` `[features]`.
-Included in the `desktop` bundle.
-NOT in `default` (per NFR-7.1 and Feature Flag Contract §9).
-
-All `deep-link`-specific code in `src/` is gated with `#[cfg(feature = "deep-link")]`.
-`zeph-common/src/deep_link.rs` is always compiled (no feature gate on the parser itself,
-which has no runtime cost) — only the CLI subcommands and OS registration code are gated.
+Consolidated into an always-on capability in the 2026-08 feature-flag audit (spec 029 §3.3):
+the `deep-link` Cargo feature has been removed and all deep-link code compiles unconditionally.
+OS-level `zeph://` scheme registration remains opt-in at the user level — via the `--init`
+wizard step or an explicit CLI subcommand — not gated by a Cargo feature or a config toggle.
 
 ## 9. TUI Status Message
 

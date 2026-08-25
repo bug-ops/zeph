@@ -16,7 +16,7 @@ use crate::tui_bridge::forward_status_to_stderr;
 use crate::tui_bridge::{
     TuiRunParams, forward_index_progress_to_tui, run_tui_agent, start_tui_early,
 };
-#[cfg(all(feature = "tui", feature = "cocoon"))]
+#[cfg(feature = "tui")]
 use tracing::Instrument as _;
 
 use crate::bootstrap::find_repo_root;
@@ -25,13 +25,10 @@ use crate::bootstrap::resolve_config_path;
 #[cfg(not(feature = "tui"))]
 use crate::bootstrap::warmup_provider;
 use crate::bootstrap::{AppBuilder, create_mcp_registry};
-#[cfg(feature = "deep-link")]
 use crate::url_scheme::prompt::confirm_prompt;
-#[cfg(feature = "deep-link")]
 use crate::url_scheme::validate::validate_deep_link_cwd;
 use parking_lot::RwLock;
 use zeph_channels::AnyChannel;
-#[cfg(feature = "deep-link")]
 use zeph_common::deep_link::parse_deep_link;
 use zeph_common::{RestartPolicy, SessionId, TaskDescriptor, TaskSupervisor};
 use zeph_config::{ThinkingConfig, ThinkingEffort};
@@ -802,7 +799,6 @@ fn configure_history_integrity(key_path: &std::path::Path, vault_path: &std::pat
 }
 
 #[allow(clippy::too_many_lines, clippy::large_futures)]
-#[cfg_attr(not(feature = "deep-link"), allow(unused_mut))]
 pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // Early-exit flags that do not require config loading.
     if cli.dump_config_defaults {
@@ -1165,7 +1161,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             .await?;
             crate::tracing_init::exit_with_flush(tracing_guards, exit_code);
         }
-        #[cfg(feature = "cocoon")]
         Some(Command::Cocoon {
             command: crate::cli::CocoonCommand::Doctor { json, timeout_secs },
         }) => {
@@ -1218,7 +1213,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             return crate::commands::knowledge::handle_knowledge(kn_cmd, cli.config.as_deref())
                 .await;
         }
-        #[cfg(feature = "deep-link")]
         Some(Command::UrlScheme {
             command: url_scheme_cmd,
         }) => {
@@ -1244,7 +1238,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 }
             };
         }
-        #[cfg(feature = "deep-link")]
         Some(Command::UrlOpen { ref uri }) => {
             // Clone `uri` and `config` before passing `&mut cli` to avoid a
             // simultaneous borrow conflict (uri borrows cli.command while &mut cli is exclusive).
@@ -1572,7 +1565,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         Some(tokio::spawn(async move { warmup_provider(&p).await })) // EXEMPT(#5143): awaited before agent.run(), needs JoinHandle
     };
 
-    #[cfg(feature = "cocoon")]
     {
         let provider_refs: Vec<&zeph_core::config::ProviderEntry> =
             config.llm.providers.iter().collect();
@@ -3657,7 +3649,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                     );
                     agent
                 }
-                #[cfg(feature = "cocoon")]
                 zeph_core::config::ProviderKind::Cocoon => agent_setup::apply_cocoon_stt(
                     agent,
                     stt_entry,
@@ -3665,15 +3656,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                     config.timeouts.llm_request_timeout_secs,
                     Some(agent_status_tx.clone()),
                 ),
-                #[cfg(not(feature = "cocoon"))]
-                zeph_core::config::ProviderKind::Cocoon => {
-                    tracing::error!(
-                        provider = stt_entry.effective_name(),
-                        "STT provider is type cocoon but the `cocoon` feature is not enabled; \
-                         STT disabled"
-                    );
-                    agent
-                }
                 _ => {
                     let api_key = resolve_stt_api_key(config, stt_entry);
                     agent_setup::apply_whisper_stt(agent, stt_entry, language, api_key)
@@ -3777,7 +3759,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
 
     #[cfg(all(feature = "tui", feature = "scheduler"))]
     let metrics_tx_for_sched = metrics_tx.clone();
-    #[cfg(all(feature = "tui", feature = "cocoon"))]
+    #[cfg(feature = "tui")]
     let metrics_tx_for_cocoon = metrics_tx.clone();
     let extended_context = config
         .llm
@@ -3911,7 +3893,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 },
             });
         }
-        #[cfg(feature = "cocoon")]
         if let Some(cocoon_cfg) = config
             .llm
             .providers
@@ -4078,7 +4059,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // INV-TRUST: sanitize the deep-link prompt before enqueuing it.
     // ContentSourceKind::McpResponse maps to ExternalUntrusted, the same tier as any
     // network-supplied text; the sanitizer applies injection detection and spotlighting.
-    #[cfg(feature = "deep-link")]
     if let Some(raw_prompt) = cli.deep_link_prompt.take() {
         use zeph_sanitizer::{
             ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind,
@@ -4117,7 +4097,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 backfill_rx,
                 task_supervisor: Some((*supervisor).clone()),
                 fleet_session_id: fleet_session_id.clone(),
-                #[cfg(feature = "deep-link")]
                 deep_link_uri: cli.deep_link_uri.take(),
                 resume_banner: session_resume_info
                     .as_ref()
@@ -4485,7 +4464,6 @@ fn parse_plugin_url_arg(raw: &str) -> (&str, Option<&str>) {
 // point, but no spawned tasks read this env var on this call path — the guard is
 // a one-time write.
 #[allow(unsafe_code)]
-#[cfg(feature = "deep-link")]
 fn handle_url_open(
     uri: String,
     config_override: Option<&std::path::Path>,
@@ -4609,7 +4587,6 @@ fn handle_url_open(
     None
 }
 
-#[cfg(feature = "deep-link")]
 #[cfg(test)]
 mod deep_link_tests {
     #[test]

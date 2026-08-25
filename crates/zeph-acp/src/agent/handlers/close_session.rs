@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Handler for `session/close` (feature `unstable-session-delete`).
+//! Handler for `session/close`.
 
 use std::sync::Arc;
 

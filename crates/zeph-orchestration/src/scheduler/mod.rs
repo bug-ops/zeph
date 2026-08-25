@@ -32,12 +32,10 @@ use zeph_config::OrchestrationConfig;
 /// Built from `MessagePart::ToolUse`/`ToolResult` pairs — either read from the sub-agent
 /// transcript (spawn dispatch path) or collected in-loop (`RunInline` dispatch path). Consumed
 /// unconditionally by the scheduler's tool-outcome heuristics (`tick::counts_toward_completion_heuristic`,
-/// issue #6397) and, when the `llm-planning` feature is enabled, also fed to
-/// [`crate::verifier::PlanVerifier::verify`] as the ground truth a verify response's
-/// `claimed_executions` is checked against (`specs/009-orchestration/spec.md` § "Verifier
-/// Tool-Call Grounding"). Lives here rather than in `verifier` because the scheduler's own
-/// `TaskOutcome`/`SchedulerAction` variants carry it unconditionally — `llm-planning` off must
-/// still compile (issue #6744, cargo-hack `--each-feature` isolation).
+/// issue #6397) and also fed to [`crate::verifier::PlanVerifier::verify`] as the ground truth a
+/// verify response's `claimed_executions` is checked against (`specs/009-orchestration/spec.md`
+/// § "Verifier Tool-Call Grounding"). Lives here rather than in `verifier` because the
+/// scheduler's own `TaskOutcome`/`SchedulerAction` variants carry it unconditionally.
 #[derive(Debug, Clone)]
 pub struct ToolCallSummary {
     /// Tool name (matches `MessagePart::ToolUse::name`).

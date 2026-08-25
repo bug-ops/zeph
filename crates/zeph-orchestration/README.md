@@ -26,13 +26,13 @@ Implements the multi-agent task orchestration pipeline extracted from `zeph-core
 | `durable` | `ReplanBudgetSnapshot`, `journal_budget`/`restore_budget` — journals the replan budget to `zeph-durable` on pause and restores it on `/plan resume` (one execution per save generation, so a stale snapshot is never replayed) |
 | `command` | `PlanCommand` parser for `/plan` CLI slash commands; `HandoffCommand`/`parse_handoff_command`/`has_handoff_fence` — parses a node's trailing ` ```zeph-command ` fenced JSON block for Command-style dynamic task handoff (spec-080, feature `[orchestration.command]`) |
 | `error` | `OrchestrationError` unified error type |
-| `planner` | `Planner` trait + `LlmPlanner` — goal decomposition via `chat_typed` structured output (feature `llm-planning`) |
-| `aggregator` | `Aggregator` trait + `LlmAggregator` — synthesizes completed task outputs; content-sanitized before injection (feature `llm-planning`) |
-| `verifier` | `PlanVerifier` — post-task and whole-plan completeness verifier with targeted replan, grounded against the DAG-wide tool-call trace (feature `llm-planning`) |
-| `verify_predicate` | `PredicateEvaluator` — evaluates a node's optional `VerifyPredicate` and records a `PredicateOutcome`, driving predicate-scoped reruns (feature `llm-planning`) |
+| `planner` | `Planner` trait + `LlmPlanner` — goal decomposition via `chat_typed` structured output |
+| `aggregator` | `Aggregator` trait + `LlmAggregator` — synthesizes completed task outputs; content-sanitized before injection |
+| `verifier` | `PlanVerifier` — post-task and whole-plan completeness verifier with targeted replan, grounded against the DAG-wide tool-call trace |
+| `verify_predicate` | `PredicateEvaluator` — evaluates a node's optional `VerifyPredicate` and records a `PredicateOutcome`, driving predicate-scoped reruns |
 | `ensemble` | `EnsembleVerifier`, `EnsembleTracker` — N-fold parallel dispatch of `PlanVerifier` gap-severity checks across configured providers with deterministic majority-vote merge (spec `073-orch-ensemble-merge`, `[orchestration.ensemble]`, feature `llm-planning`) |
-| `plan_cache` | `PlanCache` — caches plan templates by normalized goal hash; `normalize_goal` + `goal_hash` for deterministic cache keys (feature `llm-planning`) |
-| `adaptorch` | `TopologyAdvisor` — adaptive topology hints for the scheduler (feature `llm-planning`) |
+| `plan_cache` | `PlanCache` — caches plan templates by normalized goal hash; `normalize_goal` + `goal_hash` for deterministic cache keys |
+| `adaptorch` | `TopologyAdvisor` — adaptive topology hints for the scheduler |
 
 ## Usage
 
@@ -123,22 +123,22 @@ When a goal is decomposed into a task graph, the resulting structure is cached a
 |---------|---------|-------------|
 | `sqlite` | yes | SQLite backend for graph persistence (via `zeph-db`, `zeph-durable`, `zeph-memory`, `zeph-subagent`) |
 | `postgres` | no | PostgreSQL backend |
-| `llm-planning` | no | Enables the LLM-dependent modules (`planner`, `aggregator`, `verifier`, `verify_predicate`, `plan_cache`, `adaptorch`, `ensemble`) and the `zeph-llm` dependency |
-| `test-utils` | no | Testcontainers for PostgreSQL integration tests (implies `postgres` and `llm-planning`) |
+| `test-utils` | no | Testcontainers for PostgreSQL integration tests (implies `postgres`) |
 
 > [!NOTE]
-> Without `llm-planning`, the crate builds as a pure-DAG scheduler subset with no `zeph-llm` dependency — useful for embedding the scheduler without an LLM backend.
+> The LLM-dependent modules (`planner`, `aggregator`, `verifier`, `verify_predicate`, `plan_cache`,
+> `adaptorch`, `ensemble`) and the `zeph-llm` dependency compile unconditionally — the
+> `llm-planning` feature was removed in the 2026-08 feature-flag audit (it gated no real optional
+> dependency; `zeph-llm` was already transitively present).
 
 ## Installation
 
 ```bash
 cargo add zeph-orchestration
-
-# With LLM-backed planning and aggregation
-cargo add zeph-orchestration --features llm-planning
 ```
 
-Enabled via the `orchestration` feature flag on the root `zeph` crate.
+`zeph-orchestration` is a mandatory dependency of `zeph-core` — it is always compiled into the
+`zeph` binary, not gated by a root feature flag.
 
 ## Documentation
 

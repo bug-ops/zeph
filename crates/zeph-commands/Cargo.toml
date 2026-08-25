@@ -23,7 +23,6 @@ zeph-config.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [features]
-cocoon = []
 profiling = []
 
 [lints]

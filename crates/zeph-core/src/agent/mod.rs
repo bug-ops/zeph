@@ -8,7 +8,6 @@ mod autodream;
 mod autonomous_turn;
 mod builder;
 pub use builder::{SecurityWiringSnapshot, SkillConfigParams};
-#[cfg(feature = "cocoon")]
 mod cocoon_cmd;
 mod command_context_impls;
 mod command_macros;

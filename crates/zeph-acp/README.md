@@ -363,14 +363,17 @@ The `initialize` response includes an `auth_hint` key in its metadata map. For s
 |---------|--------|-------------|
 | `acp-http` | stable | Enables the HTTP+SSE and WebSocket transports (axum-based). Required for `post_handler`, `get_handler`, `ws_upgrade_handler`, and `router`. |
 | `unstable-session-fork` | unstable | Enables the `fork_session` ACP method. See below. |
-| `unstable-session-resume` | unstable | Enables the `resume_session` ACP method. See below. |
 | `unstable-session-usage` | unstable | Enables `UsageUpdate` events — token counts (input, output, cache) sent to the IDE after each turn. See below. |
 | `unstable-elicitation` | unstable | Exposes elicitation schema types (`ElicitationRequest`, etc.) for future agent-loop integration. |
 | `unstable-llm-providers` | unstable | Exposes the `LlmProtocol` wire type for advertising available LLM providers to the IDE. |
-| `unstable-logout` | unstable | Enables the `logout` ACP method and advertises `auth.logout` capability. Zeph logout is a no-op (vault-based auth). |
 | `unstable-auth-methods` | unstable | Enables the ACP auth-methods extension. |
-| `unstable-cancel-request` | unstable | Wires the real `$/cancel_request` protocol notification onto the internal cancel signal. |
-| `unstable-message-id` / `unstable-session-add-dirs` / `unstable-session-delete` / `unstable-boolean-config` | stable in SDK | Retained as no-op flags; the underlying methods/types stabilized upstream and need no gate. |
+| `unstable-cancel-request` | unstable | Wires the real `$/cancel_request` protocol notification onto the internal cancel signal. Deliberate local opt-in, not in `default` (#5362). |
+
+`session/resume`, `session/delete`, `logout`, `additional_directories`, and the inbound
+`message_id` echo compile unconditionally — `unstable-session-resume`, `unstable-session-delete`,
+`unstable-logout`, `unstable-session-add-dirs`, `unstable-message-id`, and
+`unstable-boolean-config` were removed entirely in the 2026-08 feature-flag audit rather than
+kept as no-op tombstones.
 
 **Warning:**
 > All `unstable-*` features have wire protocol that is not yet finalized. Expect breaking changes before these features graduate to stable.
@@ -381,10 +384,8 @@ To opt in, add the desired features in your `Cargo.toml`:
 [dependencies]
 zeph-acp = { version = "*", features = [
     "unstable-session-fork",
-    "unstable-session-resume",
     "unstable-session-usage",
     "unstable-elicitation",
-    "unstable-logout",
 ] }
 ```
 
@@ -407,9 +408,11 @@ Enables the `fork_session` method. Branches an existing conversation into a new 
 
 The forked session is immediately available for new turns. The event copy is fire-and-forget — if the store write fails, a warning is logged but the session is still created. Model config options are forwarded to the fork response when `available_models` is non-empty.
 
-### `unstable-session-resume`
+### `session/resume`
 
-Enables the `resume_session` method. Restores a persisted session to an active in-memory state without replaying history as `session/update` events:
+Compiles unconditionally (feature removed in the 2026-08 feature-flag audit — the upstream
+gate stabilised). Restores a persisted session to an active in-memory state without replaying
+history as `session/update` events:
 
 - If the session is already active in memory, returns success immediately (no-op).
 - Otherwise, verifies existence in SQLite and hydrates a new `SessionEntry`, making the session available for new turns with lower latency than the default `load_session` replay path.

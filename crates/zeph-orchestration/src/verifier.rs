@@ -2225,7 +2225,7 @@ mod tests {
     /// `claimed_executions` field + trace section added for #6287) end-to-end through
     /// `chat_typed::<VerifyResponse>`. Ignored by default (requires a local Ollama instance with
     /// `qwen2.5:7b` pulled) — run manually with `cargo nextest run -p zeph-orchestration
-    /// --features llm-planning -- --ignored`.
+    /// -- --ignored`.
     #[tokio::test]
     #[ignore = "requires a local Ollama instance with qwen2.5:7b"]
     async fn verify_plan_live_ollama_round_trip_does_not_error() {

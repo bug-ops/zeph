@@ -17,7 +17,7 @@
 //! separate log-rotate step truncates the original. SIGHUP-based reopen is not
 //! implemented in this MVP.
 
-#![cfg(all(unix, feature = "daemon"))]
+#![cfg(unix)]
 
 use std::path::PathBuf;
 use std::process::Stdio;

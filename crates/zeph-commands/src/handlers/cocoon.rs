@@ -29,10 +29,6 @@ impl CommandHandler<CommandContext<'_>> for CocoonCommand {
         SlashCategory::Integration
     }
 
-    fn feature_gate(&self) -> Option<&'static str> {
-        Some("cocoon")
-    }
-
     fn requires_auth(&self) -> bool {
         true
     }
@@ -63,11 +59,6 @@ mod tests {
     #[test]
     fn category_is_integration() {
         assert_eq!(CocoonCommand.category(), SlashCategory::Integration);
-    }
-
-    #[test]
-    fn feature_gate_is_cocoon() {
-        assert_eq!(CocoonCommand.feature_gate(), Some("cocoon"));
     }
 
     #[test]

@@ -569,7 +569,6 @@ async fn cocoon_malformed_json_response() {
 // Live integration tests — require a running Cocoon sidecar
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "cocoon")]
 mod integration {
     use std::sync::Arc;
     use std::time::Duration;

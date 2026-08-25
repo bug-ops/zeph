@@ -92,7 +92,7 @@ rand = "0.10.2"
 rand_distr = "0.6"
 ratatui = "0.30.2"
 regex = "1.13.1"
-reqwest = { version = "0.13.4", default-features = false }
+reqwest = { version = "0.13.4", default-features = false, features = ["query"] }
 ripemd = "0.2"
 rmcp = "3.1.2"
 rubato = "5.0.0"
@@ -243,20 +243,19 @@ readme = "README.md"
 default = ["scheduler", "sqlite"]
 
 # === Use-case bundles ===
-desktop = ["tui", "deep-link", "session"]
+desktop = ["tui", "session", "index"]
 ide     = ["acp", "acp-http"]
 server  = ["gateway", "a2a", "otel", "prometheus", "session"]
 chat    = ["discord", "slack"]
 ml      = ["candle", "pdf"]
-full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers", "profiling", "sandbox", "gonka", "cocoon", "testing", "registry"]
+full    = ["desktop", "ide", "server", "chat", "pdf", "scheduler", "classifiers", "profiling", "sandbox", "gonka"]
 testing = ["zeph-llm/testing"]
 sandbox    = ["zeph-tools/sandbox"]
 bench      = ["dep:zeph-bench"]
 
 # === Individual feature flags ===
-deep-link = ["zeph-common/deep-link", "zeph-config/deep-link"]
 a2a = ["dep:zeph-a2a", "zeph-a2a?/server", "zeph-a2a?/ibct", "zeph-a2a?/card-signing", "zeph-config/card-signing"]
-acp = ["dep:zeph-acp", "zeph-acp/unstable-session-delete", "zeph-acp/unstable-session-fork", "zeph-acp/unstable-session-resume", "zeph-acp/unstable-session-usage", "zeph-acp/unstable-elicitation", "zeph-acp/unstable-llm-providers", "zeph-acp/unstable-logout", "zeph-acp/unstable-auth-methods", "zeph-acp/unstable-message-id", "zeph-acp/unstable-session-add-dirs"]
+acp = ["dep:zeph-acp", "zeph-acp/unstable-session-fork", "zeph-acp/unstable-session-usage", "zeph-acp/unstable-elicitation", "zeph-acp/unstable-llm-providers", "zeph-acp/unstable-auth-methods"]
 acp-http = ["acp", "dep:axum", "zeph-acp/acp-http"]
 candle = ["zeph-llm/candle", "zeph-core/candle"]
 classifiers = ["candle", "zeph-llm/classifiers", "zeph-sanitizer/classifiers", "zeph-core/classifiers"]
@@ -267,10 +266,7 @@ discord = ["zeph-channels/discord"]
 slack = ["zeph-channels/slack"]
 gateway = ["dep:zeph-gateway"]
 prometheus = ["gateway", "dep:prometheus-client", "zeph-gateway/prometheus"]
-scheduler = ["dep:zeph-scheduler", "dep:blake3", "dep:cron", "dep:schemars", "zeph-core/scheduler", "zeph-scheduler/daemon", "zeph-memory/scheduler"]
-# Skill/plugin marketplace discovery (spec-045, #5869): gates zeph-plugins' `marketplace`
-# module (skills.sh registry client). CLI args and RegistryConfig parsing always compile.
-registry = ["zeph-plugins/registry"]
+scheduler = ["dep:zeph-scheduler", "dep:blake3", "dep:cron", "dep:schemars", "zeph-core/scheduler", "zeph-memory/scheduler"]
 # Session persistence, event-log replay, and `zeph serve` (spec-068, #5343). Independent of `acp`:
 # `acp` gates ACP protocol transports, `session` gates the persistence CLI verbs and `zeph serve`.
 # The `zeph-session` crate/agent-loop dual-write is always compiled and config-gated
@@ -282,7 +278,6 @@ profiling = [
     "dep:tracing-chrome",
     "dep:sysinfo",
     "zeph-core/profiling",
-    "zeph-core/sysinfo",
     "zeph-llm/profiling",
     "zeph-memory/profiling",
     "zeph-tools/profiling",
@@ -306,7 +301,6 @@ profiling-pyroscope = ["profiling", "otel", "dep:pprof"]
 #   cargo build --no-default-features --features full,sqlite
 # Or simply `cargo build --features full` to rely on the default sqlite backend.
 gonka = ["zeph-llm/gonka", "zeph-core/gonka"]
-cocoon = ["zeph-llm/cocoon", "zeph-core/cocoon", "zeph-tui?/cocoon"]
 index = ["zeph-core/index"]
 sqlite = [
     "zeph-db/sqlite",
@@ -443,7 +437,7 @@ wiremock.workspace = true
 zeph-core.workspace = true
 zeph-llm = { workspace = true, features = ["testing"] }
 zeph-memory.workspace = true
-zeph-plugins = { workspace = true, features = ["registry", "mock"] }
+zeph-plugins = { workspace = true, features = ["mock"] }
 zeph-skills.workspace = true
 # Features are declared by the crates that use them, see workspace dependencies
 

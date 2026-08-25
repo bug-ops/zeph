@@ -69,7 +69,9 @@ assert!(!is_private_ip(addr)); // false — public IP
 | `treesitter` | Enables tree-sitter parser helpers and ts-query constants for Rust, Python, JavaScript, TypeScript, Go, Bash, TOML, JSON, Markdown |
 | `http-middleware` | Enables the `http_middleware` module (shared axum bearer-token auth with constant-time comparison and per-IP rate limiting) |
 | `jsonschema` | Derives `schemars::JsonSchema` on shared types (e.g. `memory` types) for JSON-schema generation |
-| `deep-link` | Enables the `deep_link` module for parsing/handling `zeph://` deep links |
+
+The `deep_link` module (parsing/handling `zeph://` deep links) compiles unconditionally — the
+`deep-link` feature was removed in the 2026-08 feature-flag audit.
 
 ## Installation
 

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Handler for `session/resume` (feature `unstable-session-resume`).
+//! Handler for `session/resume`.
 
 use std::sync::Arc;
 

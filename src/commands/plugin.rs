@@ -49,11 +49,6 @@ fn print_overlay_section(plugins_dir: &std::path::Path) -> anyhow::Result<()> {
 /// # Errors
 ///
 /// Returns an error if the plugin operation fails (invalid manifest, conflicts, etc.).
-// `async` is unused when compiled without the `registry` feature (the Search/Get arms'
-// `.await` calls are cfg'd out, leaving the fn body synchronous) — the signature must stay
-// `async` regardless, since `runner.rs` always `.await`s this call and the feature is a
-// caller-invisible build-time choice (M1, critic handoff).
-#[allow(clippy::unused_async)]
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn handle_plugin_command(
     cmd: PluginCommand,
@@ -138,57 +133,30 @@ pub(crate) async fn handle_plugin_command(
         }
 
         PluginCommand::Search { query } => {
-            #[cfg(feature = "registry")]
-            {
-                registry_search(
-                    &config,
-                    &query,
-                    vault_override,
-                    vault_key_override,
-                    vault_path_override,
-                )
-                .await?;
-            }
-            #[cfg(not(feature = "registry"))]
-            {
-                let _ = &query;
-                println!(
-                    "This zeph build was compiled without the `registry` feature; rebuild \
-                     with `--features registry` (or `full`) to use `zeph plugin search`."
-                );
-            }
+            registry_search(
+                &config,
+                &query,
+                vault_override,
+                vault_key_override,
+                vault_path_override,
+            )
+            .await?;
         }
 
         PluginCommand::Get { registry_id } => {
-            #[cfg(feature = "registry")]
-            {
-                // Fetched packages install via the same `mgr.add(...)` path as `plugin add`, so
-                // they get the same reputation check (spec-043, #5864). No `--strict-reputation`
-                // flag on `get` — config's `enforcement` applies as-is.
-                let mgr = mgr.with_reputation_config(&config.plugins.reputation, false);
-                registry_get(
-                    &config,
-                    &mgr,
-                    &registry_id,
-                    vault_override,
-                    vault_key_override,
-                    vault_path_override,
-                )
-                .await?;
-            }
-            #[cfg(not(feature = "registry"))]
-            {
-                let _ = (
-                    &registry_id,
-                    vault_override,
-                    vault_key_override,
-                    vault_path_override,
-                );
-                println!(
-                    "This zeph build was compiled without the `registry` feature; rebuild \
-                     with `--features registry` (or `full`) to use `zeph plugin get`."
-                );
-            }
+            // Fetched packages install via the same `mgr.add(...)` path as `plugin add`, so
+            // they get the same reputation check (spec-043, #5864). No `--strict-reputation`
+            // flag on `get` — config's `enforcement` applies as-is.
+            let mgr = mgr.with_reputation_config(&config.plugins.reputation, false);
+            registry_get(
+                &config,
+                &mgr,
+                &registry_id,
+                vault_override,
+                vault_key_override,
+                vault_path_override,
+            )
+            .await?;
         }
     }
 
@@ -201,7 +169,6 @@ pub(crate) async fn handle_plugin_command(
 /// Prints [`crate::commands::registry_client::REGISTRY_NOT_CONFIGURED_MSG`] and makes zero
 /// network calls when `skills.registry.enabled = false` (FR-004, NFR-001). Thin wrapper around
 /// [`registry_search_with`] — see that fn's tests for `MockRegistryClient`-driven coverage.
-#[cfg(feature = "registry")]
 #[tracing::instrument(name = "plugin.registry_search", skip(config), fields(query))]
 async fn registry_search(
     config: &zeph_core::config::Config,
@@ -233,7 +200,6 @@ async fn registry_search(
 /// Search logic parameterized over a [`zeph_plugins::marketplace::RegistryClient`] — split out
 /// of [`registry_search`] so tests can drive it with `MockRegistryClient` without network or a
 /// real `Config`/vault (review fix #4).
-#[cfg(feature = "registry")]
 async fn registry_search_with(
     client: &dyn zeph_plugins::marketplace::RegistryClient,
     query: &str,
@@ -256,7 +222,6 @@ async fn registry_search_with(
 /// `zeph skill get` when the fetched package has no `plugin.toml` (a bare skill package).
 /// Thin wrapper around [`registry_get_with`] — see that fn's tests for `MockRegistryClient`-
 /// driven coverage.
-#[cfg(feature = "registry")]
 #[tracing::instrument(name = "plugin.registry_get", skip(config, mgr), fields(registry_id))]
 async fn registry_get(
     config: &zeph_core::config::Config,
@@ -288,7 +253,6 @@ async fn registry_get(
 
 /// Fetch-and-install logic parameterized over a [`zeph_plugins::marketplace::RegistryClient`] —
 /// split out of [`registry_get`] so tests can drive it with `MockRegistryClient` (review fix #4).
-#[cfg(feature = "registry")]
 async fn registry_get_with(
     client: &dyn zeph_plugins::marketplace::RegistryClient,
     mgr: &zeph_plugins::PluginManager,
@@ -331,7 +295,7 @@ async fn registry_get_with(
     Ok(())
 }
 
-#[cfg(all(test, feature = "registry"))]
+#[cfg(test)]
 mod registry_tests {
     use super::*;
     use zeph_plugins::marketplace::RegistryEntry;

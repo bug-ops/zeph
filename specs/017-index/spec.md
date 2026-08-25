@@ -37,7 +37,7 @@ related:
 
 ---
 
-`crates/zeph-index/` (feature: `index`) — AST-based code indexing, semantic retrieval, repo map.
+`crates/zeph-index/` (feature: `index`, in the `desktop` bundle since the 2026-08 feature-flag audit) — AST-based code indexing, semantic retrieval, repo map.
 
 ## Indexing Pipeline
 

@@ -14,12 +14,6 @@ description = "Cron-based periodic task scheduler with SQLite persistence for Ze
 readme = "README.md"
 
 [features]
-## Enable Unix daemon lifecycle: `PidFile`, `detach_and_run`, and `run_foreground`.
-##
-## Pulls in `rustix` (fs + process features) for advisory file locking, used by the
-## shared `flock(2)` pid-file guard primitive (`zeph_common::pidfile`).
-## Only meaningful on Unix targets; daemon code is `#[cfg(unix)]`-gated.
-daemon = ["dep:rustix"]
 sqlite = ["zeph-db/sqlite", "zeph-durable/sqlite"]
 postgres = ["zeph-db/postgres", "zeph-durable/postgres"]
 default = ["sqlite"]
@@ -28,7 +22,7 @@ default = ["sqlite"]
 chrono = { workspace = true, features = ["std", "clock"] }
 cron.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls"] }
-rustix = { workspace = true, features = ["fs", "process", "std"], optional = true }
+rustix = { workspace = true, features = ["fs", "process", "std"] }
 semver.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

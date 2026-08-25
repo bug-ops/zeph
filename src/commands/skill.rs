@@ -450,55 +450,28 @@ pub(crate) async fn handle_skill_command(
         }
 
         SkillCommand::Search { query } => {
-            #[cfg(feature = "registry")]
-            {
-                registry_search(
-                    &config,
-                    &query,
-                    vault_override,
-                    vault_key_override,
-                    vault_path_override,
-                )
-                .await?;
-            }
-            #[cfg(not(feature = "registry"))]
-            {
-                let _ = &query;
-                println!(
-                    "This zeph build was compiled without the `registry` feature; rebuild \
-                     with `--features registry` (or `full`) to use `zeph skill search`."
-                );
-            }
+            registry_search(
+                &config,
+                &query,
+                vault_override,
+                vault_key_override,
+                vault_path_override,
+            )
+            .await?;
         }
 
         SkillCommand::Get { registry_id } => {
-            #[cfg(feature = "registry")]
-            {
-                registry_get(
-                    &config,
-                    &mgr,
-                    &managed_dir,
-                    &sqlite_path,
-                    &registry_id,
-                    vault_override,
-                    vault_key_override,
-                    vault_path_override,
-                )
-                .await?;
-            }
-            #[cfg(not(feature = "registry"))]
-            {
-                let _ = (
-                    &registry_id,
-                    vault_override,
-                    vault_key_override,
-                    vault_path_override,
-                );
-                println!(
-                    "This zeph build was compiled without the `registry` feature; rebuild \
-                     with `--features registry` (or `full`) to use `zeph skill get`."
-                );
-            }
+            registry_get(
+                &config,
+                &mgr,
+                &managed_dir,
+                &sqlite_path,
+                &registry_id,
+                vault_override,
+                vault_key_override,
+                vault_path_override,
+            )
+            .await?;
         }
     }
 
@@ -512,7 +485,6 @@ pub(crate) async fn handle_skill_command(
 /// [`registry_search_with`] so the fetch/search logic itself is testable in isolation from the
 /// config-gate and client construction — see that fn's tests for `MockRegistryClient`-driven
 /// coverage.
-#[cfg(feature = "registry")]
 #[tracing::instrument(name = "skill.registry_search", skip(config), fields(query))]
 async fn registry_search(
     config: &zeph_core::config::Config,
@@ -544,7 +516,6 @@ async fn registry_search(
 /// Search logic parameterized over a [`zeph_plugins::marketplace::RegistryClient`] — split out
 /// of [`registry_search`] so tests can drive it with `MockRegistryClient` without network or a
 /// real `Config`/vault (review fix #4).
-#[cfg(feature = "registry")]
 async fn registry_search_with(
     client: &dyn zeph_plugins::marketplace::RegistryClient,
     query: &str,
@@ -566,7 +537,6 @@ async fn registry_search_with(
 /// as `zeph skill install <local-path>` — no bypass of frontmatter validation or the
 /// injection-pattern scan (NFR-002). Thin wrapper around [`registry_get_with`] — see that fn's
 /// tests for `MockRegistryClient`-driven coverage.
-#[cfg(feature = "registry")]
 #[tracing::instrument(name = "skill.registry_get", skip(config, mgr), fields(registry_id))]
 #[allow(clippy::too_many_arguments)]
 async fn registry_get(
@@ -601,7 +571,6 @@ async fn registry_get(
 
 /// Fetch-and-install logic parameterized over a [`zeph_plugins::marketplace::RegistryClient`] —
 /// split out of [`registry_get`] so tests can drive it with `MockRegistryClient` (review fix #4).
-#[cfg(feature = "registry")]
 async fn registry_get_with(
     client: &dyn zeph_plugins::marketplace::RegistryClient,
     mgr: &zeph_skills::manager::SkillManager,
@@ -669,7 +638,7 @@ async fn registry_get_with(
     Ok(())
 }
 
-#[cfg(all(test, feature = "registry"))]
+#[cfg(test)]
 mod registry_tests {
     use super::*;
     use zeph_plugins::marketplace::RegistryEntry;

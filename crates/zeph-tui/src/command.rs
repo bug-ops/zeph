@@ -849,7 +849,6 @@ fn build_graph_experiment_commands() -> Vec<CommandEntry> {
     ]
 }
 
-#[cfg(feature = "cocoon")]
 fn build_cocoon_commands() -> Vec<CommandEntry> {
     vec![
         CommandEntry {
@@ -946,25 +945,6 @@ const ZEPH_COMMANDS_DEDUP: &[&str] = &[
     "/subagent",   // acp:subagent-spawn (already prefills "/subagent spawn " when empty)
 ];
 
-/// Returns `false` only for entries whose `feature_gate` names a Cargo feature that is
-/// unified, via the root binary crate, with this crate's own feature of the same name — and
-/// that feature is disabled in this build.
-///
-/// Every `feature_gate` value in [`zeph_commands::COMMANDS`] is otherwise purely descriptive
-/// (rendered as `[requires: X]` in `/help` text): the underlying `CommandHandler` is
-/// unconditionally registered in `Agent::run` regardless of any Cargo feature with a
-/// matching name (most such names — `"acp"`, `"guardrail"`, `"scheduler"`, `"session"`,
-/// etc. — do not even exist as Cargo features on the relevant crates). `"cocoon"` is the one
-/// exception: `CocoonCommand`'s registration in `crates/zeph-core/src/agent/slash_commands.rs`
-/// really is `#[cfg(feature = "cocoon")]`-gated, and the root `Cargo.toml`'s `cocoon` feature
-/// unifies `zeph-core/cocoon` with this crate's own `cocoon` feature (which already gates
-/// `build_cocoon_commands`), so checking it here faithfully predicts whether `CocoonCommand`
-/// exists in this exact build (#5875 F2) — without this check, a `cocoon`-feature-off build
-/// would still show `/cocoon` in autocomplete and fail when submitted.
-fn command_is_compiled_in_this_build(entry: &zeph_commands::CommandInfo) -> bool {
-    entry.feature_gate != Some("cocoon") || cfg!(feature = "cocoon")
-}
-
 /// Returns the [`CommandEntry`] projection of every [`zeph_commands::COMMANDS`] entry that
 /// has no dedicated hand-authored `TuiCommand` (see `ZEPH_COMMANDS_DEDUP`).
 ///
@@ -984,11 +964,6 @@ fn command_is_compiled_in_this_build(entry: &zeph_commands::CommandInfo) -> bool
 /// behavior (not just the `args` hint text, which is documentation-only and not always
 /// bracket-consistent — e.g. `/goal` and `/worktree` both default sensibly on empty args
 /// despite their hint text not being `[`-wrapped).
-///
-/// Entries whose `feature_gate` corresponds to a real, compile-time-relevant Cargo feature
-/// are excluded when that feature is off in this build (see `command_is_compiled_in_this_build`)
-/// — otherwise a feature-gated command that was never actually registered would still appear
-/// in autocomplete and fail when submitted (#5875 F2).
 ///
 /// Lazily initialised and shared for the process lifetime, like [`command_registry`] and
 /// [`extra_command_registry`].
@@ -1010,7 +985,6 @@ pub fn zeph_commands_entries() -> &'static [CommandEntry] {
         zeph_commands::COMMANDS
             .iter()
             .filter(|c| !ZEPH_COMMANDS_DEDUP.contains(&c.name))
-            .filter(|c| command_is_compiled_in_this_build(c))
             .map(|c| CommandEntry {
                 id: c.name,
                 label: c.description,
@@ -1067,7 +1041,6 @@ fn build_extra_commands() -> Vec<CommandEntry> {
             command: String::new(),
         },
     });
-    #[cfg(feature = "cocoon")]
     cmds.extend(build_cocoon_commands());
     cmds.extend(build_clipboard_commands());
     cmds.extend(build_knowledge_commands());
@@ -1172,15 +1145,13 @@ mod tests {
         // 24 base (14 + 5 plan + 5 graph) + 5 experiment + 1 log:status + 1 config:migrate
         // + 1 compaction:status + 1 guidelines:view + 1 tafc:status + 1 lsp:status
         // + 1 forgetting-sweep + 3 acp + 1 sandbox:status (#3294) = 43
-        // + 2 cocoon (#3673) when feature = "cocoon"
+        // + 2 cocoon (#3673)
         // + 2 clipboard (#3685, #5098)
         // + 2 worktree (#4679)
         // + 3 knowledge (#5019, #5020)
-        let expected = 50 + if cfg!(feature = "cocoon") { 2 } else { 0 };
-        assert_eq!(extra_command_registry().len(), expected);
+        assert_eq!(extra_command_registry().len(), 52);
     }
 
-    #[cfg(feature = "cocoon")]
     #[test]
     fn filter_cocoon_returns_cocoon_entries() {
         let results = filter_commands("cocoon");
@@ -1534,20 +1505,9 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "cocoon")]
-    fn zeph_commands_entries_includes_cocoon_when_feature_enabled() {
-        // #5875 F2.
+    fn zeph_commands_entries_includes_cocoon() {
         let entries = zeph_commands_entries();
         assert!(entries.iter().any(|e| e.id == "/cocoon"));
-    }
-
-    #[test]
-    #[cfg(not(feature = "cocoon"))]
-    fn zeph_commands_entries_excludes_cocoon_when_feature_disabled() {
-        // #5875 F2: without this, a cocoon-feature-off build would still show /cocoon in
-        // autocomplete and fail when submitted, since CocoonCommand is never registered.
-        let entries = zeph_commands_entries();
-        assert!(!entries.iter().any(|e| e.id == "/cocoon"));
     }
 
     #[test]

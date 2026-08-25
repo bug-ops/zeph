@@ -280,7 +280,7 @@ pub const COMMANDS: &[CommandInfo] = &[
         args: "[status | models]",
         description: "Inspect Cocoon sidecar (status, models)",
         category: SlashCategory::Integration,
-        feature_gate: Some("cocoon"),
+        feature_gate: None,
     },
     CommandInfo {
         name: "/image",

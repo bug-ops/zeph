@@ -116,9 +116,7 @@ pub(crate) fn build_registry_client(
 
 /// The standard "registry not configured" message for FR-004.
 ///
-/// Distinct from the "compiled without the `registry` feature" message printed by the
-/// `#[cfg(not(feature = "registry"))]` arm in `skill.rs`/`plugin.rs` — this one fires when the
-/// feature IS compiled in but `enabled = false` (the default).
+/// Fires when `enabled = false` (the default).
 pub(crate) const REGISTRY_NOT_CONFIGURED_MSG: &str = "no skill/plugin registry is configured. Add `[skills.registry] enabled = true` (and a \
      backend_kind/backend_url) to config.toml, or run `zeph --init` to configure it \
      interactively. See `zeph skill search --help`.";
@@ -152,7 +150,7 @@ pub(crate) fn print_search_results(entries: &[zeph_plugins::marketplace::Registr
     }
 }
 
-#[cfg(all(test, feature = "registry"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use zeph_plugins::marketplace::RegistryEntry;

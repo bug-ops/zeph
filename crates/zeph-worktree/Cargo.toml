@@ -13,9 +13,6 @@ publish.workspace = true
 description = "Git worktree lifecycle management for Zeph subagents"
 readme = "README.md"
 
-[features]
-default = []
-
 [dependencies]
 parking_lot.workspace = true
 serde = { workspace = true, features = ["derive"] }

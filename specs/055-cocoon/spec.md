@@ -50,7 +50,7 @@ related:
 
 | File | Contents |
 |---|---|
-| `crates/zeph-llm/src/cocoon/mod.rs` | Module root, feature gate |
+| `crates/zeph-llm/src/cocoon/mod.rs` | Module root (always compiled — consolidated v0.22.x, spec 029 §3.3) |
 | `crates/zeph-llm/src/cocoon/client.rs` | `CocoonClient` — HTTP transport, health check, model listing |
 | `crates/zeph-llm/src/cocoon/provider.rs` | `CocoonProvider : LlmProvider` |
 | `crates/zeph-llm/src/cocoon/tests.rs` | Unit tests |
@@ -182,7 +182,7 @@ THEN a spinner appears, the /stats endpoint is queried, and the result (proxy_co
 | NFR-1 | Reliability | All `CocoonClient` HTTP requests MUST use a configurable timeout (default 30 s); no request ever blocks indefinitely |
 | NFR-2 | Resilience | WHEN the sidecar is unreachable THE SYSTEM SHALL return `LlmError::Unavailable` without panicking; no `unwrap()` in any Cocoon code path |
 | NFR-3 | Observability | All async I/O in the Cocoon module MUST be wrapped in `tracing::info_span!` with names `llm.cocoon.request`, `llm.cocoon.health`, `llm.cocoon.models` |
-| NFR-4 | Portability | The `cocoon` feature MUST compile cleanly with and without `--features cocoon`; no conditional compilation leakage |
+| NFR-4 | Portability | ~~The `cocoon` feature MUST compile cleanly with and without `--features cocoon`~~ — superseded: the module is always compiled (spec 029 §3.3, 2026-08 audit) |
 | NFR-5 | Minimalism | Zero new Cargo dependencies; `reqwest` (already in workspace) is the only HTTP transport needed |
 | NFR-6 | Security | `ZEPH_COCOON_ACCESS_HASH` MUST be loaded exclusively from the age vault; never from env vars or plain config fields |
 | NFR-7 | Testability | Unit tests MUST cover `CocoonClient` via a local mock server (wiremock pattern); integration tests MUST be gated behind `#[ignore]` |
@@ -219,7 +219,7 @@ Cocoon Worker (TEE + GPU)
 
 ```
 crates/zeph-llm/src/cocoon/
-├── mod.rs        — module root, feature gate (#[cfg(feature = "cocoon")])
+├── mod.rs        — module root (always compiled)
 ├── provider.rs   — CocoonProvider : LlmProvider
 ├── client.rs     — CocoonClient: HTTP transport, health check, model listing
 └── tests.rs      — unit tests (mock server)
@@ -440,10 +440,10 @@ Result: 5/5 checks passed
 |----|--------|--------|
 | SC-001 | `CocoonProvider` passes all `LlmProvider` method tests | 100% |
 | SC-002 | `zeph cocoon doctor` exits 0 when sidecar is healthy | 100% |
-| SC-003 | Feature compiles cleanly with and without `--features cocoon` | 100% |
+| SC-003 | ~~Feature compiles cleanly with and without `--features cocoon`~~ — superseded, always compiled | N/A |
 | SC-004 | Zero new Cargo dependencies introduced | 0 new deps |
 | SC-005 | All async I/O paths have tracing spans | 100% coverage |
-| SC-006 | clippy `--features cocoon -D warnings` passes | 0 warnings |
+| SC-006 | clippy `-D warnings` passes | 0 warnings |
 
 ---
 

@@ -51,7 +51,7 @@ zeph plugin add ./path/to/my-plugin --strict-reputation
 | `manager` | `PluginManager` — install/remove/list with path-traversal defense (`canonicalize + starts_with(root)`), recursive `.bundled` marker stripping, symlink skip, and atomic install-then-verify |
 | `manifest` | `plugin.toml` schema (`PluginManifest`, `PluginMeta`, `SkillEntry`, `McpSection`) |
 | `overlay` | `apply_plugin_config_overlays` — scans installed plugins, validates overlays, and merges tighten-only keys into the live `Config` struct |
-| `marketplace` | `RegistryClient` trait, `RegistryEntry`, `PackageArchive`, `RegistryError` — opt-in skill/plugin discovery-and-install marketplace backing `zeph plugin search`/`get` (feature `registry`) |
+| `marketplace` | `RegistryClient` trait, `RegistryEntry`, `PackageArchive`, `RegistryError` — skill/plugin discovery-and-install marketplace backing `zeph plugin search`/`get`; always compiled, opt-in only via `[skills.registry] enabled` config |
 | `error` | `PluginError` typed error enum |
 | `types` | `PluginName` validated identifier |
 
@@ -134,7 +134,7 @@ zeph plugin remove my-plugin
 ### Marketplace discovery (opt-in)
 
 ```bash
-# Requires the `registry` feature and [skills.registry] enabled = true in config.toml
+# Requires [skills.registry] enabled = true in config.toml
 zeph plugin search <query>
 zeph plugin get <registry-id>
 ```
@@ -205,8 +205,12 @@ Enabled automatically when the `zeph-plugins` crate is a dependency of the root 
 |---------|---------|-------------|
 | `sqlite` | yes | SQLite backend — the default, lets the crate build in isolation |
 | `postgres` | no | PostgreSQL backend for PostgreSQL deployments (#4956) |
-| `registry` | no | Enables the `marketplace` module body backing `zeph plugin search`/`get` (spec-045). Adds `reqwest`'s `query` Cargo feature only — no new crate |
-| `mock` | no | Exposes `marketplace::mock::MockRegistryClient` outside `#[cfg(test)]` for downstream crates' `dev-dependencies`. No-op unless `registry` is also enabled |
+| `mock` | no | Exposes `marketplace::mock::MockRegistryClient` outside `#[cfg(test)]` for downstream crates' `dev-dependencies` |
+
+The `marketplace` module body backing `zeph plugin search`/`get` (spec-045) compiles
+unconditionally — the `registry` feature was removed in the 2026-08 feature-flag audit (it gated
+no real optional dependency; `reqwest`'s `query` sub-feature is now unconditional on the
+workspace `reqwest` dependency).
 
 ## Documentation
 

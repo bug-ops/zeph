@@ -40,7 +40,6 @@ pub(crate) struct TuiRunParams<'a> {
     ///
     /// When `Some`, a one-shot status notification is emitted in the TUI status area within
     /// 1 s of launch per spec §9 (TASK-8).
-    #[cfg(feature = "deep-link")]
     pub(crate) deep_link_uri: Option<String>,
     /// Pre-formatted "Resuming session" banner text (spec-068 §13.5), sent as
     /// `AgentEvent::ResumeBanner` once the TUI's `agent_tx` is available. `None` for a fresh
@@ -422,7 +421,6 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
 
     // TASK-8: emit a one-shot deep-link notification within 1 s of launch.
     // Tracked in `forwarders` so it is aborted cleanly when the TUI or agent exits.
-    #[cfg(all(feature = "deep-link", feature = "tui"))]
     if let Some(uri) = params.deep_link_uri.take() {
         forwarders.spawn(deep_link_notification_task(agent_tx.clone(), uri));
     }
@@ -461,7 +459,7 @@ pub(crate) async fn run_tui_agent<C: Channel + 'static>(
 }
 
 /// Emits a deep-link launch notification in the TUI status bar, then clears it after 3 s.
-#[cfg(all(feature = "deep-link", feature = "tui"))]
+#[cfg(feature = "tui")]
 async fn deep_link_notification_task(
     tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
     uri: String,

@@ -7,7 +7,6 @@ pub(crate) mod agents;
 #[cfg(feature = "bench")]
 pub(crate) mod bench;
 pub(crate) mod classifiers;
-#[cfg(feature = "cocoon")]
 pub(crate) mod cocoon;
 pub(crate) mod db;
 pub(crate) mod doctor;
@@ -20,7 +19,6 @@ pub(crate) mod memory;
 pub(crate) mod migrate;
 pub(crate) mod plugin;
 pub(crate) mod project;
-#[cfg(feature = "registry")]
 pub(crate) mod registry_client;
 pub(crate) mod router;
 #[cfg(feature = "scheduler")]

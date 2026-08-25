@@ -32,6 +32,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   build hit the 30-minute limit and was cancelled — a direct consequence of the sccache removal
   above, since a cold `--features full` build (including the heavier candle/ML dependencies) now
   compiles from scratch on every release instead of reusing a warm cache.
+- **BREAKING**: `full` no longer implies `testing`. Anyone relying on `--features full` for mock
+  LLM providers must now add `testing` explicitly (`--features full,testing`).
+- `index` (AST-based code indexing) joins the `desktop` bundle, and therefore `full` — the first
+  time `full` compiles `zeph-index` in.
+
+### Removed
+
+- Workspace feature-flag audit: `deep-link`, `cocoon`, `registry`, `zeph-orchestration/llm-planning`,
+  `zeph-scheduler/daemon`, and six stabilized `zeph-acp/unstable-*` flags (`unstable-boolean-config`,
+  `unstable-session-delete`, `unstable-session-resume`, `unstable-logout`, `unstable-session-add-dirs`,
+  `unstable-message-id`) are removed — all gated code is now always-on. `zeph-core/sysinfo` merged
+  into `zeph-core/profiling`. Three genuinely-empty `default = []` declarations (`zeph-config`,
+  `zeph-vault`, `zeph-worktree`) removed. `zeph-skills/miner` no longer synthesizes five implicit
+  `dep:`-less features (`anyhow`, `clap`, `dirs`, `toml`, `tracing-subscriber`) — replaced with
+  explicit `dep:` prefixes. `cargo metadata` feature count: 184 → 157.
 
 ### Security
 

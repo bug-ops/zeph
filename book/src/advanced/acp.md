@@ -872,7 +872,6 @@ Each feature adds a standard ACP protocol method or notification to the agent's 
 |--------------|---------------------------|-------------|
 | `unstable-session-list` | `list_sessions` | Enumerate in-memory sessions. Accepts an optional `cwd` filter; returns session ID, working directory, and last-updated timestamp for each matching session. |
 | `unstable-session-fork` | `fork_session` | Clone an existing session's persisted event history into a new session and immediately spawn a fresh agent loop from that checkpoint. The source session continues unaffected. |
-| `unstable-session-resume` | `resume_session` | Reattach to a session that exists in SQLite but is not currently active in memory. Spawns an agent loop without replaying historical events. Useful for continuing a session after a Zeph restart. |
 | `unstable-session-usage` | `UsageUpdate` in `PromptResponse` | Include token consumption data (input tokens, output tokens, cache read/write tokens) in each prompt response. IDEs use this to display per-turn and cumulative cost estimates. |
 | `unstable-session-model` | `set_session_model` | Allow the IDE to switch the active LLM model mid-session via a model picker UI. Zeph emits a `SetSessionModel` notification so the IDE can reflect the change immediately. |
 | `unstable-session-info-update` | `SessionInfoUpdate` | Zeph automatically generates a short title for the session after the first exchange and emits a `SessionInfoUpdate` notification. IDEs display this as the conversation title in their session list. |
@@ -881,6 +880,8 @@ The composite flag `acp-unstable` (root crate) enables all six at once.
 
 > **Note:** These features are gated on the `zeph-acp` crate. Each flag also enables the corresponding feature in the `agent-client-protocol` dependency. Stability and wire format are not guaranteed across minor versions until promoted to stable.
 
+> **Note:** `unstable-session-resume` was removed entirely in the 2026-08 feature-flag audit rather than kept as a no-op tombstone — `session/resume` is stabilized upstream and now compiles unconditionally.
+
 ### Enabling the features
 
 Enable individual flags:
@@ -888,7 +889,6 @@ Enable individual flags:
 ```bash
 cargo build --features unstable-session-list
 cargo build --features unstable-session-fork
-cargo build --features unstable-session-resume
 cargo build --features unstable-session-usage
 cargo build --features unstable-session-model
 cargo build --features unstable-session-info-update
@@ -907,7 +907,6 @@ When embedding `zeph-acp` as a library dependency:
 zeph-acp = { version = "...", features = [
   "unstable-session-list",
   "unstable-session-fork",
-  "unstable-session-resume",
   "unstable-session-usage",
   "unstable-session-model",
   "unstable-session-info-update",
@@ -963,7 +962,7 @@ The source session remains active and unchanged. Both sessions are independent a
 
 ### resume_session
 
-When `unstable-session-resume` is active, the agent advertises `resume` in `session_capabilities`. The IDE can call `resume_session` to reattach to a previously persisted session.
+The agent advertises `resume` in `session_capabilities`. The IDE can call `resume_session` to reattach to a previously persisted session.
 
 The resume operation:
 
@@ -1438,7 +1437,7 @@ Restrict which filesystem paths an ACP session is allowed to access:
 additional_directories = ["/workspace", "/tmp"]
 ```
 
-Requests to access paths outside this list are rejected at session start. Feature-gated by `unstable-session-add-dirs`.
+Requests to access paths outside this list are rejected at session start.
 
 ### Auth Methods Configuration
 
@@ -1459,8 +1458,6 @@ When enabled, the client's `message_id` from the prompt is echoed back on all st
 [acp]
 message_ids_enabled = true
 ```
-
-Feature-gated by `unstable-message-id`.
 
 ### CLI Overrides
 

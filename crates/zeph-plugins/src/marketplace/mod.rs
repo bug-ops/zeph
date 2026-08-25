@@ -10,17 +10,6 @@
 //! existing [`zeph_skills::manager::SkillManager`] and [`crate::manager::PluginManager`]
 //! install pipelines unchanged (NFR-002).
 //!
-//! # Compile-time gate
-//!
-//! The entire module body is gated by the `registry` Cargo feature (see `Cargo.toml`). This is
-//! a *thin* feature: `reqwest` is already an unconditional dependency of this crate, and the
-//! only additive surface it enables is `reqwest`'s own `query` Cargo feature (a thin wrapper
-//! around `serde_urlencoded`, not a new crate) — the feature's purpose is to satisfy the
-//! project convention that every new optional network capability gets a dedicated feature
-//! flag, not to gate a heavyweight dependency. The CLI argument variants and
-//! [`zeph_config::RegistryConfig`] parsing are **not** gated by this feature and always
-//! compile, so `--help` and `--migrate-config` keep working in a build without it.
-//!
 //! # Backends
 //!
 //! - [`skills_sh::SkillsShClient`] — the only shipped backend, targeting the public

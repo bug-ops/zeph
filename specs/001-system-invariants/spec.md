@@ -183,9 +183,9 @@ Feature flags (`Cargo.toml [features]`):
 - New optional crates: `dep:zeph-<name>` in the feature definition — never unconditionally import
 - Optional features that extend the TUI: use `zeph-tui?/feature-name` (conditional propagation)
 - Bundles (`desktop`, `ide`, `server`, `full`) are the only way to enable groups of features
-- CI MUST use `--features full` for lint and test runs — partial feature builds do not count
+- CI MUST exercise the `full` configuration on every PR — satisfied by four independent legs (coverage, `bundle-check (full)`, `release-build-full`, `ci-non-linux.yml`) rather than a literal `--features full` on the hot lint/test path; see spec 029 §5.6
 
-**NEVER**: add a pure behavioral marker to `default` (must gate real optional deps per spec 029 §2); never skip `--features full` in pre-merge checks.
+**NEVER**: add a pure behavioral marker to `default` (must gate real optional deps per spec 029 §2); never drop one of the four CI legs that together exercise `full` without replacing it.
 
 ## 10. Concurrency & Safety Contract
 

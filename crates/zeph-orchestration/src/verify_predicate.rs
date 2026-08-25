@@ -5,7 +5,7 @@
 //!
 //! [`VerifyPredicate`] and [`PredicateOutcome`] (the data types stored on `TaskNode`) live
 //! in [`crate::graph`]. This module contains only [`PredicateEvaluator`], which requires
-//! an LLM provider and is therefore behind the `llm-planning` feature.
+//! an LLM provider.
 
 use std::sync::Arc;
 use std::time::Duration;

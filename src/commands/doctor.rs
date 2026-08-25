@@ -889,7 +889,6 @@ fn build_doctor_transport(server: &zeph_config::McpServerConfig) -> zeph_mcp::Mc
 /// scheme is not registered (non-fatal — user may not have run `url-scheme register`), and
 /// `Fail` when the registration exists but points to a binary that is missing or does not match
 /// the currently running executable.
-#[cfg(feature = "deep-link")]
 fn check_url_scheme() -> CheckResult {
     use crate::url_scheme::register;
     let start = Instant::now();
@@ -1102,8 +1101,7 @@ async fn build_doctor_report(
         results.push(check_mcp_server(server, &config.mcp, mcp_timeout_secs).await);
     }
 
-    // 16. url_scheme.registration (deep-link feature only)
-    #[cfg(feature = "deep-link")]
+    // 16. url_scheme.registration
     results.push(check_url_scheme());
 
     // 17. integrity.anchor / durable.seal (issue #6449)

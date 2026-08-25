@@ -9,8 +9,7 @@
 //! single `VerificationResult` the existing `should_replan` gate already consumes. See
 //! `specs/073-orch-ensemble-merge/spec.md` for the full design.
 //!
-//! Gated behind the `llm-planning` feature (same gate as [`crate::verifier`], whose `Gap` type
-//! this module reuses).
+//! Reuses the `Gap` type from [`crate::verifier`].
 
 pub mod merge;
 pub mod tracker;

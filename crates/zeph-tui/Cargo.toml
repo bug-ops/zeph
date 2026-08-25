@@ -66,7 +66,6 @@ tokio-util.workspace = true
 [features]
 default = ["sqlite"]
 clipboard = ["dep:arboard"]
-cocoon = []
 profiling = []
 # `zeph-memory`/`zeph-db` require a backend to compile; default to `sqlite` so this crate
 # builds in isolation, and expose `postgres` for PostgreSQL deployments (#4956).

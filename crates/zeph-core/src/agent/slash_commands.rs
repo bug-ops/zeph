@@ -860,7 +860,6 @@ pub(crate) fn build_agent_command_registry<'ctx>()
     agent_reg.register(LoopCommand);
     agent_reg.register(PluginsCommand);
     agent_reg.register(AcpCommand);
-    #[cfg(feature = "cocoon")]
     agent_reg.register(zeph_commands::handlers::cocoon::CocoonCommand);
     agent_reg.register(TrajectoryCommand);
     agent_reg.register(ScopeCommand);

@@ -133,7 +133,6 @@ mod startup_checks;
 mod tracing_init;
 mod tui_bridge;
 mod tui_remote;
-#[cfg(feature = "deep-link")]
 mod url_scheme;
 
 use clap::Parser;

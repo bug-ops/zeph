@@ -95,7 +95,7 @@ pub mod quality;
 pub mod redact;
 pub mod serve;
 pub mod session_resume;
-#[cfg(feature = "sysinfo")]
+#[cfg(feature = "profiling")]
 pub mod system_metrics;
 
 pub mod http;

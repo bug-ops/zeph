@@ -738,7 +738,7 @@ pub struct AcpConfig {
     /// Echo `PromptRequest.message_id` onto `PromptResponse.user_message_id` and every
     /// streamed chunk, enabling IDE-side correlation.
     ///
-    /// Requires the `unstable-message-id` feature. Default: `true`.
+    /// Default: `true`.
     #[serde(default = "default_true")]
     pub message_ids_enabled: bool,
     /// Sub-agent delegation configuration (`[acp.subagents]`).

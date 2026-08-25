@@ -399,7 +399,6 @@ mod tests {
     use super::*;
     use crate::commands::doctor::CheckStatus;
 
-    #[cfg(feature = "cocoon")]
     #[test]
     fn cocoon_doctor_cli_parses() {
         use crate::cli::{Cli, CocoonCommand, Command};
@@ -417,7 +416,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "cocoon")]
     #[test]
     fn cocoon_doctor_cli_parses_json_flag() {
         use crate::cli::{Cli, CocoonCommand, Command};
@@ -432,7 +430,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "cocoon")]
     #[test]
     fn cocoon_doctor_cli_parses_timeout() {
         use crate::cli::{Cli, CocoonCommand, Command};
@@ -657,7 +654,6 @@ mod tests {
         assert_eq!(results[0].status, CheckStatus::Ok);
     }
 
-    #[cfg(feature = "cocoon")]
     #[tokio::test]
     #[ignore = "requires running Cocoon sidecar (COCOON_TEST_URL)"]
     async fn test_doctor_all_pass() {

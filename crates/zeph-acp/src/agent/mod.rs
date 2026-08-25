@@ -675,11 +675,6 @@ impl ZephAcpAgentState {
                     .sse(false),
             );
         }
-        #[cfg(any(
-            feature = "unstable-session-delete",
-            feature = "unstable-session-fork",
-            feature = "unstable-session-resume",
-        ))]
         let caps = {
             let mut session_caps = acp::schema::v1::SessionCapabilities::new();
             session_caps = session_caps.list(acp::schema::v1::SessionListCapabilities::default());

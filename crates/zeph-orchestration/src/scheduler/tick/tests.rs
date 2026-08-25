@@ -400,7 +400,6 @@ fn test_handoff_event_all_tools_failed_marks_task_failed_not_handoff() {
     );
 }
 
-#[cfg(feature = "llm-planning")]
 #[test]
 fn test_plan_with_verify_criteria_and_predicate_disabled_reaches_completed() {
     // End-to-end regression for #5403: a planner response where a task has a

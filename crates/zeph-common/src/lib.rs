@@ -13,7 +13,6 @@ pub mod anchor;
 pub mod audit;
 pub mod clock;
 pub mod config;
-#[cfg(feature = "deep-link")]
 pub mod deep_link;
 pub mod error_taxonomy;
 pub mod fidelity;

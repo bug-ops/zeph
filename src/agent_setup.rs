@@ -2584,7 +2584,6 @@ pub(crate) fn apply_whisper_stt<C: Channel>(
 ///
 /// [`CocoonClient`]: zeph_llm::cocoon::CocoonClient
 /// [`CocoonSttProvider`]: zeph_llm::cocoon::CocoonSttProvider
-#[cfg(feature = "cocoon")]
 pub(crate) fn apply_cocoon_stt<C: Channel>(
     agent: zeph_core::agent::Agent<C>,
     entry: &zeph_core::config::ProviderEntry,
