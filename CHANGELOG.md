@@ -33,9 +33,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   above, since a cold `--features full` build (including the heavier candle/ML dependencies) now
   compiles from scratch on every release instead of reusing a warm cache.
 - **BREAKING**: `full` no longer implies `testing`. Anyone relying on `--features full` for mock
-  LLM providers must now add `testing` explicitly (`--features full,testing`).
+  LLM providers must now add `testing` explicitly (`--features full,testing`) (#6747).
 - `index` (AST-based code indexing) joins the `desktop` bundle, and therefore `full` — the first
-  time `full` compiles `zeph-index` in.
+  time `full` compiles `zeph-index` in (#6747).
 
 ### Removed
 
@@ -46,7 +46,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   into `zeph-core/profiling`. Three genuinely-empty `default = []` declarations (`zeph-config`,
   `zeph-vault`, `zeph-worktree`) removed. `zeph-skills/miner` no longer synthesizes five implicit
   `dep:`-less features (`anyhow`, `clap`, `dirs`, `toml`, `tracing-subscriber`) — replaced with
-  explicit `dep:` prefixes. `cargo metadata` feature count: 184 → 157.
+  explicit `dep:` prefixes. `cargo metadata` feature count: 184 → 157 (#6747).
 
 ### Security
 
