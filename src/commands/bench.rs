@@ -42,7 +42,7 @@ pub(crate) async fn handle_bench_command(
             no_deterministic,
         } => {
             if *baseline {
-                handle_run_baseline(
+                Box::pin(handle_run_baseline(
                     dataset,
                     output,
                     data_file.as_deref(),
@@ -54,7 +54,7 @@ pub(crate) async fn handle_bench_command(
                     vault_override,
                     vault_key_override,
                     vault_path_override,
-                )
+                ))
                 .await
             } else {
                 handle_run(
@@ -574,7 +574,7 @@ mod tests {
         let config_path = dir.path().join("missing-config.toml");
         let output = dir.path().join("out.json");
 
-        let err = handle_run_baseline(
+        let err = Box::pin(handle_run_baseline(
             "longmemeval",
             &output,
             Some(&data_file),
@@ -586,7 +586,7 @@ mod tests {
             Some("bogus_backend_name"),
             None,
             None,
-        )
+        ))
         .await
         .expect_err("bogus --vault backend must be rejected");
 
