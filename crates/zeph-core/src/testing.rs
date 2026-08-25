@@ -73,6 +73,7 @@ impl MockChannel {
 }
 
 impl Channel for MockChannel {
+    #[allow(clippy::unused_async_trait_impl)]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         let mut msgs = self.messages.lock().unwrap();
         if msgs.is_empty() {
@@ -103,20 +104,25 @@ impl Channel for MockChannel {
         }
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.sent.lock().unwrap().push(text.to_string());
         Ok(())
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.chunks.lock().unwrap().push(chunk.to_string());
         Ok(())
     }
 
-    async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
-        Ok(())
+    fn flush_chunks(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn confirm(&mut self, _prompt: &str) -> Result<bool, ChannelError> {
         let mut confs = self.confirmations.lock().unwrap();
         Ok(if confs.is_empty() {
@@ -184,6 +190,7 @@ impl MockToolExecutor {
 }
 
 impl zeph_tools::executor::ToolExecutor for MockToolExecutor {
+    #[allow(clippy::unused_async_trait_impl)]
     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
         let mut outputs = self.outputs.lock().unwrap();
         if outputs.is_empty() {

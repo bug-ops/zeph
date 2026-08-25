@@ -63,6 +63,7 @@ impl MockChannel {
 }
 
 impl Channel for MockChannel {
+    #[allow(clippy::unused_async_trait_impl)]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         Ok(self.inputs.pop_front().map(|text| ChannelMessage {
             text,
@@ -73,21 +74,29 @@ impl Channel for MockChannel {
         }))
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.output_sent.lock().unwrap().push(text.to_string());
         Ok(())
     }
 
-    async fn send_chunk(&mut self, _chunk: &str) -> Result<(), ChannelError> {
-        Ok(())
+    fn send_chunk(
+        &mut self,
+        _chunk: &str,
+    ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 
-    async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
-        Ok(())
+    fn flush_chunks(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 
-    async fn send_typing(&mut self) -> Result<(), ChannelError> {
-        Ok(())
+    fn send_typing(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 }
 
@@ -112,10 +121,14 @@ impl InstrumentedMockExecutor {
 }
 
 impl ToolExecutor for InstrumentedMockExecutor {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(None)
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         *self.call_count.lock().unwrap() += 1;
         self.execution_log
@@ -144,14 +157,20 @@ impl ToolExecutor for InstrumentedMockExecutor {
 struct BlockingMockExecutor;
 
 impl ToolExecutor for BlockingMockExecutor {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(None)
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
     }
 
-    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        Err(ToolError::Blocked {
+    fn execute_tool_call(
+        &self,
+        call: &ToolCall,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Err(ToolError::Blocked {
             command: call.tool_id.to_string(),
-        })
+        }))
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }

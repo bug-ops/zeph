@@ -47,8 +47,14 @@ impl LlmCondenser {
 }
 
 impl Condenser for LlmCondenser {
-    async fn should_condense(&self, state: &ReconstructedState, budget_used_fraction: f64) -> bool {
-        budget_used_fraction >= self.threshold && state.messages.len() > self.keep_recent
+    fn should_condense(
+        &self,
+        state: &ReconstructedState,
+        budget_used_fraction: f64,
+    ) -> impl std::future::Future<Output = bool> + Send {
+        std::future::ready(
+            budget_used_fraction >= self.threshold && state.messages.len() > self.keep_recent,
+        )
     }
 
     #[tracing::instrument(

@@ -41,8 +41,11 @@ struct SingleToolExecutor {
 }
 
 impl ToolExecutor for SingleToolExecutor {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(None)
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
     }
 
     fn tool_definitions(&self) -> Vec<ToolDef> {
@@ -56,23 +59,29 @@ impl ToolExecutor for SingleToolExecutor {
         }]
     }
 
-    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        if call.tool_id.as_str() != self.tool_name {
-            return Ok(None);
-        }
-        Ok(Some(ToolOutput {
-            tool_name: self.tool_name.into(),
-            summary: "scraped body".to_owned(),
-            blocks_executed: 1,
-            filter_stats: None,
-            diff: None,
-            streamed: false,
-            terminal_id: None,
-            locations: None,
-            raw_response: None,
-            claim_source: None,
-            ..Default::default()
-        }))
+    fn execute_tool_call(
+        &self,
+        call: &ToolCall,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        let result = (|| {
+            if call.tool_id.as_str() != self.tool_name {
+                return Ok(None);
+            }
+            Ok(Some(ToolOutput {
+                tool_name: self.tool_name.into(),
+                summary: "scraped body".to_owned(),
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: None,
+                ..Default::default()
+            }))
+        })();
+        std::future::ready(result)
     }
 
     zeph_tools::tool_executor_no_inner_defaults!();

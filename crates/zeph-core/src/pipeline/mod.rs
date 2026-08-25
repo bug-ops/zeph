@@ -48,8 +48,11 @@ mod tests {
         type Input = String;
         type Output = String;
 
-        async fn run(&self, input: Self::Input) -> Result<Self::Output, PipelineError> {
-            Ok(format!("{input}{}", self.suffix))
+        fn run(
+            &self,
+            input: Self::Input,
+        ) -> impl std::future::Future<Output = Result<Self::Output, PipelineError>> + Send {
+            std::future::ready(Ok(format!("{input}{}", self.suffix)))
         }
     }
 
@@ -59,8 +62,11 @@ mod tests {
         type Input = String;
         type Output = usize;
 
-        async fn run(&self, input: Self::Input) -> Result<Self::Output, PipelineError> {
-            Ok(input.len())
+        fn run(
+            &self,
+            input: Self::Input,
+        ) -> impl std::future::Future<Output = Result<Self::Output, PipelineError>> + Send {
+            std::future::ready(Ok(input.len()))
         }
     }
 
@@ -128,8 +134,12 @@ mod tests {
             type Input = String;
             type Output = String;
 
-            async fn run(&self, _input: Self::Input) -> Result<Self::Output, PipelineError> {
-                Err(PipelineError::Custom("boom".into()))
+            fn run(
+                &self,
+                _input: Self::Input,
+            ) -> impl std::future::Future<Output = Result<Self::Output, PipelineError>> + Send
+            {
+                std::future::ready(Err(PipelineError::Custom("boom".into())))
             }
         }
 
@@ -266,8 +276,12 @@ mod tests {
         impl Step for FailStep {
             type Input = String;
             type Output = String;
-            async fn run(&self, _input: Self::Input) -> Result<Self::Output, PipelineError> {
-                Err(PipelineError::Custom("fail_a".into()))
+            fn run(
+                &self,
+                _input: Self::Input,
+            ) -> impl std::future::Future<Output = Result<Self::Output, PipelineError>> + Send
+            {
+                std::future::ready(Err(PipelineError::Custom("fail_a".into())))
             }
         }
 
@@ -287,16 +301,24 @@ mod tests {
         impl Step for FailA {
             type Input = String;
             type Output = String;
-            async fn run(&self, _input: Self::Input) -> Result<Self::Output, PipelineError> {
-                Err(PipelineError::Custom("fail_a".into()))
+            fn run(
+                &self,
+                _input: Self::Input,
+            ) -> impl std::future::Future<Output = Result<Self::Output, PipelineError>> + Send
+            {
+                std::future::ready(Err(PipelineError::Custom("fail_a".into())))
             }
         }
         struct FailB;
         impl Step for FailB {
             type Input = String;
             type Output = String;
-            async fn run(&self, _input: Self::Input) -> Result<Self::Output, PipelineError> {
-                Err(PipelineError::Custom("fail_b".into()))
+            fn run(
+                &self,
+                _input: Self::Input,
+            ) -> impl std::future::Future<Output = Result<Self::Output, PipelineError>> + Send
+            {
+                std::future::ready(Err(PipelineError::Custom("fail_b".into())))
             }
         }
 

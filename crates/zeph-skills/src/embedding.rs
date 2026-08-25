@@ -389,12 +389,14 @@ mod tests {
             false
         }
 
+        #[allow(clippy::unused_async_trait_impl)]
         async fn embed(&self, _text: &str) -> Result<Vec<f32>, zeph_llm::LlmError> {
             let call_no = self.embed_calls.fetch_add(1, Ordering::SeqCst) + 1;
             if self.fail_embed_at_call == Some(call_no) {
-                return Err(zeph_llm::LlmError::Unavailable);
+                Err(zeph_llm::LlmError::Unavailable)
+            } else {
+                Ok(vec![1.0, 0.0])
             }
-            Ok(vec![1.0, 0.0])
         }
 
         fn embed_batch(

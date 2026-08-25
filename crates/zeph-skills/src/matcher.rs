@@ -610,7 +610,14 @@ impl SkillMatcherBackend {
     /// call it when a consumer of [`Self::skill_embedding`] is actually enabled (RL rerank
     /// and/or `GoSkills` grouping), so turns using neither feature don't pay for the extra
     /// Qdrant round-trip (see issue #5786).
-    #[cfg_attr(not(feature = "qdrant"), allow(unused_variables, clippy::unused_async))]
+    #[cfg_attr(
+        not(feature = "qdrant"),
+        allow(
+            unused_variables,
+            clippy::unused_async,
+            clippy::unused_async_trait_impl
+        )
+    )]
     pub async fn refresh_skill_embeddings(&self, meta: &[&SkillMeta], scored: &[ScoredMatch]) {
         match self {
             Self::InMemory(_) => {}
@@ -694,7 +701,7 @@ impl SkillMatcherBackend {
         feature = "profiling",
         tracing::instrument(name = "skill.matcher_sync", skip_all)
     )]
-    #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn sync<F>(
         &mut self,
         meta: &[&SkillMeta],

@@ -650,9 +650,12 @@ impl ToolExecutor for WebSearchExecutor {
         }]
     }
 
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
         // Structured tool-call only — no fenced-block invocation path.
-        Ok(None)
+        std::future::ready(Ok(None))
     }
 
     #[cfg_attr(

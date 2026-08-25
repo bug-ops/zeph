@@ -376,15 +376,15 @@ impl Channel for DiscordChannel {
         crate::confirm::ConfirmLoop::run_confirm(self, prompt).await
     }
 
-    async fn elicit(
+    fn elicit(
         &mut self,
         request: ElicitationRequest,
-    ) -> Result<ElicitationResponse, ChannelError> {
+    ) -> impl std::future::Future<Output = Result<ElicitationResponse, ChannelError>> + Send {
         tracing::warn!(
             server = %request.server_name,
             "elicit() not supported on Discord channel — declining"
         );
-        Ok(ElicitationResponse::Declined)
+        std::future::ready(Ok(ElicitationResponse::Declined))
     }
 }
 

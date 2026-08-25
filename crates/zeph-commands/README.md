@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-commands)](https://crates.io/crates/zeph-commands)
 [![docs.rs](https://img.shields.io/docsrs/zeph-commands)](https://docs.rs/zeph-commands)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.97-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.98-blue)](https://www.rust-lang.org)
 
 Slash command registry, handler trait, and channel sink abstraction for
 [Zeph](https://github.com/bug-ops/zeph).

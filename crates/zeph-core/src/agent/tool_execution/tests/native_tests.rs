@@ -777,12 +777,18 @@ use crate::agent::speculative::prediction::{Prediction, PredictionSource};
 
 struct AlwaysOkSpecExec;
 impl ToolExecutor for AlwaysOkSpecExec {
-    async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(None)
+    fn execute(
+        &self,
+        _: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
     }
 
-    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(Some(ToolOutput {
+    fn execute_tool_call(
+        &self,
+        call: &ToolCall,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(Some(ToolOutput {
             tool_name: call.tool_id.clone(),
             summary: "speculative-ok".into(),
             blocks_executed: 1,
@@ -794,7 +800,7 @@ impl ToolExecutor for AlwaysOkSpecExec {
             raw_response: None,
             claim_source: None,
             ..Default::default()
-        }))
+        })))
     }
 
     fn is_tool_speculatable(&self, _: &str) -> bool {
@@ -823,14 +829,20 @@ impl ToolExecutor for AlwaysOkSpecExec {
 
 struct AlwaysErrSpecExec;
 impl ToolExecutor for AlwaysErrSpecExec {
-    async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(None)
+    fn execute(
+        &self,
+        _: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
     }
 
-    async fn execute_tool_call(&self, _: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        Err(ToolError::Execution(std::io::Error::other(
+    fn execute_tool_call(
+        &self,
+        _: &ToolCall,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Err(ToolError::Execution(std::io::Error::other(
             "simulated error",
-        )))
+        ))))
     }
 
     fn is_tool_speculatable(&self, _: &str) -> bool {

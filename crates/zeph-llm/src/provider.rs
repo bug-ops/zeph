@@ -1095,8 +1095,11 @@ mod tests {
     }
 
     impl LlmProvider for StubProvider {
-        async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
-            Ok(self.response.clone())
+        fn chat(
+            &self,
+            _messages: &[Message],
+        ) -> impl Future<Output = Result<String, LlmError>> + Send {
+            std::future::ready(Ok(self.response.clone()))
         }
 
         async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
@@ -1110,8 +1113,8 @@ mod tests {
             false
         }
 
-        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-            Ok(vec![0.1, 0.2, 0.3])
+        fn embed(&self, _text: &str) -> impl Future<Output = Result<Vec<f32>, LlmError>> + Send {
+            std::future::ready(Ok(vec![0.1, 0.2, 0.3]))
         }
 
         fn supports_embeddings(&self) -> bool {
@@ -1186,8 +1189,11 @@ mod tests {
         struct FailProvider;
 
         impl LlmProvider for FailProvider {
-            async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
-                Err(LlmError::Unavailable)
+            fn chat(
+                &self,
+                _messages: &[Message],
+            ) -> impl Future<Output = Result<String, LlmError>> + Send {
+                std::future::ready(Err(LlmError::Unavailable))
             }
 
             async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
@@ -1201,8 +1207,11 @@ mod tests {
                 false
             }
 
-            async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-                Err(LlmError::Unavailable)
+            fn embed(
+                &self,
+                _text: &str,
+            ) -> impl Future<Output = Result<Vec<f32>, LlmError>> + Send {
+                std::future::ready(Err(LlmError::Unavailable))
             }
 
             fn supports_embeddings(&self) -> bool {
@@ -1243,8 +1252,11 @@ mod tests {
         struct FailProvider;
 
         impl LlmProvider for FailProvider {
-            async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
-                Err(LlmError::Unavailable)
+            fn chat(
+                &self,
+                _messages: &[Message],
+            ) -> impl Future<Output = Result<String, LlmError>> + Send {
+                std::future::ready(Err(LlmError::Unavailable))
             }
 
             async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
@@ -1258,10 +1270,13 @@ mod tests {
                 false
             }
 
-            async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-                Err(LlmError::EmbedUnsupported {
+            fn embed(
+                &self,
+                _text: &str,
+            ) -> impl Future<Output = Result<Vec<f32>, LlmError>> + Send {
+                std::future::ready(Err(LlmError::EmbedUnsupported {
                     provider: "fail".into(),
-                })
+                }))
             }
 
             fn supports_embeddings(&self) -> bool {
@@ -1673,12 +1688,14 @@ mod tests {
     }
 
     impl LlmProvider for SequentialStub {
+        #[allow(clippy::unused_async_trait_impl)]
         async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
             let mut responses = self.responses.lock().unwrap();
             if responses.is_empty() {
-                return Err(LlmError::Other("no more responses".into()));
+                Err(LlmError::Other("no more responses".into()))
+            } else {
+                responses.remove(0)
             }
-            responses.remove(0)
         }
 
         async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
@@ -1692,10 +1709,10 @@ mod tests {
             false
         }
 
-        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-            Err(LlmError::EmbedUnsupported {
+        fn embed(&self, _text: &str) -> impl Future<Output = Result<Vec<f32>, LlmError>> + Send {
+            std::future::ready(Err(LlmError::EmbedUnsupported {
                 provider: "sequential-stub".into(),
-            })
+            }))
         }
 
         fn supports_embeddings(&self) -> bool {

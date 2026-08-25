@@ -152,6 +152,7 @@ impl Channel for JsonCliChannel {
         true
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.sink.emit(&JsonEvent::ResponseChunk { text });
         self.pending_chunks = true;
@@ -162,16 +163,21 @@ impl Channel for JsonCliChannel {
     /// programmatically. The resume banner (spec-068 §13.5) is a human-facing presentation
     /// nicety and must not leak into it as an unsolicited `ResponseChunk`, same as it is
     /// excluded from the process-startup path via `is_cli` in `src/runner.rs`.
-    async fn send_resume_banner(&mut self, _text: &str) -> Result<(), ChannelError> {
-        Ok(())
+    fn send_resume_banner(
+        &mut self,
+        _text: &str,
+    ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.sink.emit(&JsonEvent::ResponseChunk { text: chunk });
         self.pending_chunks = true;
         Ok(())
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         if self.pending_chunks {
             self.sink.emit(&JsonEvent::ResponseEnd);
@@ -180,9 +186,11 @@ impl Channel for JsonCliChannel {
         Ok(())
     }
 
-    async fn send_typing(&mut self) -> Result<(), ChannelError> {
+    fn send_typing(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
         // No typing indicator in JSON mode.
-        Ok(())
+        std::future::ready(Ok(()))
     }
 
     async fn confirm(&mut self, prompt: &str) -> Result<bool, ChannelError> {
@@ -199,19 +207,21 @@ impl Channel for JsonCliChannel {
         }
     }
 
-    async fn elicit(
+    fn elicit(
         &mut self,
         _request: ElicitationRequest,
-    ) -> Result<ElicitationResponse, ChannelError> {
+    ) -> impl std::future::Future<Output = Result<ElicitationResponse, ChannelError>> + Send {
         // Elicitation is not supported in JSON mode; decline quietly to avoid log spam.
-        Ok(ElicitationResponse::Declined)
+        std::future::ready(Ok(ElicitationResponse::Declined))
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
         self.sink.emit(&JsonEvent::Status { message: text });
         Ok(())
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_queue_count(&mut self, count: usize) -> Result<(), ChannelError> {
         self.sink.emit(&JsonEvent::Status {
             message: &format!("queue: {count}"),
@@ -219,26 +229,33 @@ impl Channel for JsonCliChannel {
         Ok(())
     }
 
-    async fn send_diff(
+    fn send_diff(
         &mut self,
         _diff: DiffData,
         _tool_call_id: &str,
-    ) -> Result<(), ChannelError> {
+    ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
         // v1: diffs are not emitted as JSON events.
-        Ok(())
+        std::future::ready(Ok(()))
     }
 
     /// No-op: `JsonEventLayer` emits `tool_result` from its `after_tool` hook.
     /// Double-emission would corrupt the JSONL stream.
-    async fn send_tool_output(&mut self, _event: ToolOutputEvent) -> Result<(), ChannelError> {
-        Ok(())
+    fn send_tool_output(
+        &mut self,
+        _event: ToolOutputEvent,
+    ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 
-    async fn send_thinking_chunk(&mut self, _chunk: &str) -> Result<(), ChannelError> {
+    fn send_thinking_chunk(
+        &mut self,
+        _chunk: &str,
+    ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
         // v1: thinking chunks are not emitted in JSON mode.
-        Ok(())
+        std::future::ready(Ok(()))
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_stop_hint(&mut self, hint: StopHint) -> Result<(), ChannelError> {
         self.sink.emit(&JsonEvent::Status {
             message: &format!("stop_hint: {hint:?}"),
@@ -247,7 +264,7 @@ impl Channel for JsonCliChannel {
     }
 
     /// No-op: `JsonEventLayer` emits `cost` from its `after_chat` hook.
-    async fn send_usage(
+    fn send_usage(
         &mut self,
         _input_tokens: u64,
         _output_tokens: u64,
@@ -255,13 +272,16 @@ impl Channel for JsonCliChannel {
         _cache_read_tokens: u64,
         _cache_write_tokens: u64,
         _cost_cents: f64,
-    ) -> Result<(), ChannelError> {
-        Ok(())
+    ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 
     /// No-op: `JsonEventLayer` emits `tool_call` from its `before_tool` hook.
-    async fn send_tool_start(&mut self, _event: ToolStartEvent) -> Result<(), ChannelError> {
-        Ok(())
+    fn send_tool_start(
+        &mut self,
+        _event: ToolStartEvent,
+    ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 }
 

@@ -2206,6 +2206,7 @@ mod tests {
             )
         }
 
+        #[allow(clippy::unused_async_trait_impl)]
         async fn list_tools(
             &self,
             _request: Option<rmcp::model::PaginatedRequestParams>,
@@ -2221,40 +2222,46 @@ mod tests {
             ]))
         }
 
-        async fn call_tool(
+        fn call_tool(
             &self,
             request: CallToolRequestParams,
             _context: rmcp::service::RequestContext<rmcp::RoleServer>,
-        ) -> Result<rmcp::model::CallToolResponse, rmcp::model::ErrorData> {
-            if request.name.as_ref() != DUPLEX_TEST_TOOL_NAME {
-                return Err(rmcp::model::ErrorData::invalid_params(
-                    format!("unknown tool: {}", request.name),
-                    None,
-                ));
-            }
-            let echo = request
-                .arguments
-                .as_ref()
-                .and_then(|args| args.get("echo"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            Ok(CallToolResult::success(vec![
-                rmcp::model::ContentBlock::text(format!("hello from duplex test, echo={echo}")),
-                rmcp::model::ContentBlock::image("c2VjcmV0Ynl0ZXM=", "image/png"),
-                rmcp::model::ContentBlock::embedded_text(
-                    "file:///notes.txt",
-                    "embedded text resource content",
-                ),
-                rmcp::model::ContentBlock::resource(rmcp::model::ResourceContents::blob(
-                    "Ymxvb2I=",
-                    "file:///x.bin",
-                )),
-                rmcp::model::ContentBlock::resource_link(rmcp::model::Resource::new(
-                    "file:///report.pdf",
-                    "report.pdf",
-                )),
-            ])
-            .into())
+        ) -> impl std::future::Future<
+            Output = Result<rmcp::model::CallToolResponse, rmcp::model::ErrorData>,
+        > + rmcp::service::MaybeSendFuture
+        + '_ {
+            let result = (|| {
+                if request.name.as_ref() != DUPLEX_TEST_TOOL_NAME {
+                    return Err(rmcp::model::ErrorData::invalid_params(
+                        format!("unknown tool: {}", request.name),
+                        None,
+                    ));
+                }
+                let echo = request
+                    .arguments
+                    .as_ref()
+                    .and_then(|args| args.get("echo"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                Ok(CallToolResult::success(vec![
+                    rmcp::model::ContentBlock::text(format!("hello from duplex test, echo={echo}")),
+                    rmcp::model::ContentBlock::image("c2VjcmV0Ynl0ZXM=", "image/png"),
+                    rmcp::model::ContentBlock::embedded_text(
+                        "file:///notes.txt",
+                        "embedded text resource content",
+                    ),
+                    rmcp::model::ContentBlock::resource(rmcp::model::ResourceContents::blob(
+                        "Ymxvb2I=",
+                        "file:///x.bin",
+                    )),
+                    rmcp::model::ContentBlock::resource_link(rmcp::model::Resource::new(
+                        "file:///report.pdf",
+                        "report.pdf",
+                    )),
+                ])
+                .into())
+            })();
+            std::future::ready(result)
         }
     }
 

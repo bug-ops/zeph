@@ -114,8 +114,8 @@ impl CandleWhisperProvider {
             }
         };
         let mut mel_filters = vec![0f32; mel_bytes.len() / 4];
-        for (i, chunk) in mel_bytes.chunks_exact(4).enumerate() {
-            mel_filters[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        for (i, chunk) in mel_bytes.as_chunks::<4>().0.iter().enumerate() {
+            mel_filters[i] = f32::from_le_bytes(*chunk);
         }
 
         tracing::info!("candle whisper model loaded");

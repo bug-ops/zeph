@@ -267,8 +267,12 @@ mod tests {
     #[derive(Debug)]
     struct MatchingExecutor;
     impl ToolExecutor for MatchingExecutor {
-        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(Some(ToolOutput {
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(Some(ToolOutput {
                 tool_name: ToolName::new("test"),
                 summary: "matched".to_owned(),
                 blocks_executed: 1,
@@ -280,7 +284,7 @@ mod tests {
                 raw_response: None,
                 claim_source: None,
                 ..Default::default()
-            }))
+            })))
         }
 
         crate::tool_executor_no_inner_defaults!();
@@ -289,8 +293,12 @@ mod tests {
     #[derive(Debug)]
     struct NoMatchExecutor;
     impl ToolExecutor for NoMatchExecutor {
-        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
         crate::tool_executor_no_inner_defaults!();
@@ -299,10 +307,14 @@ mod tests {
     #[derive(Debug)]
     struct ErrorExecutor;
     impl ToolExecutor for ErrorExecutor {
-        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Err(ToolError::Blocked {
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Err(ToolError::Blocked {
                 command: "test".to_owned(),
-            })
+            }))
         }
 
         crate::tool_executor_no_inner_defaults!();
@@ -311,8 +323,12 @@ mod tests {
     #[derive(Debug)]
     struct SecondExecutor;
     impl ToolExecutor for SecondExecutor {
-        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(Some(ToolOutput {
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(Some(ToolOutput {
                 tool_name: ToolName::new("test"),
                 summary: "second".to_owned(),
                 blocks_executed: 1,
@@ -324,7 +340,7 @@ mod tests {
                 raw_response: None,
                 claim_source: None,
                 ..Default::default()
-            }))
+            })))
         }
 
         crate::tool_executor_no_inner_defaults!();
@@ -396,9 +412,14 @@ mod tests {
         unconfirmed_called: std::sync::Mutex<bool>,
     }
     impl ToolExecutor for ConfirmedSpy {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
+        #[allow(clippy::unused_async_trait_impl)]
         async fn execute_tool_call(
             &self,
             call: &ToolCall,
@@ -418,6 +439,7 @@ mod tests {
                 ..Default::default()
             }))
         }
+        #[allow(clippy::unused_async_trait_impl)]
         async fn execute_tool_call_confirmed(
             &self,
             call: &ToolCall,
@@ -506,14 +528,19 @@ mod tests {
     #[derive(Debug)]
     struct FileToolExecutor;
     impl ToolExecutor for FileToolExecutor {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
-        async fn execute_tool_call(
+        fn execute_tool_call(
             &self,
             call: &ToolCall,
-        ) -> Result<Option<ToolOutput>, ToolError> {
-            if call.tool_id == "read" || call.tool_id == "write" {
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(if call.tool_id == "read" || call.tool_id == "write" {
                 Ok(Some(ToolOutput {
                     tool_name: call.tool_id.clone(),
                     summary: "file_handler".to_owned(),
@@ -529,7 +556,7 @@ mod tests {
                 }))
             } else {
                 Ok(None)
-            }
+            })
         }
 
         crate::tool_executor_no_inner_defaults!();
@@ -538,14 +565,19 @@ mod tests {
     #[derive(Debug)]
     struct ShellToolExecutor;
     impl ToolExecutor for ShellToolExecutor {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
-        async fn execute_tool_call(
+        fn execute_tool_call(
             &self,
             call: &ToolCall,
-        ) -> Result<Option<ToolOutput>, ToolError> {
-            if call.tool_id == "bash" {
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(if call.tool_id == "bash" {
                 Ok(Some(ToolOutput {
                     tool_name: ToolName::new("bash"),
                     summary: "shell_handler".to_owned(),
@@ -561,7 +593,7 @@ mod tests {
                 }))
             } else {
                 Ok(None)
-            }
+            })
         }
 
         crate::tool_executor_no_inner_defaults!();
@@ -631,8 +663,12 @@ mod tests {
             last_trust: Mutex<Option<SkillTrustLevel>>,
         }
         impl ToolExecutor for SpyExecutor {
-            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            fn execute(
+                &self,
+                _: &str,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
             fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
                 *self.last_env.lock().unwrap() = env;
@@ -652,8 +688,12 @@ mod tests {
         #[derive(Debug)]
         struct FixedConfirmation(bool);
         impl ToolExecutor for FixedConfirmation {
-            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            fn execute(
+                &self,
+                _: &str,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
             fn requires_confirmation(&self, _call: &ToolCall) -> bool {
                 self.0

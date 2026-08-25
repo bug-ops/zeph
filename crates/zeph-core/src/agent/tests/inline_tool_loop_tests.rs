@@ -49,10 +49,14 @@ impl CallableToolExecutor {
 }
 
 impl ToolExecutor for CallableToolExecutor {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(None)
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn execute_tool_call(&self, _call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         let mut outputs = self.outputs.lock().unwrap();
         if outputs.is_empty() {
@@ -245,10 +249,15 @@ async fn network_deny_wrapped_executor_blocks_fetch_before_reaching_inner() {
     }
 
     impl ToolExecutor for FlaggingExecutor {
-        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
+        #[allow(clippy::unused_async_trait_impl)]
         async fn execute_tool_call(
             &self,
             _call: &ToolCall,
@@ -331,8 +340,12 @@ async fn elicitation_event_during_tool_execution_is_handled() {
     }
 
     impl ToolExecutor for BlockingElicitingExecutor {
-        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
         async fn execute_tool_call(
@@ -431,8 +444,12 @@ mod run_inline_timeout {
     }
 
     impl ToolExecutor for SlowToolExecutor {
-        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
         async fn execute_tool_call(

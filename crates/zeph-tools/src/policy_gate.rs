@@ -291,20 +291,26 @@ impl<T: ToolExecutor> PolicyGateExecutor<T> {
 impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
     // CRIT-03: legacy unstructured dispatch has no tool_id; policy cannot be enforced.
     // PolicyGateExecutor is only constructed when policy is enabled, so reject unconditionally.
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Err(ToolError::Blocked {
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Err(ToolError::Blocked {
             command:
                 "legacy unstructured dispatch is not supported when policy enforcement is enabled"
                     .into(),
-        })
+        }))
     }
 
-    async fn execute_confirmed(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Err(ToolError::Blocked {
+    fn execute_confirmed(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Err(ToolError::Blocked {
             command:
                 "legacy unstructured dispatch is not supported when policy enforcement is enabled"
                     .into(),
-        })
+        }))
     }
 
     fn tool_definitions(&self) -> Vec<ToolDef> {
@@ -434,14 +440,19 @@ mod tests {
     struct MockExecutor;
 
     impl ToolExecutor for MockExecutor {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
-        async fn execute_tool_call(
+        fn execute_tool_call(
             &self,
             call: &ToolCall,
-        ) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(Some(ToolOutput {
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(Some(ToolOutput {
                 tool_name: call.tool_id.clone(),
                 summary: "ok".into(),
                 blocks_executed: 1,
@@ -453,7 +464,7 @@ mod tests {
                 raw_response: None,
                 claim_source: None,
                 ..Default::default()
-            }))
+            })))
         }
 
         crate::tool_executor_no_inner_defaults!();
@@ -498,11 +509,19 @@ mod tests {
     struct CheckpointingExecutor;
 
     impl ToolExecutor for CheckpointingExecutor {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
-        async fn execute_tool_call(&self, _: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute_tool_call(
+            &self,
+            _: &ToolCall,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
         fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
             crate::executor::CheckpointActionResult {
@@ -546,11 +565,19 @@ mod tests {
     struct ConfirmationRequiredExecutor;
 
     impl ToolExecutor for ConfirmationRequiredExecutor {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
-        async fn execute_tool_call(&self, _: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute_tool_call(
+            &self,
+            _: &ToolCall,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
         fn requires_confirmation(&self, _call: &ToolCall) -> bool {
             true

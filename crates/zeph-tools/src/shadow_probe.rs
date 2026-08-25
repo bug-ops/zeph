@@ -518,15 +518,20 @@ mod tests {
 
     struct OkInner;
     impl ToolExecutor for OkInner {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
-        async fn execute_tool_call(
+        fn execute_tool_call(
             &self,
             call: &ToolCall,
-        ) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(Some(ToolOutput {
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(Some(ToolOutput {
                 tool_name: call.tool_id.clone(),
                 summary: "ok".to_owned(),
                 blocks_executed: 1,
@@ -538,7 +543,7 @@ mod tests {
                 raw_response: None,
                 claim_source: None,
                 ..Default::default()
-            }))
+            })))
         }
 
         crate::tool_executor_no_inner_defaults!();
@@ -548,17 +553,22 @@ mod tests {
     /// `TrustGateExecutor::execute_tool_call` for a `PermissionAction::Ask`-gated tool.
     struct ConfirmationRequiredInner;
     impl ToolExecutor for ConfirmationRequiredInner {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
-        async fn execute_tool_call(
+        fn execute_tool_call(
             &self,
             call: &ToolCall,
-        ) -> Result<Option<ToolOutput>, ToolError> {
-            Err(ToolError::ConfirmationRequired {
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Err(ToolError::ConfirmationRequired {
                 command: call.tool_id.to_string(),
-            })
+            }))
         }
 
         crate::tool_executor_no_inner_defaults!();
@@ -799,8 +809,12 @@ mod tests {
 
     struct CheckpointingInner;
     impl ToolExecutor for CheckpointingInner {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
         fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
             crate::executor::CheckpointActionResult {

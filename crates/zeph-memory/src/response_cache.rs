@@ -126,7 +126,9 @@ impl ResponseCache {
                 continue;
             }
             let stored: Vec<f32> = blob
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                 .collect();
             let score = zeph_common::math::cosine_similarity(embedding, &stored);

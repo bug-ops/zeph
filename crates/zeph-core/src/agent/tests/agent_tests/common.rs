@@ -182,6 +182,7 @@ impl MockChannel {
 }
 
 impl Channel for MockChannel {
+    #[allow(clippy::unused_async_trait_impl)]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, crate::channel::ChannelError> {
         let mut msgs = self.messages.lock().unwrap();
         if msgs.is_empty() {
@@ -212,6 +213,7 @@ impl Channel for MockChannel {
         }
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send(&mut self, text: &str) -> Result<(), crate::channel::ChannelError> {
         if self.fail_send {
             return Err(crate::channel::ChannelError::ChannelClosed);
@@ -220,20 +222,25 @@ impl Channel for MockChannel {
         Ok(())
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), crate::channel::ChannelError> {
         self.chunks.lock().unwrap().push(chunk.to_string());
         Ok(())
     }
 
-    async fn flush_chunks(&mut self) -> Result<(), crate::channel::ChannelError> {
-        Ok(())
+    fn flush_chunks(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<(), crate::channel::ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_status(&mut self, text: &str) -> Result<(), crate::channel::ChannelError> {
         self.statuses.lock().unwrap().push(text.to_string());
         Ok(())
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_tool_start(
         &mut self,
         event: ToolStartEvent,
@@ -242,6 +249,7 @@ impl Channel for MockChannel {
         Ok(())
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn confirm(&mut self, prompt: &str) -> Result<bool, crate::channel::ChannelError> {
         self.confirmed_prompts
             .lock()
@@ -263,6 +271,7 @@ impl Channel for MockChannel {
         self.input_sanitization_required
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn notify_foreground_subagent_completed(
         &mut self,
         id: &str,
@@ -276,6 +285,7 @@ impl Channel for MockChannel {
         Ok(())
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn notify_background_subagent_completed(
         &mut self,
         id: &str,
@@ -304,16 +314,24 @@ impl Channel for PendingChannel {
         std::future::pending().await
     }
 
-    async fn send(&mut self, _text: &str) -> Result<(), crate::channel::ChannelError> {
-        Ok(())
+    fn send(
+        &mut self,
+        _text: &str,
+    ) -> impl std::future::Future<Output = Result<(), crate::channel::ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 
-    async fn send_chunk(&mut self, _chunk: &str) -> Result<(), crate::channel::ChannelError> {
-        Ok(())
+    fn send_chunk(
+        &mut self,
+        _chunk: &str,
+    ) -> impl std::future::Future<Output = Result<(), crate::channel::ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 
-    async fn flush_chunks(&mut self) -> Result<(), crate::channel::ChannelError> {
-        Ok(())
+    fn flush_chunks(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<(), crate::channel::ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 }
 
@@ -379,6 +397,7 @@ impl MockToolExecutor {
 }
 
 impl ToolExecutor for MockToolExecutor {
+    #[allow(clippy::unused_async_trait_impl)]
     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
         let mut outputs = self.outputs.lock().unwrap();
         if outputs.is_empty() {

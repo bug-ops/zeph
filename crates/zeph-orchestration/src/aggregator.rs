@@ -409,8 +409,12 @@ mod tests {
                 fn supports_streaming(&self) -> bool {
                     false
                 }
-                async fn embed(&self, _: &str) -> Result<Vec<f32>, LlmError> {
-                    Err(LlmError::Unavailable)
+                fn embed(
+                    &self,
+                    _: &str,
+                ) -> impl std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send
+                {
+                    std::future::ready(Err(LlmError::Unavailable))
                 }
                 fn supports_embeddings(&self) -> bool {
                     false

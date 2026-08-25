@@ -898,7 +898,54 @@ fn parse_placeholder_importance(content: &str) -> f32 {
 mod tests {
     use super::*;
     use zeph_common::ProviderName;
-    use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+    use zeph_llm::provider::{ChatStream, Message, MessageMetadata, MessagePart, Role};
+
+    /// Deterministic embedding mock shared by fidelity semantic-scoring tests.
+    #[derive(Debug)]
+    struct EmbedMockProvider;
+
+    impl zeph_llm::provider::LlmProvider for EmbedMockProvider {
+        fn chat(
+            &self,
+            _: &[Message],
+        ) -> impl std::future::Future<Output = Result<String, LlmError>> + Send {
+            std::future::ready(Err(LlmError::Unavailable))
+        }
+        fn chat_stream(
+            &self,
+            _: &[Message],
+        ) -> impl std::future::Future<Output = Result<ChatStream, LlmError>> + Send {
+            std::future::ready(Err(LlmError::Unavailable))
+        }
+        fn supports_streaming(&self) -> bool {
+            false
+        }
+        fn embed(
+            &self,
+            text: &str,
+        ) -> impl std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send {
+            let v = if text.contains("cat")
+                || text.contains("mat")
+                || text.contains("feline")
+                || text.contains("rug")
+            {
+                if text.contains("feline") || text.contains("rug") {
+                    vec![0.9f32, 0.1, 0.0]
+                } else {
+                    vec![1.0f32, 0.0, 0.0]
+                }
+            } else {
+                vec![0.0f32, 0.0, 1.0]
+            };
+            std::future::ready(Ok(v))
+        }
+        fn supports_embeddings(&self) -> bool {
+            true
+        }
+        fn name(&self) -> &'static str {
+            "embed-mock"
+        }
+    }
 
     struct FixedTc(usize);
     impl TokenCounting for FixedTc {
@@ -1795,29 +1842,36 @@ mod tests {
     // 15. LLM path stores deferred_summary and updates content.
     #[tokio::test]
     async fn compress_llm_path_stores_deferred_summary() {
-        use zeph_llm::LlmError;
-        use zeph_llm::provider::ChatStream;
-
         #[derive(Debug)]
         struct MockProvider;
 
         impl zeph_llm::provider::LlmProvider for MockProvider {
-            async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
-                Ok("summary text".to_string())
+            fn chat(
+                &self,
+                _messages: &[Message],
+            ) -> impl std::future::Future<Output = Result<String, LlmError>> + Send {
+                std::future::ready(Ok("summary text".to_string()))
             }
 
-            async fn chat_stream(&self, _messages: &[Message]) -> Result<ChatStream, LlmError> {
-                Err(LlmError::Unavailable)
+            fn chat_stream(
+                &self,
+                _messages: &[Message],
+            ) -> impl std::future::Future<Output = Result<ChatStream, LlmError>> + Send
+            {
+                std::future::ready(Err(LlmError::Unavailable))
             }
 
             fn supports_streaming(&self) -> bool {
                 false
             }
 
-            async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-                Err(LlmError::EmbedUnsupported {
+            fn embed(
+                &self,
+                _text: &str,
+            ) -> impl std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send {
+                std::future::ready(Err(LlmError::EmbedUnsupported {
                     provider: "mock".into(),
-                })
+                }))
             }
 
             fn supports_embeddings(&self) -> bool {
@@ -1969,46 +2023,6 @@ mod tests {
     //       query "cat mat" → [1.0, 0.0, 0.0]
     #[tokio::test]
     async fn semantic_scoring_higher_for_similar_messages() {
-        use zeph_llm::LlmError;
-        use zeph_llm::provider::ChatStream;
-
-        #[derive(Debug)]
-        struct EmbedMockProvider;
-
-        impl zeph_llm::provider::LlmProvider for EmbedMockProvider {
-            async fn chat(&self, _: &[Message]) -> Result<String, LlmError> {
-                Err(LlmError::Unavailable)
-            }
-            async fn chat_stream(&self, _: &[Message]) -> Result<ChatStream, LlmError> {
-                Err(LlmError::Unavailable)
-            }
-            fn supports_streaming(&self) -> bool {
-                false
-            }
-            async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
-                let v = if text.contains("cat")
-                    || text.contains("mat")
-                    || text.contains("feline")
-                    || text.contains("rug")
-                {
-                    if text.contains("feline") || text.contains("rug") {
-                        vec![0.9f32, 0.1, 0.0]
-                    } else {
-                        vec![1.0f32, 0.0, 0.0]
-                    }
-                } else {
-                    vec![0.0f32, 0.0, 1.0]
-                };
-                Ok(v)
-            }
-            fn supports_embeddings(&self) -> bool {
-                true
-            }
-            fn name(&self) -> &'static str {
-                "embed-mock"
-            }
-        }
-
         let provider = EmbedMockProvider;
         let scorer = FidelityScorer;
         let cfg = FidelityConfig {

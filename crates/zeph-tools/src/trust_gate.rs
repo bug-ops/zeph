@@ -340,14 +340,19 @@ mod tests {
     #[derive(Debug)]
     struct MockExecutor;
     impl ToolExecutor for MockExecutor {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
-        async fn execute_tool_call(
+        fn execute_tool_call(
             &self,
             call: &ToolCall,
-        ) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(Some(ToolOutput {
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(Some(ToolOutput {
                 tool_name: call.tool_id.clone(),
                 summary: "ok".into(),
                 blocks_executed: 1,
@@ -359,7 +364,7 @@ mod tests {
                 raw_response: None,
                 claim_source: None,
                 ..Default::default()
-            }))
+            })))
         }
 
         crate::tool_executor_no_inner_defaults!();
@@ -723,11 +728,19 @@ mod tests {
         }
     }
     impl ToolExecutor for EnvCapture {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
-        async fn execute_tool_call(&self, _: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute_tool_call(
+            &self,
+            _: &ToolCall,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
         fn set_skill_env(&self, env: Option<std::collections::HashMap<String, String>>) {
             *self.captured.lock().unwrap() = env;
@@ -741,14 +754,19 @@ mod tests {
         #[derive(Debug)]
         struct RetryableExecutor;
         impl ToolExecutor for RetryableExecutor {
-            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            fn execute(
+                &self,
+                _: &str,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
-            async fn execute_tool_call(
+            fn execute_tool_call(
                 &self,
                 _: &ToolCall,
-            ) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
             fn is_tool_retryable(&self, tool_id: &str) -> bool {
                 tool_id == "fetch"
@@ -766,14 +784,19 @@ mod tests {
         #[derive(Debug)]
         struct CheckpointingExecutor;
         impl ToolExecutor for CheckpointingExecutor {
-            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            fn execute(
+                &self,
+                _: &str,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
-            async fn execute_tool_call(
+            fn execute_tool_call(
                 &self,
                 _: &ToolCall,
-            ) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
             fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
                 crate::executor::CheckpointActionResult {

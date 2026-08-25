@@ -3275,8 +3275,12 @@ mod tests {
     struct NoopExec;
 
     impl zeph_tools::executor::ToolExecutor for NoopExec {
-        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
         zeph_tools::tool_executor_no_inner_defaults!();
     }
@@ -4251,18 +4255,23 @@ mod tests {
     struct TaggedMock(String);
 
     impl ToolExecutor for TaggedMock {
-        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
-        async fn execute_tool_call(
+        fn execute_tool_call(
             &self,
             call: &zeph_tools::ToolCall,
-        ) -> Result<Option<ToolOutput>, ToolError> {
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
             if call.tool_id != self.0 {
-                return Ok(None);
+                return std::future::ready(Ok(None));
             }
-            Ok(Some(ToolOutput {
+            std::future::ready(Ok(Some(ToolOutput {
                 tool_name: call.tool_id.clone(),
                 summary: "ok".into(),
                 blocks_executed: 1,
@@ -4274,7 +4283,7 @@ mod tests {
                 raw_response: None,
                 claim_source: None,
                 ..Default::default()
-            }))
+            })))
         }
         zeph_tools::tool_executor_no_inner_defaults!();
     }

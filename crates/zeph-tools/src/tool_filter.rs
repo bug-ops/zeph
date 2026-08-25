@@ -97,8 +97,12 @@ mod tests {
     #[derive(Debug)]
     struct StubExecutor;
     impl ToolExecutor for StubExecutor {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
         fn tool_definitions(&self) -> Vec<ToolDef> {
             vec![
@@ -128,11 +132,12 @@ mod tests {
                 },
             ]
         }
-        async fn execute_tool_call(
+        fn execute_tool_call(
             &self,
             call: &ToolCall,
-        ) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(Some(ToolOutput {
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(Some(ToolOutput {
                 tool_name: call.tool_id.clone(),
                 summary: "stub".to_owned(),
                 blocks_executed: 1,
@@ -144,7 +149,7 @@ mod tests {
                 raw_response: None,
                 claim_source: None,
                 ..Default::default()
-            }))
+            })))
         }
 
         crate::tool_executor_no_inner_defaults!();
@@ -199,14 +204,19 @@ mod tests {
     struct CrossCuttingStubExecutor;
 
     impl ToolExecutor for CrossCuttingStubExecutor {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
-        async fn execute_tool_call(
+        fn execute_tool_call(
             &self,
             call: &ToolCall,
-        ) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(Some(ToolOutput {
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(Some(ToolOutput {
                 tool_name: call.tool_id.clone(),
                 summary: "stub".to_owned(),
                 blocks_executed: 1,
@@ -218,13 +228,14 @@ mod tests {
                 raw_response: None,
                 claim_source: None,
                 ..Default::default()
-            }))
+            })))
         }
-        async fn execute_tool_call_confirmed(
+        fn execute_tool_call_confirmed(
             &self,
             call: &ToolCall,
-        ) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(Some(ToolOutput {
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(Some(ToolOutput {
                 tool_name: call.tool_id.clone(),
                 summary: "stub-confirmed".to_owned(),
                 blocks_executed: 1,
@@ -236,7 +247,7 @@ mod tests {
                 raw_response: None,
                 claim_source: None,
                 ..Default::default()
-            }))
+            })))
         }
         fn is_tool_retryable(&self, _tool_id: &str) -> bool {
             true

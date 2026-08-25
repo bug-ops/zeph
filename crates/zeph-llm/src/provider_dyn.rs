@@ -390,8 +390,11 @@ mod tests {
     }
 
     impl LlmProvider for StubProvider {
-        async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
-            Ok(self.response.clone())
+        fn chat(
+            &self,
+            _messages: &[Message],
+        ) -> impl std::future::Future<Output = Result<String, LlmError>> + Send {
+            std::future::ready(Ok(self.response.clone()))
         }
 
         async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
@@ -405,8 +408,11 @@ mod tests {
             false
         }
 
-        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-            Ok(vec![0.1, 0.2, 0.3])
+        fn embed(
+            &self,
+            _text: &str,
+        ) -> impl std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send {
+            std::future::ready(Ok(vec![0.1, 0.2, 0.3]))
         }
 
         fn supports_embeddings(&self) -> bool {

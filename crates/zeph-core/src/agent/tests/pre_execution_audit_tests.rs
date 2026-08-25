@@ -17,8 +17,11 @@ use crate::agent::agent_tests::{MockChannel, create_test_registry};
 struct NoOpExecutor;
 
 impl ToolExecutor for NoOpExecutor {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(None)
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
     }
 
     fn tool_definitions(&self) -> Vec<ToolDef> {
@@ -32,8 +35,11 @@ impl ToolExecutor for NoOpExecutor {
         }]
     }
 
-    async fn execute_tool_call(&self, _call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(None)
+    fn execute_tool_call(
+        &self,
+        _call: &ToolCall,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
     }
 
     zeph_tools::tool_executor_no_inner_defaults!();

@@ -559,18 +559,22 @@ mod tests {
     struct AlwaysOkExecutor;
 
     impl zeph_tools::executor::ToolExecutor for AlwaysOkExecutor {
-        async fn execute(
+        fn execute(
             &self,
             _response: &str,
-        ) -> Result<Option<zeph_tools::executor::ToolOutput>, ToolError> {
-            Ok(None)
+        ) -> impl std::future::Future<
+            Output = Result<Option<zeph_tools::executor::ToolOutput>, ToolError>,
+        > + Send {
+            std::future::ready(Ok(None))
         }
 
-        async fn execute_tool_call(
+        fn execute_tool_call(
             &self,
             call: &zeph_tools::executor::ToolCall,
-        ) -> Result<Option<zeph_tools::executor::ToolOutput>, ToolError> {
-            Ok(Some(zeph_tools::executor::ToolOutput {
+        ) -> impl std::future::Future<
+            Output = Result<Option<zeph_tools::executor::ToolOutput>, ToolError>,
+        > + Send {
+            std::future::ready(Ok(Some(zeph_tools::executor::ToolOutput {
                 tool_name: call.tool_id.clone(),
                 summary: "ok".into(),
                 blocks_executed: 1,
@@ -582,7 +586,7 @@ mod tests {
                 raw_response: None,
                 claim_source: None,
                 ..Default::default()
-            }))
+            })))
         }
 
         zeph_tools::tool_executor_no_inner_defaults!();

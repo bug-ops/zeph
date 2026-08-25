@@ -1127,11 +1127,14 @@ mod tests {
     }
 
     impl LlmProvider for MockProvider {
-        async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
-            match &self.response {
+        fn chat(
+            &self,
+            _messages: &[Message],
+        ) -> impl std::future::Future<Output = Result<String, LlmError>> + Send {
+            std::future::ready(match &self.response {
                 Ok(s) => Ok(s.clone() as String),
                 Err(_) => Err(LlmError::Unavailable),
-            }
+            })
         }
 
         async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
@@ -1145,8 +1148,11 @@ mod tests {
             false
         }
 
-        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-            Err(LlmError::Unavailable)
+        fn embed(
+            &self,
+            _text: &str,
+        ) -> impl std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send {
+            std::future::ready(Err(LlmError::Unavailable))
         }
 
         fn supports_embeddings(&self) -> bool {
@@ -1549,8 +1555,12 @@ mod tests {
         fn supports_streaming(&self) -> bool {
             false
         }
-        async fn embed(&self, _: &str) -> Result<Vec<f32>, zeph_llm::LlmError> {
-            Err(zeph_llm::LlmError::Unavailable)
+        fn embed(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Vec<f32>, zeph_llm::LlmError>> + Send
+        {
+            std::future::ready(Err(zeph_llm::LlmError::Unavailable))
         }
         fn supports_embeddings(&self) -> bool {
             false

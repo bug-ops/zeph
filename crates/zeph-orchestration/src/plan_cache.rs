@@ -193,8 +193,10 @@ fn blob_to_embedding(blob: &[u8]) -> Option<Vec<f32>> {
         return None;
     }
     Some(
-        blob.chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("chunk is exactly 4 bytes")))
+        blob.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
             .collect(),
     )
 }

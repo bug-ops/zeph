@@ -656,8 +656,11 @@ impl FileExecutor {
 }
 
 impl ToolExecutor for FileExecutor {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(None)
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
     }
 
     #[cfg_attr(
@@ -1795,7 +1798,7 @@ mod tests {
 
         let config = crate::config::FileConfig {
             deny_read: vec!["**/*.env".to_owned()],
-            allow_read: vec![format!("**/public.env")],
+            allow_read: vec!["**/public.env".to_string()],
         };
         let exec = FileExecutor::new(vec![dir.path().to_path_buf()]).with_read_sandbox(&config);
         let params = make_params(&[("path", serde_json::json!(public.to_str().unwrap()))]);

@@ -563,17 +563,22 @@ mod tests {
 
         struct StubExec;
         impl ToolExecutor for StubExec {
-            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            fn execute(
+                &self,
+                _: &str,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
             fn tool_definitions(&self) -> Vec<ToolDef> {
                 vec![]
             }
-            async fn execute_tool_call(
+            fn execute_tool_call(
                 &self,
                 _: &ToolCall,
-            ) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
             zeph_tools::tool_executor_no_inner_defaults!();
         }

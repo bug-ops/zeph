@@ -183,6 +183,7 @@ impl Channel for TuiChannel {
         feature = "profiling",
         tracing::instrument(name = "tui.channel.send_chunk", skip_all)
     )]
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.accumulated.push_str(chunk);
         // Non-critical: dropping a chunk loses partial streaming output but agent continues.
@@ -196,6 +197,7 @@ impl Channel for TuiChannel {
         feature = "profiling",
         tracing::instrument(name = "tui.channel.flush_chunks", skip_all)
     )]
+    #[allow(clippy::unused_async_trait_impl)]
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         // Non-critical: visual signal that streaming ended.
         let _ = self.agent_event_tx.try_send(AgentEvent::Flush);
@@ -206,6 +208,7 @@ impl Channel for TuiChannel {
         feature = "profiling",
         tracing::instrument(name = "tui.channel.send_typing", skip_all)
     )]
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_typing(&mut self) -> Result<(), ChannelError> {
         // Non-critical: throbber hint only.
         let _ = self.agent_event_tx.try_send(AgentEvent::Typing);
@@ -216,6 +219,7 @@ impl Channel for TuiChannel {
         feature = "profiling",
         tracing::instrument(name = "tui.channel.send_status", skip_all)
     )]
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
         // Non-critical: informational status text.
         let _ = self
@@ -228,6 +232,7 @@ impl Channel for TuiChannel {
         feature = "profiling",
         tracing::instrument(name = "tui.channel.send_queue_count", skip_all)
     )]
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_queue_count(&mut self, count: usize) -> Result<(), ChannelError> {
         // Non-critical: display-only counter.
         let _ = self.agent_event_tx.try_send(AgentEvent::QueueCount(count));
@@ -238,6 +243,7 @@ impl Channel for TuiChannel {
         feature = "profiling",
         tracing::instrument(name = "tui.channel.send_context_estimate", skip_all)
     )]
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_context_estimate(&mut self, tokens: usize) -> Result<(), ChannelError> {
         // Non-critical: informational estimate shown in the input block title.
         let _ = self
@@ -250,6 +256,7 @@ impl Channel for TuiChannel {
         feature = "profiling",
         tracing::instrument(name = "tui.channel.send_skill_catalog", skip_all)
     )]
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_skill_catalog(&mut self, items: &[SkillCatalogItem]) -> Result<(), ChannelError> {
         // Non-critical: refreshes the mention picker's Skills tab if one is open;
         // startup/hot-reload emits arrive well before any user interaction.
@@ -263,6 +270,7 @@ impl Channel for TuiChannel {
         feature = "profiling",
         tracing::instrument(name = "tui.channel.send_transcript_backfill", skip_all)
     )]
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_transcript_backfill(
         &mut self,
         entries: &[zeph_commands::TranscriptEntry],
@@ -281,6 +289,7 @@ impl Channel for TuiChannel {
         feature = "profiling",
         tracing::instrument(name = "tui.channel.send_resume_banner", skip_all)
     )]
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_resume_banner(&mut self, text: &str) -> Result<(), ChannelError> {
         // Persistent header banner (spec-068 §13.5), same as the startup path — covers
         // live mid-session swaps too (`/conv resume`, `/conv fork`, AC-23).
@@ -324,6 +333,7 @@ impl Channel for TuiChannel {
         feature = "profiling",
         tracing::instrument(name = "tui.channel.send_tool_start", skip_all)
     )]
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_tool_start(&mut self, event: ToolStartEvent) -> Result<(), ChannelError> {
         let command = event
             .params
@@ -425,6 +435,7 @@ impl Channel for TuiChannel {
         feature = "profiling",
         tracing::instrument(name = "tui.channel.notify_foreground_subagent_started", skip_all)
     )]
+    #[allow(clippy::unused_async_trait_impl)]
     async fn notify_foreground_subagent_started(
         &mut self,
         id: &str,
@@ -444,6 +455,7 @@ impl Channel for TuiChannel {
         feature = "profiling",
         tracing::instrument(name = "tui.channel.notify_foreground_subagent_completed", skip_all)
     )]
+    #[allow(clippy::unused_async_trait_impl)]
     async fn notify_foreground_subagent_completed(
         &mut self,
         id: &str,
@@ -465,6 +477,7 @@ impl Channel for TuiChannel {
         feature = "profiling",
         tracing::instrument(name = "tui.channel.notify_background_subagent_completed", skip_all)
     )]
+    #[allow(clippy::unused_async_trait_impl)]
     async fn notify_background_subagent_completed(
         &mut self,
         id: &str,

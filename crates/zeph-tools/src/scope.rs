@@ -748,19 +748,24 @@ mod tests {
     }
 
     impl ToolExecutor for NullExecutor {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
         fn tool_definitions(&self) -> Vec<ToolDef> {
             self.defs.clone()
         }
 
-        async fn execute_tool_call(
+        fn execute_tool_call(
             &self,
             call: &ToolCall,
-        ) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(Some(ToolOutput {
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(Some(ToolOutput {
                 tool_name: call.tool_id.clone(),
                 summary: "ok".to_owned(),
                 blocks_executed: 1,
@@ -772,7 +777,7 @@ mod tests {
                 raw_response: None,
                 claim_source: None,
                 ..Default::default()
-            }))
+            })))
         }
 
         crate::tool_executor_no_inner_defaults!();
@@ -781,8 +786,12 @@ mod tests {
     struct CheckpointingExecutor;
 
     impl ToolExecutor for CheckpointingExecutor {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
         fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
             crate::executor::CheckpointActionResult {

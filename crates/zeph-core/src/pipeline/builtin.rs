@@ -107,8 +107,13 @@ impl<T: serde::de::DeserializeOwned + Send + Sync> Step for ExtractStep<T> {
     type Input = String;
     type Output = T;
 
-    async fn run(&self, input: Self::Input) -> Result<Self::Output, PipelineError> {
-        serde_json::from_str(&input).map_err(|e| PipelineError::Extract(e.to_string()))
+    fn run(
+        &self,
+        input: Self::Input,
+    ) -> impl std::future::Future<Output = Result<Self::Output, PipelineError>> + Send {
+        std::future::ready(
+            serde_json::from_str(&input).map_err(|e| PipelineError::Extract(e.to_string())),
+        )
     }
 }
 
@@ -136,7 +141,10 @@ where
     type Input = In;
     type Output = Out;
 
-    async fn run(&self, input: Self::Input) -> Result<Self::Output, PipelineError> {
-        Ok((self.f)(input))
+    fn run(
+        &self,
+        input: Self::Input,
+    ) -> impl std::future::Future<Output = Result<Self::Output, PipelineError>> + Send {
+        std::future::ready(Ok((self.f)(input)))
     }
 }

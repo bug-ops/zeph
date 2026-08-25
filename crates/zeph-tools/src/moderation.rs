@@ -179,8 +179,11 @@ fn moderation_error_to_tool_error(e: ModerationError) -> ToolError {
 }
 
 impl<B: ReactionModerationBackend + std::fmt::Debug> ToolExecutor for ModerationExecutor<B> {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(None)
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
     }
 
     #[tracing::instrument(skip(self), fields(tool_id = %call.tool_id))]

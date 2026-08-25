@@ -2014,21 +2014,25 @@ mod tests {
     struct DaemonTaggedMock(&'static str);
 
     impl zeph_tools::executor::ToolExecutor for DaemonTaggedMock {
-        async fn execute(
+        fn execute(
             &self,
             _response: &str,
-        ) -> Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError> {
-            Ok(None)
+        ) -> impl std::future::Future<
+            Output = Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+        > + Send {
+            std::future::ready(Ok(None))
         }
 
-        async fn execute_tool_call(
+        fn execute_tool_call(
             &self,
             call: &zeph_tools::ToolCall,
-        ) -> Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError> {
+        ) -> impl std::future::Future<
+            Output = Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+        > + Send {
             if call.tool_id != self.0 {
-                return Ok(None);
+                return std::future::ready(Ok(None));
             }
-            Ok(Some(zeph_tools::ToolOutput {
+            std::future::ready(Ok(Some(zeph_tools::ToolOutput {
                 tool_name: call.tool_id.clone(),
                 summary: "ok".into(),
                 blocks_executed: 1,
@@ -2040,7 +2044,7 @@ mod tests {
                 raw_response: None,
                 claim_source: None,
                 ..Default::default()
-            }))
+            })))
         }
         zeph_tools::tool_executor_no_inner_defaults!();
     }
@@ -2710,14 +2714,21 @@ mod tests {
 
         struct OkExec;
         impl ToolExecutor for OkExec {
-            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, zeph_tools::ToolError> {
-                Ok(None)
+            fn execute(
+                &self,
+                _: &str,
+            ) -> impl std::future::Future<
+                Output = Result<Option<ToolOutput>, zeph_tools::ToolError>,
+            > + Send {
+                std::future::ready(Ok(None))
             }
-            async fn execute_tool_call(
+            fn execute_tool_call(
                 &self,
                 call: &ToolCall,
-            ) -> Result<Option<ToolOutput>, zeph_tools::ToolError> {
-                Ok(Some(ToolOutput {
+            ) -> impl std::future::Future<
+                Output = Result<Option<ToolOutput>, zeph_tools::ToolError>,
+            > + Send {
+                std::future::ready(Ok(Some(ToolOutput {
                     tool_name: call.tool_id.clone(),
                     summary: "command completed".to_owned(),
                     blocks_executed: 1,
@@ -2729,7 +2740,7 @@ mod tests {
                     raw_response: None,
                     claim_source: None,
                     ..Default::default()
-                }))
+                })))
             }
             zeph_tools::tool_executor_no_inner_defaults!();
         }

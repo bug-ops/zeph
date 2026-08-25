@@ -288,6 +288,10 @@ impl BenchmarkChannel {
 }
 
 impl zeph_core::channel::Channel for BenchmarkChannel {
+    // Genuine `async fn` on purpose (see `Channel`'s doc comment): this body pops the prompt
+    // queue, an observable side effect, so it must stay poll-time-lazy — never rewrite to a
+    // synchronous `fn` returning `std::future::ready(..)` (#6746).
+    #[allow(clippy::unused_async_trait_impl)]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         match self.prompts.pop_front() {
             Some(text) => {
@@ -308,6 +312,7 @@ impl zeph_core::channel::Channel for BenchmarkChannel {
         false
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.responses.push(CapturedResponse {
             prompt_index: self.current_index.saturating_sub(1),
@@ -323,6 +328,7 @@ impl zeph_core::channel::Channel for BenchmarkChannel {
         Ok(())
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         if self.chunk_start.is_none() {
             self.chunk_start = Some(Instant::now());
@@ -331,11 +337,13 @@ impl zeph_core::channel::Channel for BenchmarkChannel {
         Ok(())
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
         self.flush_chunk_buffer();
         Ok(())
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_usage(
         &mut self,
         input_tokens: u64,
@@ -351,6 +359,7 @@ impl zeph_core::channel::Channel for BenchmarkChannel {
         Ok(())
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_tool_output(&mut self, event: ToolOutputEvent) -> Result<(), ChannelError> {
         self.tool_outputs.push(event);
         Ok(())

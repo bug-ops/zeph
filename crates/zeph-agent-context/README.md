@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-agent-context)](https://crates.io/crates/zeph-agent-context)
 [![docs.rs](https://img.shields.io/docsrs/zeph-agent-context)](https://docs.rs/zeph-agent-context)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.97-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.98-blue)](https://www.rust-lang.org)
 
 Agent context-assembly service for the [Zeph](https://github.com/bug-ops/zeph) AI agent.
 
@@ -20,7 +20,7 @@ zeph-agent-context = { version = "0.22", workspace = true }
 ```
 
 > [!IMPORTANT]
-> Requires Rust 1.97 or later (Edition 2024). This crate does **not** depend on `zeph-core` — only on lower-level crates (`zeph-memory`, `zeph-llm`, `zeph-skills`, `zeph-context`, `zeph-sanitizer`, `zeph-config`, `zeph-common`).
+> Requires Rust 1.98 or later (Edition 2024). This crate does **not** depend on `zeph-core` — only on lower-level crates (`zeph-memory`, `zeph-llm`, `zeph-skills`, `zeph-context`, `zeph-sanitizer`, `zeph-config`, `zeph-common`).
 
 ## Usage
 

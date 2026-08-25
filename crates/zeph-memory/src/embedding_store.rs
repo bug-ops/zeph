@@ -799,7 +799,9 @@ impl EmbeddingStore {
                     return None;
                 }
                 let vec: Vec<f32> = blob
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                     .collect();
                 Some((msg_id, vec))

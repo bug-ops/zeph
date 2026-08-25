@@ -111,6 +111,7 @@ impl MockChannel {
 }
 
 impl Channel for MockChannel {
+    #[allow(clippy::unused_async_trait_impl)]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         Ok(self.inputs.pop_front().map(|text| ChannelMessage {
             text,
@@ -121,17 +122,23 @@ impl Channel for MockChannel {
         }))
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.outputs.lock().unwrap().push(text.to_string());
         Ok(())
     }
 
-    async fn send_chunk(&mut self, _chunk: &str) -> Result<(), ChannelError> {
-        Ok(())
+    fn send_chunk(
+        &mut self,
+        _chunk: &str,
+    ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 
-    async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
-        Ok(())
+    fn flush_chunks(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 }
 
@@ -143,6 +150,7 @@ struct ConfirmMockChannel {
 }
 
 impl Channel for ConfirmMockChannel {
+    #[allow(clippy::unused_async_trait_impl)]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         Ok(self.inputs.pop_front().map(|text| ChannelMessage {
             text,
@@ -153,19 +161,26 @@ impl Channel for ConfirmMockChannel {
         }))
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.outputs.lock().unwrap().push(text.to_string());
         Ok(())
     }
 
-    async fn send_chunk(&mut self, _chunk: &str) -> Result<(), ChannelError> {
-        Ok(())
+    fn send_chunk(
+        &mut self,
+        _chunk: &str,
+    ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 
-    async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
-        Ok(())
+    fn flush_chunks(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn confirm(&mut self, _prompt: &str) -> Result<bool, ChannelError> {
         *self.confirm_called.lock().unwrap() = true;
         Ok(self.confirm_result)
@@ -177,8 +192,11 @@ impl Channel for ConfirmMockChannel {
 struct MockToolExecutor;
 
 impl ToolExecutor for MockToolExecutor {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(None)
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
@@ -188,8 +206,11 @@ struct OutputToolExecutor {
 }
 
 impl ToolExecutor for OutputToolExecutor {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(Some(ToolOutput {
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(Some(ToolOutput {
             tool_name: zeph_tools::ToolName::new("bash"),
             summary: self.output.clone(),
             blocks_executed: 1,
@@ -201,11 +222,14 @@ impl ToolExecutor for OutputToolExecutor {
             raw_response: None,
             claim_source: None,
             ..Default::default()
-        }))
+        })))
     }
 
-    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(Some(ToolOutput {
+    fn execute_tool_call(
+        &self,
+        call: &ToolCall,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(Some(ToolOutput {
             tool_name: call.tool_id.clone(),
             summary: self.output.clone(),
             blocks_executed: 1,
@@ -217,7 +241,7 @@ impl ToolExecutor for OutputToolExecutor {
             raw_response: None,
             claim_source: None,
             ..Default::default()
-        }))
+        })))
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
@@ -225,8 +249,11 @@ impl ToolExecutor for OutputToolExecutor {
 struct EmptyOutputToolExecutor;
 
 impl ToolExecutor for EmptyOutputToolExecutor {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(Some(ToolOutput {
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(Some(ToolOutput {
             tool_name: zeph_tools::ToolName::new("bash"),
             summary: String::new(),
             blocks_executed: 1,
@@ -238,11 +265,14 @@ impl ToolExecutor for EmptyOutputToolExecutor {
             raw_response: None,
             claim_source: None,
             ..Default::default()
-        }))
+        })))
     }
 
-    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(Some(ToolOutput {
+    fn execute_tool_call(
+        &self,
+        call: &ToolCall,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(Some(ToolOutput {
             tool_name: call.tool_id.clone(),
             summary: String::new(),
             blocks_executed: 1,
@@ -254,7 +284,7 @@ impl ToolExecutor for EmptyOutputToolExecutor {
             raw_response: None,
             claim_source: None,
             ..Default::default()
-        }))
+        })))
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
@@ -262,8 +292,11 @@ impl ToolExecutor for EmptyOutputToolExecutor {
 struct ErrorOutputToolExecutor;
 
 impl ToolExecutor for ErrorOutputToolExecutor {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(Some(ToolOutput {
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(Some(ToolOutput {
             tool_name: zeph_tools::ToolName::new("bash"),
             summary: "[error] command failed".into(),
             blocks_executed: 1,
@@ -275,11 +308,14 @@ impl ToolExecutor for ErrorOutputToolExecutor {
             raw_response: None,
             claim_source: None,
             ..Default::default()
-        }))
+        })))
     }
 
-    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(Some(ToolOutput {
+    fn execute_tool_call(
+        &self,
+        call: &ToolCall,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(Some(ToolOutput {
             tool_name: call.tool_id.clone(),
             summary: "[error] command failed".into(),
             blocks_executed: 1,
@@ -291,7 +327,7 @@ impl ToolExecutor for ErrorOutputToolExecutor {
             raw_response: None,
             claim_source: None,
             ..Default::default()
-        }))
+        })))
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
@@ -299,16 +335,22 @@ impl ToolExecutor for ErrorOutputToolExecutor {
 struct BlockedToolExecutor;
 
 impl ToolExecutor for BlockedToolExecutor {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Err(ToolError::Blocked {
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Err(ToolError::Blocked {
             command: "rm -rf /".into(),
-        })
+        }))
     }
 
-    async fn execute_tool_call(&self, _call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        Err(ToolError::Blocked {
+    fn execute_tool_call(
+        &self,
+        _call: &ToolCall,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Err(ToolError::Blocked {
             command: "rm -rf /".into(),
-        })
+        }))
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
@@ -316,14 +358,20 @@ impl ToolExecutor for BlockedToolExecutor {
 struct ConfirmToolExecutor;
 
 impl ToolExecutor for ConfirmToolExecutor {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Err(ToolError::ConfirmationRequired {
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Err(ToolError::ConfirmationRequired {
             command: "rm -rf /tmp".into(),
-        })
+        }))
     }
 
-    async fn execute_confirmed(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(Some(ToolOutput {
+    fn execute_confirmed(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(Some(ToolOutput {
             tool_name: zeph_tools::ToolName::new("bash"),
             summary: "confirmed output".into(),
             blocks_executed: 1,
@@ -335,20 +383,23 @@ impl ToolExecutor for ConfirmToolExecutor {
             raw_response: None,
             claim_source: None,
             ..Default::default()
+        })))
+    }
+
+    fn execute_tool_call(
+        &self,
+        _call: &ToolCall,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Err(ToolError::ConfirmationRequired {
+            command: "rm -rf /tmp".into(),
         }))
     }
 
-    async fn execute_tool_call(&self, _call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        Err(ToolError::ConfirmationRequired {
-            command: "rm -rf /tmp".into(),
-        })
-    }
-
-    async fn execute_tool_call_confirmed(
+    fn execute_tool_call_confirmed(
         &self,
         call: &ToolCall,
-    ) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(Some(ToolOutput {
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(Some(ToolOutput {
             tool_name: call.tool_id.clone(),
             summary: "confirmed output".into(),
             blocks_executed: 1,
@@ -360,7 +411,7 @@ impl ToolExecutor for ConfirmToolExecutor {
             raw_response: None,
             claim_source: None,
             ..Default::default()
-        }))
+        })))
     }
 
     fn checkpoint_undo(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
@@ -383,16 +434,22 @@ impl ToolExecutor for ConfirmToolExecutor {
 struct SandboxToolExecutor;
 
 impl ToolExecutor for SandboxToolExecutor {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Err(ToolError::SandboxViolation {
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Err(ToolError::SandboxViolation {
             path: "/etc/passwd".into(),
-        })
+        }))
     }
 
-    async fn execute_tool_call(&self, _call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        Err(ToolError::SandboxViolation {
+    fn execute_tool_call(
+        &self,
+        _call: &ToolCall,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Err(ToolError::SandboxViolation {
             path: "/etc/passwd".into(),
-        })
+        }))
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
@@ -400,18 +457,24 @@ impl ToolExecutor for SandboxToolExecutor {
 struct IoErrorToolExecutor;
 
 impl ToolExecutor for IoErrorToolExecutor {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Err(ToolError::Execution(std::io::Error::new(
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Err(ToolError::Execution(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "command not found",
-        )))
+        ))))
     }
 
-    async fn execute_tool_call(&self, _call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        Err(ToolError::Execution(std::io::Error::new(
+    fn execute_tool_call(
+        &self,
+        _call: &ToolCall,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Err(ToolError::Execution(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "command not found",
-        )))
+        ))))
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
@@ -419,8 +482,11 @@ impl ToolExecutor for IoErrorToolExecutor {
 struct ExitCodeToolExecutor;
 
 impl ToolExecutor for ExitCodeToolExecutor {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(Some(ToolOutput {
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(Some(ToolOutput {
             tool_name: zeph_tools::ToolName::new("bash"),
             summary: "[exit code 1] process failed".into(),
             blocks_executed: 1,
@@ -432,11 +498,14 @@ impl ToolExecutor for ExitCodeToolExecutor {
             raw_response: None,
             claim_source: None,
             ..Default::default()
-        }))
+        })))
     }
 
-    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(Some(ToolOutput {
+    fn execute_tool_call(
+        &self,
+        call: &ToolCall,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(Some(ToolOutput {
             tool_name: call.tool_id.clone(),
             summary: "[exit code 1] process failed".into(),
             blocks_executed: 1,
@@ -448,7 +517,7 @@ impl ToolExecutor for ExitCodeToolExecutor {
             raw_response: None,
             claim_source: None,
             ..Default::default()
-        }))
+        })))
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
@@ -2564,6 +2633,7 @@ mod self_learning {
     }
 
     impl Channel for MockChannel {
+        #[allow(clippy::unused_async_trait_impl)]
         async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
             Ok(self.inputs.pop_front().map(|text| ChannelMessage {
                 text,
@@ -2574,25 +2644,35 @@ mod self_learning {
             }))
         }
 
+        #[allow(clippy::unused_async_trait_impl)]
         async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
             self.outputs.lock().unwrap().push(text.to_string());
             Ok(())
         }
 
-        async fn send_chunk(&mut self, _chunk: &str) -> Result<(), ChannelError> {
-            Ok(())
+        fn send_chunk(
+            &mut self,
+            _chunk: &str,
+        ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+            std::future::ready(Ok(()))
         }
 
-        async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
-            Ok(())
+        fn flush_chunks(
+            &mut self,
+        ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+            std::future::ready(Ok(()))
         }
     }
 
     struct MockToolExecutor;
 
     impl ToolExecutor for MockToolExecutor {
-        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
         zeph_tools::tool_executor_no_inner_defaults!();
     }
@@ -2600,8 +2680,12 @@ mod self_learning {
     struct ErrorToolExecutor;
 
     impl ToolExecutor for ErrorToolExecutor {
-        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(Some(ToolOutput {
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(Some(ToolOutput {
                 tool_name: zeph_tools::ToolName::new("bash"),
                 summary: "[error] command failed".into(),
                 blocks_executed: 1,
@@ -2613,14 +2697,15 @@ mod self_learning {
                 raw_response: None,
                 claim_source: None,
                 ..Default::default()
-            }))
+            })))
         }
 
-        async fn execute_tool_call(
+        fn execute_tool_call(
             &self,
             call: &zeph_tools::executor::ToolCall,
-        ) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(Some(ToolOutput {
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(Some(ToolOutput {
                 tool_name: call.tool_id.clone(),
                 summary: "[error] command failed".into(),
                 blocks_executed: 1,
@@ -2632,7 +2717,7 @@ mod self_learning {
                 raw_response: None,
                 claim_source: None,
                 ..Default::default()
-            }))
+            })))
         }
         zeph_tools::tool_executor_no_inner_defaults!();
     }

@@ -46,6 +46,7 @@ impl TestChannel {
 }
 
 impl Channel for TestChannel {
+    #[allow(clippy::unused_async_trait_impl)]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         if self.inbox.is_empty() {
             Ok(None)
@@ -74,22 +75,29 @@ impl Channel for TestChannel {
         }
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.outbox.lock().unwrap().push(text.to_owned());
         Ok(())
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError> {
         self.outbox.lock().unwrap().push(chunk.to_owned());
         Ok(())
     }
 
-    async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
-        Ok(())
+    fn flush_chunks(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 
-    async fn confirm(&mut self, _prompt: &str) -> Result<bool, ChannelError> {
-        Ok(true)
+    fn confirm(
+        &mut self,
+        _prompt: &str,
+    ) -> impl std::future::Future<Output = Result<bool, ChannelError>> + Send {
+        std::future::ready(Ok(true))
     }
 }
 
@@ -97,8 +105,11 @@ impl Channel for TestChannel {
 struct NoopExecutor;
 
 impl ToolExecutor for NoopExecutor {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(None)
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
     }
 
     fn set_skill_env(&self, _env: Option<std::collections::HashMap<String, String>>) {}
@@ -132,8 +143,11 @@ impl SingleToolExecutor {
 }
 
 impl ToolExecutor for SingleToolExecutor {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(self.output.lock().unwrap().take())
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(self.output.lock().unwrap().take()))
     }
 
     fn set_skill_env(&self, _env: Option<std::collections::HashMap<String, String>>) {}

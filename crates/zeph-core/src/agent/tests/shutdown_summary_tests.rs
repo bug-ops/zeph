@@ -329,15 +329,20 @@ async fn filter_stats_metrics_increment_on_normal_native_tool_path() {
     struct FilteredToolExecutor;
 
     impl ToolExecutor for FilteredToolExecutor {
-        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
-        async fn execute_tool_call(
+        fn execute_tool_call(
             &self,
             _call: &ToolCall,
-        ) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(Some(ToolOutput {
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(Some(ToolOutput {
                 tool_name: "shell".into(),
                 summary: "filtered output".to_owned(),
                 blocks_executed: 1,
@@ -357,7 +362,7 @@ async fn filter_stats_metrics_increment_on_normal_native_tool_path() {
                 raw_response: None,
                 claim_source: None,
                 ..Default::default()
-            }))
+            })))
         }
 
         zeph_tools::tool_executor_no_inner_defaults!();
@@ -405,13 +410,16 @@ struct TwoToolExecutor {
 }
 
 impl zeph_tools::executor::ToolExecutor for TwoToolExecutor {
-    async fn execute(
+    fn execute(
         &self,
         _response: &str,
-    ) -> Result<Option<zeph_tools::executor::ToolOutput>, zeph_tools::executor::ToolError> {
-        Ok(None)
+    ) -> impl std::future::Future<
+        Output = Result<Option<zeph_tools::executor::ToolOutput>, zeph_tools::executor::ToolError>,
+    > + Send {
+        std::future::ready(Ok(None))
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn execute_tool_call(
         &self,
         call: &zeph_tools::executor::ToolCall,

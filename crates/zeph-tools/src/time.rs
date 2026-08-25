@@ -72,37 +72,43 @@ impl std::fmt::Debug for GetCurrentTimeExecutor {
 }
 
 impl ToolExecutor for GetCurrentTimeExecutor {
-    async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-        if call.tool_id != TOOL_NAME {
-            return Ok(None);
-        }
-        let params: TimeParams = deserialize_params(&call.params)?;
-        let now = self.clock.now();
-        let format = match params.format.as_deref() {
-            Some("unix") => TimeFormat::Unix,
-            _ => TimeFormat::Rfc3339,
-        };
-        let summary = match format {
-            TimeFormat::Rfc3339 => zeph_common::timestamp::rfc3339_from(now),
-            TimeFormat::Unix => now
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs())
-                .to_string(),
-        };
+    fn execute_tool_call(
+        &self,
+        call: &ToolCall,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        let result = (|| {
+            if call.tool_id != TOOL_NAME {
+                return Ok(None);
+            }
+            let params: TimeParams = deserialize_params(&call.params)?;
+            let now = self.clock.now();
+            let format = match params.format.as_deref() {
+                Some("unix") => TimeFormat::Unix,
+                _ => TimeFormat::Rfc3339,
+            };
+            let summary = match format {
+                TimeFormat::Rfc3339 => zeph_common::timestamp::rfc3339_from(now),
+                TimeFormat::Unix => now
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs())
+                    .to_string(),
+            };
 
-        Ok(Some(ToolOutput {
-            tool_name: ToolName::new(TOOL_NAME),
-            summary,
-            blocks_executed: 1,
-            filter_stats: None,
-            diff: None,
-            streamed: false,
-            terminal_id: None,
-            locations: None,
-            raw_response: None,
-            claim_source: None,
-            ..Default::default()
-        }))
+            Ok(Some(ToolOutput {
+                tool_name: ToolName::new(TOOL_NAME),
+                summary,
+                blocks_executed: 1,
+                filter_stats: None,
+                diff: None,
+                streamed: false,
+                terminal_id: None,
+                locations: None,
+                raw_response: None,
+                claim_source: None,
+                ..Default::default()
+            }))
+        })();
+        std::future::ready(result)
     }
 
     fn tool_definitions(&self) -> Vec<ToolDef> {
@@ -120,8 +126,11 @@ impl ToolExecutor for GetCurrentTimeExecutor {
         true
     }
 
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(None)
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
     }
 
     crate::tool_executor_no_inner_defaults!();

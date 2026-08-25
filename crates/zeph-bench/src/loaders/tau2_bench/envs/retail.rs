@@ -212,9 +212,12 @@ impl RetailEnv {
 }
 
 impl ToolExecutor for RetailEnv {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
         // tau2-bench uses structured tool calls only, not fenced code blocks.
-        Ok(None)
+        std::future::ready(Ok(None))
     }
 
     fn tool_definitions(&self) -> Vec<ToolDef> {

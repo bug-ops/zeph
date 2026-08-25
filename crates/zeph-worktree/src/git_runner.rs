@@ -185,6 +185,7 @@ impl GitRunner for std::sync::Arc<FakeGitRunner> {
 
 #[cfg(test)]
 impl GitRunner for FakeGitRunner {
+    #[allow(clippy::unused_async_trait_impl)]
     async fn run(&self, args: &[&str], cwd: &Path) -> Result<Output, WorktreeError> {
         // Record the call for post-test assertions.
         self.calls.lock().unwrap().push((

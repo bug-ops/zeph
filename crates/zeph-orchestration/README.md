@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/zeph-orchestration)](https://crates.io/crates/zeph-orchestration)
 [![docs.rs](https://img.shields.io/docsrs/zeph-orchestration)](https://docs.rs/zeph-orchestration)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](../../LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.97-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.98-blue)](https://www.rust-lang.org)
 
 DAG-based task orchestration with failure propagation, LLM planning, and SQLite persistence for Zeph.
 

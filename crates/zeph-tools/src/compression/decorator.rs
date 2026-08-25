@@ -216,11 +216,15 @@ mod tests {
     }
 
     impl ToolExecutor for SpyExecutor {
-        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(Some(make_output(
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(Some(make_output(
                 ToolName::new("spy"),
                 self.raw_output.clone(),
-            )))
+            ))))
         }
 
         async fn execute_confirmed(&self, response: &str) -> Result<Option<ToolOutput>, ToolError> {
@@ -231,6 +235,7 @@ mod tests {
             vec![]
         }
 
+        #[allow(clippy::unused_async_trait_impl)]
         async fn execute_tool_call(
             &self,
             call: &ToolCall,
@@ -381,11 +386,19 @@ mod tests {
     struct CheckpointStubExecutor;
 
     impl ToolExecutor for CheckpointStubExecutor {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
-        async fn execute_tool_call(&self, _: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute_tool_call(
+            &self,
+            _: &ToolCall,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
         fn requires_confirmation(&self, _call: &ToolCall) -> bool {
             true

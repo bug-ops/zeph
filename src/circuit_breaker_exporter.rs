@@ -150,6 +150,7 @@ mod tests {
     }
 
     impl SpanExporter for MockExporter {
+        #[allow(clippy::unused_async_trait_impl)]
         async fn export(&self, _batch: Vec<SpanData>) -> OTelSdkResult {
             let n = self.call_count.fetch_add(1, Ordering::Relaxed);
             if n < self.fail_until {

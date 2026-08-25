@@ -24,7 +24,7 @@ All feature and system specifications live in `specs/`. **Compliance is non-nego
 Path-specific instructions for GitHub Copilot live in `.github/instructions/*.instructions.md` with `applyTo` frontmatter.
 
 - Use `cargo nextest run` as the default test runner.
-- Keep Rust changes compatible with Edition 2024 and MSRV `1.97`.
+- Keep Rust changes compatible with Edition 2024 and MSRV `1.98`.
 - Prefer zero-warning `clippy`; avoid `unwrap`/`expect` in production code when proper error propagation is possible.
 - Any user-facing change must update relevant docs, config defaults, and `CHANGELOG.md` (`[Unreleased]` section).
 - For new functionality, provide all integration points: config section, CLI subcommand/argument, TUI command palette entry, `--init` wizard, `--migrate-config` migration step, live testing playbook in `.local/testing/playbooks/`, and coverage row in `.local/testing/coverage-status.md`.
@@ -69,7 +69,7 @@ All secrets and API keys are stored exclusively in the Zeph age vault. Never use
 - `cargo llvm-cov --all-features --workspace`: Generate coverage locally.
 
 ## Coding Style & Naming Conventions
-Use Rust 2024 edition and MSRV `1.97`. Follow `rustfmt` defaults (4-space indentation) and keep Clippy warnings at zero where practical.
+Use Rust 2024 edition and MSRV `1.98`. Follow `rustfmt` defaults (4-space indentation) and keep Clippy warnings at zero where practical.
 Use `snake_case` for functions/modules/files, `PascalCase` for types/traits, and `SCREAMING_SNAKE_CASE` for constants. Prefer small modules with explicit responsibilities; keep public APIs in `lib.rs` minimal and re-export intentionally.
 
 ## Testing Guidelines

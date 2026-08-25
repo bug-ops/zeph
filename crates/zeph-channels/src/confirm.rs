@@ -153,6 +153,7 @@ mod tests {
             &incoming.text
         }
 
+        #[allow(clippy::unused_async_trait_impl)]
         async fn confirm_send_prompt(&mut self, text: &str) -> Result<(), ChannelError> {
             self.sent.push(text.to_string());
             Ok(())

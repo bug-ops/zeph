@@ -9,7 +9,7 @@
   [![docs](https://img.shields.io/badge/docs-book-blue)](https://bug-ops.github.io/zeph/)
   [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main&label=CI)](https://github.com/bug-ops/zeph/actions)
   [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
-  [![MSRV](https://img.shields.io/badge/MSRV-1.97-blue)](https://www.rust-lang.org)
+  [![MSRV](https://img.shields.io/badge/MSRV-1.98-blue)](https://www.rust-lang.org)
   [![Tests](https://img.shields.io/badge/tests-15609-brightgreen)](https://github.com/bug-ops/zeph/actions)
   [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](LICENSE)
 </div>
@@ -246,7 +246,7 @@ cd zeph && cargo build --release --features full
 Builds run only what you need via [feature bundles](https://bug-ops.github.io/zeph/reference/feature-flags.html): `desktop` (TUI), `ide` (ACP), `server` (gateway + A2A + telemetry), `chat` (Discord + Slack), `ml` (Candle + PDF), or `full`. Cross-platform: Linux, macOS, Windows on x86_64 and ARM64.
 
 > [!IMPORTANT]
-> Building from source requires Rust 1.97 or later. Pre-built binaries do not need a toolchain.
+> Building from source requires Rust 1.98 or later. Pre-built binaries do not need a toolchain.
 
 ## Common commands
 

@@ -366,7 +366,7 @@ impl AuditLogger {
     /// # Errors
     ///
     /// Returns an error if a file destination cannot be opened.
-    #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn from_config(config: &AuditConfig, tui_mode: bool) -> Result<Self, std::io::Error> {
         use zeph_config::AuditDestination as CfgDest;
 

@@ -204,14 +204,19 @@ mod tests {
 
         struct NullExec;
         impl ToolExecutor for NullExec {
-            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            fn execute(
+                &self,
+                _: &str,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
-            async fn execute_tool_call(
+            fn execute_tool_call(
                 &self,
                 _: &ToolCall,
-            ) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
             fn is_tool_speculatable(&self, _: &str) -> bool {
                 false
@@ -258,14 +263,19 @@ mod tests {
             count: Arc<AtomicUsize>,
         }
         impl ToolExecutor for SpyExec {
-            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            fn execute(
+                &self,
+                _: &str,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
-            async fn execute_tool_call(
+            fn execute_tool_call(
                 &self,
                 _: &ToolCall,
-            ) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
             fn is_tool_speculatable(&self, _: &str) -> bool {
                 self.count.fetch_add(1, Ordering::Relaxed);
@@ -347,14 +357,19 @@ mod tests {
 
         struct NullExec;
         impl ToolExecutor for NullExec {
-            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            fn execute(
+                &self,
+                _: &str,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
-            async fn execute_tool_call(
+            fn execute_tool_call(
                 &self,
                 _: &ToolCall,
-            ) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
             fn is_tool_speculatable(&self, _: &str) -> bool {
                 false
@@ -400,14 +415,19 @@ mod tests {
 
         struct NullExec;
         impl ToolExecutor for NullExec {
-            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            fn execute(
+                &self,
+                _: &str,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
-            async fn execute_tool_call(
+            fn execute_tool_call(
                 &self,
                 _: &ToolCall,
-            ) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
             fn is_tool_speculatable(&self, _: &str) -> bool {
                 false
@@ -455,14 +475,19 @@ mod tests {
 
         struct NullExec;
         impl ToolExecutor for NullExec {
-            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            fn execute(
+                &self,
+                _: &str,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
-            async fn execute_tool_call(
+            fn execute_tool_call(
                 &self,
                 _: &ToolCall,
-            ) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
             fn is_tool_speculatable(&self, _: &str) -> bool {
                 false
@@ -518,14 +543,19 @@ mod tests {
 
         struct NullExec;
         impl ToolExecutor for NullExec {
-            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            fn execute(
+                &self,
+                _: &str,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
-            async fn execute_tool_call(
+            fn execute_tool_call(
                 &self,
                 _: &ToolCall,
-            ) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
             fn is_tool_speculatable(&self, _: &str) -> bool {
                 false

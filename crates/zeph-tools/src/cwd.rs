@@ -101,6 +101,11 @@ impl SetCwdExecutor {
 }
 
 impl ToolExecutor for SetCwdExecutor {
+    // `resolve_and_set_cwd` calls `std::env::set_current_dir` — a process-global mutation.
+    // Kept as a genuine `async fn` (never `std::future::ready`) so the mutation stays
+    // lazy (poll-time), matching the pre-1.98 behavior and avoiding a select!-cancellation
+    // hazard (see #6746).
+    #[allow(clippy::unused_async_trait_impl)]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         if call.tool_id != TOOL_NAME {
             return Ok(None);
@@ -140,8 +145,11 @@ impl ToolExecutor for SetCwdExecutor {
         false
     }
 
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(None)
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
     }
 
     crate::tool_executor_no_inner_defaults!();

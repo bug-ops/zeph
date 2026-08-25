@@ -830,8 +830,11 @@ mod tests {
     }
 
     impl zeph_llm::provider::LlmProvider for StubProvider {
-        async fn chat(&self, _messages: &[Message]) -> Result<String, zeph_llm::LlmError> {
-            Ok(self.response.to_owned())
+        fn chat(
+            &self,
+            _messages: &[Message],
+        ) -> impl std::future::Future<Output = Result<String, zeph_llm::LlmError>> + Send {
+            std::future::ready(Ok(self.response.to_owned()))
         }
 
         async fn chat_stream(
@@ -848,8 +851,12 @@ mod tests {
             false
         }
 
-        async fn embed(&self, _text: &str) -> Result<Vec<f32>, zeph_llm::LlmError> {
-            Ok(vec![])
+        fn embed(
+            &self,
+            _text: &str,
+        ) -> impl std::future::Future<Output = Result<Vec<f32>, zeph_llm::LlmError>> + Send
+        {
+            std::future::ready(Ok(vec![]))
         }
 
         fn supports_embeddings(&self) -> bool {
@@ -881,8 +888,12 @@ mod tests {
             false
         }
 
-        async fn embed(&self, _text: &str) -> Result<Vec<f32>, zeph_llm::LlmError> {
-            Ok(vec![])
+        fn embed(
+            &self,
+            _text: &str,
+        ) -> impl std::future::Future<Output = Result<Vec<f32>, zeph_llm::LlmError>> + Send
+        {
+            std::future::ready(Ok(vec![]))
         }
 
         fn supports_embeddings(&self) -> bool {

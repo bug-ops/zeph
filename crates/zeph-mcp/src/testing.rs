@@ -131,13 +131,17 @@ impl ToolExecutor for MockMcpServer {
             .collect()
     }
 
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
         // Intentionally no-op: this mock operates at the ToolExecutor level
         // and bypasses the rmcp transport layer entirely.  Tool dispatch always
         // goes through execute_tool_call; execute is never called in tests.
-        Ok(None)
+        std::future::ready(Ok(None))
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         // Record the call for test assertions.
         self.recorded_calls.lock().unwrap().push((

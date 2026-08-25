@@ -50,8 +50,11 @@ impl DagAwareToolExecutor {
 }
 
 impl ToolExecutor for DagAwareToolExecutor {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(None)
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
     }
 
     fn tool_definitions(&self) -> Vec<ToolDef> {
@@ -83,16 +86,20 @@ impl ToolExecutor for DagAwareToolExecutor {
         ]
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         let mut results = self.results.lock().unwrap();
         results.remove(call.tool_id.as_str()).unwrap_or(Ok(None))
     }
 
-    async fn execute_tool_call_confirmed(
+    fn execute_tool_call_confirmed(
         &self,
         call: &ToolCall,
-    ) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(Some(Self::make_output(call.tool_id.as_str(), "confirmed")))
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(Some(Self::make_output(
+            call.tool_id.as_str(),
+            "confirmed",
+        ))))
     }
 
     fn checkpoint_undo(&self, _n: usize) -> zeph_tools::CheckpointActionResult {

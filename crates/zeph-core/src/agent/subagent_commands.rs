@@ -2204,8 +2204,12 @@ mod tests {
     }
 
     impl ToolExecutor for TrustRecordingExecutor {
-        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
         fn set_skill_env(&self, _env: Option<std::collections::HashMap<String, String>>) {}
@@ -2280,10 +2284,15 @@ mod tests {
     }
 
     impl ToolExecutor for RecordingExecutor {
-        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
+        #[allow(clippy::unused_async_trait_impl)]
         async fn execute_tool_call(
             &self,
             call: &ToolCall,

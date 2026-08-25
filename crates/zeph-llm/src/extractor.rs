@@ -94,8 +94,11 @@ mod tests {
     }
 
     impl LlmProvider for StubProvider {
-        async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
-            Ok(self.response.clone())
+        fn chat(
+            &self,
+            _messages: &[Message],
+        ) -> impl std::future::Future<Output = Result<String, LlmError>> + Send {
+            std::future::ready(Ok(self.response.clone()))
         }
 
         async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
@@ -109,10 +112,13 @@ mod tests {
             false
         }
 
-        async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-            Err(LlmError::EmbedUnsupported {
+        fn embed(
+            &self,
+            _text: &str,
+        ) -> impl std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send {
+            std::future::ready(Err(LlmError::EmbedUnsupported {
                 provider: "stub".into(),
-            })
+            }))
         }
 
         fn supports_embeddings(&self) -> bool {
@@ -164,20 +170,30 @@ mod tests {
         struct FailProvider;
 
         impl LlmProvider for FailProvider {
-            async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
-                Err(LlmError::Unavailable)
+            fn chat(
+                &self,
+                _messages: &[Message],
+            ) -> impl std::future::Future<Output = Result<String, LlmError>> + Send {
+                std::future::ready(Err(LlmError::Unavailable))
             }
 
-            async fn chat_stream(&self, _messages: &[Message]) -> Result<ChatStream, LlmError> {
-                Err(LlmError::Unavailable)
+            fn chat_stream(
+                &self,
+                _messages: &[Message],
+            ) -> impl std::future::Future<Output = Result<ChatStream, LlmError>> + Send
+            {
+                std::future::ready(Err(LlmError::Unavailable))
             }
 
             fn supports_streaming(&self) -> bool {
                 false
             }
 
-            async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-                Err(LlmError::Unavailable)
+            fn embed(
+                &self,
+                _text: &str,
+            ) -> impl std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send {
+                std::future::ready(Err(LlmError::Unavailable))
             }
 
             fn supports_embeddings(&self) -> bool {

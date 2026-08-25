@@ -590,19 +590,27 @@ mod tests {
             }))
         }
 
-        async fn send(&mut self, _text: &str) -> Result<(), zeph_core::channel::ChannelError> {
-            Ok(())
+        fn send(
+            &mut self,
+            _text: &str,
+        ) -> impl std::future::Future<Output = Result<(), zeph_core::channel::ChannelError>> + Send
+        {
+            std::future::ready(Ok(()))
         }
 
-        async fn send_chunk(
+        fn send_chunk(
             &mut self,
             _chunk: &str,
-        ) -> Result<(), zeph_core::channel::ChannelError> {
-            Ok(())
+        ) -> impl std::future::Future<Output = Result<(), zeph_core::channel::ChannelError>> + Send
+        {
+            std::future::ready(Ok(()))
         }
 
-        async fn flush_chunks(&mut self) -> Result<(), zeph_core::channel::ChannelError> {
-            Ok(())
+        fn flush_chunks(
+            &mut self,
+        ) -> impl std::future::Future<Output = Result<(), zeph_core::channel::ChannelError>> + Send
+        {
+            std::future::ready(Ok(()))
         }
     }
 

@@ -337,10 +337,15 @@ mod tests {
     }
 
     impl ToolExecutor for MockInner {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
+        #[allow(clippy::unused_async_trait_impl)]
         async fn execute_tool_call(
             &self,
             call: &ToolCall,
@@ -556,8 +561,12 @@ mod tests {
     #[derive(Debug)]
     struct SpeculatableInner;
     impl ToolExecutor for SpeculatableInner {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
         fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
             true
@@ -603,8 +612,12 @@ mod tests {
     #[derive(Debug)]
     struct ConfirmationRequiredInner;
     impl ToolExecutor for ConfirmationRequiredInner {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
         fn requires_confirmation(&self, _call: &ToolCall) -> bool {
             true
@@ -648,11 +661,19 @@ mod tests {
     struct CheckpointingInner;
 
     impl ToolExecutor for CheckpointingInner {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
-        async fn execute_tool_call(&self, _: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute_tool_call(
+            &self,
+            _: &ToolCall,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
         fn checkpoint_undo(&self, n: usize) -> crate::executor::CheckpointActionResult {
             crate::executor::CheckpointActionResult {
@@ -856,15 +877,20 @@ mod tests {
         struct InnerWithClaimSource;
 
         impl ToolExecutor for InnerWithClaimSource {
-            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            fn execute(
+                &self,
+                _: &str,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
 
-            async fn execute_tool_call(
+            fn execute_tool_call(
                 &self,
                 call: &ToolCall,
-            ) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(Some(ToolOutput {
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(Some(ToolOutput {
                     tool_name: call.tool_id.clone(),
                     summary: "ok".into(),
                     blocks_executed: 1,
@@ -876,7 +902,7 @@ mod tests {
                     raw_response: None,
                     claim_source: Some(crate::executor::ClaimSource::Shell),
                     ..Default::default()
-                }))
+                })))
             }
 
             crate::tool_executor_no_inner_defaults!();

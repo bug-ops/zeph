@@ -350,8 +350,11 @@ impl ToolExecutor for MemoryToolExecutor {
         ]
     }
 
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(None)
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
     }
 
     #[allow(clippy::too_many_lines)] // two tools with validation, search, and multi-source aggregation

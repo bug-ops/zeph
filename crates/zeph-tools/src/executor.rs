@@ -632,24 +632,32 @@ pub fn deserialize_params<T: serde::de::DeserializeOwned>(
 /// struct EchoExecutor;
 ///
 /// impl ToolExecutor for EchoExecutor {
-///     async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-///         Ok(None) // not a fenced-block executor
+///     fn execute(
+///         &self,
+///         _response: &str,
+///     ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+///         std::future::ready(Ok(None)) // not a fenced-block executor
 ///     }
 ///
-///     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
-///         if call.tool_id != "echo" {
-///             return Ok(None);
-///         }
-///         let text = call.params.get("text")
-///             .and_then(|v| v.as_str())
-///             .unwrap_or("")
-///             .to_owned();
-///         Ok(Some(ToolOutput {
-///             tool_name: "echo".into(),
-///             summary: text,
-///             blocks_executed: 1,
-///             ..Default::default()
-///         }))
+///     fn execute_tool_call(
+///         &self,
+///         call: &ToolCall,
+///     ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+///         let result = if call.tool_id != "echo" {
+///             Ok(None)
+///         } else {
+///             let text = call.params.get("text")
+///                 .and_then(|v| v.as_str())
+///                 .unwrap_or("")
+///                 .to_owned();
+///             Ok(Some(ToolOutput {
+///                 tool_name: "echo".into(),
+///                 summary: text,
+///                 blocks_executed: 1,
+///                 ..Default::default()
+///             }))
+///         };
+///         std::future::ready(result)
 ///     }
 ///
 ///     zeph_tools::tool_executor_no_inner_defaults!();
@@ -801,8 +809,11 @@ pub trait ToolExecutor: Send + Sync {
     ///
     /// struct ReadOnlyExecutor;
     /// impl ToolExecutor for ReadOnlyExecutor {
-    ///     async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-    ///         Ok(None)
+    ///     fn execute(
+    ///         &self,
+    ///         _: &str,
+    ///     ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+    ///         std::future::ready(Ok(None))
     ///     }
     ///     fn is_tool_speculatable(&self, _tool_id: &str) -> bool {
     ///         true // read-only, idempotent
@@ -1408,8 +1419,12 @@ mod tests {
     #[derive(Debug)]
     struct DefaultExecutor;
     impl ToolExecutor for DefaultExecutor {
-        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
         crate::tool_executor_no_inner_defaults!();
@@ -1485,8 +1500,12 @@ mod tests {
     }
 
     impl ToolExecutor for FixedExecutor {
-        async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(Some(ToolOutput {
+        fn execute(
+            &self,
+            _response: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(Some(ToolOutput {
                 tool_name: ToolName::new(self.tool_id),
                 summary: self.output.to_owned(),
                 blocks_executed: 1,
@@ -1498,18 +1517,19 @@ mod tests {
                 raw_response: None,
                 claim_source: None,
                 ..Default::default()
-            }))
+            })))
         }
 
         fn tool_definitions(&self) -> Vec<crate::registry::ToolDef> {
             vec![]
         }
 
-        async fn execute_tool_call(
+        fn execute_tool_call(
             &self,
             _call: &ToolCall,
-        ) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(Some(ToolOutput {
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(Some(ToolOutput {
                 tool_name: ToolName::new(self.tool_id),
                 summary: self.output.to_owned(),
                 blocks_executed: 1,
@@ -1521,7 +1541,7 @@ mod tests {
                 raw_response: None,
                 claim_source: None,
                 ..Default::default()
-            }))
+            })))
         }
 
         crate::tool_executor_no_inner_defaults!();
@@ -1590,8 +1610,12 @@ mod tests {
 
         struct TrustCapture(AtomicU8);
         impl ToolExecutor for TrustCapture {
-            async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-                Ok(None)
+            fn execute(
+                &self,
+                _: &str,
+            ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+            {
+                std::future::ready(Ok(None))
             }
             fn set_effective_trust(&self, level: crate::SkillTrustLevel) {
                 // encode: Trusted=0, Verified=1, Quarantined=2, Blocked=3
@@ -1893,8 +1917,12 @@ mod tests {
     /// Stub implementing only `ToolExecutor` without overriding `requires_confirmation`.
     struct StubExecutor;
     impl ToolExecutor for StubExecutor {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
         crate::tool_executor_no_inner_defaults!();
@@ -1903,8 +1931,12 @@ mod tests {
     /// Stub that always signals confirmation is required via `ToolExecutor::requires_confirmation`.
     struct ConfirmingExecutor;
     impl ToolExecutor for ConfirmingExecutor {
-        async fn execute(&self, _: &str) -> Result<Option<ToolOutput>, ToolError> {
-            Ok(None)
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
         fn requires_confirmation(&self, _call: &ToolCall) -> bool {
             true

@@ -415,26 +415,34 @@ mod tests {
         }
 
         impl zeph_llm::provider::LlmProvider for OkProvider {
-            async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
-                Ok(self.response.clone())
-            }
-
-            async fn chat_stream(
+            fn chat(
                 &self,
                 _messages: &[Message],
-            ) -> Result<zeph_llm::provider::ChatStream, LlmError> {
+            ) -> impl std::future::Future<Output = Result<String, LlmError>> + Send {
+                std::future::ready(Ok(self.response.clone()))
+            }
+
+            fn chat_stream(
+                &self,
+                _messages: &[Message],
+            ) -> impl std::future::Future<Output = Result<zeph_llm::provider::ChatStream, LlmError>> + Send
+            {
                 let r = self.response.clone();
-                Ok(Box::pin(tokio_stream::once(Ok(
+                let stream: zeph_llm::provider::ChatStream = Box::pin(tokio_stream::once(Ok(
                     zeph_llm::provider::StreamChunk::Content(r),
-                ))))
+                )));
+                std::future::ready(Ok(stream))
             }
 
             fn supports_streaming(&self) -> bool {
                 false
             }
 
-            async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-                Ok(vec![])
+            fn embed(
+                &self,
+                _text: &str,
+            ) -> impl std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send {
+                std::future::ready(Ok(vec![]))
             }
 
             fn supports_embeddings(&self) -> bool {
@@ -451,23 +459,30 @@ mod tests {
         struct ErrProvider;
 
         impl zeph_llm::provider::LlmProvider for ErrProvider {
-            async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
-                Err(LlmError::Inference("mock error".into()))
-            }
-
-            async fn chat_stream(
+            fn chat(
                 &self,
                 _messages: &[Message],
-            ) -> Result<zeph_llm::provider::ChatStream, LlmError> {
-                Err(LlmError::Inference("mock error".into()))
+            ) -> impl std::future::Future<Output = Result<String, LlmError>> + Send {
+                std::future::ready(Err(LlmError::Inference("mock error".into())))
+            }
+
+            fn chat_stream(
+                &self,
+                _messages: &[Message],
+            ) -> impl std::future::Future<Output = Result<zeph_llm::provider::ChatStream, LlmError>> + Send
+            {
+                std::future::ready(Err(LlmError::Inference("mock error".into())))
             }
 
             fn supports_streaming(&self) -> bool {
                 false
             }
 
-            async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-                Ok(vec![])
+            fn embed(
+                &self,
+                _text: &str,
+            ) -> impl std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send {
+                std::future::ready(Ok(vec![]))
             }
 
             fn supports_embeddings(&self) -> bool {
@@ -503,8 +518,11 @@ mod tests {
                 false
             }
 
-            async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-                Ok(vec![])
+            fn embed(
+                &self,
+                _text: &str,
+            ) -> impl std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send {
+                std::future::ready(Ok(vec![]))
             }
 
             fn supports_embeddings(&self) -> bool {

@@ -38,22 +38,27 @@ impl OwnerKeyChannel {
 }
 
 impl Channel for OwnerKeyChannel {
+    #[allow(clippy::unused_async_trait_impl)]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, crate::channel::ChannelError> {
         Ok(self.inbox.pop_front())
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send(&mut self, text: &str) -> Result<(), crate::channel::ChannelError> {
         self.sent.lock().unwrap().push(text.to_owned());
         Ok(())
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), crate::channel::ChannelError> {
         self.sent.lock().unwrap().push(chunk.to_owned());
         Ok(())
     }
 
-    async fn flush_chunks(&mut self) -> Result<(), crate::channel::ChannelError> {
-        Ok(())
+    fn flush_chunks(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<(), crate::channel::ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 }
 

@@ -270,6 +270,19 @@ const STATUS_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// **Blocked by:** workspace-wide breaking change affecting CLI, Telegram, TUI, gateway, JSON,
 /// Discord, Slack, loopback channels, and all integration tests. Must be migrated channel by
 /// channel across ≥5 PRs. Requires its own SDD spec. See critic review §S4.
+///
+/// # Implementor contract: side effects must stay poll-time-lazy (#6746)
+///
+/// Every method here returns `impl Future<Output = _> + Send`. A body with no internal
+/// `.await` must remain a genuine `async fn` (with `#[allow(clippy::unused_async_trait_impl)]`)
+/// whenever it has an observable side effect — mutating `self`, sending on a channel, or
+/// panicking. **Never** rewrite such a body to a synchronous `fn` wrapping
+/// `std::future::ready(body)`: `std::future::ready` evaluates its argument eagerly, at the
+/// moment the function is *called*, not when the returned future is first polled. A caller
+/// that constructs the future as a losing `tokio::select!` arm (or otherwise never polls it)
+/// would still trigger the side effect — see `BenchmarkChannel::recv`'s history for a
+/// confirmed instance of exactly this bug. `std::future::ready` is safe only for bodies that
+/// are pure computation over their arguments.
 pub trait Channel: Send {
     /// Receive the next message. Returns `None` on EOF or shutdown.
     ///
@@ -859,8 +872,11 @@ impl Channel for LoopbackChannel {
             .map_err(|_| ChannelError::ChannelClosed)
     }
 
-    async fn confirm(&mut self, _prompt: &str) -> Result<bool, ChannelError> {
-        Ok(true)
+    fn confirm(
+        &mut self,
+        _prompt: &str,
+    ) -> impl std::future::Future<Output = Result<bool, ChannelError>> + Send {
+        std::future::ready(Ok(true))
     }
 
     async fn send_stop_hint(&mut self, hint: StopHint) -> Result<(), ChannelError> {
@@ -981,20 +997,31 @@ mod tests {
     struct StubChannel;
 
     impl Channel for StubChannel {
-        async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
-            Ok(None)
+        fn recv(
+            &mut self,
+        ) -> impl std::future::Future<Output = Result<Option<ChannelMessage>, ChannelError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
-        async fn send(&mut self, _text: &str) -> Result<(), ChannelError> {
-            Ok(())
+        fn send(
+            &mut self,
+            _text: &str,
+        ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+            std::future::ready(Ok(()))
         }
 
-        async fn send_chunk(&mut self, _chunk: &str) -> Result<(), ChannelError> {
-            Ok(())
+        fn send_chunk(
+            &mut self,
+            _chunk: &str,
+        ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+            std::future::ready(Ok(()))
         }
 
-        async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
-            Ok(())
+        fn flush_chunks(
+            &mut self,
+        ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+            std::future::ready(Ok(()))
         }
     }
 
@@ -1046,24 +1073,38 @@ mod tests {
     struct ErroringStatusChannel;
 
     impl Channel for ErroringStatusChannel {
-        async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
-            Ok(None)
+        fn recv(
+            &mut self,
+        ) -> impl std::future::Future<Output = Result<Option<ChannelMessage>, ChannelError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
-        async fn send(&mut self, _text: &str) -> Result<(), ChannelError> {
-            Ok(())
+        fn send(
+            &mut self,
+            _text: &str,
+        ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+            std::future::ready(Ok(()))
         }
 
-        async fn send_chunk(&mut self, _chunk: &str) -> Result<(), ChannelError> {
-            Ok(())
+        fn send_chunk(
+            &mut self,
+            _chunk: &str,
+        ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+            std::future::ready(Ok(()))
         }
 
-        async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
-            Ok(())
+        fn flush_chunks(
+            &mut self,
+        ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+            std::future::ready(Ok(()))
         }
 
-        async fn send_status(&mut self, _text: &str) -> Result<(), ChannelError> {
-            Err(ChannelError::ChannelClosed)
+        fn send_status(
+            &mut self,
+            _text: &str,
+        ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+            std::future::ready(Err(ChannelError::ChannelClosed))
         }
     }
 
@@ -1103,20 +1144,31 @@ mod tests {
     struct HangingStatusChannel;
 
     impl Channel for HangingStatusChannel {
-        async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
-            Ok(None)
+        fn recv(
+            &mut self,
+        ) -> impl std::future::Future<Output = Result<Option<ChannelMessage>, ChannelError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
-        async fn send(&mut self, _text: &str) -> Result<(), ChannelError> {
-            Ok(())
+        fn send(
+            &mut self,
+            _text: &str,
+        ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+            std::future::ready(Ok(()))
         }
 
-        async fn send_chunk(&mut self, _chunk: &str) -> Result<(), ChannelError> {
-            Ok(())
+        fn send_chunk(
+            &mut self,
+            _chunk: &str,
+        ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+            std::future::ready(Ok(()))
         }
 
-        async fn flush_chunks(&mut self) -> Result<(), ChannelError> {
-            Ok(())
+        fn flush_chunks(
+            &mut self,
+        ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
+            std::future::ready(Ok(()))
         }
 
         async fn send_status(&mut self, _text: &str) -> Result<(), ChannelError> {

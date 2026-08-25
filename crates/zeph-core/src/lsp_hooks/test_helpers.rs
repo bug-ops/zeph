@@ -38,6 +38,7 @@ impl RecordingCaller {
 }
 
 impl McpCaller for RecordingCaller {
+    #[allow(clippy::unused_async_trait_impl)]
     async fn call_tool(
         &self,
         server_id: &str,
@@ -57,7 +58,7 @@ impl McpCaller for RecordingCaller {
         queue.remove(0)
     }
 
-    async fn list_servers(&self) -> Vec<String> {
-        vec!["mcpls".to_owned()]
+    fn list_servers(&self) -> impl std::future::Future<Output = Vec<String>> + Send {
+        std::future::ready(vec!["mcpls".to_owned()])
     }
 }

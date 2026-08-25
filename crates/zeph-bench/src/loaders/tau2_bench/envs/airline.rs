@@ -193,8 +193,11 @@ impl AirlineEnv {
 }
 
 impl ToolExecutor for AirlineEnv {
-    async fn execute(&self, _response: &str) -> Result<Option<ToolOutput>, ToolError> {
-        Ok(None)
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
     }
 
     fn tool_definitions(&self) -> Vec<ToolDef> {
