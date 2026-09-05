@@ -273,6 +273,7 @@ pub(crate) fn spawn_gateway_server(
     #[cfg(feature = "prometheus")] metrics_registry: Option<(
         std::sync::Arc<prometheus_client::registry::Registry>,
         String,
+        bool,
     )>,
     supervisor: Option<&zeph_common::TaskSupervisor>,
 ) {
@@ -303,8 +304,8 @@ pub(crate) fn spawn_gateway_server(
     .with_trusted_proxy_cidrs(config.gateway.trusted_proxy_cidrs.clone());
 
     #[cfg(feature = "prometheus")]
-    let gw = if let Some((registry, path)) = metrics_registry {
-        gw.with_metrics_registry(registry, path)
+    let gw = if let Some((registry, path, require_auth)) = metrics_registry {
+        gw.with_metrics_registry(registry, path, require_auth)
     } else {
         gw
     };

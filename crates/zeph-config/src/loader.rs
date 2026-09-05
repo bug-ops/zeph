@@ -371,7 +371,7 @@ impl Config {
             }
             // vault key collision detection
             if s.oauth.as_ref().is_some_and(|o| o.enabled) {
-                let key = format!("ZEPH_MCP_OAUTH_{}", s.id.to_uppercase().replace('-', "_"));
+                let key = crate::channels::oauth_vault_key(&s.id);
                 if !seen_oauth_vault_keys.insert(key.clone()) {
                     return Err(ConfigError::Validation(format!(
                         "MCP server '{}' has vault key collision ('{key}'): another server \
@@ -882,12 +882,64 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
+    use crate::channels::{McpOAuthConfig, McpPolicy, McpServerConfig, McpTrustLevel};
 
     fn config_with_sct(threshold: f32) -> Config {
         let mut cfg = Config::default();
         cfg.llm.semantic_cache_threshold = threshold;
         cfg
+    }
+
+    fn mcp_server(id: &str, oauth_enabled: bool) -> McpServerConfig {
+        McpServerConfig {
+            id: id.to_owned(),
+            command: Some("echo".to_owned()),
+            args: Vec::new(),
+            env: HashMap::new(),
+            url: None,
+            timeout: 30,
+            policy: McpPolicy::default(),
+            headers: HashMap::new(),
+            oauth: Some(McpOAuthConfig {
+                enabled: oauth_enabled,
+                ..McpOAuthConfig::default()
+            }),
+            trust_level: McpTrustLevel::default(),
+            tool_allowlist: None,
+            allow_untrusted_without_allowlist: false,
+            expected_tools: Vec::new(),
+            roots: Vec::new(),
+            tool_metadata: HashMap::new(),
+            elicitation_enabled: None,
+            env_isolation: None,
+            media_passthrough: false,
+        }
+    }
+
+    /// Two oauth-enabled MCP servers whose IDs normalize to the same vault key
+    /// (`oauth_vault_key`) must be rejected at config-validation time (F2, #6550) —
+    /// otherwise both servers would silently share one set of vault-stored credentials.
+    #[test]
+    fn validate_mcp_servers_rejects_oauth_vault_key_collision() {
+        let mut cfg = Config::default();
+        cfg.mcp.servers = vec![mcp_server("my-app", true), mcp_server("my_app", true)];
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("vault key collision"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The same colliding IDs are fine when only one server has `oauth.enabled = true` —
+    /// the collision only matters once both servers actually read/write the shared vault key.
+    #[test]
+    fn validate_mcp_servers_allows_collision_when_only_one_server_has_oauth_enabled() {
+        let mut cfg = Config::default();
+        cfg.mcp.servers = vec![mcp_server("my-app", true), mcp_server("my_app", false)];
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

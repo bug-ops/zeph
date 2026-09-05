@@ -895,6 +895,11 @@ enabled = false
 path = "/metrics"
 # How often (seconds) to sync MetricsSnapshot to the Prometheus registry (min 1)
 sync_interval_secs = 5
+# Require the gateway bearer token on /metrics. Default: false (unauthenticated, unthrottled).
+# Set true when the gateway is reachable from an untrusted network; this gives /metrics its
+# own independent per-IP counter with the same limit as /webhook, so the token cannot be
+# brute-forced via /metrics.
+require_auth = false
 
 [daemon]
 # Enable daemon supervisor

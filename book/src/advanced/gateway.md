@@ -104,6 +104,19 @@ On success, returns `200` with `{"status": "accepted"}`. Returns `401` if the to
 
 The gateway tracks requests per source IP with a 60-second sliding window. When a client exceeds the configured `rate_limit`, subsequent requests receive `429 Too Many Requests` until the window resets. The rate limiter evicts stale entries when the tracking map exceeds 10,000 IPs.
 
+## Metrics Endpoint
+
+When `[metrics] enabled = true` (requires the `prometheus` feature), the gateway also mounts a `/metrics` route (path configurable via `[metrics] path`) that returns `OpenMetrics` 1.0.0 text for Prometheus scraping. This applies to the CLI/TUI-driven gateway (`src/runner.rs`) only — `zeph --daemon` (`src/daemon.rs`) does not currently wire a metrics registry into its gateway, so `/metrics` (and `require_auth`) has no effect in daemon mode.
+
+By default (`[metrics] require_auth = false`), `/metrics` is unauthenticated and unthrottled — the same posture as `/health`. This matches the common deployment where the gateway's port is only reachable from a trusted scrape network (a private VPC, a sidecar, or behind a reverse proxy that itself enforces access control). If the gateway is reachable from an untrusted network, set:
+
+```toml
+[metrics]
+require_auth = true
+```
+
+to require the same `Authorization: Bearer <token>` header as `/webhook`. This also gives `/metrics` its own independent per-IP rate-limit counter, with the same limit and the same middleware ordering as `/webhook` (rate limit outside auth, so a failed-auth request still counts toward the limit). Without this, `/metrics` would give the bearer token an unthrottled brute-force surface even though `/webhook` throttles it.
+
 ## Architecture
 
 The gateway is built on [axum](https://docs.rs/axum) with `tower-http` middleware:
