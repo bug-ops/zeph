@@ -22,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   because crypto crates (`ring`, `aws-lc-sys`) require Windows ARM64 SDK headers unavailable in
   cross containers — the native runner ships the real MSVC ARM64 toolchain and SDK, so the
   problem no longer applies.
+- Added `SecretFuture` type alias to `zeph-vault` to de-duplicate the `VaultProvider::get_secret`
+  return type (PR link pending).
 
 ### Changed
 
