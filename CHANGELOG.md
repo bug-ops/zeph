@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Capped the ambient `<shared-state>` prompt block's cross-thread-store read at a fixed
   row count instead of relying on `limit = 0` ("unlimited"), and surfaced truncation to
-  the receiving node via a `truncated`/`shown` marker in the block's tag (#6763).
+  the receiving node via a `truncated`/`shown` marker in the block's tag (#6763, #6767).
 
 ### Added
 
