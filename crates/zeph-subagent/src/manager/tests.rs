@@ -3804,6 +3804,55 @@ fn context_injection_last_assistant_fallback_when_no_assistant() {
     assert_eq!(result, "do work");
 }
 
+#[test]
+fn context_injection_last_assistant_truncates_to_max_chars() {
+    use zeph_config::ContextInjectionMode;
+    let msgs = vec![make_message(Role::Assistant, "x".repeat(2000))];
+    let result = apply_context_injection(
+        "do work",
+        &msgs,
+        ContextInjectionMode::LastAssistantTurn,
+        600,
+    );
+    let preamble = "Parent agent context (last response):\n";
+    let after = result.strip_prefix(preamble).unwrap_or(&result);
+    let content_part = after
+        .split_once("\n\n---\n\nTask: ")
+        .map_or(after, |(content, _)| content);
+    assert!(
+        content_part.len() <= 600,
+        "last-assistant-turn content should be capped to summary_max_chars, got {} chars",
+        content_part.len()
+    );
+    assert!(result.contains("do work"), "should still contain the task");
+}
+
+#[test]
+fn context_injection_last_assistant_zero_cap_falls_back_to_bare_prompt() {
+    use zeph_config::ContextInjectionMode;
+    let msgs = vec![make_message(Role::Assistant, "some response".into())];
+    let result =
+        apply_context_injection("do work", &msgs, ContextInjectionMode::LastAssistantTurn, 0);
+    assert_eq!(
+        result, "do work",
+        "a zero cap should fall back to the bare task prompt, not an empty context header"
+    );
+}
+
+#[test]
+fn context_injection_last_assistant_truncates_on_char_boundary() {
+    use zeph_config::ContextInjectionMode;
+    // Multi-byte chars straddling the truncation boundary must not panic or split a char.
+    let msgs = vec![make_message(Role::Assistant, "€".repeat(500))];
+    let result = apply_context_injection(
+        "do work",
+        &msgs,
+        ContextInjectionMode::LastAssistantTurn,
+        10,
+    );
+    assert!(result.contains("do work"));
+}
+
 #[tokio::test]
 async fn spawn_model_inherit_resolves_to_parent_provider() {
     let mut mgr = make_manager();

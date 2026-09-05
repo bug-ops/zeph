@@ -696,11 +696,14 @@ pub struct SubAgentConfig {
     /// limit.  The tighter of the two limits always applies.
     #[serde(default = "default_max_parent_messages")]
     pub max_parent_messages: usize,
-    /// Maximum character count for the `Summary` context injection mode.
+    /// Maximum character count for the `Summary` and `LastAssistantTurn` context injection
+    /// modes.
     ///
-    /// When `context_injection_mode = "summary"`, the extracted summary is truncated
-    /// to this many characters at a UTF-8 char boundary before being prepended to the
-    /// sub-agent's task prompt.  Consistent with the `max_state_chars` naming convention.
+    /// When `context_injection_mode = "summary"`, the extracted summary is truncated to this
+    /// many characters at a UTF-8 char boundary before being prepended to the sub-agent's task
+    /// prompt. When `context_injection_mode = "last_assistant_turn"` (the default), the raw
+    /// last-assistant-turn content spliced into the task prompt is capped the same way.
+    /// Consistent with the `max_state_chars` naming convention.
     ///
     /// Default: `600` (≈200 tokens at 3 chars/token).
     #[serde(default = "default_summary_max_chars")]
