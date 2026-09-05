@@ -7,13 +7,9 @@
 //! while the inner `Arc` is separately accessible for mutable operations such as OAuth
 //! credential persistence.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
-use zeph_common::secret::VaultError;
-
-use crate::{AgeVaultProvider, VaultProvider};
+use crate::{AgeVaultProvider, SecretFuture, VaultProvider};
 
 /// [`VaultProvider`] wrapper around `Arc<RwLock<AgeVaultProvider>>`.
 ///
@@ -48,10 +44,7 @@ use crate::{AgeVaultProvider, VaultProvider};
 pub struct ArcAgeVaultProvider(pub Arc<RwLock<AgeVaultProvider>>);
 
 impl VaultProvider for ArcAgeVaultProvider {
-    fn get_secret(
-        &self,
-        key: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, VaultError>> + Send + '_>> {
+    fn get_secret(&self, key: &str) -> SecretFuture<'_> {
         let value = self
             .0
             .read()

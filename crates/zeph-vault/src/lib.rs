@@ -77,6 +77,11 @@ pub use env::EnvVaultProvider;
 #[cfg(any(test, feature = "mock"))]
 pub use mock::MockVaultProvider;
 
+/// A boxed, `Send` future resolving to a secret lookup result, borrowed for the
+/// lifetime of the `&self` receiver that produced it.
+pub type SecretFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<String>, VaultError>> + Send + 'a>>;
+
 /// Pluggable secret retrieval backend.
 ///
 /// Implement this trait to integrate a custom secret store (e.g. `HashiCorp` Vault, `AWS` Secrets
@@ -86,17 +91,12 @@ pub use mock::MockVaultProvider;
 /// # Implementing
 ///
 /// ```
-/// use std::pin::Pin;
-/// use std::future::Future;
-/// use zeph_vault::{VaultProvider, VaultError};
+/// use zeph_vault::{SecretFuture, VaultProvider, VaultError};
 ///
 /// struct ConstantVault(&'static str);
 ///
 /// impl VaultProvider for ConstantVault {
-///     fn get_secret(
-///         &self,
-///         key: &str,
-///     ) -> Pin<Box<dyn Future<Output = Result<Option<String>, VaultError>> + Send + '_>> {
+///     fn get_secret(&self, key: &str) -> SecretFuture<'_> {
 ///         let value = if key == "MY_KEY" { Some(self.0.to_owned()) } else { None };
 ///         Box::pin(async move { Ok(value) })
 ///     }
@@ -107,10 +107,7 @@ pub trait VaultProvider: Send + Sync {
     ///
     /// Returns `Ok(None)` when the key does not exist. Returns `Err(VaultError)` on
     /// backend failures (I/O, decryption, network, etc.).
-    fn get_secret(
-        &self,
-        key: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, VaultError>> + Send + '_>>;
+    fn get_secret(&self, key: &str) -> SecretFuture<'_>;
 
     /// Return all known secret keys.
     ///

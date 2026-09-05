@@ -6,12 +6,7 @@
 //! [`EnvVaultProvider`] reads secrets directly from process environment variables.
 //! Designed for quick local development and CI environments.
 
-use std::future::Future;
-use std::pin::Pin;
-
-use zeph_common::secret::VaultError;
-
-use crate::VaultProvider;
+use crate::{SecretFuture, VaultProvider};
 
 /// Vault backend that reads secrets from environment variables.
 ///
@@ -37,10 +32,7 @@ use crate::VaultProvider;
 pub struct EnvVaultProvider;
 
 impl VaultProvider for EnvVaultProvider {
-    fn get_secret(
-        &self,
-        key: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, VaultError>> + Send + '_>> {
+    fn get_secret(&self, key: &str) -> SecretFuture<'_> {
         let key = key.to_owned();
         Box::pin(async move { Ok(std::env::var(&key).ok()) })
     }

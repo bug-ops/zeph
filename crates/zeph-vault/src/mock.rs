@@ -5,12 +5,7 @@
 //!
 //! Available when the `mock` feature is enabled or in `#[cfg(test)]` contexts.
 
-use std::future::Future;
-use std::pin::Pin;
-
-use zeph_common::secret::VaultError;
-
-use crate::VaultProvider;
+use crate::{SecretFuture, VaultProvider};
 
 /// In-memory vault backend for tests and mocking.
 ///
@@ -108,10 +103,7 @@ impl MockVaultProvider {
 }
 
 impl VaultProvider for MockVaultProvider {
-    fn get_secret(
-        &self,
-        key: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, VaultError>> + Send + '_>> {
+    fn get_secret(&self, key: &str) -> SecretFuture<'_> {
         let result = self.secrets.get(key).cloned();
         Box::pin(async move { Ok(result) })
     }

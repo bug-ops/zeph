@@ -9,15 +9,12 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::future::Future;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 
 use zeroize::Zeroizing;
 
-use crate::VaultProvider;
-use zeph_common::secret::VaultError;
+use crate::{SecretFuture, VaultProvider};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -564,10 +561,7 @@ impl AgeVaultProvider {
 }
 
 impl VaultProvider for AgeVaultProvider {
-    fn get_secret(
-        &self,
-        key: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, VaultError>> + Send + '_>> {
+    fn get_secret(&self, key: &str) -> SecretFuture<'_> {
         let result = self.secrets.get(key).map(|v| (**v).clone());
         Box::pin(async move { Ok(result) })
     }
