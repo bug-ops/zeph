@@ -41,6 +41,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   LLM providers must now add `testing` explicitly (`--features full,testing`) (#6747).
 - `index` (AST-based code indexing) joins the `desktop` bundle, and therefore `full` — the first
   time `full` compiles `zeph-index` in (#6747).
+- `zeph-config`: replaced glob re-exports with explicit named lists in `memory/mod.rs` and
+  `migrate/mod.rs` (#6486, #6759).
 
 ### Removed
 

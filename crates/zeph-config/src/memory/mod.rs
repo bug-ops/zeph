@@ -33,17 +33,42 @@ mod store;
 #[cfg(test)]
 mod tests;
 
-pub use consent_gate::*;
-pub use consolidation::*;
-pub use fidelity::*;
-pub use graph::*;
-pub use hebbian::*;
-pub use persona::*;
-pub use reasoning::*;
-pub use retrieval::*;
-pub use root::*;
-pub use session::*;
-pub use store::*;
+pub use consent_gate::ConsentGateConfig;
+pub use consolidation::{
+    EpisodicConsolidationConfig, FiveSignalConfig, FiveSignalConsolidationConfig,
+};
+pub use fidelity::{
+    AconConfig, ArcCompactionConfig, CompressionConfig, CompressionGuidelinesConfig,
+    CompressionStrategy, DigestConfig, EvictionConfig, EvictionPolicy, ForgettingConfig,
+    MicrocompactConfig, OpticalForgettingConfig, PruningStrategy, TypedPagesConfig,
+    TypedPagesEnforcement,
+};
+pub use graph::{
+    ApexMemConfig, BeamSearchConfig, ConflictResolutionStrategy, ConsolidationDaemonConfig,
+    EmGraphConfig, ExperienceConfig, GraphConfig, GraphRetrievalStrategy, ImplicitConflictConfig,
+    NoteLinkingConfig, SimilarityMethod, SpreadingActivationConfig, WaterCirclesConfig,
+    WriteQualityGateConfig,
+};
+pub use hebbian::{
+    BeliefRevisionConfig, ConflictRecencyConfig, HebbianConfig, RpeConfig, WriteGateConfig,
+};
+pub use persona::{
+    CategoryConfig, PersonaConfig, SidequestConfig, TrajectoryConfig,
+    TrajectoryRiskAccumulatorConfig, TrajectorySeverityMultipliers, TrajectorySignalWeights,
+    TreeConfig,
+};
+pub use reasoning::{
+    AutoDreamConfig, CompactionProbeConfig, MagicDocsConfig, MemCotConfig, ProbeCategory,
+    ReasoningConfig, RecallViewConfig,
+};
+pub use retrieval::{
+    AdmissionConfig, AdmissionStrategy, AdmissionWeights, ConsolidationConfig, ContextFormat,
+    RetrievalConfig, RetrievalFailuresConfig, StoreRoutingConfig, StoreRoutingStrategy, TierConfig,
+    TieredRetrievalConfig, TypeAwareComposeConfig,
+};
+pub use root::{MemoryConfig, VectorBackend};
+pub use session::{ContextStrategy, DocumentConfig, SemanticConfig, SessionsConfig};
+pub use store::CrossThreadStoreConfig;
 
 pub(crate) fn default_embed_timeout_secs() -> u64 {
     5
