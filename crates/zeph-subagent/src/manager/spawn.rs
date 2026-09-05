@@ -452,9 +452,16 @@ pub(crate) fn apply_context_injection(
                 .find(|m| m.role == Role::Assistant)
                 .map(|m| &m.content);
             match last_assistant {
-                Some(content) if !content.is_empty() => {
+                Some(content) if !content.is_empty() && summary_max_chars > 0 => {
+                    // Cap uncapped raw content to the same size class as `Summary` mode's
+                    // `summary_max_chars` (#6764) — otherwise a long parent turn splices its
+                    // full content into the sub-agent's task prompt unbounded. A zero cap falls
+                    // back to the bare task prompt, consistent with `Summary` mode's
+                    // `summary.is_empty()` fallback below, rather than emitting an empty header.
+                    let end = content.floor_char_boundary(summary_max_chars.min(content.len()));
+                    let truncated = &content[..end];
                     format!(
-                        "Parent agent context (last response):\n{content}\n\n---\n\nTask: \
+                        "Parent agent context (last response):\n{truncated}\n\n---\n\nTask: \
                          {task_prompt}"
                     )
                 }

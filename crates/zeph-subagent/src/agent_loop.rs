@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
@@ -1048,6 +1048,28 @@ async fn handle_tool_step(
 ///
 /// The system message at index 0 (if `role == System`) is always preserved.
 /// When `limit == 0` the function is a no-op.
+///
+/// A FIFO cutoff can land in the middle of a `ToolUse`/`ToolResult` pair, leaving an orphaned
+/// half in the retained window — a provider 400/422 on the next request (see
+/// `specs/002-agent-loop/spec.md`). [`repair_tool_pairing`] repairs the orphaned half after the
+/// drain so the retained window is always well-formed. The drain boundary is also nudged
+/// forward to the next `Role::User` message when possible (at most one extra message beyond
+/// `excess`, in the normal Assistant/User-alternating shape) — this is what lets a canonical
+/// subagent tool loop (pure `Assistant(ToolUse)`/`User(ToolResult)` alternation with no other
+/// plain-text anchor) land on a valid `user`-first window without relying on
+/// [`repair_tool_pairing`]'s leading-role cascade at all.
+///
+/// `max_history_messages` is a plain user-authored per-subagent field with no lower bound —
+/// at a pathologically small `limit` (e.g. 1), the drain alone can leave zero non-system
+/// messages with nothing left to repair. A window with no conversational message is rejected by
+/// every provider just as surely as an orphaned pair is, so this function computes the
+/// trim+repair on a scratch copy first and skips applying it entirely when the result would be
+/// non-conversational — leaving `messages` over `limit` for this call rather than emitting a
+/// guaranteed-invalid request. The loop retries the trim every turn, so this self-heals once the
+/// message shape changes. This is a backstop, not the common path: for the shapes this crate
+/// actually produces, the boundary nudge plus [`repair_tool_pairing`]'s downgrade-not-delete
+/// handling of orphaned `ToolResult`s (see `strip_orphaned_tool_parts`) means the trim almost
+/// always succeeds instead of being skipped (issue #6762 review discussion, R1).
 fn trim_message_history(messages: &mut Vec<Message>, limit: usize) {
     if limit == 0 || messages.len() <= limit {
         return;
@@ -1056,13 +1078,201 @@ fn trim_message_history(messages: &mut Vec<Message>, limit: usize) {
     let excess = messages.len() - limit;
     // Remove from the front, but skip index 0 when a system message is present.
     let start = usize::from(has_system);
-    let drain_end = (start + excess).min(messages.len());
+    let mut drain_end = (start + excess).min(messages.len());
+    // Prefer a boundary that starts the retained window on a `User` message so it never needs
+    // `repair_tool_pairing`'s leading-role cascade in the first place — in the canonical
+    // alternating shape this costs at most one extra dropped message.
+    while drain_end < messages.len() && messages[drain_end].role != Role::User {
+        drain_end += 1;
+    }
+
+    let mut candidate = messages.clone();
+    candidate.drain(start..drain_end);
+    repair_tool_pairing(&mut candidate);
+
+    if candidate.iter().all(|m| m.role == Role::System) {
+        tracing::warn!(
+            limit,
+            len = messages.len(),
+            "skipping subagent history trim: result would leave no conversational message"
+        );
+        return;
+    }
+
     tracing::debug!(
-        dropped = drain_end - start,
-        remaining = messages.len() - (drain_end - start),
+        dropped = messages.len() - candidate.len(),
+        remaining = candidate.len(),
         "trimming subagent message history"
     );
-    messages.drain(start..drain_end);
+    *messages = candidate;
+}
+
+/// Repairs `ToolUse`/`ToolResult` parts left orphaned by a FIFO trim boundary (downgrading an
+/// orphaned `ToolResult` to text, stripping an orphaned `ToolUse`), and drops any leading
+/// non-system message that is not `Role::User`.
+///
+/// Pairing is adjacency-scoped — matched against the immediately preceding/following
+/// non-system message, never a global id set — because providers such as Ollama mint tool-call
+/// ids by batch index (`call_0`, `call_1`, ...; see `crates/zeph-llm/src/ollama.rs`), so the
+/// same id recurs across unrelated turns. A global set would wrongly pair an orphan left by the
+/// drain against an unrelated call sharing its id. This mirrors the adjacency scoping in
+/// `zeph_agent_persistence::sanitize::sanitize_tool_pairs`, adapted for a FIFO count-based
+/// cutoff instead of DB-restored history (`crates/zeph-core/src/agent/subagent_commands.rs`'s
+/// `trim_parent_messages` has the same global-set gap; see issue #6762 discussion).
+///
+/// Anthropic requires the first non-system message in a request to have role `user`, and
+/// nothing downstream normalizes this (`crates/zeph-llm/src/claude/request.rs` passes roles
+/// through verbatim) — a FIFO cutoff can leave a *correctly paired* `ToolUse`/`ToolResult` at
+/// the front whose assistant message is not itself orphaned, so pairing repair alone would not
+/// catch it. Dropping that leading assistant message can newly orphan whatever followed it, so
+/// pairing repair and the leading-role check run to a fixed point.
+///
+/// Messages left empty by pruning are removed; the system message (if any) is always kept.
+fn repair_tool_pairing(messages: &mut Vec<Message>) {
+    let mut orphans_repaired = 0usize;
+    loop {
+        let stripped = strip_orphaned_tool_parts(messages);
+        orphans_repaired += stripped;
+        let dropped_leading = drop_leading_non_user_message(messages);
+        if stripped == 0 && !dropped_leading {
+            break;
+        }
+    }
+    if orphans_repaired > 0 {
+        tracing::debug!(
+            orphans = orphans_repaired,
+            "repaired orphaned ToolUse/ToolResult parts from subagent history trim boundary"
+        );
+    }
+}
+
+/// One adjacency-scoped sweep over `messages`:
+///
+/// 1. Downgrade `ToolResult` parts in user messages whose matching `ToolUse` is not present in
+///    the immediately preceding non-system message to a plain `MessagePart::Text` carrying the
+///    same content — mirrors the non-destructive orphan repair `zeph-llm`'s Claude request
+///    builder already does at request-build time (`crates/zeph-llm/src/claude/request.rs`,
+///    `push_tool_result_block`). Downgrading rather than deleting keeps the message non-empty
+///    and `Role::User`, which matters: a canonical subagent tool loop is pure
+///    `Assistant(ToolUse)`/`User(ToolResult)` alternation, so this orphaned `ToolResult` is
+///    often the *only* message available to serve as the window's leading `user` anchor —
+///    deleting it here previously fed [`drop_leading_non_user_message`] a cascade that could
+///    annihilate the entire window down to just the system message (issue #6762 review
+///    discussion, R1).
+/// 2. Strip `ToolUse` parts from assistant messages whose matching `ToolResult` is not present
+///    in the immediately following non-system message. The very last message in `messages` is
+///    exempt — its unanswered `ToolUse` calls are not orphaned; the window just ends before the
+///    result. Deletion (not downgrade) is safe here: unlike pass 1, an assistant message losing
+///    its only part does not change what row would anchor the window, since role alone (not
+///    content) decides whether [`drop_leading_non_user_message`] fires.
+///
+/// Messages left empty by pass 2 are removed, except the system message (index 0, if present),
+/// which is always kept regardless of content.
+///
+/// Returns the number of parts stripped or downgraded.
+fn strip_orphaned_tool_parts(messages: &mut Vec<Message>) -> usize {
+    let mut dropped_total = 0usize;
+
+    for i in 0..messages.len() {
+        if messages[i].role != Role::User || messages[i].parts.is_empty() {
+            continue;
+        }
+        let prev_idx = (0..i).rev().find(|&j| messages[j].role != Role::System);
+        let available_tool_ids: HashSet<String> = prev_idx
+            .filter(|&j| messages[j].role == Role::Assistant)
+            .map(|j| {
+                messages[j]
+                    .parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        MessagePart::ToolUse { id, .. } => Some(id.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut downgraded = 0usize;
+        for part in &mut messages[i].parts {
+            if let MessagePart::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } = part
+                && !available_tool_ids.contains(tool_use_id.as_str())
+            {
+                // Marker mirrors `push_tool_use_block`'s `[tool_use: {name}] {input}` style and,
+                // critically, guarantees non-empty text even when `content` is empty (e.g. a
+                // no-output tool result, `handle_tool_step`'s `Ok(None)` arm) — a bare empty
+                // string here would be dropped entirely by `claude/request.rs`'s plain-text
+                // branch (`if !text.trim().is_empty()`), silently losing this message as the
+                // window's leading `user` anchor at request-build time (#6762 review, N5).
+                let text = format!("[tool result: {tool_use_id}] {content}");
+                *part = MessagePart::Text { text };
+                downgraded += 1;
+            }
+        }
+        if downgraded > 0 {
+            dropped_total += downgraded;
+            messages[i].rebuild_content();
+        }
+    }
+
+    let last_idx = messages.len().saturating_sub(1);
+    for i in 0..messages.len() {
+        if messages[i].role != Role::Assistant || messages[i].parts.is_empty() || i == last_idx {
+            continue;
+        }
+        let next_idx = (i + 1..messages.len()).find(|&j| messages[j].role != Role::System);
+        let consumed_tool_ids: HashSet<String> = next_idx
+            .filter(|&j| messages[j].role == Role::User)
+            .map(|j| {
+                messages[j]
+                    .parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        MessagePart::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let before = messages[i].parts.len();
+        messages[i].parts.retain(|p| match p {
+            MessagePart::ToolUse { id, .. } => consumed_tool_ids.contains(id.as_str()),
+            _ => true,
+        });
+        let dropped = before - messages[i].parts.len();
+        if dropped > 0 {
+            dropped_total += dropped;
+            if messages[i].parts.is_empty() {
+                messages[i].content.clear();
+            } else {
+                messages[i].rebuild_content();
+            }
+        }
+    }
+
+    if dropped_total > 0 {
+        messages.retain(|m| m.role == Role::System || !m.content.is_empty() || !m.parts.is_empty());
+    }
+
+    dropped_total
+}
+
+/// Drops the first non-system message in `messages` if its role is not `Role::User`.
+///
+/// Returns `true` if a message was dropped.
+fn drop_leading_non_user_message(messages: &mut Vec<Message>) -> bool {
+    let Some(idx) = messages.iter().position(|m| m.role != Role::System) else {
+        return false;
+    };
+    if messages[idx].role == Role::User {
+        return false;
+    }
+    messages.remove(idx);
+    true
 }
 
 #[tracing::instrument(name = "subagent.agent_loop.run", skip_all, fields(task_id = %args.task_id, agent_name = %args.agent_name))]
@@ -1254,6 +1464,42 @@ mod trim_message_history_tests {
         make_message(Role::Assistant, text.to_owned())
     }
 
+    fn tool_use_part(id: &str) -> MessagePart {
+        MessagePart::ToolUse {
+            id: id.to_owned(),
+            name: "some_tool".to_owned(),
+            input: serde_json::json!({}),
+        }
+    }
+
+    fn tool_result_part(id: &str, content: &str) -> MessagePart {
+        MessagePart::ToolResult {
+            tool_use_id: id.to_owned(),
+            content: content.to_owned(),
+            is_error: false,
+        }
+    }
+
+    fn asst_tool_use(id: &str) -> Message {
+        Message::from_parts(Role::Assistant, vec![tool_use_part(id)])
+    }
+
+    fn usr_tool_result(id: &str) -> Message {
+        Message::from_parts(Role::User, vec![tool_result_part(id, "result")])
+    }
+
+    fn has_tool_use(m: &Message, id: &str) -> bool {
+        m.parts
+            .iter()
+            .any(|p| matches!(p, MessagePart::ToolUse { id: tid, .. } if tid == id))
+    }
+
+    fn has_tool_result(m: &Message, id: &str) -> bool {
+        m.parts
+            .iter()
+            .any(|p| matches!(p, MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == id))
+    }
+
     #[test]
     fn noop_when_within_limit() {
         let mut msgs = vec![sys("sys"), usr("u1"), asst("a1")];
@@ -1305,6 +1551,437 @@ mod trim_message_history_tests {
         trim_message_history(&mut msgs, 3);
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0].role, Role::System);
+    }
+
+    #[test]
+    fn orphaned_tool_result_downgraded_when_matching_tool_use_trimmed() {
+        // The trim boundary lands between the ToolUse (dropped) and its ToolResult (kept) —
+        // the FIFO cutoff alone would leave the ToolResult dangling with no preceding ToolUse.
+        // It is downgraded to a Text part (not deleted, see R1) so the message survives as a
+        // valid User anchor.
+        let mut msgs = vec![
+            sys("sys"),
+            asst_tool_use("t1"),
+            usr_tool_result("t1"),
+            usr("u2"),
+            asst("a2"),
+            usr("u3"),
+        ];
+        trim_message_history(&mut msgs, 5);
+        assert!(
+            !msgs.iter().any(|m| has_tool_result(m, "t1")),
+            "orphaned ToolResult must be downgraded, not left dangling as a ToolResult"
+        );
+        assert!(!msgs.iter().any(|m| has_tool_use(m, "t1")));
+        assert!(
+            msgs.iter()
+                .all(|m| !m.content.is_empty() || !m.parts.is_empty()),
+            "no message should be left empty"
+        );
+    }
+
+    #[test]
+    fn intact_tool_pair_survives_trim_together() {
+        // Pair (t1) sits after the drain boundary but is not itself the leading non-system
+        // message — u1 still leads, so no leading-role cascade applies.
+        let mut msgs = vec![
+            sys("sys"),
+            usr("u0"),
+            asst("a0"),
+            usr("u1"),
+            asst_tool_use("t1"),
+            usr_tool_result("t1"),
+            usr("u2"),
+        ];
+        trim_message_history(&mut msgs, 5);
+        assert_eq!(msgs[0].role, Role::System);
+        assert_eq!(msgs[1].content, "u1");
+        assert!(msgs.iter().any(|m| has_tool_use(m, "t1")));
+        assert!(msgs.iter().any(|m| has_tool_result(m, "t1")));
+    }
+
+    #[test]
+    fn trailing_unanswered_tool_use_is_not_treated_as_orphan() {
+        // The trailing assistant ToolUse has no result yet (the loop just hasn't dispatched it) —
+        // it must survive the trim, not be pruned as if it were orphaned.
+        let mut msgs = vec![
+            sys("sys"),
+            usr("u1"),
+            asst("a1"),
+            usr("u2"),
+            asst_tool_use("t1"),
+        ];
+        trim_message_history(&mut msgs, 4);
+        assert!(msgs.iter().any(|m| has_tool_use(m, "t1")));
+    }
+
+    #[test]
+    fn leading_assistant_forces_boundary_past_the_pair() {
+        // Without the drain-boundary nudge, the drain would leave a *correctly paired*
+        // ToolUse/ToolResult at the front (t1's pairing is fine) — but Anthropic requires the
+        // first non-system message to be role=user. The boundary nudge drops one extra message
+        // (the leading Assistant) so the window lands on the ToolResult instead; that ToolResult
+        // is now orphaned but downgraded to Text (R1), not deleted, so it survives as the
+        // window's User anchor rather than the pair being destroyed or Assistant being left
+        // leading.
+        let mut msgs = vec![
+            sys("sys"),
+            usr("u1"),
+            asst_tool_use("t1"),
+            usr_tool_result("t1"),
+            usr("u2"),
+        ];
+        trim_message_history(&mut msgs, 4);
+        assert_eq!(
+            msgs[0].role,
+            Role::System,
+            "system message must be preserved"
+        );
+        assert_eq!(
+            msgs[1].role,
+            Role::User,
+            "first non-system message must be role=user"
+        );
+        assert!(
+            !msgs.iter().any(|m| has_tool_use(m, "t1")),
+            "the ToolUse half was dropped by the boundary nudge"
+        );
+        assert!(
+            !msgs.iter().any(|m| has_tool_result(m, "t1")),
+            "the ToolResult half must be downgraded, not left as a dangling ToolResult"
+        );
+    }
+
+    #[test]
+    fn canonical_tool_loop_alternation_trims_to_exact_limit() {
+        // R1 regression fixture: a canonical subagent tool loop is pure
+        // Assistant(ToolUse)/User(ToolResult) alternation with no plain-text anchor surviving
+        // the drain (the task-prompt User message is always the drain's first casualty). Before
+        // the R1 fix, this shape's leading-role cascade ran to exhaustion and annihilated the
+        // whole window down to just the system message. Chosen so the drain boundary already
+        // lands on a User message with no nudge needed — the ideal case, no message lost beyond
+        // `excess`.
+        let mut msgs = vec![
+            sys("sys"),
+            asst_tool_use("t1"),
+            usr_tool_result("t1"),
+            asst_tool_use("t2"),
+            usr_tool_result("t2"),
+            asst_tool_use("t3"),
+            usr_tool_result("t3"),
+            asst_tool_use("t4"),
+            usr_tool_result("t4"),
+        ];
+        trim_message_history(&mut msgs, 6);
+        assert_eq!(
+            msgs.len(),
+            6,
+            "no plain-text anchor exists, but the window must still hit the exact limit"
+        );
+        assert_eq!(msgs[0].role, Role::System);
+        assert_eq!(
+            msgs[1].role,
+            Role::User,
+            "window must start with a user message"
+        );
+        assert!(has_tool_use(&msgs[msgs.len() - 2], "t4"));
+        assert!(has_tool_result(&msgs[msgs.len() - 1], "t4"));
+    }
+
+    #[test]
+    fn canonical_tool_loop_alternation_drops_at_most_one_extra_message() {
+        // Same shape as above, but with an `excess` that lands the initial drain boundary on an
+        // Assistant message — exercises the boundary-nudge path (at most one extra message
+        // dropped beyond `excess` to reach a User anchor), not just the already-aligned case.
+        let mut msgs = vec![
+            sys("sys"),
+            asst_tool_use("t1"),
+            usr_tool_result("t1"),
+            asst_tool_use("t2"),
+            usr_tool_result("t2"),
+            asst_tool_use("t3"),
+            usr_tool_result("t3"),
+            asst_tool_use("t4"),
+            usr_tool_result("t4"),
+        ];
+        trim_message_history(&mut msgs, 7);
+        assert!(
+            msgs.len() == 7 || msgs.len() == 6,
+            "at most one extra message beyond the limit may be dropped to reach a User anchor, \
+             got {}",
+            msgs.len()
+        );
+        assert_eq!(msgs[0].role, Role::System);
+        assert_eq!(
+            msgs[1].role,
+            Role::User,
+            "window must start with a user message"
+        );
+        assert!(has_tool_use(&msgs[msgs.len() - 2], "t4"));
+        assert!(has_tool_result(&msgs[msgs.len() - 1], "t4"));
+    }
+
+    #[test]
+    fn id_reuse_across_turns_does_not_cross_pair_orphan_with_unrelated_call() {
+        // Ollama-style id reuse: tool-call ids are minted per-batch-index (e.g. "call_0"), so
+        // the same id recurs across unrelated turns (crates/zeph-llm/src/ollama.rs). A leading
+        // orphaned ToolResult("call_0") — its ToolUse was trimmed away — must not be kept just
+        // because a later, unrelated ToolUse("call_0") exists in the window; and that later,
+        // legitimate pair must survive untouched. Constructed as a post-drain state directly
+        // (adjacency scoping is exercised by `repair_tool_pairing`, not `trim_message_history`'s
+        // arithmetic).
+        let mut msgs = vec![
+            sys("sys"),
+            usr("task"),
+            // Orphan: its ToolUse("call_0") was trimmed away by the drain.
+            Message::from_parts(Role::User, vec![tool_result_part("call_0", "orphaned")]),
+            asst("unrelated text turn"),
+            usr("u2"),
+            // Legitimate, unrelated turn that happens to reuse id "call_0".
+            asst_tool_use("call_0"),
+            Message::from_parts(
+                Role::User,
+                vec![tool_result_part("call_0", "turn-2 output")],
+            ),
+        ];
+
+        repair_tool_pairing(&mut msgs);
+
+        let remaining_results: Vec<&str> = msgs
+            .iter()
+            .flat_map(|m| m.parts.iter())
+            .filter_map(|p| {
+                if let MessagePart::ToolResult { content, .. } = p {
+                    Some(content.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            remaining_results,
+            vec!["turn-2 output"],
+            "the orphan must be stripped and the unrelated legitimate pair must survive intact"
+        );
+        assert!(
+            msgs.iter().any(|m| has_tool_use(m, "call_0")),
+            "the legitimate ToolUse(call_0) must survive"
+        );
+    }
+
+    #[test]
+    fn pass_2_strips_orphaned_tool_use_from_interior_assistant_message() {
+        // Interior (non-last) assistant message whose ToolUse is never answered by the
+        // immediately following message — a shape pass 1 alone cannot catch since it only
+        // looks at User messages carrying ToolResult parts.
+        let mut msgs = vec![
+            sys("sys"),
+            usr("task"),
+            asst_tool_use("t1"),
+            usr("no matching result"),
+            asst("a2"),
+            usr("u3"),
+        ];
+        repair_tool_pairing(&mut msgs);
+        assert!(
+            !msgs.iter().any(|m| has_tool_use(m, "t1")),
+            "pass 2 must strip the unanswered interior ToolUse"
+        );
+    }
+
+    #[test]
+    fn orphaned_tool_use_stripped_from_text_and_tool_use_message_rebuilds_content() {
+        // Assistant message carrying both a Text part and an orphaned ToolUse part: stripping
+        // the ToolUse must not drop the Text part, and `rebuild_content` must re-flatten it.
+        let mut msgs = vec![
+            sys("sys"),
+            usr("task"),
+            Message::from_parts(
+                Role::Assistant,
+                vec![
+                    MessagePart::Text {
+                        text: "thinking out loud".to_owned(),
+                    },
+                    tool_use_part("t1"),
+                ],
+            ),
+            usr("no matching result"),
+            asst("a2"),
+            usr("u3"),
+        ];
+        repair_tool_pairing(&mut msgs);
+        let asst_msg = &msgs[2];
+        assert!(!has_tool_use(asst_msg, "t1"));
+        assert!(
+            asst_msg
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Text { text } if text == "thinking out loud")),
+            "the Text part must survive stripping"
+        );
+        assert!(
+            asst_msg.content.contains("thinking out loud"),
+            "rebuild_content must re-flatten the surviving Text part into content"
+        );
+    }
+
+    #[test]
+    fn multi_tool_use_message_partially_pruned_when_only_one_call_answered() {
+        // One assistant message emits two ToolUse calls; only one gets a matching ToolResult in
+        // the following message. The answered call must survive, the unanswered one must be
+        // stripped, and the surviving ToolResult must not be affected.
+        let mut msgs = vec![
+            sys("sys"),
+            usr("task"),
+            Message::from_parts(
+                Role::Assistant,
+                vec![tool_use_part("t1"), tool_use_part("t2")],
+            ),
+            Message::from_parts(Role::User, vec![tool_result_part("t1", "r1")]),
+            asst("a2"),
+            usr("u3"),
+        ];
+        repair_tool_pairing(&mut msgs);
+        assert!(has_tool_use(&msgs[2], "t1"), "answered call must survive");
+        assert!(
+            !has_tool_use(&msgs[2], "t2"),
+            "unanswered call must be stripped"
+        );
+        assert!(has_tool_result(&msgs[3], "t1"));
+    }
+
+    #[test]
+    fn empty_system_message_is_never_deleted_by_repair() {
+        // An empty-content System message (empty system_prompt with no skills/MCP tools, see
+        // `build_effective_system_prompt`) must survive the unconditional-retain hazard even
+        // when the repair loop strips other messages down to empty.
+        let mut msgs = vec![
+            make_message(Role::System, String::new()),
+            usr("task"),
+            // Orphan: no preceding ToolUse in the window.
+            usr_tool_result("t1"),
+            usr("u2"),
+        ];
+        repair_tool_pairing(&mut msgs);
+        assert_eq!(
+            msgs.first().map(|m| m.role),
+            Some(Role::System),
+            "the empty system message must always be preserved"
+        );
+    }
+
+    #[test]
+    fn small_limit_downgrades_orphan_to_text_instead_of_skipping_or_emptying() {
+        // Critic M5's original counterexample, now resolved by R1's downgrade-not-delete fix:
+        // at limit=2 the drain keeps [System, User(ToolResult t1)] — t1's ToolUse was in the
+        // drained portion. Pass 1 now downgrades the orphan to `MessagePart::Text` instead of
+        // deleting it, so the window stays non-empty and `User`-first — the trim succeeds and
+        // hits the exact limit, rather than being skipped (the old M5 behavior) or cascading to
+        // just [System] (R1).
+        let mut msgs = vec![sys("sys"), asst_tool_use("t1"), usr_tool_result("t1")];
+        trim_message_history(&mut msgs, 2);
+        assert_eq!(msgs.len(), 2, "trim should succeed and hit the exact limit");
+        assert_eq!(msgs[0].role, Role::System);
+        assert_eq!(msgs[1].role, Role::User);
+        assert!(
+            !has_tool_result(&msgs[1], "t1"),
+            "the orphaned ToolResult must be downgraded, not left as a dangling ToolResult"
+        );
+        assert!(
+            msgs[1].parts.iter().any(
+                |p| matches!(p, MessagePart::Text { text } if text == "[tool result: t1] result")
+            ),
+            "the orphan's content must survive as a marked, non-empty Text part"
+        );
+    }
+
+    #[test]
+    fn empty_content_orphaned_tool_result_downgrades_to_non_empty_marked_text() {
+        // N5 (critic re-review): `handle_tool_step`'s `Ok(None)` arm can yield an
+        // empty-content ToolResult. A bare `text: content` downgrade would then produce
+        // `MessagePart::Text { text: "" }` — the message survives in-memory (non-empty
+        // `parts`), but `claude/request.rs`'s plain-text branch drops empty/whitespace-only
+        // text entirely at request-build time, silently losing the window's leading `user`
+        // anchor and reproducing the exact 400 this PR targets. The marker format
+        // (`[tool result: {id}] {content}`) guarantees non-empty text even when `content` is
+        // empty.
+        let mut msgs = vec![
+            sys("sys"),
+            asst_tool_use("t1"),
+            Message::from_parts(Role::User, vec![tool_result_part("t1", "")]),
+        ];
+        trim_message_history(&mut msgs, 2);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, Role::System);
+        assert_eq!(msgs[1].role, Role::User);
+        let text_part = msgs[1]
+            .parts
+            .iter()
+            .find_map(|p| match p {
+                MessagePart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .expect("orphan must survive downgraded to a Text part");
+        assert!(
+            !text_part.trim().is_empty(),
+            "downgraded text must be non-empty even for an empty-content ToolResult, or it \
+             would be dropped at request-build time (claude/request.rs's `!text.trim().is_empty()` \
+             guard), silently losing the leading user anchor"
+        );
+        assert!(
+            !msgs[1].content.trim().is_empty(),
+            "rebuilt content must also be non-empty"
+        );
+    }
+
+    #[test]
+    fn limit_of_one_skips_trim_rather_than_leaving_only_the_system_message() {
+        // Critic M5: at limit=1 the drain alone produces [System] — no conversational message
+        // survives at all.
+        let mut msgs = vec![sys("sys"), usr("u1"), asst("a1")];
+        let before = msgs.clone();
+        trim_message_history(&mut msgs, 1);
+        assert_eq!(
+            msgs.len(),
+            before.len(),
+            "trim must be skipped rather than leaving only the system message"
+        );
+    }
+
+    #[test]
+    fn leading_drop_cascade_to_empty_without_system_message_skips_trim() {
+        // No system message at all: a lone trailing Assistant message is dropped by the
+        // leading-role invariant (S2), collapsing the candidate window to empty. Must be
+        // treated the same as the System-only case above.
+        let mut msgs = vec![usr("u1"), asst("a1")];
+        let before = msgs.clone();
+        trim_message_history(&mut msgs, 1);
+        assert_eq!(
+            msgs.len(),
+            before.len(),
+            "trim must be skipped when the only candidate result is an empty window"
+        );
+    }
+
+    #[test]
+    fn valid_small_limit_still_trims_normally() {
+        // A small limit is not inherently pathological — when the resulting window is still
+        // conversational and already starts with a User message (no cascade to empty), the
+        // trim must proceed as usual.
+        let mut msgs = vec![
+            sys("sys"),
+            usr("u0"),
+            asst("a0"),
+            usr("u1"),
+            asst("a1"),
+            usr("u2"),
+            asst("a2"),
+        ];
+        trim_message_history(&mut msgs, 3);
+        assert_eq!(msgs.len(), 3, "trim should apply normally here");
+        assert_eq!(msgs[0].role, Role::System);
+        assert_eq!(msgs[1].content, "u2");
+        assert_eq!(msgs[2].content, "a2");
     }
 }
 

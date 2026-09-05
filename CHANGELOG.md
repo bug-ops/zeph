@@ -99,6 +99,12 @@ running for the first time, each masked previously by combined feature strings.
   during the build step before any fuzzing ran.
 - `zeph-skills`: replaced two unconditional intra-doc links to the `qdrant`-feature-gated
   `Qdrant` variant with plain code spans, fixing `cargo doc` under default features (#6533, #6753).
+- `zeph-subagent`: `trim_message_history`'s FIFO cutoff could leave an orphaned `ToolUse`/
+  `ToolResult` half, a window starting with a non-`user` message, or (at a pathologically small
+  `max_history_messages`) no conversational message at all — any of which caused a provider
+  400/422 on the next turn (#6762).
+- `zeph-subagent`: capped the default `LastAssistantTurn` context-injection mode's spliced
+  parent content to `summary_max_chars`, matching `Summary` mode's existing bound (#6764).
 
 ## [0.22.4] - 2026-08-16
 
