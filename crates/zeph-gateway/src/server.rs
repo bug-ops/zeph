@@ -68,11 +68,13 @@ pub struct GatewayServer {
     webhook_tx: mpsc::Sender<WebhookMessage>,
     shutdown_rx: watch::Receiver<bool>,
     trusted_proxy_cidrs: Vec<String>,
-    /// Prometheus metrics registry and endpoint path (feature-gated).
+    /// Prometheus metrics registry, endpoint path, and whether it requires the gateway
+    /// bearer token (feature-gated).
     #[cfg(feature = "prometheus")]
     metrics_registry: Option<(
         std::sync::Arc<prometheus_client::registry::Registry>,
         String,
+        bool,
     )>,
 }
 
@@ -255,8 +257,14 @@ impl GatewayServer {
     /// Attach a Prometheus metrics registry to the gateway.
     ///
     /// When set, the server mounts an additional route at `path` that returns the registry
-    /// contents encoded as `OpenMetrics` 1.0.0 text.  The endpoint is unauthenticated and
-    /// bypasses rate limiting.
+    /// contents encoded as `OpenMetrics` 1.0.0 text. When `require_auth` is `true`, this route
+    /// requires the same `Authorization: Bearer <token>` header as `/webhook`, and is also
+    /// rate-limited the same way (`rate_limit_middleware` outside `auth_middleware`, so
+    /// failed-auth attempts still count toward the limit) — without this, the same bearer token
+    /// would gain an unthrottled brute-force surface via `/metrics` even though `/webhook`
+    /// throttles it (#6550). When `require_auth` is `false` (the historical default), the route
+    /// is unauthenticated and unthrottled — there is no token to protect and no reason to
+    /// throttle a legitimate scrape loop.
     ///
     /// Requires the `prometheus` feature.
     ///
@@ -275,7 +283,7 @@ impl GatewayServer {
     /// let registry = Arc::new(Registry::default());
     ///
     /// let server = GatewayServer::new("127.0.0.1", 8080, tx, srx)
-    ///     .with_metrics_registry(registry, "/metrics");
+    ///     .with_metrics_registry(registry, "/metrics", false);
     /// # }
     /// ```
     #[cfg(feature = "prometheus")]
@@ -285,8 +293,9 @@ impl GatewayServer {
         mut self,
         registry: std::sync::Arc<prometheus_client::registry::Registry>,
         path: impl Into<String>,
+        require_auth: bool,
     ) -> Self {
-        self.metrics_registry = Some((registry, path.into()));
+        self.metrics_registry = Some((registry, path.into(), require_auth));
         self
     }
 
@@ -340,11 +349,16 @@ impl GatewayServer {
         );
 
         #[cfg(feature = "prometheus")]
-        let router = if let Some((registry, path)) = self.metrics_registry {
-            let metrics_route = axum::Router::new()
-                .route(&path, axum::routing::get(crate::handlers::metrics_handler))
-                .with_state(registry);
-            router.merge(metrics_route)
+        let router = if let Some((registry, path, require_auth)) = self.metrics_registry {
+            attach_metrics_route(
+                router,
+                registry,
+                &path,
+                require_auth,
+                self.auth_token.as_deref(),
+                self.rate_limit,
+                &self.trusted_proxy_cidrs,
+            )
         } else {
             router
         };
@@ -374,6 +388,54 @@ impl GatewayServer {
     }
 }
 
+/// Mount the Prometheus metrics route onto `router`, optionally gating it behind the same
+/// bearer-token auth and rate limiting `/webhook` gets.
+///
+/// Extracted so `serve()` and its own tests call the exact same code — a regression that drops
+/// the conditional layering here, or that merges the metrics sub-router in unlayered (relying on
+/// a layer already applied to the outer `router`, which `Router::merge` does not propagate onto
+/// routes merged in afterward — the exact shape of #6550's original bug), fails the tests that
+/// exercise this function directly, not just `serve()`'s assembled router.
+///
+/// `require_auth = false` (the historical default) leaves the route unauthenticated and
+/// unthrottled — there is no token to protect and no reason to throttle a legitimate scrape
+/// loop. `require_auth = true` layers `rate_limit_middleware` outside `auth_middleware`,
+/// mirroring `router.rs`'s `build_router` ordering, so a failed-auth request still counts
+/// toward the limit and the bearer token cannot be brute-forced via `/metrics` at an unthrottled
+/// rate (#6550 S2) — without this, `/metrics` would reintroduce the exact unthrottled-token
+/// surface `/webhook`'s auth-inside-rate-limit ordering exists to prevent.
+#[cfg(feature = "prometheus")]
+fn attach_metrics_route(
+    router: axum::Router,
+    registry: std::sync::Arc<prometheus_client::registry::Registry>,
+    path: &str,
+    require_auth: bool,
+    auth_token: Option<&str>,
+    rate_limit: u32,
+    trusted_proxy_cidrs: &[String],
+) -> axum::Router {
+    let mut metrics_route = axum::Router::new()
+        .route(path, axum::routing::get(crate::handlers::metrics_handler))
+        .with_state(registry);
+
+    if require_auth {
+        let auth_cfg = zeph_common::http_middleware::AuthConfig::new(auth_token, true);
+        let rate_state =
+            zeph_common::http_middleware::RateLimitState::new(rate_limit, trusted_proxy_cidrs);
+        metrics_route = metrics_route
+            .layer(axum::middleware::from_fn_with_state(
+                auth_cfg,
+                zeph_common::http_middleware::auth_middleware,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                rate_state,
+                zeph_common::http_middleware::rate_limit_middleware,
+            ));
+    }
+
+    router.merge(metrics_route)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,29 +452,48 @@ mod tests {
 
         let (tx, _rx) = mpsc::channel(1);
         let (_stx, srx) = watch::channel(false);
-        let server = GatewayServer::new("127.0.0.1", 19999, tx, srx)
-            .with_metrics_registry(std::sync::Arc::clone(&registry), "/metrics");
+        let server = GatewayServer::new("127.0.0.1", 19999, tx, srx).with_metrics_registry(
+            std::sync::Arc::clone(&registry),
+            "/metrics",
+            false,
+        );
 
-        // Build the router directly without binding a port
+        // Build the router the same way `serve()` does — via `build_router` +
+        // `attach_metrics_route` — so this test exercises the exact production code path
+        // instead of hand-rolling an equivalent router (#6550 S1).
+        let GatewayServer {
+            auth_token,
+            rate_limit,
+            max_body_size,
+            trusted_proxy_cidrs,
+            webhook_tx,
+            webhook_send_timeout,
+            metrics_registry,
+            ..
+        } = server;
+        let (metrics_registry, path, require_auth) =
+            metrics_registry.expect("metrics_registry must be set by with_metrics_registry");
         let state = AppState {
-            webhook_tx: server.webhook_tx,
+            webhook_tx,
             started_at: Instant::now(),
-            webhook_send_timeout: server.webhook_send_timeout,
+            webhook_send_timeout,
         };
         let router = crate::router::build_router(
             state,
-            server.auth_token.as_deref(),
-            server.rate_limit,
-            server.max_body_size,
-            &server.trusted_proxy_cidrs,
+            auth_token.as_deref(),
+            rate_limit,
+            max_body_size,
+            &trusted_proxy_cidrs,
         );
-        let metrics_route = axum::Router::new()
-            .route(
-                "/metrics",
-                axum::routing::get(crate::handlers::metrics_handler),
-            )
-            .with_state(registry);
-        let router = router.merge(metrics_route);
+        let router = attach_metrics_route(
+            router,
+            metrics_registry,
+            &path,
+            require_auth,
+            auth_token.as_deref(),
+            rate_limit,
+            &trusted_proxy_cidrs,
+        );
 
         let req = axum::http::Request::builder()
             .method("GET")
@@ -437,6 +518,154 @@ mod tests {
         let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body = String::from_utf8(body_bytes.to_vec()).unwrap();
         assert!(body.ends_with("# EOF\n"), "missing EOF marker in:\n{body}");
+    }
+
+    /// F1 (#6550): with `require_auth = true`, `/metrics` must reject a request with no bearer
+    /// token (401) and accept one with the correct token (200) — the same middleware `/webhook`
+    /// gets, layered directly onto the metrics sub-router before it is merged into the main
+    /// router, since `Router::merge` does not propagate a layer applied to the outer router.
+    /// Goes through the real `attach_metrics_route` helper `serve()` calls, not a hand-rolled
+    /// duplicate (#6550 S1).
+    #[cfg(feature = "prometheus")]
+    #[tokio::test]
+    async fn test_metrics_endpoint_requires_auth_when_configured() {
+        use axum::body::Body;
+        use prometheus_client::registry::Registry;
+        use tower::Service;
+
+        let registry = std::sync::Arc::new(Registry::default());
+        let (tx, _rx) = mpsc::channel(1);
+        let (_stx, srx) = watch::channel(false);
+        let server = GatewayServer::new("127.0.0.1", 19997, tx, srx)
+            .with_auth(Some("secret".into()))
+            .with_metrics_registry(std::sync::Arc::clone(&registry), "/metrics", true);
+
+        let GatewayServer {
+            auth_token,
+            rate_limit,
+            max_body_size,
+            trusted_proxy_cidrs,
+            webhook_tx,
+            webhook_send_timeout,
+            metrics_registry,
+            ..
+        } = server;
+        let (metrics_registry, path, require_auth) =
+            metrics_registry.expect("metrics_registry must be set by with_metrics_registry");
+        let state = AppState {
+            webhook_tx,
+            started_at: Instant::now(),
+            webhook_send_timeout,
+        };
+        let router = crate::router::build_router(
+            state,
+            auth_token.as_deref(),
+            rate_limit,
+            max_body_size,
+            &trusted_proxy_cidrs,
+        );
+        let mut router = attach_metrics_route(
+            router,
+            metrics_registry,
+            &path,
+            require_auth,
+            auth_token.as_deref(),
+            rate_limit,
+            &trusted_proxy_cidrs,
+        );
+
+        let no_token_req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.call(no_token_req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+
+        let valid_token_req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .header("authorization", "Bearer secret")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.call(valid_token_req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    /// F1 (#6550) S2 fix: when `require_auth = true`, `/metrics` must also rate-limit — without
+    /// this, the same bearer token gains an unthrottled brute-force surface via `/metrics` even
+    /// though `/webhook` throttles it. Mirrors `router.rs`'s `failed_auth_requests_are_rate_limited`:
+    /// failed-auth requests must still count toward the limit, proving rate limiting is layered
+    /// outside auth, not inside it.
+    #[cfg(feature = "prometheus")]
+    #[tokio::test]
+    async fn test_metrics_endpoint_rate_limited_when_require_auth() {
+        use axum::body::Body;
+        use prometheus_client::registry::Registry;
+        use tower::Service;
+
+        let registry = std::sync::Arc::new(Registry::default());
+        let (tx, _rx) = mpsc::channel(1);
+        let (_stx, srx) = watch::channel(false);
+        let server = GatewayServer::new("127.0.0.1", 19996, tx, srx)
+            .with_auth(Some("secret".into()))
+            .with_rate_limit(2)
+            .with_metrics_registry(std::sync::Arc::clone(&registry), "/metrics", true);
+
+        let GatewayServer {
+            auth_token,
+            rate_limit,
+            max_body_size,
+            trusted_proxy_cidrs,
+            webhook_tx,
+            webhook_send_timeout,
+            metrics_registry,
+            ..
+        } = server;
+        let (metrics_registry, path, require_auth) =
+            metrics_registry.expect("metrics_registry must be set by with_metrics_registry");
+        let state = AppState {
+            webhook_tx,
+            started_at: Instant::now(),
+            webhook_send_timeout,
+        };
+        let router = crate::router::build_router(
+            state,
+            auth_token.as_deref(),
+            rate_limit,
+            max_body_size,
+            &trusted_proxy_cidrs,
+        );
+        let mut router = attach_metrics_route(
+            router,
+            metrics_registry,
+            &path,
+            require_auth,
+            auth_token.as_deref(),
+            rate_limit,
+            &trusted_proxy_cidrs,
+        );
+
+        let make_req = || {
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/metrics")
+                .header("authorization", "Bearer wrong")
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        let resp = router.call(make_req()).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+        let resp = router.call(make_req()).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+        let resp = router.call(make_req()).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "third failed-auth request against /metrics must be rate-limited when \
+             require_auth=true"
+        );
     }
 
     #[test]

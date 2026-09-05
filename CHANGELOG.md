@@ -53,6 +53,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Security
 
 - Bumped `h2` 0.4.15 -> 0.4.19, resolving RUSTSEC-2026-0258 (unbounded empty DATA frames).
+- Added opt-in `[metrics] require_auth` to gate the gateway `/metrics` endpoint behind the same
+  bearer token and rate limiting as `/webhook`; default is unchanged (unauthenticated,
+  unthrottled) (#6550).
+- Extracted the duplicated MCP OAuth vault-key derivation into a single shared
+  `zeph_config::oauth_vault_key` helper, and added test coverage for the vault-key collision
+  validation path (#6550).
 
 ### Fixed
 

@@ -24,11 +24,12 @@ pub struct VaultCredentialStore {
 impl VaultCredentialStore {
     /// Derive vault key and create the store.
     ///
-    /// Key format: `ZEPH_MCP_OAUTH_{server_id.to_uppercase().replace('-', "_")}`.
+    /// Key format: `ZEPH_MCP_OAUTH_{server_id.to_uppercase().replace('-', "_")}`, derived via
+    /// [`zeph_config::oauth_vault_key`] — the same helper `Config::validate_mcp_servers` uses
+    /// to detect a collision, so the two can never drift apart.
     pub fn new(server_id: &str, vault: Arc<RwLock<AgeVaultProvider>>) -> Self {
-        let normalized = server_id.to_uppercase().replace('-', "_");
         Self {
-            vault_key: format!("ZEPH_MCP_OAUTH_{normalized}"),
+            vault_key: zeph_config::oauth_vault_key(server_id),
             vault,
         }
     }
@@ -101,23 +102,18 @@ impl CredentialStore for VaultCredentialStore {
 
 #[cfg(test)]
 mod tests {
+    use zeph_config::oauth_vault_key;
+
     #[test]
     fn vault_key_normalization_hyphen() {
-        let key = format!(
-            "ZEPH_MCP_OAUTH_{}",
-            "my-server".to_uppercase().replace('-', "_")
-        );
-        assert_eq!(key, "ZEPH_MCP_OAUTH_MY_SERVER");
+        assert_eq!(oauth_vault_key("my-server"), "ZEPH_MCP_OAUTH_MY_SERVER");
     }
 
     #[test]
     fn vault_key_collision_documented() {
-        // "my-app" and "my_app" normalize to the same key — config validation must reject this.
-        let a = "my-app".to_uppercase().replace('-', "_");
-        let b = "my_app".to_uppercase().replace('-', "_");
-        assert_eq!(
-            a, b,
-            "vault key collision exists for hyphens vs underscores"
-        );
+        // "my-app" and "my_app" normalize to the same key via the shared helper —
+        // `Config::validate_mcp_servers` rejects this at config-load time (see
+        // zeph-config's `validate_mcp_servers_rejects_oauth_vault_key_collision` test).
+        assert_eq!(oauth_vault_key("my-app"), oauth_vault_key("my_app"));
     }
 }

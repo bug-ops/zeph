@@ -320,6 +320,8 @@ pub(crate) struct WizardState {
     pub(crate) telemetry_enabled: bool,
     // Prometheus metrics export (#2866)
     pub(crate) prometheus_enabled: bool,
+    // Require the gateway bearer token on /metrics (#6550)
+    pub(crate) metrics_require_auth: bool,
     // Trajectory risk sentinel (spec 050)
     pub(crate) trajectory_critical_at: f32,
     pub(crate) trajectory_auto_recover: u32,
@@ -590,6 +592,7 @@ impl Default for WizardState {
             magic_docs_enabled: false,
             telemetry_enabled: false,
             prometheus_enabled: false,
+            metrics_require_auth: false,
             trajectory_critical_at: 10.0,
             trajectory_auto_recover: 16,
             gonka_private_key: None,
@@ -1507,6 +1510,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.telemetry.enabled = state.telemetry_enabled;
     if state.prometheus_enabled {
         config.metrics.enabled = true;
+        config.metrics.require_auth = state.metrics_require_auth;
         // Only enable gateway if not already enabled by the deployment bundle.
         if !config.gateway.enabled {
             config.gateway.enabled = true;
@@ -2078,6 +2082,14 @@ fn step_prometheus(state: &mut WizardState) -> anyhow::Result<()> {
              zeph vault set ZEPH_GATEWAY_TOKEN <token>\n  \
              This wizard never prompts for the raw token — see CLAUDE.md Secrets & Vault."
         );
+
+        state.metrics_require_auth = Confirm::new()
+            .with_prompt(
+                "Require the gateway bearer token on /metrics too? (recommended if reachable \
+                 from an untrusted network)",
+            )
+            .default(false)
+            .interact()?;
     }
 
     println!();

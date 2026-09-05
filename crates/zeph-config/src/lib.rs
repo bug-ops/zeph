@@ -123,7 +123,7 @@ pub use channels::{
     IbctKeyConfig, McpConfig, McpMediaConfig, McpOAuthConfig, McpPolicy, McpServerConfig,
     McpTrustLevel, OAuthTokenStorage, RateLimit, SlackConfig, TelegramConfig, ToolDiscoveryConfig,
     ToolDiscoveryStrategyConfig, ToolPruningConfig, TrustCalibrationConfig, TrustedAgentKey,
-    is_skill_allowed,
+    is_skill_allowed, oauth_vault_key,
 };
 pub use cli::{CliConfig, LoopConfig};
 pub use cocoon::CocoonConfig;

@@ -1441,6 +1441,21 @@ impl Default for McpMediaConfig {
     }
 }
 
+/// Derive the age-vault key holding OAuth credentials for an MCP server.
+///
+/// Normalizes `server_id` by uppercasing it and replacing `-` with `_`, so `"my-app"` and
+/// `"my_app"` collide on the same key — [`crate::Config::validate`] rejects this collision at
+/// config load time when both servers have `oauth.enabled = true`. Shared by
+/// [`McpServerConfig`] validation and the vault-backed `CredentialStore` that reads/writes
+/// this key at runtime, so the two never drift apart.
+#[must_use]
+pub fn oauth_vault_key(server_id: &str) -> String {
+    format!(
+        "ZEPH_MCP_OAUTH_{}",
+        server_id.to_uppercase().replace('-', "_")
+    )
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 pub struct McpServerConfig {
     pub id: String,

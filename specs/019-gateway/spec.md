@@ -127,6 +127,19 @@ POST /webhook
 
 - Auth middleware runs before all handlers — enforced by middleware layer order in router build
 - `GET /health` bypasses auth unconditionally — monitoring must work unauthenticated
+- `GET /metrics` (when `[metrics] enabled = true`) is the second, opt-in-gated auth exemption:
+  unauthenticated and unthrottled by default (`[metrics] require_auth = false`, no token exists
+  to protect and no reason to throttle a legitimate scrape loop), but when `require_auth = true`
+  it requires the same bearer token as `/webhook` **and** the same rate limiting, layered in the
+  same order (`rate_limit_middleware` outside `auth_middleware`, so a failed-auth request still
+  counts toward the limit) — omitting the rate limiter here would reintroduce an unthrottled
+  brute-force surface against the same bearer token `/webhook`'s ordering exists to prevent
+  (#6550 S2). Because `Router::merge` does not propagate a layer applied to the outer router
+  onto a merged-in sub-router, both layers must be applied directly to the metrics sub-router
+  *before* it is merged (`GatewayServer::serve`, via the shared `attach_metrics_route` helper) —
+  merging it unlayered after `build_router` has already applied
+  `auth_middleware`/`rate_limit_middleware` to the `protected` sub-router silently bypasses both
+  (#6550's original bug).
 - Token hash pre-computed at startup — never per-request
 - `ct_eq()` mandatory for token comparison — `==` is banned
 - `202 Accepted` returned immediately — gateway does not wait for agent to process

@@ -4004,7 +4004,11 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             config,
             shutdown_rx.clone(),
             gateway_input_tx.clone(),
-            Some((std::sync::Arc::clone(&prom.registry), effective_path)),
+            Some((
+                std::sync::Arc::clone(&prom.registry),
+                effective_path,
+                config.metrics.require_auth,
+            )),
             Some(&*supervisor),
         );
         Some(handle)
