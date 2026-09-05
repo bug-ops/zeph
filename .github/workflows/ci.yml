@@ -145,7 +145,7 @@ jobs:
           toolchain: nightly-2026-08-07
           components: rustfmt
       - name: Check formatting
-        run: cargo +nightly fmt --check
+        run: cargo fmt --check
 
   lint-clippy:
     name: Lint (clippy, ${{ matrix.label }})
