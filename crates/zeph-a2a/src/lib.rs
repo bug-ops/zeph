@@ -33,7 +33,7 @@
 //! |---------|-------------|
 //! | `server` | Enables `A2aServer`, `TaskManager`, and `TaskProcessor` |
 //! | `ibct`   | Enables [`Ibct`] token issuance and verification (HMAC-SHA256) |
-//! | `card-signing` | Enables [`card_signing::verify_card_signatures`] and [`card_signing::sign_card`] (JWS/ES256 over RFC 8785 JCS). Without it, `AgentCardSignature`/`signatures` still (de)serialize, but verification always returns `SignatureVerification::FeatureDisabled`. |
+//! | `card-signing` | Enables [`card_signing::verify_card_signatures`] and `sign_card` (JWS/ES256 over RFC 8785 JCS). Without it, `AgentCardSignature`/`signatures` still (de)serialize, but verification always returns `SignatureVerification::FeatureDisabled`. |
 //!
 //! # Examples
 //!
