@@ -575,7 +575,7 @@ impl SkillMatcherBackend {
     /// Return the embedding vector for a skill at the given index, if available.
     ///
     /// For [`Self::InMemory`], this is the pre-computed description embedding. For
-    /// [`Self::Qdrant`], this is served from a per-turn cache populated by
+    /// the `Qdrant` backend, this is served from a per-turn cache populated by
     /// [`Self::refresh_skill_embeddings`] — `None` if that hasn't been called yet,
     /// `skill_index` wasn't among its candidates, or the fetch failed or returned a partial
     /// result (see issue #5786).
@@ -606,7 +606,7 @@ impl SkillMatcherBackend {
     /// top-K that [`Self::match_skills`] alone would have cached.
     ///
     /// No-op for [`Self::InMemory`], whose embeddings are already resident in memory. For
-    /// [`Self::Qdrant`], this issues a bounded `get_points` round-trip scoped to `scored` — only
+    /// the `Qdrant` backend, this issues a bounded `get_points` round-trip scoped to `scored` — only
     /// call it when a consumer of [`Self::skill_embedding`] is actually enabled (RL rerank
     /// and/or `GoSkills` grouping), so turns using neither feature don't pay for the extra
     /// Qdrant round-trip (see issue #5786).
