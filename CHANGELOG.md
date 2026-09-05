@@ -79,7 +79,7 @@ running for the first time, each masked previously by combined feature strings.
   build is incompatible with the statically-linked musl libc, so every scheduled fuzz job failed
   during the build step before any fuzzing ran.
 - `zeph-skills`: replaced two unconditional intra-doc links to the `qdrant`-feature-gated
-  `Qdrant` variant with plain code spans, fixing `cargo doc` under default features (#6533).
+  `Qdrant` variant with plain code spans, fixing `cargo doc` under default features (#6533, #6753).
 
 ## [0.22.4] - 2026-08-16
 
