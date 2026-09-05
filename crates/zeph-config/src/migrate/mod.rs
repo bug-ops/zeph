@@ -34,18 +34,59 @@ pub use features::{
     migrate_telegram_expandable_blockquote_config, migrate_tui_delights, migrate_tui_mouse,
     migrate_tui_panel_sizing, migrate_tui_theme_config, migrate_tui_theme_defaults,
 };
-pub use infra::*;
+/// Crate-internal: re-exported only so `migrate/tests.rs` can reach it via `super::*`.
+#[cfg(test)]
+pub(crate) use infra::is_unsafe_shared_topology;
+pub use infra::{
+    migrate_a2a_card_trust_config, migrate_a2a_server_remove_inert_fields, migrate_database_url,
+    migrate_durable_config, migrate_durable_hwm_advisory, migrate_durable_key_rotation,
+    migrate_durable_shared_db, migrate_durable_stale_running_after_secs, migrate_egress_config,
+    migrate_nli_config, migrate_otel_filter, migrate_pii_filter_names, migrate_sandbox_config,
+    migrate_sandbox_egress_filter, migrate_scheduler_daemon_config, migrate_secret_masking_config,
+    migrate_shadow_sentinel_config, migrate_shell_transactional, migrate_supervisor_config,
+    migrate_telemetry_config, migrate_trace_metadata, migrate_vigil_config,
+    migrate_worktree_config, migrate_worktree_git_timeout, migrate_worktree_quota_fields,
+};
 pub use integrity::migrate_integrity_config;
 /// Advisory `GonkaGate` migration is crate-internal (registered via the [`MIGRATIONS`] registry).
 pub(crate) use llm::migrate_gonkagate_to_gonka;
-pub use llm::*;
-pub use mcp::*;
-pub use memory::*;
+pub use llm::{
+    migrate_cocoon_provider_notice, migrate_cocoon_show_balance, migrate_embed_provider_rename,
+    migrate_eval_model_to_provider, migrate_llm_stream_limits, migrate_llm_to_providers,
+    migrate_orchestration_orchestrator_provider, migrate_planner_model_to_provider,
+    migrate_provider_max_concurrent, migrate_stt_to_provider,
+};
+pub use mcp::{
+    migrate_mcp_elicitation_config, migrate_mcp_max_connect_attempts, migrate_mcp_media_config,
+    migrate_mcp_retry_and_tool_timeout, migrate_mcp_trust_levels,
+};
+pub use memory::{
+    migrate_fidelity_timeout_defaults, migrate_focus_auto_consolidate_min_window,
+    migrate_forgetting_config, migrate_memory_consent_gate_config, migrate_memory_graph_config,
+    migrate_memory_graph_recall_include_imported, migrate_memory_hebbian_config,
+    migrate_memory_hebbian_consolidation_config, migrate_memory_hebbian_spread_config,
+    migrate_memory_persona_config, migrate_memory_reasoning_config,
+    migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
+    migrate_memory_retrieval_query_bias, migrate_memory_store_config,
+    migrate_memory_type_aware_compose_config, migrate_qdrant_api_key, migrate_qdrant_timeout_secs,
+};
 pub use plugins::migrate_plugins_reputation_config;
 pub use serve::migrate_serve_config;
-pub use session::*;
+pub use session::{
+    migrate_acp_auth_clients_config, migrate_acp_subagents_config,
+    migrate_hooks_permission_denied_config, migrate_hooks_turn_complete_config,
+    migrate_session_persist_provider_overrides, migrate_session_persistence_config,
+    migrate_session_provider_persistence, migrate_session_recap_config,
+    migrate_session_resume_config,
+};
 pub use subagent::{migrate_agents_delegation_mode, migrate_agents_max_spawns_per_session};
-pub use tools::*;
+pub use tools::{
+    migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry, migrate_agent_time_reminder,
+    migrate_overflow_max_per_call_override, migrate_policy_provider_and_utility_window,
+    migrate_quality_config, migrate_search_config, migrate_shell_checkpoints_config,
+    migrate_shell_risk_chain_window_turns, migrate_tools_compression_config,
+    migrate_utility_high_gain_tools,
+};
 
 /// Returns `true` when `name` is an active (non-commented) TOML section header in `src`.
 ///
