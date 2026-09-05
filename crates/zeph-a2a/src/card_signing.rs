@@ -29,7 +29,7 @@
 //!
 //! The [`SignatureVerification`], [`SigAlg`], and [`TrustedKey`] types are always
 //! compiled (needed for config plumbing and the crypto-free URL-origin check in
-//! [`crate::discovery`]). [`verify_card_signatures`] and [`sign_card`] require the
+//! [`crate::discovery`]). [`verify_card_signatures`] and `sign_card` require the
 //! `card-signing` feature; without it, [`verify_card_signatures`] returns
 //! [`SignatureVerification::FeatureDisabled`] and `sign_card` does not exist at all
 //! (it has no meaningful behavior to fall back to — signing requires the crypto crates).
@@ -40,7 +40,7 @@
 //! the A2A 1.0.0 spec text (§8.4.1–§8.4.3) retrieved verbatim during design review, not
 //! from a real signed-card test vector produced by a reference implementation (e.g. the
 //! Python/JS `a2a-sdk`). `canonical_payload` (private, used by both [`verify_card_signatures`]
-//! and [`sign_card`]) strips proto3-default-valued fields (empty
+//! and `sign_card`) strips proto3-default-valued fields (empty
 //! string, `false`, `0`, empty array/object, recursively through nested objects) before
 //! JCS, matching the spec text's canonicalization rules — this closes the specific
 //! divergence a compliant signer that strips defaults before signing would otherwise
