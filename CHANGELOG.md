@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `ci.yml`: added a `zeph-skills` default-features doc-build step to the `rustdoc` job, closing
   a gap where CI only ever built `zeph-skills` docs with `qdrant` force-enabled via workspace
-  feature unification, hiding doc defects specific to its default (non-qdrant) feature set.
+  feature unification, hiding doc defects specific to its default (non-qdrant) feature set (#6758).
 - `ci.yml`: added `default-build-check` (plain `cargo check --workspace --all-targets`, no
   `--features` flag) and `feature-matrix` (`cargo-hack`-based, 4-way partitioned isolation
   check of every leaf feature flag) jobs, closing a gap where CI never built the bare-default
