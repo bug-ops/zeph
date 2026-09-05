@@ -887,6 +887,15 @@ jobs:
         run: cargo doc --no-deps --workspace --features "desktop,ide,server,chat,pdf,scheduler"
       - name: Doc-tests
         run: cargo test --doc --workspace --features "desktop,ide,server,chat,pdf,scheduler"
+      # The workspace-wide build above always force-enables zeph-skills' `qdrant` feature,
+      # because crates/zeph-core/Cargo.toml depends on `zeph-skills = { features = ["qdrant"] }`
+      # unconditionally and Cargo unifies features per-package across the whole build. A doc
+      # defect that only reproduces under zeph-skills' own default (non-qdrant) feature set is
+      # therefore invisible to the step above (#6754). Building only `-p zeph-skills`, without
+      # `--workspace`, excludes zeph-core from this invocation's unit graph so its forced
+      # `qdrant` feature request never applies here.
+      - name: Build zeph-skills docs (default features, no qdrant)
+        run: cargo doc --no-deps -p zeph-skills
 
   validate-specs:
     name: Validate Specs
