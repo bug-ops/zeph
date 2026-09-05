@@ -139,10 +139,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@7c8d7d138f5c09cef361f8214cf96882cd029cdb # nightly
         with:
-          toolchain: nightly
+          # Pinned to the same dated nightly as build-tests (issue #6737) so a
+          # new nightly rustfmt formatting-rule change can't silently break
+          # this job on a day nobody touched the code (#6739).
+          toolchain: nightly-2026-08-07
           components: rustfmt
       - name: Check formatting
-        run: cargo +nightly fmt --check
+        run: cargo fmt --check
 
   lint-clippy:
     name: Lint (clippy, ${{ matrix.label }})
@@ -202,6 +205,22 @@ jobs:
     # Nightly + -Z threads=4 (issue #6737), pinned to a dated toolchain so new
     # nightly lints don't fail this gate via build.warnings = "deny". RUSTFLAGS
     # set here, not .cargo/config.toml (af1be7ba/cf75b63f).
+    #
+    # Issue #6738 (redundant 647MB archive download across 17 consumers):
+    # switching this archive handoff from upload/download-artifact to
+    # actions/cache (save here, restore per consumer, keyed on github.run_id)
+    # was evaluated and rejected. actions/cache enforces a 10GB-per-repository
+    # cache budget with LRU eviction; a run-scoped key is by construction never
+    # reused by a later run, so every one of these single-use ~650MB-1GB+
+    # entries (main + 3 postgres archives) would occupy quota for its lifetime
+    # only to be evicted, while competing for that same budget with the
+    # Swatinem/rust-cache and sccache entries above that ARE reused
+    # cross-run and actually drive build speed. Displacing those for a
+    # zero-reuse blob is a plausible net regression, not an improvement, and
+    # cannot be verified safe without live-runner cache-usage data we don't
+    # have. Applied instead: compression-level: 0 on the archive uploads below
+    # (already zstd-compressed, so upload-artifact's default deflate pass
+    # wastes CPU on this upload and all 17 downloads for no size benefit).
     name: Build Tests
     needs: detect-changes
     if: needs.detect-changes.outputs.run-full-ci == 'true'
@@ -231,6 +250,10 @@ jobs:
           name: nextest-archive-ubuntu-latest
           path: nextest-archive.tar.zst
           retention-days: 1
+          # The archive is already zstd-compressed by nextest; upload-artifact's
+          # default deflate pass (level 6) can't shrink it further and only burns
+          # CPU on this upload and on all 17 downstream downloads (issue #6738).
+          compression-level: 0
       - name: Upload binary
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -273,6 +296,7 @@ jobs:
           name: nextest-archive-zeph-db-postgres
           path: nextest-archive-zeph-db-postgres.tar.zst
           retention-days: 1
+          compression-level: 0 # already zstd-compressed, see build-tests upload step (#6738)
       - name: Build and archive zeph-memory postgres integration tests
         # sqlite and postgres are mutually exclusive (zeph-db's compile_error!
         # fires if both are active), so default features (which include "sqlite")
@@ -289,6 +313,7 @@ jobs:
           name: nextest-archive-zeph-memory-postgres
           path: nextest-archive-zeph-memory-postgres.tar.zst
           retention-days: 1
+          compression-level: 0 # already zstd-compressed, see build-tests upload step (#6738)
       - name: Build and archive zeph-index postgres integration tests
         # sqlite and postgres are mutually exclusive; default features (which
         # include "sqlite") must be disabled so only postgres is active.
@@ -299,6 +324,7 @@ jobs:
           name: nextest-archive-zeph-index-postgres
           path: nextest-archive-zeph-index-postgres.tar.zst
           retention-days: 1
+          compression-level: 0 # already zstd-compressed, see build-tests upload step (#6738)
       - name: Build and archive zeph-orchestration postgres integration tests
         # sqlite and postgres are mutually exclusive; default features (which
         # include "sqlite") must be disabled so only postgres is active.
@@ -311,6 +337,7 @@ jobs:
           name: nextest-archive-zeph-orchestration-postgres
           path: nextest-archive-zeph-orchestration-postgres.tar.zst
           retention-days: 1
+          compression-level: 0 # already zstd-compressed, see build-tests upload step (#6738)
 
   test:
     name: "Test (shard ${{ matrix.partition }})"
