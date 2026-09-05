@@ -78,6 +78,8 @@ running for the first time, each masked previously by combined feature strings.
   `cargo-fuzz` defaults to `x86_64-unknown-linux-musl` even on a glibc host, and its AddressSanitizer
   build is incompatible with the statically-linked musl libc, so every scheduled fuzz job failed
   during the build step before any fuzzing ran.
+- `zeph-skills`: replaced two unconditional intra-doc links to the `qdrant`-feature-gated
+  `Qdrant` variant with plain code spans, fixing `cargo doc` under default features (#6533).
 
 ## [0.22.4] - 2026-08-16
 
