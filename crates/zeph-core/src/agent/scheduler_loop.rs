@@ -26,6 +26,28 @@ use super::tool_execution;
 /// already been dropped.
 const STORE_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Upper bound on the number of rows [`append_shared_state_block`] reads from the
+/// cross-thread store's `orch/{graph_id}` namespace (GitHub #6763).
+///
+/// Unlike an explicit LLM-invoked `store_search`/`store_list` call — where `limit = 0`
+/// (`zeph_db::limit_clause`'s documented "unlimited" sentinel) reflects a deliberate
+/// model choice — this block is ambient and unauthenticated: it is auto-injected into
+/// every prompt (spec-080 FR-B-011) with no bound on how many rows N concurrent
+/// writers can accumulate under one namespace before this read runs. Only a per-value
+/// size cap exists (`CrossThreadStoreConfig::max_value_bytes`); nothing capped row
+/// *count* until this constant. `200` is generous headroom over realistic handoff-chain
+/// fan-in (a handful of concurrent nodes writing a handful of keys each) while keeping
+/// the DB read and `Vec<StoreItem>`/`String` build cheap even under a hostile namespace.
+///
+/// Note: this bounds read cost (DB round-trip size, allocation), not prompt bytes —
+/// `ContentSanitizer::sanitize` (`crates/zeph-sanitizer/src/sanitizer.rs`) already caps
+/// the rendered `<shared-state>` body at `ContentIsolationConfig::max_content_size`
+/// (65536 bytes by default, `MemoryRetrieval` → `ExternalUntrusted`), independently of
+/// this row count. That byte cap is normally the binding one under default config; this
+/// constant exists so the read itself can't grow unbounded before the sanitizer ever
+/// sees it.
+const SHARED_STATE_MAX_ROWS: usize = 200;
+
 /// Outcome of [`Agent::run_inline_tool_loop`]: the final narrated text plus the real tool-call
 /// trace observed in-loop, for verifier grounding (spec 009 § Verifier Tool-Call Grounding).
 #[derive(Debug)]
@@ -432,6 +454,15 @@ async fn persist_handoff_update(
 /// `<recovery-source>`/`<completed-dependencies>` blocks already apply to dependency
 /// output — its provenance may include a previously-injected `Command.update` value
 /// written by a different, possibly-compromised node.
+///
+/// The read is capped at [`SHARED_STATE_MAX_ROWS`] rows (GitHub #6763): this is an
+/// ambient, unauthenticated, multi-writer read, unlike an explicit LLM-invoked
+/// `store_list`/`store_search` call where `limit = 0` (unlimited) reflects a
+/// deliberate model choice. When the namespace holds more than that, the surviving
+/// `SHARED_STATE_MAX_ROWS` rows (ordered by `(namespace, key)`, per `store_list`) are
+/// rendered and the opening tag carries `truncated="true" shown="N"` so the receiving
+/// node can tell a missing key from one dropped by the cap, rather than silently
+/// concluding it was never written.
 pub(super) async fn append_shared_state_block(
     prompt: String,
     ctx: &CommandHandoffContext,
@@ -445,10 +476,14 @@ pub(super) async fn append_shared_state_block(
     };
 
     let namespace_prefix = format!("orch/{graph_id}");
-    let read = memory
-        .sqlite()
-        .store_list(ctx.owner_key.as_str(), &namespace_prefix, 0);
-    let items = match tokio::time::timeout(STORE_IO_TIMEOUT, read).await {
+    // Probe one row past the cap so an exact `len() == SHARED_STATE_MAX_ROWS` namespace
+    // isn't mistaken for a truncated one (the off-by-one this replaced).
+    let read = memory.sqlite().store_list(
+        ctx.owner_key.as_str(),
+        &namespace_prefix,
+        SHARED_STATE_MAX_ROWS + 1,
+    );
+    let mut items = match tokio::time::timeout(STORE_IO_TIMEOUT, read).await {
         Ok(Ok(items)) => items,
         Ok(Err(e)) => {
             tracing::warn!(
@@ -471,6 +506,15 @@ pub(super) async fn append_shared_state_block(
     if items.is_empty() {
         return prompt;
     }
+    let truncated = items.len() > SHARED_STATE_MAX_ROWS;
+    if truncated {
+        items.truncate(SHARED_STATE_MAX_ROWS);
+        tracing::warn!(
+            graph_id = %graph_id,
+            max_rows = SHARED_STATE_MAX_ROWS,
+            "shared-state store_list truncated to max_rows; namespace holds more entries"
+        );
+    }
 
     let mut raw = String::new();
     for item in &items {
@@ -482,7 +526,16 @@ pub(super) async fn append_shared_state_block(
             .with_memory_hint(zeph_sanitizer::MemorySourceHint::ExternalContent);
     let wrapped = ctx.sanitizer.sanitize(&raw, source).body;
 
-    format!("{prompt}\n\n<shared-state>\n{wrapped}\n</shared-state>")
+    // Truncation metadata goes in the trusted tag attributes, not inside `raw` (which is
+    // sanitized/spotlighted as untrusted content and could itself be truncated away) —
+    // node B must be able to tell a missing key from a merely-clipped block (FR-B-011).
+    let open_tag = if truncated {
+        format!(r#"<shared-state truncated="true" shown="{SHARED_STATE_MAX_ROWS}">"#)
+    } else {
+        "<shared-state>".to_owned()
+    };
+
+    format!("{prompt}\n\n{open_tag}\n{wrapped}\n</shared-state>")
 }
 
 impl<C: crate::channel::Channel> Agent<C> {
@@ -1779,9 +1832,9 @@ impl<C: crate::channel::Channel> Agent<C> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CommandHandoffContext, append_shared_state_block, determine_task_outcome,
-        lookahead_effective_depth, network_denied_for_task, task_tool_allowlist_for_task,
-        tool_trace_from_messages,
+        CommandHandoffContext, SHARED_STATE_MAX_ROWS, append_shared_state_block,
+        determine_task_outcome, lookahead_effective_depth, network_denied_for_task,
+        task_tool_allowlist_for_task, tool_trace_from_messages,
     };
 
     #[test]
@@ -2391,6 +2444,98 @@ mod tests {
 
         let out_alice = append_shared_state_block(prompt.clone(), &ctx_alice, graph_id).await;
         assert!(out_alice.contains("alice-only secret"));
+    }
+
+    /// Writes `n` sequentially-keyed rows (`key-0000`, `key-0001`, ...) into `namespace`
+    /// under `owner_key`, so tests can assert on `store_list`'s `(namespace, key)` order.
+    async fn seed_sequential_rows(
+        memory: &zeph_memory::semantic::SemanticMemory,
+        owner_key: &str,
+        namespace: &str,
+        n: usize,
+    ) {
+        for i in 0..n {
+            memory
+                .sqlite()
+                .store_put(
+                    owner_key,
+                    namespace,
+                    &format!("key-{i:04}"),
+                    "v",
+                    65536,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn append_shared_state_bounds_row_count() {
+        // #6763: `store_list` with `limit = 0` means "unlimited" (`zeph_db::limit_clause`),
+        // but this ambient, unauthenticated, multi-writer read must never be unbounded —
+        // write more than SHARED_STATE_MAX_ROWS entries and assert the block reflects at
+        // most that many, that the survivors are exactly the first SHARED_STATE_MAX_ROWS by
+        // `(namespace, key)` order (pins the truncation policy so a `store_list` ordering
+        // change fails this test instead of silently changing what the model sees), and
+        // that the truncation marker (C1) is present in the trusted tag, not the sanitized
+        // body.
+        let ctx = test_ctx(true, true).await;
+        let graph_id = zeph_orchestration::GraphId::new();
+        let namespace = format!("orch/{graph_id}");
+        let memory = ctx.memory.as_ref().unwrap();
+        let total = SHARED_STATE_MAX_ROWS + 50;
+        seed_sequential_rows(memory, ctx.owner_key.as_str(), &namespace, total).await;
+
+        let prompt = "task".to_string();
+        let out = append_shared_state_block(prompt.clone(), &ctx, graph_id).await;
+
+        let expected_tag =
+            format!(r#"<shared-state truncated="true" shown="{SHARED_STATE_MAX_ROWS}">"#);
+        assert!(
+            out.contains(&expected_tag),
+            "truncated block must carry a truncated/shown marker in the trusted tag: {out}"
+        );
+        let survivors: Vec<&str> = out
+            .lines()
+            .filter_map(|l| l.strip_suffix(": v"))
+            .filter(|k| k.starts_with("key-"))
+            .collect();
+        let expected: Vec<String> = (0..SHARED_STATE_MAX_ROWS)
+            .map(|i| format!("key-{i:04}"))
+            .collect();
+        assert_eq!(
+            survivors, expected,
+            "surviving rows must be exactly the first SHARED_STATE_MAX_ROWS by (namespace, key) order"
+        );
+    }
+
+    #[tokio::test]
+    async fn append_shared_state_exact_cap_is_not_flagged_truncated() {
+        // C2 regression: a namespace holding exactly SHARED_STATE_MAX_ROWS rows has nothing
+        // truncated — the off-by-one this replaced (`items.len() >= SHARED_STATE_MAX_ROWS`)
+        // would have warned/flagged here even though every row is present.
+        let ctx = test_ctx(true, true).await;
+        let graph_id = zeph_orchestration::GraphId::new();
+        let namespace = format!("orch/{graph_id}");
+        let memory = ctx.memory.as_ref().unwrap();
+        seed_sequential_rows(
+            memory,
+            ctx.owner_key.as_str(),
+            &namespace,
+            SHARED_STATE_MAX_ROWS,
+        )
+        .await;
+
+        let prompt = "task".to_string();
+        let out = append_shared_state_block(prompt.clone(), &ctx, graph_id).await;
+
+        assert!(
+            !out.contains("truncated"),
+            "exactly SHARED_STATE_MAX_ROWS rows must not be flagged as truncated: {out}"
+        );
+        let row_count = out.lines().filter(|l| l.starts_with("key-")).count();
+        assert_eq!(row_count, SHARED_STATE_MAX_ROWS);
     }
 
     // ── AC-8 spawn/inline trace parity + S1 fail-closed-on-partial-read regression
