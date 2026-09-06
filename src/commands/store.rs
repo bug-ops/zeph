@@ -72,7 +72,12 @@ pub(crate) async fn handle_store_command(
             limit,
         } => {
             let items = sqlite
-                .store_list(&owner_key, &namespace_prefix, limit)
+                .store_list(
+                    &owner_key,
+                    &namespace_prefix,
+                    limit,
+                    zeph_memory::store::StoreListOrder::KeyAsc,
+                )
                 .await
                 .map_err(|e| anyhow::anyhow!("store list failed: {e}"))?;
             if items.is_empty() {

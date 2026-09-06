@@ -39,6 +39,44 @@ pub struct StoreItem {
 
 type StoreItemTuple = (String, String, String, String, i64, String, String);
 
+/// Row ordering for [`SqliteStore::store_list`] (GitHub #6768).
+///
+/// `KeyAsc` is the original, deterministic listing order every explicit LLM- or
+/// operator-driven call (`/store list`, the `store_list` slash command) must keep using —
+/// reproducible pagination matters more than recency there. `RecentFirst` exists solely
+/// for the ambient, unauthenticated, multi-writer `<shared-state>` read
+/// (`append_shared_state_block`, `zeph-core`): under `KeyAsc`, a writer choosing
+/// low-sorting keys (`"0000"`, `"0001"`, ...) can write them once and permanently occupy
+/// every slot under the row cap, starving every other writer's keys out of the truncated
+/// view forever.
+///
+/// `RecentFirst` closes the *write-once* version of that attack (a one-time flood of
+/// low-sorting keys ages out as soon as any honest node writes), but does **not** close a
+/// *sustained-write* attacker: `store_put` with `expected_version = None` is an
+/// unconditional upsert that refreshes `updated_at` on every call
+/// (`SqliteStore::store_put`), so a compromised node re-writing its own `SHARED_STATE_MAX_ROWS`
+/// keys in a loop keeps them all newer than any write-once honest key, starving it just as
+/// permanently as before. Durably closing the sustained-write case needs per-writer
+/// provenance (a follow-up, tracked separately, out of scope here) so a fairness quota can
+/// be enforced per writer rather than per namespace.
+///
+/// `RecentFirst`'s second, independent residual gap: `SQLite`'s `updated_at` is
+/// `datetime('now')`, i.e. second-granularity (`crates/zeph-db/src/dialect.rs`). Rows
+/// written within the same second tie on `updated_at` and fall back to `(namespace, key)`
+/// order, so a flood landing in the same second as an honest write can still win that one
+/// second — accepted as a residual limitation rather than switching `SQLite` to sub-second
+/// timestamps, which would diverge from migration 110's column `DEFAULT` and every other
+/// table's timestamp convention in this project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StoreListOrder {
+    /// `ORDER BY namespace, key` — lexicographic, deterministic across repeated calls.
+    #[default]
+    KeyAsc,
+    /// `ORDER BY updated_at DESC, namespace ASC, key ASC` — most-recently-written rows
+    /// first, so a row cap and a downstream byte cap evict the same (oldest) rows.
+    RecentFirst,
+}
+
 fn item_from_tuple(t: StoreItemTuple) -> StoreItem {
     StoreItem {
         owner_key: t.0,
@@ -250,8 +288,9 @@ impl SqliteStore {
     ///
     /// `namespace_prefix` matches every namespace starting with it — pass e.g.
     /// `"orch/graph-1"` to match exactly that namespace (and any longer namespace that
-    /// starts with it), or a shorter prefix to match several. Results are ordered by
-    /// `(namespace, key)`. Pass `limit = 0` for unlimited.
+    /// starts with it), or a shorter prefix to match several. `order` selects between
+    /// `(namespace, key)` lexicographic order and most-recently-written-first — see
+    /// [`StoreListOrder`]. Pass `limit = 0` for unlimited.
     ///
     /// Implemented as an explicit `namespace >= lower AND namespace < upper` range scan
     /// rather than `namespace LIKE 'prefix%'` (perf finding NFR-004/5): `SQLite` only
@@ -271,14 +310,16 @@ impl SqliteStore {
     ///
     /// ```rust,no_run
     /// # async fn example() -> Result<(), zeph_memory::MemoryError> {
-    /// use zeph_memory::store::SqliteStore;
+    /// use zeph_memory::store::{SqliteStore, StoreListOrder};
     ///
     /// let store = SqliteStore::new(":memory:").await?;
     /// store
     ///     .store_put("local", "orch/graph-1", "finding", "{\"x\":1}", 65536, None)
     ///     .await?;
     ///
-    /// let items = store.store_list("local", "orch/graph-1", 0).await?;
+    /// let items = store
+    ///     .store_list("local", "orch/graph-1", 0, StoreListOrder::KeyAsc)
+    ///     .await?;
     /// assert_eq!(items.len(), 1);
     /// assert_eq!(items[0].key, "finding");
     /// # Ok(())
@@ -289,21 +330,34 @@ impl SqliteStore {
         owner_key: &str,
         namespace_prefix: &str,
         limit: usize,
+        order: StoreListOrder,
     ) -> Result<Vec<StoreItem>, MemoryError> {
         let cols = select_columns();
         let (limit_clause, limit_bind) = zeph_db::limit_clause(limit as u64);
         let upper = prefix_range_upper_bound(namespace_prefix);
+        // The `cross_thread_store.` qualifier on `updated_at` is load-bearing: on
+        // Postgres, `select_columns()` projects `updated_at::text` under the output alias
+        // `updated_at`, and a bare `ORDER BY updated_at` binds to that text-rendered output
+        // column rather than the underlying timestamp column — variable-length fractional
+        // seconds and a session-`TimeZone`-dependent offset make that not reliably
+        // chronological. A qualified reference always resolves to the source table column.
+        let order_clause = match order {
+            StoreListOrder::KeyAsc => "namespace, key",
+            StoreListOrder::RecentFirst => {
+                "cross_thread_store.updated_at DESC, namespace ASC, key ASC"
+            }
+        };
         let raw = if upper.is_some() {
             format!(
                 "SELECT {cols} FROM cross_thread_store \
                  WHERE owner_key = ? AND namespace >= ? AND namespace < ? \
-                 ORDER BY namespace, key{limit_clause}"
+                 ORDER BY {order_clause}{limit_clause}"
             )
         } else {
             format!(
                 "SELECT {cols} FROM cross_thread_store \
                  WHERE owner_key = ? AND namespace >= ? \
-                 ORDER BY namespace, key{limit_clause}"
+                 ORDER BY {order_clause}{limit_clause}"
             )
         };
         let query_sql = zeph_db::rewrite_placeholders(&raw);
@@ -650,11 +704,17 @@ mod tests {
             .await
             .unwrap();
 
-        let g1 = s.store_list("local", "orch/g1", 0).await.unwrap();
+        let g1 = s
+            .store_list("local", "orch/g1", 0, StoreListOrder::KeyAsc)
+            .await
+            .unwrap();
         assert_eq!(g1.len(), 2);
         assert!(g1.iter().all(|i| i.namespace == "orch/g1"));
 
-        let all_orch = s.store_list("local", "orch/", 0).await.unwrap();
+        let all_orch = s
+            .store_list("local", "orch/", 0, StoreListOrder::KeyAsc)
+            .await
+            .unwrap();
         assert_eq!(all_orch.len(), 3);
     }
 
@@ -666,15 +726,71 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let limited = s.store_list("local", "ns", 2).await.unwrap();
+        let limited = s
+            .store_list("local", "ns", 2, StoreListOrder::KeyAsc)
+            .await
+            .unwrap();
         assert_eq!(limited.len(), 2);
     }
 
     #[tokio::test]
     async fn list_empty_namespace_returns_empty_vec() {
         let s = store().await;
-        let rows = s.store_list("local", "no/such/ns", 0).await.unwrap();
+        let rows = s
+            .store_list("local", "no/such/ns", 0, StoreListOrder::KeyAsc)
+            .await
+            .unwrap();
         assert!(rows.is_empty());
+    }
+
+    /// M1 (GitHub #6768): `RecentFirst` returns rows ordered by `updated_at DESC`,
+    /// independent of key lexicographic order — the opposite of `KeyAsc`'s natural
+    /// insertion order for these keys, so the test only passes if the ordering actually
+    /// switched.
+    #[tokio::test]
+    async fn recent_first_orders_by_updated_at_descending() {
+        let s = store().await;
+        s.store_put("local", "orch/g1", "z-oldest", "v", MAX_BYTES, None)
+            .await
+            .unwrap();
+        s.store_put("local", "orch/g1", "m-middle", "v", MAX_BYTES, None)
+            .await
+            .unwrap();
+        s.store_put("local", "orch/g1", "a-newest", "v", MAX_BYTES, None)
+            .await
+            .unwrap();
+
+        // Force distinct, deterministic `updated_at` values via a raw UPDATE — avoids a
+        // wall-clock sleep and works around SQLite's second-granularity clock.
+        for (key, ts) in [
+            ("z-oldest", "2026-01-01T00:00:00Z"),
+            ("m-middle", "2026-01-01T00:00:01Z"),
+            ("a-newest", "2026-01-01T00:00:02Z"),
+        ] {
+            zeph_db::query(sql!(
+                "UPDATE cross_thread_store SET updated_at = ? WHERE key = ?"
+            ))
+            .bind(ts)
+            .bind(key)
+            .execute(&s.pool)
+            .await
+            .unwrap();
+        }
+
+        let recent = s
+            .store_list("local", "orch/g1", 0, StoreListOrder::RecentFirst)
+            .await
+            .unwrap();
+        let keys: Vec<&str> = recent.iter().map(|i| i.key.as_str()).collect();
+        assert_eq!(keys, vec!["a-newest", "m-middle", "z-oldest"]);
+
+        // `limit` composes with `RecentFirst`: the newest N rows, not the first N by key.
+        let top_two = s
+            .store_list("local", "orch/g1", 2, StoreListOrder::RecentFirst)
+            .await
+            .unwrap();
+        let top_two_keys: Vec<&str> = top_two.iter().map(|i| i.key.as_str()).collect();
+        assert_eq!(top_two_keys, vec!["a-newest", "m-middle"]);
     }
 
     #[tokio::test]

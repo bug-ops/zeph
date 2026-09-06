@@ -11,6 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Capped the ambient `<shared-state>` prompt block's cross-thread-store read at a fixed
   row count instead of relying on `limit = 0` ("unlimited"), and surfaced truncation to
   the receiving node via a `truncated`/`shown` marker in the block's tag (#6763, #6767).
+- Ordered the `<shared-state>` prompt block's surviving rows most-recently-written-first
+  instead of lexicographically, closing a truncation-starvation gap where a writer using
+  low-sorting keys could permanently evict every other writer's keys, and set the block's
+  `truncated` marker when the sanitizer's byte cap clips the body even if the row cap
+  didn't (#6768, #6772).
 
 ### Added
 
