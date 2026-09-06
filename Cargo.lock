@@ -11957,8 +11957,10 @@ dependencies = [
 name = "zeph-subagent"
 version = "0.22.4"
 dependencies = [
+ "chrono",
  "dirs",
  "indoc",
+ "parking_lot",
  "proptest",
  "regex",
  "schemars 1.2.2",

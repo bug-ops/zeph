@@ -166,6 +166,13 @@ pub enum ContentSourceKind {
     /// that the message content is safe — treated as `ExternalUntrusted` like any other
     /// network-supplied text.
     ChannelMessage,
+    /// Message received from another sub-agent via the in-process peer-messaging
+    /// mailbox (spec `046-subagent-peer-messaging-parity`).
+    ///
+    /// A sibling or parent sub-agent can only ever influence the receiver through this
+    /// message body, so it is classified the same as [`A2aMessage`](Self::A2aMessage) —
+    /// `ExternalUntrusted` — even though the sender runs in the same process.
+    SubagentPeerMessage,
 }
 
 impl ContentSourceKind {
@@ -190,7 +197,8 @@ impl ContentSourceKind {
             | Self::McpResponse
             | Self::A2aMessage
             | Self::MemoryRetrieval
-            | Self::ChannelMessage => ContentTrustLevel::ExternalUntrusted,
+            | Self::ChannelMessage
+            | Self::SubagentPeerMessage => ContentTrustLevel::ExternalUntrusted,
         }
     }
 
@@ -215,6 +223,7 @@ impl ContentSourceKind {
             Self::MemoryRetrieval => "memory_retrieval",
             Self::InstructionFile => "instruction_file",
             Self::ChannelMessage => "channel_message",
+            Self::SubagentPeerMessage => "subagent_peer_message",
         }
     }
 
@@ -245,6 +254,7 @@ impl ContentSourceKind {
             "memory_retrieval" => Some(Self::MemoryRetrieval),
             "instruction_file" => Some(Self::InstructionFile),
             "channel_message" => Some(Self::ChannelMessage),
+            "subagent_peer_message" => Some(Self::SubagentPeerMessage),
             _ => None,
         }
     }
@@ -533,6 +543,10 @@ mod tests {
             (ContentSourceKind::MemoryRetrieval, "memory_retrieval"),
             (ContentSourceKind::InstructionFile, "instruction_file"),
             (ContentSourceKind::ChannelMessage, "channel_message"),
+            (
+                ContentSourceKind::SubagentPeerMessage,
+                "subagent_peer_message",
+            ),
         ];
         for (kind, s) in &variants {
             assert_eq!(ContentSourceKind::from_str_opt(s), Some(*kind));
@@ -653,6 +667,7 @@ mod tests {
             ContentSourceKind::A2aMessage,
             ContentSourceKind::MemoryRetrieval,
             ContentSourceKind::ChannelMessage,
+            ContentSourceKind::SubagentPeerMessage,
         ] {
             assert_eq!(
                 kind.default_trust_level(),

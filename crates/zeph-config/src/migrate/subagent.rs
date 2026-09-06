@@ -131,6 +131,63 @@ pub fn migrate_agents_max_spawns_per_session(
     })
 }
 
+/// Add a `[agents.peer_messaging]` advisory block to an existing active `[agents]` table
+/// (spec `046-subagent-peer-messaging-parity`, issue #5871).
+///
+/// `#[serde(default)]` on every field of `PeerMessagingConfig` already makes the section's
+/// absence safe on load, so this insertion is purely for discoverability — an operator who
+/// already has `[agents]` active sees the new inter-sub-agent messaging knobs in their config
+/// file rather than having them resolved silently.
+///
+/// No-op when `[agents]` is absent or not active (only commented-out), or
+/// `[agents.peer_messaging]` is already present (active or as a prior advisory comment).
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_agents_peer_messaging_config(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    if section_header_present(toml_src, "agents.peer_messaging")
+        || toml_src.contains("# [agents.peer_messaging]")
+        || !section_header_present(toml_src, "agents")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    if !doc.contains_key("agents") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Live inter-sub-agent messaging (spec 046-subagent-peer-messaging-parity, #5871).\n\
+         # Lets a spawner, coordinator, or sibling sub-agent send an addressed message to a\n\
+         # currently-running sub-agent's own mailbox, without it terminating or being respawned.\n\
+         # Enabled by default; each addressable agent's mailbox is bounded and denies delivery\n\
+         # across spawn-tree roots.\n\
+         # [agents.peer_messaging]\n\
+         # enabled = true\n\
+         # mailbox_capacity = 32   # bounded queue per agent\n\
+         # max_body_bytes = 8192  # per-message cap\n\
+         # max_wait_ms = 30000    # ceiling for check_messages(wait_ms)\n";
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["agents.peer_messaging".to_owned()],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +286,48 @@ mod tests {
         let src = "[agents]\nenabled = true\n";
         let once = migrate_agents_max_spawns_per_session(src).expect("migrate");
         let twice = migrate_agents_max_spawns_per_session(&once.output).expect("migrate");
+        assert_eq!(twice.changed_count, 0);
+        assert_eq!(twice.output, once.output);
+    }
+
+    #[test]
+    fn peer_messaging_inserts_advisory_block_when_agents_active() {
+        let src = "[agents]\nenabled = true\n";
+        let result = migrate_agents_peer_messaging_config(src).expect("migrate");
+        assert_eq!(result.changed_count, 1);
+        assert!(result.output.contains("# [agents.peer_messaging]"));
+        assert!(result.output.contains("# max_wait_ms = 30000"));
+    }
+
+    #[test]
+    fn peer_messaging_noop_when_section_absent() {
+        let src = "[llm]\nprovider = \"claude\"\n";
+        let result = migrate_agents_peer_messaging_config(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn peer_messaging_noop_when_section_only_commented_out() {
+        let src = "# [agents]\n# enabled = true\n";
+        let result = migrate_agents_peer_messaging_config(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn peer_messaging_noop_when_already_present() {
+        let src = "[agents]\nenabled = true\n\n[agents.peer_messaging]\nenabled = false\n";
+        let result = migrate_agents_peer_messaging_config(src).expect("migrate");
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, src);
+    }
+
+    #[test]
+    fn peer_messaging_idempotent() {
+        let src = "[agents]\nenabled = true\n";
+        let once = migrate_agents_peer_messaging_config(src).expect("migrate");
+        let twice = migrate_agents_peer_messaging_config(&once.output).expect("migrate");
         assert_eq!(twice.changed_count, 0);
         assert_eq!(twice.output, once.output);
     }

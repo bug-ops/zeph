@@ -727,6 +727,9 @@ pub struct SubAgentConfig {
     /// because the bootstrap overwrites this value before passing it to `SubAgentManager`.
     #[serde(default)]
     pub worktree: crate::worktree::WorktreeConfig,
+    /// Live inter-sub-agent messaging settings (spec `046-subagent-peer-messaging-parity`).
+    #[serde(default)]
+    pub peer_messaging: PeerMessagingConfig,
 }
 
 impl Default for SubAgentConfig {
@@ -755,6 +758,7 @@ impl Default for SubAgentConfig {
             summary_max_chars: default_summary_max_chars(),
             llm_timeout_secs: default_llm_timeout_secs(),
             worktree: crate::worktree::WorktreeConfig::default(),
+            peer_messaging: PeerMessagingConfig::default(),
         }
     }
 }
@@ -792,6 +796,67 @@ impl SubAgentConfig {
     }
 }
 
+fn default_peer_messaging_enabled() -> bool {
+    true
+}
+
+fn default_peer_mailbox_capacity() -> usize {
+    32
+}
+
+fn default_peer_max_body_bytes() -> usize {
+    8192
+}
+
+fn default_peer_max_wait_ms() -> u64 {
+    30_000
+}
+
+/// Live inter-sub-agent messaging settings (spec `046-subagent-peer-messaging-parity`,
+/// issue #5871).
+///
+/// Governs the bounded mailbox every addressable agent (parent and sub-agents) is
+/// registered with, and the three peer-messaging tools (`send_peer_message`,
+/// `check_messages`, `list_peers`) a spawned sub-agent's tool executor exposes.
+///
+/// # Examples
+///
+/// ```toml
+/// [agents.peer_messaging]
+/// enabled = true          # kill switch
+/// mailbox_capacity = 32   # bounded queue per agent
+/// max_body_bytes = 8192   # per-message cap
+/// max_wait_ms = 30000     # ceiling for check_messages(wait_ms)
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PeerMessagingConfig {
+    /// Kill switch. When `false`, no route is registered for any spawn and the three
+    /// peer-messaging tools are absent from every sub-agent's tool catalog.
+    #[serde(default = "default_peer_messaging_enabled")]
+    pub enabled: bool,
+    /// Bounded inbound message queue capacity per addressable agent.
+    #[serde(default = "default_peer_mailbox_capacity")]
+    pub mailbox_capacity: usize,
+    /// Maximum size, in bytes, of a single message body.
+    #[serde(default = "default_peer_max_body_bytes")]
+    pub max_body_bytes: usize,
+    /// Ceiling, in milliseconds, for the `check_messages` tool's optional `wait_ms` argument.
+    #[serde(default = "default_peer_max_wait_ms")]
+    pub max_wait_ms: u64,
+}
+
+impl Default for PeerMessagingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_peer_messaging_enabled(),
+            mailbox_capacity: default_peer_mailbox_capacity(),
+            max_body_bytes: default_peer_max_body_bytes(),
+            max_wait_ms: default_peer_max_wait_ms(),
+        }
+    }
+}
+
 /// Config-level lifecycle hooks fired when any sub-agent starts or stops.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -824,6 +889,23 @@ mod tests {
             !cfg.forward_transcript,
             "forward_transcript must default to false (NFR-003)"
         );
+    }
+
+    #[test]
+    fn peer_messaging_config_defaults() {
+        let cfg = PeerMessagingConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.mailbox_capacity, 32);
+        assert_eq!(cfg.max_body_bytes, 8192);
+        assert_eq!(cfg.max_wait_ms, 30_000);
+    }
+
+    #[test]
+    fn peer_messaging_config_omitted_key_defaults_to_enabled() {
+        let toml_str = "enabled = true\n";
+        let cfg: SubAgentConfig = toml::from_str(toml_str).unwrap();
+        assert!(cfg.peer_messaging.enabled);
+        assert_eq!(cfg.peer_messaging.mailbox_capacity, 32);
     }
 
     #[test]

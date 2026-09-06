@@ -45,6 +45,8 @@ That's it. The sub-agent works in the background and reports results when done.
 | `/agent resume <id> <prompt>` | Resume a completed sub-agent with its conversation history |
 | `/agent approve <id>` | Approve a pending secret request |
 | `/agent deny <id>` | Deny a pending secret request |
+| `/agent msg <id> <body>` | Send a message to a running sub-agent (accepts ID prefix) |
+| `/agent inbox` | List messages received from sub-agents this session |
 | `@name <prompt>` | Shorthand for `/agent spawn` |
 
 ### Checking Status
@@ -76,6 +78,42 @@ Resuming sub-agent a1b2c3d4-... (code-reviewer) with 12 messages
 The `<id>` argument accepts a UUID prefix, just like `cancel`. The `<prompt>` is appended as a new user message after the restored history.
 
 Resume requires transcript storage to be enabled (it is by default). If the transcript file for the given ID does not exist, the command returns an error.
+
+### Peer Messaging
+
+Sub-agents can exchange messages with each other and with you while they're still running — no need to cancel and respawn a sub-agent to redirect it, or wait for it to finish to ask it something.
+
+Every sub-agent gets three tools automatically:
+
+- `send_peer_message` — send a message to another sub-agent (or you, the spawner) by task ID or name
+- `check_messages` — drain its own inbox, optionally waiting up to `wait_ms` milliseconds for a reply
+- `list_peers` — discover which sub-agents (and you) it's allowed to message
+
+A sub-agent can only message its own spawner, its siblings (other sub-agents spawned by the same parent), and its own descendants — never a sub-agent from an unrelated spawn tree (e.g. one dispatched by a separate `/plan` execution).
+
+From your side, reply to a sub-agent's question with `/agent msg`:
+
+```
+> /agent msg a1b2 Use the new auth module in src/auth2.rs instead
+Message delivered to sub-agent a1b2c3d4-....
+```
+
+Messages a sub-agent sends you appear as notices in your channel and are listed with `/agent inbox`:
+
+```
+> /agent inbox
+[2026-09-06T10:15:32Z] from code-reviewer: Should I also check the test files, or just src/?
+```
+
+Peer messaging is on by default. Configure it under `[agents.peer_messaging]`:
+
+```toml
+[agents.peer_messaging]
+enabled = true          # kill switch — disables the three tools and all routing
+mailbox_capacity = 32   # bounded queue per agent; a full mailbox fails the send fast
+max_body_bytes = 8192   # per-message size cap
+max_wait_ms = 30000     # ceiling for check_messages' optional wait
+```
 
 ### Transcript Storage
 

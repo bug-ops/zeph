@@ -115,7 +115,11 @@ pub(super) struct AgentLoopArgs {
 
 /// Record a progress heartbeat, if this loop has a live handle. No-op for `None` (untracked
 /// or `RunInline`-style spawns — see [`AgentLoopArgs::progress_at`]).
-fn record_progress(progress_at: Option<&Arc<AtomicU64>>) {
+///
+/// `pub(crate)` so [`crate::peer::PeerToolExecutor`]'s `check_messages(wait_ms)` progress
+/// ticker can also call it (critic round-2 S2) — a legitimately-waiting sub-agent must not
+/// read as orchestration idle-time and get reaped mid-wait.
+pub(crate) fn record_progress(progress_at: Option<&Arc<AtomicU64>>) {
     if let Some(p) = progress_at {
         p.store(zeph_common::monotonic_millis(), Ordering::Relaxed);
     }

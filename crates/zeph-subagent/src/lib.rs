@@ -52,6 +52,7 @@ pub mod grants;
 pub mod hooks;
 pub mod manager;
 pub mod memory;
+pub mod peer;
 pub mod resolve;
 pub mod state;
 pub mod transcript;

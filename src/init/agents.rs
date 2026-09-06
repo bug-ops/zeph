@@ -273,6 +273,14 @@ pub(super) fn step_agents(state: &mut WizardState) -> anyhow::Result<()> {
         .default(false)
         .interact()?;
 
+    state.agents_peer_messaging_enabled = Confirm::new()
+        .with_prompt(
+            "Enable live inter-sub-agent messaging (send_peer_message/check_messages tools, \
+             /agent msg)? See [agents.peer_messaging] in config.toml for capacity/limit knobs.",
+        )
+        .default(true)
+        .interact()?;
+
     println!();
     Ok(())
 }

@@ -466,6 +466,7 @@ impl<C: Channel> Agent<C> {
             self.process_pending_elicitations().await;
             self.refresh_subagent_metrics();
             self.notify_completed_subagents().await?;
+            self.notify_peer_messages().await;
             self.drain_channel();
 
             let (text, image_parts) = if let Some(queued) = self.msg.message_queue.pop_front() {

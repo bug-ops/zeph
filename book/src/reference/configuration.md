@@ -782,6 +782,12 @@ extra_dirs = []            # Additional directories to scan for agent definition
 # type = "command"
 # command = "./scripts/cleanup.sh"
 
+[agents.peer_messaging]
+enabled = true          # Enable live inter-sub-agent messaging (default: true)
+mailbox_capacity = 32   # Bounded inbound message queue per agent (default: 32)
+max_body_bytes = 8192   # Max size of a single message body in bytes (default: 8192)
+max_wait_ms = 30000     # Ceiling for check_messages' optional wait_ms argument (default: 30000)
+
 [orchestration]
 enabled = false                          # Enable task orchestration (default: false, requires `orchestration` feature)
 max_tasks = 20                           # Max tasks per graph (default: 20)

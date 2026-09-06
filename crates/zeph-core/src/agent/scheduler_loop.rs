@@ -628,6 +628,13 @@ impl<C: crate::channel::Channel> Agent<C> {
         // its base value (correct for its other, user-command-driven callers) — this is the
         // one caller that isn't user-driven, so override it back to `Autonomous` here.
         spawn_ctx.origin = zeph_subagent::SpawnOrigin::Autonomous;
+        // Spec 046 (peer messaging) FR-013/FR-014: this DAG execution's own `GraphId` (already
+        // computed above as `graph_id`, a stable per-execution UUID) is a distinct
+        // `PeerGroupId::Plan` root from the interactive session's own `PeerGroupId::Session` —
+        // makes US-003's cross-group authorization denial reachable in production, since a
+        // `background: true` interactively-spawned sub-agent can stay alive concurrently with
+        // a running plan's sub-agents in the same `SubAgentManager`, with no shared ancestor.
+        spawn_ctx.peer_group = Some(zeph_subagent::peer::PeerGroupId::Plan(graph_id.to_string()));
 
         // Idle-timeout progress heartbeat (issue #6245, Alt-A): the driver owns creation of
         // the Arc. One clone flows into the sub-agent loop via `spawn_ctx.progress_at`
@@ -1438,6 +1445,7 @@ impl<C: crate::channel::Channel> Agent<C> {
 
             self.process_pending_secret_requests(&mut denied_secrets)
                 .await;
+            self.notify_peer_messages().await;
 
             let snapshot = crate::metrics::TaskGraphSnapshot::from(scheduler.graph());
             self.update_metrics(|m| {
@@ -1531,6 +1539,15 @@ impl<C: crate::channel::Channel> Agent<C> {
 
         self.process_pending_secret_requests(&mut std::collections::HashSet::new())
             .await;
+        self.notify_peer_messages().await;
+
+        // Critic round-4 S2: release this plan execution's peer-messaging root now that the
+        // plan has reached a terminal state, mirroring how a `SubAgentHandle`'s own
+        // `PeerRegistration` is dropped on collection — drained one last time just above so
+        // no in-flight message to the parent is lost by tearing the mailbox down under it.
+        if let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() {
+            mgr.release_plan_peer_group(&scheduler.graph().id.to_string());
+        }
 
         // Clear lookahead cache so stale hints are never seen after plan completion.
         self.services.orchestration.cached_lookahead = Vec::new();
@@ -3219,6 +3236,7 @@ mod tests {
             started_at_str: String::new(),
             transcript_dir: None,
             mcp_tool_names: Vec::new(),
+            peer: None,
         };
 
         let mut mgr = SubAgentManager::new(4);
@@ -3336,6 +3354,7 @@ mod tests {
             started_at_str: String::new(),
             transcript_dir: None,
             mcp_tool_names: Vec::new(),
+            peer: None,
         };
 
         let mut mgr = SubAgentManager::new(4);

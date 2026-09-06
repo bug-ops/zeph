@@ -4,6 +4,7 @@
 //! Sub-agent lifecycle management: spawn, cancel, collect, and resume.
 
 mod collect;
+mod peer_api;
 mod secrets;
 mod spawn;
 mod worktree;
@@ -27,6 +28,7 @@ use crate::error::SubAgentError;
 use crate::fleet::SharedFleetRegistry;
 use crate::forward::ForwardSurfaces;
 use crate::grants::{GrantedSecret, PermissionGrants, SecretRequest};
+use crate::peer::{AgentId, PeerGroupId, PeerRegistration, PeerRouter};
 use crate::state::SubAgentState;
 
 /// Classifies what triggered a given spawn attempt, for [`DelegationMode`] enforcement
@@ -251,6 +253,32 @@ pub struct SpawnContext {
     /// the existing post-construction override pattern used for
     /// [`network_denied`][Self::network_denied] and [`progress_at`][Self::progress_at].
     pub origin: SpawnOrigin,
+
+    /// Peer-messaging spawn-tree root this sub-agent joins (spec
+    /// `046-subagent-peer-messaging-parity`, FR-013/FR-014).
+    ///
+    /// `None` resolves to [`PeerGroupId::Session`] — the interactive session's own root,
+    /// used by `/agent spawn`/`/agent resume`. The orchestration scheduler sets
+    /// `Some(PeerGroupId::Plan(plan_run_id))` so a `DagScheduler`-dispatched sub-agent joins
+    /// a distinct root per plan execution, making US-003's cross-group authorization denial
+    /// reachable in production: a `background: true` interactively-spawned sub-agent can
+    /// stay alive concurrently with a running plan's sub-agents, in the same
+    /// [`SubAgentManager`], with no shared ancestor.
+    ///
+    /// # Caller responsibility for nested spawns
+    ///
+    /// Like [`max_trust_level`][Self::max_trust_level], this field does **not** propagate
+    /// automatically — a sub-agent that spawns its own children must copy this field from
+    /// its received `SpawnContext` into the child's, or the grandchild silently joins the
+    /// wrong spawn-tree root.
+    pub peer_group: Option<PeerGroupId>,
+
+    /// Exfiltration-guard configuration this sub-agent's [`PeerToolExecutor`][crate::peer::PeerToolExecutor]
+    /// constructs its own [`ExfiltrationGuard`][zeph_sanitizer::exfiltration::ExfiltrationGuard]
+    /// from (FR-012, NFR-007) — peer message bodies are attacker-influenceable across an
+    /// agent boundary, so `check_messages` scans them the same way parent-turn LLM output is
+    /// scanned. Defaults to [`zeph_config::ExfiltrationGuardConfig::default`].
+    pub exfiltration_guard: zeph_config::ExfiltrationGuardConfig,
 }
 
 /// Intersect two optional tool allowlists, preserving the "narrow only" invariant shared by
@@ -353,6 +381,15 @@ pub struct SubAgentHandle {
     pub transcript_dir: Option<PathBuf>,
     /// MCP tool names available at spawn time, persisted for transcript meta on collect.
     pub mcp_tool_names: Vec<String>,
+    /// Peer-messaging route registration for this sub-agent (spec
+    /// `046-subagent-peer-messaging-parity`).
+    ///
+    /// `None` for `for_test` handles and any spawn made while
+    /// `peer_messaging.enabled = false`. Dropping this (explicitly, or via
+    /// `SubAgentHandle`'s own `Drop`) deregisters the route, so a send addressed to this
+    /// agent after that point returns `DeliveryError::TargetNotFound` rather than a silent
+    /// drop into a dangling mailbox.
+    pub peer: Option<PeerRegistration>,
 }
 
 impl SubAgentHandle {
@@ -389,6 +426,7 @@ impl SubAgentHandle {
             started_at_str: String::new(),
             transcript_dir: None,
             mcp_tool_names: Vec::new(),
+            peer: None,
         }
     }
 
@@ -551,6 +589,24 @@ pub struct SubAgentManager {
     /// enforce the same session-wide cap. See [`SessionSpawnBudget`]'s own doc comment for why
     /// it is a plain, uncloned `AtomicUsize` newtype rather than a shared `Arc` handle.
     session_spawn_budget: crate::budget::SessionSpawnBudget,
+    /// `Arc`-shared peer-messaging routing table (spec `046-subagent-peer-messaging-parity`),
+    /// cloned into every spawned sub-agent's own `PeerToolExecutor` decorator. Never owned by
+    /// value by a running sub-agent task — see the crate's `peer` module docs for why.
+    peer_router: Arc<PeerRouter>,
+    /// This manager's own `PeerGroupId::Session` root registration, kept alive for the
+    /// manager's lifetime so `AgentId::Root(PeerGroupId::Session)` stays addressable.
+    #[allow(dead_code)] // held only to keep the route registered; never read directly
+    peer_root_registration: PeerRegistration,
+    /// Receiver half of the session root's own mailbox, drained by
+    /// [`try_recv_peer_message`][Self::try_recv_peer_message] (T005).
+    peer_root_rx: mpsc::Receiver<crate::peer::PeerMessage>,
+    /// One `Root(PeerGroupId::Plan(graph_id))` registration + mailbox receiver per
+    /// orchestration plan execution currently live in this manager, keyed by `graph_id`
+    /// (critic round-4 S2). Registered lazily on first spawn into a given plan
+    /// ([`ensure_plan_peer_group`][Self::ensure_plan_peer_group]); released when the plan
+    /// completes ([`release_plan_peer_group`][Self::release_plan_peer_group]), mirroring how
+    /// dropping a `SubAgentHandle`'s own `PeerRegistration` deregisters its route.
+    plan_peer_roots: HashMap<String, (PeerRegistration, mpsc::Receiver<crate::peer::PeerMessage>)>,
 }
 
 impl std::fmt::Debug for SubAgentManager {
@@ -575,6 +631,10 @@ impl std::fmt::Debug for SubAgentManager {
             .field("pii_filter", &self.pii_filter.is_some())
             .field("delegation_mode", &self.delegation_mode)
             .field("session_spawn_budget", &self.session_spawn_budget)
+            .field("peer_router", &self.peer_router)
+            .field("peer_root_registration", &"<PeerRegistration>")
+            .field("peer_root_rx", &"<mpsc::Receiver>")
+            .field("plan_peer_roots_count", &self.plan_peer_roots.len())
             .finish()
     }
 }
@@ -583,6 +643,13 @@ impl SubAgentManager {
     /// Create a new manager with the given concurrency limit.
     #[must_use]
     pub fn new(max_concurrent: usize) -> Self {
+        let peer_router = PeerRouter::new(zeph_config::PeerMessagingConfig::default(), None);
+        let (peer_root_registration, peer_root_rx) = peer_router.register(
+            AgentId::Root(PeerGroupId::Session),
+            "spawner".to_owned(),
+            None,
+            PeerGroupId::Session,
+        );
         Self {
             definitions: Vec::new(),
             agents: HashMap::new(),
@@ -603,7 +670,71 @@ impl SubAgentManager {
             pii_filter: None,
             delegation_mode: zeph_config::DelegationMode::default(),
             session_spawn_budget: crate::budget::SessionSpawnBudget::default(),
+            peer_router,
+            peer_root_registration,
+            peer_root_rx,
+            plan_peer_roots: HashMap::new(),
         }
+    }
+
+    /// Reconfigure the peer-messaging router's mailbox capacity/body-size/wait limits and
+    /// enabled kill switch (spec `046-subagent-peer-messaging-parity`).
+    ///
+    /// Call during bootstrap, before the first [`spawn`][Self::spawn] — replaces the router
+    /// (and re-registers the session root) wholesale, so any route already registered before
+    /// this call would be silently orphaned. Carries over whatever secret-mask registry is
+    /// already wired via [`set_secret_registry`][Self::set_secret_registry], regardless of
+    /// call order relative to this method.
+    pub fn set_peer_messaging_config(&mut self, config: zeph_config::PeerMessagingConfig) {
+        let peer_router = PeerRouter::new(config, self.secret_registry.clone());
+        let (peer_root_registration, peer_root_rx) = peer_router.register(
+            AgentId::Root(PeerGroupId::Session),
+            "spawner".to_owned(),
+            None,
+            PeerGroupId::Session,
+        );
+        self.peer_router = peer_router;
+        self.peer_root_registration = peer_root_registration;
+        self.peer_root_rx = peer_root_rx;
+        // Any existing plan-root registrations are bound to the router just replaced; drop
+        // them (deregistering from the now-discarded router is harmless) rather than leaving
+        // stale entries that reference an `Arc<PeerRouter>` nothing else uses anymore.
+        self.plan_peer_roots.clear();
+    }
+
+    /// Ensure a `Root(PeerGroupId::Plan(graph_id))` node is registered, registering one lazily
+    /// on first use (critic round-4 S2). A no-op if a root for `graph_id` is already live.
+    ///
+    /// Without this, no node ever exists for a `Plan` group's root, so `send_to_subagent`
+    /// (backing `/agent msg`) and the parent's `try_recv_peer_message` drain can never reach
+    /// or observe a `DagScheduler`-dispatched sub-agent — US-002 would be structurally
+    /// unreachable on that path.
+    pub(crate) fn ensure_plan_peer_group(&mut self, graph_id: &str) {
+        if self.plan_peer_roots.contains_key(graph_id) {
+            return;
+        }
+        let group = PeerGroupId::Plan(graph_id.to_owned());
+        let (registration, rx) =
+            self.peer_router
+                .register(AgentId::Root(group.clone()), "plan".to_owned(), None, group);
+        self.plan_peer_roots
+            .insert(graph_id.to_owned(), (registration, rx));
+    }
+
+    /// Release the `Root(PeerGroupId::Plan(graph_id))` node for a completed or torn-down plan
+    /// execution, deregistering its route (critic round-4 S2).
+    ///
+    /// A no-op if no root was ever registered for `graph_id` (e.g. the plan never actually
+    /// dispatched a sub-agent).
+    pub fn release_plan_peer_group(&mut self, graph_id: &str) {
+        self.plan_peer_roots.remove(graph_id);
+    }
+
+    /// The `Arc`-shared peer-messaging router, cloned into every spawned sub-agent's own
+    /// `PeerToolExecutor` decorator.
+    #[must_use]
+    pub fn peer_router(&self) -> &Arc<PeerRouter> {
+        &self.peer_router
     }
 
     /// The session-wide cumulative subagent-spawn budget this manager originates (issue
@@ -673,7 +804,10 @@ impl SubAgentManager {
         &mut self,
         registry: Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>,
     ) {
-        self.secret_registry = Some(registry);
+        self.secret_registry = Some(Arc::clone(&registry));
+        // Propagate into the peer router regardless of call order relative to
+        // `set_peer_messaging_config` — see that method's doc comment.
+        self.peer_router.set_secret_registry(Some(registry));
     }
 
     /// Wire a PII filter into the forwarding pipeline (issue #6359, security Finding 1 /

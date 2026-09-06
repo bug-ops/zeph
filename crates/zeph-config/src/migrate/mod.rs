@@ -79,7 +79,10 @@ pub use session::{
     migrate_session_provider_persistence, migrate_session_recap_config,
     migrate_session_resume_config,
 };
-pub use subagent::{migrate_agents_delegation_mode, migrate_agents_max_spawns_per_session};
+pub use subagent::{
+    migrate_agents_delegation_mode, migrate_agents_max_spawns_per_session,
+    migrate_agents_peer_messaging_config,
+};
 pub use tools::{
     migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry, migrate_agent_time_reminder,
     migrate_overflow_max_per_call_override, migrate_policy_provider_and_utility_window,
@@ -650,9 +653,9 @@ use steps::{
     MigrateA2aCardTrustConfig, MigrateA2aServerRemoveInertFields, MigrateAcpAuthClientsConfig,
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
     MigrateAgentTimeReminder, MigrateAgentsDelegationMode, MigrateAgentsMaxSpawnsPerSession,
-    MigrateAutodreamConfig, MigrateCavemanConfig, MigrateCocoonProviderNotice,
-    MigrateCocoonShowBalance, MigrateCompressionPredictorConfig, MigrateDatabaseUrl,
-    MigrateDeepLinkConfig, MigrateDurableConfig, MigrateDurableHwmAdvisory,
+    MigrateAgentsPeerMessagingConfig, MigrateAutodreamConfig, MigrateCavemanConfig,
+    MigrateCocoonProviderNotice, MigrateCocoonShowBalance, MigrateCompressionPredictorConfig,
+    MigrateDatabaseUrl, MigrateDeepLinkConfig, MigrateDurableConfig, MigrateDurableHwmAdvisory,
     MigrateDurableKeyRotation, MigrateDurableSharedDb, MigrateDurableStaleRunningAfterSecs,
     MigrateEgressConfig, MigrateEmbedProviderRename, MigrateEvalModelToProvider,
     MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow,
@@ -910,6 +913,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateShellRiskChainWindowTurns),
             // Step 107 — add panel_sizing = "auto" advisory comment under [tui] (#6675)
             Box::new(MigrateTuiPanelSizing),
+            // Step 108 — add [agents.peer_messaging] advisory block for live inter-sub-agent
+            // messaging (spec 046-subagent-peer-messaging-parity, #5871)
+            Box::new(MigrateAgentsPeerMessagingConfig),
         ]
     });
 

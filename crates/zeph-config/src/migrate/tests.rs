@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        107,
-        "MIGRATIONS registry must contain all 107 sequential steps"
+        108,
+        "MIGRATIONS registry must contain all 108 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -2124,7 +2124,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 107);
+    assert_eq!(MIGRATIONS.len(), 108);
 }
 
 /// Mirrors the SC-003 wire-X-into-registry check below for `MigrateTuiPanelSizing` (#6675):
@@ -2327,6 +2327,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_agents_max_spawns_per_session",
         "migrate_shell_risk_chain_window_turns",
         "migrate_tui_panel_sizing",
+        "migrate_agents_peer_messaging_config",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
