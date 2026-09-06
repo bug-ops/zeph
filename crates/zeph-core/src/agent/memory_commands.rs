@@ -141,7 +141,16 @@ impl<C: Channel + Send + 'static> MemoryAccess for Agent<C> {
                             .next()
                             .and_then(|s| s.parse::<usize>().ok())
                             .unwrap_or(0);
-                        match memory.sqlite().store_list(owner_key, prefix, limit).await {
+                        match memory
+                            .sqlite()
+                            .store_list(
+                                owner_key,
+                                prefix,
+                                limit,
+                                zeph_memory::store::StoreListOrder::KeyAsc,
+                            )
+                            .await
+                        {
                             Ok(items) if items.is_empty() => "No rows found.".to_owned(),
                             Ok(items) => items
                                 .iter()

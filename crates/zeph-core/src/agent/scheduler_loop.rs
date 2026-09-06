@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicU64;
 
 use tokio_util::sync::CancellationToken;
 use zeph_llm::provider::LlmProvider;
+use zeph_memory::store::StoreListOrder;
 
 use super::Agent;
 use super::error;
@@ -455,14 +456,27 @@ async fn persist_handoff_update(
 /// output — its provenance may include a previously-injected `Command.update` value
 /// written by a different, possibly-compromised node.
 ///
-/// The read is capped at [`SHARED_STATE_MAX_ROWS`] rows (GitHub #6763): this is an
-/// ambient, unauthenticated, multi-writer read, unlike an explicit LLM-invoked
-/// `store_list`/`store_search` call where `limit = 0` (unlimited) reflects a
-/// deliberate model choice. When the namespace holds more than that, the surviving
-/// `SHARED_STATE_MAX_ROWS` rows (ordered by `(namespace, key)`, per `store_list`) are
-/// rendered and the opening tag carries `truncated="true" shown="N"` so the receiving
-/// node can tell a missing key from one dropped by the cap, rather than silently
-/// concluding it was never written.
+/// The read is capped at [`SHARED_STATE_MAX_ROWS`] rows (GitHub #6763), ordered
+/// [`StoreListOrder::RecentFirst`] (GitHub #6768): this is an ambient, unauthenticated,
+/// multi-writer read, unlike an explicit LLM-invoked `store_list`/`store_search` call
+/// where `limit = 0` (unlimited) and `(namespace, key)` order reflect a deliberate model
+/// choice. Under lexicographic order, a writer picking low-sorting keys (e.g. `"0000"`,
+/// `"0001"`, ...) could write them once and permanently occupy every surviving slot,
+/// starving out every other writer's keys forever. Recency order closes that *write-once*
+/// version of the attack, but — because `store_put` is an unconditional upsert that
+/// refreshes `updated_at` on every call — a *sustained-write* attacker re-writing its own
+/// keys in a loop can still starve a write-once honest key indefinitely; see
+/// [`StoreListOrder::RecentFirst`]'s doc comment for the full residual-gap accounting
+/// (this and the separate `SQLite` same-second tie-break) and the follow-up this leaves
+/// for per-writer provenance. When the namespace holds more than
+/// [`SHARED_STATE_MAX_ROWS`] rows, the surviving rows are rendered **in the same
+/// newest-first order they were read in** (not re-sorted) and the opening tag carries
+/// `truncated="true" shown="N"` (`N` = rows selected for rendering, not necessarily every
+/// byte of them if the byte cap below also clips) so the receiving node can tell a
+/// missing key from one dropped by the cap, rather than silently concluding it was never
+/// written. `truncated` is also set when the sanitizer's own byte cap
+/// (`ContentIsolationConfig::max_content_size`) clips the body, even if every row fit
+/// under the row cap — see the `sanitized.was_truncated` check below.
 pub(super) async fn append_shared_state_block(
     prompt: String,
     ctx: &CommandHandoffContext,
@@ -482,6 +496,7 @@ pub(super) async fn append_shared_state_block(
         ctx.owner_key.as_str(),
         &namespace_prefix,
         SHARED_STATE_MAX_ROWS + 1,
+        StoreListOrder::RecentFirst,
     );
     let mut items = match tokio::time::timeout(STORE_IO_TIMEOUT, read).await {
         Ok(Ok(items)) => items,
@@ -506,8 +521,8 @@ pub(super) async fn append_shared_state_block(
     if items.is_empty() {
         return prompt;
     }
-    let truncated = items.len() > SHARED_STATE_MAX_ROWS;
-    if truncated {
+    let row_truncated = items.len() > SHARED_STATE_MAX_ROWS;
+    if row_truncated {
         items.truncate(SHARED_STATE_MAX_ROWS);
         tracing::warn!(
             graph_id = %graph_id,
@@ -516,6 +531,12 @@ pub(super) async fn append_shared_state_block(
         );
     }
 
+    // Render in the returned newest-first order — do NOT re-sort to `(namespace, key)`.
+    // `ContentSanitizer::truncate` clips the tail at `max_content_size`, so render order
+    // (not just selection order) decides which rows survive that second, byte-level cap;
+    // keeping newest-first here makes the row cap and the byte cap evict the same
+    // (oldest) rows instead of the byte cap silently handing the win back to whichever
+    // rows happen to sort first lexicographically.
     let mut raw = String::new();
     for item in &items {
         let _ = writeln!(raw, "{}: {}", item.key, item.value);
@@ -524,18 +545,30 @@ pub(super) async fn append_shared_state_block(
         zeph_sanitizer::ContentSource::new(zeph_sanitizer::ContentSourceKind::MemoryRetrieval)
             .with_identifier(graph_id.to_string())
             .with_memory_hint(zeph_sanitizer::MemorySourceHint::ExternalContent);
-    let wrapped = ctx.sanitizer.sanitize(&raw, source).body;
+    let sanitized = ctx.sanitizer.sanitize(&raw, source);
 
     // Truncation metadata goes in the trusted tag attributes, not inside `raw` (which is
     // sanitized/spotlighted as untrusted content and could itself be truncated away) —
     // node B must be able to tell a missing key from a merely-clipped block (FR-B-011).
+    // A byte-cap clip (`sanitized.was_truncated`) must be just as visible as a row-cap
+    // clip: without this, a namespace whose rows fit under `SHARED_STATE_MAX_ROWS` but
+    // exceed `max_content_size` in bytes would render an untruncated-looking tag over a
+    // silently-clipped body.
+    let truncated = row_truncated || sanitized.was_truncated;
     let open_tag = if truncated {
-        format!(r#"<shared-state truncated="true" shown="{SHARED_STATE_MAX_ROWS}">"#)
+        // `shown` is the row count *selected* for rendering, not a guarantee every byte of
+        // every row survived — on a byte-cap-only clip (`sanitized.was_truncated` true,
+        // `row_truncated` false) `items.len()` rows were selected but the sanitizer's tail
+        // truncation may still have clipped some of their bytes out of `sanitized.body`.
+        format!(r#"<shared-state truncated="true" shown="{}">"#, items.len())
     } else {
         "<shared-state>".to_owned()
     };
 
-    format!("{prompt}\n\n{open_tag}\n{wrapped}\n</shared-state>")
+    format!(
+        "{prompt}\n\n{open_tag}\n{}\n</shared-state>",
+        sanitized.body
+    )
 }
 
 impl<C: crate::channel::Channel> Agent<C> {
@@ -1849,7 +1882,7 @@ impl<C: crate::channel::Channel> Agent<C> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CommandHandoffContext, SHARED_STATE_MAX_ROWS, append_shared_state_block,
+        CommandHandoffContext, SHARED_STATE_MAX_ROWS, StoreListOrder, append_shared_state_block,
         determine_task_outcome, lookahead_effective_depth, network_denied_for_task,
         task_tool_allowlist_for_task, tool_trace_from_messages,
     };
@@ -2146,7 +2179,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .sqlite()
-            .store_list("local", &namespace, 0)
+            .store_list("local", &namespace, 0, StoreListOrder::KeyAsc)
             .await
             .unwrap();
         assert!(
@@ -2232,7 +2265,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .sqlite()
-            .store_list("local", &namespace, 0)
+            .store_list("local", &namespace, 0, StoreListOrder::KeyAsc)
             .await
             .unwrap();
         assert_eq!(items.len(), 1);
@@ -2271,7 +2304,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .sqlite()
-            .store_list("local", &namespace, 0)
+            .store_list("local", &namespace, 0, StoreListOrder::KeyAsc)
             .await
             .unwrap();
         assert!(
@@ -2312,7 +2345,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .sqlite()
-            .store_list("local", &namespace, 0)
+            .store_list("local", &namespace, 0, StoreListOrder::KeyAsc)
             .await
             .unwrap();
         assert!(items.is_empty());
@@ -2464,7 +2497,11 @@ mod tests {
     }
 
     /// Writes `n` sequentially-keyed rows (`key-0000`, `key-0001`, ...) into `namespace`
-    /// under `owner_key`, so tests can assert on `store_list`'s `(namespace, key)` order.
+    /// under `owner_key`. All rows land within the same second of `SQLite`'s
+    /// second-granularity `updated_at` clock, so under `StoreListOrder::RecentFirst` they
+    /// tie on `updated_at` and fall back to `(namespace, key)` order — this helper does
+    /// not, by itself, exercise genuine recency ordering (see
+    /// `recent_write_survives_low_sorting_key_flood` below for that).
     async fn seed_sequential_rows(
         memory: &zeph_memory::semantic::SemanticMemory,
         owner_key: &str,
@@ -2492,17 +2529,28 @@ mod tests {
         // #6763: `store_list` with `limit = 0` means "unlimited" (`zeph_db::limit_clause`),
         // but this ambient, unauthenticated, multi-writer read must never be unbounded —
         // write more than SHARED_STATE_MAX_ROWS entries and assert the block reflects at
-        // most that many, that the survivors are exactly the first SHARED_STATE_MAX_ROWS by
-        // `(namespace, key)` order (pins the truncation policy so a `store_list` ordering
-        // change fails this test instead of silently changing what the model sees), and
-        // that the truncation marker (C1) is present in the trusted tag, not the sanitized
-        // body.
+        // most that many, and that the truncation marker (C1) is present in the trusted
+        // tag, not the sanitized body. This test forces every row to the same synthetic
+        // `updated_at` (below) so `StoreListOrder::RecentFirst` deterministically ties and
+        // falls back to `(namespace, key)` order — 250 sequential `store_put` round-trips
+        // are not guaranteed to land within one real wall-clock second (observed crossing
+        // a second boundary on a loaded machine), so relying on real timing here would be
+        // flaky. This test does NOT by itself cover #6768's recency policy; see
+        // `recent_write_survives_low_sorting_key_flood` for that.
         let ctx = test_ctx(true, true).await;
         let graph_id = zeph_orchestration::GraphId::new();
         let namespace = format!("orch/{graph_id}");
         let memory = ctx.memory.as_ref().unwrap();
         let total = SHARED_STATE_MAX_ROWS + 50;
         seed_sequential_rows(memory, ctx.owner_key.as_str(), &namespace, total).await;
+        zeph_db::query(zeph_db::sql!(
+            "UPDATE cross_thread_store SET updated_at = ? WHERE namespace = ?"
+        ))
+        .bind("2026-01-01T00:00:00Z")
+        .bind(&namespace)
+        .execute(memory.sqlite().pool())
+        .await
+        .unwrap();
 
         let prompt = "task".to_string();
         let out = append_shared_state_block(prompt.clone(), &ctx, graph_id).await;
@@ -2523,7 +2571,102 @@ mod tests {
             .collect();
         assert_eq!(
             survivors, expected,
-            "surviving rows must be exactly the first SHARED_STATE_MAX_ROWS by (namespace, key) order"
+            "surviving rows must be exactly the first SHARED_STATE_MAX_ROWS by the \
+             same-second RecentFirst tie-break, i.e. (namespace, key) order"
+        );
+    }
+
+    /// Attack-shape test (GitHub #6768): a namespace flooded with
+    /// `SHARED_STATE_MAX_ROWS` low-sorting adversarial keys (`"0000"`..) that would have
+    /// occupied every surviving slot under the old `(namespace, key)` order. One honest
+    /// row, keyed to sort *after* all of them lexicographically, is made strictly newer
+    /// via a synthetic `updated_at` (not a wall-clock sleep). Under `RecentFirst`, the
+    /// honest row must survive the row cap; under the pre-#6768 `KeyAsc` order it would
+    /// have been evicted every time.
+    #[tokio::test]
+    async fn recent_write_survives_low_sorting_key_flood() {
+        let ctx = test_ctx(true, true).await;
+        let graph_id = zeph_orchestration::GraphId::new();
+        let namespace = format!("orch/{graph_id}");
+        let memory = ctx.memory.as_ref().unwrap();
+
+        // Adversarial low-sorting keys, one per surviving slot.
+        for i in 0..SHARED_STATE_MAX_ROWS {
+            memory
+                .sqlite()
+                .store_put(
+                    ctx.owner_key.as_str(),
+                    &namespace,
+                    &format!("{i:04}"),
+                    "attacker",
+                    65536,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        // The honest write: sorts last lexicographically, so it would always be evicted
+        // under `(namespace, key)` order once the namespace is at (or over) the cap.
+        memory
+            .sqlite()
+            .store_put(
+                ctx.owner_key.as_str(),
+                &namespace,
+                "zzzz-honest",
+                "honest-value",
+                65536,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Force it strictly newer than every adversarial row via a raw UPDATE.
+        zeph_db::query(zeph_db::sql!(
+            "UPDATE cross_thread_store SET updated_at = ? WHERE key = ?"
+        ))
+        .bind("2027-01-01T00:00:00Z")
+        .bind("zzzz-honest")
+        .execute(memory.sqlite().pool())
+        .await
+        .unwrap();
+
+        let prompt = "task".to_string();
+        let out = append_shared_state_block(prompt.clone(), &ctx, graph_id).await;
+
+        assert!(
+            out.contains("honest-value"),
+            "the strictly-newer honest row must survive truncation under RecentFirst: {out}"
+        );
+    }
+
+    /// M3 (GitHub #6768): a byte-cap clip from `ContentSanitizer::truncate` must set
+    /// `truncated="true"` in the trusted tag exactly like a row-cap clip does — a
+    /// namespace whose row count fits under `SHARED_STATE_MAX_ROWS` but whose rendered
+    /// bytes exceed `ContentIsolationConfig::max_content_size` must not render an
+    /// untruncated-looking tag over a silently-clipped body.
+    #[tokio::test]
+    async fn append_shared_state_byte_cap_truncation_sets_flag() {
+        let small_sanitizer =
+            zeph_sanitizer::ContentSanitizer::new(&zeph_config::ContentIsolationConfig {
+                max_content_size: 16,
+                ..Default::default()
+            });
+        let mut ctx = test_ctx(true, true).await;
+        ctx.sanitizer = small_sanitizer;
+        let graph_id = zeph_orchestration::GraphId::new();
+        let namespace = format!("orch/{graph_id}");
+        let memory = ctx.memory.as_ref().unwrap();
+        // Well under SHARED_STATE_MAX_ROWS, so only the byte cap can be responsible for
+        // any truncation observed here.
+        seed_sequential_rows(memory, ctx.owner_key.as_str(), &namespace, 5).await;
+
+        let prompt = "task".to_string();
+        let out = append_shared_state_block(prompt.clone(), &ctx, graph_id).await;
+
+        assert!(
+            out.contains(r#"truncated="true""#),
+            "a byte-cap clip must set truncated=\"true\" in the trusted tag: {out}"
         );
     }
 

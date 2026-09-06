@@ -62,7 +62,7 @@ use crate::error::MemoryError;
 
 pub use acp_sessions::{AcpSessionConfigSnapshot, AcpSessionEvent, AcpSessionInfo};
 pub use agent_sessions::{AgentSessionRow, SessionChannel, SessionKind, SessionStatus};
-pub use cross_thread::StoreItem;
+pub use cross_thread::{StoreItem, StoreListOrder};
 pub use memory_tree::MemoryTreeRow;
 pub use messages::role_str;
 pub use persona::PersonaFactRow;
