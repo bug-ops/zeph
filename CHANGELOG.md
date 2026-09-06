@@ -33,7 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Live inter-sub-agent messaging (`send_peer_message`/`check_messages`/`list_peers` tools,
   `/agent msg`/`/agent inbox` slash commands, TUI unread-message badge) — spawner, coordinator,
   and sibling sub-agents can now exchange messages while running, gated by spawn-tree
-  authorization and a new `[agents.peer_messaging]` config section (#5871).
+  authorization and a new `[agents.peer_messaging]` config section (#6776).
 
 ### Changed
 
