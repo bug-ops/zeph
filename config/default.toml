@@ -1219,6 +1219,18 @@ llm_timeout_secs = 120
 # ZEPH_AGENTS_FORWARD_TRANSCRIPT. CLI override: --forward-subagent-text.
 forward_transcript = false
 
+[agents.peer_messaging]
+# Live inter-sub-agent messaging (spec 046-subagent-peer-messaging-parity, issue #5871).
+# Lets a spawner, coordinator, or sibling sub-agent send an addressed message to a
+# currently-running sub-agent's own mailbox, without it terminating or being respawned.
+enabled = true
+# Bounded inbound message queue capacity per addressable agent.
+mailbox_capacity = 32
+# Maximum size, in bytes, of a single message body.
+max_body_bytes = 8192
+# Ceiling, in milliseconds, for the check_messages tool's optional wait_ms argument.
+max_wait_ms = 30000
+
 [orchestration]
 # Enable the orchestration subsystem (/plan commands and task graph execution)
 enabled = false

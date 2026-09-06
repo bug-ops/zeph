@@ -30,7 +30,8 @@ use zeph_llm::provider::{ChatResponse, Role};
 use super::*;
 use crate::manager::spawn::{
     MemoryAwareExecutor, apply_constraint_propagation, apply_context_injection,
-    build_context_summary, build_system_prompt_with_memory, sanitize_identity_field,
+    build_context_summary, build_system_prompt_with_memory,
+    resolve_resume_exfiltration_guard_config, sanitize_identity_field,
 };
 
 fn make_manager() -> SubAgentManager {
@@ -455,6 +456,7 @@ fn insert_handle_with_pending_secret_channel(
             started_at_str: String::new(),
             transcript_dir: None,
             mcp_tool_names: Vec::new(),
+            peer: None,
         },
     );
     req_tx
@@ -1711,6 +1713,7 @@ fn resume_still_running_via_active_agents_returns_error() {
             started_at_str: "2026-01-01T00:00:00Z".to_owned(),
             transcript_dir: None,
             mcp_tool_names: Vec::new(),
+            peer: None,
         },
     );
     drop(status_tx);
@@ -1909,6 +1912,37 @@ fn resume_with_spawn_context_applies_constraint_propagation() {
 
     let _guard = rt.enter();
     mgr.cancel(&new_id).unwrap();
+}
+
+// --- Critic round-4 S4: resume()'s peer-install exfiltration-guard regression ---
+//
+// No test previously asserted that a non-default `exfiltration_guard` on `SpawnContext`
+// actually reaches the constructed guard through `resume()` — exactly why the regression
+// (a hardcoded `ExfiltrationGuardConfig::default()`) shipped uncaught. The resolution logic
+// is factored into `resolve_resume_exfiltration_guard_config` specifically so it is directly
+// testable without needing to drive a full `resume()` call and inspect a background task's
+// internal executor.
+
+#[test]
+fn resolve_resume_exfiltration_guard_config_uses_spawn_context_when_present() {
+    let ctx = SpawnContext {
+        exfiltration_guard: zeph_config::ExfiltrationGuardConfig {
+            block_markdown_images: false,
+            ..zeph_config::ExfiltrationGuardConfig::default()
+        },
+        ..SpawnContext::default()
+    };
+    let resolved = resolve_resume_exfiltration_guard_config(Some(&ctx));
+    assert!(
+        !resolved.block_markdown_images,
+        "resume() must read the real policy from spawn_context, not silently default it"
+    );
+}
+
+#[test]
+fn resolve_resume_exfiltration_guard_config_defaults_when_spawn_context_absent() {
+    let resolved = resolve_resume_exfiltration_guard_config(None);
+    assert_eq!(resolved, zeph_config::ExfiltrationGuardConfig::default());
 }
 
 /// Executor that records the trust level passed to `set_effective_trust`.
@@ -5802,4 +5836,201 @@ fn intersect_allowlists_disjoint_sets_returns_empty_not_none() {
         intersect_allowlists(Some(a), Some(b)),
         Some(std::collections::HashSet::new())
     );
+}
+
+/// End-to-end integration tests through the real `SubAgentManager::spawn()` path (spec
+/// `046-subagent-peer-messaging-parity`, tasks.md T008), one per user story. Route
+/// registration happens synchronously inside `spawn()` before the background agent loop
+/// task is even launched, so these assertions need no timing coordination with that task.
+mod peer_messaging_integration_tests {
+    use crate::peer::{AgentId, DeliveryError, PeerGroupId};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn us001_siblings_spawned_under_one_manager_can_message_each_other_while_running() {
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+
+        let task_a = do_spawn(&mut mgr, "bot", "research").await.unwrap();
+        let task_b = do_spawn(&mut mgr, "bot", "implement").await.unwrap();
+
+        mgr.peer_router
+            .send(
+                &AgentId::Task(task_a.clone()),
+                &task_b,
+                "redirect".to_owned(),
+            )
+            .expect("sibling send must succeed");
+        assert_eq!(
+            mgr.peer_router
+                .mailbox_depth(&AgentId::Task(task_b.clone())),
+            1
+        );
+
+        // Neither handle was cancelled or collected by this test — both remain tracked.
+        let ids: Vec<String> = mgr.statuses().into_iter().map(|(id, _)| id).collect();
+        assert!(ids.contains(&task_a));
+        assert!(ids.contains(&task_b));
+    }
+
+    #[tokio::test]
+    async fn us002_running_subagent_messages_its_parent_root() {
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+
+        let task_a = do_spawn(&mut mgr, "bot", "work").await.unwrap();
+
+        mgr.peer_router
+            .send(
+                &AgentId::Task(task_a.clone()),
+                "spawner",
+                "clarifying question".to_owned(),
+            )
+            .expect("child to parent send must succeed");
+
+        let received = mgr
+            .try_recv_peer_message()
+            .expect("parent-addressed message must be observable");
+        assert_eq!(received.body, "clarifying question");
+        assert_eq!(received.sender_id, AgentId::Task(task_a.clone()));
+
+        // The sub-agent was never collected — still tracked by the manager.
+        assert!(
+            mgr.statuses().iter().any(|(id, _)| id == &task_a),
+            "sub-agent must remain non-collect()-able after sending"
+        );
+    }
+
+    #[tokio::test]
+    async fn us003_session_and_plan_group_agents_in_one_manager_deny_cross_group_send() {
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+
+        let session_task = do_spawn(&mut mgr, "bot", "session work").await.unwrap();
+
+        let plan_ctx = SpawnContext {
+            peer_group: Some(PeerGroupId::Plan("plan-1".to_owned())),
+            ..SpawnContext::default()
+        };
+        let plan_task = mgr
+            .spawn(
+                "bot",
+                "plan work",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &SubAgentConfig::default(),
+                plan_ctx,
+            )
+            .await
+            .unwrap();
+
+        let err = mgr
+            .peer_router
+            .send(&AgentId::Task(session_task), &plan_task, "leak?".to_owned())
+            .unwrap_err();
+        // Critic round-4 S3: a cross-group target must be indistinguishable from a
+        // nonexistent one (NFR-003) — `TargetNotFound`, not `Unauthorized`.
+        assert!(
+            matches!(err, DeliveryError::TargetNotFound(_)),
+            "expected TargetNotFound (no existence oracle across groups), got: {err:?}"
+        );
+        assert_eq!(
+            mgr.peer_router.mailbox_depth(&AgentId::Task(plan_task)),
+            0,
+            "a denied send must never silently queue into the target's mailbox"
+        );
+    }
+
+    #[tokio::test]
+    async fn us002_plan_group_task_reaches_its_own_root_via_send_to_subagent() {
+        // Critic round-4 S2: /agent msg (send_to_subagent) must be able to reach a
+        // DagScheduler-dispatched sub-agent through its own Plan-group root, not just
+        // Session-group sub-agents.
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+
+        let plan_ctx = SpawnContext {
+            peer_group: Some(PeerGroupId::Plan("plan-2".to_owned())),
+            ..SpawnContext::default()
+        };
+        let plan_task = mgr
+            .spawn(
+                "bot",
+                "plan work",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &SubAgentConfig::default(),
+                plan_ctx,
+            )
+            .await
+            .unwrap();
+
+        mgr.send_to_subagent(&plan_task, "go".to_owned())
+            .expect("send_to_subagent must route through the Plan-group's own root");
+
+        mgr.peer_router
+            .send(
+                &AgentId::Task(plan_task),
+                "plan",
+                "clarifying question".to_owned(),
+            )
+            .expect("plan task to its own plan root must succeed");
+        let received = mgr
+            .try_recv_peer_message()
+            .expect("try_recv_peer_message must observe a Plan-root mailbox, not just Session's");
+        assert_eq!(received.body, "clarifying question");
+    }
+
+    #[tokio::test]
+    async fn us004_full_mailbox_fails_fast_without_awaiting() {
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        let cfg = SubAgentConfig {
+            peer_messaging: zeph_config::PeerMessagingConfig {
+                mailbox_capacity: 1,
+                ..zeph_config::PeerMessagingConfig::default()
+            },
+            ..SubAgentConfig::default()
+        };
+        // Mailbox capacity is a router-wide setting applied at bootstrap, not read per-spawn
+        // from `SubAgentConfig` — mirrors `runner.rs`'s real bootstrap call order.
+        mgr.set_peer_messaging_config(cfg.peer_messaging.clone());
+
+        let task_a = mgr
+            .spawn(
+                "bot",
+                "work",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+                SpawnContext::default(),
+            )
+            .await
+            .unwrap();
+
+        mgr.peer_router
+            .send(
+                &AgentId::Root(PeerGroupId::Session),
+                &task_a,
+                "first".to_owned(),
+            )
+            .expect("first message fits the capacity-1 mailbox");
+
+        // `PeerRouter::send` has no `.await` on its path at all — a tight timeout proves the
+        // full-mailbox case returns immediately rather than by wall-clock feel.
+        let result = tokio::time::timeout(std::time::Duration::from_millis(50), async {
+            mgr.peer_router.send(
+                &AgentId::Root(PeerGroupId::Session),
+                &task_a,
+                "second".to_owned(),
+            )
+        })
+        .await
+        .expect("send must return well within the timeout, not hang");
+        assert!(matches!(result, Err(DeliveryError::MailboxFull(_))));
+    }
 }

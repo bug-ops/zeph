@@ -226,6 +226,7 @@ mod tests {
             started_at_str: String::new(),
             transcript_dir: None,
             mcp_tool_names: Vec::new(),
+            peer: None,
         };
         (handle, secret_rx)
     }

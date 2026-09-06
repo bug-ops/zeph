@@ -342,6 +342,9 @@ pub struct SubAgentMetrics {
     /// Empty unless `agents.forward_transcript = true` and a consumer surface (TUI/`--bare`)
     /// is active — see `SubAgentManager::forwarded_tail`.
     pub live_transcript: Vec<String>,
+    /// Queued (undelivered) peer-message count for this sub-agent's mailbox (spec
+    /// `046-subagent-peer-messaging-parity`, FR-010) — see `SubAgentManager::mailbox_depth`.
+    pub unread_messages: u32,
 }
 
 /// Per-turn latency breakdown for the four agent hot-path phases.

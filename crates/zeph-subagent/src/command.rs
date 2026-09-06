@@ -154,6 +154,11 @@ pub enum AgentCommand {
     Mention { agent: String, prompt: String },
     /// Resume a previously completed sub-agent session by ID prefix.
     Resume { id: String, prompt: String },
+    /// Send a message to a running sub-agent by task ID prefix (spec
+    /// `046-subagent-peer-messaging-parity`).
+    Msg { id: String, body: String },
+    /// List messages addressed to the parent agent, drained this session (spec `046`).
+    Inbox,
 }
 
 impl AgentCommand {
@@ -187,7 +192,8 @@ impl AgentCommand {
 
         if rest.is_empty() {
             return Err(SubAgentError::InvalidCommand(
-                "usage: /agent <list|spawn|bg|resume|status|cancel|approve|deny> [args]".into(),
+                "usage: /agent <list|spawn|bg|resume|status|cancel|approve|deny|msg|inbox> [args]"
+                    .into(),
             ));
         }
 
@@ -250,35 +256,61 @@ impl AgentCommand {
                     id: args.to_owned(),
                 })
             }
-            "resume" => {
-                let (id, prompt) = args.split_once(' ').ok_or_else(|| {
-                    SubAgentError::InvalidCommand("usage: /agent resume <id> <prompt>".into())
-                })?;
-                let id = id.trim().to_owned();
-                let prompt = prompt.trim().to_owned();
-                if id.is_empty() {
-                    return Err(SubAgentError::InvalidCommand(
-                        "agent id must not be empty".into(),
-                    ));
-                }
-                // Require at least 4 characters to prevent accidental mass-match or session
-                // enumeration via very short prefixes.
-                if id.len() < 4 {
-                    return Err(SubAgentError::InvalidCommand(
-                        "agent id prefix must be at least 4 characters".into(),
-                    ));
-                }
-                if prompt.is_empty() {
-                    return Err(SubAgentError::InvalidCommand(
-                        "prompt must not be empty".into(),
-                    ));
-                }
-                Ok(Self::Resume { id, prompt })
-            }
+            "resume" => Self::parse_resume(args),
+            "msg" => Self::parse_msg(args),
+            "inbox" => Ok(Self::Inbox),
             other => Err(SubAgentError::InvalidCommand(format!(
-                "unknown subcommand '{other}'; try: list, spawn, bg, resume, status, cancel, approve, deny"
+                "unknown subcommand '{other}'; try: list, spawn, bg, resume, status, cancel, approve, deny, msg, inbox"
             ))),
         }
+    }
+
+    /// Parse the `resume <id> <prompt>` subcommand's arguments.
+    fn parse_resume(args: &str) -> Result<Self, SubAgentError> {
+        let (id, prompt) = args.split_once(' ').ok_or_else(|| {
+            SubAgentError::InvalidCommand("usage: /agent resume <id> <prompt>".into())
+        })?;
+        let id = id.trim().to_owned();
+        let prompt = prompt.trim().to_owned();
+        if id.is_empty() {
+            return Err(SubAgentError::InvalidCommand(
+                "agent id must not be empty".into(),
+            ));
+        }
+        // Require at least 4 characters to prevent accidental mass-match or session
+        // enumeration via very short prefixes.
+        if id.len() < 4 {
+            return Err(SubAgentError::InvalidCommand(
+                "agent id prefix must be at least 4 characters".into(),
+            ));
+        }
+        if prompt.is_empty() {
+            return Err(SubAgentError::InvalidCommand(
+                "prompt must not be empty".into(),
+            ));
+        }
+        Ok(Self::Resume { id, prompt })
+    }
+
+    /// Parse the `msg <id> <body>` subcommand's arguments (spec
+    /// `046-subagent-peer-messaging-parity`).
+    fn parse_msg(args: &str) -> Result<Self, SubAgentError> {
+        let (id, body) = args
+            .split_once(' ')
+            .ok_or_else(|| SubAgentError::InvalidCommand("usage: /agent msg <id> <body>".into()))?;
+        let id = id.trim().to_owned();
+        let body = body.trim().to_owned();
+        if id.is_empty() {
+            return Err(SubAgentError::InvalidCommand(
+                "agent id must not be empty".into(),
+            ));
+        }
+        if body.is_empty() {
+            return Err(SubAgentError::InvalidCommand(
+                "message body must not be empty".into(),
+            ));
+        }
+        Ok(Self::Msg { id, body })
     }
 
     /// Parse an `@agent_name <prompt>` mention from raw input.
@@ -663,6 +695,40 @@ mod tests {
         let err = AgentCommand::parse("/agent resume deadbeef    ", &[]).unwrap_err();
         // Either split_once returns None (no space after id) or prompt trims to empty.
         assert_matches!(err, SubAgentError::InvalidCommand(_));
+    }
+
+    // ── parse msg/inbox (spec 046) ──────────────────────────────────────────
+
+    #[test]
+    fn parse_msg() {
+        let cmd = AgentCommand::parse("/agent msg abc123 what should I do next?", &[]).unwrap();
+        assert_eq!(
+            cmd,
+            AgentCommand::Msg {
+                id: "abc123".into(),
+                body: "what should I do next?".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_msg_missing_body_returns_error() {
+        let err = AgentCommand::parse("/agent msg abc123", &[]).unwrap_err();
+        assert_matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("usage"));
+    }
+
+    #[test]
+    fn parse_msg_missing_id_and_body_returns_error() {
+        let err = AgentCommand::parse("/agent msg", &[]).unwrap_err();
+        assert_matches!(err, SubAgentError::InvalidCommand(_));
+    }
+
+    #[test]
+    fn parse_inbox() {
+        assert_eq!(
+            AgentCommand::parse("/agent inbox", &[]).unwrap(),
+            AgentCommand::Inbox
+        );
     }
 
     // ── AgentsCommand (definition CRUD) ────────────────────────────────────

@@ -138,12 +138,27 @@ impl ErasedToolExecutor for MemoryAwareExecutor {
     zeph_tools::erased_tool_executor_forward!(inner);
 }
 
+/// Bundles the construction arguments for [`crate::peer::PeerToolExecutor`], installed by
+/// [`build_filtered_executor`] when peer messaging is enabled (spec
+/// `046-subagent-peer-messaging-parity`, FR-012).
+pub(crate) struct PeerInstallArgs {
+    pub(crate) id: crate::peer::AgentId,
+    pub(crate) router: Arc<crate::peer::PeerRouter>,
+    pub(crate) mailbox_rx: mpsc::Receiver<crate::peer::PeerMessage>,
+    pub(crate) cancel: CancellationToken,
+    pub(crate) progress_at: Option<Arc<std::sync::atomic::AtomicU64>>,
+    pub(crate) sanitizer: zeph_sanitizer::ContentSanitizer,
+    pub(crate) exfil_guard: zeph_sanitizer::exfiltration::ExfiltrationGuard,
+    pub(crate) max_wait_ms: u64,
+}
+
 pub(crate) fn build_filtered_executor(
     tool_executor: Arc<dyn ErasedToolExecutor>,
     permission_mode: PermissionMode,
     def: &SubAgentDef,
     memory_dir: Option<PathBuf>,
     network_denied: bool,
+    peer: Option<PeerInstallArgs>,
 ) -> FilteredToolExecutor {
     let base: Arc<dyn ErasedToolExecutor> = match memory_dir {
         Some(dir) => Arc::new(MemoryAwareExecutor::new(tool_executor, dir)),
@@ -154,6 +169,24 @@ pub(crate) fn build_filtered_executor(
     // tool-level allow/deny policy.
     let base: Arc<dyn ErasedToolExecutor> = if network_denied {
         Arc::new(NetworkDenyToolExecutor::new(base))
+    } else {
+        base
+    };
+    // Peer messaging (spec 046) is not network egress, so it wraps outside the network-deny
+    // gate; it is still wrapped *inside* FilteredToolExecutor below so `tools.except`/
+    // `ToolPolicy` can still deny the three peer tools for a given definition.
+    let base: Arc<dyn ErasedToolExecutor> = if let Some(peer) = peer {
+        Arc::new(crate::peer::PeerToolExecutor::new(
+            base,
+            peer.id,
+            peer.router,
+            peer.mailbox_rx,
+            peer.cancel,
+            peer.progress_at,
+            peer.sanitizer,
+            peer.exfil_guard,
+            peer.max_wait_ms,
+        ))
     } else {
         base
     };
@@ -434,6 +467,24 @@ fn build_orchestrator_header(ctx: &SpawnContext) -> String {
 
 pub(crate) fn sanitize_identity_field(s: &str) -> String {
     s.lines().next().unwrap_or("").chars().take(128).collect()
+}
+
+/// Resolve the `ExfiltrationGuardConfig` for `resume()`'s peer-install site (critic round-4
+/// S4): from `spawn_context` when present, `::default()` otherwise. Mirrors the
+/// `max_trust_level` resolution pattern used two statements below this call site — unlike
+/// `content_isolation`, which `resume()` deliberately always defaults (see this function's
+/// own doc comment), the exfiltration-guard policy has no such documented "never propagate on
+/// resume" rationale, so silently defaulting it was a real regression versus `spawn()`'s
+/// equivalent site.
+///
+/// Factored out as a free function so the resolution itself is directly unit-testable without
+/// needing to drive a full `resume()` call and inspect a background task's internal executor.
+pub(crate) fn resolve_resume_exfiltration_guard_config(
+    spawn_context: Option<&SpawnContext>,
+) -> zeph_config::ExfiltrationGuardConfig {
+    spawn_context
+        .map(|ctx| ctx.exfiltration_guard.clone())
+        .unwrap_or_default()
 }
 
 pub(crate) fn apply_context_injection(
@@ -760,12 +811,52 @@ impl SubAgentManager {
                 .push("set_working_directory".to_string());
         }
 
+        // Peer-messaging route registration (spec 046-subagent-peer-messaging-parity): every
+        // top-level spawn's parent is its own group's root — no subagent-side spawn tool
+        // exists yet, so nesting deeper than one level never occurs in production today.
+        let peer_group = ctx
+            .peer_group
+            .clone()
+            .unwrap_or(crate::peer::PeerGroupId::Session);
+        let (peer_registration, peer_install) = if config.peer_messaging.enabled {
+            // Critic round-4 S2: a `Plan` group's own root is never registered anywhere else
+            // — without this, `send_to_subagent`/the parent's drain can never reach or
+            // observe a `DagScheduler`-dispatched sub-agent at all. No-op if already live for
+            // this `graph_id` (e.g. a second task spawned into the same plan).
+            if let crate::peer::PeerGroupId::Plan(ref graph_id) = peer_group {
+                self.ensure_plan_peer_group(graph_id);
+            }
+            let peer_id = crate::peer::AgentId::Task(task_id.clone());
+            let (registration, mailbox_rx) = self.peer_router.register(
+                peer_id.clone(),
+                def.name.clone(),
+                Some(crate::peer::AgentId::Root(peer_group.clone())),
+                peer_group,
+            );
+            let install = PeerInstallArgs {
+                id: peer_id,
+                router: Arc::clone(&self.peer_router),
+                mailbox_rx,
+                cancel: cancel.clone(),
+                progress_at: ctx.progress_at.clone(),
+                sanitizer: zeph_sanitizer::ContentSanitizer::new(&ctx.content_isolation),
+                exfil_guard: zeph_sanitizer::exfiltration::ExfiltrationGuard::new(
+                    ctx.exfiltration_guard.clone(),
+                ),
+                max_wait_ms: config.peer_messaging.max_wait_ms,
+            };
+            (Some(registration), Some(install))
+        } else {
+            (None, None)
+        };
+
         let executor = build_filtered_executor(
             tool_executor,
             permission_mode,
             &def,
             memory_dir,
             network_denied,
+            peer_install,
         );
 
         if let Some(cap) = ctx.max_trust_level {
@@ -929,6 +1020,7 @@ impl SubAgentManager {
             started_at_str: crate::transcript::utc_now(),
             transcript_dir: handle_transcript_dir,
             mcp_tool_names: handle_mcp_tool_names,
+            peer: peer_registration,
         };
 
         self.agents.insert(task_id.clone(), handle);
@@ -1249,8 +1341,44 @@ impl SubAgentManager {
         let agent_name_clone = def.name.clone();
 
         let network_denied = spawn_context.is_some_and(|ctx| ctx.network_denied);
-        let executor =
-            build_filtered_executor(tool_executor, permission_mode, &def, None, network_denied);
+        // Peer-messaging route registration (spec 046-subagent-peer-messaging-parity): a
+        // resumed sub-agent is always session-scoped in v1 (critic round-2 S1) — without
+        // this, `resume()` would silently produce a handle with no route and no peer tools,
+        // since it is a spawn path distinct from `spawn()`/`spawn_for_task()`.
+        let (peer_registration, peer_install) = if config.peer_messaging.enabled {
+            let peer_id = crate::peer::AgentId::Task(new_task_id.clone());
+            let (registration, mailbox_rx) = self.peer_router.register(
+                peer_id.clone(),
+                def.name.clone(),
+                Some(crate::peer::AgentId::Root(
+                    crate::peer::PeerGroupId::Session,
+                )),
+                crate::peer::PeerGroupId::Session,
+            );
+            let install = PeerInstallArgs {
+                id: peer_id,
+                router: Arc::clone(&self.peer_router),
+                mailbox_rx,
+                cancel: cancel.clone(),
+                progress_at: None,
+                sanitizer: zeph_sanitizer::ContentSanitizer::new(&ContentIsolationConfig::default()),
+                exfil_guard: zeph_sanitizer::exfiltration::ExfiltrationGuard::new(
+                    resolve_resume_exfiltration_guard_config(spawn_context),
+                ),
+                max_wait_ms: config.peer_messaging.max_wait_ms,
+            };
+            (Some(registration), Some(install))
+        } else {
+            (None, None)
+        };
+        let executor = build_filtered_executor(
+            tool_executor,
+            permission_mode,
+            &def,
+            None,
+            network_denied,
+            peer_install,
+        );
 
         if let Some(ctx) = spawn_context
             && let Some(cap) = ctx.max_trust_level
@@ -1365,6 +1493,7 @@ impl SubAgentManager {
             started_at_str: crate::transcript::utc_now(),
             transcript_dir: resume_handle_transcript_dir,
             mcp_tool_names: resumed_mcp_tool_names_for_handle,
+            peer: peer_registration,
         };
 
         self.agents.insert(new_task_id.clone(), handle);
@@ -1588,6 +1717,7 @@ mod build_filtered_executor_tests {
             &def,
             None,
             true,
+            None,
         );
         let res = exec
             .execute_tool_call_erased(&bash_call("curl https://evil.example"))
@@ -1604,6 +1734,7 @@ mod build_filtered_executor_tests {
             &def,
             None,
             false,
+            None,
         );
         let res = exec
             .execute_tool_call_erased(&bash_call("curl https://example.com"))
@@ -1623,6 +1754,7 @@ mod build_filtered_executor_tests {
             &def,
             None,
             true,
+            None,
         );
         let res = exec.execute_tool_call_erased(&bash_call("ls -la")).await;
         assert!(

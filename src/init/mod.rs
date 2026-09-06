@@ -119,6 +119,9 @@ pub(crate) struct WizardState {
     /// Forward each running sub-agent's per-turn text/thinking output to an active consumer
     /// surface (issue #6359). Default `false` (opt-in, matches `SubAgentConfig::default()`).
     pub(crate) agents_forward_transcript: bool,
+    /// Enable live inter-sub-agent messaging (spec `046-subagent-peer-messaging-parity`,
+    /// issue #5871). Default `true`, matching `PeerMessagingConfig::default()`.
+    pub(crate) agents_peer_messaging_enabled: bool,
     /// "regex", "judge", or "model" — defaults to "regex" (no LLM calls).
     pub(crate) detector_mode: Option<String>,
     pub(crate) judge_model: Option<String>,
@@ -453,6 +456,7 @@ impl Default for WizardState {
             agents_user_dir: None,
             agents_default_memory_scope: None,
             agents_forward_transcript: false,
+            agents_peer_messaging_enabled: true,
             detector_mode: None,
             judge_model: None,
             feedback_provider: None,
@@ -1242,6 +1246,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         .clone_from(&state.agents_user_dir);
     config.agents.default_memory_scope = state.agents_default_memory_scope;
     config.agents.forward_transcript = state.agents_forward_transcript;
+    config.agents.peer_messaging.enabled = state.agents_peer_messaging_enabled;
 
     // Worktree isolation for sub-agents (#4656)
     if state.worktree_enabled {

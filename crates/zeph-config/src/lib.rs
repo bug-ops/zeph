@@ -115,8 +115,8 @@ pub mod worktree;
 
 pub use agent::{
     AgentConfig, ContextInjectionMode, DelegationMode, FocusConfig, GoalConfig, ModelSpec,
-    ParentContextPolicy, SubAgentConfig, SubAgentLifecycleHooks, TaskSupervisorConfig,
-    ToolFilterConfig,
+    ParentContextPolicy, PeerMessagingConfig, SubAgentConfig, SubAgentLifecycleHooks,
+    TaskSupervisorConfig, ToolFilterConfig,
 };
 pub use channels::{
     A2aClientConfig, A2aServerConfig, CardTrustPolicy, ChannelSkillsConfig, DiscordConfig,

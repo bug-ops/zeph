@@ -114,6 +114,7 @@ impl<C: Channel> Agent<C> {
                         .agent_transcript_dir(&id)
                         .map(|p| p.to_string_lossy().into_owned()),
                     live_transcript: mgr.forwarded_tail(&id, LIVE_TRANSCRIPT_TAIL_LINES),
+                    unread_messages: u32::try_from(mgr.mailbox_depth(&id)).unwrap_or(u32::MAX),
                 }
             })
             .collect();
@@ -149,6 +150,39 @@ impl<C: Channel> Agent<C> {
             }
         }
         Ok(())
+    }
+    /// Non-blocking poll: drain and surface peer messages addressed to the parent agent
+    /// itself (spec `046-subagent-peer-messaging-parity`), mirroring
+    /// [`notify_completed_subagents`](Self::notify_completed_subagents)'s shape.
+    ///
+    /// # Known latency limitation
+    ///
+    /// Same as [`try_recv_peer_message`](zeph_subagent::SubAgentManager::try_recv_peer_message):
+    /// a message is not observed until the parent reaches this drain point, at most one turn
+    /// away.
+    pub(super) async fn notify_peer_messages(&mut self) {
+        let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() else {
+            return;
+        };
+        while let Some(mut msg) = mgr.try_recv_peer_message() {
+            let source = zeph_sanitizer::ContentSource::new(
+                zeph_sanitizer::ContentSourceKind::SubagentPeerMessage,
+            )
+            .with_identifier(msg.sender_name.as_str());
+            let sanitized = self.services.security.sanitizer.sanitize(&msg.body, source);
+            let notice = format!("[peer message from {}] {}", msg.sender_name, sanitized.body);
+            if let Err(e) = self.channel.send(&notice).await {
+                tracing::warn!(error = %e, "failed to send peer-message notice");
+            }
+            // Store the sanitized body, not the raw one — `/agent inbox` is an operator
+            // display surface, not an LLM context injection, but re-showing unsanitized
+            // attacker-influenceable content there defeats the point of sanitizing it above.
+            msg.body = sanitized.body;
+            self.services.orchestration.peer_inbox.push_back(msg);
+            while self.services.orchestration.peer_inbox.len() > super::state::PEER_INBOX_CAPACITY {
+                self.services.orchestration.peer_inbox.pop_front();
+            }
+        }
     }
     /// Poll a sub-agent until it reaches a terminal state, bridging secret requests to the
     /// channel. Returns a human-readable status string and success flag suitable for
@@ -393,8 +427,47 @@ impl<C: Channel> Agent<C> {
             AgentCommand::Approve { id } => self.handle_agent_approve(&id),
             AgentCommand::Deny { id } => self.handle_agent_deny(&id),
             AgentCommand::Resume { id, prompt } => self.handle_agent_resume(&id, &prompt).await,
+            AgentCommand::Msg { id, body } => self.handle_agent_msg(&id, &body).await,
+            AgentCommand::Inbox => Some(self.handle_agent_inbox()),
             _ => None,
         }
+    }
+    /// `/agent msg <id> <body>` — parent-to-sub-agent send (spec
+    /// `046-subagent-peer-messaging-parity`, US-002).
+    async fn handle_agent_msg(&mut self, id: &str, body: &str) -> Option<String> {
+        let full_id = match self.resolve_agent_id_prefix(id)? {
+            Ok(fid) => fid,
+            Err(msg) => return Some(msg),
+        };
+        // TUI Rules: every background/implicit operation gets a visible status indicator.
+        self.channel
+            .send_status_best_effort("Delivering message…")
+            .await;
+        let mgr = self.services.orchestration.subagent_manager.as_ref()?;
+        match mgr.send_to_subagent(&full_id, body.to_owned()) {
+            Ok(()) => Some(format!("Message delivered to sub-agent {full_id}.")),
+            Err(e) => Some(format!("Delivery failed: {e}")),
+        }
+    }
+    /// `/agent inbox` — list peer messages addressed to the parent, drained this session
+    /// (spec `046-subagent-peer-messaging-parity`).
+    fn handle_agent_inbox(&self) -> String {
+        use std::fmt::Write as _;
+
+        if self.services.orchestration.peer_inbox.is_empty() {
+            return "No peer messages received this session.".to_owned();
+        }
+        let mut out = String::new();
+        for msg in &self.services.orchestration.peer_inbox {
+            let _ = writeln!(
+                out,
+                "[{}] from {}: {}",
+                msg.sent_at.to_rfc3339(),
+                msg.sender_name,
+                msg.body
+            );
+        }
+        out
     }
     /// Return the sub-agent definitions section formatted for the `/agents` fleet view.
     ///
@@ -933,6 +1006,10 @@ impl<C: Channel> Agent<C> {
                 if score > 0.0 { Some(score) } else { None }
             },
             content_isolation: self.runtime.config.security.content_isolation.clone(),
+            // Spec 046 FR-012/NFR-007: the sub-agent's PeerToolExecutor constructs its own
+            // ExfiltrationGuard from this, mirroring the parent's own exfiltration_guard so
+            // peer message bodies are scanned to the same policy as parent-turn LLM output.
+            exfiltration_guard: self.runtime.config.security.exfiltration_guard.clone(),
             orchestrator_name: Some("zeph".to_owned()),
             orchestrator_role: Some("orchestrator".to_owned()),
             session_mcp_servers: Vec::new(),

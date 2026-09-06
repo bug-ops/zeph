@@ -73,6 +73,13 @@ fn build_agent_line(sa: &SubAgentMetrics, tick: u8, selected: bool, ascii: bool)
         "accept_edits" => " [accept_edits]",
         _ => "",
     };
+    // FR-010 (spec 046-subagent-peer-messaging-parity): visible unread-message badge,
+    // cleared once `check_messages` drains the mailbox (mailbox_depth returns to 0).
+    let msg_badge = if sa.unread_messages > 0 {
+        format!(" [msg:{}]", sa.unread_messages)
+    } else {
+        String::new()
+    };
 
     let base_style = if selected {
         Style::default().add_modifier(Modifier::REVERSED)
@@ -83,7 +90,7 @@ fn build_agent_line(sa: &SubAgentMetrics, tick: u8, selected: bool, ascii: bool)
     Line::from(vec![
         Span::styled(format!(" {spinner} "), Style::default().fg(color)),
         Span::styled(
-            format!("{}{}{}", sa.name, bg_marker, perm_badge),
+            format!("{}{}{}{}", sa.name, bg_marker, perm_badge, msg_badge),
             base_style,
         ),
         Span::styled(
@@ -1117,6 +1124,7 @@ mod tests {
                     permission_mode: String::new(),
                     transcript_dir: None,
                     live_transcript: Vec::new(),
+                    unread_messages: 0,
                 },
                 SubAgentMetrics {
                     id: "def456".into(),
@@ -1129,6 +1137,7 @@ mod tests {
                     permission_mode: "dont_ask".into(),
                     transcript_dir: None,
                     live_transcript: Vec::new(),
+                    unread_messages: 0,
                 },
             ],
             ..MetricsSnapshot::default()
@@ -1161,6 +1170,7 @@ mod tests {
                     permission_mode: "plan".into(),
                     transcript_dir: None,
                     live_transcript: Vec::new(),
+                    unread_messages: 0,
                 },
                 SubAgentMetrics {
                     id: "b".into(),
@@ -1173,6 +1183,7 @@ mod tests {
                     permission_mode: "bypass_permissions".into(),
                     transcript_dir: None,
                     live_transcript: Vec::new(),
+                    unread_messages: 0,
                 },
             ],
             ..MetricsSnapshot::default()
@@ -1209,6 +1220,7 @@ mod tests {
                     permission_mode: String::new(),
                     transcript_dir: None,
                     live_transcript: Vec::new(),
+                    unread_messages: 0,
                 },
                 SubAgentMetrics {
                     id: "b".into(),
@@ -1221,6 +1233,7 @@ mod tests {
                     permission_mode: String::new(),
                     transcript_dir: None,
                     live_transcript: Vec::new(),
+                    unread_messages: 0,
                 },
             ],
             ..MetricsSnapshot::default()
@@ -1245,6 +1258,7 @@ mod tests {
                     permission_mode: String::new(),
                     transcript_dir: None,
                     live_transcript: Vec::new(),
+                    unread_messages: 0,
                 })
                 .collect(),
             ..MetricsSnapshot::default()
@@ -1274,6 +1288,7 @@ mod tests {
             permission_mode: String::new(),
             transcript_dir: None,
             live_transcript,
+            unread_messages: 0,
         }
     }
 
@@ -1303,6 +1318,49 @@ mod tests {
         );
         assert!(output.contains("first forwarded turn"));
         assert!(output.contains("second forwarded turn"));
+    }
+
+    #[test]
+    fn build_agent_line_shows_unread_badge_when_nonzero() {
+        let sa = SubAgentMetrics {
+            id: "abc".into(),
+            name: "helper".into(),
+            state: "working".into(),
+            turns_used: 1,
+            max_turns: 5,
+            background: false,
+            elapsed_secs: 1,
+            permission_mode: String::new(),
+            transcript_dir: None,
+            live_transcript: Vec::new(),
+            unread_messages: 2,
+        };
+        let line = super::build_agent_line(&sa, 0, false, true);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("[msg:2]"),
+            "expected unread badge, got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn build_agent_line_omits_unread_badge_when_zero() {
+        let sa = SubAgentMetrics {
+            id: "abc".into(),
+            name: "helper".into(),
+            state: "working".into(),
+            turns_used: 1,
+            max_turns: 5,
+            background: false,
+            elapsed_secs: 1,
+            permission_mode: String::new(),
+            transcript_dir: None,
+            live_transcript: Vec::new(),
+            unread_messages: 0,
+        };
+        let line = super::build_agent_line(&sa, 0, false, true);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(!text.contains("[msg:"), "no badge expected, got: {text:?}");
     }
 
     #[test]

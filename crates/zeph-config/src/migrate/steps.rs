@@ -92,13 +92,13 @@ use super::{
     migrate_a2a_server_remove_inert_fields, migrate_acp_auth_clients_config,
     migrate_acp_subagents_config, migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry,
     migrate_agent_time_reminder, migrate_agents_delegation_mode,
-    migrate_agents_max_spawns_per_session, migrate_autodream_config, migrate_caveman_config,
-    migrate_cocoon_provider_notice, migrate_cocoon_show_balance,
-    migrate_compression_predictor_config, migrate_database_url, migrate_deep_link_config,
-    migrate_durable_config, migrate_durable_hwm_advisory, migrate_durable_key_rotation,
-    migrate_durable_shared_db, migrate_durable_stale_running_after_secs, migrate_egress_config,
-    migrate_embed_provider_rename, migrate_eval_model_to_provider,
-    migrate_fidelity_timeout_defaults, migrate_five_signal_config,
+    migrate_agents_max_spawns_per_session, migrate_agents_peer_messaging_config,
+    migrate_autodream_config, migrate_caveman_config, migrate_cocoon_provider_notice,
+    migrate_cocoon_show_balance, migrate_compression_predictor_config, migrate_database_url,
+    migrate_deep_link_config, migrate_durable_config, migrate_durable_hwm_advisory,
+    migrate_durable_key_rotation, migrate_durable_shared_db,
+    migrate_durable_stale_running_after_secs, migrate_egress_config, migrate_embed_provider_rename,
+    migrate_eval_model_to_provider, migrate_fidelity_timeout_defaults, migrate_five_signal_config,
     migrate_focus_auto_consolidate_min_window, migrate_forgetting_config, migrate_goals_config,
     migrate_hooks_permission_denied_config, migrate_hooks_turn_complete_config,
     migrate_integrity_config, migrate_knowledge_config, migrate_llm_stream_limits,
@@ -1381,5 +1381,18 @@ impl Migration for MigrateTuiPanelSizing {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_tui_panel_sizing(toml_src)
+    }
+}
+
+/// Step 108 — add an `[agents.peer_messaging]` advisory block for live inter-sub-agent
+/// messaging (spec `046-subagent-peer-messaging-parity`, issue #5871).
+pub(super) struct MigrateAgentsPeerMessagingConfig;
+impl Migration for MigrateAgentsPeerMessagingConfig {
+    fn name(&self) -> &'static str {
+        "migrate_agents_peer_messaging_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_agents_peer_messaging_config(toml_src)
     }
 }

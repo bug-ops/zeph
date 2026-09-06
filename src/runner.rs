@@ -3311,6 +3311,10 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         // switch — `effective_delegation_mode` folds it in so `SubAgentManager` itself only
         // ever sees the already-resolved value and does not need to re-read `enabled` (FR-002).
         mgr.set_delegation_mode(agents_config.effective_delegation_mode());
+        // Spec 046-subagent-peer-messaging-parity: reconfigure the peer-messaging router from
+        // the resolved config before any spawn (must precede the first `spawn()` call, per
+        // `set_peer_messaging_config`'s own doc comment).
+        mgr.set_peer_messaging_config(agents_config.peer_messaging.clone());
 
         // Bootstrap the worktree subsystem when enabled (hard-fail per spec NEVER #92).
         if agents_config.worktree.enabled && !exec_mode.bare {

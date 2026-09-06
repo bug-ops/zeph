@@ -19,8 +19,11 @@ postgres = ["zeph-durable/postgres", "zeph-sanitizer/postgres", "zeph-skills/pos
 default = ["sqlite"]
 
 [dependencies]
+chrono = { workspace = true, features = ["clock"] }
 dirs.workspace = true
+parking_lot.workspace = true
 regex.workspace = true
+schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_norway.workspace = true
@@ -45,7 +48,6 @@ zeroize.workspace = true
 [dev-dependencies]
 indoc.workspace = true
 proptest.workspace = true
-schemars.workspace = true
 serial_test.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
