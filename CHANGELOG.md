@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-llm`: broke a recursive opaque-type cycle between `RouterProvider`/`TriageRouter`
+  and `AnyProvider` by returning a boxed `LlmFuture<T>` instead of `impl Future + Send`
+  from their `LlmProvider` methods, fixing a fuzz-workflow-only build failure
+  (`error[E0275]: overflow evaluating the requirement`) under `cargo fuzz`'s
+  `-Ccodegen-units=1` nightly build; also added `#![recursion_limit = "256"]` to
+  `zeph-llm` and `zeph-memory` for the same build's deep async auto-trait checks.
 - Capped the ambient `<shared-state>` prompt block's cross-thread-store read at a fixed
   row count instead of relying on `limit = 0` ("unlimited"), and surfaced truncation to
   the receiving node via a `truncated`/`shown` marker in the block's tag (#6763, #6767).

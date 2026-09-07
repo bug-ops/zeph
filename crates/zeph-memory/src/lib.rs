@@ -1,6 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// The graph extraction call chain (run_graph_extraction_task -> extract_and_store ->
+// upsert_entities -> EntityResolver::resolve -> resolve_via_embedding -> ...) exceeds
+// the default auto-trait (Send) recursion limit of 128 under `-Ccodegen-units=1`
+// builds (e.g. `cargo fuzz`); default-codegen-units CI builds stay under the limit.
+// Same pattern as zeph-core, zeph-orchestration, zeph-durable, zeph-acp, zeph-bench.
+#![recursion_limit = "256"]
+
 //! Semantic memory layer for the Zeph agent.
 //!
 //! `zeph-memory` implements a two-backend hybrid memory system:

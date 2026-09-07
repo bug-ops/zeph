@@ -185,8 +185,23 @@ pub enum ChatResponse {
     },
 }
 
+/// Boxed, type-erased future for an [`LlmProvider`] method returning `T`.
+///
+/// Router-composing implementors ([`crate::router::RouterProvider`],
+/// [`crate::router::triage::TriageRouter`]) must return this instead of an opaque
+/// `impl Future + Send` from their `LlmProvider` methods. Those methods call back
+/// into [`crate::any::AnyProvider`], which can itself hold a nested router — a
+/// genuinely recursive call graph, so an opaque return type here is self-referential.
+/// The compiler's opaque-type auto-trait check recurses without a useful bound in
+/// that case (confirmed: raising `#![recursion_limit]` does not converge — it
+/// crashes rustc's trait solver instead of resolving). Boxing to `dyn Future` erases
+/// the concrete type at this exact boundary and breaks the cycle. Backends with no
+/// recursive call graph (`OllamaProvider`, `ClaudeProvider`, etc.) are unaffected and
+/// should keep returning an opaque `impl Future + Send`.
+pub type LlmFuture<T> = Pin<Box<dyn Future<Output = Result<T, LlmError>> + Send>>;
+
 /// Boxed future returning an embedding vector, returned by [`EmbedFn`].
-pub type EmbedFuture = Pin<Box<dyn Future<Output = Result<Vec<f32>, LlmError>> + Send>>;
+pub type EmbedFuture = LlmFuture<Vec<f32>>;
 
 /// A Send + Sync closure that embeds a text slice into a vector.
 ///

@@ -15,7 +15,8 @@ use crate::any::AnyProvider;
 use crate::embed::owned_strs;
 use crate::error::LlmError;
 use crate::provider::{
-    ChatResponse, ChatStream, LlmProvider, Message, MessageMetadata, Role, StatusTx, ToolDefinition,
+    ChatResponse, ChatStream, LlmFuture, LlmProvider, Message, MessageMetadata, Role, StatusTx,
+    ToolDefinition,
 };
 
 use super::{messages_contain_image, strip_image_parts};
@@ -701,10 +702,13 @@ impl LlmProvider for TriageRouter {
             .any(|(_, p)| p.supports_tool_use())
     }
 
-    fn embed(
-        &self,
-        text: &str,
-    ) -> impl std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send {
+    // `TriageRouter::chat`/`embed`* dispatch into `AnyProvider`, which can itself hold
+    // a nested `Router`/`Triage` variant — a recursive call graph. Returning a boxed
+    // `LlmFuture` instead of `impl Future + Send` erases the concrete type at this
+    // boundary; an opaque RPIT return here is self-referential and overflows the
+    // compiler's opaque-type auto-trait check (see `LlmFuture` docs).
+    #[allow(refining_impl_trait_reachable)]
+    fn embed(&self, text: &str) -> LlmFuture<Vec<f32>> {
         let embed_provider = self.select_embed_provider();
 
         let name = self.name.clone();
@@ -717,10 +721,9 @@ impl LlmProvider for TriageRouter {
         })
     }
 
-    fn embed_batch(
-        &self,
-        texts: &[&str],
-    ) -> impl std::future::Future<Output = Result<Vec<Vec<f32>>, LlmError>> + Send {
+    // See the `embed` doc comment above — same recursive-call-graph rationale applies.
+    #[allow(refining_impl_trait_reachable)]
+    fn embed_batch(&self, texts: &[&str]) -> LlmFuture<Vec<Vec<f32>>> {
         let embed_provider = self.select_embed_provider();
 
         let name = self.name.clone();
@@ -737,11 +740,9 @@ impl LlmProvider for TriageRouter {
     }
 
     /// Classify + delegate: each method independently performs triage (MF-2).
+    // See the `embed` doc comment above — same recursive-call-graph rationale applies.
     #[allow(refining_impl_trait_reachable)]
-    fn chat(
-        &self,
-        messages: &[Message],
-    ) -> impl std::future::Future<Output = Result<String, LlmError>> + Send {
+    fn chat(&self, messages: &[Message]) -> LlmFuture<String> {
         let router = self.clone();
         let messages = messages.to_vec();
         Box::pin(async move {
@@ -761,11 +762,9 @@ impl LlmProvider for TriageRouter {
     }
 
     /// Classify + delegate: each method independently performs triage (MF-2).
+    // See the `embed` doc comment above — same recursive-call-graph rationale applies.
     #[allow(refining_impl_trait_reachable)]
-    fn chat_stream(
-        &self,
-        messages: &[Message],
-    ) -> impl std::future::Future<Output = Result<ChatStream, LlmError>> + Send {
+    fn chat_stream(&self, messages: &[Message]) -> LlmFuture<ChatStream> {
         let router = self.clone();
         let messages = messages.to_vec();
         Box::pin(async move {
@@ -791,12 +790,13 @@ impl LlmProvider for TriageRouter {
     /// serve the request with vision support, the `Image` part(s) are stripped before dispatch
     /// so the request never reaches an incapable tier as a 400/422 (C3, AC-6) — the text
     /// placeholder remains as the guaranteed fallback.
+    // See the `embed` doc comment above — same recursive-call-graph rationale applies.
     #[allow(refining_impl_trait_reachable)]
     fn chat_with_tools(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
-    ) -> impl std::future::Future<Output = Result<ChatResponse, LlmError>> + Send {
+    ) -> LlmFuture<ChatResponse> {
         let router = self.clone();
         let messages = messages.to_vec();
         let tools = tools.to_vec();
