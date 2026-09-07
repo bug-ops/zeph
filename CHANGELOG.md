@@ -14,11 +14,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`error[E0275]: overflow evaluating the requirement`) under `cargo fuzz`'s
   `-Ccodegen-units=1` nightly build; also added `#![recursion_limit = "256"]` to
   `zeph-llm` and `zeph-memory` for the same build's deep async auto-trait checks.
-- `fuzz/`: added `#![allow(unused_crate_dependencies)]` to every fuzz target, closing a
-  second, previously-masked fuzz-build failure — `fuzz/Cargo.toml`'s single shared
-  dependency list across all five `[[bin]]` targets means each target's cargo-fuzz-forced
-  `unused_crate_dependencies` warning (denied by `build.warnings = "deny"`) fires for the
-  deps that specific target doesn't use.
+- `fuzz/`: made every crate-path dependency `optional`, gated per `[[bin]]` behind a
+  same-named feature via `required-features`, closing a second, previously-masked
+  fuzz-build failure — `fuzz/Cargo.toml`'s single shared dependency list across all five
+  targets meant each target's cargo-fuzz-forced `unused_crate_dependencies` warning
+  (denied by `build.warnings = "deny"`) fired for the deps that target didn't use; the
+  lint's usual `#[allow(...)]` mitigation doesn't work here since `--force-warn`
+  overrides in-source lint attributes. `.github/workflows/fuzz.yml` and `fuzz/README.md`
+  updated to pass `--features <target>` accordingly.
 - Capped the ambient `<shared-state>` prompt block's cross-thread-store read at a fixed
   row count instead of relying on `limit = 0` ("unlimited"), and surfaced truncation to
   the receiving node via a `truncated`/`shown` marker in the block's tag (#6763, #6767).

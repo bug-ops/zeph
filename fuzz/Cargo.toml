@@ -9,14 +9,29 @@ cargo-fuzz = true
 
 [workspace]
 
+# Each [[bin]] below only uses a subset of these — every crate-path dependency is
+# `optional = true` and gated behind a same-named feature in [features], activated per
+# target via `required-features` (CI passes `--features <target>` accordingly; see
+# .github/workflows/fuzz.yml). This keeps `cargo build --bin <target>` from linking in
+# (and rustc from force-warning `unused_crate_dependencies` on) crates that target
+# doesn't reference — `build.warnings = "deny"` (.cargo/config.toml) denies that
+# force-warned lint unconditionally, and it cannot be silenced with an in-source
+# `#[allow(...)]` since `--force-warn` overrides source-level lint attributes.
 [dependencies]
-arbitrary = { version = "1.4.2", features = ["derive"] }
+arbitrary = { version = "1.4.2", features = ["derive"], optional = true }
 libfuzzer-sys = "0.4.13"
-toml = "1.1.4"
-zeph-config = { path = "../crates/zeph-config" }
-zeph-index = { path = "../crates/zeph-index", features = ["sqlite"] }
-zeph-plugins = { path = "../crates/zeph-plugins", features = ["sqlite"] }
-zeph-skills = { path = "../crates/zeph-skills" }
+toml = { version = "1.1.4", optional = true }
+zeph-config = { path = "../crates/zeph-config", optional = true }
+zeph-index = { path = "../crates/zeph-index", features = ["sqlite"], optional = true }
+zeph-plugins = { path = "../crates/zeph-plugins", features = ["sqlite"], optional = true }
+zeph-skills = { path = "../crates/zeph-skills", optional = true }
+
+[features]
+chunk_file = ["dep:arbitrary", "dep:zeph-index"]
+config_toml = ["dep:toml", "dep:zeph-config"]
+plugin_manifest = ["dep:toml", "dep:zeph-plugins"]
+skill_extensions = ["dep:zeph-skills"]
+skill_frontmatter = ["dep:zeph-skills"]
 
 [[bin]]
 name = "skill_frontmatter"
@@ -24,6 +39,7 @@ path = "fuzz_targets/skill_frontmatter.rs"
 test = false
 doc = false
 bench = false
+required-features = ["skill_frontmatter"]
 
 [[bin]]
 name = "skill_extensions"
@@ -31,6 +47,7 @@ path = "fuzz_targets/skill_extensions.rs"
 test = false
 doc = false
 bench = false
+required-features = ["skill_extensions"]
 
 [[bin]]
 name = "chunk_file"
@@ -38,6 +55,7 @@ path = "fuzz_targets/chunk_file.rs"
 test = false
 doc = false
 bench = false
+required-features = ["chunk_file"]
 
 [[bin]]
 name = "config_toml"
@@ -45,6 +63,7 @@ path = "fuzz_targets/config_toml.rs"
 test = false
 doc = false
 bench = false
+required-features = ["config_toml"]
 
 [[bin]]
 name = "plugin_manifest"
@@ -52,3 +71,4 @@ path = "fuzz_targets/plugin_manifest.rs"
 test = false
 doc = false
 bench = false
+required-features = ["plugin_manifest"]
