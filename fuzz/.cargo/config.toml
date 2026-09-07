@@ -1,0 +1,12 @@
+# Overrides the root `.cargo/config.toml`'s `build.warnings = "deny"` for this detached
+# cargo-fuzz workspace only (Cargo merges config files up the directory tree, closer file
+# wins per key). That root setting targets the pinned stable toolchain used everywhere else
+# in this repo; the fuzz workspace requires a rolling, unpinned nightly (see fuzz/README.md),
+# and on nightly builds from 2026-09 onward `warnings = "deny"` fails the build with a bare
+# "warnings are denied by `build.warnings` configuration" and zero diagnostic text --
+# reproduced with a plain `cargo build` (no cargo-fuzz, no sanitizer flags) even though
+# `--message-format=json`'s `build-finished` message reports `success: true` and rustc itself
+# emits no compiler-message warnings -- a rolling-nightly-only regression/rough edge in a very
+# recent, still-unreleased Cargo `build.warnings` check, not an actual warning in this crate.
+[build]
+warnings = "warn"

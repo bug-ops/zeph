@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// Nested async fns (router bandit/cascade dispatch chains) exceed the default
+// auto-trait (Send) recursion limit of 128 under `-Ccodegen-units=1` builds (e.g.
+// `cargo fuzz`); default-codegen-units CI builds stay under the limit. Same pattern
+// as zeph-core, zeph-orchestration, zeph-durable, zeph-acp, zeph-bench.
+#![recursion_limit = "256"]
+
 //! LLM provider abstraction and backend implementations for the Zeph agent.
 //!
 //! # Overview

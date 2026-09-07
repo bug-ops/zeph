@@ -36,16 +36,20 @@ attacker-bundled `.plugin-source.toml` inside a plugin archive — intentionally
 
 ## Running a target locally
 
+Each target only uses a subset of this package's dependencies (see `fuzz/Cargo.toml`), so every
+`[[bin]]` requires its same-named feature — pass `--features <target>` or the build fails with a
+"requires the features" error:
+
 ```bash
 cd fuzz
-cargo +nightly fuzz run skill_frontmatter
+cargo +nightly fuzz run --features skill_frontmatter skill_frontmatter
 ```
 
 Stop with Ctrl-C at any time; libFuzzer runs until interrupted or a crash is found. To bound a
 run (as CI does), pass `-max_total_time=<seconds>`:
 
 ```bash
-cargo +nightly fuzz run skill_frontmatter -- -max_total_time=300
+cargo +nightly fuzz run --features skill_frontmatter skill_frontmatter -- -max_total_time=300
 ```
 
 **Corpus pollution warning**: by default, `cargo fuzz run <target>` uses `fuzz/corpus/<target>/`
@@ -57,7 +61,7 @@ about growing the committed corpus on purpose, point libFuzzer at a scratch dire
 passing it as a positional `CORPUS` argument:
 
 ```bash
-mkdir -p /tmp/fuzz-scratch && cargo +nightly fuzz run skill_frontmatter /tmp/fuzz-scratch -- -max_total_time=20
+mkdir -p /tmp/fuzz-scratch && cargo +nightly fuzz run --features skill_frontmatter skill_frontmatter /tmp/fuzz-scratch -- -max_total_time=20
 ```
 
 After any run against the real corpus directory (intentional or not), run
@@ -69,13 +73,13 @@ deliberately-added seeds.
 A crashing input is written to `fuzz/artifacts/<target>/crash-<hash>`. Replay it directly:
 
 ```bash
-cargo +nightly fuzz run skill_frontmatter fuzz/artifacts/skill_frontmatter/crash-<hash>
+cargo +nightly fuzz run --features skill_frontmatter skill_frontmatter fuzz/artifacts/skill_frontmatter/crash-<hash>
 ```
 
 Minimize a crash to the smallest input that still triggers it:
 
 ```bash
-cargo +nightly fuzz tmin skill_frontmatter fuzz/artifacts/skill_frontmatter/crash-<hash>
+cargo +nightly fuzz tmin --features skill_frontmatter skill_frontmatter fuzz/artifacts/skill_frontmatter/crash-<hash>
 ```
 
 ## Seed corpora
@@ -187,7 +191,7 @@ Generate the coverage profile for a target (replays its `fuzz/corpus/<target>/` 
 
 ```bash
 cd fuzz
-cargo +nightly fuzz coverage <target>
+cargo +nightly fuzz coverage --features <target> <target>
 ```
 
 This writes `fuzz/coverage/<target>/coverage.profdata` and builds an instrumented binary under

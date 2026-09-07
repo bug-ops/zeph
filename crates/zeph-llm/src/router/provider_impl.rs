@@ -16,7 +16,9 @@ use super::embed_cache::TurnEmbedCache;
 use super::{RouterProvider, RouterStrategy, messages_contain_image, strip_image_parts};
 use crate::embed::owned_strs;
 use crate::error::LlmError;
-use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
+use crate::provider::{
+    ChatResponse, ChatStream, LlmFuture, LlmProvider, Message, StatusTx, ToolDefinition,
+};
 use zeph_common::math::cosine_similarity;
 
 const EMBED_MAX_RETRIES: u32 = 3;
@@ -52,11 +54,15 @@ impl LlmProvider for RouterProvider {
             .and_then(LlmProvider::context_window)
     }
 
+    #[allow(refining_impl_trait)]
+    // deliberate: erase the opaque type to break router recursion, see `LlmFuture` docs
+    // `RouterProvider::chat` dispatches into `AnyProvider`, which can itself hold a
+    // nested `Router`/`Triage` variant — a recursive call graph. Returning a boxed
+    // `LlmFuture` instead of `impl Future + Send` erases the concrete type at this
+    // boundary; an opaque RPIT return here is self-referential and overflows the
+    // compiler's opaque-type auto-trait check (see `LlmFuture` docs).
     #[allow(clippy::too_many_lines)] // CoE + quality-gate inline logic; extracting would obscure the control flow
-    fn chat(
-        &self,
-        messages: &[Message],
-    ) -> impl std::future::Future<Output = Result<String, LlmError>> + Send {
+    fn chat(&self, messages: &[Message]) -> LlmFuture<String> {
         let status_tx = self.status_tx.clone();
         let messages = messages.to_vec();
         let router = self.clone();
@@ -221,16 +227,15 @@ impl LlmProvider for RouterProvider {
 
             Err(last_err.unwrap_or(LlmError::NoProviders))
         });
-        {
-            use tracing::Instrument as _;
-            fut.instrument(tracing::info_span!("llm.router.chat", model = model))
-        }
+        Box::pin(tracing::Instrument::instrument(
+            fut,
+            tracing::info_span!("llm.router.chat", model = model),
+        ))
     }
 
-    fn chat_stream(
-        &self,
-        messages: &[Message],
-    ) -> impl std::future::Future<Output = Result<ChatStream, LlmError>> + Send {
+    #[allow(refining_impl_trait)] // see `chat`'s `LlmFuture` allow above
+    // See the `chat` doc comment above — same recursive-call-graph rationale applies.
+    fn chat_stream(&self, messages: &[Message]) -> LlmFuture<ChatStream> {
         let status_tx = self.status_tx.clone();
         let messages = messages.to_vec();
         let router = self.clone();
@@ -294,10 +299,10 @@ impl LlmProvider for RouterProvider {
             }
             Err(last_err.unwrap_or(LlmError::NoProviders))
         });
-        {
-            use tracing::Instrument as _;
-            fut.instrument(tracing::info_span!("llm.router.chat_stream", model = model))
-        }
+        Box::pin(tracing::Instrument::instrument(
+            fut,
+            tracing::info_span!("llm.router.chat_stream", model = model),
+        ))
     }
 
     fn supports_streaming(&self) -> bool {
@@ -319,11 +324,11 @@ impl LlmProvider for RouterProvider {
             .any(LlmProvider::supports_vision)
     }
 
+    #[allow(refining_impl_trait)]
+    // see `chat`'s `LlmFuture` allow above
+    // See the `chat` doc comment above — same recursive-call-graph rationale applies.
     #[allow(clippy::too_many_lines)] // retry + timeout + fallback + availability tracking: splitting would break the shared `last_err` accumulator
-    fn embed(
-        &self,
-        text: &str,
-    ) -> impl std::future::Future<Output = Result<Vec<f32>, LlmError>> + Send {
+    fn embed(&self, text: &str) -> LlmFuture<Vec<f32>> {
         let providers = self.embed_candidates();
         let status_tx = self.status_tx.clone();
         let text = text.to_owned();
@@ -430,17 +435,17 @@ impl LlmProvider for RouterProvider {
             }
             Err(last_err.unwrap_or(LlmError::NoProviders))
         });
-        {
-            use tracing::Instrument as _;
-            fut.instrument(tracing::info_span!("llm.router.embed", model = model))
-        }
+        Box::pin(tracing::Instrument::instrument(
+            fut,
+            tracing::info_span!("llm.router.embed", model = model),
+        ))
     }
 
+    #[allow(refining_impl_trait)]
+    // see `chat`'s `LlmFuture` allow above
+    // See the `chat` doc comment above — same recursive-call-graph rationale applies.
     #[allow(clippy::too_many_lines)] // retry + timeout + fallback + availability tracking: splitting would break the shared `last_err` accumulator
-    fn embed_batch(
-        &self,
-        texts: &[&str],
-    ) -> impl std::future::Future<Output = Result<Vec<Vec<f32>>, LlmError>> + Send {
+    fn embed_batch(&self, texts: &[&str]) -> LlmFuture<Vec<Vec<f32>>> {
         let providers = self.embed_candidates();
         let status_tx = self.status_tx.clone();
         let owned = owned_strs(texts);
@@ -557,10 +562,10 @@ impl LlmProvider for RouterProvider {
             }
             Err(last_err.unwrap_or(LlmError::NoProviders))
         });
-        {
-            use tracing::Instrument as _;
-            fut.instrument(tracing::info_span!("llm.router.embed_batch", model = model))
-        }
+        Box::pin(tracing::Instrument::instrument(
+            fut,
+            tracing::info_span!("llm.router.embed_batch", model = model),
+        ))
     }
 
     fn supports_embeddings(&self) -> bool {
@@ -613,13 +618,15 @@ impl LlmProvider for RouterProvider {
             .collect()
     }
 
-    #[allow(refining_impl_trait_reachable)]
+    #[allow(refining_impl_trait)]
+    // see `chat`'s `LlmFuture` allow above
+    // See the `chat` doc comment above — same recursive-call-graph rationale applies.
     #[allow(clippy::too_many_lines)] // fallback loop + bandit branch + spec-072 vision safety net
     fn chat_with_tools(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
-    ) -> impl std::future::Future<Output = Result<ChatResponse, LlmError>> + Send {
+    ) -> LlmFuture<ChatResponse> {
         let messages = messages.to_vec();
         let tool_count = tools.len();
         let tools = tools.to_vec();
@@ -745,14 +752,14 @@ impl LlmProvider for RouterProvider {
             }
             Err(last_err.unwrap_or(LlmError::NoProviders))
         });
-        {
-            use tracing::Instrument as _;
-            fut.instrument(tracing::info_span!(
+        Box::pin(tracing::Instrument::instrument(
+            fut,
+            tracing::info_span!(
                 "llm.router.chat_with_tools",
                 model = model,
                 tool_count = tool_count
-            ))
-        }
+            ),
+        ))
     }
 
     fn debug_request_json(
