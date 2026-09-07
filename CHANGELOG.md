@@ -22,6 +22,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   lint's usual `#[allow(...)]` mitigation doesn't work here since `--force-warn`
   overrides in-source lint attributes. `.github/workflows/fuzz.yml` and `fuzz/README.md`
   updated to pass `--features <target>` accordingly.
+- `fuzz/`: added `fuzz/.cargo/config.toml` overriding the root `build.warnings = "deny"`
+  to `"warn"` for this workspace only, closing a third fuzz-build failure — CI's rolling,
+  unpinned nightly toolchain picked up a very recent (as of 2026-09) Cargo regression
+  where `build.warnings = "deny"` fails the build with a bare "warnings are denied"
+  message and no diagnostic text, even when `--message-format=json`'s `build-finished`
+  reports `success: true` and rustc emits zero compiler-message warnings; reproduced with
+  a plain `cargo build` (no cargo-fuzz, no sanitizer flags) after updating a local nightly
+  toolchain to match CI's. The root config (used by the pinned stable toolchain
+  everywhere else) is untouched.
 - Capped the ambient `<shared-state>` prompt block's cross-thread-store read at a fixed
   row count instead of relying on `limit = 0` ("unlimited"), and surfaced truncation to
   the receiving node via a `truncated`/`shown` marker in the block's tag (#6763, #6767).
