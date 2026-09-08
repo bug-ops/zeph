@@ -50,7 +50,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   literal newline (#6775, #6779).
 - `zeph-core`: fixed `trim_parent_messages` matching orphaned `ToolUse`/`ToolResult` parts
   against a global id set instead of adjacency, which could cross-pair an orphan against an
-  unrelated tool call sharing its id under Ollama-style batch-index id reuse (#6770).
+  unrelated tool call sharing its id under Ollama-style batch-index id reuse (#6770, #6780).
 
 ### Added
 
@@ -88,7 +88,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   certain orphan/thinking-only user messages, and a trailing unanswered `ToolUse` is now repaired
   everywhere instead of being exempted only at some call sites. **Breaking**:
   `zeph_agent_persistence::sanitize::has_meaningful_content` (a `pub fn`) is removed — relocated
-  to `zeph_llm::tool_pairing::has_meaningful_content`, with no re-export.
+  to `zeph_llm::tool_pairing::has_meaningful_content`, with no re-export (#6780).
 - Raised the workspace MSRV to Rust 1.98 and resolved the new `clippy::unused_async_trait_impl` /
   `clippy::chunks_exact_to_as_chunks` lints introduced by it (#6746, #6748).
 - `release.yml`: removed `Swatinem/rust-cache` and `sccache` from the `build-binaries` job.
