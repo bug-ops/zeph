@@ -42,12 +42,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-memory`: recorded last-writer provenance (`writer_id`) on every write that
   supplies one (the three in-tree call sites do), preserved rather than erased by a
   subsequent anonymous write, and warn on a cross-writer overwrite instead of leaving
-  it silently invisible (#6773).
+  it silently invisible (#6773, #6779).
 - `zeph-memory`: bounded cross-thread store namespace growth with an oldest-first
-  eviction cap (`[memory.store].max_namespace_rows`, default 256) (#6774).
+  eviction cap (`[memory.store].max_namespace_rows`, default 256) (#6774, #6779).
 - `zeph-core`: rendered the `<shared-state>` prompt block as NDJSON instead of
   `"{key}: {value}"` lines, closing a pseudo-row-forging gap for values containing a
-  literal newline (#6775).
+  literal newline (#6775, #6779).
 
 ### Added
 
