@@ -30,9 +30,13 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
+use std::fmt::Write as _;
 
 use crate::error::LlmError;
 use crate::tool_desc::build_tool_description;
+use crate::tool_pairing::{
+    next_non_system, prev_non_system, unmatched_tool_result_ids, unmatched_tool_use_ids,
+};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 
@@ -1598,10 +1602,120 @@ where
     Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// Convert an assistant message's parts into a single `StructuredApiMessage`, downgrading any
+/// `ToolUse` part whose id is in `orphaned_tool_use` to a text marker instead of a `tool_calls`
+/// entry (issue #6781 — mirrors the Claude request builder's `push_tool_use_block`). A single
+/// ordered pass over `msg.parts` preserves relative order between downgraded-orphan text and
+/// genuine text content.
+fn convert_assistant_tool_message(
+    msg: &Message,
+    orphaned_tool_use: &HashSet<&str>,
+) -> StructuredApiMessage {
+    let mut text_content = String::new();
+    let mut tool_calls: Vec<OpenAiToolCallOut> = Vec::new();
+    for part in &msg.parts {
+        match part {
+            MessagePart::ToolUse { id, name, input } if orphaned_tool_use.contains(id.as_str()) => {
+                tracing::warn!(
+                    tool_use_id = %id,
+                    tool_name = %name,
+                    "downgrading unmatched tool_use to text in OpenAI request"
+                );
+                let _ = write!(text_content, "[tool_use: {name}] {input}");
+            }
+            MessagePart::ToolUse { id, name, input } => {
+                tool_calls.push(OpenAiToolCallOut {
+                    id: id.clone(),
+                    r#type: "function".to_owned(),
+                    function: OpenAiFunctionCall {
+                        name: name.clone(),
+                        arguments: serde_json::to_string(input).unwrap_or_else(|_| "{}".to_owned()),
+                    },
+                });
+            }
+            other => {
+                if let Some(text) = other.as_plain_text() {
+                    text_content.push_str(text);
+                }
+            }
+        }
+    }
+
+    StructuredApiMessage {
+        role: "assistant".to_owned(),
+        content: if text_content.is_empty() {
+            None
+        } else {
+            Some(text_content)
+        },
+        tool_calls: if tool_calls.is_empty() {
+            None
+        } else {
+            Some(tool_calls)
+        },
+        tool_call_id: None,
+    }
+}
+
+/// Convert a user message's parts into zero or more `StructuredApiMessage` entries pushed onto
+/// `result`: each `ToolResult` becomes a `role: "tool"` message unless its id is in
+/// `orphaned_tool_result`, in which case it is downgraded to a plain `role: "user"` text message
+/// (issue #6781 — mirrors the Claude request builder's `push_tool_result_block`) instead of a
+/// `tool_call_id` the API can never resolve. Non-tool text parts pass through as `"user"`
+/// messages, matching the pre-#6781 behaviour.
+fn push_user_tool_messages(
+    result: &mut Vec<StructuredApiMessage>,
+    msg: &Message,
+    orphaned_tool_result: &HashSet<&str>,
+) {
+    for part in &msg.parts {
+        match part {
+            MessagePart::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } if orphaned_tool_result.contains(tool_use_id.as_str()) => {
+                tracing::warn!(
+                    tool_use_id = %tool_use_id,
+                    "downgrading orphaned tool_result to text in OpenAI request"
+                );
+                result.push(StructuredApiMessage {
+                    role: "user".to_owned(),
+                    content: Some(format!("[tool result: {tool_use_id}] {content}")),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
+            MessagePart::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } => {
+                result.push(StructuredApiMessage {
+                    role: "tool".to_owned(),
+                    content: Some(content.clone()),
+                    tool_calls: None,
+                    tool_call_id: Some(tool_use_id.clone()),
+                });
+            }
+            other => {
+                if let Some(text) = other.as_plain_text().filter(|t| !t.is_empty()) {
+                    result.push(StructuredApiMessage {
+                        role: "user".to_owned(),
+                        content: Some(text.to_owned()),
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
+            }
+        }
+    }
+}
+
 fn convert_messages_structured(messages: &[Message]) -> Vec<StructuredApiMessage> {
     let mut result = Vec::new();
 
-    for msg in messages {
+    for (i, msg) in messages.iter().enumerate() {
         let has_tool_parts = msg.parts.iter().any(|p| {
             matches!(
                 p,
@@ -1610,74 +1724,28 @@ fn convert_messages_structured(messages: &[Message]) -> Vec<StructuredApiMessage
         });
 
         if has_tool_parts {
-            // Assistant messages with ToolUse parts → tool_calls field
+            // Layer A (zeph_llm::tool_pairing), adjacency-scoped against the immediate
+            // neighbour in `messages` — never a global id set (issue #6781, matching the
+            // Claude request builder's #6770 fix). `messages` here is not pre-filtered to
+            // agent-visible non-system messages the way Claude's `visible` slice is, so
+            // adjacency is computed directly over `messages` via the shared
+            // `next_non_system`/`prev_non_system` helpers rather than a raw `idx + 1`/`idx - 1`.
+            // This also means classification is not filtered by `metadata.visibility` the way
+            // Claude's is — self-consistent only because this builder also emits
+            // agent-invisible messages; a future change that filters emission without also
+            // filtering classification input would misclassify pairs straddling a hidden
+            // message as orphaned.
             if msg.role == Role::Assistant {
-                let text_content: String = msg
-                    .parts
-                    .iter()
-                    .filter_map(|p| p.as_plain_text())
-                    .collect::<Vec<_>>()
-                    .join("");
-
-                let tool_calls: Vec<OpenAiToolCallOut> = msg
-                    .parts
-                    .iter()
-                    .filter_map(|p| match p {
-                        MessagePart::ToolUse { id, name, input } => Some(OpenAiToolCallOut {
-                            id: id.clone(),
-                            r#type: "function".to_owned(),
-                            function: OpenAiFunctionCall {
-                                name: name.clone(),
-                                arguments: serde_json::to_string(input)
-                                    .unwrap_or_else(|_| "{}".to_owned()),
-                            },
-                        }),
-                        _ => None,
-                    })
-                    .collect();
-
-                result.push(StructuredApiMessage {
-                    role: "assistant".to_owned(),
-                    content: if text_content.is_empty() {
-                        None
-                    } else {
-                        Some(text_content)
-                    },
-                    tool_calls: if tool_calls.is_empty() {
-                        None
-                    } else {
-                        Some(tool_calls)
-                    },
-                    tool_call_id: None,
-                });
+                result.push(convert_assistant_tool_message(
+                    msg,
+                    &unmatched_tool_use_ids(msg, next_non_system(messages, i)),
+                ));
             } else {
-                // User messages with ToolResult parts → role: "tool" messages
-                for part in &msg.parts {
-                    match part {
-                        MessagePart::ToolResult {
-                            tool_use_id,
-                            content,
-                            ..
-                        } => {
-                            result.push(StructuredApiMessage {
-                                role: "tool".to_owned(),
-                                content: Some(content.clone()),
-                                tool_calls: None,
-                                tool_call_id: Some(tool_use_id.clone()),
-                            });
-                        }
-                        other => {
-                            if let Some(text) = other.as_plain_text().filter(|t| !t.is_empty()) {
-                                result.push(StructuredApiMessage {
-                                    role: "user".to_owned(),
-                                    content: Some(text.to_owned()),
-                                    tool_calls: None,
-                                    tool_call_id: None,
-                                });
-                            }
-                        }
-                    }
-                }
+                push_user_tool_messages(
+                    &mut result,
+                    msg,
+                    &unmatched_tool_result_ids(msg, prev_non_system(messages, i)),
+                );
             }
         } else {
             let role = match msg.role {

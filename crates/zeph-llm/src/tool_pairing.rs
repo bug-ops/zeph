@@ -96,6 +96,66 @@ use std::collections::HashSet;
 
 use crate::provider::{Message, MessagePart, Role};
 
+/// Nearest `Role`-eligible neighbour immediately following index `at` in `messages`, skipping
+/// any `Role::System` messages in between.
+///
+/// This is the single definition of "next adjacent message" used by every orphan-detection call
+/// site — [`repair_tool_pairs`]'s own pass 2 scan, and non-Claude request builders (`OpenAI`/
+/// `OpenAI`-compatible, issue #6781) that classify orphans against `&[Message]` directly rather
+/// than a pre-filtered `visible` slice (contrast `zeph_llm::claude::request::split_messages_structured`,
+/// which pre-filters agent-visible non-system messages and therefore indexes that slice instead).
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::{Message, Role};
+/// use zeph_llm::tool_pairing::next_non_system;
+///
+/// let messages = vec![
+///     Message::from_legacy(Role::Assistant, "a"),
+///     Message::from_legacy(Role::System, "sys"),
+///     Message::from_legacy(Role::User, "b"),
+/// ];
+/// let next = next_non_system(&messages, 0).expect("skips the System message");
+/// assert_eq!(next.role, Role::User);
+/// assert!(next_non_system(&messages, 2).is_none(), "no message follows index 2");
+/// ```
+#[must_use]
+pub fn next_non_system(messages: &[Message], at: usize) -> Option<&Message> {
+    messages
+        .get(at + 1..)?
+        .iter()
+        .find(|m| m.role != Role::System)
+}
+
+/// Nearest `Role`-eligible neighbour immediately preceding index `at` in `messages`, skipping
+/// any `Role::System` messages in between. See [`next_non_system`] for the forward direction and
+/// why this shared definition exists.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::{Message, Role};
+/// use zeph_llm::tool_pairing::prev_non_system;
+///
+/// let messages = vec![
+///     Message::from_legacy(Role::Assistant, "a"),
+///     Message::from_legacy(Role::System, "sys"),
+///     Message::from_legacy(Role::User, "b"),
+/// ];
+/// let prev = prev_non_system(&messages, 2).expect("skips the System message");
+/// assert_eq!(prev.role, Role::Assistant);
+/// assert!(prev_non_system(&messages, 0).is_none(), "no message precedes index 0");
+/// ```
+#[must_use]
+pub fn prev_non_system(messages: &[Message], at: usize) -> Option<&Message> {
+    messages
+        .get(..at)?
+        .iter()
+        .rev()
+        .find(|m| m.role != Role::System)
+}
+
 /// Collect `tool_use` ids from `msg` that have no matching `ToolResult` in `next`.
 ///
 /// `next` must resolve to the message immediately following `msg` in the caller's window,
@@ -133,15 +193,7 @@ use crate::provider::{Message, MessagePart, Role};
 /// ```
 #[must_use]
 pub fn unmatched_tool_use_ids<'a>(msg: &'a Message, next: Option<&Message>) -> HashSet<&'a str> {
-    let matched: HashSet<&str> = next.filter(|n| n.role == Role::User).map_or_default(|n| {
-        n.parts
-            .iter()
-            .filter_map(|p| match p {
-                MessagePart::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
-                _ => None,
-            })
-            .collect()
-    });
+    let matched = resolved_tool_result_ids(next);
 
     msg.parts
         .iter()
@@ -150,6 +202,46 @@ pub fn unmatched_tool_use_ids<'a>(msg: &'a Message, next: Option<&Message>) -> H
             _ => None,
         })
         .collect()
+}
+
+/// Collect the `tool_use_id`s of every `ToolResult` part in `next`, if `next` is eligible to
+/// resolve a preceding `ToolUse` (`next.role == Role::User`; `None`, or any other role, yields
+/// an empty set).
+///
+/// This is the "matched" half of [`unmatched_tool_use_ids`]'s definition, factored out so a
+/// caller that needs to test *arbitrary candidate ids* against the same adjacency-scoped
+/// resolution set — not necessarily ids drawn from a `Message`'s own `parts`, as
+/// [`unmatched_tool_use_ids`] requires — does not re-implement the pairing predicate (issue
+/// #6783: `zeph-core`'s `Agent::persist_cancelled_tool_results` idempotency guard checks a
+/// `&[ToolUseRequest]` parameter against this resolution set, and that parameter is not
+/// guaranteed to equal the current turn's assistant message's own `ToolUse` parts in every
+/// caller — see its doc comment).
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::{Message, MessagePart, Role};
+/// use zeph_llm::tool_pairing::resolved_tool_result_ids;
+///
+/// let next = Message::from_parts(Role::User, vec![MessagePart::ToolResult {
+///     tool_use_id: "t1".into(),
+///     content: "ok".into(),
+///     is_error: false,
+/// }]);
+/// assert!(resolved_tool_result_ids(Some(&next)).contains("t1"));
+/// assert!(resolved_tool_result_ids(None).is_empty());
+/// ```
+#[must_use]
+pub fn resolved_tool_result_ids(next: Option<&Message>) -> HashSet<&str> {
+    next.filter(|n| n.role == Role::User).map_or_default(|n| {
+        n.parts
+            .iter()
+            .filter_map(|p| match p {
+                MessagePart::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                _ => None,
+            })
+            .collect()
+    })
 }
 
 /// Collect `tool_result` ids from `msg` that have no matching `ToolUse` in `prev`.
@@ -310,10 +402,7 @@ pub fn repair_tool_pairs(messages: &mut Vec<Message>, action: OrphanAction) -> R
             continue;
         }
         let orphaned: HashSet<String> = {
-            let prev = (0..i)
-                .rev()
-                .find(|&j| messages[j].role != Role::System)
-                .map(|j| &messages[j]);
+            let prev = prev_non_system(messages, i);
             unmatched_tool_result_ids(&messages[i], prev)
                 .into_iter()
                 .map(str::to_owned)
@@ -378,9 +467,7 @@ pub fn repair_tool_pairs(messages: &mut Vec<Message>, action: OrphanAction) -> R
             continue;
         }
         let orphaned: HashSet<String> = {
-            let next = (i + 1..messages.len())
-                .find(|&j| messages[j].role != Role::System)
-                .map(|j| &messages[j]);
+            let next = next_non_system(messages, i);
             unmatched_tool_use_ids(&messages[i], next)
                 .into_iter()
                 .map(str::to_owned)
@@ -602,6 +689,74 @@ mod tests {
         m.parts
             .iter()
             .any(|p| matches!(p, MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == id))
+    }
+
+    #[test]
+    fn next_non_system_skips_a_run_of_system_messages() {
+        let messages = vec![
+            Message::from_legacy(Role::Assistant, "a"),
+            Message::from_legacy(Role::System, "sys1"),
+            Message::from_legacy(Role::System, "sys2"),
+            Message::from_legacy(Role::User, "b"),
+        ];
+        let next = next_non_system(&messages, 0).expect("skips both System messages");
+        assert_eq!(next.role, Role::User);
+    }
+
+    #[test]
+    fn next_non_system_is_none_at_the_last_index() {
+        let messages = vec![Message::from_legacy(Role::Assistant, "a")];
+        assert!(next_non_system(&messages, 0).is_none());
+    }
+
+    #[test]
+    fn next_non_system_is_none_when_only_system_messages_follow() {
+        let messages = vec![
+            Message::from_legacy(Role::Assistant, "a"),
+            Message::from_legacy(Role::System, "sys"),
+        ];
+        assert!(next_non_system(&messages, 0).is_none());
+    }
+
+    #[test]
+    fn prev_non_system_skips_a_run_of_system_messages() {
+        let messages = vec![
+            Message::from_legacy(Role::Assistant, "a"),
+            Message::from_legacy(Role::System, "sys1"),
+            Message::from_legacy(Role::System, "sys2"),
+            Message::from_legacy(Role::User, "b"),
+        ];
+        let prev = prev_non_system(&messages, 3).expect("skips both System messages");
+        assert_eq!(prev.role, Role::Assistant);
+    }
+
+    #[test]
+    fn prev_non_system_is_none_at_index_zero() {
+        let messages = vec![Message::from_legacy(Role::User, "a")];
+        assert!(prev_non_system(&messages, 0).is_none());
+    }
+
+    #[test]
+    fn resolved_tool_result_ids_is_empty_for_non_user_role() {
+        let next = Message::from_parts(Role::Assistant, vec![tool_result("t1", "ok")]);
+        assert!(resolved_tool_result_ids(Some(&next)).is_empty());
+    }
+
+    #[test]
+    fn resolved_tool_result_ids_collects_multiple_results_in_one_message() {
+        let next = Message::from_parts(
+            Role::User,
+            vec![tool_result("t1", "ok"), tool_result("t2", "ok")],
+        );
+        let resolved = resolved_tool_result_ids(Some(&next));
+        assert!(resolved.contains("t1"));
+        assert!(resolved.contains("t2"));
+        assert_eq!(resolved.len(), 2);
+    }
+
+    #[test]
+    fn resolved_tool_result_ids_is_empty_for_none() {
+        assert!(resolved_tool_result_ids(None).is_empty());
     }
 
     #[test]

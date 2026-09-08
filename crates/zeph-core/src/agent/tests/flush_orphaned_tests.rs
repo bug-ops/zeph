@@ -316,23 +316,14 @@ async fn flush_orphaned_inserts_tombstone_immediately_after_orphan_not_at_end() 
     );
 }
 
-/// FO6 (#6771 site-5 migration, KNOWN GAP — see tester handoff): `flush_orphaned_tool_use_on_shutdown`
-/// itself now computes `unpaired_ids` via `zeph_llm::tool_pairing::unmatched_tool_use_ids`
-/// (adjacency-scoped, immediate-neighbour only) and correctly identifies `call_0` as unpaired in
-/// this shape. But the call is still routed through
-/// `Agent::persist_cancelled_tool_results` (`crates/zeph-core/src/agent/tool_execution/focus.rs`,
-/// untouched by #6771), whose own `already_resolved` idempotency guard scans
-/// `self.msg.messages[turn_start..]` — from the last assistant message to the true end of
-/// history, not just the immediate neighbour. A later, unrelated `ToolResult` reusing `call_0`
-/// still falls inside that wider scan and is treated as "already resolved", silently swallowing
-/// the tombstone. So the #6770 adjacency fix for site 5 is *not* fully closed end-to-end: the
-/// classification predicate was fixed, but the downstream write-path idempotency check was not.
-/// Empirically confirmed to fail against current `focus.rs` (not a regression from this PR —
-/// `persist_cancelled_tool_results` is pre-existing #5513 code the PR does not touch). Left
-/// `#[ignore]` rather than failing the suite; un-ignore once `focus.rs`'s scan is narrowed to
-/// adjacency (or the gap is otherwise accepted and tracked).
-#[ignore = "known gap: persist_cancelled_tool_results's turn-scoped (not adjacency-scoped) \
-            already_resolved check can still swallow the tombstone; see doc comment"]
+/// FO6 (#6783 fix): `flush_orphaned_tool_use_on_shutdown` computes `unpaired_ids` via
+/// `zeph_llm::tool_pairing::unmatched_tool_use_ids` (adjacency-scoped, immediate-neighbour only)
+/// and correctly identifies `call_0` as unpaired in this shape. `Agent::persist_cancelled_tool_results`
+/// (`crates/zeph-core/src/agent/tool_execution/focus.rs`) now uses the same adjacency-scoped
+/// `zeph_llm::tool_pairing::resolved_tool_result_ids` for its own idempotency guard instead of
+/// scanning `self.msg.messages[turn_start..]` to the true end of history, so a later, unrelated
+/// `ToolResult` reusing `call_0` no longer falls inside the scan and can no longer be treated as
+/// "already resolved" to silently swallow the tombstone.
 #[tokio::test]
 async fn flush_orphaned_writes_tombstone_despite_a_later_unrelated_reuse_of_the_same_id() {
     use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
