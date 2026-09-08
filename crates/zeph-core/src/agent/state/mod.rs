@@ -930,8 +930,6 @@ pub(crate) struct ToolState {
     pub(crate) dependency_always_on: HashSet<String>,
     /// Tool IDs that completed successfully in the current session.
     pub(crate) completed_tool_ids: HashSet<String>,
-    /// Current tool loop iteration index within the active user turn.
-    pub(crate) current_tool_iteration: usize,
     /// PASTE pattern store for tool invocation history and prediction (#3642).
     ///
     /// `Some` only when `config.tools.speculative.mode` is `Pattern` or `Both`.
@@ -960,7 +958,6 @@ impl Default for ToolState {
             dependency_graph: None,
             dependency_always_on: HashSet::new(),
             completed_tool_ids: HashSet::new(),
-            current_tool_iteration: 0,
             pattern_store: None,
             tool_to_skill: HashMap::new(),
             last_tool_per_skill: HashMap::new(),

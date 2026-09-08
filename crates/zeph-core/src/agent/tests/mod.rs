@@ -8,6 +8,8 @@ mod bare_mode_shutdown_tests;
 #[cfg(test)]
 mod bg_metrics_tick_race_tests;
 #[cfg(test)]
+mod budget_hint_reset_tests;
+#[cfg(test)]
 mod commands_rs_drift_tests;
 #[cfg(test)]
 mod compaction_e2e;

@@ -1172,9 +1172,10 @@ impl<C: Channel> Agent<C> {
                 let max = ct.max_daily_cents();
                 if max > 0.0 { Some(max) } else { None }
             });
+            // `rebuild_system_prompt` runs once per turn, before the tool loop starts, so the
+            // full budget is always what should be advertised here (#6765).
             let max_tool_calls = self.tool_orchestrator.max_iterations;
-            let remaining_tool_calls =
-                max_tool_calls.saturating_sub(self.services.tool_state.current_tool_iteration);
+            let remaining_tool_calls = max_tool_calls;
             let hint = BudgetHint {
                 remaining_cost_cents,
                 total_budget_cents,

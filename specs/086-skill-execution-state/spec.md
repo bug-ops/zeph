@@ -63,12 +63,12 @@ related:
 | `crates/zeph-skills/src/generator.rs:412,448` | Self-learning re-emission of whole SKILL.md text; `metadata` feeds re-emission |
 | `crates/zeph-skills/src/merge_prompts.rs:18` | `MERGE_SYSTEM_PROMPT` — must preserve `state:` block on skill merge |
 | `crates/zeph-core/src/agent/state/mod.rs:83-168` | `SkillState` — new state field lives here |
-| `crates/zeph-core/src/agent/state/mod.rs:907-953` | `ToolState` — gains `last_batch_tool_call_ids`; sibling of `current_tool_iteration` (which has the never-reset-per-turn defect, M2) |
+| `crates/zeph-core/src/agent/state/mod.rs:907-953` | `ToolState` — gains `last_batch_tool_call_ids`; the former `current_tool_iteration` field that sat alongside it was removed entirely by #6765 (M2 fixed), not just reset |
 | `crates/zeph-core/src/agent/state/mod.rs:1038` | `durable_agent_turns_config: Option<DurableConfig>` — session-stable gate predicate for D1 |
 | `crates/zeph-core/src/agent/context/assembly.rs:908` | `active_skill_names` assignment site — where skill-state activation is resolved, turn-start only |
 | `crates/zeph-core/src/agent/context/assembly.rs:1058` | Cache-stable system-prompt prefix seal — state must never enter here |
 | `crates/zeph-core/src/agent/context/assembly.rs:1106-1107` | Volatile system-prompt region ("never cached") |
-| `crates/zeph-core/src/agent/context/assembly.rs:1177` | `BudgetHint` reads `current_tool_iteration` once per turn (evidence for D4, M2) |
+| `crates/zeph-core/src/agent/context/assembly.rs:1177` | `BudgetHint.remaining_tool_calls` now set directly to `max_tool_calls` at this once-per-turn seam, post-#6765 (evidence for D4; M2 fixed) |
 | `crates/zeph-core/src/agent/tool_execution/tier_loop.rs:2331` | `call_llm_durable` fingerprint construction (`fp_input`) — D1's hazard |
 | `crates/zeph-core/src/agent/tool_execution/tier_loop.rs:2466-2474` | `handle_native_tool_calls` → clearing pass insertion point → `maybe_summarize_tool_pair` → `prune_stale_tool_outputs` |
 | `crates/zeph-core/src/agent/llm_dispatch.rs:92-113` | Rolling-tail rendering precedent (`remove_lsp_messages` → `push_message` → `recompute_prompt_tokens`) — D4's seam |
@@ -275,7 +275,7 @@ THEN no `<skill_state>` block is rendered, no clearing pass runs, and a `tracing
 | `SkillExecutionState` | `zeph-skills` | The live, bounded state object for the active state-declaring skill — **in-memory only**, no persistence in this spec |
 | `StatePatch` | `zeph-skills` | A validated, dictionary-merge patch with null-deletion semantics — rejected before merge on any validation failure, never partially applied |
 | `NestedMode` | `zeph-skills::loader` | `enum { Collect, Skip }` — replaces `parse_frontmatter`'s `bool in_metadata`; `Collect` for `metadata:` (unchanged behavior), `Skip` for any other empty-valued top-level key (fixes the pre-existing `extensions:` leak, and covers the new `state:` block) |
-| `ToolState.last_batch_tool_call_ids` | `crates/zeph-core/src/agent/state/mod.rs`, sibling of `current_tool_iteration` (`:924`) | `Vec<String>` — the `tool_use_id`s of the tool batch a validated patch in the current iteration may absorb; **must** be cleared at turn start or gated on `iteration > 0` (FR-009) |
+| `ToolState.last_batch_tool_call_ids` | `crates/zeph-core/src/agent/state/mod.rs` | `Vec<String>` — the `tool_use_id`s of the tool batch a validated patch in the current iteration may absorb; **must** be cleared at turn start or gated on `iteration > 0` (FR-009) |
 | `clear_absorbed_tool_results` | `zeph-context::microcompact` (new, pure) | `fn(messages: &mut [Message], tool_use_ids: &[String], sentinel: &str, now_ts: i64) -> usize` — signature mirrors `sweep_stale_tool_outputs` (slice in, sentinel/`now_ts` supplied by caller, count returned); no `LOW_VALUE_TOOLS` gate, no `keep_recent` cutoff — targets exactly the given ids |
 | `find_preceding_tool_use_id` | `zeph-context::microcompact` (new) | Sibling of `find_preceding_tool_use_name` — walks back to the nearest preceding `ToolUse` id for a `ToolOutput` part (which carries no `tool_use_id` itself) |
 | `skill_state_patch` | Built-in tool, `zeph-core` | Registered only when a state-declaring skill is active; JSON input schema derived from `SkillStateSchema` |
@@ -417,11 +417,15 @@ sentinel-prefixed or with `compacted_at.is_some()`. Never removing a part and ne
 
 The original design's rendering seam (a `<skill_state>` block at the once-per-turn
 system-prompt/`inject_active_goal` seam, `assembly.rs:2228-2270`, rebuilt once per turn at
-`mod.rs:1761`) is **superseded**. Direct evidence it mis-serves per-iteration state: the existing
-`current_tool_iteration` field is written every iteration (`tier_loop.rs:2379`) but its only
-reader, `BudgetHint` in `rebuild_system_prompt`, runs once before the loop
-(`assembly.rs:1177`) — `remaining_tool_calls` shown to the model carries over from the previous
-turn's last iteration (M2, a separate pre-existing P3 defect, not fixed by this spec).
+`mod.rs:1761`) is **superseded**. Direct evidence it mis-serves per-iteration state (pre-#6765):
+the `current_tool_iteration` field used to be written every iteration (`tier_loop.rs:2379`) but
+its only reader, `BudgetHint` in `rebuild_system_prompt`, ran once before the loop
+(`assembly.rs:1177`) — `remaining_tool_calls` shown to the model carried over from the previous
+turn's last iteration (M2, a separate pre-existing P3 defect). #6765 fixed M2 by removing the
+dead per-iteration counter outright rather than merely resetting it: `remaining_tool_calls` is
+now set directly to `max_tool_calls` at the once-per-turn seam. That resolution sharpens rather
+than undermines this section's point — the once-per-turn seam structurally cannot reflect
+per-iteration state, so it was simplified to stop pretending to.
 
 **Decision**: render at the rolling-tail seam in `llm_dispatch.rs:96-113`, the verified precedent
 for mid-turn `messages[0]`-adjacent mutation: `remove_lsp_messages()` → `push_message(Message::
