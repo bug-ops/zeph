@@ -371,17 +371,30 @@ impl<C: Channel> Agent<C> {
     /// persisted but the matching user `ToolResult` message was not yet written. Without this, the
     /// DB contains an orphaned `ToolUse` that will trigger a Claude API 400 on the next session.
     ///
-    /// Idempotency guard (#5513): skips any `tool_use_id` that already has a `ToolResult` (real or
-    /// tombstone) earlier in the *current turn*, so a caller that (mistakenly, or via a future
-    /// defect) invokes this more than once for the same batch cannot write duplicate/contradicting
-    /// results.
+    /// Idempotency guard (#5513): skips any `tool_use_id` that already has a matching `ToolResult`
+    /// (real or tombstone), so a caller that (mistakenly, or via a future defect) invokes this
+    /// more than once for the same batch cannot write duplicate/contradicting results.
     ///
-    /// The scan is scoped to messages from the current turn's assistant `ToolUse` message onward
+    /// The guard is adjacency-scoped (#6783), via [`zeph_llm::tool_pairing::resolved_tool_result_ids`]
+    /// against the message immediately following the current turn's assistant `ToolUse` message
     /// (found as the most recent `Role::Assistant` message, mirroring
-    /// `shutdown::flush_orphaned_tool_use_on_shutdown`), not the whole history. Some providers
-    /// (e.g. Ollama, which assigns `tool_call` ids as `format!("call_{i}")` by batch index) reuse
-    /// the same `tool_use_id` across turns; scanning full history would treat an earlier turn's
-    /// legitimate result as covering this turn's call and wrongly skip its tombstone.
+    /// `shutdown::flush_orphaned_tool_use_on_shutdown`, whose own adjacency-scoped `unpaired_ids`
+    /// computation this mirrors) — not a scan of every message in the turn. A turn-wide scan can
+    /// be fooled by an unrelated *later* `ToolResult` in the same turn that reuses the orphaned
+    /// call's id (Ollama-style `format!("call_{i}")` batch-index id reuse, see the
+    /// `zeph_llm::tool_pairing` module docs for the general hazard): it would wrongly treat the
+    /// genuinely orphaned call as already resolved and silently skip its tombstone, even when
+    /// `shutdown::flush_orphaned_tool_use_on_shutdown` already correctly identified it as unpaired
+    /// before calling in here.
+    ///
+    /// `resolved_tool_result_ids` (not [`zeph_llm::tool_pairing::unmatched_tool_use_ids`]) is used
+    /// because `tool_calls` here is an arbitrary caller-supplied batch, not necessarily identical
+    /// to the current turn's assistant message's own `ToolUse` parts — `resolved_tool_result_ids`
+    /// only needs the adjacent message, not a `Message` to read `ToolUse` ids from. When no
+    /// `Role::Assistant` message exists in history at all (there is no turn boundary to be
+    /// adjacent to), the guard treats every id as unresolved rather than guessing a boundary —
+    /// every `tool_calls` entry gets tombstoned, which is the safe direction for an idempotency
+    /// guard to fail in (a spurious duplicate tombstone, never a silently dropped one).
     ///
     /// `insert_at` places the tombstone at a specific index instead of the true end of history —
     /// required by `flush_orphaned_tool_use_on_shutdown`, which can run after a later turn's
@@ -400,23 +413,21 @@ impl<C: Channel> Agent<C> {
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
         insert_at: Option<usize>,
     ) {
-        let turn_start = self
+        // No fallback to index 0 on a missing assistant message: `resolved_tool_result_ids`
+        // needs a real turn boundary to identify "the adjacent message" — guessing one would
+        // silently narrow the scan to an arbitrary slice instead of "no assistant ⇒ no
+        // adjacency, nothing can be resolved yet" (review finding, #6783 follow-up).
+        let already_resolved = self
             .msg
             .messages
             .iter()
             .rposition(|m| m.role == Role::Assistant)
-            .unwrap_or(0);
-        let already_resolved: std::collections::HashSet<&str> = self.msg.messages[turn_start..]
-            .iter()
-            .flat_map(|m| m.parts.iter())
-            .filter_map(|p| {
-                if let MessagePart::ToolResult { tool_use_id, .. } = p {
-                    Some(tool_use_id.as_str())
-                } else {
-                    None
-                }
+            .map(|turn_start| {
+                zeph_llm::tool_pairing::resolved_tool_result_ids(
+                    zeph_llm::tool_pairing::next_non_system(&self.msg.messages, turn_start),
+                )
             })
-            .collect();
+            .unwrap_or_default();
 
         let result_parts: Vec<MessagePart> = tool_calls
             .iter()

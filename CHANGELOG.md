@@ -51,6 +51,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-core`: fixed `trim_parent_messages` matching orphaned `ToolUse`/`ToolResult` parts
   against a global id set instead of adjacency, which could cross-pair an orphan against an
   unrelated tool call sharing its id under Ollama-style batch-index id reuse (#6770, #6780).
+- `zeph-llm`: added a request-build-time orphaned `ToolUse`/`ToolResult` repair pass to the
+  OpenAI/OpenAI-compatible request builder (`convert_messages_structured`), mirroring the
+  Claude request builder's downgrade-to-text pattern — previously only Claude had this
+  backstop, so an orphan surviving upstream trim/sanitize passes could reach OpenAI or an
+  OpenAI-compatible/Ollama endpoint unrepaired and produce a 400/422 (#6781).
+- `zeph-core`: made `persist_cancelled_tool_results`'s idempotency guard adjacency-scoped
+  instead of scanning the whole turn tail, closing a gap where an unrelated later
+  `ToolResult` reusing an orphaned call's id (Ollama-style batch-index id reuse) could make
+  the guard wrongly treat the orphan as already resolved and silently skip its shutdown
+  tombstone write (#6783). Also fixed `shutdown.rs`'s `flush_orphaned_tool_use_on_shutdown`
+  to reuse the shared `zeph_llm::tool_pairing::next_non_system` adjacency helper instead of
+  a duplicate hand-rolled scan, and hardened the same idempotency guard against a missing
+  assistant message in history (previously fell back to an arbitrary index instead of
+  resolving nothing).
 
 ### Added
 

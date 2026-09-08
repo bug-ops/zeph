@@ -109,13 +109,8 @@ impl<C: Channel> Agent<C> {
             return;
         }
 
-        let next_non_system = msgs
-            .get(asst_idx + 1..)
-            .into_iter()
-            .flatten()
-            .find(|m| m.role != Role::System);
-        let unpaired_ids =
-            zeph_llm::tool_pairing::unmatched_tool_use_ids(asst_msg, next_non_system);
+        let next_msg = zeph_llm::tool_pairing::next_non_system(msgs, asst_idx);
+        let unpaired_ids = zeph_llm::tool_pairing::unmatched_tool_use_ids(asst_msg, next_msg);
         if unpaired_ids.is_empty() {
             return;
         }

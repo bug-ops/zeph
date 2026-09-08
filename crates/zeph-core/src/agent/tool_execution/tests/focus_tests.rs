@@ -116,6 +116,23 @@ fn tool_use_request(id: &str) -> ToolUseRequest {
     }
 }
 
+fn push_assistant_tool_use(agent: &mut Agent<MockChannel>, ids: &[&str]) {
+    let parts: Vec<MessagePart> = ids
+        .iter()
+        .map(|id| MessagePart::ToolUse {
+            id: (*id).to_owned(),
+            name: "bash".to_owned(),
+            input: serde_json::json!({}),
+        })
+        .collect();
+    agent.msg.messages.push(Message {
+        role: Role::Assistant,
+        content: "[tool_use]".to_owned(),
+        parts,
+        metadata: MessageMetadata::default(),
+    });
+}
+
 fn push_tool_result(agent: &mut Agent<MockChannel>, id: &str, content: &str, is_error: bool) {
     let part = MessagePart::ToolResult {
         tool_use_id: id.to_owned(),
@@ -148,6 +165,9 @@ fn tool_result_count(agent: &Agent<MockChannel>, id: &str) -> usize {
 #[tokio::test]
 async fn persist_cancelled_tool_results_is_noop_when_all_ids_already_resolved() {
     let mut agent = make_agent();
+    // An assistant ToolUse message must anchor the adjacency scan (#6783 follow-up) — without
+    // one, "already resolved" can no longer be inferred and every id is tombstoned instead.
+    push_assistant_tool_use(&mut agent, &["call-1"]);
     push_tool_result(&mut agent, "call-1", "real output", false);
     let message_count_before = agent.msg.messages.len();
 
@@ -172,6 +192,9 @@ async fn persist_cancelled_tool_results_is_noop_when_all_ids_already_resolved() 
 #[tokio::test]
 async fn persist_cancelled_tool_results_only_tombstones_unresolved_ids() {
     let mut agent = make_agent();
+    // An assistant ToolUse message must anchor the adjacency scan (#6783 follow-up) — without
+    // one, "already resolved" can no longer be inferred and every id is tombstoned instead.
+    push_assistant_tool_use(&mut agent, &["call-1", "call-2"]);
     push_tool_result(&mut agent, "call-1", "real output", false);
 
     agent
@@ -221,6 +244,31 @@ async fn persist_cancelled_tool_results_tombstones_all_ids_when_none_resolved() 
 
     assert_eq!(tool_result_count(&agent, "call-1"), 1);
     assert_eq!(tool_result_count(&agent, "call-2"), 1);
+}
+
+/// Review finding (#6783 follow-up): with **no** `Role::Assistant` message anywhere in history,
+/// there is no turn boundary for the adjacency scan to anchor on, so the guard must never guess
+/// one — every id must be treated as unresolved (tombstoned), not silently "resolved" by
+/// whatever non-system message happens to sit at a fallback index. Before this fix, a fallback
+/// of `turn_start = 0` made `next_non_system` inspect `messages[1]`, which could coincidentally
+/// be a real `ToolResult` for `call-1` and wrongly skip its tombstone.
+#[tokio::test]
+async fn persist_cancelled_tool_results_tombstones_everything_when_no_assistant_message_exists() {
+    let mut agent = make_agent();
+    // No assistant ToolUse message at all — just an unrelated ToolResult sitting at the
+    // position a naive `unwrap_or(0)` fallback would have inspected as "the adjacent message".
+    push_tool_result(&mut agent, "call-1", "real output", false);
+
+    agent
+        .persist_cancelled_tool_results(&[tool_use_request("call-1")], None)
+        .await;
+
+    assert_eq!(
+        tool_result_count(&agent, "call-1"),
+        2,
+        "with no assistant message to anchor adjacency, call-1 must be tombstoned even though \
+         an unrelated ToolResult for the same id exists elsewhere in history"
+    );
 }
 
 /// Regression test for the Ollama id-reuse finding (impl-critic, verified against

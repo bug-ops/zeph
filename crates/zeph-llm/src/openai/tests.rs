@@ -1187,7 +1187,43 @@ fn convert_messages_structured_plain_messages() {
 #[test]
 fn convert_messages_structured_assistant_tool_only_content_is_none() {
     // When assistant message has tool_calls but no text, content must be None (not "")
-    // OpenAI API rejects "content": "" combined with "tool_calls" with HTTP 400
+    // OpenAI API rejects "content": "" combined with "tool_calls" with HTTP 400.
+    // A following ToolResult message keeps the pair matched so the orphan-repair pass
+    // (issue #6781) does not downgrade it — see the trailing-unanswered test below for
+    // that case.
+    let messages = vec![
+        Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::ToolUse {
+                id: "call_1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "ls"}),
+            }],
+        ),
+        Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "call_1".into(),
+                content: "file1.rs".into(),
+                is_error: false,
+            }],
+        ),
+    ];
+    let result = convert_messages_structured(&messages);
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0].role, "assistant");
+    assert!(
+        result[0].content.is_none(),
+        "content must be None (not \"\") for tool-only assistant messages"
+    );
+    assert!(result[0].tool_calls.is_some());
+}
+
+#[test]
+fn convert_messages_structured_trailing_unanswered_tool_use_is_downgraded_to_text() {
+    // #6781: a trailing ToolUse with no following ToolResult is orphaned — matching the
+    // Claude request builder's repair (#6770/#6771), it is downgraded to text instead of
+    // being sent as a dangling tool_calls entry the API can never resolve.
     let messages = vec![Message::from_parts(
         Role::Assistant,
         vec![MessagePart::ToolUse {
@@ -1200,10 +1236,85 @@ fn convert_messages_structured_assistant_tool_only_content_is_none() {
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].role, "assistant");
     assert!(
-        result[0].content.is_none(),
-        "content must be None (not \"\") for tool-only assistant messages"
+        result[0].tool_calls.is_none(),
+        "the orphaned call must not survive as tool_calls"
     );
-    assert!(result[0].tool_calls.is_some());
+    let content = result[0]
+        .content
+        .as_deref()
+        .expect("downgraded marker must survive as text");
+    assert!(
+        content.contains("bash"),
+        "downgrade marker must name the tool"
+    );
+}
+
+#[test]
+fn convert_messages_structured_leading_unmatched_tool_result_is_downgraded_to_text() {
+    // #6781: a ToolResult with no preceding matching ToolUse (e.g. after a trim boundary)
+    // must not be sent as a "tool" role message — OpenAI rejects a tool_call_id with no
+    // corresponding tool_calls entry earlier in the request.
+    let messages = vec![Message::from_parts(
+        Role::User,
+        vec![MessagePart::ToolResult {
+            tool_use_id: "call_orphan".into(),
+            content: "leftover output".into(),
+            is_error: false,
+        }],
+    )];
+    let result = convert_messages_structured(&messages);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].role, "user");
+    assert!(
+        result[0].tool_call_id.is_none(),
+        "the orphaned result must not survive as a tool-role message"
+    );
+    let content = result[0]
+        .content
+        .as_deref()
+        .expect("downgraded marker must survive as text");
+    assert!(content.contains("leftover output"));
+}
+
+#[test]
+fn convert_messages_structured_multiple_orphaned_tool_use_ids_in_one_message_are_all_downgraded() {
+    // Parity with tool_pairing's own
+    // multiple_consecutive_orphaned_tool_use_ids_in_one_message_are_all_stripped: a trailing
+    // assistant message with several ToolUse parts and no following ToolResult message must
+    // have every one of them downgraded, not just the first.
+    let messages = vec![Message::from_parts(
+        Role::Assistant,
+        vec![
+            MessagePart::ToolUse {
+                id: "call_1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({}),
+            },
+            MessagePart::ToolUse {
+                id: "call_2".into(),
+                name: "read_file".into(),
+                input: serde_json::json!({}),
+            },
+            MessagePart::ToolUse {
+                id: "call_3".into(),
+                name: "grep".into(),
+                input: serde_json::json!({}),
+            },
+        ],
+    )];
+    let result = convert_messages_structured(&messages);
+    assert_eq!(result.len(), 1);
+    assert!(
+        result[0].tool_calls.is_none(),
+        "none of the three orphaned calls may survive as tool_calls"
+    );
+    let content = result[0]
+        .content
+        .as_deref()
+        .expect("all three downgraded markers must survive as text");
+    assert!(content.contains("bash"));
+    assert!(content.contains("read_file"));
+    assert!(content.contains("grep"));
 }
 
 #[test]
