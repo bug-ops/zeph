@@ -110,12 +110,12 @@ use super::{
     migrate_memory_persona_config, migrate_memory_reasoning_config,
     migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
     migrate_memory_retrieval_query_bias, migrate_memory_store_config,
-    migrate_memory_type_aware_compose_config, migrate_microcompact_config, migrate_nli_config,
-    migrate_orchestration_asset_sensitivity, migrate_orchestration_command_config,
-    migrate_orchestration_ensemble, migrate_orchestration_idle_timeout,
-    migrate_orchestration_orchestrator_provider, migrate_orchestration_persistence,
-    migrate_orchestration_whole_plan_verifier_timeout, migrate_otel_filter,
-    migrate_overflow_max_per_call_override, migrate_pii_filter_names,
+    migrate_memory_store_max_namespace_rows, migrate_memory_type_aware_compose_config,
+    migrate_microcompact_config, migrate_nli_config, migrate_orchestration_asset_sensitivity,
+    migrate_orchestration_command_config, migrate_orchestration_ensemble,
+    migrate_orchestration_idle_timeout, migrate_orchestration_orchestrator_provider,
+    migrate_orchestration_persistence, migrate_orchestration_whole_plan_verifier_timeout,
+    migrate_otel_filter, migrate_overflow_max_per_call_override, migrate_pii_filter_names,
     migrate_planner_model_to_provider, migrate_plugins_reputation_config,
     migrate_policy_provider_and_utility_window, migrate_provider_max_concurrent,
     migrate_qdrant_api_key, migrate_qdrant_timeout_secs, migrate_quality_config,
@@ -1394,5 +1394,18 @@ impl Migration for MigrateAgentsPeerMessagingConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_agents_peer_messaging_config(toml_src)
+    }
+}
+
+/// Step 109 — insert an active `max_namespace_rows = 256` value into an existing active
+/// `[memory.store]` table that lacks it (issue #6774).
+pub(super) struct MigrateMemoryStoreMaxNamespaceRows;
+impl Migration for MigrateMemoryStoreMaxNamespaceRows {
+    fn name(&self) -> &'static str {
+        "migrate_memory_store_max_namespace_rows"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_memory_store_max_namespace_rows(toml_src)
     }
 }

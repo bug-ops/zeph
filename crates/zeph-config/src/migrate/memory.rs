@@ -886,12 +886,72 @@ pub fn migrate_memory_store_config(toml_src: &str) -> Result<MigrationResult, Mi
          # [memory.store]\n\
          # enabled = false\n\
          # max_value_bytes = 65536    # reject store_put writes larger than this instead of truncating\n\
+         # max_namespace_rows = 256   # evict oldest rows past this count per namespace\n\
          # search_provider = \"fast\"   # reserved for a future semantic-search extension; unused in v1\n";
     let raw = doc.to_string();
     let output = format!("{raw}{comment}");
 
     Ok(MigrationResult {
         output,
+        changed_count: 1,
+        sections_changed: vec!["memory.store".to_owned()],
+    })
+}
+
+/// Insert an active `max_namespace_rows = 256` value into an existing active `[memory.store]`
+/// table that lacks it (issue #6774).
+///
+/// `migrate_memory_store_config` (above) only adds `[memory.store]` as a commented advisory
+/// block, and only when the section is entirely absent — it is a no-op once the section
+/// already exists, e.g. after `--init` enabled the store, or after a user copied
+/// `config/default.toml`'s commented example verbatim under an active header. Every such
+/// deployment silently gets the new row-cap default (256) applied with no config-file surface
+/// to see or change it; this step makes that surface reachable without a config rewrite.
+///
+/// Uses the parsed table's `contains_key`, not a raw-source substring check, so a merely
+/// *commented* `# max_namespace_rows = ...` line (invisible to `toml_edit`) does not block the
+/// insertion — only a real, active key does.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_memory_store_max_namespace_rows(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    if !section_header_present(toml_src, "memory.store") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    let Some(store_table) = doc
+        .get_mut("memory")
+        .and_then(toml_edit::Item::as_table_mut)
+        .and_then(|memory| memory.get_mut("store"))
+        .and_then(toml_edit::Item::as_table_mut)
+    else {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    };
+
+    if store_table.contains_key("max_namespace_rows") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    store_table.insert("max_namespace_rows", toml_edit::value(256_i64));
+
+    Ok(MigrationResult {
+        output: doc.to_string(),
         changed_count: 1,
         sections_changed: vec!["memory.store".to_owned()],
     })

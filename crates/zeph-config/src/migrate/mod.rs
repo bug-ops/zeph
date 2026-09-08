@@ -68,7 +68,8 @@ pub use memory::{
     migrate_memory_persona_config, migrate_memory_reasoning_config,
     migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
     migrate_memory_retrieval_query_bias, migrate_memory_store_config,
-    migrate_memory_type_aware_compose_config, migrate_qdrant_api_key, migrate_qdrant_timeout_secs,
+    migrate_memory_store_max_namespace_rows, migrate_memory_type_aware_compose_config,
+    migrate_qdrant_api_key, migrate_qdrant_timeout_secs,
 };
 pub use plugins::migrate_plugins_reputation_config;
 pub use serve::migrate_serve_config;
@@ -667,10 +668,10 @@ use steps::{
     MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
     MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
     MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
-    MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig, MigrateMemoryTypeAwareCompose,
-    MigrateMicrocompactConfig, MigrateNliConfig, MigrateOrchestrationAssetSensitivity,
-    MigrateOrchestrationCommandConfig, MigrateOrchestrationEnsemble,
-    MigrateOrchestrationIdleTimeout, MigrateOrchestrationPersistence,
+    MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig, MigrateMemoryStoreMaxNamespaceRows,
+    MigrateMemoryTypeAwareCompose, MigrateMicrocompactConfig, MigrateNliConfig,
+    MigrateOrchestrationAssetSensitivity, MigrateOrchestrationCommandConfig,
+    MigrateOrchestrationEnsemble, MigrateOrchestrationIdleTimeout, MigrateOrchestrationPersistence,
     MigrateOrchestrationWholePlanVerifierTimeout, MigrateOrchestratorProvider, MigrateOtelFilter,
     MigrateOverflowMaxPerCallOverride, MigratePiiFilterNames, MigratePlannerModelToProvider,
     MigratePluginsReputationConfig, MigratePolicyProviderAndUtilityWindow,
@@ -916,6 +917,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 108 — add [agents.peer_messaging] advisory block for live inter-sub-agent
             // messaging (spec 046-subagent-peer-messaging-parity, #5871)
             Box::new(MigrateAgentsPeerMessagingConfig),
+            // Step 109 — insert active max_namespace_rows = 256 into an existing active
+            // [memory.store] table that lacks it (#6774)
+            Box::new(MigrateMemoryStoreMaxNamespaceRows),
         ]
     });
 

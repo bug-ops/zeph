@@ -12,6 +12,10 @@ fn default_max_value_bytes() -> usize {
     65536
 }
 
+fn default_max_namespace_rows() -> usize {
+    256
+}
+
 /// Configuration for the generic namespaced cross-thread key-value store, nested under
 /// `[memory.store]` in TOML (spec-080, #6363).
 ///
@@ -24,6 +28,7 @@ fn default_max_value_bytes() -> usize {
 /// [memory.store]
 /// enabled = false
 /// max_value_bytes = 65536
+/// max_namespace_rows = 256
 /// # search_provider = "fast"   # reserved for future semantic search
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -35,6 +40,10 @@ pub struct CrossThreadStoreConfig {
     /// with a descriptive error rather than truncated (FR-A-005). Default: `65536`.
     #[serde(default = "default_max_value_bytes")]
     pub max_value_bytes: usize,
+    /// Max rows retained per `(owner_key, namespace)`; oldest-first eviction on overflow
+    /// (#6774). `0` disables the cap. Default: `256`.
+    #[serde(default = "default_max_namespace_rows")]
+    pub max_namespace_rows: usize,
     /// Reserved for a future semantic-search extension over store values (`[memory.store]
     /// search_provider`, declare-once `*_provider` naming per `CLAUDE.md` §Multi-Model
     /// Design). Unused in v1 — MVP `store_search` is namespace-prefix + keyword match only
@@ -48,6 +57,7 @@ impl Default for CrossThreadStoreConfig {
         Self {
             enabled: false,
             max_value_bytes: default_max_value_bytes(),
+            max_namespace_rows: default_max_namespace_rows(),
             search_provider: None,
         }
     }
@@ -62,6 +72,7 @@ mod tests {
         let cfg = CrossThreadStoreConfig::default();
         assert!(!cfg.enabled);
         assert_eq!(cfg.max_value_bytes, 65536);
+        assert_eq!(cfg.max_namespace_rows, 256);
         assert!(cfg.search_provider.is_none());
     }
 
@@ -70,6 +81,7 @@ mod tests {
         let cfg: CrossThreadStoreConfig = toml::from_str("").unwrap();
         assert!(!cfg.enabled);
         assert_eq!(cfg.max_value_bytes, 65536);
+        assert_eq!(cfg.max_namespace_rows, 256);
     }
 
     #[test]

@@ -187,16 +187,17 @@ this new control-flow surface does not bypass existing defenses.
 | ID | Requirement | Priority |
 |----|------------|----------|
 | FR-A-001 | WHEN `[memory.store].enabled = false` (default) THE SYSTEM SHALL expose no store read/write path to orchestration or CLI — zero behavior change | must |
-| FR-A-002 | WHEN `[memory.store].enabled = true` THE SYSTEM SHALL provide `store_put`/`store_get`/`store_delete`/`store_list`/`store_search` methods on `SqliteStore`/the Postgres-backed equivalent, each taking `owner_key: &str` as the first parameter | must |
+| FR-A-002 | WHEN `[memory.store].enabled = true` THE SYSTEM SHALL provide `store_put`/`store_get`/`store_delete`/`store_list`/`store_search` methods on `SqliteStore`/the Postgres-backed equivalent, each taking `owner_key: &str` as the first parameter; `store_put` takes its trailing options (`max_value_bytes`, `max_namespace_rows`, `expected_version`, `writer_id`) as a single `StorePutOptions` builder rather than positional scalars (issue #6773/#6774) | must |
 | FR-A-003 | WHEN `store_put` is called with an `expected_version` THE SYSTEM SHALL perform a compare-then-write in one statement (`WHERE version = ?`, checking rows-affected) and return `MemoryError::VersionConflict` on mismatch, rather than silently overwriting | must |
 | FR-A-004 | WHEN `store_put` is called without `expected_version` (or on first write) THE SYSTEM SHALL upsert the row, incrementing `version` and refreshing `updated_at` | must |
 | FR-A-005 | WHEN a value exceeds `[memory.store].max_value_bytes` THE SYSTEM SHALL reject the write with a descriptive error rather than truncating or silently accepting it | must |
 | FR-A-006 | WHEN any store method is called THE SYSTEM SHALL scope every read and write to the caller-supplied `owner_key`, such that no method can return or mutate a row belonging to a different `owner_key` | must |
 | FR-A-007 | WHEN `store_list`/`store_search` results are assembled into a prompt-facing `<shared-state>` block (by zeph-core, §Group B) THE SYSTEM SHALL wrap that block as untrusted/spotlighted content per the existing `ContentTrustLevel` tiers (`sanitizer/lib.rs:49-55`) — this requirement is cross-referenced from FR-B-006, the store itself has no prompt-assembly responsibility | must |
 | FR-A-008 | WHEN `zeph-db`'s migration-parity test runs THE SYSTEM SHALL find migration 110's SQLite and Postgres definitions of `cross_thread_store` structurally identical (same table/column/index set) | must |
-| FR-A-009 | WHEN `--migrate-config` runs on a pre-080 config THE SYSTEM SHALL add a `[memory.store]` section with `enabled = false`, `max_value_bytes = 65536` | must |
+| FR-A-009 | WHEN `--migrate-config` runs on a pre-080 config THE SYSTEM SHALL add a `[memory.store]` section with `enabled = false`, `max_value_bytes = 65536`, `max_namespace_rows = 256` | must |
 | FR-A-010 | WHEN `--init` runs THE SYSTEM SHALL prompt for enabling the cross-thread store, defaulting to `No` | should |
 | FR-A-011 | WHEN the `zeph store {get,put,list,delete}` CLI subcommand or the `/store` slash command is invoked THE SYSTEM SHALL require an explicit `owner_key` (or resolve it from the invoking channel's identity per §4 NFR-SEC-02) rather than defaulting silently to a shared bucket without the operator's awareness | should |
+| FR-A-012 | WHEN a `store_put` write has been confirmed to have actually applied (the row landed) AND `(owner_key, namespace)` now holds more rows than `[memory.store].max_namespace_rows` (`0` disables the cap) THE SYSTEM SHALL evict the oldest rows (by `updated_at`, tie-broken by `key`, excluding the row just written) down to the cap, via a single atomic count-and-delete statement so each eviction pass recomputes the true current count rather than acting on an earlier snapshot — eviction runs strictly after the write, never before, so a write that ultimately fails (e.g. a stale `expected_version` CAS) never triggers an eviction, and two concurrent writers racing on the same over-cap condition cannot double-evict (issue #6774, #6773 review round 2) | must |
 
 ### Group B — Command Handoff (`crates/zeph-orchestration` + `crates/zeph-core`)
 
@@ -212,7 +213,7 @@ this new control-flow surface does not bypass existing defenses.
 | FR-B-008 | WHEN `dag::try_handoff` validation passes THE SYSTEM SHALL activate the target (`Dormant`/`Pending → Ready`), set `commanded_from = Some(source)`, and decrement the per-graph `max_handoffs` budget | must |
 | FR-B-009 | WHEN the produce-side parse detects a trailing block that is malformed, partial, or fails the sanitizer scan (FR-B-003) THE SYSTEM SHALL emit `TaskOutcome::Failed` with a descriptive error and a `tracing::warn!` — NEVER a silent fallback to `Completed`. Absence of any trailing block is not an error and produces ordinary `Completed` | must |
 | FR-B-010 | WHEN `dag::try_handoff` validates a `goto` target's dependency state THE SYSTEM SHALL require the target's `depends_on` set to be either empty or fully `Completed` at validation time, mirroring `validate_route_to`'s existing empty-`depends_on` constraint (`dag.rs:209-214`) — a target with unsatisfied dependencies is rejected as `InvalidHandoffTarget`, never force-activated with a partial `<completed-dependencies>` context (resolves critic finding N1; decision (a) of the two offered in the design review) | must |
-| FR-B-011 | WHEN any node dispatches (spawn or `RunInline`) under a graph with `[orchestration.command].enabled = true` THE SYSTEM SHALL have zeph-core append a `<shared-state>` block (from `store_list(owner_key, "orch/{graph_id}", …, StoreListOrder::RecentFirst)`, capped at a fixed row count — GitHub #6763 — with the surviving rows ordered most-recently-written-first, `updated_at DESC` tie-broken by `(namespace, key)` — GitHub #6768, replacing the original `(namespace, key)` order, which let a writer occupying every low-sorting key permanently starve every other writer out of the truncated view), rendered in that same order (never re-sorted back to `(namespace, key)`, so the row cap and the sanitizer's byte cap evict the same oldest rows), wrapped as untrusted/spotlighted content, to the prompt `router.rs::build_task_prompt` produced — `router.rs` itself remains store-free. WHEN the namespace holds more rows than the cap, or the sanitizer's byte cap clips the rendered body, THE SYSTEM SHALL mark the block's opening tag `truncated="true" shown="N"` (`N` = rows selected for rendering; trusted framing, outside the sanitized body) so the receiving node can distinguish an absent key from one dropped by truncation. Residual (documented, not closed by this requirement): a compromised node that repeatedly re-writes its own keys refreshes their `updated_at` and can still starve a write-once honest key indefinitely — recency order only bounds the *write-once* attacker; closing the sustained-write case needs per-writer provenance (tracked as a follow-up, out of scope here) | must |
+| FR-B-011 | WHEN any node dispatches (spawn or `RunInline`) under a graph with `[orchestration.command].enabled = true` THE SYSTEM SHALL have zeph-core append a `<shared-state>` block (from `store_list(owner_key, "orch/{graph_id}", …, StoreListOrder::RecentFirst)`, capped at a fixed row count — GitHub #6763 — with the surviving rows ordered most-recently-written-first, `updated_at DESC` tie-broken by `(namespace, key)` — GitHub #6768, replacing the original `(namespace, key)` order, which let a writer occupying every low-sorting key permanently starve every other writer out of the truncated view), rendered as one JSON object per line (NDJSON: `{"key", "writer", "value"}`, `writer` omitted when absent) in that same order (never re-sorted back to `(namespace, key)`, so the row cap and the sanitizer's byte cap evict the same oldest rows), wrapped as untrusted/spotlighted content, to the prompt `router.rs::build_task_prompt` produced — `router.rs` itself remains store-free. The NDJSON rendering (replacing an earlier `"{key}: {value}"` line format) closes issue #6775: a `value` containing a literal newline is JSON-string-escaped, so it can never be split into an extra pseudo-row by the receiving node's line-based parsing. WHEN the namespace holds more rows than the cap, or the sanitizer's byte cap clips the rendered body, THE SYSTEM SHALL mark the block's opening tag `truncated="true" shown="N"` (`N` = rows selected for rendering; trusted framing, outside the sanitized body) so the receiving node can distinguish an absent key from one dropped by truncation. Residual (documented, not closed by this requirement): a compromised node that repeatedly re-writes its own keys refreshes their `updated_at` and can still starve a write-once honest key indefinitely — recency order only bounds the *write-once* attacker; per-writer provenance is recorded (issue #6773) so a cross-writer overwrite is at least detectable and attributable, but the fairness quota that would consume that provenance to durably close the sustained-write case is still not implemented | must |
 | FR-B-012 | WHEN `--migrate-config` runs on a pre-080 config THE SYSTEM SHALL add an `[orchestration.command]` section with `enabled = false`, `max_handoffs = 16` | must |
 | FR-B-013 | WHEN `max_handoffs` is loaded from config THE SYSTEM SHALL reject a value of `0` at graph-plan-validation time (config-validated `> 0`), following the `default_idle_timeout_secs` precedent | must |
 | FR-B-014 | WHEN `--init` runs THE SYSTEM SHALL prompt for enabling Command handoff, defaulting to `No` | should |
@@ -229,8 +230,13 @@ this new control-flow surface does not bypass existing defenses.
   the sanitizer/`ExfiltrationGuard` scan (FR-B-003) as an equivalent checkpoint, and (b) structural
   bounding — `goto` may only target a node already present in the plan (no arbitrary node
   creation, no code execution), and `update` may only write into the emitting task's own
-  `orch/{graph_id}` namespace under the caller's `owner_key` (no cross-namespace or cross-owner
-  write). This spec explicitly does NOT claim "not a tool" as a security property.
+  `orch/{graph_id}` namespace under the caller's `owner_key`. The `orch/{graph_id}` namespace is
+  graph-scoped and *shared* by every node in the graph, so within-graph cross-node overwrite of
+  the same key is possible by design — the bounding claim is cross-*namespace*/cross-*owner*
+  isolation, not per-task write isolation within a graph. The compensating control for the
+  within-graph case is recorded last-writer provenance plus a `tracing::warn!` on a cross-writer
+  overwrite (issue #6773) — detection and attribution, not prevention. This spec explicitly does
+  NOT claim "not a tool" as a security property.
 - **NFR-SEC-02 (tenancy).** Every store row is scoped by `owner_key`, enforced as a query filter
   on every read/write method (FR-A-006), not merely a caller convention — the isolation mechanism
   is *ready* (PK column + per-call filtering seam) for every channel. v1 default path uses
@@ -251,7 +257,15 @@ this new control-flow surface does not bypass existing defenses.
   per `ContentTrustLevel` (FR-A-007/FR-B-011) because its provenance may include a previously
   injected `Command.update` value. Spotlighting is not injection-resistance (`vigil.rs:10,22`) —
   it is this codebase's existing, accepted posture for all untrusted content, and this feature
-  inherits it rather than introducing a new posture.
+  inherits it rather than introducing a new posture. The advisory injection-pattern detection
+  that feeds the spotlight's `[WARNING: ...]` annotation scans a plain-text shadow of the block
+  (`ContentSanitizer::sanitize_with_detection_source`), not the rendered NDJSON body directly —
+  NDJSON's JSON-string escaping turns a literal newline into the two-character sequence `\n`,
+  which the whitespace-joining injection patterns (`\s+`/`\s*`) do not match, so scanning the
+  escaped body would silently weaken detection for a multi-line payload hidden inside one JSON
+  string value (critic finding S4, issue #6773). This only affects the advisory annotation; the
+  blocking write-side gate (`sanitizer_reject_handoff`, FR-B-003) scans the pre-serialization
+  `key=value` text and was never affected.
 - **NFR-SEC-04 (Phase-2 boundary flag).** A future native `orch_handoff` LLM-facing tool
   (explicitly out of scope here) is structurally analogous to the LLM-initiated interrupt governed
   by issue #6234 / spec-073's INV-9 ("LLM may create but never resolve an interrupt"). Any future
@@ -264,7 +278,17 @@ this new control-flow surface does not bypass existing defenses.
   and `crates/zeph-db/migrations/postgres/110_cross_thread_store.sql`, structurally identical per
   `migration_parity.rs` (FR-A-008). `owner_key` is `NOT NULL DEFAULT 'local'` as part of the
   composite primary key `(owner_key, namespace, key)` — never nullable, since a NULL PK column is
-  invalid on Postgres and all-distinct on SQLite (would silently break upsert).
+  invalid on Postgres and all-distinct on SQLite (would silently break upsert). Migration 116
+  (`crates/zeph-db/migrations/{sqlite,postgres}/116_cross_thread_store_writer.sql`) adds a nullable
+  `writer_id TEXT` column (issue #6773) — `NULL` means "no writer identity has ever been recorded
+  for this row" (pre-migration, or every write so far was anonymous — an anonymous write
+  preserves an existing `writer_id` rather than clearing it, `COALESCE(?, writer_id)`); both
+  dialects use `ALTER TABLE ... ADD COLUMN [IF NOT EXISTS] writer_id TEXT`, verified identical
+  by hand, not by `migration_parity.rs`'s automated check — that test's `table_sets_equivalent`
+  regex-matches `CREATE TABLE` only (`crates/zeph-db/tests/migration_parity.rs:54-74`), so it
+  confirms migration 116's file-count and logical-name parity (both files exist, same numeric
+  prefix) but cannot see inside an `ALTER TABLE ADD COLUMN` statement; a `TEXT`/`VARCHAR`-shaped
+  divergence between the two dialect files would pass that test silently.
 
 **Performance / Await Discipline**
 
@@ -339,7 +363,7 @@ exists (`state/persistence.rs:23`). `try_handoff` and `build_task_prompt` stay p
    untrusted/spotlighted content, to the prompt `router.rs::build_task_prompt` produced
    (FR-B-011).
 
-### 5.3 Store schema (migration 110)
+### 5.3 Store schema (migration 110, extended by migration 116)
 
 ```sql
 CREATE TABLE cross_thread_store (
@@ -350,6 +374,7 @@ CREATE TABLE cross_thread_store (
     version     INTEGER NOT NULL DEFAULT 1,
     created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- TIMESTAMPTZ on Postgres
     updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    writer_id   TEXT,                                      -- migration 116, issue #6773; NULL = pre-migration/anonymous
     PRIMARY KEY (owner_key, namespace, key)
 );
 CREATE INDEX idx_cross_thread_store_owner_ns ON cross_thread_store(owner_key, namespace);
@@ -369,8 +394,9 @@ CREATE INDEX idx_cross_thread_store_owner_ns ON cross_thread_store(owner_key, na
 
 | Type | Location | Purpose |
 |------|----------|---------|
-| `StoreItem` | `zeph-memory/src/store/cross_thread.rs` (new) | `{ owner_key, namespace, key, value: String(JSON), version, created_at, updated_at }` |
-| `CrossThreadStore` methods | impl on `SqliteStore`/Postgres equivalent, same file | `store_put(owner_key, ns, key, value, expected_version: Option<i64>)`, `store_get`, `store_delete`, `store_list(owner_key, ns_prefix, limit)`, `store_search(owner_key, ns_prefix, query, limit)` |
+| `StoreItem` | `zeph-memory/src/store/cross_thread.rs` (new) | `{ owner_key, namespace, key, value: String(JSON), version, created_at, updated_at, writer_id: Option<String> }` |
+| `StorePutOptions<'a>` | `zeph-memory/src/store/cross_thread.rs` (new, issue #6773/#6774) | `{ max_value_bytes, max_namespace_rows, expected_version: Option<i64>, writer_id: Option<&'a str> }`, built via `::new(max_value_bytes, max_namespace_rows)` + `.with_expected_version(v)` / `.with_writer(id)` |
+| `CrossThreadStore` methods | impl on `SqliteStore`/Postgres equivalent, same file | `store_put(owner_key, ns, key, value, opts: StorePutOptions)`, `store_get`, `store_delete`, `store_list(owner_key, ns_prefix, limit)`, `store_search(owner_key, ns_prefix, query, limit)` |
 | `MemoryError::VersionConflict` | `zeph-memory/src/error.rs` | thiserror variant for optimistic-concurrency failure |
 | `HandoffCommand` | `zeph-orchestration/src/command.rs` (extend) | `{ goto: TaskRef, update: Vec<(String,String)> }`; `TaskRef = ById(TaskId) | ByTitle(String)` — parsed and consumed entirely in zeph-core; only `goto` crosses into orchestration |
 | `TaskOutcome::Handoff` | `zeph-orchestration/src/scheduler/mod.rs` (new non_exhaustive variant) | `{ output: String, goto: TaskRef }` — no `update` field; the payload is pre-persisted (§5.2 step 3-4) |
@@ -384,6 +410,7 @@ CREATE INDEX idx_cross_thread_store_owner_ns ON cross_thread_store(owner_key, na
 [memory.store]
 enabled = false
 max_value_bytes = 65536
+max_namespace_rows = 256   # evict oldest rows past this count per (owner_key, namespace); 0 disables
 # search_provider = "fast"   # reserved for future semantic search (declare-once name)
 
 [orchestration.command]
@@ -501,6 +528,10 @@ max_handoffs = 16       # per-graph livelock budget, validated > 0
 | A graph runs with `[memory.store].enabled = true` but `[orchestration.command].enabled = false` | Store is usable via CLI/slash-command surfaces; no Command handoff occurs; the two config flags are independent (FR-A-001/FR-B-001 are separately gated) |
 | A graph runs with `[orchestration.command].enabled = true` but `[memory.store].enabled = false` | Command handoff produce-side parse still runs, but the `update` write (FR-B-004) has nowhere to persist — treat as a configuration error at graph-plan-validation time (`orchestration.command.enabled` requires `memory.store.enabled`), rejecting the graph plan rather than silently dropping updates at runtime |
 | Malformed `zeph-command` block on a node whose actual text output was otherwise valid and useful | Output is discarded, node is `Failed`, existing failure recovery (`route_to`/`Retry`/`Ask`) engages as it would for any other failure — accepted MVP tradeoff (§6 Always, F5/N4) |
+| A confirmed successful `store_put` write leaves `(owner_key, namespace)` holding more rows than `max_namespace_rows` | The oldest rows (by `updated_at`, tie-broken by `key`, excluding the row just written) are evicted down to the cap in one atomic count-and-delete statement, strictly after the write (FR-A-012). A write that fails (e.g. stale `expected_version`) never reaches eviction; an update to an already-existing key naturally triggers no eviction since the row count did not grow |
+| Two writes race to evict for the same over-cap namespace (e.g. two concurrent `store_put` calls to the same new key) | Each eviction pass recomputes the true current row count at execution time, so a pass that runs after an earlier one already restored the namespace to (or under) the cap evicts nothing further — no double-eviction (issue #6773 review round 2) |
+| A row is overwritten by a `writer_id` different from the one that last wrote it (e.g. two nodes in the same graph write the same key) | The write proceeds — not rejected — and, once the write is confirmed to have actually applied, a `tracing::warn!` records `previous_writer`/`new_writer`; the row's `writer_id` updates to the new writer (issue #6773). A stale CAS write that ultimately fails with `VersionConflict` never logs this warning, even if the pre-write state briefly looked like a cross-writer overwrite. This is detection/attribution, not prevention: within-graph cross-node overwrite of the same key is possible by design (NFR-SEC-01) |
+| An anonymous write (no `writer_id` supplied) overwrites the content of a row that already carries a writer's id | The write proceeds; `COALESCE` preserves the existing `writer_id` rather than clearing it, so the row's attribution does not change — but a `tracing::warn!` still fires (once the write is confirmed applied) noting the attribution may now be stale relative to the new content (review round 4, N4) |
 
 ---
 
@@ -551,6 +582,29 @@ max_handoffs = 16       # per-graph livelock budget, validated > 0
 - [ ] `.local/testing/coverage-status.md` rows added (main-repo path, status `Untested`)
 - [ ] Migration file number `110` and migrate-step numbers re-verified against HEAD immediately
       before implementation (§6 Never)
+- [ ] Row-cap eviction test: a confirmed write that pushes a namespace past `max_namespace_rows`
+      evicts the oldest row(s) first, never the newly-written key; an update to an existing key
+      that does not grow the namespace never evicts (FR-A-012, issue #6774)
+- [ ] Double-eviction race test: two eviction passes over the same over-cap condition (or two
+      concurrent `store_put` calls to the same new key) evict exactly the rows needed once, not
+      twice (FR-A-012, issue #6773 review round 2)
+- [ ] Cross-writer overwrite test: a write from a different `writer_id` than the row's current one
+      is accepted (not rejected) and updates `writer_id`, not merely logged as a symptom (issue
+      #6773); a stale CAS write that fails with `VersionConflict` despite observing a different
+      existing writer does NOT log the overwrite warning (issue #6773 review round 2)
+- [ ] Newline-in-value render test: a `store_put` value containing a literal newline (and a
+      crafted fake `"key: value"`-shaped continuation) renders as exactly one NDJSON row in
+      `<shared-state>`, never splitting into an extra pseudo-row (FR-B-011, issue #6775)
+- [ ] Shadow-detection test: a multi-line injection payload hidden inside one `store_put`
+      value's JSON string still trips the sanitizer's `[WARNING: ...]` annotation despite
+      NDJSON escaping its newlines (NFR-SEC-03, critic finding S4)
+- [ ] `shown` accuracy: the truncated `<shared-state>` tag's `shown="N"` reflects the number of
+      rows actually written into the body, not the number of rows selected before rendering —
+      relevant when a row's serialization is skipped (FR-B-011, review round 2)
+- [ ] `migration_parity.rs` passes for migration 116 (file-count and logical-name parity only —
+      its `table_sets_equivalent` check cannot see inside an `ALTER TABLE ADD COLUMN` statement,
+      so the two dialect files' column type was verified identical by hand, not by this test;
+      see NFR-POR-01)
 
 ---
 

@@ -119,16 +119,14 @@ impl<C: Channel + Send + 'static> MemoryAccess for Agent<C> {
                         if value.is_empty() {
                             return Ok("Usage: /store put <namespace> <key> <value...>".to_owned());
                         }
+                        let opts = zeph_memory::store::StorePutOptions::new(
+                            store_config.max_value_bytes,
+                            store_config.max_namespace_rows,
+                        )
+                        .with_writer("slash");
                         match memory
                             .sqlite()
-                            .store_put(
-                                owner_key,
-                                ns,
-                                key,
-                                &value,
-                                store_config.max_value_bytes,
-                                None,
-                            )
+                            .store_put(owner_key, ns, key, &value, opts)
                             .await
                         {
                             Ok(item) => format!("Stored {ns}/{key} (version {}).", item.version),
