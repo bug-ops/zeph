@@ -113,6 +113,7 @@ pub mod stt;
 #[cfg(test)]
 pub mod testing;
 pub(crate) mod tool_desc;
+pub mod tool_pairing;
 pub(crate) mod usage;
 pub mod whisper;
 
@@ -127,4 +128,8 @@ pub use provider_dyn::LlmProviderDyn;
 pub use router::aware::RouterAware;
 pub use router::coe::{CoeConfig, CoeMetrics, CoeRouter};
 pub use stt::{SpeechToText, Transcription};
+pub use tool_pairing::{
+    OrphanAction, RepairReport, has_meaningful_content, repair_tool_pairs, repair_window,
+    unmatched_tool_result_ids, unmatched_tool_use_ids,
+};
 pub use zeph_config::{CacheTtl, GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};

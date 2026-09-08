@@ -48,6 +48,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-core`: rendered the `<shared-state>` prompt block as NDJSON instead of
   `"{key}: {value}"` lines, closing a pseudo-row-forging gap for values containing a
   literal newline (#6775, #6779).
+- `zeph-core`: fixed `trim_parent_messages` matching orphaned `ToolUse`/`ToolResult` parts
+  against a global id set instead of adjacency, which could cross-pair an orphan against an
+  unrelated tool call sharing its id under Ollama-style batch-index id reuse (#6770).
 
 ### Added
 
@@ -74,6 +77,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Consolidated five independent `ToolUse`/`ToolResult` orphan-pairing implementations
+  (`zeph-core::agent::subagent_commands::trim_parent_messages`,
+  `zeph-core::agent::shutdown::flush_orphaned_tool_use_on_shutdown`,
+  `zeph-subagent::agent_loop::trim_message_history`,
+  `zeph-agent-persistence::sanitize::sanitize_tool_pairs`, and the Claude request builder) into a
+  shared `zeph_llm::tool_pairing` module, all adjacency-scoped against the immediately
+  preceding/following non-system message rather than a global id set. Also closes a Claude
+  request-builder gap (#6771) where an empty content-block array could be sent to the API on
+  certain orphan/thinking-only user messages, and a trailing unanswered `ToolUse` is now repaired
+  everywhere instead of being exempted only at some call sites. **Breaking**:
+  `zeph_agent_persistence::sanitize::has_meaningful_content` (a `pub fn`) is removed — relocated
+  to `zeph_llm::tool_pairing::has_meaningful_content`, with no re-export.
 - Raised the workspace MSRV to Rust 1.98 and resolved the new `clippy::unused_async_trait_impl` /
   `clippy::chunks_exact_to_as_chunks` lints introduced by it (#6746, #6748).
 - `release.yml`: removed `Swatinem/rust-cache` and `sccache` from the `build-binaries` job.

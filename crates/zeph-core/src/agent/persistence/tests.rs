@@ -2018,8 +2018,8 @@ async fn load_history_keeps_tool_only_user_message() {
 }
 
 /// RC2 reverse pass: a user message with a `ToolResult` whose `tool_use_id` has no matching
-/// `ToolUse` in the preceding assistant message must be stripped by
-/// `strip_mid_history_orphans`.
+/// `ToolUse` in the preceding assistant message must be stripped by adjacency repair
+/// (`zeph_llm::tool_pairing::repair_tool_pairs`, via `sanitize_tool_pairs`).
 #[tokio::test]
 async fn strip_orphans_removes_orphaned_tool_result() {
     use zeph_llm::provider::MessagePart;

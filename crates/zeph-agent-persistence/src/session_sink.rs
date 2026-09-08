@@ -434,8 +434,9 @@ mod tests {
 
     /// Regression test for #5464: same round-trip as
     /// `session_replay_tool_call_turn_produces_valid_openai_message_array`, but through the
-    /// Claude serializer. Also exercises `compute_matched_tool_ids`'s orphan guard
-    /// (`crates/zeph-llm/src/claude/request.rs`): if the fold still produced a mismatched/merged
+    /// Claude serializer. Also exercises `zeph_llm::tool_pairing`'s orphan guard
+    /// (`unmatched_tool_use_ids`/`unmatched_tool_result_ids`, used by
+    /// `crates/zeph-llm/src/claude/request.rs`): if the fold still produced a mismatched/merged
     /// shape, the guard would silently downgrade the `tool_use`/`tool_result` blocks to plain
     /// text instead of letting the API 400 — so asserting the blocks keep their native
     /// `tool_use`/`tool_result` type is what actually proves the fix here, not just that a

@@ -308,6 +308,53 @@ accordingly.
 - `effective_embedding_model` and `stable_skill_embedding_model` live in `LlmConfig` — NEVER re-add them to `provider_factory`
 - `LlmConfig::default()` must round-trip through empty TOML — NEVER implement `Default` by hand
 
+## Tool-Pair Repair (`zeph_llm::tool_pairing`) (#6771, #6770, #6769, #6762)
+
+`crates/zeph-llm/src/tool_pairing.rs` is the single, shared definition of "orphaned"
+`ToolUse`/`ToolResult` pairing and repair, used by the Claude request builder's per-request hot
+path (`claude/request.rs`) and by every history-mutating call site that previously implemented
+its own copy: `zeph-core::agent::subagent_commands::trim_parent_messages`,
+`zeph-core::agent::shutdown::flush_orphaned_tool_use_on_shutdown`,
+`zeph-subagent::agent_loop::trim_message_history`, and
+`zeph-agent-persistence::sanitize::sanitize_tool_pairs`. Prior to this consolidation each site
+independently reimplemented pairing, and one (`trim_parent_messages`, issue #6770) matched
+against a **global** id set rather than adjacency, cross-pairing an orphan against an unrelated
+call sharing its id under Ollama-style `format!("call_{i}")` id reuse.
+
+Two layers:
+
+- **Layer A** — `unmatched_tool_use_ids(msg, next)` / `unmatched_tool_result_ids(msg, prev)`:
+  pure classification, adjacency-scoped against an already-resolved neighbour message (works for
+  both `Vec<Message>` and `Vec<&Message>` callers).
+- **Layer B** — `repair_tool_pairs` / `repair_window`: mutating repair built strictly on top of
+  Layer A, parameterized by `OrphanAction` (`Delete` or `DowngradeToText`) for orphaned
+  `ToolResult` handling; orphaned `ToolUse` is always deleted regardless of `action`.
+  `repair_window` additionally enforces that the first non-system message has role `user`
+  (required by the Anthropic API), looping the pairing repair and the leading-role drop to a
+  joint fixed point since dropping a leading non-user message can newly orphan a pair that was
+  otherwise well-formed.
+
+### Key Invariants
+
+- Pairing is always adjacency-scoped (immediately preceding/following non-system message) — a
+  global id set across the whole history is NEVER an acceptable match, since it produces the
+  #6770 cross-pair defect under any provider that reuses `tool_use_id`s across turns
+- Layer B MUST call Layer A for every orphan decision — no second, independent pairing predicate
+  may exist anywhere in the module (this is a reviewer-verified property of the source, not a
+  grep-checkable pattern)
+- An orphaned `ToolUse` part is always deleted, never downgraded — it has no safe text form
+  worth preserving as conversation content
+- `Role::System` messages are never removed by repair, regardless of content or parts state
+- The Claude request builder's `StructuredApiMessage` list must never contain an entry with an
+  empty block array — Anthropic rejects an empty content array. This applies to every producer of
+  an empty block list (an orphaned empty-content `ToolResult`, or a message whose only parts are
+  `ThinkingBlock`/`RedactedThinkingBlock`/`Compaction`/whitespace-only `Text` on the user role),
+  not only the tool-pairing case
+- The `[tool result: {id}] {content}` downgrade marker (space, no underscore) MUST stay
+  distinguishable from `has_meaningful_content`'s recognized `[tool_result: ` marker (underscore)
+  — a downgraded orphan must always read as "meaningful" content so it is never later mistaken
+  for empty, marker-only text and dropped as the window's leading anchor
+
 ## Key Invariants
 
 - Provider methods are always `&self` — immutable, concurrent-safe. This scopes to **request/inference** methods (`chat`, `chat_stream`, `chat_with_tools`, …). In-place `&mut self` config setters applied only at turn boundaries between requests (e.g. `set_reasoning_effort`, and the runtime `set_thinking`/`set_thinking_budget`/`set_thinking_level`/`apply_reasoning_effort` setters from `[[specs/070-runtime-thinking-controls/spec]]`) are exempt — request methods remain `&self`.

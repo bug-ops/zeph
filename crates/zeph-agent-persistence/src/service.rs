@@ -106,7 +106,7 @@ impl PersistenceService {
         let mut skipped = 0;
 
         for msg in history {
-            use crate::sanitize::has_meaningful_content;
+            use zeph_llm::tool_pairing::has_meaningful_content;
             if !has_meaningful_content(&msg.content) && msg.parts.is_empty() {
                 tracing::warn!("skipping empty message from history (role: {:?})", msg.role);
                 skipped += 1;
