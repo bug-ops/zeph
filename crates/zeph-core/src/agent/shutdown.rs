@@ -90,58 +90,53 @@ impl<C: Channel> Agent<C> {
         use zeph_llm::provider::{MessagePart, Role};
 
         // Walk messages in reverse: if the last assistant message (ignoring any trailing
-        // system messages) has ToolUse parts and is NOT immediately followed by a user
-        // message whose ToolResult ids cover those ToolUse ids, persist tombstones.
+        // system messages) has ToolUse parts and is NOT immediately followed (adjacency-scoped,
+        // see zeph_llm::tool_pairing — a global scan across every following message wrongly
+        // cross-pairs an orphan against an unrelated call sharing its id under Ollama-style
+        // call_{i} id reuse, issue #6770) by a user message whose ToolResult ids cover those
+        // ToolUse ids, persist tombstones.
         let msgs = &self.msg.messages;
         // Find last assistant message index.
         let Some(asst_idx) = msgs.iter().rposition(|m| m.role == Role::Assistant) else {
             return;
         };
         let asst_msg = &msgs[asst_idx];
-        let tool_use_ids: Vec<(&str, &str, &serde_json::Value)> = asst_msg
+        if !asst_msg
             .parts
             .iter()
-            .filter_map(|p| {
-                if let MessagePart::ToolUse { id, name, input } = p {
-                    Some((id.as_str(), name.as_str(), input))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if tool_use_ids.is_empty() {
+            .any(|p| matches!(p, MessagePart::ToolUse { .. }))
+        {
             return;
         }
 
-        // Check whether a following user message already pairs all ToolUse ids.
-        let paired_ids: std::collections::HashSet<&str> = msgs
+        let next_non_system = msgs
             .get(asst_idx + 1..)
             .into_iter()
             .flatten()
-            .filter(|m| m.role == Role::User)
-            .flat_map(|m| m.parts.iter())
+            .find(|m| m.role != Role::System);
+        let unpaired_ids =
+            zeph_llm::tool_pairing::unmatched_tool_use_ids(asst_msg, next_non_system);
+        if unpaired_ids.is_empty() {
+            return;
+        }
+
+        let unpaired: Vec<zeph_llm::provider::ToolUseRequest> = asst_msg
+            .parts
+            .iter()
             .filter_map(|p| {
-                if let MessagePart::ToolResult { tool_use_id, .. } = p {
-                    Some(tool_use_id.as_str())
+                if let MessagePart::ToolUse { id, name, input } = p
+                    && unpaired_ids.contains(id.as_str())
+                {
+                    Some(zeph_llm::provider::ToolUseRequest {
+                        id: id.clone(),
+                        name: name.clone().into(),
+                        input: input.clone(),
+                    })
                 } else {
                     None
                 }
             })
             .collect();
-
-        let unpaired: Vec<zeph_llm::provider::ToolUseRequest> = tool_use_ids
-            .iter()
-            .filter(|(id, _, _)| !paired_ids.contains(*id))
-            .map(|(id, name, input)| zeph_llm::provider::ToolUseRequest {
-                id: (*id).to_owned(),
-                name: (*name).to_owned().into(),
-                input: (*input).clone(),
-            })
-            .collect();
-
-        if unpaired.is_empty() {
-            return;
-        }
 
         tracing::info!(
             count = unpaired.len(),

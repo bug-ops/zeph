@@ -3,9 +3,12 @@
 
 //! Message conversion and request building utilities for the Claude provider.
 
+use std::collections::HashSet;
+
 use base64::{Engine, engine::general_purpose::STANDARD};
 
 use crate::provider::{ChatResponse, Message, MessagePart, Role, ThinkingBlock, ToolUseRequest};
+use crate::tool_pairing::{unmatched_tool_result_ids, unmatched_tool_use_ids};
 
 use super::cache::apply_cache_breakpoint;
 use super::types::{
@@ -92,14 +95,7 @@ pub(in crate::claude) fn split_messages_structured(
         .filter(|m| m.metadata.visibility.is_agent_visible() && m.role != Role::System)
         .collect();
 
-    // Track which tool_use IDs were actually emitted as native AnthropicContentBlock::ToolUse
-    // by the most recent assistant message. When processing the following user message, any
-    // ToolResult block whose tool_use_id is not in this set is downgraded to text — prevents
-    // API 400 caused by orphaned ToolResult referencing a non-existent tool_use (RC1 fix).
-    let mut last_emitted_tool_ids: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
-
-    for (idx, msg) in visible.iter().enumerate() {
+    for (idx, &msg) in visible.iter().enumerate() {
         match msg.role {
             Role::System => {} // already extracted above
             Role::User | Role::Assistant => {
@@ -122,35 +118,37 @@ pub(in crate::claude) fn split_messages_structured(
 
                 if has_structured_parts {
                     let is_assistant = msg.role == Role::Assistant;
-                    // For assistant messages, pre-compute which tool_use IDs are matched by
-                    // the next visible user message. Unmatched IDs are downgraded to text to
-                    // prevent Claude API 400 (tool_use without tool_result).
-                    let matched_tool_ids = if is_assistant {
-                        Some(compute_matched_tool_ids(msg, visible.get(idx + 1)))
+                    // Layer A (zeph_llm::tool_pairing), adjacency-scoped against the immediate
+                    // neighbour in `visible` — never a global id set (#6770). Always an
+                    // explicitly computed set, never `Option`, so a call site cannot silently
+                    // reopen the RC1 400 via a defaulted/empty set.
+                    let orphaned_tool_use: HashSet<&str> = if is_assistant {
+                        unmatched_tool_use_ids(msg, visible.get(idx + 1).copied())
                     } else {
-                        None
+                        HashSet::new()
                     };
-                    // Reset emitted tool IDs at the start of each assistant message so user
-                    // messages can check against the immediately preceding assistant only.
-                    if is_assistant {
-                        last_emitted_tool_ids.clear();
-                    }
+                    let orphaned_tool_result: HashSet<&str> = if is_assistant {
+                        HashSet::new()
+                    } else {
+                        let prev = idx.checked_sub(1).and_then(|i| visible.get(i)).copied();
+                        unmatched_tool_result_ids(msg, prev)
+                    };
                     let blocks = convert_parts_to_blocks(
                         &msg.parts,
                         is_assistant,
-                        matched_tool_ids.as_ref(),
-                        &mut last_emitted_tool_ids,
+                        &orphaned_tool_use,
+                        &orphaned_tool_result,
                     );
-                    chat.push(StructuredApiMessage {
-                        role: role.to_owned(),
-                        content: StructuredContent::Blocks(blocks),
-                    });
-                } else {
-                    // Non-structured user/assistant message: clear emitted tool IDs since
-                    // no tool pairs are possible across a plain text message boundary.
-                    if msg.role == Role::Assistant {
-                        last_emitted_tool_ids.clear();
+                    // D4 (mandatory): never emit a StructuredApiMessage with an empty block
+                    // list — Anthropic rejects an empty content array. Consistent with the
+                    // non-structured branch below, which already skips whitespace-only text.
+                    if !blocks.is_empty() {
+                        chat.push(StructuredApiMessage {
+                            role: role.to_owned(),
+                            content: StructuredContent::Blocks(blocks),
+                        });
                     }
+                } else {
                     let text = msg.to_llm_content();
                     if !text.trim().is_empty() {
                         chat.push(StructuredApiMessage {
@@ -274,18 +272,9 @@ fn push_tool_use_block(
     id: &str,
     name: &str,
     input: &serde_json::Value,
-    matched_tool_ids: Option<&std::collections::HashSet<&str>>,
-    last_emitted_tool_ids: &mut std::collections::HashSet<String>,
+    orphaned_tool_use_ids: &HashSet<&str>,
 ) {
-    let matched = matched_tool_ids.is_some_and(|ids| ids.contains(id));
-    if matched {
-        last_emitted_tool_ids.insert(id.to_owned());
-        blocks.push(AnthropicContentBlock::ToolUse {
-            id: id.to_owned(),
-            name: name.to_owned(),
-            input: input.clone(),
-        });
-    } else {
+    if orphaned_tool_use_ids.contains(id) {
         tracing::warn!(
             tool_use_id = %id,
             tool_name = %name,
@@ -295,6 +284,12 @@ fn push_tool_use_block(
             text: format!("[tool_use: {name}] {input}"),
             cache_control: None,
         });
+    } else {
+        blocks.push(AnthropicContentBlock::ToolUse {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            input: input.clone(),
+        });
     }
 }
 
@@ -303,39 +298,43 @@ fn push_tool_result_block(
     tool_use_id: &str,
     content: &str,
     is_error: bool,
-    last_emitted_tool_ids: &std::collections::HashSet<String>,
+    orphaned_tool_result_ids: &HashSet<&str>,
 ) {
-    if last_emitted_tool_ids.contains(tool_use_id) {
+    if orphaned_tool_result_ids.contains(tool_use_id) {
+        tracing::warn!(
+            tool_use_id = %tool_use_id,
+            "downgrading orphaned tool_result to text in API request"
+        );
+        // D4 (mandatory): guarantee non-empty text even when `content` is empty, so this
+        // message survives as the window's leading `user` anchor rather than being dropped
+        // entirely by the empty-blocks guard.
+        blocks.push(AnthropicContentBlock::Text {
+            text: format!("[tool result: {tool_use_id}] {content}"),
+            cache_control: None,
+        });
+    } else {
         blocks.push(AnthropicContentBlock::ToolResult {
             tool_use_id: tool_use_id.to_owned(),
             content: content.to_owned(),
             is_error,
             cache_control: None,
         });
-    } else {
-        tracing::warn!(
-            tool_use_id = %tool_use_id,
-            "downgrading orphaned tool_result to text in API request"
-        );
-        if !content.trim().is_empty() {
-            blocks.push(AnthropicContentBlock::Text {
-                text: content.to_owned(),
-                cache_control: None,
-            });
-        }
     }
 }
 
 /// Convert message parts into `AnthropicContentBlock`s, respecting tool-use/result pairing rules.
 ///
 /// - `is_assistant`: whether the message is from the assistant role
-/// - `matched_tool_ids`: set of `tool_use` IDs that are matched by the next user message
-/// - `last_emitted_tool_ids`: tracks IDs emitted as native `ToolUse` to detect orphaned results
+/// - `orphaned_tool_use_ids`: `tool_use` IDs from [`crate::tool_pairing::unmatched_tool_use_ids`]
+///   to downgrade to text (empty when `!is_assistant`)
+/// - `orphaned_tool_result_ids`: `tool_result` IDs from
+///   [`crate::tool_pairing::unmatched_tool_result_ids`] to downgrade to text (empty when
+///   `is_assistant`)
 pub(super) fn convert_parts_to_blocks(
     parts: &[MessagePart],
     is_assistant: bool,
-    matched_tool_ids: Option<&std::collections::HashSet<&str>>,
-    last_emitted_tool_ids: &mut std::collections::HashSet<String>,
+    orphaned_tool_use_ids: &HashSet<&str>,
+    orphaned_tool_result_ids: &HashSet<&str>,
 ) -> Vec<AnthropicContentBlock> {
     let mut blocks = Vec::new();
     for part in parts {
@@ -363,14 +362,7 @@ pub(super) fn convert_parts_to_blocks(
             MessagePart::ToolUse { id, name, input } if is_assistant => {
                 // Downgrade to text if the tool_use ID is not matched by the
                 // next user message — prevents API 400 on orphaned tool_use.
-                push_tool_use_block(
-                    &mut blocks,
-                    id,
-                    name,
-                    input,
-                    matched_tool_ids,
-                    last_emitted_tool_ids,
-                );
+                push_tool_use_block(&mut blocks, id, name, input, orphaned_tool_use_ids);
             }
             MessagePart::ToolUse { name, input, .. } => {
                 blocks.push(AnthropicContentBlock::Text {
@@ -383,14 +375,14 @@ pub(super) fn convert_parts_to_blocks(
                 content,
                 is_error,
             } if !is_assistant => {
-                // Downgrade to text if the tool_use_id was not emitted as a
-                // native ToolUse by the preceding assistant message (RC1 fix).
+                // Downgrade to text if the tool_use_id was not matched by the
+                // preceding assistant message (RC1 fix).
                 push_tool_result_block(
                     &mut blocks,
                     tool_use_id,
                     content,
                     *is_error,
-                    last_emitted_tool_ids,
+                    orphaned_tool_result_ids,
                 );
             }
             MessagePart::ToolResult { content, .. } => {
@@ -436,34 +428,6 @@ pub(super) fn convert_parts_to_blocks(
         }
     }
     blocks
-}
-
-pub(super) fn compute_matched_tool_ids<'m>(
-    msg: &'m Message,
-    next: Option<&&'m Message>,
-) -> std::collections::HashSet<&'m str> {
-    msg.parts
-        .iter()
-        .filter_map(|p| {
-            if let MessagePart::ToolUse { id, .. } = p {
-                Some(id.as_str())
-            } else {
-                None
-            }
-        })
-        .filter(|uid| {
-            next.is_some_and(|next_msg| {
-                next_msg.role == Role::User
-                    && next_msg.parts.iter().any(|np| {
-                        matches!(
-                            np,
-                            MessagePart::ToolResult { tool_use_id, .. }
-                                if tool_use_id.as_str() == *uid
-                        )
-                    })
-            })
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -1216,6 +1180,136 @@ mod tests {
         assert!(
             !user_json.contains("compaction"),
             "Compaction in user message must be dropped"
+        );
+    }
+
+    /// D4: an orphaned `ToolResult` with empty `content` must not yield a `StructuredApiMessage`
+    /// with an empty block array (Anthropic rejects an empty content array). The kept marker
+    /// guarantees non-empty text, so the message survives as the leading `user` anchor instead
+    /// of being skipped by the empty-blocks guard.
+    #[test]
+    fn d4_empty_content_orphaned_tool_result_survives_as_non_empty_text_anchor() {
+        let messages = vec![Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "orphan".into(),
+                content: String::new(),
+                is_error: false,
+            }],
+        )];
+        let (_, chat) = split_messages_structured(&messages, false, None);
+        assert_eq!(
+            chat.len(),
+            1,
+            "the orphan-only message must survive, not be skipped"
+        );
+        assert_eq!(chat[0].role, "user");
+        match &chat[0].content {
+            StructuredContent::Blocks(blocks) => {
+                assert!(!blocks.is_empty(), "no empty block array may be emitted");
+            }
+            StructuredContent::Text(_) => panic!("expected Blocks content"),
+        }
+    }
+
+    /// D4: a user message whose only part is a `ThinkingBlock`/`Compaction`/`RedactedThinkingBlock`
+    /// produces zero blocks (those variants are silently dropped for the user role) — the
+    /// mandatory empty-blocks guard must skip emitting the message entirely rather than pushing
+    /// an empty `Blocks(vec![])`.
+    ///
+    /// N2 (impl-critic C4): the guard fixes the empty-`Blocks([])` 400, but does not by itself
+    /// guarantee the first *emitted* message has `role: "user"` — skipping a leading message can
+    /// promote a following `Assistant` message to `chat[0]`, which Anthropic also rejects. This
+    /// is a **pre-existing, un-widened gap**: `split_messages_structured` has never enforced a
+    /// leading-role invariant on its own (a message list beginning with `Assistant` and no
+    /// structured parts at all would hit exactly this today, empty-blocks guard or not) — it
+    /// relies entirely on upstream repair (`zeph_llm::tool_pairing::repair_window`,
+    /// `adjust_compact_end_for_tool_pairs`) to never hand it such a list. This PR does not close
+    /// that gap; it is tracked as a follow-up (enforcing a leading-role invariant inside
+    /// `split_messages_structured` itself is out of scope here — see the module's callers for
+    /// where that invariant is actually maintained today).
+    #[test]
+    fn d4_empty_blocks_skip_can_promote_a_leading_assistant_message() {
+        let messages = vec![
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ThinkingBlock {
+                    thinking: "stray".into(),
+                    signature: "sig".into(),
+                }],
+            ),
+            Message::from_legacy(Role::Assistant, "hello"),
+        ];
+        let (_, chat) = split_messages_structured(&messages, false, None);
+        assert_eq!(chat.len(), 1, "the empty-blocks message must be skipped");
+        assert_eq!(
+            chat[0].role, "assistant",
+            "known gap (N2, not closed by this PR): the skip can promote a leading Assistant \
+             message to chat[0], which Anthropic also rejects — see the doc comment above"
+        );
+    }
+
+    /// The empty-blocks skip does not disturb a *following* leading `user` message when one
+    /// exists — this passes because the second message happens to be `User`, not because the
+    /// guard enforces the leading-role invariant in general (see
+    /// `d4_empty_blocks_skip_can_promote_a_leading_assistant_message` for the case where it
+    /// doesn't hold).
+    #[test]
+    fn d4_leading_skip_does_not_disturb_a_following_user_message() {
+        let messages = vec![
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::Compaction {
+                    summary: "dropped for user role".into(),
+                }],
+            ),
+            Message::from_legacy(Role::User, "real question"),
+            Message::from_legacy(Role::Assistant, "reply"),
+        ];
+        let (_, chat) = split_messages_structured(&messages, false, None);
+        assert_eq!(chat[0].role, "user");
+        assert!(matches!(&chat[0].content, StructuredContent::Text(t) if t == "real question"));
+    }
+
+    /// New (v2 test strategy item 7): adjacency is stricter than the old threaded
+    /// `last_emitted_tool_ids` state, which was not cleared by an intervening plain-text user
+    /// message. `Assistant(ToolUse a) / User(text) / User(ToolResult a)` — under adjacency,
+    /// `ToolResult a`'s immediate predecessor is the plain-text `User` message, not the
+    /// `Assistant`, so it is downgraded rather than wrongly emitted as a native `ToolResult`.
+    #[test]
+    fn adjacency_is_stricter_than_the_old_threaded_state_across_a_text_message() {
+        let messages = vec![
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::ToolUse {
+                    id: "a".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({}),
+                }],
+            ),
+            Message::from_legacy(Role::User, "unrelated text"),
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolResult {
+                    tool_use_id: "a".into(),
+                    content: "late result".into(),
+                    is_error: false,
+                }],
+            ),
+        ];
+        let (_, chat) = split_messages_structured(&messages, false, None);
+        assert_eq!(chat.len(), 3);
+        // The ToolUse itself has no immediately-following User(ToolResult) either — the text
+        // message intervenes — so it is downgraded too.
+        let assistant_json = serde_json::to_string(&chat[0]).unwrap();
+        assert!(
+            !assistant_json.contains("\"type\":\"tool_use\""),
+            "the ToolUse's immediate neighbour is plain text, not a matching ToolResult: {assistant_json}"
+        );
+        let last_json = serde_json::to_string(&chat[2]).unwrap();
+        assert!(
+            !last_json.contains("\"type\":\"tool_result\""),
+            "the ToolResult's immediate predecessor is plain text, not the ToolUse: {last_json}"
         );
     }
 }

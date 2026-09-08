@@ -1,29 +1,36 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Tool-pair sanitization helpers: remove orphaned `ToolUse`/`ToolResult` messages from
-//! restored conversation history.
+//! Tool-pair sanitization helpers: remove orphaned `ToolUse`/`ToolResult` parts from restored
+//! conversation history.
 //!
 //! These are pure functions operating on `Vec<Message>` slices — no agent state required.
+//! Orphan repair itself delegates to `zeph_llm::tool_pairing` (issue #6771).
+//!
+//! A prior revision of this module also ran a separate duplicate-`ToolResult` sweep after orphan
+//! repair (#5513: a `tool_use_id` that already received a result earlier in the same open call
+//! window, re-appearing later — e.g. from a cancellation-handling defect that wrote more than one
+//! tombstone for the same call). That sweep is now provably unreachable and was removed: after
+//! [`zeph_llm::tool_pairing::repair_tool_pairs`] with [`OrphanAction::Delete`], every surviving
+//! `ToolResult(X)` has, by [`unmatched_tool_result_ids`](zeph_llm::tool_pairing::unmatched_tool_result_ids)'s
+//! own definition, an `Assistant` message carrying `ToolUse(X)` as its immediately preceding
+//! non-system message — so any #5513 shape is already caught by adjacency repair itself, which
+//! never depended on a cross-message "already resolved" id set in the first place (that is
+//! exactly the global-vs-adjacency distinction issue #6770 is about). The `#5513` regression
+//! tests below are kept: they now document that adjacency repair alone handles duplicate/reopened
+//! `tool_use_id`s correctly, without needing a second bookkeeping pass.
 
-use std::collections::HashSet;
+use zeph_llm::provider::Message;
+use zeph_llm::tool_pairing::{self, OrphanAction};
 
-use zeph_llm::provider::{Message, MessagePart, Role};
-
-/// Remove orphaned `ToolUse`/`ToolResult` messages from restored history.
+/// Remove orphaned `ToolUse`/`ToolResult` parts from restored history.
 ///
-/// Four failure modes are handled:
-/// 1. **Trailing orphan**: the last message is an assistant with `ToolUse` parts but no
-///    subsequent user message with `ToolResult` — caused by LIMIT boundary splits or
-///    interrupted sessions.
-/// 2. **Leading orphan**: the first message is a user with `ToolResult` parts but no
-///    preceding assistant message with `ToolUse` — caused by LIMIT boundary cuts.
-/// 3. **Mid-history orphaned `ToolUse`**: an assistant message with `ToolUse` parts is not
-///    followed by a user message with matching `ToolResult` parts. The `ToolUse` parts are
-///    stripped; if no content remains the message is removed.
-/// 4. **Mid-history orphaned `ToolResult`**: a user message has `ToolResult` parts whose
-///    `tool_use_id` is not present in the preceding assistant message. Those `ToolResult` parts
-///    are stripped; if no content remains the message is removed.
+/// Delegates to [`zeph_llm::tool_pairing::repair_tool_pairs`] with [`OrphanAction::Delete`]: a
+/// `ToolUse` part with no matching `ToolResult` in the immediately following non-system message,
+/// or a `ToolResult` part with no matching `ToolUse` in the immediately preceding non-system
+/// message, is deleted. A message left with no parts and no meaningful content is removed
+/// entirely. Repair is part-level — a message that also carries independent text is kept, only
+/// the orphaned part is stripped (spec-078 FR-003).
 ///
 /// Returns `(removed_count, db_ids)` where `removed_count` is the number of messages removed
 /// entirely and `db_ids` contains `metadata.db_id` values of those messages for `SQLite`
@@ -43,365 +50,19 @@ use zeph_llm::provider::{Message, MessagePart, Role};
 /// assert!(ids.is_empty());
 /// ```
 pub fn sanitize_tool_pairs(messages: &mut Vec<Message>) -> (usize, Vec<i64>) {
-    let mut removed = 0;
-    let mut db_ids: Vec<i64> = Vec::new();
-
-    // Remove trailing orphaned tool_use messages (assistant with ToolUse, no following tool_result).
-    while let Some(last) = messages.last()
-        && last.role == Role::Assistant
-        && last
-            .parts
-            .iter()
-            .any(|p| matches!(p, MessagePart::ToolUse { .. }))
-    {
-        let ids: Vec<String> = last
-            .parts
-            .iter()
-            .filter_map(|p| {
-                if let MessagePart::ToolUse { id, .. } = p {
-                    Some(id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        tracing::warn!(
-            tool_ids = ?ids,
-            "removing orphaned trailing tool_use message from restored history"
-        );
-        if let Some(db_id) = messages.last().and_then(|m| m.metadata.db_id) {
-            db_ids.push(db_id);
-        }
-        messages.pop();
-        removed += 1;
-    }
-
-    // Count leading orphaned tool_result messages (user with ToolResult, no preceding tool_use),
-    // then drain them in a single O(N) pass instead of repeated O(N) remove(0) calls.
-    let skip_count = messages
+    let report = tool_pairing::repair_tool_pairs(messages, OrphanAction::Delete);
+    let db_ids: Vec<i64> = report
+        .removed_messages
         .iter()
-        .take_while(|m| {
-            m.role == Role::User
-                && m.parts
-                    .iter()
-                    .any(|p| matches!(p, MessagePart::ToolResult { .. }))
-        })
-        .count();
-
-    if skip_count > 0 {
-        for m in messages.iter().take(skip_count) {
-            let ids: Vec<String> = m
-                .parts
-                .iter()
-                .filter_map(|p| {
-                    if let MessagePart::ToolResult { tool_use_id, .. } = p {
-                        Some(tool_use_id.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            tracing::warn!(
-                tool_use_ids = ?ids,
-                "removing orphaned leading tool_result message from restored history"
-            );
-            if let Some(db_id) = m.metadata.db_id {
-                db_ids.push(db_id);
-            }
-        }
-        messages.drain(0..skip_count);
-        removed += skip_count;
-    }
-
-    let (mid_removed, mid_db_ids) = strip_mid_history_orphans(messages);
-    removed += mid_removed;
-    db_ids.extend(mid_db_ids);
-
-    (removed, db_ids)
-}
-
-/// Returns `true` if `content` contains human-readable text beyond legacy tool bracket markers.
-///
-/// Legacy markers produced by `Message::flatten_parts` are:
-/// - `[tool_use: name(id)]` — assistant `ToolUse`
-/// - `[tool_result: id]\nbody` — user `ToolResult`
-/// - `[tool output: name] body` — `ToolOutput`
-///
-/// A message whose content consists solely of such markers (and whitespace) has no
-/// user-visible text and is a candidate for soft-delete.
-///
-/// # Examples
-///
-/// ```
-/// use zeph_agent_persistence::sanitize::has_meaningful_content;
-///
-/// assert!(has_meaningful_content("hello world"));
-/// assert!(!has_meaningful_content("[tool_use: bash(abc123)]"));
-/// assert!(!has_meaningful_content("   [tool_result: abc]\nsome output"));
-/// ```
-#[must_use]
-pub fn has_meaningful_content(content: &str) -> bool {
-    const PREFIXES: [&str; 3] = ["[tool_use: ", "[tool_result: ", "[tool output: "];
-
-    let mut remaining = content.trim();
-
-    loop {
-        let next = PREFIXES
-            .iter()
-            .filter_map(|prefix| remaining.find(prefix).map(|pos| (pos, *prefix)))
-            .min_by_key(|(pos, _)| *pos);
-
-        let Some((start, prefix)) = next else {
-            break;
-        };
-
-        if !remaining[..start].trim().is_empty() {
-            return true;
-        }
-
-        let after_prefix = &remaining[start + prefix.len()..];
-        let Some(close) = after_prefix.find(']') else {
-            return true; // Malformed tag — treat as meaningful.
-        };
-
-        let tag_end = start + prefix.len() + close + 1;
-
-        if prefix == "[tool_result: " || prefix == "[tool output: " {
-            let body = remaining[tag_end..].trim_start_matches('\n');
-            let next_tag = PREFIXES
-                .iter()
-                .filter_map(|p| body.find(p))
-                .min()
-                .unwrap_or(body.len());
-            remaining = &body[next_tag..];
-        } else {
-            remaining = &remaining[tag_end..];
-        }
-    }
-
-    !remaining.trim().is_empty()
-}
-
-/// Collect `tool_use` IDs from `msg` that have no matching `ToolResult` in `next_msg`.
-fn orphaned_tool_use_ids(msg: &Message, next_msg: Option<&Message>) -> HashSet<String> {
-    let matched: HashSet<String> = next_msg
-        .filter(|n| n.role == Role::User)
-        .map(|n| {
-            msg.parts
-                .iter()
-                .filter_map(|p| if let MessagePart::ToolUse { id, .. } = p { Some(id.clone()) } else { None })
-                .filter(|uid| n.parts.iter().any(|np| matches!(np, MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == uid)))
-                .collect()
-        })
-        .unwrap_or_default();
-    msg.parts
-        .iter()
-        .filter_map(|p| {
-            if let MessagePart::ToolUse { id, .. } = p
-                && !matched.contains(id)
-            {
-                Some(id.clone())
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-/// Collect `tool_result` IDs from `msg` that have no matching `ToolUse` in `prev_msg`.
-fn orphaned_tool_result_ids(msg: &Message, prev_msg: Option<&Message>) -> HashSet<String> {
-    let avail: HashSet<&str> = prev_msg
-        .filter(|p| p.role == Role::Assistant)
-        .map(|p| {
-            p.parts
-                .iter()
-                .filter_map(|part| {
-                    if let MessagePart::ToolUse { id, .. } = part {
-                        Some(id.as_str())
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    msg.parts
-        .iter()
-        .filter_map(|p| {
-            if let MessagePart::ToolResult { tool_use_id, .. } = p
-                && !avail.contains(tool_use_id.as_str())
-            {
-                Some(tool_use_id.clone())
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-/// Strips orphaned `ToolUse` parts from `messages[i]` (an assistant message) when unmatched by a
-/// `ToolResult` in the next non-system message. Returns `true` if the message was removed
-/// entirely (caller must not advance past `i`).
-fn strip_orphaned_tool_use_at(
-    messages: &mut Vec<Message>,
-    i: usize,
-    db_ids: &mut Vec<i64>,
-) -> bool {
-    let next_non_system = (i + 1..messages.len())
-        .find(|&j| messages[j].role != Role::System)
-        .and_then(|j| messages.get(j));
-    let orphaned_ids = orphaned_tool_use_ids(&messages[i], next_non_system);
-    if orphaned_ids.is_empty() {
-        return false;
-    }
-    tracing::warn!(
-        tool_ids = ?orphaned_ids,
-        index = i,
-        "stripping orphaned mid-history tool_use parts from assistant message"
-    );
-    messages[i]
-        .parts
-        .retain(|p| !matches!(p, MessagePart::ToolUse { id, .. } if orphaned_ids.contains(id)));
-    let is_empty = !has_meaningful_content(&messages[i].content) && messages[i].parts.is_empty();
-    if is_empty {
-        if let Some(db_id) = messages[i].metadata.db_id {
-            db_ids.push(db_id);
-        }
-        messages.remove(i);
-    }
-    is_empty
-}
-
-/// Strips orphaned and duplicate `ToolResult` parts from `messages[i]` (a user message).
-///
-/// A part is orphaned when unmatched by a `ToolUse` in the previous non-system message, or a
-/// **duplicate** (#5513) when its `tool_use_id` is already in `resolved_tool_use_ids` — i.e. a
-/// `tool_use_id` that already received a result (real or tombstone) earlier in history and shows
-/// up again later, e.g. from a cancellation-handling defect that wrote more than one tombstone for
-/// the same call. Either shape would trip the same "`tool_calls` must be followed by tool
-/// messages" provider error, so both are stripped.
-///
-/// Whatever `ToolResult` parts survive are added to `resolved_tool_use_ids`. Returns `true` if the
-/// message was removed entirely (caller must not advance past `i`).
-fn strip_tool_result_orphans_at(
-    messages: &mut Vec<Message>,
-    i: usize,
-    resolved_tool_use_ids: &mut HashSet<String>,
-    db_ids: &mut Vec<i64>,
-) -> bool {
-    let prev_non_system = (0..i)
-        .rev()
-        .find(|&j| messages[j].role != Role::System)
-        .and_then(|j| messages.get(j));
-    let orphaned_ids = orphaned_tool_result_ids(&messages[i], prev_non_system);
-    let duplicate_ids: HashSet<String> = messages[i]
-        .parts
-        .iter()
-        .filter_map(|p| {
-            if let MessagePart::ToolResult { tool_use_id, .. } = p {
-                Some(tool_use_id.clone())
-            } else {
-                None
-            }
-        })
-        .filter(|id| resolved_tool_use_ids.contains(id))
+        .filter_map(|m| m.metadata.db_id)
         .collect();
-    if !duplicate_ids.is_empty() {
-        tracing::warn!(
-            tool_use_ids = ?duplicate_ids,
-            index = i,
-            "stripping duplicate mid-history tool_result parts from user message"
-        );
-    }
-    if !orphaned_ids.is_empty() {
-        tracing::warn!(
-            tool_use_ids = ?orphaned_ids,
-            index = i,
-            "stripping orphaned mid-history tool_result parts from user message"
-        );
-    }
-    let strip_ids: HashSet<&str> = orphaned_ids
-        .iter()
-        .chain(duplicate_ids.iter())
-        .map(String::as_str)
-        .collect();
-    let mut removed = false;
-    if !strip_ids.is_empty() {
-        messages[i].parts.retain(|p| {
-            !matches!(p, MessagePart::ToolResult { tool_use_id, .. } if strip_ids.contains(tool_use_id.as_str()))
-        });
-        let is_empty =
-            !has_meaningful_content(&messages[i].content) && messages[i].parts.is_empty();
-        if is_empty {
-            if let Some(db_id) = messages[i].metadata.db_id {
-                db_ids.push(db_id);
-            }
-            messages.remove(i);
-            removed = true;
-        }
-    }
-    if !removed {
-        for p in &messages[i].parts {
-            if let MessagePart::ToolResult { tool_use_id, .. } = p {
-                resolved_tool_use_ids.insert(tool_use_id.clone());
-            }
-        }
-    }
-    removed
-}
-
-/// Scan all messages and strip orphaned `ToolUse`/`ToolResult` parts from mid-history messages,
-/// as well as **duplicate** `ToolResult` parts (#5513) — see [`strip_tool_result_orphans_at`].
-///
-/// `resolved_tool_use_ids` is scoped to the current open call window: whenever a `ToolUse(id)`
-/// is encountered, `id` is removed from the set first, since it is being re-opened. Some
-/// providers (e.g. Ollama, which assigns `tool_call` ids as `format!("call_{i}")` by batch
-/// index) legitimately reuse the same `tool_use_id` across turns; without this, a later turn's
-/// real `ToolResult` would be misdetected as a duplicate of an earlier turn's and stripped,
-/// orphaning the later turn's `ToolUse`.
-fn strip_mid_history_orphans(messages: &mut Vec<Message>) -> (usize, Vec<i64>) {
-    let mut removed = 0;
-    let mut db_ids: Vec<i64> = Vec::new();
-    let mut resolved_tool_use_ids: HashSet<String> = HashSet::new();
-    let mut i = 0;
-    while i < messages.len() {
-        if messages[i].role == Role::Assistant
-            && messages[i]
-                .parts
-                .iter()
-                .any(|p| matches!(p, MessagePart::ToolUse { .. }))
-        {
-            for p in &messages[i].parts {
-                if let MessagePart::ToolUse { id, .. } = p {
-                    resolved_tool_use_ids.remove(id);
-                }
-            }
-            if strip_orphaned_tool_use_at(messages, i, &mut db_ids) {
-                removed += 1;
-                continue;
-            }
-        }
-
-        if messages[i].role == Role::User
-            && messages[i]
-                .parts
-                .iter()
-                .any(|p| matches!(p, MessagePart::ToolResult { .. }))
-            && strip_tool_result_orphans_at(messages, i, &mut resolved_tool_use_ids, &mut db_ids)
-        {
-            removed += 1;
-            continue;
-        }
-
-        i += 1;
-    }
-    (removed, db_ids)
+    (report.removed_messages.len(), db_ids)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeph_llm::provider::MessageMetadata;
+    use zeph_llm::provider::{MessageMetadata, MessagePart, Role};
 
     fn msg(role: Role, content: &str) -> Message {
         Message {
@@ -509,39 +170,103 @@ mod tests {
         assert_eq!(msgs.len(), 3);
     }
 
+    /// Relaxation (spec-078 FR-003 amendment): the shared helper is part-level. A trailing
+    /// assistant message that carries an orphaned `ToolUse` *and* independent text now keeps
+    /// the text instead of being removed wholesale, unlike the old whole-message removal.
     #[test]
-    fn has_meaningful_content_with_text() {
-        assert!(has_meaningful_content("hello world"));
-        assert!(has_meaningful_content(
-            "some text [tool_use: bash(abc)] more text"
-        ));
+    fn trailing_orphan_tool_use_alongside_text_keeps_the_text() {
+        let mut msgs = vec![
+            msg(Role::User, "run something"),
+            msg_with_parts(
+                Role::Assistant,
+                "thinking",
+                vec![
+                    MessagePart::Text {
+                        text: "thinking out loud".to_owned(),
+                    },
+                    MessagePart::ToolUse {
+                        id: "abc".to_owned(),
+                        name: "bash".to_owned(),
+                        input: serde_json::json!({}),
+                    },
+                ],
+            ),
+        ];
+        let (removed, _) = sanitize_tool_pairs(&mut msgs);
+        assert_eq!(removed, 0, "the message survives because text remains");
+        assert_eq!(msgs.len(), 2);
+        assert!(
+            msgs[1]
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Text { text } if text == "thinking out loud"))
+        );
+        assert!(
+            !msgs[1]
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolUse { .. }))
+        );
     }
 
+    /// C2 regression: a partial strip must never touch `content`, not just a fully-empty one.
+    /// A restored assistant message with `parts = [ThinkingBlock, ToolUse(orphan)]` keeps
+    /// `ThinkingBlock` after the orphan is stripped (parts non-empty), but `ThinkingBlock` alone
+    /// flattens to `""` — rebuilding `content` from the surviving parts would silently empty a
+    /// message whose `content` field holds real, independently-authored DB-restored text.
     #[test]
-    fn has_meaningful_content_only_markers() {
-        assert!(!has_meaningful_content("[tool_use: bash(abc123)]"));
-        assert!(!has_meaningful_content("  "));
+    fn partial_strip_never_touches_independently_authored_content() {
+        let mut msgs = vec![
+            msg(Role::User, "run something"),
+            Message {
+                role: Role::Assistant,
+                content: "Independently-authored reasoning text flatten_parts cannot \
+                          reconstruct."
+                    .to_owned(),
+                parts: vec![
+                    MessagePart::ThinkingBlock {
+                        thinking: "internal reasoning".to_owned(),
+                        signature: "sig".to_owned(),
+                    },
+                    MessagePart::ToolUse {
+                        id: "orphan".to_owned(),
+                        name: "bash".to_owned(),
+                        input: serde_json::json!({}),
+                    },
+                ],
+                metadata: MessageMetadata::default(),
+            },
+        ];
+        let content_before = msgs[1].content.clone();
+        let (removed, _) = sanitize_tool_pairs(&mut msgs);
+        assert_eq!(
+            removed, 0,
+            "the message survives because ThinkingBlock keeps parts non-empty"
+        );
+        assert_eq!(msgs.len(), 2);
+        assert!(
+            !msgs[1]
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolUse { .. })),
+            "the orphaned ToolUse must be stripped"
+        );
+        assert_eq!(
+            msgs[1].content, content_before,
+            "content must never be touched by a partial strip — it may hold independently- \
+             authored text `flatten_parts` cannot reconstruct"
+        );
     }
 
-    #[test]
-    fn has_meaningful_content_empty() {
-        assert!(!has_meaningful_content(""));
-    }
-
-    /// Regression test for #5513 item 6 (turn-scoped, see S1 correction below):
-    /// `strip_mid_history_orphans` must track resolved `tool_use_id`s cumulatively *within one
-    /// open call window*, so a duplicate `ToolResult` several messages downstream of its
-    /// matching `ToolUse` (no intervening re-open) is still caught — see
-    /// `duplicate_tool_result_several_messages_downstream_is_stripped` for that shape.
-    ///
-    /// This test instead documents the corrected boundary: when a *second* `ToolUse` reuses the
-    /// same id (re-opening the call), `resolved_tool_use_ids` forgets the earlier resolution, so
-    /// the following `ToolResult` is evaluated as a fresh pairing, not a duplicate. An earlier
-    /// version of this test asserted the opposite (id reuse via a new `ToolUse` always means
-    /// duplicate) — that assumption was wrong: it is indistinguishable from legitimate
-    /// index-based id reuse (e.g. Ollama's `format!("call_{i}")`, see
-    /// `legitimate_id_reuse_across_turns_ollama_style_must_not_be_stripped`), and stripping it
-    /// unconditionally re-creates the #5513 corruption for those providers.
+    /// Regression test for #5513 item 6: when a *second* `ToolUse` reuses the same id
+    /// (re-opening the call), the second `ToolResult(id)` must pair with the second `ToolUse`,
+    /// not be treated as a duplicate of the first result. Adjacency repair handles this for
+    /// free — each `ToolResult` matches only against its own immediately preceding non-system
+    /// message, never a cross-message "already resolved" id set — so there is nothing here that
+    /// needs id reuse to be distinguished from a genuine duplicate; see
+    /// `duplicate_tool_result_several_messages_downstream_is_stripped` for the shape that *is* a
+    /// genuine duplicate, and the module docs for why a separate dedup sweep was removed as
+    /// provably unreachable after this repair runs.
     #[test]
     fn tool_result_after_id_reopened_by_new_tool_use_is_not_a_duplicate() {
         let tool_use = |id: &str| MessagePart::ToolUse {
@@ -609,10 +334,10 @@ mod tests {
     /// by batch index, so `call_0` legitimately recurs on *every* turn of a multi-turn tool
     /// conversation — unlike OpenAI/Claude/Gemini, which use globally unique per-call ids.
     ///
-    /// `resolved_tool_use_ids` is scoped to the current open call window (S1 fix): a `ToolUse(id)`
-    /// removes `id` from the set, so a later turn's legitimate `ToolUse(call_0) ->
-    /// ToolResult(call_0, real)` pair is evaluated fresh, not flagged as a duplicate of an
-    /// earlier turn's result.
+    /// Adjacency repair (issue #6770/#6771) matches each `ToolResult` only against its own
+    /// immediately preceding non-system message, so a later turn's legitimate
+    /// `ToolUse(call_0) -> ToolResult(call_0, real)` pair is evaluated fresh against its own
+    /// neighbour — never flagged as a duplicate of an earlier, unrelated turn's result.
     #[test]
     fn legitimate_id_reuse_across_turns_ollama_style_must_not_be_stripped() {
         let tool_use = |id: &str| MessagePart::ToolUse {
@@ -736,5 +461,64 @@ mod tests {
             })
             .collect();
         assert_eq!(remaining_results, vec!["real output"]);
+    }
+
+    /// A leading orphaned `ToolResult` whose id recurs later in history must not confuse the
+    /// later, legitimate pair: adjacency repair matches each `ToolResult` only against its own
+    /// immediately preceding non-system message, so the leading orphan (`prev == None`) and the
+    /// later pair (`prev` is the matching `Assistant(ToolUse)`) are judged independently, with
+    /// no cross-message id-set bookkeeping to confuse.
+    #[test]
+    fn leading_orphan_result_id_recurring_later_does_not_confuse_the_later_legitimate_pair() {
+        let tool_use = |id: &str| MessagePart::ToolUse {
+            id: id.to_owned(),
+            name: "bash".to_owned(),
+            input: serde_json::json!({}),
+        };
+        let tool_result = |id: &str, content: &str| MessagePart::ToolResult {
+            tool_use_id: id.to_owned(),
+            content: content.to_owned(),
+            is_error: false,
+        };
+
+        let mut msgs = vec![
+            // Leading orphan: no preceding ToolUse for "dup_id" — will be repaired away first.
+            msg_with_parts(
+                Role::User,
+                "[tool_result: dup_id]",
+                vec![tool_result("dup_id", "boundary-cut orphan")],
+            ),
+            msg(Role::User, "real task"),
+            msg_with_parts(
+                Role::Assistant,
+                "[tool_use: bash(dup_id)]",
+                vec![tool_use("dup_id")],
+            ),
+            msg_with_parts(
+                Role::User,
+                "[tool_result: dup_id]\nreal output",
+                vec![tool_result("dup_id", "real output")],
+            ),
+        ];
+
+        let (removed, _) = sanitize_tool_pairs(&mut msgs);
+
+        assert_eq!(removed, 1, "only the leading orphan must be removed");
+        let remaining_results: Vec<&str> = msgs
+            .iter()
+            .flat_map(|m| m.parts.iter())
+            .filter_map(|p| {
+                if let MessagePart::ToolResult { content, .. } = p {
+                    Some(content.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            remaining_results,
+            vec!["real output"],
+            "the legitimate later pair must survive, not be flagged a duplicate of the orphan"
+        );
     }
 }

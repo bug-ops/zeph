@@ -1309,26 +1309,47 @@ pub(crate) fn estimate_parts_size(m: &zeph_llm::provider::Message) -> usize {
         .sum()
 }
 
-/// Applies token-budget truncation and orphaned-tool-pair pruning to a parent message slice.
+/// Applies token-budget truncation and orphaned-tool-pair repair to a parent message slice.
 ///
 /// Budget truncation keeps the **most recent** messages that fit within `max_chars`
 /// (a suffix), so the subagent always receives the freshest context.
 ///
-/// Two passes are performed after budget truncation:
+/// After budget truncation, [`zeph_llm::tool_pairing::repair_window`] repairs any
+/// `ToolUse`/`ToolResult` pair left orphaned by the truncation boundary (adjacency-scoped
+/// against the immediately preceding/following non-system message — never a global id set,
+/// which would wrongly cross-pair an orphan against an unrelated call sharing its id under
+/// Ollama-style `call_{i}` id reuse, issue #6770) and drops any leading non-`user` message
+/// (Anthropic requires the first non-system message to have role `user`).
 ///
-/// 1. Remove `ToolResult` parts from user messages whose matching `ToolUse` is no longer in the
-///    slice (truncated away).
-/// 2. Remove `ToolUse` parts from **interior** assistant messages whose matching `ToolResult`
-///    was removed in pass 1 or was already absent. The trailing assistant message is exempt —
-///    its unanswered `ToolUse` calls are not orphaned; the slice just ends before the result.
+/// `OrphanAction::Delete` is the default: this slice is a **terminal snapshot** handed to a
+/// fresh subagent as `initial_messages`, not a live in-progress window, and `Delete` avoids
+/// pushing previously-discarded parent tool output into the subagent's context unsanitized
+/// under `ParentContextPolicy::Inherit`, where `sanitize_parent_messages` never runs.
 ///
-/// Messages that become fully empty after pruning are removed from `msgs`.
-///
-/// `rebuild_content` is called **only** when `retain` actually removed parts — preserving the
-/// existing `content` field (and any `ThinkingBlock` text embedded there) for unmodified
-/// messages.
+/// `Delete`'s leading-role enforcement can annihilate the **entire** window, though: for a
+/// canonical `Assistant(ToolUse)`/`User(ToolResult)`-alternating tool-loop parent history (with
+/// no other plain-text anchor), the constraints "first non-system message is `user`" and "no
+/// orphaned `ToolResult`" are jointly unsatisfiable by deletion alone — repeatedly dropping the
+/// leading non-`user` message re-orphans the next `ToolResult` in turn, all the way down to
+/// empty. This is reachable in practice (`extract_parent_messages` slices by message count, not
+/// role alignment, so roughly half of count-based cuts into a tool-heavy history start on
+/// `Assistant`), and it would silently deliver **zero** parent context for a user-configured
+/// `ParentContextPolicy::Inherit`/`InheritSanitized` — a functional failure, not the graceful
+/// `[System, User(task_prompt)]` degradation `ParentContextPolicy::None` already produces on
+/// purpose. So `Delete` runs first on a scratch copy; if (and only if) it would annihilate a
+/// non-empty window, repair falls back to `DowngradeToText` on the original, un-repaired
+/// messages instead, so the leading orphan survives as a `user`-role text anchor. This fallback
+/// is strictly safer under `ParentContextPolicy::InheritSanitized` than the paired case already
+/// is: `sanitize_parent_messages` runs after this function and sanitizes only
+/// `MessagePart::Text`, so a downgraded orphan gets sanitized where a paired native
+/// `ToolResult` does not. Under `ParentContextPolicy::Inherit` the residual exposure is exactly
+/// one orphaned `ToolResult`'s content — qualitatively identical to every *paired* `ToolResult`
+/// that policy already forwards verbatim; there is no security boundary between "tool output
+/// whose `ToolUse` fell inside the count-based slice" and "tool output whose `ToolUse` fell
+/// outside it".
 pub(crate) fn trim_parent_messages(msgs: &mut Vec<zeph_llm::provider::Message>, max_chars: usize) {
-    use zeph_llm::provider::{MessagePart, Role};
+    use zeph_llm::provider::Role;
+    use zeph_llm::tool_pairing::{OrphanAction, repair_window};
 
     // Token-budget cap: keep the most recent messages that fit within max_chars.
     // We iterate from the end (newest) and drain from the front once the budget is exceeded,
@@ -1346,106 +1367,33 @@ pub(crate) fn trim_parent_messages(msgs: &mut Vec<zeph_llm::provider::Message>, 
         msgs.drain(..drop_before);
     }
 
-    // Pass 1: collect ToolUse IDs emitted by assistant messages; prune orphaned ToolResult
-    // parts from user messages that reference a ToolUse no longer present in the slice.
-    // Use owned Strings to avoid holding immutable borrows across the subsequent mutable loop.
-    let emitted_tool_ids: std::collections::HashSet<String> = msgs
-        .iter()
-        .filter(|m| m.role == Role::Assistant)
-        .flat_map(|m| m.parts.iter())
-        .filter_map(|p| {
-            if let MessagePart::ToolUse { id, .. } = p {
-                Some(id.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
+    let had_content = msgs.iter().any(|m| m.role != Role::System);
+    let mut candidate = msgs.clone();
+    let report = repair_window(&mut candidate, OrphanAction::Delete);
 
-    let mut orphans_removed = 0usize;
-    for m in msgs.iter_mut() {
-        if m.role != Role::User || m.parts.is_empty() {
-            continue;
+    if had_content && !candidate.iter().any(|m| m.role != Role::System) {
+        // Delete annihilated the whole window (pure tool-loop parent history, see the doc
+        // comment above) — fall back to DowngradeToText on the un-repaired original so the
+        // leading orphan survives as a user-role text anchor instead of delivering zero parent
+        // context.
+        let fallback = repair_window(msgs, OrphanAction::DowngradeToText);
+        if fallback.parts_repaired > 0 {
+            tracing::debug!(
+                orphans = fallback.parts_repaired,
+                "[subagent] Delete would have emptied the parent context window; \
+                 downgraded orphaned parts to text anchors instead"
+            );
         }
-        let before = m.parts.len();
-        m.parts.retain(|p| match p {
-            MessagePart::ToolResult { tool_use_id, .. } => {
-                emitted_tool_ids.contains(tool_use_id.as_str())
-            }
-            _ => true,
-        });
-        let dropped = before - m.parts.len();
-        if dropped > 0 {
-            orphans_removed += dropped;
-            if m.parts.is_empty() {
-                m.content.clear();
-            } else {
-                m.rebuild_content();
-            }
-        }
+        return;
     }
 
-    // Pass 2: collect ToolResult IDs present in user messages after pass 1; prune ToolUse
-    // parts from assistant messages whose result is confirmed absent.
-    //
-    // The trailing assistant message is exempt: it may legitimately contain unanswered
-    // ToolUse calls (the slice ends before the result arrives). Only interior assistant
-    // messages — those followed by at least one user message — can have provably orphaned
-    // ToolUse parts (the conversation moved on without answering them).
-    let consumed_tool_ids: std::collections::HashSet<String> = msgs
-        .iter()
-        .filter(|m| m.role == Role::User)
-        .flat_map(|m| m.parts.iter())
-        .filter_map(|p| {
-            if let MessagePart::ToolResult { tool_use_id, .. } = p {
-                Some(tool_use_id.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Index of the last assistant message — exempt from pass 2.
-    let last_assistant_idx = msgs
-        .iter()
-        .enumerate()
-        .rev()
-        .find(|(_, m)| m.role == Role::Assistant)
-        .map(|(i, _)| i);
-
-    for (idx, m) in msgs.iter_mut().enumerate() {
-        if m.role != Role::Assistant || m.parts.is_empty() {
-            continue;
-        }
-        // Skip the trailing assistant message — its unanswered ToolUse calls are not orphaned.
-        if Some(idx) == last_assistant_idx {
-            continue;
-        }
-        let before = m.parts.len();
-        m.parts.retain(|p| match p {
-            MessagePart::ToolUse { id, .. } => consumed_tool_ids.contains(id.as_str()),
-            _ => true,
-        });
-        let dropped = before - m.parts.len();
-        if dropped > 0 {
-            orphans_removed += dropped;
-            if m.parts.is_empty() {
-                m.content.clear();
-            } else {
-                m.rebuild_content();
-            }
-        }
-    }
-
-    // Remove messages that were emptied by orphan pruning.
-    msgs.retain(|m| !m.content.is_empty() || !m.parts.is_empty());
-
-    if orphans_removed > 0 {
+    if report.parts_repaired > 0 {
         tracing::debug!(
-            orphans = orphans_removed,
+            orphans = report.parts_repaired,
             "[subagent] pruned orphaned ToolUse/ToolResult parts from parent context boundary"
         );
     }
+    *msgs = candidate;
 }
 
 /// Sanitize text parts of `msgs` through the IPI pipeline.

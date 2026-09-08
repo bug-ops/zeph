@@ -228,31 +228,46 @@ Provider preference per channel is persisted to SQLite (#3308, #3385):
 - TUI: `context_gauge` widget (color-coded: green < 70%, yellow 70–90%, red > 90%); hidden when `context_max_tokens == 0`
 - TUI: `compaction_badge` widget shows `"{before}k→{after}k (-{saved}k) {elapsed}"`; hidden until first compaction this session
 
-## Hard Compaction Post-Processing: Orphaned `tool_result` Strip
+## Hard Compaction Boundary: Tool-Pair Prevention, Not Post-Hoc Strip (#6771 amendment)
 
-After hard compaction the message list is drained and rebuilt. A `tool_result` message
-references a prior `tool_use` by id. When the drain removes the originating `tool_use`
-(e.g., the turn that produced it was summarized or evicted) the `tool_result` becomes
-**orphaned** — its reference id points to a message no longer in the list. Sending an
-orphaned `tool_result` to any provider causes a request validation error (Claude: 400,
-OpenAI: 422).
+A `tool_result` message references a prior `tool_use` by id. If hard compaction's drain
+boundary landed inside a `ToolUse`/`ToolResult` pair, the surviving half becomes **orphaned** —
+its reference id points to a message no longer in the list. Sending an orphaned `tool_result` to
+any provider causes a request validation error (Claude: 400, OpenAI: 422).
 
-Fix (#3256): after `apply_hard_compaction()` and after any `apply_deferred_summaries()`
-step, run `strip_orphaned_tool_results(messages)`:
+The originally specified fix (#3256), `strip_orphaned_tool_results(messages)` with a
+**global** tool_use-id-set match, does not exist in the codebase under that name and its
+algorithm is exactly the adjacency-vs-global-set defect fixed by issue #6770 (a global set
+wrongly cross-pairs an orphan against an unrelated call sharing its id under provider-side id
+reuse, e.g. Ollama's `format!("call_{i}")`). The mechanism actually implemented is
+**prevention, not repair**: `crates/zeph-agent-context/src/summarization/compaction.rs`'s
+`adjust_compact_end_for_tool_pairs` walks the compaction boundary backward off any assistant
+message carrying a `ToolUse` part, so the drain never splits a pair in the first place. This
+runs after `apply_deferred_summaries`, so the boundary adjustment sees the final message list
+including any messages deferred summaries just inserted.
 
-```
-strip_orphaned_tool_results(messages: &mut Vec<Message>)
-    collect_set of all tool_use ids present in messages
-    remove any message where role == tool_result AND tool_use_id NOT IN that set
-```
+Residual gap (tracked, not implemented): deferred-summary **hiding**
+(`metadata.deferred_summary`/`MessageVisibility`) removes a message from the request without
+moving the compaction boundary, so it can still orphan a pair at request-build time. Today this
+is caught only by the Claude request builder's Layer-A downgrade
+(`zeph_llm::tool_pairing::unmatched_tool_use_ids`/`unmatched_tool_result_ids` in
+`claude/request.rs`) — OpenAI/compatible/Ollama have no equivalent request-build-time repair (see
+`specs/003-llm-providers/spec.md`'s Tool-Pair Repair section; follow-up issue filed for the
+OpenAI-compatible gap).
 
 ### Key Invariants
 
-- `strip_orphaned_tool_results` runs after EVERY hard compaction event — no exceptions
-- The strip runs AFTER `apply_deferred_summaries` (deferred insertions may add new tool_use messages)
-- Removing an orphaned `tool_result` is silent (no WARN) unless `--debug-dump` is active
-- This is a correctness invariant, not a heuristic — a single orphaned `tool_result` causes a provider 400/422 error
-- NEVER send a `tool_result` whose `tool_use_id` is absent from the message list
+- The compaction boundary MUST be adjusted off any `ToolUse`-bearing assistant message before the
+  drain executes — no exceptions
+- Boundary adjustment runs AFTER `apply_deferred_summaries` (deferred insertions can shift indices
+  and add new `tool_use`-bearing messages, so adjustment must see the final message list, not the
+  pre-insertion one)
+- This is a correctness invariant, not a heuristic — a single orphaned `tool_result` causes a
+  provider 400/422 error
+- NEVER send a `tool_result` whose `tool_use_id` is absent from the message list — enforced at
+  the compaction boundary by prevention here, and at request-build time by
+  `zeph_llm::tool_pairing` (see `specs/003-llm-providers/spec.md`) as defense-in-depth for the
+  residual deferred-summary-hiding gap
 
 ---
 

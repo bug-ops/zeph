@@ -713,7 +713,7 @@ impl Message {
         }
     }
 
-    fn flatten_parts(parts: &[MessagePart]) -> String {
+    pub(crate) fn flatten_parts(parts: &[MessagePart]) -> String {
         use std::fmt::Write;
         let mut out = String::new();
         for part in parts {

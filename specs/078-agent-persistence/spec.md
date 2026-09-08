@@ -155,7 +155,7 @@ AND values are available to the metrics subsystem for Prometheus export
 |----|------------|----------|
 | FR-001 | WHEN `LoadHistoryParams` is populated with memory, conversation ID, and mutable buffers THEN `load_history()` SHALL fetch up to 50 agent-visible messages (`agent_visible=true`) from SQLite | must |
 | FR-002 | WHEN loaded messages include empty or orphaned messages THEN they SHALL be skipped and counted in the outcome | must |
-| FR-003 | WHEN `sanitize_tool_pairs()` receives a message buffer THEN it SHALL remove: (1) trailing assistant ToolUse without matching ToolResult, (2) leading user ToolResult without preceding ToolUse, (3) mid-history orphaned ToolUse/ToolResult, and (4) unmatched ToolResult parts | must |
+| FR-003 | WHEN `sanitize_tool_pairs()` receives a message buffer THEN it SHALL delegate orphan repair to `zeph_llm::tool_pairing::repair_tool_pairs` (`OrphanAction::Delete`), which strips — at the individual-part level, not whole-message — any `ToolUse` part with no matching `ToolResult` in the immediately following non-system message and any `ToolResult` part with no matching `ToolUse` in the immediately preceding non-system message (adjacency-scoped, not a global id set, per issue #6770); a message left with no parts and no meaningful content is then removed entirely. There is no separate duplicate-`ToolResult` sweep: the #5513 shape (a stale duplicate result for an already-resolved `tool_use_id`) is provably always caught by adjacency repair itself, since any surviving `ToolResult` is by construction paired with its own immediately preceding `ToolUse` — a dedicated sweep that existed in an earlier revision was removed as unreachable dead code | must |
 | FR-004 | WHEN orphaned messages are removed THEN their SQLite `db_id` values SHALL be collected and returned for soft-delete | must |
 | FR-005 | WHEN `persist_message()` is called with memory disabled (None) THEN the operation SHALL return early with zero-filled outcome | must |
 | FR-006 | WHEN message parts cannot be serialized to JSON THEN persistence SHALL fail gracefully, log an error, and return `None` to avoid creating orphaned tool-pair records | must |
@@ -165,7 +165,7 @@ AND values are available to the metrics subsystem for Prometheus export
 | FR-010 | WHEN `last_persisted_message_id` is set THEN subsequent history loads SHALL fetch only newer messages (LIMIT-based pagination) | must |
 | FR-011 | WHEN a `PersistenceService` method encounters a database error THEN it SHALL log at ERROR level and return an error or `None`, never panic | must |
 | FR-012 | WHEN `serialize_parts_json()` is called THEN it SHALL serde-serialize parts to a flat JSON array; empty parts returns `"[]"` | must |
-| FR-013 | WHEN `has_meaningful_content()` evaluates a message THEN it SHALL identify legacy tool bracket markers and strip them; content with only markers is considered empty | must |
+| FR-013 | WHEN `has_meaningful_content()` evaluates a message THEN it SHALL identify legacy tool bracket markers and strip them; content with only markers is considered empty. Relocated to `zeph_llm::tool_pairing` (issue #6771) since it decodes markers produced by `zeph_llm::provider::Message::flatten_parts`, which lives in that crate; `zeph-agent-persistence` calls it via `zeph_llm::tool_pairing::has_meaningful_content` | must |
 | FR-014 | WHEN metrics are updated via `MetricsView` THEN `sqlite_message_count`, `embeddings_generated`, and `exfiltration_memory_guards` counters SHALL be incremented atomically | must |
 
 ---

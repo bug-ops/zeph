@@ -315,3 +315,190 @@ async fn flush_orphaned_inserts_tombstone_immediately_after_orphan_not_at_end() 
         "the later message must remain after the tombstone, not before it"
     );
 }
+
+/// FO6 (#6771 site-5 migration, KNOWN GAP — see tester handoff): `flush_orphaned_tool_use_on_shutdown`
+/// itself now computes `unpaired_ids` via `zeph_llm::tool_pairing::unmatched_tool_use_ids`
+/// (adjacency-scoped, immediate-neighbour only) and correctly identifies `call_0` as unpaired in
+/// this shape. But the call is still routed through
+/// `Agent::persist_cancelled_tool_results` (`crates/zeph-core/src/agent/tool_execution/focus.rs`,
+/// untouched by #6771), whose own `already_resolved` idempotency guard scans
+/// `self.msg.messages[turn_start..]` — from the last assistant message to the true end of
+/// history, not just the immediate neighbour. A later, unrelated `ToolResult` reusing `call_0`
+/// still falls inside that wider scan and is treated as "already resolved", silently swallowing
+/// the tombstone. So the #6770 adjacency fix for site 5 is *not* fully closed end-to-end: the
+/// classification predicate was fixed, but the downstream write-path idempotency check was not.
+/// Empirically confirmed to fail against current `focus.rs` (not a regression from this PR —
+/// `persist_cancelled_tool_results` is pre-existing #5513 code the PR does not touch). Left
+/// `#[ignore]` rather than failing the suite; un-ignore once `focus.rs`'s scan is narrowed to
+/// adjacency (or the gap is otherwise accepted and tracked).
+#[ignore = "known gap: persist_cancelled_tool_results's turn-scoped (not adjacency-scoped) \
+            already_resolved check can still swallow the tombstone; see doc comment"]
+#[tokio::test]
+async fn flush_orphaned_writes_tombstone_despite_a_later_unrelated_reuse_of_the_same_id() {
+    use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+
+    let provider = mock_provider(vec![]);
+    let memory = flush_test_memory().await;
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+        std::sync::Arc::new(memory),
+        cid,
+        50,
+        5,
+        100,
+    );
+
+    // Genuinely in-flight ToolUse — the last assistant message.
+    agent.msg.messages.push(Message {
+        role: Role::Assistant,
+        content: "[tool_use]".into(),
+        parts: vec![MessagePart::ToolUse {
+            id: "call_0".into(),
+            name: "shell".into(),
+            input: serde_json::json!({}),
+        }],
+        metadata: MessageMetadata::default(),
+    });
+    // Immediately following: unrelated plain text, not the reply to call_0.
+    agent.msg.messages.push(Message {
+        role: Role::User,
+        content: "an unrelated later message".into(),
+        parts: vec![MessagePart::Text {
+            text: "an unrelated later message".into(),
+        }],
+        metadata: MessageMetadata::default(),
+    });
+    // A ToolResult reusing "call_0" surfaces even later (Ollama-style id reuse from an
+    // unrelated call). Adjacency correctly ignores this — it is not the immediate neighbour.
+    agent.msg.messages.push(Message {
+        role: Role::User,
+        content: "[tool_result]".into(),
+        parts: vec![MessagePart::ToolResult {
+            tool_use_id: "call_0".into(),
+            content: "unrelated reused result".into(),
+            is_error: false,
+        }],
+        metadata: MessageMetadata::default(),
+    });
+
+    agent.flush_orphaned_tool_use_on_shutdown().await;
+
+    let history = agent
+        .services
+        .memory
+        .persistence
+        .memory
+        .as_ref()
+        .unwrap()
+        .sqlite()
+        .load_history(cid, 50)
+        .await
+        .unwrap();
+
+    let tombstone_written = history.iter().any(|m| {
+        m.parts.iter().any(|p| {
+            matches!(
+                p,
+                MessagePart::ToolResult { tool_use_id, is_error, content }
+                    if tool_use_id == "call_0" && *is_error && content == "[Cancelled]"
+            )
+        })
+    });
+    assert!(
+        tombstone_written,
+        "the genuinely in-flight call_0 must get a tombstone, not be silently treated as \
+         paired against an unrelated later reuse of its id"
+    );
+}
+
+/// FO7: adjacency must not be confused by an *earlier* turn reusing the same id. A call that is
+/// directly, immediately paired with its own `ToolResult` must produce no tombstone, even when an
+/// unrelated earlier turn already used and resolved the same `call_0` id (Ollama-style reuse).
+/// `unmatched_tool_use_ids` only ever looks at the immediate neighbour, so it cannot be swayed by
+/// anything earlier in history — this is a direct regression test for that contract.
+#[tokio::test]
+async fn flush_orphaned_noop_when_directly_paired_despite_an_earlier_turn_reusing_the_same_id() {
+    use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+
+    let provider = mock_provider(vec![]);
+    let memory = flush_test_memory().await;
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+
+    let channel = MockChannel::new(vec![]);
+    let registry = create_test_registry();
+    let executor = MockToolExecutor::no_tools();
+    let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
+        std::sync::Arc::new(memory),
+        cid,
+        50,
+        5,
+        100,
+    );
+
+    // Turn 1: call_0 used and legitimately resolved.
+    agent.msg.messages.push(Message {
+        role: Role::Assistant,
+        content: "[tool_use]".into(),
+        parts: vec![MessagePart::ToolUse {
+            id: "call_0".into(),
+            name: "shell".into(),
+            input: serde_json::json!({}),
+        }],
+        metadata: MessageMetadata::default(),
+    });
+    agent.msg.messages.push(Message {
+        role: Role::User,
+        content: "[tool_result]".into(),
+        parts: vec![MessagePart::ToolResult {
+            tool_use_id: "call_0".into(),
+            content: "turn-1 output".into(),
+            is_error: false,
+        }],
+        metadata: MessageMetadata::default(),
+    });
+    // Turn 2: call_0 reused (Ollama batch-index id), immediately and legitimately paired — this
+    // is the last assistant message the function will examine.
+    agent.msg.messages.push(Message {
+        role: Role::Assistant,
+        content: "[tool_use]".into(),
+        parts: vec![MessagePart::ToolUse {
+            id: "call_0".into(),
+            name: "shell".into(),
+            input: serde_json::json!({}),
+        }],
+        metadata: MessageMetadata::default(),
+    });
+    agent.msg.messages.push(Message {
+        role: Role::User,
+        content: "[tool_result]".into(),
+        parts: vec![MessagePart::ToolResult {
+            tool_use_id: "call_0".into(),
+            content: "turn-2 output".into(),
+            is_error: false,
+        }],
+        metadata: MessageMetadata::default(),
+    });
+
+    agent.flush_orphaned_tool_use_on_shutdown().await;
+
+    let history = agent
+        .services
+        .memory
+        .persistence
+        .memory
+        .as_ref()
+        .unwrap()
+        .sqlite()
+        .load_history(cid, 50)
+        .await
+        .unwrap();
+    assert!(
+        history.is_empty(),
+        "no tombstone must be persisted for a call that is directly, immediately paired, \
+         regardless of an earlier turn reusing the same id"
+    );
+}
