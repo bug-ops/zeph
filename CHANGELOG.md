@@ -65,6 +65,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a duplicate hand-rolled scan, and hardened the same idempotency guard against a missing
   assistant message in history (previously fell back to an arbitrary index instead of
   resolving nothing).
+- `zeph-core`: `BudgetHint.remaining_tool_calls` no longer leaked the previous turn's last
+  tool-loop iteration count into a new turn's system prompt; removed the dead per-iteration
+  counter and set `remaining_tool_calls` directly to the full `max_tool_calls` budget at the
+  once-per-turn seam that reads it (#6765).
 
 ### Added
 

@@ -2375,8 +2375,6 @@ impl<C: Channel> Agent<C> {
         // Clear the per-turn replay flag; it is set below when the LLM step is replayed.
         self.services.session.durable_turn_replayed = false;
 
-        // Track iteration for BudgetHint injection (#2267).
-        self.services.tool_state.current_tool_iteration = iteration;
         self.channel.send_typing().await?;
 
         if let Some(ref budget) = self.context_manager.budget {
