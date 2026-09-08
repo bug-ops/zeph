@@ -27,6 +27,7 @@ pub(crate) async fn handle_store_command(
         .await
         .map_err(|e| anyhow::anyhow!("failed to open SQLite: {e}"))?;
     let max_value_bytes = config.memory.store.max_value_bytes;
+    let max_namespace_rows = config.memory.store.max_namespace_rows;
 
     match cmd {
         StoreCommand::Get {
@@ -50,15 +51,14 @@ pub(crate) async fn handle_store_command(
             owner_key,
             expected_version,
         } => {
+            let mut opts =
+                zeph_memory::store::StorePutOptions::new(max_value_bytes, max_namespace_rows)
+                    .with_writer("cli");
+            if let Some(v) = expected_version {
+                opts = opts.with_expected_version(v);
+            }
             let item = sqlite
-                .store_put(
-                    &owner_key,
-                    &namespace,
-                    &key,
-                    &value,
-                    max_value_bytes,
-                    expected_version,
-                )
+                .store_put(&owner_key, &namespace, &key, &value, opts)
                 .await
                 .map_err(|e| anyhow::anyhow!("store put failed: {e}"))?;
             println!(

@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        108,
-        "MIGRATIONS registry must contain all 108 sequential steps"
+        109,
+        "MIGRATIONS registry must contain all 109 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -1191,6 +1191,92 @@ fn migrate_memory_store_config_noop_when_active_section_present() {
     assert_eq!(result.output, base);
 }
 
+// ── Step 109 — migrate_memory_store_max_namespace_rows (issue #6774) ──────────
+
+#[test]
+fn migrate_memory_store_max_namespace_rows_inserts_when_active_section_present() {
+    let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n\n[memory.store]\nenabled = true\n";
+    let result = migrate_memory_store_max_namespace_rows(base).unwrap();
+    assert_eq!(result.changed_count, 1);
+    let doc: toml_edit::DocumentMut = result.output.parse().expect("valid TOML");
+    assert_eq!(
+        doc["memory"]["store"]["max_namespace_rows"].as_integer(),
+        Some(256)
+    );
+}
+
+#[test]
+fn migrate_memory_store_max_namespace_rows_noop_when_section_absent() {
+    let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n";
+    let result = migrate_memory_store_max_namespace_rows(base).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, base);
+}
+
+#[test]
+fn migrate_memory_store_max_namespace_rows_noop_when_section_only_commented() {
+    // The commented advisory block Step 92 appends (or a hand-copied config/default.toml
+    // example) must not be mistaken for an active section.
+    let base = "[memory]\ndb_path = \"~/.zeph/memory.db\"\n\n\
+                # [memory.store]\n# enabled = false\n# max_namespace_rows = 256\n";
+    let result = migrate_memory_store_max_namespace_rows(base).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, base);
+}
+
+#[test]
+fn migrate_memory_store_max_namespace_rows_noop_when_key_already_present() {
+    let base = "[memory.store]\nenabled = true\nmax_namespace_rows = 512\n";
+    let result = migrate_memory_store_max_namespace_rows(base).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, base);
+}
+
+#[test]
+fn migrate_memory_store_max_namespace_rows_ignores_commented_key_under_active_section() {
+    // A commented `# max_namespace_rows = ...` line under an otherwise-active [memory.store]
+    // (e.g. copied from config/default.toml's example) is invisible to toml_edit and must not
+    // block the insertion of a real, active key.
+    let base = "[memory.store]\nenabled = true\n# max_namespace_rows = 256\n";
+    let result = migrate_memory_store_max_namespace_rows(base).unwrap();
+    assert_eq!(result.changed_count, 1);
+    let doc: toml_edit::DocumentMut = result.output.parse().expect("valid TOML");
+    assert_eq!(
+        doc["memory"]["store"]["max_namespace_rows"].as_integer(),
+        Some(256)
+    );
+}
+
+#[test]
+fn migrate_memory_store_max_namespace_rows_idempotent() {
+    let base = "[memory.store]\nenabled = true\n";
+    let once = migrate_memory_store_max_namespace_rows(base).unwrap();
+    let twice = migrate_memory_store_max_namespace_rows(&once.output).unwrap();
+    assert_eq!(twice.changed_count, 0);
+    assert_eq!(twice.output, once.output);
+}
+
+/// SC-003-style wire-X guard (mirrors `full_registry_adds_max_spawns_per_session_to_legacy_agents_config`
+/// below): proves `MigrateMemoryStoreMaxNamespaceRows` is actually reachable through
+/// `MIGRATIONS`, not merely a correct free function nobody calls.
+#[test]
+fn full_registry_adds_max_namespace_rows_to_legacy_store_config() {
+    let legacy = "[memory.store]\nenabled = true\n";
+    let mut current = legacy.to_owned();
+    for m in MIGRATIONS.iter() {
+        current = m
+            .apply(&current)
+            .expect("registry migration must not fail")
+            .output;
+    }
+    let doc: toml_edit::DocumentMut = current.parse().expect("migrated output must be valid TOML");
+    assert_eq!(
+        doc["memory"]["store"]["max_namespace_rows"].as_integer(),
+        Some(256),
+        "MIGRATIONS must add an active (non-commented) key, got: {current}"
+    );
+}
+
 // ── Step 103 — migrate_memory_consent_gate_config (issue #6490, MemGhost) ──────────
 
 #[test]
@@ -2124,7 +2210,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 108);
+    assert_eq!(MIGRATIONS.len(), 109);
 }
 
 /// Mirrors the SC-003 wire-X-into-registry check below for `MigrateTuiPanelSizing` (#6675):
@@ -2328,6 +2414,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_shell_risk_chain_window_turns",
         "migrate_tui_panel_sizing",
         "migrate_agents_peer_messaging_config",
+        "migrate_memory_store_max_namespace_rows",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);

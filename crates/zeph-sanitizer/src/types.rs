@@ -416,16 +416,23 @@ impl ContentSource {
 
 /// A single detected injection pattern match in sanitized content.
 ///
-/// Produced by the regex injection-detection step inside `ContentSanitizer::sanitize`].
-/// Injection flags are advisory — they are recorded in [`SanitizedContent`] and surfaced
-/// in the spotlight warning header, but the content is never silently removed.
+/// Produced by the regex injection-detection step inside `ContentSanitizer::sanitize`] or
+/// `ContentSanitizer::sanitize_with_detection_source`]. Injection flags are advisory — they
+/// are recorded in [`SanitizedContent`] and surfaced in the spotlight warning header, but the
+/// content is never silently removed.
 #[derive(Debug, Clone)]
 pub struct InjectionFlag {
     /// Name of the compiled pattern that matched (from `zeph_common::patterns`).
     pub pattern_name: &'static str,
-    /// Byte offset of the match within the (already truncated, stripped) content.
+    /// Byte offset of the match within the (already truncated, stripped) *scanned* text —
+    /// `content` when produced by `sanitize`, or `detection_content` when produced by
+    /// `sanitize_with_detection_source`. The two can differ (e.g. a plain-text shadow scanned
+    /// in place of a JSON-escaped body), so this offset is not necessarily valid against
+    /// [`SanitizedContent::body`] — no consumer indexes `body` with it today (verify before
+    /// adding one).
     pub byte_offset: usize,
-    /// The matched substring. Kept for logging and operator review.
+    /// The matched substring, from the same scanned text `byte_offset` is relative to (see
+    /// above). Kept for logging and operator review.
     pub matched_text: String,
 }
 

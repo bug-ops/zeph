@@ -255,6 +255,7 @@ pub(crate) struct WizardState {
     // Cross-thread key-value store (spec-080, #6363, opt-in)
     pub(crate) store_enabled: bool,
     pub(crate) store_max_value_bytes: usize,
+    pub(crate) store_max_namespace_rows: usize,
     // Write-time memory-consent gate (issue #6490, MemGhost)
     pub(crate) consent_gate_enabled: bool,
     // Session recap on resume (#3064)
@@ -554,6 +555,7 @@ impl Default for WizardState {
             digest_enabled: false,
             store_enabled: false,
             store_max_value_bytes: 65536,
+            store_max_namespace_rows: 256,
             consent_gate_enabled: true,
             recap_on_resume: true,
             resume_show_banner: true,
@@ -1094,6 +1096,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
     config.memory.digest.enabled = state.digest_enabled;
     config.memory.store.enabled = state.store_enabled;
     config.memory.store.max_value_bytes = state.store_max_value_bytes;
+    config.memory.store.max_namespace_rows = state.store_max_namespace_rows;
     config.memory.consent_gate.enabled = state.consent_gate_enabled;
     config.session.recap.on_resume = state.recap_on_resume;
     config.session.resume.show_banner = state.resume_show_banner;
@@ -2725,6 +2728,20 @@ mod tests {
         let config = build_config(&state);
         assert!(config.memory.store.enabled);
         assert_eq!(config.memory.store.max_value_bytes, 131_072);
+    }
+
+    #[test]
+    fn build_config_store_enabled_wires_max_namespace_rows() {
+        // issue #6774: the --init wizard's max_namespace_rows prompt must reach the
+        // assembled Config unchanged, mirroring max_value_bytes above.
+        let state = WizardState {
+            store_enabled: true,
+            store_max_namespace_rows: 512,
+            ..single_provider_state()
+        };
+        let config = build_config(&state);
+        assert!(config.memory.store.enabled);
+        assert_eq!(config.memory.store.max_namespace_rows, 512);
     }
 
     #[test]

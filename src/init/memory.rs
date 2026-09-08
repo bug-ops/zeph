@@ -194,6 +194,13 @@ pub(super) fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
             .with_prompt("Maximum value size in bytes for a single store entry")
             .default(65536usize)
             .interact_text()?;
+        state.store_max_namespace_rows = Input::new()
+            .with_prompt(
+                "Max rows retained per (owner_key, namespace); oldest rows are evicted past \
+                 this count (0 disables the cap)",
+            )
+            .default(256usize)
+            .interact_text()?;
     }
 
     state.consent_gate_enabled = Confirm::new()

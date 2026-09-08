@@ -483,6 +483,7 @@ enabled = true
 [memory.store]
 enabled = false
 # max_value_bytes = 65536    # reject store_put writes larger than this instead of truncating
+# max_namespace_rows = 256   # evict oldest rows past this count per (owner_key, namespace); 0 disables
 # search_provider = "fast"   # reserved for a future semantic-search extension; unused in v1
 
 # Code RAG: AST-based code indexing and hybrid retrieval
