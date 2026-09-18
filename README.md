@@ -10,7 +10,7 @@
   [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main&label=CI)](https://github.com/bug-ops/zeph/actions)
   [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
   [![MSRV](https://img.shields.io/badge/MSRV-1.98-blue)](https://www.rust-lang.org)
-  [![Tests](https://img.shields.io/badge/tests-15609-brightgreen)](https://github.com/bug-ops/zeph/actions)
+  [![Tests](https://img.shields.io/badge/tests-15761-brightgreen)](https://github.com/bug-ops/zeph/actions)
   [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](LICENSE)
 </div>
 
@@ -224,6 +224,7 @@ Zeph's [Telegram](https://bug-ops.github.io/zeph/guides/telegram.html) integrati
 | **Interfaces** | CLI, [TUI](https://bug-ops.github.io/zeph/advanced/tui.html), [Telegram](https://bug-ops.github.io/zeph/guides/telegram.html), Discord, Slack, [ACP](https://bug-ops.github.io/zeph/advanced/acp.html), [A2A](https://bug-ops.github.io/zeph/advanced/a2a.html), HTTP gateway, [scheduler](https://bug-ops.github.io/zeph/concepts/scheduler.html). |
 | **Code intelligence** | [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) indexing (Rust, Python, TS/JS, Go, and more), semantic repo map, [LSP](https://bug-ops.github.io/zeph/guides/lsp.html) diagnostics and hover via MCP. |
 | **Observability** | [Debug dumps](https://bug-ops.github.io/zeph/advanced/debug-dump.html), JSONL mode, opt-in live sub-agent transcript forwarding to TUI/`--bare`, [Prometheus](https://bug-ops.github.io/zeph/guides/prometheus.html), [OpenTelemetry](https://opentelemetry.io) traces, per-model cost tracking with daily budgets. |
+| **Sub-agents** | Spawning, grants, transcripts, live peer-to-peer messaging between running sub-agents (deny-by-default authorization, sanitized, no auto-injection into context). |
 
 ## Installation
 

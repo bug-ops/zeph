@@ -21,6 +21,7 @@ related:
   - "[[033-subagent-context-propagation/spec]]"
   - "[[039-background-task-supervisor/spec]]"
   - "[[047-cli-modes/spec]]"
+  - "[[087-subagent-peer-messaging/spec]]"
 ---
 
 # Spec: Subagent Lifecycle (`zeph-subagent`)
@@ -49,6 +50,7 @@ grants and tool policies, firing lifecycle hooks, and persisting transcripts.
 
 - TUI sidebar rendering for subagents (owned by `zeph-tui`, spec `026`)
 - Context propagation details (spec `033` covers the gap analysis; this spec covers the full lifecycle)
+- Live inter-sub-agent messaging while a sub-agent is running (owned by spec `087`)
 - MCP server lifecycle (owned by `zeph-mcp`)
 - A2A protocol (owned by `zeph-a2a`)
 

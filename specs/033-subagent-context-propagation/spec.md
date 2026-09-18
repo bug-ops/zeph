@@ -16,6 +16,8 @@ related:
   - "[[002-agent-loop/spec]]"
   - "[[026-tui-subagent-management/spec]]"
   - "[[032-handoff-skill-system/spec]]"
+  - "[[003-llm-providers/spec]]"
+  - "[[087-subagent-peer-messaging/spec]]"
 ---
 
 # Spec: Subagent Context Propagation
@@ -210,7 +212,11 @@ The parent's recent context is injected into the subagent's task prompt to answe
 When `context_injection_mode = last_assistant_turn`:
 
 1. Extract the last `Role::Assistant` message from `parent_messages`
-2. Prepend it to `task_prompt` as a structured preamble:
+2. Truncate it to `[agents] summary_max_chars` before splicing (#6762, #6764) — this mode
+   previously spliced the raw, unbounded parent message, letting a long parent turn inject
+   unbounded content into a new subagent's task prompt; the bound now matches the cap already
+   applied to `Summary` mode
+3. Prepend it to `task_prompt` as a structured preamble:
 
 ```
 Context from parent agent:
@@ -236,6 +242,32 @@ Now, write a detailed security report on these findings.
 ```
 
 **Impact**: The subagent understands what the parent has already discovered, avoiding duplicate analysis.
+
+### 4.3 History-Window Trim: Tool-Pair Repair and Non-Conversational Skip (#6762, #6764)
+
+`max_history_messages` (per-subagent, `[agents]` default) bounds the subagent's own in-loop
+message history via `trim_message_history`, a plain FIFO cutoff from the front, preserving a
+leading `Role::System` message when present.
+
+A FIFO cutoff can land inside a `ToolUse`/`ToolResult` pair, leaving an orphaned half in the
+retained window — a provider 400/422 on the next request. `trim_message_history`:
+
+1. Nudges the drain boundary forward to the next `Role::User` message when possible (at most one
+   extra message beyond the raw excess), so the canonical `Assistant(ToolUse)`/`User(ToolResult)`
+   alternating shape lands on a valid user-first window without needing repair at all.
+2. Computes the trim on a scratch copy and runs `zeph_llm::tool_pairing::repair_window` (see
+   `specs/003-llm-providers/spec.md`) with `OrphanAction::DowngradeToText` — an orphaned
+   `ToolResult` half is downgraded to text, not deleted, so it can still anchor the retained
+   window instead of leaving it empty.
+3. Skips applying the trim entirely (leaving `messages` over `limit` for this call) when the
+   repaired result would contain no conversational message at all — a backstop for a
+   pathologically small `max_history_messages` (e.g. `1`), since a window with zero
+   conversational messages is rejected by every provider just as surely as an orphaned pair is.
+   The loop retries the trim every turn, so this self-heals once the message shape changes.
+
+**Key invariant**: `max_history_messages` has no enforced lower bound — the skip-on-empty
+backstop in step 3 exists precisely because a caller can set it arbitrarily low; NEVER apply a
+trim result that would leave the window with no conversational message.
 
 ---
 

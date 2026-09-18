@@ -6,69 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Fixed
-
-- `zeph-llm`: broke a recursive opaque-type cycle between `RouterProvider`/`TriageRouter`
-  and `AnyProvider` by returning a boxed `LlmFuture<T>` instead of `impl Future + Send`
-  from their `LlmProvider` methods, fixing a fuzz-workflow-only build failure
-  (`error[E0275]: overflow evaluating the requirement`) under `cargo fuzz`'s
-  `-Ccodegen-units=1` nightly build; also added `#![recursion_limit = "256"]` to
-  `zeph-llm` and `zeph-memory` for the same build's deep async auto-trait checks.
-- `fuzz/`: made every crate-path dependency `optional`, gated per `[[bin]]` behind a
-  same-named feature via `required-features`, closing a second, previously-masked
-  fuzz-build failure — `fuzz/Cargo.toml`'s single shared dependency list across all five
-  targets meant each target's cargo-fuzz-forced `unused_crate_dependencies` warning
-  (denied by `build.warnings = "deny"`) fired for the deps that target didn't use; the
-  lint's usual `#[allow(...)]` mitigation doesn't work here since `--force-warn`
-  overrides in-source lint attributes. `.github/workflows/fuzz.yml` and `fuzz/README.md`
-  updated to pass `--features <target>` accordingly.
-- `fuzz/`: added `fuzz/.cargo/config.toml` overriding the root `build.warnings = "deny"`
-  to `"warn"` for this workspace only, closing a third fuzz-build failure — CI's rolling,
-  unpinned nightly toolchain picked up a very recent (as of 2026-09) Cargo regression
-  where `build.warnings = "deny"` fails the build with a bare "warnings are denied"
-  message and no diagnostic text, even when `--message-format=json`'s `build-finished`
-  reports `success: true` and rustc emits zero compiler-message warnings; reproduced with
-  a plain `cargo build` (no cargo-fuzz, no sanitizer flags) after updating a local nightly
-  toolchain to match CI's. The root config (used by the pinned stable toolchain
-  everywhere else) is untouched.
-- Capped the ambient `<shared-state>` prompt block's cross-thread-store read at a fixed
-  row count instead of relying on `limit = 0` ("unlimited"), and surfaced truncation to
-  the receiving node via a `truncated`/`shown` marker in the block's tag (#6763, #6767).
-- Ordered the `<shared-state>` prompt block's surviving rows most-recently-written-first
-  instead of lexicographically, closing a truncation-starvation gap where a writer using
-  low-sorting keys could permanently evict every other writer's keys, and set the block's
-  `truncated` marker when the sanitizer's byte cap clips the body even if the row cap
-  didn't (#6768, #6772).
-- `zeph-memory`: recorded last-writer provenance (`writer_id`) on every write that
-  supplies one (the three in-tree call sites do), preserved rather than erased by a
-  subsequent anonymous write, and warn on a cross-writer overwrite instead of leaving
-  it silently invisible (#6773, #6779).
-- `zeph-memory`: bounded cross-thread store namespace growth with an oldest-first
-  eviction cap (`[memory.store].max_namespace_rows`, default 256) (#6774, #6779).
-- `zeph-core`: rendered the `<shared-state>` prompt block as NDJSON instead of
-  `"{key}: {value}"` lines, closing a pseudo-row-forging gap for values containing a
-  literal newline (#6775, #6779).
-- `zeph-core`: fixed `trim_parent_messages` matching orphaned `ToolUse`/`ToolResult` parts
-  against a global id set instead of adjacency, which could cross-pair an orphan against an
-  unrelated tool call sharing its id under Ollama-style batch-index id reuse (#6770, #6780).
-- `zeph-llm`: added a request-build-time orphaned `ToolUse`/`ToolResult` repair pass to the
-  OpenAI/OpenAI-compatible request builder (`convert_messages_structured`), mirroring the
-  Claude request builder's downgrade-to-text pattern — previously only Claude had this
-  backstop, so an orphan surviving upstream trim/sanitize passes could reach OpenAI or an
-  OpenAI-compatible/Ollama endpoint unrepaired and produce a 400/422 (#6781).
-- `zeph-core`: made `persist_cancelled_tool_results`'s idempotency guard adjacency-scoped
-  instead of scanning the whole turn tail, closing a gap where an unrelated later
-  `ToolResult` reusing an orphaned call's id (Ollama-style batch-index id reuse) could make
-  the guard wrongly treat the orphan as already resolved and silently skip its shutdown
-  tombstone write (#6783). Also fixed `shutdown.rs`'s `flush_orphaned_tool_use_on_shutdown`
-  to reuse the shared `zeph_llm::tool_pairing::next_non_system` adjacency helper instead of
-  a duplicate hand-rolled scan, and hardened the same idempotency guard against a missing
-  assistant message in history (previously fell back to an arbitrary index instead of
-  resolving nothing).
-- `zeph-core`: `BudgetHint.remaining_tool_calls` no longer leaked the previous turn's last
-  tool-loop iteration count into a new turn's system prompt; removed the dead per-iteration
-  counter and set `remaining_tool_calls` directly to the full `max_tool_calls` budget at the
-  once-per-turn seam that reads it (#6787).
+## [0.22.5] - 2026-09-18
 
 ### Added
 
@@ -137,18 +75,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `dep:`-less features (`anyhow`, `clap`, `dirs`, `toml`, `tracing-subscriber`) — replaced with
   explicit `dep:` prefixes. `cargo metadata` feature count: 184 → 157 (#6747).
 
-### Security
-
-- Bumped `h2` 0.4.15 -> 0.4.19, resolving RUSTSEC-2026-0258 (unbounded empty DATA frames).
-- Added opt-in `[metrics] require_auth` to gate the gateway `/metrics` endpoint behind the same
-  bearer token and rate limiting as `/webhook`; default is unchanged (unauthenticated,
-  unthrottled) (#6550).
-- Extracted the duplicated MCP OAuth vault-key derivation into a single shared
-  `zeph_config::oauth_vault_key` helper, and added test coverage for the vault-key collision
-  validation path (#6550).
-
 ### Fixed
 
+- `zeph-llm`: broke a recursive opaque-type cycle between `RouterProvider`/`TriageRouter`
+  and `AnyProvider` by returning a boxed `LlmFuture<T>` instead of `impl Future + Send`
+  from their `LlmProvider` methods, fixing a fuzz-workflow-only build failure
+  (`error[E0275]: overflow evaluating the requirement`) under `cargo fuzz`'s
+  `-Ccodegen-units=1` nightly build; also added `#![recursion_limit = "256"]` to
+  `zeph-llm` and `zeph-memory` for the same build's deep async auto-trait checks.
+- `fuzz/`: made every crate-path dependency `optional`, gated per `[[bin]]` behind a
+  same-named feature via `required-features`, closing a second, previously-masked
+  fuzz-build failure — `fuzz/Cargo.toml`'s single shared dependency list across all five
+  targets meant each target's cargo-fuzz-forced `unused_crate_dependencies` warning
+  (denied by `build.warnings = "deny"`) fired for the deps that target didn't use; the
+  lint's usual `#[allow(...)]` mitigation doesn't work here since `--force-warn`
+  overrides in-source lint attributes. `.github/workflows/fuzz.yml` and `fuzz/README.md`
+  updated to pass `--features <target>` accordingly.
+- `fuzz/`: added `fuzz/.cargo/config.toml` overriding the root `build.warnings = "deny"`
+  to `"warn"` for this workspace only, closing a third fuzz-build failure — CI's rolling,
+  unpinned nightly toolchain picked up a very recent (as of 2026-09) Cargo regression
+  where `build.warnings = "deny"` fails the build with a bare "warnings are denied"
+  message and no diagnostic text, even when `--message-format=json`'s `build-finished`
+  reports `success: true` and rustc emits zero compiler-message warnings; reproduced with
+  a plain `cargo build` (no cargo-fuzz, no sanitizer flags) after updating a local nightly
+  toolchain to match CI's. The root config (used by the pinned stable toolchain
+  everywhere else) is untouched.
+- Capped the ambient `<shared-state>` prompt block's cross-thread-store read at a fixed
+  row count instead of relying on `limit = 0` ("unlimited"), and surfaced truncation to
+  the receiving node via a `truncated`/`shown` marker in the block's tag (#6763, #6767).
+- Ordered the `<shared-state>` prompt block's surviving rows most-recently-written-first
+  instead of lexicographically, closing a truncation-starvation gap where a writer using
+  low-sorting keys could permanently evict every other writer's keys, and set the block's
+  `truncated` marker when the sanitizer's byte cap clips the body even if the row cap
+  didn't (#6768, #6772).
+- `zeph-memory`: recorded last-writer provenance (`writer_id`) on every write that
+  supplies one (the three in-tree call sites do), preserved rather than erased by a
+  subsequent anonymous write, and warn on a cross-writer overwrite instead of leaving
+  it silently invisible (#6773, #6779).
+- `zeph-memory`: bounded cross-thread store namespace growth with an oldest-first
+  eviction cap (`[memory.store].max_namespace_rows`, default 256) (#6774, #6779).
+- `zeph-core`: rendered the `<shared-state>` prompt block as NDJSON instead of
+  `"{key}: {value}"` lines, closing a pseudo-row-forging gap for values containing a
+  literal newline (#6775, #6779).
+- `zeph-core`: fixed `trim_parent_messages` matching orphaned `ToolUse`/`ToolResult` parts
+  against a global id set instead of adjacency, which could cross-pair an orphan against an
+  unrelated tool call sharing its id under Ollama-style batch-index id reuse (#6770, #6780).
+- `zeph-llm`: added a request-build-time orphaned `ToolUse`/`ToolResult` repair pass to the
+  OpenAI/OpenAI-compatible request builder (`convert_messages_structured`), mirroring the
+  Claude request builder's downgrade-to-text pattern — previously only Claude had this
+  backstop, so an orphan surviving upstream trim/sanitize passes could reach OpenAI or an
+  OpenAI-compatible/Ollama endpoint unrepaired and produce a 400/422 (#6781).
+- `zeph-core`: made `persist_cancelled_tool_results`'s idempotency guard adjacency-scoped
+  instead of scanning the whole turn tail, closing a gap where an unrelated later
+  `ToolResult` reusing an orphaned call's id (Ollama-style batch-index id reuse) could make
+  the guard wrongly treat the orphan as already resolved and silently skip its shutdown
+  tombstone write (#6783). Also fixed `shutdown.rs`'s `flush_orphaned_tool_use_on_shutdown`
+  to reuse the shared `zeph_llm::tool_pairing::next_non_system` adjacency helper instead of
+  a duplicate hand-rolled scan, and hardened the same idempotency guard against a missing
+  assistant message in history (previously fell back to an arbitrary index instead of
+  resolving nothing).
+- `zeph-core`: `BudgetHint.remaining_tool_calls` no longer leaked the previous turn's last
+  tool-loop iteration count into a new turn's system prompt; removed the dead per-iteration
+  counter and set `remaining_tool_calls` directly to the full `max_tool_calls` budget at the
+  once-per-turn seam that reads it (#6787).
 - `ci.yml`: pinned every `dtolnay/rust-toolchain` step's `toolchain:` from rolling `stable`
   to `"1.97"` (matches root `rust-version`). The rolling ref had silently picked up Rust
   1.98.0, whose new clippy lints broke ~105 pre-existing call sites across 8 crates,
@@ -179,6 +168,16 @@ running for the first time, each masked previously by combined feature strings.
   400/422 on the next turn (#6762).
 - `zeph-subagent`: capped the default `LastAssistantTurn` context-injection mode's spliced
   parent content to `summary_max_chars`, matching `Summary` mode's existing bound (#6764).
+
+### Security
+
+- Bumped `h2` 0.4.15 -> 0.4.19, resolving RUSTSEC-2026-0258 (unbounded empty DATA frames).
+- Added opt-in `[metrics] require_auth` to gate the gateway `/metrics` endpoint behind the same
+  bearer token and rate limiting as `/webhook`; default is unchanged (unauthenticated,
+  unthrottled) (#6550).
+- Extracted the duplicated MCP OAuth vault-key derivation into a single shared
+  `zeph_config::oauth_vault_key` helper, and added test coverage for the vault-key collision
+  validation path (#6550).
 
 ## [0.22.4] - 2026-08-16
 
@@ -18207,7 +18206,8 @@ let agent = Agent::new(provider, channel, &skills_prompt, executor);
 
 [0.16.0]: https://github.com/bug-ops/zeph/compare/v0.15.3...v0.16.0
 
-[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.22.4...HEAD
+[Unreleased]: https://github.com/bug-ops/zeph/compare/v0.22.5...HEAD
+[0.22.5]: https://github.com/bug-ops/zeph/compare/v0.22.4...v0.22.5
 [0.22.4]: https://github.com/bug-ops/zeph/compare/v0.22.3...v0.22.4
 [0.22.3]: https://github.com/bug-ops/zeph/compare/v0.22.2...v0.22.3
 [0.22.2]: https://github.com/bug-ops/zeph/compare/v0.22.1...v0.22.2

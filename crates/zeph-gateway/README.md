@@ -27,6 +27,7 @@ Endpoints:
 |---|---|---|---|
 | `/health` | GET | No | Liveness check; returns uptime in seconds |
 | `/webhook` | POST | Yes | Ingest external events into the agent |
+| `/metrics` | GET | Optional (`[metrics] require_auth`, default `false`) | Prometheus scrape endpoint, when a registry is attached via `with_metrics_registry` |
 
 ## Activation
 
