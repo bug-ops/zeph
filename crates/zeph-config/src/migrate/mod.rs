@@ -915,7 +915,7 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 107 — add panel_sizing = "auto" advisory comment under [tui] (#6675)
             Box::new(MigrateTuiPanelSizing),
             // Step 108 — add [agents.peer_messaging] advisory block for live inter-sub-agent
-            // messaging (spec 046-subagent-peer-messaging-parity, #5871)
+            // messaging (spec 087-subagent-peer-messaging, #5871)
             Box::new(MigrateAgentsPeerMessagingConfig),
             // Step 109 — insert active max_namespace_rows = 256 into an existing active
             // [memory.store] table that lacks it (#6774)

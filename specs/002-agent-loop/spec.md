@@ -246,14 +246,13 @@ message carrying a `ToolUse` part, so the drain never splits a pair in the first
 runs after `apply_deferred_summaries`, so the boundary adjustment sees the final message list
 including any messages deferred summaries just inserted.
 
-Residual gap (tracked, not implemented): deferred-summary **hiding**
-(`metadata.deferred_summary`/`MessageVisibility`) removes a message from the request without
-moving the compaction boundary, so it can still orphan a pair at request-build time. Today this
-is caught only by the Claude request builder's Layer-A downgrade
-(`zeph_llm::tool_pairing::unmatched_tool_use_ids`/`unmatched_tool_result_ids` in
-`claude/request.rs`) — OpenAI/compatible/Ollama have no equivalent request-build-time repair (see
-`specs/003-llm-providers/spec.md`'s Tool-Pair Repair section; follow-up issue filed for the
-OpenAI-compatible gap).
+Defense-in-depth: deferred-summary **hiding** (`metadata.deferred_summary`/`MessageVisibility`)
+removes a message from the request without moving the compaction boundary, so it can still
+orphan a pair at request-build time. This is caught by request-build-time Layer-A downgrade
+(`zeph_llm::tool_pairing::unmatched_tool_use_ids`/`unmatched_tool_result_ids`) in **both** the
+Claude (`claude/request.rs`) and OpenAI/OpenAI-compatible (`openai/mod.rs`) request builders —
+the OpenAI-compatible/Ollama gap tracked here was closed by issue #6781 (see
+`specs/003-llm-providers/spec.md`'s Tool-Pair Repair section).
 
 ### Key Invariants
 
@@ -266,8 +265,8 @@ OpenAI-compatible gap).
   provider 400/422 error
 - NEVER send a `tool_result` whose `tool_use_id` is absent from the message list — enforced at
   the compaction boundary by prevention here, and at request-build time by
-  `zeph_llm::tool_pairing` (see `specs/003-llm-providers/spec.md`) as defense-in-depth for the
-  residual deferred-summary-hiding gap
+  `zeph_llm::tool_pairing` in every provider's request builder (see
+  `specs/003-llm-providers/spec.md`) as defense-in-depth for the deferred-summary-hiding case
 
 ---
 

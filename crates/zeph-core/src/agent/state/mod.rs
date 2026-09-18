@@ -845,7 +845,7 @@ pub(crate) struct OrchestrationState {
     /// Execution IDs explicitly grandfathered past the seal (issue #6449).
     pub(crate) durable_integrity_grandfather: std::collections::HashSet<zeph_durable::ExecutionId>,
     /// Peer messages addressed to the parent agent itself, drained non-blocking from
-    /// `SubAgentManager::try_recv_peer_message` (spec `046-subagent-peer-messaging-parity`).
+    /// `SubAgentManager::try_recv_peer_message` (spec `087-subagent-peer-messaging`).
     ///
     /// Bounded to [`PEER_INBOX_CAPACITY`] entries (oldest evicted first) so a chatty sub-agent
     /// cannot grow this unboundedly; backs the `/agent inbox` slash command.

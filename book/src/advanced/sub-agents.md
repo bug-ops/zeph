@@ -865,6 +865,13 @@ context_injection_mode = "last_assistant_turn"  # default
 
 `context_window_turns` limits how many parent turns are forwarded regardless of mode. Set to `0` to disable history propagation entirely (equivalent to `none` but affects all modes uniformly).
 
+Both `summary` and `last_assistant_turn` content spliced into the task prompt is truncated to `summary_max_chars` (default `600`, roughly 200 tokens) at a UTF-8 char boundary, so a long parent turn can never splice unbounded content into a new sub-agent's task prompt:
+
+```toml
+[agents]
+summary_max_chars = 600
+```
+
 **Model inheritance**: sub-agents use the parent's active provider unless the definition's `model` field specifies an override. This means a sub-agent spawned during a `gpt-5.4` session will use `gpt-5.4` unless pinned to a different model in the definition.
 
 ### MCP Tool Awareness

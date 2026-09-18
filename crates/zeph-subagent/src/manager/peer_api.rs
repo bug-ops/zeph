@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Parent-side surface for live inter-sub-agent messaging (spec
-//! `046-subagent-peer-messaging-parity`), mirroring the shape of
+//! `087-subagent-peer-messaging`), mirroring the shape of
 //! [`secrets`](super::secrets)'s approve/deny/`try_recv` API.
 
 use crate::peer::{AgentId, DeliveryError, PeerGroupId, PeerMessage};

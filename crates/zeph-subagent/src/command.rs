@@ -155,7 +155,7 @@ pub enum AgentCommand {
     /// Resume a previously completed sub-agent session by ID prefix.
     Resume { id: String, prompt: String },
     /// Send a message to a running sub-agent by task ID prefix (spec
-    /// `046-subagent-peer-messaging-parity`).
+    /// `087-subagent-peer-messaging`).
     Msg { id: String, body: String },
     /// List messages addressed to the parent agent, drained this session (spec `046`).
     Inbox,
@@ -293,7 +293,7 @@ impl AgentCommand {
     }
 
     /// Parse the `msg <id> <body>` subcommand's arguments (spec
-    /// `046-subagent-peer-messaging-parity`).
+    /// `087-subagent-peer-messaging`).
     fn parse_msg(args: &str) -> Result<Self, SubAgentError> {
         let (id, body) = args
             .split_once(' ')

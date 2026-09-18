@@ -33,7 +33,7 @@ struct PeerNode {
 }
 
 /// `Arc`-shared node table for live inter-sub-agent messaging (spec
-/// `046-subagent-peer-messaging-parity`).
+/// `087-subagent-peer-messaging`).
 ///
 /// Shared between [`SubAgentManager`](crate::manager::SubAgentManager) and every spawned
 /// sub-agent's own [`PeerToolExecutor`](super::PeerToolExecutor) — never owned by value by
@@ -205,7 +205,7 @@ impl PeerRouter {
     /// `root(S) == root(T) AND S != T AND (T == parent(S) | parent(T) == parent(S) | S is an
     /// ancestor of T)`.
     ///
-    /// TODO(spec `046-subagent-peer-messaging-parity`, review M6): a grandchild cannot reply
+    /// TODO(spec `087-subagent-peer-messaging`, review M6): a grandchild cannot reply
     /// to an ancestor beyond its direct parent (only `T == parent(S)`, not "T is an ancestor
     /// of S") — latent until a sub-agent-side spawn tool exists, since every spawn's `parent`
     /// is a group root today (`manager/spawn.rs`'s own comment at the `spawn()`/`resume()`

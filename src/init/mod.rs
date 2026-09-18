@@ -119,7 +119,7 @@ pub(crate) struct WizardState {
     /// Forward each running sub-agent's per-turn text/thinking output to an active consumer
     /// surface (issue #6359). Default `false` (opt-in, matches `SubAgentConfig::default()`).
     pub(crate) agents_forward_transcript: bool,
-    /// Enable live inter-sub-agent messaging (spec `046-subagent-peer-messaging-parity`,
+    /// Enable live inter-sub-agent messaging (spec `087-subagent-peer-messaging`,
     /// issue #5871). Default `true`, matching `PeerMessagingConfig::default()`.
     pub(crate) agents_peer_messaging_enabled: bool,
     /// "regex", "judge", or "model" — defaults to "regex" (no LLM calls).

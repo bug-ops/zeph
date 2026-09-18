@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Live, addressable peer-to-peer messaging between sub-agents and their spawner
-//! (spec `046-subagent-peer-messaging-parity`, issue #5871).
+//! (spec `087-subagent-peer-messaging`, issue #5871).
 //!
 //! # Architecture
 //!

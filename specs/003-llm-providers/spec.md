@@ -308,12 +308,17 @@ accordingly.
 - `effective_embedding_model` and `stable_skill_embedding_model` live in `LlmConfig` — NEVER re-add them to `provider_factory`
 - `LlmConfig::default()` must round-trip through empty TOML — NEVER implement `Default` by hand
 
-## Tool-Pair Repair (`zeph_llm::tool_pairing`) (#6771, #6770, #6769, #6762)
+## Tool-Pair Repair (`zeph_llm::tool_pairing`) (#6771, #6770, #6769, #6762, #6781, #6783)
 
 `crates/zeph-llm/src/tool_pairing.rs` is the single, shared definition of "orphaned"
-`ToolUse`/`ToolResult` pairing and repair, used by the Claude request builder's per-request hot
-path (`claude/request.rs`) and by every history-mutating call site that previously implemented
-its own copy: `zeph-core::agent::subagent_commands::trim_parent_messages`,
+`ToolUse`/`ToolResult` pairing and repair, used by **both** the Claude request builder's
+per-request hot path (`claude/request.rs`) and the OpenAI/OpenAI-compatible request builder's
+per-request hot path (`openai/mod.rs`'s `convert_assistant_tool_message`/
+`push_user_tool_messages`, issue #6781) — previously only Claude had a request-build-time
+backstop, so an orphan surviving upstream trim/sanitize passes could reach OpenAI or an
+OpenAI-compatible/Ollama endpoint unrepaired and produce a 400/422. Also used by every
+history-mutating call site that previously implemented its own copy:
+`zeph-core::agent::subagent_commands::trim_parent_messages`,
 `zeph-core::agent::shutdown::flush_orphaned_tool_use_on_shutdown`,
 `zeph-subagent::agent_loop::trim_message_history`, and
 `zeph-agent-persistence::sanitize::sanitize_tool_pairs`. Prior to this consolidation each site
@@ -321,11 +326,22 @@ independently reimplemented pairing, and one (`trim_parent_messages`, issue #677
 against a **global** id set rather than adjacency, cross-pairing an orphan against an unrelated
 call sharing its id under Ollama-style `format!("call_{i}")` id reuse.
 
-Two layers:
+Three layers:
 
-- **Layer A** — `unmatched_tool_use_ids(msg, next)` / `unmatched_tool_result_ids(msg, prev)`:
-  pure classification, adjacency-scoped against an already-resolved neighbour message (works for
-  both `Vec<Message>` and `Vec<&Message>` callers).
+- **Layer A** — `unmatched_tool_use_ids(msg, next)` / `unmatched_tool_result_ids(msg, prev)` /
+  `resolved_tool_result_ids(next)`: pure classification, adjacency-scoped against an
+  already-resolved neighbour message (works for both `Vec<Message>` and `Vec<&Message>` callers).
+  `resolved_tool_result_ids` is the "matched" half of `unmatched_tool_use_ids` factored out so a
+  caller testing arbitrary candidate ids (not necessarily drawn from a `Message`'s own `parts`)
+  against the same adjacency-scoped resolution set does not reimplement the predicate — used by
+  `zeph-core::agent::tool_execution::focus::persist_cancelled_tool_results`'s idempotency guard
+  (issue #6783), which checks a caller-supplied `&[ToolUseRequest]` batch rather than an assistant
+  message's own parts.
+- **`next_non_system(messages, at)` / `prev_non_system(messages, at)`** — the single shared
+  definition of "next/previous adjacent message", skipping any `Role::System` messages in
+  between; used by every call site that classifies orphans against `&[Message]` directly rather
+  than a pre-filtered `visible` slice (contrast `claude::request::split_messages_structured`,
+  which pre-filters agent-visible non-system messages and indexes that slice instead).
 - **Layer B** — `repair_tool_pairs` / `repair_window`: mutating repair built strictly on top of
   Layer A, parameterized by `OrphanAction` (`Delete` or `DowngradeToText`) for orphaned
   `ToolResult` handling; orphaned `ToolUse` is always deleted regardless of `action`.
@@ -336,9 +352,10 @@ Two layers:
 
 ### Key Invariants
 
-- Pairing is always adjacency-scoped (immediately preceding/following non-system message) — a
-  global id set across the whole history is NEVER an acceptable match, since it produces the
-  #6770 cross-pair defect under any provider that reuses `tool_use_id`s across turns
+- Pairing is always adjacency-scoped (immediately preceding/following non-system message via
+  `next_non_system`/`prev_non_system`) — a global id set across the whole history is NEVER an
+  acceptable match, since it produces the #6770 cross-pair defect under any provider that reuses
+  `tool_use_id`s across turns
 - Layer B MUST call Layer A for every orphan decision — no second, independent pairing predicate
   may exist anywhere in the module (this is a reviewer-verified property of the source, not a
   grep-checkable pattern)
@@ -354,6 +371,15 @@ Two layers:
   distinguishable from `has_meaningful_content`'s recognized `[tool_result: ` marker (underscore)
   — a downgraded orphan must always read as "meaningful" content so it is never later mistaken
   for empty, marker-only text and dropped as the window's leading anchor
+- An idempotency guard that checks "is this tool call already resolved" (e.g.
+  `persist_cancelled_tool_results`) MUST be adjacency-scoped via `resolved_tool_result_ids`
+  against the message adjacent to the current turn boundary — NEVER a scan of the whole turn
+  tail, which a later, unrelated `ToolResult` reusing an orphaned call's id (Ollama-style
+  batch-index id reuse) can fool into wrongly treating the orphan as already resolved and
+  silently skipping its shutdown tombstone (#6783). When no turn-boundary `Role::Assistant`
+  message exists in history at all, treat every id as unresolved rather than guessing a
+  boundary — the safe failure direction is a spurious duplicate tombstone, never a silently
+  dropped one.
 
 ## Key Invariants
 
