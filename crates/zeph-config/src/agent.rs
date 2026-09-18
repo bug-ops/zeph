@@ -727,7 +727,7 @@ pub struct SubAgentConfig {
     /// because the bootstrap overwrites this value before passing it to `SubAgentManager`.
     #[serde(default)]
     pub worktree: crate::worktree::WorktreeConfig,
-    /// Live inter-sub-agent messaging settings (spec `046-subagent-peer-messaging-parity`).
+    /// Live inter-sub-agent messaging settings (spec `087-subagent-peer-messaging`).
     #[serde(default)]
     pub peer_messaging: PeerMessagingConfig,
 }
@@ -812,7 +812,7 @@ fn default_peer_max_wait_ms() -> u64 {
     30_000
 }
 
-/// Live inter-sub-agent messaging settings (spec `046-subagent-peer-messaging-parity`,
+/// Live inter-sub-agent messaging settings (spec `087-subagent-peer-messaging`,
 /// issue #5871).
 ///
 /// Governs the bounded mailbox every addressable agent (parent and sub-agents) is

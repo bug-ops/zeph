@@ -5839,7 +5839,7 @@ fn intersect_allowlists_disjoint_sets_returns_empty_not_none() {
 }
 
 /// End-to-end integration tests through the real `SubAgentManager::spawn()` path (spec
-/// `046-subagent-peer-messaging-parity`, tasks.md T008), one per user story. Route
+/// `087-subagent-peer-messaging`, tasks.md T008), one per user story. Route
 /// registration happens synchronously inside `spawn()` before the background agent loop
 /// task is even launched, so these assertions need no timing coordination with that task.
 mod peer_messaging_integration_tests {

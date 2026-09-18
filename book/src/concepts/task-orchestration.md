@@ -340,6 +340,30 @@ When Mode-2 recovery is triggered:
 
 Mode-2 can be combined with cascade-abort mitigation to implement sophisticated fallback chains. If all route-to tasks also fail, the cascade-abort check runs again on the updated graph structure.
 
+#### Dynamic Handoff (Command)
+
+A node's agent can end its final output with a trailing fenced block to both write shared state and choose the next node to run at runtime, instead of following only the plan's static edges:
+
+```zeph-command
+{"goto": "task-id-or-title", "update": {"finding": "value"}}
+```
+
+This is opt-in via `[orchestration.command].enabled` (default `false`) and requires `[memory.store].enabled = true` — the `update` write has nowhere to persist otherwise, so a graph plan that enables Command without the store is rejected at validation time rather than silently dropping updates.
+
+```toml
+[orchestration.command]
+enabled = false   # opt-in: lets node agents dynamically reroute
+max_handoffs = 16 # per-graph livelock budget, must be > 0
+```
+
+When enabled, zeph-core (never `zeph-orchestration`, which has no production dependency on `zeph-memory`) parses the trailing block, scans it through the sanitizer's `ExfiltrationGuard`, writes `update` into the [cross-thread store](memory.md#cross-thread-store) under the graph's namespace, and only then emits `TaskOutcome::Handoff { goto }` — the write is guaranteed to complete before the event is sent, so a routed-to node's shared-state read is always consistent. The node that emitted `Handoff` becomes `Completed` in the same scheduler pass, which makes `goto` forward-only: a target that is already `Completed` is rejected, structurally ruling out A↔B ping-pong. `max_handoffs` is a livelock backstop on top of that, not the primary guard. A `goto` target must also have its dependencies satisfied, mirroring Mode-2 recovery's `route_to` constraint above.
+
+A malformed, partial, or sanitizer-rejected `zeph-command` block produces `TaskOutcome::Failed` rather than silently falling back to `Completed` — the node did not fulfill its declared contract, so the failure is loud rather than swallowed.
+
+#### Shared State (`<shared-state>` block)
+
+When Command handoff is enabled, every dispatched node's prompt gains a `<shared-state>` block alongside `<completed-dependencies>`, built from the graph's cross-thread-store namespace. Rows are rendered as NDJSON (one `{"key", "writer", "value"}` object per line), ordered most-recently-written-first, and capped at a fixed 200 rows regardless of the store's own `max_namespace_rows` setting. When the namespace holds more rows than that cap — or the sanitizer's own byte cap clips the body — the opening tag carries `truncated="true" shown="N"`, so a receiving node can tell an absent key apart from one dropped by truncation. Like `<completed-dependencies>`, the block is wrapped as untrusted/spotlighted content: its provenance may include a value a previous `Command.update` wrote, so treat it with the same caution as any other externally-influenced context.
+
 #### Cross-Task Context Injection
 
 When a task becomes ready, the scheduler collects output from its completed dependencies and injects it into the task prompt as a `<completed-dependencies>` XML block. This gives downstream tasks access to upstream results without manual plumbing.
@@ -489,6 +513,10 @@ aggregator_max_tokens = 4096        # Token budget for the aggregation LLM call 
 # verify_provider = ""              # Provider for post-task completeness verification; empty = primary provider
 # default_idle_timeout_secs = 60    # RESERVED — not yet enforced; see "Per-Task Timeout Override" above
 
+[orchestration.command]
+enabled = false   # opt-in: lets node agents dynamically reroute via a trailing zeph-command block
+max_handoffs = 16 # per-graph livelock budget, must be > 0 — see "Dynamic Handoff (Command)" above
+
 [orchestration.plan_cache]
 enabled = false                     # Enable plan template caching (default: false)
 similarity_threshold = 0.90         # Min cosine similarity for cache hit (default: 0.90)
@@ -529,5 +557,6 @@ During hard compaction, the summarizer preserves messages associated with active
 ## Related
 
 - [Sub-Agent Orchestration](../advanced/sub-agents.md) — sub-agents that execute individual tasks
+- [Memory & Context](memory.md#cross-thread-store) — the cross-thread store Command handoff reads and writes
 - [Feature Flags](../reference/feature-flags.md)
 - [Configuration](../reference/configuration.md) — full config reference

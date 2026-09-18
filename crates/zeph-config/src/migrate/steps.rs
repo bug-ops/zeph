@@ -1385,7 +1385,7 @@ impl Migration for MigrateTuiPanelSizing {
 }
 
 /// Step 108 — add an `[agents.peer_messaging]` advisory block for live inter-sub-agent
-/// messaging (spec `046-subagent-peer-messaging-parity`, issue #5871).
+/// messaging (spec `087-subagent-peer-messaging`, issue #5871).
 pub(super) struct MigrateAgentsPeerMessagingConfig;
 impl Migration for MigrateAgentsPeerMessagingConfig {
     fn name(&self) -> &'static str {

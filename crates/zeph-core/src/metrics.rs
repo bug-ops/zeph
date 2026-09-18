@@ -343,7 +343,7 @@ pub struct SubAgentMetrics {
     /// is active — see `SubAgentManager::forwarded_tail`.
     pub live_transcript: Vec<String>,
     /// Queued (undelivered) peer-message count for this sub-agent's mailbox (spec
-    /// `046-subagent-peer-messaging-parity`, FR-010) — see `SubAgentManager::mailbox_depth`.
+    /// `087-subagent-peer-messaging`, FR-010) — see `SubAgentManager::mailbox_depth`.
     pub unread_messages: u32,
 }
 

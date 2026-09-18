@@ -132,7 +132,7 @@ pub fn migrate_agents_max_spawns_per_session(
 }
 
 /// Add a `[agents.peer_messaging]` advisory block to an existing active `[agents]` table
-/// (spec `046-subagent-peer-messaging-parity`, issue #5871).
+/// (spec `087-subagent-peer-messaging`, issue #5871).
 ///
 /// `#[serde(default)]` on every field of `PeerMessagingConfig` already makes the section's
 /// absence safe on load, so this insertion is purely for discoverability — an operator who
@@ -168,7 +168,7 @@ pub fn migrate_agents_peer_messaging_config(
         });
     }
 
-    let comment = "\n# Live inter-sub-agent messaging (spec 046-subagent-peer-messaging-parity, #5871).\n\
+    let comment = "\n# Live inter-sub-agent messaging (spec 087-subagent-peer-messaging, #5871).\n\
          # Lets a spawner, coordinator, or sibling sub-agent send an addressed message to a\n\
          # currently-running sub-agent's own mailbox, without it terminating or being respawned.\n\
          # Enabled by default; each addressable agent's mailbox is bounded and denies delivery\n\

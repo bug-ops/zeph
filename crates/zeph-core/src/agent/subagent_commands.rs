@@ -152,7 +152,7 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
     /// Non-blocking poll: drain and surface peer messages addressed to the parent agent
-    /// itself (spec `046-subagent-peer-messaging-parity`), mirroring
+    /// itself (spec `087-subagent-peer-messaging`), mirroring
     /// [`notify_completed_subagents`](Self::notify_completed_subagents)'s shape.
     ///
     /// # Known latency limitation
@@ -433,7 +433,7 @@ impl<C: Channel> Agent<C> {
         }
     }
     /// `/agent msg <id> <body>` — parent-to-sub-agent send (spec
-    /// `046-subagent-peer-messaging-parity`, US-002).
+    /// `087-subagent-peer-messaging`, US-002).
     async fn handle_agent_msg(&mut self, id: &str, body: &str) -> Option<String> {
         let full_id = match self.resolve_agent_id_prefix(id)? {
             Ok(fid) => fid,
@@ -450,7 +450,7 @@ impl<C: Channel> Agent<C> {
         }
     }
     /// `/agent inbox` — list peer messages addressed to the parent, drained this session
-    /// (spec `046-subagent-peer-messaging-parity`).
+    /// (spec `087-subagent-peer-messaging`).
     fn handle_agent_inbox(&self) -> String {
         use std::fmt::Write as _;
 

@@ -73,7 +73,7 @@ fn build_agent_line(sa: &SubAgentMetrics, tick: u8, selected: bool, ascii: bool)
         "accept_edits" => " [accept_edits]",
         _ => "",
     };
-    // FR-010 (spec 046-subagent-peer-messaging-parity): visible unread-message badge,
+    // FR-010 (spec 087-subagent-peer-messaging): visible unread-message badge,
     // cleared once `check_messages` drains the mailbox (mailbox_depth returns to 0).
     let msg_badge = if sa.unread_messages > 0 {
         format!(" [msg:{}]", sa.unread_messages)

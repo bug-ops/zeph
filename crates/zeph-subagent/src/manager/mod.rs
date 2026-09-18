@@ -255,7 +255,7 @@ pub struct SpawnContext {
     pub origin: SpawnOrigin,
 
     /// Peer-messaging spawn-tree root this sub-agent joins (spec
-    /// `046-subagent-peer-messaging-parity`, FR-013/FR-014).
+    /// `087-subagent-peer-messaging`, FR-013/FR-014).
     ///
     /// `None` resolves to [`PeerGroupId::Session`] — the interactive session's own root,
     /// used by `/agent spawn`/`/agent resume`. The orchestration scheduler sets
@@ -382,7 +382,7 @@ pub struct SubAgentHandle {
     /// MCP tool names available at spawn time, persisted for transcript meta on collect.
     pub mcp_tool_names: Vec<String>,
     /// Peer-messaging route registration for this sub-agent (spec
-    /// `046-subagent-peer-messaging-parity`).
+    /// `087-subagent-peer-messaging`).
     ///
     /// `None` for `for_test` handles and any spawn made while
     /// `peer_messaging.enabled = false`. Dropping this (explicitly, or via
@@ -589,7 +589,7 @@ pub struct SubAgentManager {
     /// enforce the same session-wide cap. See [`SessionSpawnBudget`]'s own doc comment for why
     /// it is a plain, uncloned `AtomicUsize` newtype rather than a shared `Arc` handle.
     session_spawn_budget: crate::budget::SessionSpawnBudget,
-    /// `Arc`-shared peer-messaging routing table (spec `046-subagent-peer-messaging-parity`),
+    /// `Arc`-shared peer-messaging routing table (spec `087-subagent-peer-messaging`),
     /// cloned into every spawned sub-agent's own `PeerToolExecutor` decorator. Never owned by
     /// value by a running sub-agent task — see the crate's `peer` module docs for why.
     peer_router: Arc<PeerRouter>,
@@ -678,7 +678,7 @@ impl SubAgentManager {
     }
 
     /// Reconfigure the peer-messaging router's mailbox capacity/body-size/wait limits and
-    /// enabled kill switch (spec `046-subagent-peer-messaging-parity`).
+    /// enabled kill switch (spec `087-subagent-peer-messaging`).
     ///
     /// Call during bootstrap, before the first [`spawn`][Self::spawn] — replaces the router
     /// (and re-registers the session root) wholesale, so any route already registered before

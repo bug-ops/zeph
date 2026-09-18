@@ -915,10 +915,27 @@ log_retrieval_failures = true       # Record no-hit recalls for analysis
 
 Logged failures include the query, timestamp, applied filters, and confidence score. A background analyzer can use these logs to detect categories of questions your memory system fails on and adjust admission strategies accordingly.
 
+## Cross-Thread Store
+
+A generic namespaced key-value store, addressable by `(owner_key, namespace, key)`, that outlives a single conversation turn or task and is visible to anything sharing the same `owner_key` — the primary consumer today is [task orchestration](task-orchestration.md)'s Command-style dynamic handoff, where a completing DAG node writes state that a later node reads. Disabled by default and additive: no bespoke table (`learned_preferences`, persona facts, etc.) migrates onto it, and it produces zero behavior change until enabled.
+
+```toml
+[memory.store]
+enabled = false
+# max_value_bytes = 65536    # reject store_put writes larger than this instead of truncating
+# max_namespace_rows = 256   # evict oldest rows past this count per (owner_key, namespace); 0 disables
+# search_provider = "fast"   # reserved for a future semantic-search extension; unused in v1
+```
+
+Every read and write method takes `owner_key` as its first parameter, and no call can cross an `owner_key` boundary — this is the store's only isolation guarantee, so callers must scope `owner_key` correctly (e.g. one key per orchestration graph). `store_put` rejects a value larger than `max_value_bytes` outright rather than truncating it. When a confirmed write leaves `(owner_key, namespace)` holding more rows than `max_namespace_rows`, the oldest rows (by `updated_at`, tied-broken by `key`) are evicted down to the cap in a single atomic statement, strictly after the write — a write that itself fails (e.g. a stale optimistic-concurrency version) never triggers eviction. `search` in this version is namespace-prefix plus keyword matching only; semantic (embedding) search is reserved behind `search_provider` but not implemented yet.
+
+Cross-thread-store I/O always happens in `zeph-core`; `zeph-orchestration` has no production dependency on `zeph-memory` and never touches the store directly. See [Dynamic Handoff (Command)](task-orchestration.md#dynamic-handoff-command) for how orchestration writes into and reads back from the store, and [Security](../reference/security.md) for the untrusted-content wrapping applied to anything rendered from it into a prompt.
+
 ## Next Steps
 
 - [Set Up Semantic Memory](../guides/semantic-memory.md) — Qdrant setup guide
 - [Context Budgets](context-budgets.md) — BATS budget hints and allocation strategy
 - [SleepGate](../advanced/sleep-gate.md) — automatic memory forgetting and index hygiene
 - [Graph Memory](graph-memory.md) — entity-relationship tracking and multi-hop reasoning
+- [Task Orchestration](task-orchestration.md) — Command-style dynamic handoff built on the cross-thread store
 - [Context Engineering](../advanced/context.md) — budget allocation, compaction, recall tuning

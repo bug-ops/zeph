@@ -167,7 +167,7 @@ pub enum ContentSourceKind {
     /// network-supplied text.
     ChannelMessage,
     /// Message received from another sub-agent via the in-process peer-messaging
-    /// mailbox (spec `046-subagent-peer-messaging-parity`).
+    /// mailbox (spec `087-subagent-peer-messaging`).
     ///
     /// A sibling or parent sub-agent can only ever influence the receiver through this
     /// message body, so it is classified the same as [`A2aMessage`](Self::A2aMessage) —
