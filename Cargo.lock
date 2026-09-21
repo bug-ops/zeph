@@ -2251,6 +2251,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dirs"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
 name = "dirs-sys"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7940,7 +7949,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32824fab5e16e6c4d86dc1ba84489390419a39f97699852b66480bb87d297ed8"
 dependencies = [
  "bstr",
- "dirs",
+ "dirs 6.0.0",
  "os_str_bytes",
 ]
 
@@ -11040,7 +11049,7 @@ dependencies = [
  "colored",
  "const-str",
  "ctor",
- "dirs",
+ "dirs 6.0.0",
  "futures",
  "git-version",
  "humantime",
@@ -11128,7 +11137,7 @@ dependencies = [
  "clap",
  "cron",
  "dialoguer",
- "dirs",
+ "dirs 7.0.0",
  "futures",
  "glob",
  "http-body-util",
@@ -11243,7 +11252,7 @@ dependencies = [
  "blake3",
  "chrono",
  "dashmap",
- "dirs",
+ "dirs 7.0.0",
  "futures",
  "glob",
  "parking_lot",
@@ -11443,7 +11452,7 @@ dependencies = [
 name = "zeph-config"
 version = "0.22.5"
 dependencies = [
- "dirs",
+ "dirs 7.0.0",
  "insta",
  "ordered-float 5.5.0",
  "regex",
@@ -11492,7 +11501,7 @@ dependencies = [
  "chrono",
  "cpu-time",
  "criterion",
- "dirs",
+ "dirs 7.0.0",
  "futures",
  "indoc",
  "insta",
@@ -11683,7 +11692,7 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "criterion",
- "dirs",
+ "dirs 7.0.0",
  "eventsource-stream",
  "futures",
  "futures-core",
@@ -11809,7 +11818,7 @@ version = "0.22.5"
 dependencies = [
  "blake3",
  "chrono",
- "dirs",
+ "dirs 7.0.0",
  "futures",
  "parking_lot",
  "rand 0.10.2",
@@ -11838,7 +11847,7 @@ dependencies = [
 name = "zeph-plugins"
 version = "0.22.5"
 dependencies = [
- "dirs",
+ "dirs 7.0.0",
  "flate2",
  "futures",
  "hex",
@@ -11936,7 +11945,7 @@ dependencies = [
  "blake3",
  "clap",
  "criterion",
- "dirs",
+ "dirs 7.0.0",
  "futures",
  "include_dir",
  "notify",
@@ -11970,7 +11979,7 @@ name = "zeph-subagent"
 version = "0.22.5"
 dependencies = [
  "chrono",
- "dirs",
+ "dirs 7.0.0",
  "indoc",
  "parking_lot",
  "proptest",
@@ -12005,7 +12014,7 @@ version = "0.22.5"
 dependencies = [
  "arc-swap",
  "dashmap",
- "dirs",
+ "dirs 7.0.0",
  "glob",
  "globset",
  "insta",
@@ -12052,7 +12061,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "crossterm",
- "dirs",
+ "dirs 7.0.0",
  "expectrl",
  "ignore",
  "indexmap 2.14.2",
