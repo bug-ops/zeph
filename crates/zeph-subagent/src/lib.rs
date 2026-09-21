@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// The nested `#[tracing::instrument]` async chain in spawn.rs/agent_loop.rs
+// (spawn_agent_task -> run_agent_loop -> run_turn) exceeds the default Send
+// auto-trait recursion limit of 128 during type-checking.
+#![recursion_limit = "256"]
+
 //! Subagent management: spawning, grants, transcripts, and lifecycle hooks.
 //!
 //! `zeph-subagent` provides the full lifecycle of sub-agent tasks within the Zeph agent
