@@ -20,7 +20,7 @@ cargo-fuzz = true
 [dependencies]
 arbitrary = { version = "1.4.2", features = ["derive"], optional = true }
 libfuzzer-sys = "0.4.13"
-toml = { version = "1.1.4", optional = true }
+toml = { version = "1.1.6", optional = true }
 zeph-config = { path = "../crates/zeph-config", optional = true }
 zeph-index = { path = "../crates/zeph-index", features = ["sqlite"], optional = true }
 zeph-plugins = { path = "../crates/zeph-plugins", features = ["sqlite"], optional = true }
