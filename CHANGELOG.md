@@ -15,6 +15,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-agent-context`: added `#![recursion_limit = "256"]` to fix the same `Send` auto-trait
   overflow on the nested `recall_routed_async -> recall_by_route -> recall_vectors_raw ->
   apply_query_bias` async chain in `memory_backend.rs`.
+- `zeph-experiments`: added `#![recursion_limit = "256"]` to fix the same `Send` auto-trait
+  overflow on the nested `evaluate -> score_subject_responses -> FuturesUnordered` async chain
+  in `evaluator.rs`.
 
 ## [0.22.5] - 2026-09-18
 
