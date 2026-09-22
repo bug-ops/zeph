@@ -153,12 +153,12 @@ fn extract_symbol_positions_tsquery(
             break;
         }
         let def_node = m
-            .captures
+            .captures()
             .iter()
             .find(|c| c.index == def_idx)
             .map(|c| c.node);
         let name_node = m
-            .captures
+            .captures()
             .iter()
             .find(|c| c.index == name_idx)
             .map(|c| c.node);
