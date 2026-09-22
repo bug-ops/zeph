@@ -21,6 +21,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `.github/renovate.json`: added a `packageRule` to stop Renovate from bumping the deliberately
   pinned nightly Rust toolchain date in `ci.yml` (issues #6737/#6739) — it was silently advancing
   the date alongside routine action digest updates and breaking CI with new nightly lints.
+- `zeph-tools`, `zeph-core`, `zeph-index`: updated `QueryMatch.captures` field access to the
+  `captures()` accessor method required by `tree-sitter` 0.27.0.
+- `zeph-tui`: passed the new `cancellation_flag` parameter required by `tree-sitter-highlight`
+  0.27.0's `Highlighter::highlight`.
+- `zeph-mcp`: renamed `rmcp::model::ClientInfo`/`ServerInfo` usages to `ClientConfig`/
+  `ServerConfig`, required by `rmcp` 3.4.0 (the old names are deprecated aliases).
+- Reverted `agent-client-protocol`/`agent-client-protocol-schema` and `testcontainers` version
+  bumps pulled in by a grouped Renovate update: `agent-client-protocol` 2.2.0 dropped the
+  `unstable_auth_methods`/`unstable_elicitation` features `zeph-acp` depends on, and
+  `testcontainers` 0.28.0 is incompatible with the latest available `testcontainers-modules`
+  (still 0.15, requires `testcontainers` `^0.27`). Also reverted `zeph-llm`'s `reqwest012` alias
+  back to `reqwest` 0.12, which the same grouped update incorrectly bumped to 0.13 — it exists
+  specifically to match `ollama-rs`'s own pinned `reqwest` 0.12 dependency.
 
 ## [0.22.5] - 2026-09-18
 

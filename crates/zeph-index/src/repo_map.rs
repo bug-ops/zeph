@@ -304,17 +304,17 @@ fn extract_via_query(
 
     while let Some(m) = matches.next() {
         let def_node = m
-            .captures
+            .captures()
             .iter()
             .find(|c| c.index == def_idx)
             .map(|c| c.node);
         let name_node = m
-            .captures
+            .captures()
             .iter()
             .find(|c| c.index == name_idx)
             .map(|c| c.node);
         let vis_text: Option<&str> = vis_idx.and_then(|vi| {
-            m.captures
+            m.captures()
                 .iter()
                 .find(|c| c.index == vi)
                 .map(|c| &source[c.node.byte_range()])
@@ -371,17 +371,17 @@ fn extract_methods(source: &str, lang: Lang, parent: &tree_sitter::Node<'_>) -> 
 
     while let Some(m) = matches.next() {
         let def_node = m
-            .captures
+            .captures()
             .iter()
             .find(|c| c.index == def_idx)
             .map(|c| c.node);
         let name_node = m
-            .captures
+            .captures()
             .iter()
             .find(|c| c.index == name_idx)
             .map(|c| c.node);
         let vis_text: Option<&str> = vis_idx.and_then(|vi| {
-            m.captures
+            m.captures()
                 .iter()
                 .find(|c| c.index == vi)
                 .map(|c| &source[c.node.byte_range()])

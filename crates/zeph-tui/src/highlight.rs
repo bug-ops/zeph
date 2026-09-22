@@ -313,7 +313,7 @@ impl SyntaxHighlighter {
 
         let mut highlighter = Highlighter::new();
         let events = highlighter
-            .highlight(config, code.as_bytes(), None, |_| None)
+            .highlight(config, code.as_bytes(), None, None, |_| None)
             .ok()?;
 
         let mut spans = Vec::new();

@@ -708,7 +708,7 @@ fn collect_structural_hits_inner(
         while let Some(match_) = query_matches.next() {
             let mut def_node = None;
             let mut name = None;
-            for capture in match_.captures {
+            for capture in match_.captures() {
                 if capture.index as usize == def_idx {
                     def_node = Some(capture.node);
                 }

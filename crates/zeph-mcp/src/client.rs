@@ -208,7 +208,7 @@ impl ToolListChangedHandler {
 }
 
 impl rmcp::ClientHandler for ToolListChangedHandler {
-    fn get_info(&self) -> rmcp::model::ClientInfo {
+    fn get_info(&self) -> rmcp::model::ClientConfig {
         let mut caps = rmcp::model::ClientCapabilities::default();
         let mut roots_caps = rmcp::model::RootsCapabilities::default();
         roots_caps.list_changed = Some(false);
@@ -218,7 +218,7 @@ impl rmcp::ClientHandler for ToolListChangedHandler {
                 rmcp::model::FormElicitationCapability::new().with_schema_validation(true),
             ));
         }
-        let mut info = rmcp::model::ClientInfo::default();
+        let mut info = rmcp::model::ClientConfig::default();
         info.capabilities = caps;
         info
     }
@@ -2197,8 +2197,8 @@ mod tests {
     const DUPLEX_TEST_TOOL_NAME: &str = "multi_content_tool";
 
     impl rmcp::ServerHandler for DuplexTestServer {
-        fn get_info(&self) -> rmcp::model::ServerInfo {
-            rmcp::model::ServerInfo::new(
+        fn get_info(&self) -> rmcp::model::ServerConfig {
+            rmcp::model::ServerConfig::new(
                 rmcp::model::ServerCapabilities::builder()
                     .enable_tools()
                     .enable_tool_list_changed()
