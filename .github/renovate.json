@@ -116,6 +116,13 @@
       "minimumReleaseAge": "3 days"
     },
     {
+      "description": "Dated nightly Rust toolchain pins (dtolnay/rust-toolchain `toolchain:` input) in ci.yml are deliberately frozen (issues #6737/#6739) so a new nightly lint or rustfmt rule can't silently break CI on a day nobody touched the code. Renovate must never bump these — do it manually and re-verify the full check suite.",
+      "matchManagers": ["github-actions"],
+      "matchDepTypes": ["uses-with"],
+      "matchPackageNames": ["rust"],
+      "enabled": false
+    },
+    {
       "description": "Docker base images — manual review",
       "matchManagers": ["dockerfile", "docker-compose"],
       "automerge": false,
