@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   compiler's `Send` auto-trait check on the nested `spawn_agent_task -> run_agent_loop ->
   run_turn` async chain exceeded the default recursion limit, producing a `future_incompatible`
   warning promoted to a hard error by `build.warnings = "deny"`.
+- `zeph-agent-context`: added `#![recursion_limit = "256"]` to fix the same `Send` auto-trait
+  overflow on the nested `recall_routed_async -> recall_by_route -> recall_vectors_raw ->
+  apply_query_bias` async chain in `memory_backend.rs`.
 
 ## [0.22.5] - 2026-09-18
 

@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// The nested async chain in memory_backend.rs (recall_routed_async -> recall_by_route ->
+// recall_vectors_raw -> apply_query_bias) exceeds the default Send auto-trait recursion
+// limit of 128 during type-checking.
+#![recursion_limit = "256"]
+
 //! Agent context-assembly service for Zeph.
 //!
 //! This crate provides [`service::ContextService`] — a stateless façade for all
