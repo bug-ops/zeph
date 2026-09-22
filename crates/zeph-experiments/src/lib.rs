@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// The nested async chain in evaluator.rs (evaluate -> score_subject_responses ->
+// FuturesUnordered polling) exceeds the default Send auto-trait recursion limit of 128
+// during type-checking.
+#![recursion_limit = "256"]
+
 //! Experiment engine for adaptive agent behavior testing and hyperparameter tuning.
 //!
 //! `zeph-experiments` provides the infrastructure for running autonomous A/B experiments
