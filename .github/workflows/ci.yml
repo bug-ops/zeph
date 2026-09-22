@@ -141,8 +141,9 @@ jobs:
         with:
           # Pinned to the same dated nightly as build-tests (issue #6737) so a
           # new nightly rustfmt formatting-rule change can't silently break
-          # this job on a day nobody touched the code (#6739).
-          toolchain: nightly-2026-09-18
+          # this job on a day nobody touched the code (#6739). Renovate must
+          # not bump this date — see .github/renovate.json (#6804).
+          toolchain: nightly-2026-08-07
           components: rustfmt
       - name: Check formatting
         run: cargo fmt --check
@@ -204,7 +205,8 @@ jobs:
     # parity with the per-OS archives produced there.
     # Nightly + -Z threads=4 (issue #6737), pinned to a dated toolchain so new
     # nightly lints don't fail this gate via build.warnings = "deny". RUSTFLAGS
-    # set here, not .cargo/config.toml (af1be7ba/cf75b63f).
+    # set here, not .cargo/config.toml (af1be7ba/cf75b63f). Renovate must not
+    # bump this date — see .github/renovate.json (#6804).
     #
     # Issue #6738 (redundant 647MB archive download across 17 consumers):
     # switching this archive handoff from upload/download-artifact to
@@ -233,7 +235,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296 # nightly
         with:
-          toolchain: nightly-2026-09-18
+          toolchain: nightly-2026-08-07
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-targets: "false"
