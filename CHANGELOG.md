@@ -18,6 +18,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-experiments`: added `#![recursion_limit = "256"]` to fix the same `Send` auto-trait
   overflow on the nested `evaluate -> score_subject_responses -> FuturesUnordered` async chain
   in `evaluator.rs`.
+- `.github/renovate.json`: added a `packageRule` to stop Renovate from bumping the deliberately
+  pinned nightly Rust toolchain date in `ci.yml` (issues #6737/#6739) — it was silently advancing
+  the date alongside routine action digest updates and breaking CI with new nightly lints.
 
 ## [0.22.5] - 2026-09-18
 
