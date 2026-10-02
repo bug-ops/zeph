@@ -55,7 +55,7 @@ jobs:
       - name: Install musl-tools (Linux native musl builds)
         if: "!matrix.use_cross && runner.os == 'Linux'"
         run: sudo apt-get install -y musl-tools
-      - uses: taiki-e/install-action@c968d1ff37748a72063b02e0b07b039cef90e5f6 # cross
+      - uses: taiki-e/install-action@666809a3b1160e26755a57e9c62dcb4a4370803e # cross
       - name: Build binary (cross)
         if: matrix.use_cross
         run: cross build --release --features full --target ${{ matrix.target }}
