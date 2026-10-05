@@ -18,8 +18,8 @@ publish = true
 
 [workspace.dependencies]
 age = { version = "0.12.1", default-features = false }
-agent-client-protocol = "2.0.0"
-agent-client-protocol-schema = "=1.5.0"
+agent-client-protocol = "2.2.0"
+agent-client-protocol-schema = "=1.10.2"
 anyhow = "1.0.104"
 arboard = "3.6.1"
 arc-swap = "1.9.2"
@@ -66,7 +66,7 @@ insta = "1.48.0"
 k256 = { version = "0.14.0", default-features = false }
 landlock = "0.4.7"
 libsqlite3-sys = "0.38.2"
-lru = "0.18.4"
+lru = "0.18.5"
 metrics = "0.24.6"
 metrics-util = "0.20.4"
 nix = { version = "0.31.3", default-features = false }
@@ -88,17 +88,17 @@ prometheus-client = "0.25.1"
 proptest = "1.11"
 pulldown-cmark = "0.13.4"
 qdrant-client = { version = "1.19", default-features = false }
-rand = "0.10.2"
+rand = "0.10.3"
 rand_distr = "0.6"
 ratatui = "0.30.2"
 regex = "1.13.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["query"] }
 ripemd = "0.2"
-rmcp = "3.4.0"
-rubato = "5.0.0"
+rmcp = "3.5.0"
+rubato = "5.0.1"
 rustix = { version = "1.1.5", default-features = false }
 schemars = "1.2.2"
-scrape-core = "0.2.12"
+scrape-core = "0.2.13"
 seccompiler = "0.5.0"
 semver = "1.0.28"
 serde = "1.0.229"
@@ -116,12 +116,12 @@ symphonia = { version = "0.6.1", default-features = false }
 sysinfo = { version = "0.39.6", default-features = false }
 teloxide = { version = "0.17", default-features = false }
 tempfile = "3.27"
-testcontainers = "0.27.3"
+testcontainers = "0.28.0"
 tar = "0.4.46"
 testcontainers-modules = { version = "0.15", default-features = false }
-thiserror = "2.0.20"
+thiserror = "2.0.21"
 throbber-widgets-tui = "0.11.1"
-tiktoken-rs = "0.12.0"
+tiktoken-rs = "0.12.1"
 tokenizers = { version = "0.23.2", default-features = false }
 tokio = "1.53.1"
 tokio-stream = "0.1.19"
