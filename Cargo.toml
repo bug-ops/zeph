@@ -75,9 +75,9 @@ notify-debouncer-mini = "0.7"
 nucleo-matcher = "0.3.1"
 ollama-rs = { version = "0.3.6", default-features = false }
 open = "5.4.4"
-opentelemetry = "0.32.0"
-opentelemetry-otlp = { version = "0.32.0", default-features = false }
-opentelemetry_sdk = { version = "0.32.1", default-features = false }
+opentelemetry = "0.33.0"
+opentelemetry-otlp = { version = "0.33.0", default-features = false }
+opentelemetry_sdk = { version = "0.33.0", default-features = false }
 ordered-float = "5.5.0"
 p256 = "0.14.0"
 parking_lot = "0.12.5"
@@ -134,7 +134,7 @@ tower-http = { version = "0.7.1", default-features = false }
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-chrome = "0.7.2"
-tracing-opentelemetry = "0.33.0"
+tracing-opentelemetry = "0.34.0"
 tracing-subscriber = { version = "0.3.23", default-features = false }
 tracing-test = "0.2.6"
 tree-sitter = "0.27.0"
