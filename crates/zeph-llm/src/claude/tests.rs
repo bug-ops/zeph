@@ -3251,3 +3251,142 @@ fn apply_cache_breakpoint_propagates_one_hour_ttl() {
         "breakpoint message must carry 1h TTL"
     );
 }
+
+fn anchor_provider() -> ClaudeProvider {
+    ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 512)
+}
+
+fn history_items(history: &GatedStructuredHistory) -> Vec<serde_json::Value> {
+    match serde_json::to_value(history).unwrap() {
+        serde_json::Value::Array(items) => items,
+        other => panic!("history must serialize to an array, got {other}"),
+    }
+}
+
+#[test]
+fn leading_assistant_after_skipped_thinking_only_user_gets_anchor() {
+    let messages = vec![
+        Message::from_parts(
+            Role::User,
+            vec![MessagePart::ThinkingBlock {
+                thinking: "stray".into(),
+                signature: "sig".into(),
+            }],
+        ),
+        Message::from_legacy(Role::Assistant, "hello"),
+        Message::from_legacy(Role::User, "next"),
+    ];
+    let (_, history) = anchor_provider().structured_history(&messages, None, 0);
+    let items = history_items(&history);
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0]["role"], "user");
+    assert_eq!(items[0]["content"], LEADING_USER_ANCHOR);
+    assert_eq!(items[1]["role"], "assistant");
+}
+
+#[test]
+fn server_compaction_shape_gets_anchor_and_keeps_compaction_block() {
+    let messages = vec![
+        Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::Compaction {
+                summary: "summary".into(),
+            }],
+        ),
+        Message::from_legacy(Role::User, "continue"),
+    ];
+    let (_, history) = anchor_provider().structured_history(&messages, None, 0);
+    let items = history_items(&history);
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0]["content"], LEADING_USER_ANCHOR);
+    assert_eq!(items[1]["role"], "assistant");
+    assert_eq!(items[1]["content"][0]["type"], "compaction");
+    assert_eq!(items[2]["role"], "user");
+}
+
+#[test]
+fn leading_tool_pair_keeps_native_blocks_behind_anchor() {
+    let messages = vec![
+        Message::from_parts(
+            Role::Assistant,
+            vec![
+                MessagePart::ThinkingBlock {
+                    thinking: "t".into(),
+                    signature: "sig".into(),
+                },
+                MessagePart::ToolUse {
+                    id: "t1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({}),
+                },
+            ],
+        ),
+        Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "ok".into(),
+                is_error: false,
+            }],
+        ),
+    ];
+    let (_, history) = anchor_provider().structured_history(&messages, None, 0);
+    let items = history_items(&history);
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0]["content"], LEADING_USER_ANCHOR);
+    assert_eq!(items[1]["content"][0]["type"], "thinking");
+    assert_eq!(items[1]["content"][1]["type"], "tool_use");
+    assert_eq!(items[2]["content"][0]["type"], "tool_result");
+}
+
+#[test]
+fn no_prefill_all_assistant_history_stays_empty() {
+    let messages = vec![Message::from_legacy(Role::Assistant, "only")];
+    let provider = anchor_provider();
+    assert!(
+        provider.no_prefill(None),
+        "fixture model must reject prefill"
+    );
+    let (_, history) = provider.structured_history(&messages, None, 0);
+    assert_eq!(history_items(&history), Vec::<serde_json::Value>::new());
+}
+
+#[test]
+fn leading_user_anchor_carries_no_cache_control() {
+    let messages = vec![
+        Message::from_legacy(Role::Assistant, "hello"),
+        Message::from_legacy(Role::User, "next"),
+    ];
+    let (_, history) = anchor_provider().structured_history(&messages, None, 4);
+    let items = history_items(&history);
+    assert_eq!(items[0]["content"], LEADING_USER_ANCHOR);
+    assert!(!items[0].to_string().contains("cache_control"));
+}
+
+#[test]
+fn leading_assistant_gets_user_anchor_plain() {
+    let history = GatedPlainHistory::new(vec![
+        ApiMessage {
+            role: "assistant",
+            content: "hello",
+        },
+        ApiMessage {
+            role: "user",
+            content: "next",
+        },
+    ]);
+    let json = serde_json::to_value(&history).unwrap();
+    assert_eq!(json[0]["role"], "user");
+    assert_eq!(json[0]["content"], LEADING_USER_ANCHOR);
+    assert_eq!(json[1]["role"], "assistant");
+}
+
+#[test]
+fn leading_user_history_is_unchanged() {
+    let history = GatedPlainHistory::new(vec![ApiMessage {
+        role: "user",
+        content: "hi",
+    }]);
+    let json = serde_json::to_value(&history).unwrap();
+    assert_eq!(json.as_array().unwrap().len(), 1);
+}

@@ -126,7 +126,7 @@ impl<C: Channel> Agent<C> {
 // `compact_context_with_budget` is used exclusively by integration tests in
 // `crates/zeph-core/src/agent/context/summarization/mod.rs` (T-ORPHAN-01, T-ORPHAN-02).
 // It delegates to `ContextService::compact_context` which exercises the same structural
-// invariants (orphan-pair detection, adjust_compact_end_for_tool_pairs) without the
+// invariants (orphan-pair detection, pair_safe_cut) without the
 // Agent-specific probe/archive/persist/Qdrant logic.
 #[cfg(test)]
 impl<C: Channel> Agent<C> {

@@ -263,8 +263,24 @@ fn stale_model_suggestion(model: &str) -> Option<&'static str> {
 #[serde(transparent)]
 pub(in crate::claude) struct GatedStructuredHistory(Vec<StructuredApiMessage>);
 
+/// Placeholder user turn prepended when a history would otherwise lead with a non-`user`
+/// role, which the Claude Messages API rejects.
+pub(in crate::claude) const LEADING_USER_ANCHOR: &str = "[earlier conversation context omitted]";
+
 impl GatedStructuredHistory {
-    fn new(chat: Vec<StructuredApiMessage>) -> Self {
+    /// Guarantees the history is empty or leads with a `user` message. An anchor is
+    /// inserted instead of dropping messages, so no tool pair or compaction block is severed.
+    fn new(mut chat: Vec<StructuredApiMessage>) -> Self {
+        if chat.first().is_some_and(|m| m.role != "user") {
+            tracing::debug!("claude history led with a non-user turn; inserting user anchor");
+            chat.insert(
+                0,
+                StructuredApiMessage {
+                    role: "user".to_owned(),
+                    content: types::StructuredContent::Text(LEADING_USER_ANCHOR.to_owned()),
+                },
+            );
+        }
         Self(chat)
     }
 }
@@ -280,7 +296,18 @@ impl GatedStructuredHistory {
 pub(in crate::claude) struct GatedPlainHistory<'m>(Vec<ApiMessage<'m>>);
 
 impl<'m> GatedPlainHistory<'m> {
-    fn new(chat: Vec<ApiMessage<'m>>) -> Self {
+    /// Same leading-`user` guarantee as [`GatedStructuredHistory::new`].
+    fn new(mut chat: Vec<ApiMessage<'m>>) -> Self {
+        if chat.first().is_some_and(|m| m.role != "user") {
+            tracing::debug!("claude history led with a non-user turn; inserting user anchor");
+            chat.insert(
+                0,
+                ApiMessage {
+                    role: "user",
+                    content: LEADING_USER_ANCHOR,
+                },
+            );
+        }
         Self(chat)
     }
 }

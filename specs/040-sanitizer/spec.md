@@ -482,6 +482,7 @@ max_external_content_size = 25000
 
 ### Always
 - All external content is wrapped in spotlighting delimiters (tool-output / external-data tags)
+- Delimiter tags (`tool-output`, `external-data`, `shared-state`, case-insensitive) inside content are entity-escaped by `escape_delimiter_tags` (literal ASCII tag substrings only; spacing and fullwidth variants are a known pre-existing class)
 - Injection flags are logged at `warn` level minimum
 - PII detections are logged and never silently dropped
 - Truncation is always marked with `[truncated]` to preserve transparency

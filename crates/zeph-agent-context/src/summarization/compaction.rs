@@ -11,6 +11,7 @@
 //! The caller (scheduling module) is responsible for deciding *when* to compact.
 //! This module handles: archive → partition → summarize → probe → drain → reinsert → persist.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use zeph_common::ContextFidelity;
@@ -60,7 +61,7 @@ pub(crate) async fn compact_context(
 
     let compact_end = {
         let raw = summ.messages.len() - preserve_tail;
-        adjust_compact_end_for_tool_pairs(summ.messages, raw)
+        zeph_llm::tool_pairing::pair_safe_cut(summ.messages, raw, 1)
     };
 
     if compact_end <= 1 {
@@ -267,53 +268,94 @@ fn partition_messages_for_compaction(
         .pruning_strategy
         .is_subgoal();
 
-    let active_subgoal: Vec<Message> = if is_subgoal {
-        summ.messages[1..compact_end]
-            .iter()
-            .enumerate()
-            .filter(|(slice_i, m)| {
-                let actual_i = slice_i + 1;
-                !m.metadata.focus_pinned
-                    && matches!(
-                        summ.subgoal_registry.subgoal_state(actual_i),
-                        Some(SubgoalState::Active)
-                    )
-            })
-            .map(|(_, m)| m.clone())
-            .collect()
-    } else {
-        vec![]
+    let is_compactable = |m: &Message| {
+        // INV-02: never include Placeholder messages in LLM summarizer input.
+        !m.metadata.focus_pinned && m.metadata.fidelity_tag != Some(ContextFidelity::Placeholder)
     };
 
-    let to_compact: Vec<Message> = if is_subgoal {
-        summ.messages[1..compact_end]
+    if !is_subgoal {
+        let to_compact = summ.messages[1..compact_end]
             .iter()
-            .enumerate()
-            .filter(|(slice_i, m)| {
-                let actual_i = slice_i + 1;
-                // INV-02: never include Placeholder messages in LLM summarizer input.
-                !m.metadata.focus_pinned
-                    && m.metadata.fidelity_tag != Some(ContextFidelity::Placeholder)
-                    && !matches!(
-                        summ.subgoal_registry.subgoal_state(actual_i),
-                        Some(SubgoalState::Active)
-                    )
-            })
-            .map(|(_, m)| m.clone())
-            .collect()
-    } else {
-        summ.messages[1..compact_end]
-            .iter()
-            // INV-02: never include Placeholder messages in LLM summarizer input.
-            .filter(|m| {
-                !m.metadata.focus_pinned
-                    && m.metadata.fidelity_tag != Some(ContextFidelity::Placeholder)
-            })
+            .filter(|m| is_compactable(m))
             .cloned()
-            .collect()
-    };
+            .collect();
+        return (pinned, vec![], to_compact);
+    }
+
+    let preserved = subgoal_preserved_indices(summ, compact_end);
+    let active_subgoal = preserved
+        .iter()
+        .map(|&i| summ.messages[i].clone())
+        .collect();
+    let to_compact = (1..compact_end)
+        .filter(|i| !preserved.contains(i))
+        .map(|i| &summ.messages[i])
+        .filter(|m| is_compactable(m))
+        .cloned()
+        .collect();
 
     (pinned, active_subgoal, to_compact)
+}
+
+/// Indices in `[1, compact_end)` of non-pinned `Active`-subgoal messages, closed over tool pairs.
+///
+/// A subgoal span can start on a `ToolResult` whose `ToolUse` belongs to a `Completed` span (or
+/// end on a `ToolUse` whose result belongs to the next one). Preserving only one half would
+/// re-insert an orphan after the drain, so the partner is pulled into the preserved set.
+fn subgoal_preserved_indices(
+    summ: &ContextSummarizationView<'_>,
+    compact_end: usize,
+) -> BTreeSet<usize> {
+    let messages: &[Message] = summ.messages;
+    let mut preserved: BTreeSet<usize> = (1..compact_end)
+        .filter(|&i| {
+            !messages[i].metadata.focus_pinned
+                && matches!(
+                    summ.subgoal_registry.subgoal_state(i),
+                    Some(SubgoalState::Active)
+                )
+        })
+        .collect();
+
+    loop {
+        let partners: Vec<usize> = preserved
+            .iter()
+            .filter_map(|&i| tool_pair_partner(messages, i, compact_end))
+            .filter(|&p| !messages[p].metadata.focus_pinned && !preserved.contains(&p))
+            .collect();
+        if partners.is_empty() {
+            return preserved;
+        }
+        tracing::debug!(
+            added = partners.len(),
+            "subgoal reinsertion pulled tool-pair partners into the preserved set"
+        );
+        preserved.extend(partners);
+    }
+}
+
+/// Index of the message paired with `messages[i]` through a `ToolUse`/`ToolResult` hand-off,
+/// skipping `System` messages and staying inside `[1, compact_end)`.
+fn tool_pair_partner(messages: &[Message], i: usize, compact_end: usize) -> Option<usize> {
+    let msg = &messages[i];
+    let carries = |m: &Message, want_result: bool| {
+        m.parts.iter().any(|p| match p {
+            MessagePart::ToolResult { .. } => want_result,
+            MessagePart::ToolUse { .. } => !want_result,
+            _ => false,
+        })
+    };
+    match msg.role {
+        Role::User if carries(msg, true) => {
+            let p = (1..i).rev().find(|&j| messages[j].role != Role::System)?;
+            (messages[p].role == Role::Assistant && carries(&messages[p], false)).then_some(p)
+        }
+        Role::Assistant if carries(msg, false) => {
+            let n = (i + 1..compact_end).find(|&j| messages[j].role != Role::System)?;
+            (messages[n].role == Role::User && carries(&messages[n], true)).then_some(n)
+        }
+        _ => None,
+    }
 }
 
 /// Drain the compaction range and reinsert the summary plus protected messages.
@@ -402,28 +444,6 @@ async fn summarize_messages(
         .map_err(|e| ContextError::Memory(zeph_memory::MemoryError::Llm(e)))?;
 
     Ok(cap_summary(raw, cap))
-}
-
-/// Adjust the compaction boundary to not split tool-use / tool-result pairs.
-///
-/// If `raw` lands on an assistant message that has a `ToolUse` part, walks backward
-/// until the boundary sits on a non-tool-use message.
-pub(crate) fn adjust_compact_end_for_tool_pairs(messages: &[Message], mut raw: usize) -> usize {
-    use zeph_llm::provider::MessagePart;
-
-    while raw > 1 {
-        let msg = &messages[raw - 1];
-        let is_tool_use = msg
-            .parts
-            .iter()
-            .any(|p| matches!(p, MessagePart::ToolUse { .. }));
-        if is_tool_use {
-            raw -= 1;
-        } else {
-            break;
-        }
-    }
-    raw
 }
 
 // ── Typed-page helpers ────────────────────────────────────────────────────────
@@ -695,36 +715,36 @@ mod tests {
     }
 
     #[test]
-    fn adjust_compact_end_skips_tool_use() {
+    fn pair_safe_cut_skips_tool_use() {
         let messages = vec![
             make_msg(Role::System, "system"),
             make_msg(Role::User, "hello"),
             make_tool_use_msg(),
         ];
         // raw = 3 would split at the ToolUse message — must walk back to 2.
-        let adjusted = adjust_compact_end_for_tool_pairs(&messages, 3);
+        let adjusted = zeph_llm::tool_pairing::pair_safe_cut(&messages, 3, 1);
         assert_eq!(adjusted, 2);
     }
 
     #[test]
-    fn adjust_compact_end_no_change_when_not_tool_use() {
+    fn pair_safe_cut_no_change_when_not_tool_use() {
         let messages = vec![
             make_msg(Role::System, "system"),
             make_msg(Role::User, "hello"),
             make_msg(Role::Assistant, "world"),
         ];
-        let adjusted = adjust_compact_end_for_tool_pairs(&messages, 3);
+        let adjusted = zeph_llm::tool_pairing::pair_safe_cut(&messages, 3, 1);
         assert_eq!(adjusted, 3);
     }
 
     #[test]
-    fn adjust_compact_end_stops_at_one() {
+    fn pair_safe_cut_stops_at_floor() {
         let mut messages = vec![make_msg(Role::System, "system")];
         // Fill with tool-use messages so the loop must stop.
         for _ in 0..5 {
             messages.push(make_tool_use_msg());
         }
-        let adjusted = adjust_compact_end_for_tool_pairs(&messages, 6);
+        let adjusted = zeph_llm::tool_pairing::pair_safe_cut(&messages, 6, 1);
         assert_eq!(adjusted, 1);
     }
 
@@ -940,6 +960,110 @@ mod tests {
                 view.messages[1].metadata.trust_level, None,
                 "compacting only trusted messages must not spuriously tag the summary"
             );
+        }
+
+        fn tool_use_msg(id: &str) -> Message {
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::ToolUse {
+                    id: id.to_owned(),
+                    name: "shell".to_owned(),
+                    input: serde_json::json!({}),
+                }],
+            )
+        }
+
+        fn tool_result_msg(id: &str) -> Message {
+            Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolResult {
+                    tool_use_id: id.to_owned(),
+                    content: "ok".to_owned(),
+                    is_error: false,
+                }],
+            )
+        }
+
+        fn assert_no_orphans(messages: &[Message]) {
+            let mut clone = messages.to_vec();
+            let report = zeph_llm::tool_pairing::repair_tool_pairs(
+                &mut clone,
+                zeph_llm::tool_pairing::OrphanAction::Delete,
+            );
+            assert_eq!(report.parts_repaired, 0, "compaction left an orphan");
+        }
+
+        fn subgoal_fixture(messages: Vec<Message>) -> Fixture {
+            let mut fixture = Fixture::new(messages);
+            fixture.context_manager.compression.pruning_strategy =
+                zeph_config::PruningStrategy::Subgoal;
+            fixture
+        }
+
+        fn filler_tail(messages: &mut Vec<Message>) {
+            let preserve_tail = ContextManager::new().compaction_preserve_tail;
+            for i in 0..(preserve_tail + 3) {
+                messages.push(plain_msg(Role::User, &format!("filler {i}")));
+            }
+        }
+
+        #[tokio::test]
+        async fn subgoal_compaction_keeps_tool_use_for_active_span_starting_on_tool_result() {
+            let mut messages = vec![
+                plain_msg(Role::System, "system"),
+                plain_msg(Role::User, "question"),
+                tool_use_msg("t1"),
+                tool_result_msg("t1"),
+            ];
+            filler_tail(&mut messages);
+
+            let mut fixture = subgoal_fixture(messages);
+            let completed = fixture.subgoal_registry.push_active("first".to_owned(), 1);
+            fixture.subgoal_registry.tag_range(1, 2, completed);
+            let active = fixture.subgoal_registry.push_active("second".to_owned(), 3);
+            fixture.subgoal_registry.tag_range(3, 3, active);
+
+            let mut view = fixture.view();
+            let outcome = compact_context(&mut view, None).await.unwrap();
+            assert!(matches!(outcome, CompactionOutcome::Compacted { .. }));
+
+            assert!(
+                view.messages.iter().any(|m| m
+                    .parts
+                    .iter()
+                    .any(|p| matches!(p, MessagePart::ToolUse { id, .. } if id == "t1"))),
+                "the ToolUse paired with the preserved ToolResult must survive"
+            );
+            assert_no_orphans(&view.messages[1..]);
+        }
+
+        #[tokio::test]
+        async fn subgoal_compaction_keeps_pairs_atomic_after_deferred_summary_shift() {
+            let mut resp0 = tool_result_msg("t0");
+            resp0.metadata.deferred_summary = Some("ran t0".to_owned());
+            let mut messages = vec![
+                plain_msg(Role::System, "system"),
+                plain_msg(Role::User, "question"),
+                tool_use_msg("t0"),
+                resp0,
+                tool_use_msg("t1"),
+                tool_result_msg("t1"),
+            ];
+            filler_tail(&mut messages);
+
+            // Registry indices predate the deferred-summary insertion that
+            // `compact_context` applies first, so they are shifted by one.
+            let mut fixture = subgoal_fixture(messages);
+            let completed = fixture.subgoal_registry.push_active("first".to_owned(), 1);
+            fixture.subgoal_registry.tag_range(1, 4, completed);
+            let active = fixture.subgoal_registry.push_active("second".to_owned(), 5);
+            fixture.subgoal_registry.tag_range(5, 5, active);
+
+            let mut view = fixture.view();
+            let outcome = compact_context(&mut view, None).await.unwrap();
+            assert!(matches!(outcome, CompactionOutcome::Compacted { .. }));
+
+            assert_no_orphans(&view.messages[1..]);
         }
     }
 }

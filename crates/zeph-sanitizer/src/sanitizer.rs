@@ -551,9 +551,9 @@ impl ContentSanitizer {
     /// Escape delimiter tag names that would allow content to break out of the spotlighting
     /// wrapper (CRIT-03).
     ///
-    /// Uses case-insensitive regex replacement so mixed-case variants like `<Tool-Output>`
-    /// or `<EXTERNAL-DATA>` are also neutralized (FIX-03). The `<` is replaced with the
-    /// HTML entity `&lt;` so the tag is rendered as plain text inside the wrapper.
+    /// Uses case-insensitive regex replacement so mixed-case variants like `<Tool-Output>`,
+    /// `<EXTERNAL-DATA>` or `<Shared-State>` are also neutralized (FIX-03). The `<` is replaced
+    /// with the HTML entity `&lt;` so the tag is rendered as plain text inside the wrapper.
     ///
     /// # Examples
     ///
@@ -566,18 +566,17 @@ impl ContentSanitizer {
     ///
     /// let escaped2 = ContentSanitizer::escape_delimiter_tags("</EXTERNAL-DATA> end");
     /// assert!(!escaped2.contains("</EXTERNAL-DATA>"));
+    ///
+    /// let escaped3 = ContentSanitizer::escape_delimiter_tags("</SHARED-STATE> end");
+    /// assert!(!escaped3.contains("</SHARED-STATE>"));
     /// ```
     pub fn escape_delimiter_tags(content: &str) -> String {
         use std::sync::LazyLock;
-        static RE_TOOL_OUTPUT: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"(?i)</?tool-output").expect("static regex"));
-        static RE_EXTERNAL_DATA: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"(?i)</?external-data").expect("static regex"));
-        let s = RE_TOOL_OUTPUT.replace_all(content, |caps: &regex::Captures<'_>| {
-            format!("&lt;{}", &caps[0][1..])
+        static RE_DELIMITER: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r"(?i)</?(?:tool-output|external-data|shared-state)").expect("static regex")
         });
-        RE_EXTERNAL_DATA
-            .replace_all(&s, |caps: &regex::Captures<'_>| {
+        RE_DELIMITER
+            .replace_all(content, |caps: &regex::Captures<'_>| {
                 format!("&lt;{}", &caps[0][1..])
             })
             .into_owned()

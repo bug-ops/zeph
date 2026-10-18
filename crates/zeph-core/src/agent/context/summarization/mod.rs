@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use zeph_common::memory::AnchoredSummary;
 #[cfg(test)]
-use zeph_llm::provider::{Message, MessagePart, Role};
+use zeph_llm::provider::Message;
 
 use super::super::Agent;
 use crate::channel::Channel;
@@ -112,56 +112,6 @@ impl<C: Channel> Agent<C> {
                 String::new()
             }
         }
-    }
-
-    /// Adjust `compact_end` backward so the preserved tail begins on a clean message boundary.
-    ///
-    /// If `messages[compact_end]` is a `Role::User` message that contains only `ToolResult`
-    /// parts, its paired `Role::Assistant` `ToolUse` message is at `compact_end - 1` and would
-    /// be drained, leaving an orphaned `tool_result`.  This function walks the boundary backward
-    /// until the first message of the tail is not a `ToolResult`-only user message, absorbing all
-    /// consecutive `ToolResult` messages and the single preceding `ToolUse` assistant message.
-    ///
-    /// Returns the adjusted `compact_end`.  The minimum returned value is `1` (drain nothing
-    /// beyond the system message).
-    #[cfg(test)]
-    fn adjust_compact_end_for_tool_pairs(messages: &[Message], compact_end: usize) -> usize {
-        let mut end = compact_end;
-        loop {
-            // Nothing left to drain — stop.
-            if end <= 1 {
-                return 1;
-            }
-            // compact_end may equal messages.len() when preserve_tail = 0.
-            if end >= messages.len() {
-                break;
-            }
-            let first_tail = &messages[end];
-            let is_tool_result_msg = first_tail.role == Role::User
-                && !first_tail.parts.is_empty()
-                && first_tail
-                    .parts
-                    .iter()
-                    .all(|p| matches!(p, MessagePart::ToolResult { .. }));
-            if !is_tool_result_msg {
-                break;
-            }
-            // Absorb this ToolResult message into the tail.
-            end -= 1;
-        }
-        // If we moved the boundary, also absorb the preceding ToolUse assistant message.
-        if end < compact_end && end > 1 {
-            let preceding = &messages[end - 1];
-            let is_tool_use_msg = preceding.role == Role::Assistant
-                && preceding
-                    .parts
-                    .iter()
-                    .any(|p| matches!(p, MessagePart::ToolUse { .. }));
-            if is_tool_use_msg {
-                end -= 1;
-            }
-        }
-        end.max(1)
     }
 }
 
@@ -925,7 +875,7 @@ mod orphan_tool_result_tests {
 
     // T-ORPHAN-01: compact_context_with_budget must not produce an orphan ToolResult when
     // the boundary lands exactly on a ToolUse/ToolResult pair.
-    // Regression guard for #3257: adjust_compact_end_for_tool_pairs must absorb the pair.
+    // Regression guard for #3257: the compaction cut (`pair_safe_cut`) must keep the pair whole.
     #[tokio::test]
     async fn compact_context_with_budget_no_orphan_tool_result() {
         use crate::agent::tests::agent_tests::{
@@ -1147,158 +1097,5 @@ mod orphan_tool_result_tests {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod compact_end_tool_pair_tests {
-    use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
-
-    use super::super::super::Agent;
-    use crate::agent::tests::agent_tests::MockChannel;
-
-    fn tool_use_msg() -> Message {
-        Message {
-            role: Role::Assistant,
-            content: String::new(),
-            parts: vec![MessagePart::ToolUse {
-                id: "tu1".into(),
-                name: "shell".into(),
-                input: serde_json::json!({}),
-            }],
-            metadata: MessageMetadata::default(),
-        }
-    }
-
-    fn tool_result_msg() -> Message {
-        Message {
-            role: Role::User,
-            content: String::new(),
-            parts: vec![MessagePart::ToolResult {
-                tool_use_id: "tu1".into(),
-                content: "ok".into(),
-                is_error: false,
-            }],
-            metadata: MessageMetadata::default(),
-        }
-    }
-
-    fn text_msg(role: Role, text: &str) -> Message {
-        Message {
-            role,
-            content: text.into(),
-            parts: vec![MessagePart::Text { text: text.into() }],
-            metadata: MessageMetadata::default(),
-        }
-    }
-
-    fn system_msg() -> Message {
-        Message {
-            role: Role::System,
-            content: "system".into(),
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }
-    }
-
-    // Alias for the static helper under test.
-    fn adjust(messages: &[Message], compact_end: usize) -> usize {
-        Agent::<MockChannel>::adjust_compact_end_for_tool_pairs(messages, compact_end)
-    }
-
-    #[test]
-    fn no_tool_pair_at_boundary_unchanged() {
-        // [sys, user, assistant_text, user2]  preserve_tail=1 → compact_end=3
-        // messages[3] = user2 (plain text) → no adjustment
-        let msgs = vec![
-            system_msg(),
-            text_msg(Role::User, "hi"),
-            text_msg(Role::Assistant, "ok"),
-            text_msg(Role::User, "bye"),
-        ];
-        assert_eq!(adjust(&msgs, 3), 3);
-    }
-
-    #[test]
-    fn tool_result_at_boundary_absorbs_pair() {
-        // [sys, user, tool_use, tool_result, user2]  preserve_tail=2 → compact_end=3
-        // messages[3] = tool_result → adjust to 2, then absorb tool_use → compact_end=2
-        let msgs = vec![
-            system_msg(),
-            text_msg(Role::User, "hi"),
-            tool_use_msg(),
-            tool_result_msg(),
-            text_msg(Role::User, "bye"),
-        ];
-        assert_eq!(adjust(&msgs, 3), 2);
-    }
-
-    #[test]
-    fn multiple_tool_results_absorbed() {
-        // Parallel tool calls: one tool_use, two tool_results (two result messages)
-        let tool_result2 = Message {
-            role: Role::User,
-            content: String::new(),
-            parts: vec![MessagePart::ToolResult {
-                tool_use_id: "tu2".into(),
-                content: "ok2".into(),
-                is_error: false,
-            }],
-            metadata: MessageMetadata::default(),
-        };
-        // [sys, user, tool_use, tool_result, tool_result2, assistant_reply]
-        // preserve_tail=2 → compact_end=4
-        // messages[4] = tool_result2 → absorb; messages[3] = tool_result → absorb;
-        // messages[2] = tool_use → absorb; compact_end=2
-        let msgs = vec![
-            system_msg(),
-            text_msg(Role::User, "hi"),
-            tool_use_msg(),
-            tool_result_msg(),
-            tool_result2,
-            text_msg(Role::Assistant, "done"),
-        ];
-        assert_eq!(adjust(&msgs, 4), 2);
-    }
-
-    #[test]
-    fn preserve_tail_zero_no_tool_result_unchanged() {
-        // [sys, user, assistant]  compact_end=3 (preserve_tail=0)
-        // We only call with compact_end < len in practice; test a valid boundary.
-        let msgs = vec![
-            system_msg(),
-            text_msg(Role::User, "hi"),
-            text_msg(Role::Assistant, "ok"),
-        ];
-        assert_eq!(adjust(&msgs, 2), 2);
-    }
-
-    #[test]
-    fn compact_end_equals_len_does_not_panic() {
-        // preserve_tail=0 → compact_end = messages.len(); must not panic on out-of-bounds.
-        let msgs = vec![
-            system_msg(),
-            text_msg(Role::User, "hi"),
-            tool_use_msg(),
-            tool_result_msg(),
-        ];
-        // compact_end = 4 = msgs.len(); bounds guard must fire and return unchanged.
-        assert_eq!(adjust(&msgs, msgs.len()), msgs.len());
-    }
-
-    #[test]
-    fn compact_end_already_one_returns_one() {
-        let msgs = vec![system_msg(), tool_result_msg()];
-        assert_eq!(adjust(&msgs, 1), 1);
-    }
-
-    #[test]
-    fn only_tool_pairs_degenerate_returns_one() {
-        // All non-system messages are tool pairs; compact_end points into the pair.
-        let msgs = vec![system_msg(), tool_use_msg(), tool_result_msg()];
-        // compact_end=2 → messages[2]=tool_result → absorb → end=1; tool_use at [1]
-        // preceding = messages[0] = system (not tool_use) so no extra absorption
-        // end = 1, max(1) = 1
-        assert_eq!(adjust(&msgs, 2), 1);
     }
 }

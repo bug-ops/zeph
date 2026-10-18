@@ -31,6 +31,14 @@
 //!   `MessagePart::ToolUse`/`MessagePart::ToolResult` match alone does not distinguish correct
 //!   Layer B code (which must match those variants to mutate `parts`) from a duplicated predicate.
 //!
+//! # Cut prevention
+//!
+//! [`pair_safe_cut`] is the single primitive that places history-removal cuts (compaction drain,
+//! budget trim, memory-first drain) so they never separate a `ToolUse` from its `ToolResult`.
+//! It is presence-based, not Layer A: it prevents orphans from being created rather than
+//! classifying existing ones, so an in-flight `ToolUse` whose results are not appended yet must
+//! count as paired.
+//!
 //! # Orphaned `ToolUse` is always deleted
 //!
 //! Unlike an orphaned `ToolResult` (which already carries content and can be downgraded to a
@@ -154,6 +162,75 @@ pub fn prev_non_system(messages: &[Message], at: usize) -> Option<&Message> {
         .iter()
         .rev()
         .find(|m| m.role != Role::System)
+}
+
+/// Move a history cut backward so it does not separate an `Assistant` `ToolUse` message from
+/// the `User` `ToolResult` message that follows it.
+///
+/// `messages[..cut]` is the part a caller is about to remove (compaction drain, budget trim,
+/// memory-first drain) and `messages[cut..]` the part it keeps. When the last non-`System`
+/// message before the cut is an `Assistant` message carrying a `ToolUse`, the cut moves to that
+/// message so the whole pair stays in the kept tail; this repeats for consecutive tool rounds.
+/// `cut` is clamped to `messages.len()`, and the result is never below `floor` unless `cut`
+/// itself already was (then the clamped `cut` is returned unchanged).
+///
+/// The check is presence-based on purpose: any `ToolUse` counts as paired, including one whose
+/// results are not appended yet. This is cut *placement* (prevention), not orphan
+/// classification, so it deliberately does not call the Layer A predicates.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::{Message, MessagePart, Role};
+/// use zeph_llm::tool_pairing::pair_safe_cut;
+///
+/// let messages = vec![
+///     Message::from_legacy(Role::System, "sys"),
+///     Message::from_parts(
+///         Role::Assistant,
+///         vec![MessagePart::ToolUse {
+///             id: "t1".into(),
+///             name: "bash".into(),
+///             input: serde_json::json!({}),
+///         }],
+///     ),
+///     Message::from_parts(
+///         Role::User,
+///         vec![MessagePart::ToolResult {
+///             tool_use_id: "t1".into(),
+///             content: "ok".into(),
+///             is_error: false,
+///         }],
+///     ),
+/// ];
+/// // Cutting between the pair moves the cut before the assistant message.
+/// assert_eq!(pair_safe_cut(&messages, 2, 1), 1);
+/// // A cut that is already pair-safe is unchanged.
+/// assert_eq!(pair_safe_cut(&messages, 1, 1), 1);
+/// ```
+#[must_use]
+pub fn pair_safe_cut(messages: &[Message], cut: usize, floor: usize) -> usize {
+    let mut cut = cut.min(messages.len());
+    if cut < floor {
+        return cut;
+    }
+    while let Some(idx) = messages[floor..cut]
+        .iter()
+        .rposition(|m| m.role != Role::System)
+        .map(|i| i + floor)
+    {
+        let m = &messages[idx];
+        let has_tool_use = m.role == Role::Assistant
+            && m.parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolUse { .. }));
+        if !has_tool_use {
+            break;
+        }
+        tracing::debug!(from = cut, to = idx, "history cut moved off a tool pair");
+        cut = idx;
+    }
+    cut
 }
 
 /// Collect `tool_use` ids from `msg` that have no matching `ToolResult` in `next`.
@@ -689,6 +766,98 @@ mod tests {
         m.parts
             .iter()
             .any(|p| matches!(p, MessagePart::ToolResult { tool_use_id, .. } if tool_use_id == id))
+    }
+
+    fn round(id: &str) -> [Message; 2] {
+        [
+            Message::from_parts(Role::Assistant, vec![tool_use(id)]),
+            Message::from_parts(Role::User, vec![tool_result(id, "ok")]),
+        ]
+    }
+
+    fn assert_no_orphans(messages: &[Message]) {
+        let mut clone = messages.to_vec();
+        let report = repair_tool_pairs(&mut clone, OrphanAction::Delete);
+        assert_eq!(report.parts_repaired, 0, "cut produced an orphan");
+    }
+
+    #[test]
+    fn pair_safe_cut_moves_off_a_tool_use_boundary() {
+        let [a, u] = round("t1");
+        let messages = vec![Message::from_legacy(Role::System, "sys"), a, u];
+        assert_eq!(pair_safe_cut(&messages, 2, 1), 1);
+        assert_no_orphans(&messages[1..]);
+    }
+
+    #[test]
+    fn pair_safe_cut_leaves_plain_boundary_unchanged() {
+        let [a, u] = round("t1");
+        let messages = vec![
+            Message::from_legacy(Role::System, "sys"),
+            Message::from_legacy(Role::User, "q"),
+            a,
+            u,
+        ];
+        assert_eq!(pair_safe_cut(&messages, 2, 1), 2);
+        assert_eq!(pair_safe_cut(&messages, 4, 1), 4);
+    }
+
+    #[test]
+    fn pair_safe_cut_looks_past_interleaved_system_messages() {
+        let [a, u] = round("t1");
+        let messages = vec![
+            Message::from_legacy(Role::System, "sys"),
+            a,
+            Message::from_legacy(Role::System, "hint"),
+            u,
+        ];
+        assert_eq!(pair_safe_cut(&messages, 3, 1), 1);
+        assert_eq!(pair_safe_cut(&messages, 2, 1), 1);
+    }
+
+    #[test]
+    fn pair_safe_cut_walks_consecutive_tool_rounds() {
+        let [a1, u1] = round("t1");
+        let [a2, u2] = round("t2");
+        let messages = vec![
+            Message::from_legacy(Role::System, "sys"),
+            Message::from_legacy(Role::User, "q"),
+            a1,
+            u1,
+            a2,
+            u2,
+        ];
+        assert_eq!(pair_safe_cut(&messages, 5, 1), 4);
+        assert_eq!(pair_safe_cut(&messages, 3, 1), 2);
+    }
+
+    #[test]
+    fn pair_safe_cut_treats_in_flight_tool_use_as_paired() {
+        let messages = vec![
+            Message::from_legacy(Role::System, "sys"),
+            Message::from_legacy(Role::User, "q"),
+            Message::from_parts(Role::Assistant, vec![tool_use("t1")]),
+        ];
+        assert_eq!(pair_safe_cut(&messages, 3, 1), 2);
+    }
+
+    #[test]
+    fn pair_safe_cut_on_empty_input_returns_zero() {
+        assert_eq!(pair_safe_cut(&[], 0, 0), 0);
+        assert_eq!(pair_safe_cut(&[], 5, 1), 0);
+    }
+
+    #[test]
+    fn pair_safe_cut_respects_floor_and_clamps() {
+        let [a, u] = round("t1");
+        let messages = vec![a, u];
+        assert_eq!(pair_safe_cut(&messages, 1, 1), 1, "floor stops the walk");
+        assert_eq!(
+            pair_safe_cut(&messages, 0, 1),
+            0,
+            "cut below floor is unchanged"
+        );
+        assert_eq!(pair_safe_cut(&messages, 99, 0), 2, "cut clamps to len");
     }
 
     #[test]

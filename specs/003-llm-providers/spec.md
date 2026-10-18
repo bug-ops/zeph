@@ -326,7 +326,16 @@ independently reimplemented pairing, and one (`trim_parent_messages`, issue #677
 against a **global** id set rather than adjacency, cross-pairing an orphan against an unrelated
 call sharing its id under Ollama-style `format!("call_{i}")` id reuse.
 
-Three layers:
+Request-time repair coverage per provider: Claude = visible-projection Layer A; OpenAI family =
+raw Layer A; Gemini = none; native Ollama = N/A (no tool-call ids on the wire).
+
+Three layers, plus one prevention primitive:
+
+- **`pair_safe_cut(messages, cut, floor)`** — cut *prevention* (#6782): places history-removal
+  cuts (compaction drain, budget trim, memory-first drain) so they never separate a `ToolUse`
+  from its `ToolResult`. Presence-based by design (an in-flight `ToolUse` counts as paired); it
+  prevents orphans rather than classifying them, so it is the one sanctioned exception to the
+  "no second pairing predicate" invariant below.
 
 - **Layer A** — `unmatched_tool_use_ids(msg, next)` / `unmatched_tool_result_ids(msg, prev)` /
   `resolved_tool_result_ids(next)`: pure classification, adjacency-scoped against an
@@ -357,8 +366,13 @@ Three layers:
   acceptable match, since it produces the #6770 cross-pair defect under any provider that reuses
   `tool_use_id`s across turns
 - Layer B MUST call Layer A for every orphan decision — no second, independent pairing predicate
-  may exist anywhere in the module (this is a reviewer-verified property of the source, not a
-  grep-checkable pattern)
+  may exist anywhere in the module, other than `pair_safe_cut`'s presence-based cut placement
+  (this is a reviewer-verified property of the source, not a grep-checkable pattern)
+- The Claude `GatedStructuredHistory`/`GatedPlainHistory` are empty or lead with a `user`
+  message by construction: a non-`user` leading turn gets a `LEADING_USER_ANCHOR` user message
+  prepended in `new` (after the cache-breakpoint cap and the no-prefill strip) — messages are
+  never dropped to satisfy this, so no tool pair or compaction block is severed. An all-assistant
+  history under no-prefill stays empty (a loud API 400, not a fabricated request)
 - An orphaned `ToolUse` part is always deleted, never downgraded — it has no safe text form
   worth preserving as conversation content
 - `Role::System` messages are never removed by repair, regardless of content or parts state
