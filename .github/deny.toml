@@ -24,7 +24,17 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # No patched version exists; advisory suggests migrating to `skrifa`. Transitive via
 # pdf-extract/lopdf, which do not offer a ttf-parser-free path yet; track migrating off
 # ttf-parser (or pdf-extract/lopdf entirely) once an upstream alternative lands
-ignore = ["RUSTSEC-2024-0436", "RUSTSEC-2026-0173", "RUSTSEC-2026-0192"]
+# zip 8.x extract() advisories (RUSTSEC-2026-0367, -0368, -0369; fixed in zip 9.0.0) via candle-core,
+# which pins zip ^8. candle only reads npz/pickle entries (by_index/by_name), never calls extract();
+# remove once candle-core moves to zip >=9
+ignore = [
+    "RUSTSEC-2024-0436",
+    "RUSTSEC-2026-0173",
+    "RUSTSEC-2026-0192",
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
+]
 
 [licenses]
 confidence-threshold = 0.93
