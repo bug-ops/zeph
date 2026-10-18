@@ -92,7 +92,7 @@ impl<C: Channel> Agent<C> {
     ///   `memory_save` confirmation gate lives in [`crate::memory_tools::MemoryToolExecutor`]
     ///   instead, which has a live `Channel` handle this deep write path does not.
     ///
-    /// `MessagePart::Image` parts are deliberately stripped (via [`MessagePart::strip_images`])
+    /// `MessagePart::Image` parts are deliberately stripped (via [`MessagePart::strip_for_persistence`], which also drops `RuntimeNote` parts)
     /// before either persistence writer below sees `parts` — they are ephemeral, current-turn-only
     /// content (spec-072 §4, C1) and must never reach `SQLite` `parts_json`, the Qdrant embed path,
     /// or the durable JSONL session log. This is a single, explicit strip point above both writers,
@@ -131,7 +131,7 @@ impl<C: Channel> Agent<C> {
         // C1 (spec-072 §4): strip Image parts once, above both persistence writers below.
         // Neither `sink.record_message` nor `PersistMessageRequest::from_borrowed`/
         // `svc.persist_message` may see an unstripped `parts` slice — see the doc comment above.
-        let persisted_parts: Vec<MessagePart> = MessagePart::strip_images(parts);
+        let persisted_parts: Vec<MessagePart> = MessagePart::strip_for_persistence(parts);
 
         // INV-SP-1 (spec-068 §13): the durable event log must be appended and flushed before the
         // SQLite `messages` projection is written — the projection must never lead the log. A

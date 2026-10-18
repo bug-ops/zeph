@@ -47,6 +47,7 @@ mod policy_commands;
 mod provider_cmd;
 mod quality_hook;
 pub(crate) mod rate_limiter;
+mod runtime_note;
 mod scheduler_commands;
 #[cfg(feature = "scheduler")]
 mod scheduler_loop;
@@ -1332,6 +1333,7 @@ impl<C: Channel> Agent<C> {
             ms = turn.metrics_snapshot().timings.persist_message_ms,
             "turn timing: persist_message(user) done"
         );
+        self.msg.supersede_turn_input();
         self.push_message(user_msg);
 
         // Emit pre-LLM context size so the TUI gauge is non-zero before the provider responds.
@@ -1341,6 +1343,9 @@ impl<C: Channel> Agent<C> {
         // llm_chat_ms and tool_exec_ms are accumulated inside call_chat_with_tools and
         // handle_native_tool_calls respectively via metrics.pending_timings.
         tracing::debug!("turn timing: process_response start");
+        // The only turn entry: nested self-reflection re-enters `process_response` and must not
+        // reset the turn-scoped runtime-note budget.
+        self.begin_runtime_note_turn();
         let turn_had_error = if let Err(e) = self.process_response().await {
             // Detach any in-flight learning tasks before mutating message state.
             self.services.learning_engine.learning_tasks.detach_all();
@@ -1884,7 +1889,7 @@ impl<C: Channel> Agent<C> {
         let mut all_image_parts = std::mem::take(&mut self.msg.pending_image_parts);
         all_image_parts.extend(image_parts);
 
-        if !all_image_parts.is_empty() && self.provider.supports_vision() {
+        let mut msg = if !all_image_parts.is_empty() && self.provider.supports_vision() {
             let mut parts = vec![zeph_llm::provider::MessagePart::Text {
                 text: text.to_owned(),
             }];
@@ -1903,7 +1908,9 @@ impl<C: Channel> Agent<C> {
                 parts: vec![],
                 metadata: MessageMetadata::default(),
             }
-        }
+        };
+        msg.metadata.origin = Some(zeph_llm::provider::MessageOrigin::TurnInput);
+        msg
     }
 
     /// Drain any ready [`zeph_tools::BackgroundCompletion`]s from the channel into

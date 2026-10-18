@@ -231,8 +231,9 @@ impl MockProvider {
         self
     }
 
-    /// Enable call recording. Returns the shared buffer. Each `chat()` call
-    /// appends a clone of the messages slice so tests can inspect them.
+    /// Enable call recording. Returns the shared buffer. Each `chat()` call, and each
+    /// `chat_with_tools()` call answered from the queued tool responses, appends a clone of the
+    /// messages slice so tests can inspect them.
     #[must_use]
     pub fn with_recording(mut self) -> (Self, Arc<Mutex<Vec<Vec<Message>>>>) {
         let buf = Arc::new(Mutex::new(Vec::new()));
@@ -581,6 +582,11 @@ impl LlmProvider for MockProvider {
         }
         let queued = self.tool_responses.lock().unwrap().pop_front();
         if let Some(response) = queued {
+            if let Some(buf) = &self.recorded
+                && let Ok(mut guard) = buf.lock()
+            {
+                guard.push(messages.to_vec());
+            }
             return Ok(response);
         }
         // Fallback: delegate to chat() and wrap in Text.

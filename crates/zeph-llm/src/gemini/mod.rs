@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -10,11 +10,15 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 
 use crate::error::LlmError;
 use crate::provider::{
-    ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart, Role,
-    StatusTx, ToolDefinition, ToolUseRequest,
+    AgentVisible, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart,
+    Role, StatusTx, ToolDefinition, ToolUseRequest,
 };
 use crate::retry::send_with_retry;
 use crate::sse::gemini_sse_to_stream;
+use crate::tool_pairing::{
+    downgraded_tool_result_text, downgraded_tool_use_text, unmatched_tool_result_ids,
+    unmatched_tool_use_ids,
+};
 use crate::usage::UsageTracker;
 
 const MAX_RETRIES: u32 = 3;
@@ -846,9 +850,9 @@ fn convert_tool_definitions(tools: &[ToolDefinition]) -> Vec<GeminiFunctionDecla
 // ---------------------------------------------------------------------------
 
 /// Build a lookup map from `tool_use_id` to `tool_name` by scanning all messages.
-fn build_tool_name_lookup(messages: &[Message]) -> HashMap<String, String> {
+fn build_tool_name_lookup(messages: &AgentVisible<'_>) -> HashMap<String, String> {
     let mut map = HashMap::new();
-    for msg in messages {
+    for msg in messages.iter() {
         for part in &msg.parts {
             if let MessagePart::ToolUse { id, name, .. } = part {
                 map.insert(id.clone(), name.clone());
@@ -863,12 +867,15 @@ fn build_tool_name_lookup(messages: &[Message]) -> HashMap<String, String> {
 /// System messages are extracted and concatenated into `system_instruction`.
 /// Consecutive same-role messages are merged (Gemini requires strict alternation).
 /// Handles `ToolUse` and `ToolResult` `MessagePart`s.
-fn convert_messages(messages: &[Message]) -> (Option<GeminiContent>, Vec<GeminiContent>) {
-    let tool_names = build_tool_name_lookup(messages);
+fn convert_messages<'a>(
+    messages: impl Into<AgentVisible<'a>>,
+) -> (Option<GeminiContent>, Vec<GeminiContent>) {
+    let visible: AgentVisible<'a> = messages.into();
+    let tool_names = build_tool_name_lookup(&visible);
     let mut system_parts: Vec<String> = Vec::new();
     let mut contents: Vec<GeminiContent> = Vec::new();
 
-    for msg in messages {
+    for (i, msg) in visible.iter().enumerate() {
         match msg.role {
             Role::System => {
                 let text = extract_text(msg);
@@ -883,7 +890,19 @@ fn convert_messages(messages: &[Message]) -> (Option<GeminiContent>, Vec<GeminiC
                     Role::System => unreachable!(),
                 };
 
-                let parts = convert_message_parts(msg, &tool_names);
+                // Layer A (zeph_llm::tool_pairing), adjacency-scoped against the immediate
+                // agent-visible neighbour — the same orphan downgrade Claude and the OpenAI
+                // family apply, so Gemini never sends a `functionCall`/`functionResponse` the
+                // API cannot pair.
+                let orphans = if msg.role == Role::Assistant {
+                    OrphanedIds::ToolUse(unmatched_tool_use_ids(msg, visible.next_non_system(i)))
+                } else {
+                    OrphanedIds::ToolResult(unmatched_tool_result_ids(
+                        msg,
+                        visible.prev_non_system(i),
+                    ))
+                };
+                let parts = convert_message_parts(msg, &tool_names, &orphans);
                 if parts.is_empty() {
                     continue;
                 }
@@ -937,19 +956,44 @@ fn convert_messages(messages: &[Message]) -> (Option<GeminiContent>, Vec<GeminiC
     (system_instruction, contents)
 }
 
-fn convert_message_parts(msg: &Message, tool_names: &HashMap<String, String>) -> Vec<GeminiPart> {
+/// Ids of unmatched tool parts in one message, split by direction so a `ToolUse` id can never be
+/// confused with a `ToolResult` id.
+enum OrphanedIds<'a> {
+    ToolUse(HashSet<&'a str>),
+    ToolResult(HashSet<&'a str>),
+}
+
+impl OrphanedIds<'_> {
+    fn has_tool_use(&self, id: &str) -> bool {
+        matches!(self, Self::ToolUse(ids) if ids.contains(id))
+    }
+
+    fn has_tool_result(&self, id: &str) -> bool {
+        matches!(self, Self::ToolResult(ids) if ids.contains(id))
+    }
+}
+
+fn text_part(text: String) -> GeminiPart {
+    GeminiPart {
+        text: Some(text),
+        inline_data: None,
+        function_call: None,
+        function_response: None,
+    }
+}
+
+fn convert_message_parts(
+    msg: &Message,
+    tool_names: &HashMap<String, String>,
+    orphans: &OrphanedIds<'_>,
+) -> Vec<GeminiPart> {
     if msg.parts.is_empty() {
         // Legacy message: use content field as plain text.
         let text = msg.content.clone();
         if text.is_empty() {
             return vec![];
         }
-        return vec![GeminiPart {
-            text: Some(text),
-            inline_data: None,
-            function_call: None,
-            function_response: None,
-        }];
+        return vec![text_part(text)];
     }
 
     let mut result = Vec::new();
@@ -957,13 +1001,27 @@ fn convert_message_parts(msg: &Message, tool_names: &HashMap<String, String>) ->
         match part {
             MessagePart::Text { text } => {
                 if !text.is_empty() {
-                    result.push(GeminiPart {
-                        text: Some(text.clone()),
-                        inline_data: None,
-                        function_call: None,
-                        function_response: None,
-                    });
+                    result.push(text_part(text.clone()));
                 }
+            }
+            MessagePart::ToolUse { id, name, input } if orphans.has_tool_use(id) => {
+                tracing::warn!(
+                    tool_use_id = %id,
+                    tool_name = %name,
+                    "downgrading unmatched tool_use to text in Gemini request"
+                );
+                result.push(text_part(downgraded_tool_use_text(name, input)));
+            }
+            MessagePart::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } if orphans.has_tool_result(tool_use_id) => {
+                tracing::warn!(
+                    tool_use_id = %tool_use_id,
+                    "downgrading orphaned tool_result to text in Gemini request"
+                );
+                result.push(text_part(downgraded_tool_result_text(tool_use_id, content)));
             }
             MessagePart::ToolUse { name, input, .. } => {
                 result.push(GeminiPart {
@@ -1000,6 +1058,8 @@ fn convert_message_parts(msg: &Message, tool_names: &HashMap<String, String>) ->
                     function_response: Some(GeminiFunctionResponse { name, response }),
                 });
             }
+            // The note joins the same merged `user` content as the `functionResponse` parts.
+            MessagePart::RuntimeNote { text } => result.push(text_part(text.clone())),
             MessagePart::Image(img) => {
                 result.push(GeminiPart {
                     text: None,
@@ -1016,12 +1076,7 @@ fn convert_message_parts(msg: &Message, tool_names: &HashMap<String, String>) ->
                 // Extract text if available (e.g. Recall, Summary, CodeContext, ToolOutput).
                 let text = extract_part_text(other);
                 if let Some(t) = text {
-                    result.push(GeminiPart {
-                        text: Some(t),
-                        inline_data: None,
-                        function_call: None,
-                        function_response: None,
-                    });
+                    result.push(text_part(t));
                 }
             }
         }
@@ -1045,6 +1100,7 @@ fn extract_part_text(part: &MessagePart) -> Option<String> {
             .as_plain_text()
             .filter(|t| !t.is_empty())
             .map(str::to_owned),
+        MessagePart::Compaction { summary } if !summary.is_empty() => Some(summary.clone()),
         _ => None,
     }
 }

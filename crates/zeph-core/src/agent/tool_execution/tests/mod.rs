@@ -14,5 +14,6 @@ mod pre_tool_use_concurrency_tests;
 mod pure_helpers_tests;
 mod retry_and_skill_env_tests;
 mod sanitize_and_native_tests;
+mod server_compaction_tests;
 mod shadow_memory_tests;
 mod tafc_and_record_outcomes_tests;

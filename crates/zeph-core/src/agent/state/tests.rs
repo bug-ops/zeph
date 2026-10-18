@@ -70,6 +70,7 @@ fn make_session_state() -> SessionState {
         current_turn_intent: None,
         status_tx: None,
         lsp_hooks: None,
+        runtime_notes: crate::agent::runtime_note::RuntimeNoteState::default(),
         policy_config: None,
         hooks_config: HooksConfigSnapshot::default(),
         last_assistant_at: None,

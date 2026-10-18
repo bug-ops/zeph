@@ -51,8 +51,8 @@ use std::future::Future;
 use tokio_stream::StreamExt;
 
 use crate::provider::{
-    ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart,
-    Role, ToolDefinition, ToolUseRequest,
+    AgentVisible, ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message,
+    MessagePart, Role, ToolDefinition, ToolUseRequest,
 };
 use crate::retry::{exponential_backoff_delay, send_with_retry};
 use crate::usage::UsageTracker;
@@ -537,7 +537,8 @@ impl LlmProvider for OllamaProvider {
         fields(provider = self.name(), model = self.model_identifier())
     )]
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
-        let has_images = messages
+        let visible = AgentVisible::new(messages);
+        let has_images = visible
             .iter()
             .any(|m| m.parts.iter().any(|p| matches!(p, MessagePart::Image(_))));
         let model = if has_images {
@@ -545,7 +546,7 @@ impl LlmProvider for OllamaProvider {
         } else {
             &self.model
         };
-        let ollama_messages: Vec<ChatMessage> = messages.iter().map(convert_message).collect();
+        let ollama_messages: Vec<ChatMessage> = visible.iter().map(convert_message).collect();
 
         let mut request = ChatMessageRequest::new(model.to_owned(), ollama_messages);
         if let Some(ref ov) = self.generation_overrides {
@@ -576,7 +577,8 @@ impl LlmProvider for OllamaProvider {
         fields(provider = self.name(), model = self.model_identifier())
     )]
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
-        let has_images = messages
+        let visible = AgentVisible::new(messages);
+        let has_images = visible
             .iter()
             .any(|m| m.parts.iter().any(|p| matches!(p, MessagePart::Image(_))));
         let model = if has_images {
@@ -584,7 +586,7 @@ impl LlmProvider for OllamaProvider {
         } else {
             &self.model
         };
-        let ollama_messages: Vec<ChatMessage> = messages.iter().map(convert_message).collect();
+        let ollama_messages: Vec<ChatMessage> = visible.iter().map(convert_message).collect();
         let mut request = ChatMessageRequest::new(model.to_owned(), ollama_messages);
         if let Some(ref ov) = self.generation_overrides {
             request = apply_generation_overrides(request, ov);
@@ -642,8 +644,10 @@ impl LlmProvider for OllamaProvider {
                     },
                 })
                 .collect();
-            let ollama_messages: Vec<ChatMessage> =
-                messages.iter().map(convert_message_structured).collect();
+            let ollama_messages: Vec<ChatMessage> = AgentVisible::new(messages)
+                .iter()
+                .flat_map(convert_message_structured)
+                .collect();
             let mut request =
                 ChatMessageRequest::new(self.model.clone(), ollama_messages).tools(ollama_tools);
             if let Some(ref ov) = self.generation_overrides {
@@ -653,7 +657,8 @@ impl LlmProvider for OllamaProvider {
                 .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }));
         }
 
-        let has_images = messages
+        let visible = AgentVisible::new(messages);
+        let has_images = visible
             .iter()
             .any(|m| m.parts.iter().any(|p| matches!(p, MessagePart::Image(_))));
         let model = if has_images {
@@ -661,7 +666,7 @@ impl LlmProvider for OllamaProvider {
         } else {
             &self.model
         };
-        let ollama_messages: Vec<ChatMessage> = messages.iter().map(convert_message).collect();
+        let ollama_messages: Vec<ChatMessage> = visible.iter().map(convert_message).collect();
         let mut request = ChatMessageRequest::new(model.to_owned(), ollama_messages);
         if let Some(ref ov) = self.generation_overrides {
             request = apply_generation_overrides(request, ov);
@@ -692,8 +697,10 @@ impl LlmProvider for OllamaProvider {
             })
             .collect();
 
-        let ollama_messages: Vec<ChatMessage> =
-            messages.iter().map(convert_message_structured).collect();
+        let ollama_messages: Vec<ChatMessage> = AgentVisible::new(messages)
+            .iter()
+            .flat_map(convert_message_structured)
+            .collect();
 
         let mut request =
             ChatMessageRequest::new(self.model.clone(), ollama_messages).tools(ollama_tools);
@@ -828,7 +835,7 @@ impl LlmProvider for OllamaProvider {
 }
 
 /// Convert a message for tool-aware requests. Handles `ToolUse` and `ToolResult` parts.
-fn convert_message_structured(msg: &Message) -> ChatMessage {
+fn convert_message_structured(msg: &Message) -> Vec<ChatMessage> {
     // If the message contains ToolResult parts, emit them as role:tool messages.
     // ollama-rs represents tool results as a single ChatMessage with role Tool.
     // We concatenate all tool result contents (Ollama expects one message per turn).
@@ -853,13 +860,20 @@ fn convert_message_structured(msg: &Message) -> ChatMessage {
         // Sibling Image parts (e.g. from MCP media passthrough) must not be dropped:
         // ollama-rs does not role-restrict ChatMessage.images, so attach them here too.
         let images = extract_images(msg);
-        return if images.is_empty() {
+        let tool_message = if images.is_empty() {
             tool_message
         } else {
             tool_message.with_images(images)
         };
+        let mut out = vec![tool_message];
+        // A runtime note follows the tool message as a separate `user` message.
+        out.extend(msg.parts.iter().filter_map(|p| match p {
+            MessagePart::RuntimeNote { text } => Some(ChatMessage::user(text.clone())),
+            _ => None,
+        }));
+        return out;
     }
-    convert_message(msg)
+    vec![convert_message(msg)]
 }
 
 /// Collect all `MessagePart::Image` siblings from a message, base64-encoded for `ollama-rs`.
@@ -876,7 +890,7 @@ fn extract_images(msg: &Message) -> Vec<OllamaImage> {
 fn convert_message(msg: &Message) -> ChatMessage {
     let images = extract_images(msg);
 
-    let text = msg.to_llm_content().to_string();
+    let text = msg.to_request_text().into_owned();
 
     match msg.role {
         Role::System => ChatMessage::system(text),
@@ -1883,7 +1897,8 @@ mod tests {
                 is_error: false,
             }],
         );
-        let chat_msg = convert_message_structured(&msg);
+        let chat_msgs = convert_message_structured(&msg);
+        let chat_msg = chat_msgs.into_iter().next().expect("one tool message");
         assert_eq!(
             chat_msg.role,
             ollama_rs::generation::chat::MessageRole::Tool
@@ -1911,7 +1926,8 @@ mod tests {
                 })),
             ],
         );
-        let chat_msg = convert_message_structured(&msg);
+        let chat_msgs = convert_message_structured(&msg);
+        let chat_msg = chat_msgs.into_iter().next().expect("one tool message");
         assert_eq!(
             chat_msg.role,
             ollama_rs::generation::chat::MessageRole::Tool
@@ -1940,7 +1956,8 @@ mod tests {
                 },
             ],
         );
-        let chat_msg = convert_message_structured(&msg);
+        let chat_msgs = convert_message_structured(&msg);
+        let chat_msg = chat_msgs.into_iter().next().expect("one tool message");
         assert_eq!(
             chat_msg.role,
             ollama_rs::generation::chat::MessageRole::Tool
@@ -1952,7 +1969,8 @@ mod tests {
     #[test]
     fn convert_message_structured_no_tool_results_delegates_to_convert_message() {
         let msg = Message::from_legacy(Role::Assistant, "response");
-        let chat_msg = convert_message_structured(&msg);
+        let chat_msgs = convert_message_structured(&msg);
+        let chat_msg = chat_msgs.into_iter().next().expect("one tool message");
         assert_eq!(
             chat_msg.role,
             ollama_rs::generation::chat::MessageRole::Assistant
@@ -2003,5 +2021,55 @@ mod tests {
             OllamaProvider::new("http://127.0.0.1:1", "test-model".into(), "embed".into());
         let result = provider.embed_batch(&[]).await.unwrap();
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn debug_request_json_omits_user_only_messages() {
+        let provider = OllamaProvider::new("http://localhost:11434", "test".into(), "embed".into());
+        let messages = vec![
+            Message::from_legacy(Role::User, "visible question"),
+            Message {
+                metadata: MessageMetadata::user_only(),
+                ..Message::from_legacy(Role::Assistant, "SECRET-HIDDEN-ORIGINAL")
+            },
+        ];
+        let plain = provider
+            .debug_request_json(&messages, &[], false)
+            .to_string();
+        assert!(plain.contains("visible question"));
+        assert!(!plain.contains("SECRET-HIDDEN-ORIGINAL"));
+
+        let tool = ToolDefinition {
+            name: "bash".to_owned().into(),
+            description: "run".to_owned(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+            output_schema: None,
+        };
+        let with_tools = provider
+            .debug_request_json(&messages, &[tool], false)
+            .to_string();
+        assert!(with_tools.contains("visible question"));
+        assert!(!with_tools.contains("SECRET-HIDDEN-ORIGINAL"));
+    }
+
+    #[test]
+    fn convert_message_structured_emits_tool_message_then_user_note() {
+        let mut msg = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "id1".into(),
+                content: "file list".into(),
+                is_error: false,
+            }],
+        );
+        msg.append_runtime_note("<runtime-note>NOTE</runtime-note>".into());
+
+        let out = convert_message_structured(&msg);
+
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].role, ollama_rs::generation::chat::MessageRole::Tool);
+        assert_eq!(out[0].content, "file list");
+        assert_eq!(out[1].role, ollama_rs::generation::chat::MessageRole::User);
+        assert_eq!(out[1].content, "<runtime-note>NOTE</runtime-note>");
     }
 }

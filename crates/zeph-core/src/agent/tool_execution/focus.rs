@@ -162,7 +162,19 @@ impl<C: Channel> Agent<C> {
                 None
             }
         };
-        self.msg.messages.truncate(checkpoint_pos);
+        let cut = checkpoint_pos.max(zeph_llm::provider::context_floor(&self.msg.messages));
+        // A checkpoint kept below a server compaction block would otherwise erase the turn's
+        // user input along with the bracketed phase.
+        let removed_turn_input = self.msg.messages[cut..]
+            .iter()
+            .rfind(|m| m.metadata.origin == Some(zeph_llm::provider::MessageOrigin::TurnInput))
+            .cloned();
+        self.msg.messages.truncate(cut);
+        // A checkpoint below the floor survives the truncate; it is finished, so drop it too.
+        if checkpoint_pos < cut {
+            self.msg.messages.remove(checkpoint_pos);
+        }
+        self.msg.messages.extend(removed_turn_input);
         if let Some(assistant_msg) = current_turn_assistant {
             // TODO(critic): focus checkpoint re-pushes a ToolUse-only assistant message;
             // no pairable ToolResult present, so magic-doc detection is intentionally
@@ -194,12 +206,8 @@ impl<C: Channel> Agent<C> {
             .messages
             .retain(|m| !(m.metadata.focus_pinned && m.metadata.focus_marker_id.is_none()));
         if let Some(kb_msg) = self.services.focus.build_knowledge_message() {
-            // Insert the Knowledge block right after the system prompt (index 1).
-            if self.msg.messages.is_empty() {
-                self.msg.messages.push(kb_msg);
-            } else {
-                self.msg.messages.insert(1, kb_msg);
-            }
+            // Insert the Knowledge block right after the system prompt / compaction block.
+            zeph_llm::provider::insert_at_context_floor(&mut self.msg.messages, kb_msg);
         }
         self.msg.recompute_non_system_count();
         self.recompute_prompt_tokens();
@@ -320,12 +328,18 @@ impl<C: Channel> Agent<C> {
         ),
         usize,
     > {
+        let floor = zeph_llm::provider::context_floor(&self.msg.messages);
         let compressible_indices: Vec<usize> = self
             .msg
             .messages
             .iter()
             .enumerate()
-            .filter(|(_, m)| !m.metadata.focus_pinned && m.role != zeph_llm::provider::Role::System)
+            .skip(floor)
+            .filter(|(_, m)| {
+                !m.metadata.focus_pinned
+                    && m.metadata.origin.is_none()
+                    && m.role != zeph_llm::provider::Role::System
+            })
             .map(|(i, _)| i)
             .collect();
 
@@ -586,6 +600,73 @@ fn repair_truncated_spotlight_wrapper(mut content: String, trust_level: Option<u
 #[cfg(test)]
 mod tests {
     use super::repair_truncated_spotlight_wrapper;
+    use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+
+    use crate::agent::Agent;
+    use crate::agent::tests::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+
+    #[test]
+    fn complete_focus_truncate_stops_at_compaction_floor() {
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        let marker = agent.services.focus.start("scope".to_owned());
+        agent.msg.messages = vec![
+            Message::from_legacy(Role::System, "system"),
+            Message {
+                metadata: MessageMetadata {
+                    focus_pinned: true,
+                    focus_marker_id: Some(marker),
+                    ..MessageMetadata::agent_only()
+                },
+                ..Message::from_legacy(Role::System, "[focus checkpoint: scope]")
+            },
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::Compaction {
+                    summary: "sum".into(),
+                }],
+            ),
+            Message {
+                metadata: MessageMetadata {
+                    origin: Some(zeph_llm::provider::MessageOrigin::TurnInput),
+                    ..MessageMetadata::default()
+                },
+                ..Message::from_legacy(Role::User, "current request")
+            },
+        ];
+
+        let (reply, _) = agent.complete_focus_tool(&serde_json::json!({"summary": "done"}));
+
+        assert!(reply.starts_with("Focus session complete"), "{reply}");
+        assert!(agent.msg.messages.iter().any(|m| {
+            m.parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Compaction { .. }))
+        }));
+        assert!(
+            agent
+                .msg
+                .messages
+                .iter()
+                .any(|m| m.content == "current request")
+        );
+        assert!(
+            agent
+                .msg
+                .messages
+                .iter()
+                .all(|m| m.metadata.focus_marker_id != Some(marker)),
+            "the finished checkpoint below the floor must not linger"
+        );
+    }
 
     #[test]
     fn repairs_severed_tool_output_close() {

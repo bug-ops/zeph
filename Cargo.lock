@@ -11491,6 +11491,7 @@ dependencies = [
  "tree-sitter-rust",
  "tree-sitter-toml-ng",
  "tree-sitter-typescript",
+ "unicode-normalization",
  "url",
  "uuid",
  "zeroize",

@@ -7,8 +7,13 @@ use std::collections::HashSet;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 
-use crate::provider::{ChatResponse, Message, MessagePart, Role, ThinkingBlock, ToolUseRequest};
-use crate::tool_pairing::{unmatched_tool_result_ids, unmatched_tool_use_ids};
+use crate::provider::{
+    AgentVisible, ChatResponse, Message, MessagePart, Role, ThinkingBlock, ToolUseRequest,
+};
+use crate::tool_pairing::{
+    downgraded_tool_result_text, downgraded_tool_use_text, unmatched_tool_result_ids,
+    unmatched_tool_use_ids,
+};
 
 use super::cache::apply_cache_breakpoint;
 use super::types::{
@@ -37,14 +42,11 @@ pub(in crate::claude) fn split_messages(
     let mut system_parts = Vec::new();
     let mut chat = Vec::new();
 
-    for msg in messages {
-        if !msg.metadata.visibility.is_agent_visible() {
-            continue;
-        }
+    for msg in AgentVisible::new(messages).iter() {
         match msg.role {
             Role::System => system_parts.push(msg.to_llm_content()),
             Role::User | Role::Assistant => {
-                let content = msg.to_llm_content();
+                let content = msg.to_request_text();
                 if !content.trim().is_empty() {
                     let role = if msg.role == Role::User {
                         "user"
@@ -81,18 +83,16 @@ pub(in crate::claude) fn split_messages_structured(
     let mut system_parts = Vec::new();
     let mut chat = Vec::new();
 
-    for msg in messages
-        .iter()
-        .filter(|m| m.metadata.visibility.is_agent_visible() && m.role == Role::System)
-    {
+    let agent_visible = AgentVisible::new(messages);
+    for msg in agent_visible.iter().filter(|m| m.role == Role::System) {
         system_parts.push(msg.to_llm_content());
     }
 
     // Collect only agent-visible non-system messages so that idx-based peek always lands on a
     // user or assistant message (RC4: system messages in `visible` would break +1 index peek).
-    let visible: Vec<&Message> = messages
+    let visible: Vec<&Message> = agent_visible
         .iter()
-        .filter(|m| m.metadata.visibility.is_agent_visible() && m.role != Role::System)
+        .filter(|m| m.role != Role::System)
         .collect();
 
     for (idx, &msg) in visible.iter().enumerate() {
@@ -113,6 +113,7 @@ pub(in crate::claude) fn split_messages_structured(
                             | MessagePart::ThinkingBlock { .. }
                             | MessagePart::RedactedThinkingBlock { .. }
                             | MessagePart::Compaction { .. }
+                            | MessagePart::RuntimeNote { .. }
                     )
                 });
 
@@ -161,6 +162,8 @@ pub(in crate::claude) fn split_messages_structured(
         }
     }
 
+    coalesce_same_role(&mut chat);
+
     // Place 1 message-level cache breakpoint at the user message closest to position
     // (total - 20) to maximize the 20-block lookback window coverage.
     if cache_user_messages && chat.len() > 1 {
@@ -174,6 +177,40 @@ pub(in crate::claude) fn split_messages_structured(
     };
 
     (system, chat)
+}
+
+/// Merge consecutive same-role messages into one multi-block message.
+///
+/// Dropped or hidden messages (and a server compaction block followed by assistant output)
+/// can leave adjacent same-role entries, which are valid for the Messages API only as separate
+/// blocks of one turn. Runs before the cache breakpoint so the breakpoint lands on the merged turn.
+// TODO(#6821): coalescing must keep thinking blocks first once thinking replay is fixed.
+fn coalesce_same_role(chat: &mut Vec<StructuredApiMessage>) {
+    let mut out: Vec<StructuredApiMessage> = Vec::with_capacity(chat.len());
+    for msg in chat.drain(..) {
+        match out.last_mut() {
+            Some(prev) if prev.role == msg.role => {
+                let mut blocks = into_blocks(std::mem::replace(
+                    &mut prev.content,
+                    StructuredContent::Blocks(Vec::new()),
+                ));
+                blocks.extend(into_blocks(msg.content));
+                prev.content = StructuredContent::Blocks(blocks);
+            }
+            _ => out.push(msg),
+        }
+    }
+    *chat = out;
+}
+
+fn into_blocks(content: StructuredContent) -> Vec<AnthropicContentBlock> {
+    match content {
+        StructuredContent::Blocks(blocks) => blocks,
+        StructuredContent::Text(text) => vec![AnthropicContentBlock::Text {
+            text,
+            cache_control: None,
+        }],
+    }
 }
 
 pub(super) fn parse_tool_response(resp: ToolApiResponse) -> (ChatResponse, Option<String>) {
@@ -281,7 +318,7 @@ fn push_tool_use_block(
             "downgrading unmatched tool_use to text in API request"
         );
         blocks.push(AnthropicContentBlock::Text {
-            text: format!("[tool_use: {name}] {input}"),
+            text: downgraded_tool_use_text(name, input),
             cache_control: None,
         });
     } else {
@@ -309,7 +346,7 @@ fn push_tool_result_block(
         // message survives as the window's leading `user` anchor rather than being dropped
         // entirely by the empty-blocks guard.
         blocks.push(AnthropicContentBlock::Text {
-            text: format!("[tool result: {tool_use_id}] {content}"),
+            text: downgraded_tool_result_text(tool_use_id, content),
             cache_control: None,
         });
     } else {
@@ -366,7 +403,7 @@ pub(super) fn convert_parts_to_blocks(
             }
             MessagePart::ToolUse { name, input, .. } => {
                 blocks.push(AnthropicContentBlock::Text {
-                    text: format!("[tool_use: {name}] {input}"),
+                    text: downgraded_tool_use_text(name, input),
                     cache_control: None,
                 });
             }
@@ -421,10 +458,20 @@ pub(super) fn convert_parts_to_blocks(
                     summary: summary.clone(),
                 });
             }
-            // Compaction blocks in user messages and thinking blocks are silently dropped.
+            // Runtime notes ride on the tail tool-result `user` message, after its
+            // `tool_result` blocks, so the cached prefix is never touched.
+            MessagePart::RuntimeNote { text } if !is_assistant => {
+                blocks.push(AnthropicContentBlock::Text {
+                    text: text.clone(),
+                    cache_control: None,
+                });
+            }
+            // Compaction blocks in user messages, thinking blocks, and notes on assistant
+            // messages are silently dropped.
             MessagePart::Compaction { .. }
             | MessagePart::ThinkingBlock { .. }
-            | MessagePart::RedactedThinkingBlock { .. } => {}
+            | MessagePart::RedactedThinkingBlock { .. }
+            | MessagePart::RuntimeNote { .. } => {}
         }
     }
     blocks
@@ -1291,7 +1338,8 @@ mod tests {
             ),
         ];
         let (_, chat) = split_messages_structured(&messages, false, None);
-        assert_eq!(chat.len(), 3);
+        // The two consecutive user messages are coalesced into one turn.
+        assert_eq!(chat.len(), 2);
         // The ToolUse itself has no immediately-following User(ToolResult) either — the text
         // message intervenes — so it is downgraded too.
         let assistant_json = serde_json::to_string(&chat[0]).unwrap();
@@ -1299,10 +1347,115 @@ mod tests {
             !assistant_json.contains("\"type\":\"tool_use\""),
             "the ToolUse's immediate neighbour is plain text, not a matching ToolResult: {assistant_json}"
         );
-        let last_json = serde_json::to_string(&chat[2]).unwrap();
+        let last_json = serde_json::to_string(&chat[1]).unwrap();
         assert!(
             !last_json.contains("\"type\":\"tool_result\""),
             "the ToolResult's immediate predecessor is plain text, not the ToolUse: {last_json}"
         );
+    }
+
+    #[test]
+    fn coalesce_merges_consecutive_same_role_messages_into_one_block_list() {
+        let messages = vec![
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::Compaction {
+                    summary: "sum".into(),
+                }],
+            ),
+            Message::from_legacy(Role::Assistant, "continuing"),
+            Message::from_legacy(Role::User, "question"),
+        ];
+        let (_, chat) = split_messages_structured(&messages, false, None);
+        assert_eq!(chat.len(), 2);
+        assert_eq!(chat[0].role, "assistant");
+        let StructuredContent::Blocks(blocks) = &chat[0].content else {
+            panic!("expected Blocks for coalesced assistant turn");
+        };
+        assert!(matches!(
+            blocks[0],
+            AnthropicContentBlock::Compaction { .. }
+        ));
+        assert!(matches!(blocks[1], AnthropicContentBlock::Text { .. }));
+        assert_eq!(chat[1].role, "user");
+    }
+
+    #[test]
+    fn compaction_mirror_shape_keeps_system_and_orders_recall_after_block() {
+        let messages = vec![
+            Message::from_legacy(Role::System, "system prompt"),
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::Compaction {
+                    summary: "sum".into(),
+                }],
+            ),
+            Message::from_legacy(Role::System, "recall"),
+            Message::from_legacy(Role::User, "turn input"),
+        ];
+        let (system, chat) = split_messages_structured(&messages, false, None);
+        assert_eq!(system.as_deref(), Some("system prompt\n\nrecall"));
+        assert_eq!(chat.len(), 2);
+        assert_eq!(chat[0].role, "assistant");
+        assert_eq!(chat[1].role, "user");
+    }
+
+    fn tail_with_note() -> Vec<Message> {
+        let mut tail = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "output".into(),
+                is_error: false,
+            }],
+        );
+        tail.append_runtime_note("<runtime-note>NOTE</runtime-note>".into());
+        vec![
+            Message::from_legacy(Role::User, "go"),
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::ToolUse {
+                    id: "t1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({}),
+                }],
+            ),
+            tail,
+        ]
+    }
+
+    #[test]
+    fn runtime_note_is_a_text_block_after_the_tool_result_blocks() {
+        let (_, chat) = split_messages_structured(&tail_with_note(), false, None);
+        let StructuredContent::Blocks(blocks) = &chat[2].content else {
+            panic!("tail must be structured");
+        };
+        assert!(matches!(
+            blocks[0],
+            AnthropicContentBlock::ToolResult { .. }
+        ));
+        assert!(
+            matches!(&blocks[1], AnthropicContentBlock::Text { text, .. } if text.contains("NOTE"))
+        );
+        assert_eq!(blocks.len(), 2);
+    }
+
+    #[test]
+    fn runtime_note_on_assistant_message_is_dropped() {
+        let mut msg = Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::Text { text: "a".into() }],
+        );
+        msg.parts
+            .push(MessagePart::RuntimeNote { text: "n".into() });
+        let blocks = convert_parts_to_blocks(&msg.parts, true, &HashSet::new(), &HashSet::new());
+        assert_eq!(blocks.len(), 1);
+    }
+
+    #[test]
+    fn plain_history_carries_the_runtime_note_through_to_request_text() {
+        let messages = tail_with_note();
+        let (_, chat) = split_messages(&messages);
+        assert!(chat[2].content.contains("NOTE"));
     }
 }

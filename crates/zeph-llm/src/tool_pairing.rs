@@ -100,9 +100,45 @@
 //! part, a downgrade converts a `ToolResult` into a `Text` part (never re-examined by either pass),
 //! and a leading-drop removes a message — no combination can increase the measure, so no ping-pong.
 
+use std::borrow::Borrow;
 use std::collections::HashSet;
 
 use crate::provider::{Message, MessagePart, Role};
+
+/// Text a request builder sends in place of an unmatched `ToolUse` part.
+///
+/// Single definition shared by every provider's Layer A downgrade so the wording the model sees
+/// is identical across Claude, `OpenAI`-family, and Gemini requests.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::tool_pairing::downgraded_tool_use_text;
+///
+/// let text = downgraded_tool_use_text("bash", &serde_json::json!({"cmd": "ls"}));
+/// assert_eq!(text, r#"[tool_use: bash] {"cmd":"ls"}"#);
+/// ```
+#[must_use]
+pub fn downgraded_tool_use_text(name: &str, input: &serde_json::Value) -> String {
+    format!("[tool_use: {name}] {input}")
+}
+
+/// Text a request builder sends in place of an orphaned `ToolResult` part.
+///
+/// Counterpart of [`downgraded_tool_use_text`]; also used by [`repair_tool_pairs`] with
+/// [`OrphanAction::DowngradeToText`].
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::tool_pairing::downgraded_tool_result_text;
+///
+/// assert_eq!(downgraded_tool_result_text("t1", "ok"), "[tool result: t1] ok");
+/// ```
+#[must_use]
+pub fn downgraded_tool_result_text(tool_use_id: &str, content: &str) -> String {
+    format!("[tool result: {tool_use_id}] {content}")
+}
 
 /// Nearest `Role`-eligible neighbour immediately following index `at` in `messages`, skipping
 /// any `Role::System` messages in between.
@@ -129,11 +165,11 @@ use crate::provider::{Message, MessagePart, Role};
 /// assert!(next_non_system(&messages, 2).is_none(), "no message follows index 2");
 /// ```
 #[must_use]
-pub fn next_non_system(messages: &[Message], at: usize) -> Option<&Message> {
+pub fn next_non_system<M: Borrow<Message>>(messages: &[M], at: usize) -> Option<&M> {
     messages
         .get(at + 1..)?
         .iter()
-        .find(|m| m.role != Role::System)
+        .find(|m| (*m).borrow().role != Role::System)
 }
 
 /// Nearest `Role`-eligible neighbour immediately preceding index `at` in `messages`, skipping
@@ -156,12 +192,12 @@ pub fn next_non_system(messages: &[Message], at: usize) -> Option<&Message> {
 /// assert!(prev_non_system(&messages, 0).is_none(), "no message precedes index 0");
 /// ```
 #[must_use]
-pub fn prev_non_system(messages: &[Message], at: usize) -> Option<&Message> {
+pub fn prev_non_system<M: Borrow<Message>>(messages: &[M], at: usize) -> Option<&M> {
     messages
         .get(..at)?
         .iter()
         .rev()
-        .find(|m| m.role != Role::System)
+        .find(|m| (*m).borrow().role != Role::System)
 }
 
 /// Move a history cut backward so it does not separate an `Assistant` `ToolUse` message from
@@ -515,7 +551,7 @@ pub fn repair_tool_pairs(messages: &mut Vec<Message>, action: OrphanAction) -> R
                     } = part
                         && orphaned.contains(tool_use_id.as_str())
                     {
-                        let text = format!("[tool result: {tool_use_id}] {content}");
+                        let text = downgraded_tool_result_text(tool_use_id, content);
                         *part = MessagePart::Text { text };
                         changed += 1;
                     }
@@ -587,7 +623,7 @@ pub fn repair_tool_pairs(messages: &mut Vec<Message>, action: OrphanAction) -> R
         // `parts` — it can still carry independently-authored text after its last structured
         // part is gone.
         let empty = messages[idx].role != Role::System
-            && messages[idx].parts.is_empty()
+            && (messages[idx].parts.is_empty() || messages[idx].has_only_runtime_notes())
             && !has_meaningful_content(&messages[idx].content);
         if empty {
             removed_messages.push(messages.remove(idx));
@@ -1222,5 +1258,30 @@ mod tests {
             messages[0].content.contains(text_part),
             "content must be resynced to the downgraded anchor text, not left as stale whitespace"
         );
+    }
+
+    #[test]
+    fn delete_repair_drops_a_message_left_with_only_a_runtime_note() {
+        let mut orphan = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "gone".into(),
+                content: "output".into(),
+                is_error: false,
+            }],
+        );
+        orphan.append_runtime_note("NOTE".into());
+        orphan.content = String::new();
+        let mut messages = vec![
+            Message::from_legacy(Role::System, "sys"),
+            Message::from_legacy(Role::User, "go"),
+            orphan,
+        ];
+
+        let report = repair_tool_pairs(&mut messages, OrphanAction::Delete);
+
+        assert_eq!(report.parts_repaired, 1);
+        assert_eq!(messages.len(), 2, "note-only message must be removed");
+        assert!(messages.iter().all(|m| !m.has_only_runtime_notes()));
     }
 }

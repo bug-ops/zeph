@@ -204,7 +204,8 @@ fn part_text_mut(part: &mut MessagePart) -> Option<&mut String> {
         | MessagePart::Recall { text }
         | MessagePart::CodeContext { text }
         | MessagePart::Summary { text }
-        | MessagePart::CrossSession { text } => Some(text),
+        | MessagePart::CrossSession { text }
+        | MessagePart::RuntimeNote { text } => Some(text),
         MessagePart::ToolOutput { body, .. } => Some(body),
         MessagePart::ToolResult { content, .. } => Some(content),
         MessagePart::Compaction { summary } => Some(summary),
@@ -219,7 +220,8 @@ fn part_text_ref(part: &MessagePart) -> Option<&str> {
         | MessagePart::Recall { text }
         | MessagePart::CodeContext { text }
         | MessagePart::Summary { text }
-        | MessagePart::CrossSession { text } => Some(text.as_str()),
+        | MessagePart::CrossSession { text }
+        | MessagePart::RuntimeNote { text } => Some(text.as_str()),
         MessagePart::ToolOutput { body, .. } => Some(body.as_str()),
         MessagePart::ToolResult { content, .. } => Some(content.as_str()),
         MessagePart::Compaction { summary } => Some(summary.as_str()),
@@ -576,5 +578,44 @@ mod tests {
             "claude-3-opus-think"
         );
         assert_ne!(LlmProvider::effective_model_identifier(&mp), "router");
+    }
+
+    #[test]
+    fn secret_inside_runtime_note_is_masked_in_debug_request_json() {
+        use crate::claude::ClaudeProvider;
+        use crate::provider::MessagePart;
+
+        let provider = AnyProvider::Claude(ClaudeProvider::new(
+            "key".into(),
+            "claude-sonnet-4-5".into(),
+            256,
+        ));
+        let mp = masked(provider);
+        let mut tail = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "clean".into(),
+                is_error: false,
+            }],
+        );
+        tail.append_runtime_note("<runtime-note>token SECRET_VALUE</runtime-note>".into());
+        let messages = vec![
+            Message::from_legacy(Role::User, "go"),
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::ToolUse {
+                    id: "t1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({}),
+                }],
+            ),
+            tail,
+        ];
+
+        let json = LlmProvider::debug_request_json(&mp, &messages, &[], false).to_string();
+
+        assert!(json.contains("<MASKED>"), "{json}");
+        assert!(!json.contains("SECRET_VALUE"), "{json}");
     }
 }

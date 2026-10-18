@@ -426,7 +426,10 @@ impl<C: Channel> Agent<C> {
         use zeph_agent_context::score_blocks_subgoal;
 
         if let Some(ref d) = self.runtime.debug.debug_dumper {
-            d.dump_subgoal_registry(&self.services.compression.subgoal_registry);
+            d.dump_subgoal_registry(
+                &self.services.compression.subgoal_registry,
+                &self.msg.messages,
+            );
         }
 
         let scores = score_blocks_subgoal(
@@ -456,7 +459,10 @@ impl<C: Channel> Agent<C> {
         use zeph_agent_context::score_blocks_subgoal_mig;
 
         if let Some(ref d) = self.runtime.debug.debug_dumper {
-            d.dump_subgoal_registry(&self.services.compression.subgoal_registry);
+            d.dump_subgoal_registry(
+                &self.services.compression.subgoal_registry,
+                &self.msg.messages,
+            );
         }
 
         let mut scores = score_blocks_subgoal_mig(

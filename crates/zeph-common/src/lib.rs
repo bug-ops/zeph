@@ -14,6 +14,7 @@ pub mod audit;
 pub mod clock;
 pub mod config;
 pub mod deep_link;
+pub mod delimiter;
 pub mod error_taxonomy;
 pub mod fidelity;
 pub mod fs_secure;
@@ -67,7 +68,8 @@ pub use text::format_tokens;
 pub use trust_level::SkillTrustLevel;
 pub use turn_trust_floor::TurnTrustFloor;
 pub use types::{
-    ProviderName, SessionId, SessionIdError, SkillName, StopHint, ToolDefinition, ToolName,
+    ProviderName, SessionId, SessionIdError, SkillName, StopHint, SubgoalId, ToolDefinition,
+    ToolName,
 };
 
 #[cfg(feature = "treesitter")]

@@ -31,7 +31,7 @@ use zeph_common::memory::TokenCounting;
 use zeph_common::{ContextFidelity, PlannedToolHint};
 use zeph_llm::LlmError;
 use zeph_llm::LlmProviderDyn;
-use zeph_llm::provider::{EmbedFuture, Message, MessageMetadata, MessagePart, Role};
+use zeph_llm::provider::{EmbedFuture, Message, MessageMetadata, MessagePart, Role, context_floor};
 
 use crate::assembler::CORRECTIONS_PREFIX;
 
@@ -91,8 +91,9 @@ async fn embed_prepass_dyn(
         config.embed_concurrency
     };
 
+    let floor = context_floor(messages);
     let tasks = messages.iter().enumerate().filter_map(|(i, msg)| {
-        if is_exempt(msg, i, inserted_count)
+        if is_exempt(msg, i, floor, inserted_count)
             || msg.content.is_empty()
             || msg.metadata.embedding.is_some()
         {
@@ -381,9 +382,10 @@ fn compute_scores(
     let max_dist = score_end.saturating_sub(1) as f32;
 
     let mut scores: Vec<Option<FidelityScore>> = (0..n).map(|_| None).collect();
+    let floor = context_floor(messages);
 
     for (i, msg) in messages.iter().enumerate().take(score_end) {
-        if is_exempt(msg, i, inserted_count) {
+        if is_exempt(msg, i, floor, inserted_count) {
             continue;
         }
 
@@ -514,15 +516,17 @@ async fn apply_scores(
     );
 }
 
-fn is_exempt(msg: &Message, idx: usize, inserted_count: usize) -> bool {
+fn is_exempt(msg: &Message, idx: usize, floor: usize, inserted_count: usize) -> bool {
     // INV-07: system prompt at index 0.
     // INV-08: focus_pinned messages.
     // INV-09: correction messages.
-    // INV-10: freshly injected memory context at indices 1..1+inserted_count.
+    // INV-10: freshly injected memory context at indices floor..floor+inserted_count.
+    // Floor: everything up to and including a server compaction block, and the turn input.
     (idx == 0 && msg.role == Role::System)
         || msg.metadata.focus_pinned
+        || msg.metadata.origin.is_some()
         || msg.content.starts_with(CORRECTIONS_PREFIX)
-        || (idx >= 1 && idx < 1 + inserted_count)
+        || (idx >= 1 && idx < floor + inserted_count)
 }
 
 fn role_weight(role: Role) -> f32 {
@@ -803,7 +807,7 @@ fn render_placeholder(msg: &mut Message, score: f32, original_tokens: u32) {
 /// Returns the number of individual messages consumed by merges.
 fn merge_consecutive_placeholders(messages: &mut Vec<Message>) -> usize {
     let mut merged_count = 0usize;
-    let mut i = 0;
+    let mut i = context_floor(messages);
     while i < messages.len() {
         if messages[i].metadata.fidelity_tag != Some(ContextFidelity::Placeholder)
             || messages[i].role == Role::System
@@ -1013,6 +1017,44 @@ mod tests {
             )
             .await;
         assert!(messages.is_empty());
+    }
+
+    // Floor: the server compaction block and the turn input are never scored, tagged, or merged.
+    #[tokio::test]
+    async fn compaction_block_and_turn_input_are_never_tagged_or_merged() {
+        let scorer = FidelityScorer;
+        let cfg = FidelityConfig {
+            full_threshold: 2.0,
+            compressed_threshold: 1.5,
+            ..make_cfg()
+        };
+        let tc = FixedTc(4);
+        let mut comp = make_msg(Role::Assistant, "server summary");
+        comp.parts = vec![MessagePart::Compaction {
+            summary: "server summary".to_owned(),
+        }];
+        let mut input = make_msg(Role::User, "the current request");
+        input.metadata.origin = Some(zeph_llm::provider::MessageOrigin::TurnInput);
+        let mut messages = vec![
+            make_msg(Role::System, "system prompt"),
+            comp,
+            make_msg(Role::User, "older one"),
+            make_msg(Role::User, "older two"),
+            input,
+        ];
+
+        scorer
+            .score_and_apply(&mut messages, "short", &[], &cfg, &tc, 0, false, None, None)
+            .await;
+
+        assert!(messages[1].metadata.fidelity_tag.is_none());
+        assert!(matches!(
+            messages[1].parts.first(),
+            Some(MessagePart::Compaction { .. })
+        ));
+        let last = messages.last().unwrap();
+        assert_eq!(last.content, "the current request");
+        assert!(last.metadata.fidelity_tag.is_none());
     }
 
     // 2. All-exempt window → no downgrade.

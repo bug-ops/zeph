@@ -400,7 +400,7 @@ fn with_provider_name_overrides_name() {
 fn chat_request_serialization() {
     let msgs = [ApiMessage {
         role: "user",
-        content: "hello",
+        content: "hello".into(),
     }];
     let body = ChatRequest {
         model: "gpt-5.2",
@@ -426,7 +426,7 @@ fn chat_request_serialization() {
 fn chat_request_serialization_non_gpt5_uses_max_tokens() {
     let msgs = [ApiMessage {
         role: "user",
-        content: "hello",
+        content: "hello".into(),
     }];
     let body = ChatRequest {
         model: "gpt-4o",
@@ -593,7 +593,7 @@ fn vision_chat_request_serialization_uses_gpt5_completion_tokens() {
 fn typed_chat_request_serialization_uses_gpt5_completion_tokens() {
     let msgs = [ApiMessage {
         role: "user",
-        content: "hello",
+        content: "hello".into(),
     }];
     let body = TypedChatRequest {
         model: "gpt-5-mini",
@@ -807,7 +807,7 @@ fn convert_messages_empty() {
 fn api_message_serializes() {
     let msg = ApiMessage {
         role: "user",
-        content: "hello",
+        content: "hello".into(),
     };
     let json = serde_json::to_string(&msg).unwrap();
     assert!(json.contains("\"role\":\"user\""));
@@ -3018,4 +3018,180 @@ fn openai_config_debug_redacts_api_key() {
     let dbg = format!("{cfg:?}");
     assert!(!dbg.contains("sk-SUPERSECRET"));
     assert!(dbg.contains("<redacted>"));
+}
+
+// --- #6814: agent-visibility filtering ---
+
+fn hidden(role: Role, text: &str) -> Message {
+    Message {
+        metadata: MessageMetadata::user_only(),
+        ..Message::from_legacy(role, text)
+    }
+}
+
+fn tool_use_msg(id: &str) -> Message {
+    Message::from_parts(
+        Role::Assistant,
+        vec![MessagePart::ToolUse {
+            id: id.into(),
+            name: "bash".into(),
+            input: serde_json::json!({}),
+        }],
+    )
+}
+
+fn tool_result_msg(id: &str) -> Message {
+    Message::from_parts(
+        Role::User,
+        vec![MessagePart::ToolResult {
+            tool_use_id: id.into(),
+            content: "out".into(),
+            is_error: false,
+        }],
+    )
+}
+
+fn echo_tool() -> ToolDefinition {
+    ToolDefinition {
+        name: "bash".to_owned().into(),
+        description: "run".to_owned(),
+        parameters: serde_json::json!({"type": "object", "properties": {}}),
+        output_schema: None,
+    }
+}
+
+#[test]
+fn debug_request_json_plain_omits_user_only_messages() {
+    let messages = vec![
+        Message::from_legacy(Role::User, "visible question"),
+        hidden(Role::Assistant, "SECRET-HIDDEN-ORIGINAL"),
+    ];
+    let json = test_provider()
+        .debug_request_json(&messages, &[], false)
+        .to_string();
+    assert!(json.contains("visible question"));
+    assert!(!json.contains("SECRET-HIDDEN-ORIGINAL"));
+}
+
+#[test]
+fn debug_request_json_tools_omits_user_only_messages() {
+    let messages = vec![
+        Message::from_legacy(Role::User, "visible question"),
+        hidden(Role::Assistant, "SECRET-HIDDEN-ORIGINAL"),
+    ];
+    let json = test_provider()
+        .debug_request_json(&messages, &[echo_tool()], false)
+        .to_string();
+    assert!(json.contains("visible question"));
+    assert!(!json.contains("SECRET-HIDDEN-ORIGINAL"));
+}
+
+#[test]
+fn debug_request_json_vision_omits_user_only_messages() {
+    let mut with_image = Message::from_parts(
+        Role::User,
+        vec![
+            MessagePart::Text {
+                text: "look".into(),
+            },
+            MessagePart::Image(Box::new(ImageData {
+                data: vec![1, 2, 3],
+                mime_type: "image/png".into(),
+            })),
+        ],
+    );
+    with_image.metadata = MessageMetadata::default();
+    let messages = vec![
+        with_image,
+        hidden(Role::Assistant, "SECRET-HIDDEN-ORIGINAL"),
+    ];
+    let json = test_provider()
+        .debug_request_json(&messages, &[], false)
+        .to_string();
+    assert!(json.contains("data:image/png;base64"));
+    assert!(!json.contains("SECRET-HIDDEN-ORIGINAL"));
+}
+
+#[test]
+fn hidden_image_does_not_trigger_vision_path() {
+    let mut img = Message::from_parts(
+        Role::User,
+        vec![MessagePart::Image(Box::new(ImageData {
+            data: vec![9],
+            mime_type: "image/png".into(),
+        }))],
+    );
+    img.metadata = MessageMetadata::user_only();
+    assert!(!has_image_parts(&[img]));
+}
+
+#[test]
+fn hidden_pair_with_visible_summary_is_not_misclassified_as_orphans() {
+    let mut req = tool_use_msg("t1");
+    req.metadata = MessageMetadata::user_only();
+    let mut resp = tool_result_msg("t1");
+    resp.metadata = MessageMetadata::user_only();
+    let summary = Message {
+        metadata: MessageMetadata::agent_only(),
+        ..Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::Summary {
+                text: "ran bash".into(),
+            }],
+        )
+    };
+    let result =
+        convert_messages_structured(&[Message::from_legacy(Role::User, "go"), req, resp, summary]);
+    let json = serde_json::to_string(&result).unwrap();
+    assert!(!json.contains("tool_use"), "{json}");
+    assert!(!json.contains("\"tool\""), "{json}");
+    assert!(json.contains("ran bash"));
+}
+
+#[test]
+fn visible_pair_straddling_a_hidden_message_stays_intact() {
+    let result = convert_messages_structured(&[
+        Message::from_legacy(Role::User, "go"),
+        tool_use_msg("t1"),
+        hidden(Role::User, "hidden in between"),
+        tool_result_msg("t1"),
+    ]);
+    let json = serde_json::to_string(&result).unwrap();
+    assert!(json.contains("\"tool_call_id\":\"t1\""), "{json}");
+    assert!(!json.contains("[tool result"), "{json}");
+    assert!(!json.contains("hidden in between"));
+}
+
+// --- #6786: runtime note ---
+
+fn tail_with_note() -> Vec<Message> {
+    let mut tail = tool_result_msg("t1");
+    tail.append_runtime_note("<runtime-note>NOTE</runtime-note>".into());
+    vec![
+        Message::from_legacy(Role::User, "go"),
+        tool_use_msg("t1"),
+        tail,
+    ]
+}
+
+#[test]
+fn runtime_note_is_a_user_message_after_the_tool_messages() {
+    let result = convert_messages_structured(&tail_with_note());
+    let roles: Vec<&str> = result.iter().map(|m| m.role.as_str()).collect();
+    assert_eq!(roles, vec!["user", "assistant", "tool", "user"]);
+    assert_eq!(
+        result[3].content.as_deref(),
+        Some("<runtime-note>NOTE</runtime-note>")
+    );
+}
+
+#[test]
+fn plain_openai_path_includes_the_runtime_note_text() {
+    let messages = tail_with_note();
+    let converted = convert_messages(&messages);
+    assert!(converted[2].content.contains("NOTE"));
+    let json = test_provider()
+        .debug_request_json(&messages, &[], false)
+        .to_string();
+    assert!(json.contains("NOTE"));
 }

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::provider::{Message, Role};
+use crate::provider::{AgentVisible, Message, Role};
 
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
@@ -27,12 +27,13 @@ impl ChatTemplate {
 
     #[must_use]
     pub fn format(&self, messages: &[Message]) -> String {
+        let visible = AgentVisible::new(messages);
         match self {
-            Self::Llama3 => format_llama3(messages),
-            Self::ChatML => format_chatml(messages),
-            Self::Mistral => format_mistral(messages),
-            Self::Phi3 => format_phi3(messages),
-            Self::Raw => format_raw(messages),
+            Self::Llama3 => format_llama3(&visible),
+            Self::ChatML => format_chatml(&visible),
+            Self::Mistral => format_mistral(&visible),
+            Self::Phi3 => format_phi3(&visible),
+            Self::Raw => format_raw(&visible),
         }
     }
 }
@@ -45,43 +46,43 @@ fn role_tag(role: Role) -> &'static str {
     }
 }
 
-fn format_llama3(messages: &[Message]) -> String {
+fn format_llama3(messages: &AgentVisible<'_>) -> String {
     let mut out = String::from("<|begin_of_text|>");
-    for msg in messages {
+    for msg in messages.iter() {
         out.push_str("<|start_header_id|>");
         out.push_str(role_tag(msg.role));
         out.push_str("<|end_header_id|>\n\n");
-        out.push_str(msg.to_llm_content());
+        out.push_str(&msg.to_request_text());
         out.push_str("<|eot_id|>");
     }
     out.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
     out
 }
 
-fn format_chatml(messages: &[Message]) -> String {
+fn format_chatml(messages: &AgentVisible<'_>) -> String {
     let mut out = String::new();
-    for msg in messages {
+    for msg in messages.iter() {
         out.push_str("<|im_start|>");
         out.push_str(role_tag(msg.role));
         out.push('\n');
-        out.push_str(msg.to_llm_content());
+        out.push_str(&msg.to_request_text());
         out.push_str("<|im_end|>\n");
     }
     out.push_str("<|im_start|>assistant\n");
     out
 }
 
-fn format_mistral(messages: &[Message]) -> String {
+fn format_mistral(messages: &AgentVisible<'_>) -> String {
     let mut out = String::new();
     let mut system_text = String::new();
 
-    for msg in messages {
+    for msg in messages.iter() {
         match msg.role {
             Role::System => {
                 if !system_text.is_empty() {
                     system_text.push('\n');
                 }
-                system_text.push_str(msg.to_llm_content());
+                system_text.push_str(&msg.to_request_text());
             }
             Role::User => {
                 out.push_str("[INST] ");
@@ -90,11 +91,11 @@ fn format_mistral(messages: &[Message]) -> String {
                     out.push_str("\n\n");
                     system_text.clear();
                 }
-                out.push_str(msg.to_llm_content());
+                out.push_str(&msg.to_request_text());
                 out.push_str(" [/INST]");
             }
             Role::Assistant => {
-                out.push_str(msg.to_llm_content());
+                out.push_str(&msg.to_request_text());
                 out.push_str("</s>");
             }
         }
@@ -102,26 +103,26 @@ fn format_mistral(messages: &[Message]) -> String {
     out
 }
 
-fn format_phi3(messages: &[Message]) -> String {
+fn format_phi3(messages: &AgentVisible<'_>) -> String {
     let mut out = String::new();
-    for msg in messages {
+    for msg in messages.iter() {
         out.push_str("<|");
         out.push_str(role_tag(msg.role));
         out.push_str("|>\n");
-        out.push_str(msg.to_llm_content());
+        out.push_str(&msg.to_request_text());
         out.push_str("<|end|>\n");
     }
     out.push_str("<|assistant|>\n");
     out
 }
 
-fn format_raw(messages: &[Message]) -> String {
+fn format_raw(messages: &AgentVisible<'_>) -> String {
     let mut out = String::new();
-    for msg in messages {
+    for msg in messages.iter() {
         if !out.is_empty() {
             out.push('\n');
         }
-        out.push_str(msg.to_llm_content());
+        out.push_str(&msg.to_request_text());
     }
     out
 }
@@ -231,5 +232,44 @@ mod tests {
         assert!(out.contains("[INST] System prompt.\n\nHello [/INST]"));
         assert!(out.contains("Hi there</s>"));
         assert!(out.contains("[INST] How are you? [/INST]"));
+    }
+
+    #[test]
+    fn format_omits_user_only_messages_in_every_template() {
+        let messages = vec![
+            Message::from_legacy(Role::User, "visible question"),
+            Message {
+                metadata: MessageMetadata::user_only(),
+                ..Message::from_legacy(Role::Assistant, "SECRET-HIDDEN-ORIGINAL")
+            },
+        ];
+        for template in [
+            ChatTemplate::Llama3,
+            ChatTemplate::ChatML,
+            ChatTemplate::Mistral,
+            ChatTemplate::Phi3,
+            ChatTemplate::Raw,
+        ] {
+            let out = template.format(&messages);
+            assert!(out.contains("visible question"));
+            assert!(!out.contains("SECRET-HIDDEN-ORIGINAL"), "{template:?}");
+        }
+    }
+
+    #[test]
+    fn format_includes_the_runtime_note_text() {
+        use crate::provider::MessagePart;
+
+        let mut tail = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "output".into(),
+                is_error: false,
+            }],
+        );
+        tail.append_runtime_note("NOTE-MARKER".into());
+        let out = ChatTemplate::ChatML.format(&[tail]);
+        assert!(out.contains("NOTE-MARKER"));
     }
 }

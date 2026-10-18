@@ -15,7 +15,7 @@ use zeph_common::task_supervisor::BlockingHandle;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
 
-use crate::compaction::SubgoalExtractionResult;
+use crate::compaction::{SubgoalExtractionResult, SubgoalRegistry};
 use crate::state::ContextSummarizationView;
 use zeph_context::budget::ContextBudget;
 use zeph_context::manager::CompactionTier;
@@ -231,13 +231,9 @@ fn register_subgoal_transition(
             "subgoal transition detected"
         );
     }
+    let new_id = summ.subgoal_registry.push_active(result.current.clone());
     summ.subgoal_registry
-        .complete_active(msg_len.saturating_sub(1));
-    let new_id = summ
-        .subgoal_registry
-        .push_active(result.current.clone(), msg_len.saturating_sub(1));
-    summ.subgoal_registry
-        .extend_active(msg_len.saturating_sub(1));
+        .extend_active(summ.messages, 0..msg_len);
     tracing::debug!(
         current = result.current.as_str(),
         id = new_id.0,
@@ -252,14 +248,8 @@ fn register_subgoal_continuation(
 ) {
     let is_first = summ.subgoal_registry.subgoals.is_empty();
     if is_first {
-        let id = summ
-            .subgoal_registry
-            .push_active(result.current.clone(), msg_len.saturating_sub(1));
-        if msg_len > 2 {
-            summ.subgoal_registry.tag_range(1, msg_len - 2, id);
-        }
-        summ.subgoal_registry
-            .extend_active(msg_len.saturating_sub(1));
+        let id = summ.subgoal_registry.push_active(result.current.clone());
+        SubgoalRegistry::tag_untagged(summ.messages, 0..msg_len, id);
         tracing::debug!(
             current = result.current.as_str(),
             id = id.0,
@@ -268,7 +258,7 @@ fn register_subgoal_continuation(
         );
     } else {
         summ.subgoal_registry
-            .extend_active(msg_len.saturating_sub(1));
+            .extend_active(summ.messages, 0..msg_len);
         tracing::debug!(current = result.current.as_str(), "active subgoal extended");
     }
 }
@@ -586,5 +576,20 @@ mod tests {
     #[test]
     fn format_conversation_excerpt_empty_input_is_empty_string() {
         assert_eq!(format_conversation_excerpt(&[]), "");
+    }
+
+    #[test]
+    fn last_user_content_hash_is_unchanged_by_a_runtime_note() {
+        let mut tail = Message::from_parts(
+            Role::User,
+            vec![zeph_llm::provider::MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "output".into(),
+                is_error: false,
+            }],
+        );
+        let before = last_user_content_hash(std::slice::from_ref(&tail));
+        tail.append_runtime_note("<runtime-note>n</runtime-note>".into());
+        assert_eq!(last_user_content_hash(std::slice::from_ref(&tail)), before);
     }
 }

@@ -650,6 +650,23 @@ pub struct ToolDefinition {
     pub output_schema: Option<serde_json::Value>,
 }
 
+/// Unique identifier for a subgoal within a session.
+///
+/// Carried on `MessageMetadata::subgoal_id` so subgoal membership travels with the message
+/// itself and survives drains, reinserts, and deferred-summary insertions without any
+/// index bookkeeping.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::SubgoalId;
+///
+/// let id = SubgoalId(3);
+/// assert_eq!(id, SubgoalId(3));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SubgoalId(pub u32);
+
 /// Reason why the agent turn ended early.
 ///
 /// Emitted by the agent loop when a non-default terminal condition is detected.

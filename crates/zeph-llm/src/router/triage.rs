@@ -380,7 +380,10 @@ impl TriageRouter {
 
     #[tracing::instrument(name = "llm.router.triage.try_classify", skip_all)]
     async fn try_classify(&self, messages: &[Message]) -> Option<ComplexityTier> {
-        let prompt = build_triage_prompt(messages);
+        let Some(prompt) = build_triage_prompt(messages) else {
+            tracing::warn!("triage: no user query message in context");
+            return None;
+        };
         let triage_msg = Message {
             role: Role::User,
             content: prompt,
@@ -589,16 +592,14 @@ impl TriageRouter {
     }
 }
 
-fn build_triage_prompt(messages: &[Message]) -> String {
-    let last_user = messages
-        .iter()
-        .rev()
-        .find(|m| m.role == Role::User)
-        .map_or("", |m| m.content.as_str());
+/// Build the classification prompt from the turn's user query, or `None` when the context has
+/// no user query message (the caller then takes the triage-failure path).
+fn build_triage_prompt(messages: &[Message]) -> Option<String> {
+    let query = crate::provider::turn_query_message(messages)?;
     // Truncate to keep triage cost minimal (~120 input tokens).
-    let truncated = truncate_chars(last_user, 400);
+    let truncated = truncate_chars(query.content.as_str(), 400);
 
-    format!(
+    Some(format!(
         r#"Classify the complexity of the following user request. Consider:
 - Number of reasoning steps required
 - Domain expertise needed
@@ -614,7 +615,7 @@ User message:
 {truncated}
 
 Respond ONLY with JSON: {{"tier":"simple|medium|complex|expert","reason":"...","large_context":false}}"#
-    )
+    ))
 }
 
 fn parse_tier_from_response(raw: &str) -> Option<ComplexityTier> {
@@ -1222,9 +1223,59 @@ mod tests {
             },
             make_user_msg("explain quantum entanglement"),
         ];
-        let prompt = build_triage_prompt(&messages);
+        let prompt = build_triage_prompt(&messages).unwrap();
         assert!(prompt.contains("explain quantum entanglement"));
         assert!(prompt.contains("simple|medium|complex|expert"));
+    }
+
+    #[test]
+    fn build_triage_prompt_mid_loop_uses_turn_input_not_tool_output() {
+        use crate::provider::{MessageOrigin, MessagePart};
+
+        let mut query = make_user_msg("refactor the parser");
+        query.metadata.origin = Some(MessageOrigin::TurnInput);
+        let mut tool_result = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "TOOL-OUTPUT-MARKER".into(),
+                is_error: false,
+            }],
+        );
+        tool_result.append_runtime_note("<runtime-note>NOTE-MARKER</runtime-note>".into());
+        let messages = vec![
+            query,
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::ToolUse {
+                    id: "t1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({}),
+                }],
+            ),
+            tool_result,
+        ];
+
+        let prompt = build_triage_prompt(&messages).unwrap();
+
+        assert!(prompt.contains("refactor the parser"));
+        assert!(!prompt.contains("TOOL-OUTPUT-MARKER"));
+        assert!(!prompt.contains("NOTE-MARKER"));
+    }
+
+    #[test]
+    fn build_triage_prompt_without_a_user_query_is_none() {
+        use crate::provider::MessagePart;
+
+        let messages = vec![Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "output".into(),
+                is_error: false,
+            }],
+        )];
+        assert!(build_triage_prompt(&messages).is_none());
     }
 
     #[test]
@@ -1865,7 +1916,7 @@ mod tests {
             make_user_msg("second message"),
             make_user_msg("third message"),
         ];
-        let prompt = build_triage_prompt(&messages);
+        let prompt = build_triage_prompt(&messages).unwrap();
         assert!(
             !prompt.contains("messages"),
             "prompt must not contain 'messages' context metadata"

@@ -38,7 +38,7 @@ use tokio::sync::{Notify, mpsc, watch};
 use tokio::time::Interval;
 use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
-use zeph_llm::provider::{Message, Role};
+use zeph_llm::provider::{Message, MessageOrigin, Role};
 use zeph_llm::stt::SpeechToText;
 
 use crate::config::{ProviderEntry, SecurityConfig, SkillPromptMode, TimeoutConfig};
@@ -987,9 +987,12 @@ pub(crate) struct SessionState {
     pub(crate) current_turn_intent: Option<String>,
     /// Optional status channel for sending spinner/status messages to TUI or stderr.
     pub(crate) status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
-    /// LSP context injection hooks. Fires after native tool execution, injects
-    /// diagnostics/hover notes as `Role::System` messages before the next LLM call.
+    /// LSP context injection hooks. Fires after native tool execution; queued diagnostics/hover
+    /// notes are attached as a `RuntimeNote` on the tail tool-result message before the next
+    /// LLM call (never as `System` messages).
     pub(crate) lsp_hooks: Option<crate::lsp_hooks::LspHookRunner>,
+    /// Runtime-note seam state: session nonce, turn-scoped tool-loop budget, pending hints.
+    pub(crate) runtime_notes: crate::agent::runtime_note::RuntimeNoteState,
     /// Snapshot of the policy config for `/policy` command inspection.
     pub(crate) policy_config: Option<zeph_tools::PolicyConfig>,
     /// `CwdChanged` hook definitions extracted from `[hooks]` config.
@@ -1214,6 +1217,34 @@ impl MessageState {
             .iter()
             .filter(|m| m.role != Role::System)
             .count();
+    }
+
+    /// Clear the [`MessageOrigin::TurnInput`] marker on every message so a new turn's input is
+    /// the only one carrying it. Older turn inputs become ordinary compactable history.
+    pub(crate) fn supersede_turn_input(&mut self) {
+        for msg in &mut self.messages {
+            if msg.metadata.origin == Some(MessageOrigin::TurnInput) {
+                msg.metadata.origin = None;
+            }
+        }
+    }
+
+    /// Write the rebuilt system prompt into `messages[0]`.
+    ///
+    /// Only overwrites an existing `Role::System` head (clearing stale `parts`). When the head
+    /// is anything else — for example a server `Compaction` assistant block — a new System
+    /// message is inserted at index 0 so the prompt is never smuggled into a non-System message
+    /// and silently dropped from requests (#6815).
+    pub(crate) fn set_system_prompt(&mut self, prompt: String) {
+        match self.messages.first_mut() {
+            Some(head) if head.role == Role::System => {
+                head.content = prompt;
+                head.parts.clear();
+            }
+            _ => self
+                .messages
+                .insert(0, Message::from_legacy(Role::System, prompt)),
+        }
     }
 
     /// Adjust [`Self::non_system_count`] for a single message added to or removed from
@@ -1551,6 +1582,7 @@ impl SessionState {
             current_turn_intent: None,
             status_tx: None,
             lsp_hooks: None,
+            runtime_notes: crate::agent::runtime_note::RuntimeNoteState::default(),
             policy_config: None,
             hooks_config: HooksConfigSnapshot::default(),
             is_guest_context: false,

@@ -1544,27 +1544,31 @@ async fn utility_window_exhaustion_signals_hard_break() {
         "handle_native_tool_calls must return true when utility_window is exhausted"
     );
 
-    // The system hint must appear in a system-role message injected into history.
-    let has_hint = agent.msg.messages.iter().any(|m| {
-        m.role == Role::User
-            && m.parts.iter().any(|p| {
-                if let MessagePart::ToolResult { content, .. } = p {
-                    content.contains("Tool loop stopped early")
-                } else {
-                    false
-                }
-            })
-    });
-    // The hint is pushed as a pending_system_hints entry which becomes part of the
-    // tool-result batch message; verify the overall message history contains it.
-    let hint_in_content = agent
-        .msg
-        .messages
-        .iter()
-        .any(|m| m.content.contains("Tool loop stopped early"));
+    // The hint is queued for the runtime note (never a System message, #6786) and attached to
+    // the tool-result tail by the loop's exit flush; the real-loop delivery is covered in
+    // `runtime_note_loop_tests`. Here the loop is bypassed, so flush by hand.
     assert!(
-        has_hint || hint_in_content,
-        "system hint 'Tool loop stopped early' must be present in message history after window exhaustion"
+        agent
+            .services
+            .session
+            .runtime_notes
+            .pending_utility_hints()
+            .iter()
+            .any(|h| h.contains("Tool loop stopped early"))
+    );
+    agent.flush_runtime_note();
+    assert!(
+        !agent
+            .msg
+            .messages
+            .iter()
+            .any(|m| m.role == Role::System && m.content.contains("Tool loop stopped early"))
+    );
+    assert!(
+        agent.msg.messages.iter().any(|m| m.parts.iter().any(|p| {
+            matches!(p, MessagePart::RuntimeNote { text } if text.contains("Tool loop stopped early"))
+        })),
+        "the hint must be delivered as a RuntimeNote on the tool-result message"
     );
 }
 

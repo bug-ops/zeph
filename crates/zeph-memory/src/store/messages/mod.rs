@@ -434,6 +434,8 @@ impl SqliteStore {
                             },
                             embedding: None,
                             trust_level: parse_persisted_trust_level(trust_level_str.as_deref()),
+                            origin: None,
+                            subgoal_id: None,
                         },
                     }
                 },
@@ -525,6 +527,8 @@ impl SqliteStore {
                             },
                             embedding: None,
                             trust_level: parse_persisted_trust_level(trust_level_str.as_deref()),
+                            origin: None,
+                            subgoal_id: None,
                         },
                     }
                 },
@@ -800,6 +804,8 @@ impl SqliteStore {
                         },
                         embedding: None,
                         trust_level: parse_persisted_trust_level(trust_level_str.as_deref()),
+                        origin: None,
+                        subgoal_id: None,
                     },
                 }
             },

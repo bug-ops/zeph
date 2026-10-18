@@ -44,8 +44,6 @@ pub const CORRECTIONS_PREFIX: &str = "[past corrections]\n";
 pub const CODE_CONTEXT_PREFIX: &str = "[code context]\n";
 /// User message prefix for session digest summaries from the previous interaction.
 pub const SESSION_DIGEST_PREFIX: &str = "[Session digest from previous interaction]\n";
-/// System message prefix for LSP context notes (diagnostics, hover data, etc.).
-pub const LSP_NOTE_PREFIX: &str = "[lsp ";
 /// System message prefix for document RAG results.
 pub const DOCUMENT_RAG_PREFIX: &str = "## Relevant documents\n";
 
