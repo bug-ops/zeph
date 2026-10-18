@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-skills`: literal block scalar de-indent no longer panics on multibyte or non-ASCII whitespace indentation in SKILL.md frontmatter (#6805) (#PR)
+- `zeph-llm`: Claude request history now always leads with a `user` turn (anchor message inserted instead of sending a leading assistant turn) (#6784) (#PR)
+- `zeph-llm`, `zeph-agent-context`, `zeph-context`: history cuts (compaction, budget trim, memory-first drain) and subgoal reinsertion no longer split `ToolUse`/`ToolResult` pairs, via the new `tool_pairing::pair_safe_cut` (#6782) (#PR)
+- `zeph-context`: removed the `assembler::MAX_KEEP_TAIL_SCAN` constant (breaking; the memory-first tail cut is now placed by `pair_safe_cut`) (#6782) (#PR)
+- `zeph-sanitizer`, `zeph-core`: shared-state rows can no longer forge the `<shared-state>` delimiter, with content isolation on or off (#6778) (#PR)
 - `zeph-subagent`: added `#![recursion_limit = "256"]` to fix a CI build failure where the
   compiler's `Send` auto-trait check on the nested `spawn_agent_task -> run_agent_loop ->
   run_turn` async chain exceeded the default recursion limit, producing a `future_incompatible`

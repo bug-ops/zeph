@@ -240,27 +240,42 @@ The originally specified fix (#3256), `strip_orphaned_tool_results(messages)` wi
 algorithm is exactly the adjacency-vs-global-set defect fixed by issue #6770 (a global set
 wrongly cross-pairs an orphan against an unrelated call sharing its id under provider-side id
 reuse, e.g. Ollama's `format!("call_{i}")`). The mechanism actually implemented is
-**prevention, not repair**: `crates/zeph-agent-context/src/summarization/compaction.rs`'s
-`adjust_compact_end_for_tool_pairs` walks the compaction boundary backward off any assistant
-message carrying a `ToolUse` part, so the drain never splits a pair in the first place. This
-runs after `apply_deferred_summaries`, so the boundary adjustment sees the final message list
-including any messages deferred summaries just inserted.
+**prevention, not repair**: every history-removal cut is placed by
+`zeph_llm::tool_pairing::pair_safe_cut`, which walks the cut backward off any assistant message
+carrying a `ToolUse` part (looking past interleaved `System` messages), so the drain never
+splits a pair in the first place. The cut sites are:
+
+- the hard compaction drain (`crates/zeph-agent-context/src/summarization/compaction.rs`,
+  `compact_context`), placed after `apply_deferred_summaries` so the cut sees the final message
+  list including any messages deferred summaries just inserted;
+- the budget trim (`ContextService::trim_messages_to_budget`), which runs every turn;
+- the `MemoryFirst` drain (`zeph_context::assembler::memory_first_keep_tail`).
+
+Subgoal reinsertion (`partition_messages_for_compaction`, subgoal pruning only) preserves the
+`Active`-span messages across the drain. That preserved set is closed over `ToolUse`/`ToolResult`
+partners, so a span starting on a `ToolResult` (or ending on a `ToolUse`) never re-inserts half
+a pair.
 
 Defense-in-depth: deferred-summary **hiding** (`metadata.deferred_summary`/`MessageVisibility`)
-removes a message from the request without moving the compaction boundary, so it can still
-orphan a pair at request-build time. This is caught by request-build-time Layer-A downgrade
-(`zeph_llm::tool_pairing::unmatched_tool_use_ids`/`unmatched_tool_result_ids`) in **both** the
-Claude (`claude/request.rs`) and OpenAI/OpenAI-compatible (`openai/mod.rs`) request builders —
-the OpenAI-compatible/Ollama gap tracked here was closed by issue #6781 (see
-`specs/003-llm-providers/spec.md`'s Tool-Pair Repair section).
+is pair-atomic (both halves of a pair are hidden together), so it does not by itself create
+orphans. Residual orphans (cancelled turns, restore boundaries) are caught by request-build-time
+Layer-A downgrade (`zeph_llm::tool_pairing::unmatched_tool_use_ids`/`unmatched_tool_result_ids`)
+in the Claude (`claude/request.rs`) and OpenAI/OpenAI-compatible (`openai/mod.rs`) request
+builders (#6781, see `specs/003-llm-providers/spec.md`'s Tool-Pair Repair section). Native
+Ollama is not applicable (no tool-call ids on the wire); Gemini has no request-time repair.
 
 ### Key Invariants
 
-- The compaction boundary MUST be adjusted off any `ToolUse`-bearing assistant message before the
-  drain executes — no exceptions
-- Boundary adjustment runs AFTER `apply_deferred_summaries` (deferred insertions can shift indices
-  and add new `tool_use`-bearing messages, so adjustment must see the final message list, not the
-  pre-insertion one)
+- The three prevention cuts (compaction drain, `trim_messages_to_budget`, `memory_first_keep_tail`)
+  MUST be placed by `zeph_llm::tool_pairing::pair_safe_cut` before the drain executes — no
+  exceptions. Explicit exceptions, which are not prevention cuts: repair-based sites that call
+  `repair_window`/`repair_tool_pairs` (subagent history trim, `zeph-agent-persistence`
+  `sanitize_tool_pairs`), and the server-side-compaction mirror cut (`metrics_compact.rs`), which
+  clears history by design and is tracked with follow-up M3 (no code change in this spec)
+- Subgoal reinsertion MUST close its preserved set over `ToolUse`/`ToolResult` partners
+- The compaction cut is placed AFTER `apply_deferred_summaries` (deferred insertions can shift
+  indices and add new `tool_use`-bearing messages, so placement must see the final message list,
+  not the pre-insertion one)
 - This is a correctness invariant, not a heuristic — a single orphaned `tool_result` causes a
   provider 400/422 error
 - NEVER send a `tool_result` whose `tool_use_id` is absent from the message list — enforced at

@@ -380,19 +380,27 @@ fn collect_block_scalar<'a>(
         let block_indent = raw_parts
             .iter()
             .find(|s| !s.trim().is_empty())
-            .map_or(0, |s| s.len() - s.trim_start().len());
+            .map_or(0, |s| leading_indent(s));
         let parts: Vec<&str> = raw_parts
             .iter()
             .map(|s| {
                 if s.trim().is_empty() {
                     ""
                 } else {
-                    &s[block_indent.min(s.len())..]
+                    &s[block_indent.min(leading_indent(s))..]
                 }
             })
             .collect();
         parts.join("\n").trim().to_string()
     }
+}
+
+/// Byte length of the ASCII space/tab prefix of `s`.
+///
+/// Counting only ASCII guarantees the result is a char boundary, unlike `trim_start`,
+/// which also strips multibyte Unicode whitespace.
+fn leading_indent(s: &str) -> usize {
+    s.len() - s.trim_start_matches([' ', '\t']).len()
 }
 
 /// Apply a parsed inline (non-block-scalar) key-value pair to `raw`.
@@ -1472,6 +1480,27 @@ mod tests {
         let yaml = "description: |\n  def foo():\n    return 1\n";
         let raw = parse_frontmatter(yaml);
         assert_eq!(raw.description.as_deref(), Some("def foo():\n  return 1"));
+    }
+
+    #[test]
+    fn literal_block_scalar_nbsp_indent_no_panic() {
+        let yaml = "description: |\n \u{00a0}a\n b\u{2500}\n";
+        let raw = parse_frontmatter(yaml);
+        assert!(raw.description.as_deref().unwrap().contains("b\u{2500}"));
+    }
+
+    #[test]
+    fn literal_block_scalar_short_line_multibyte() {
+        let yaml = "description: |\n    a\n \u{2500}b\n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(raw.description.as_deref(), Some("a\n\u{2500}b"));
+    }
+
+    #[test]
+    fn literal_block_scalar_tab_indent() {
+        let yaml = "description: |\n\t\ta\n\t\t b\n";
+        let raw = parse_frontmatter(yaml);
+        assert_eq!(raw.description.as_deref(), Some("a\n b"));
     }
 
     #[test]

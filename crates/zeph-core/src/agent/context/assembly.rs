@@ -2545,7 +2545,7 @@ impl<C: Channel> Agent<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeph_context::assembler::{MAX_KEEP_TAIL_SCAN, memory_first_keep_tail};
+    use zeph_context::assembler::memory_first_keep_tail;
     use zeph_llm::provider::{Message, MessagePart, Role};
 
     // ── #6701: trust-aware skill activation and turn trust floor ────────────
@@ -2924,12 +2924,10 @@ mod tests {
     }
 
     #[test]
-    fn keep_tail_capped_at_max_scan_does_not_split_tool_pair() {
+    fn keep_tail_long_tool_chain_does_not_split_tool_pair() {
         // Build a history: system + (tool_use, tool_result) × 30 pairs + assistant reply.
-        // Total: 1 + 60 + 1 = 62 messages. The cap fires at MAX_KEEP_TAIL_SCAN = 50.
-        // At that point, keep_tail includes 49 ToolResult messages. The preceding message
-        // (index len - 51) is a ToolUse — the fix must extend keep_tail to 51 so the pair
-        // is not split.
+        // Total: 1 + 60 + 1 = 62 messages; the boundary lands on the last ToolResult, so the
+        // kept tail is that pair plus the reply.
         let mut msgs = vec![sys()];
         for _ in 0..30 {
             msgs.push(tool_use_msg());
@@ -2939,11 +2937,7 @@ mod tests {
 
         let tail = memory_first_keep_tail(&msgs, 1);
 
-        // The result must not exceed MAX_KEEP_TAIL_SCAN + 1 (cap + one extra for ToolUse).
-        assert!(
-            tail <= MAX_KEEP_TAIL_SCAN + 1,
-            "keep_tail {tail} exceeds cap + 1"
-        );
+        assert_eq!(tail, 3);
 
         // Verify the first retained message is not a ToolResult without a preceding ToolUse.
         let len = msgs.len();

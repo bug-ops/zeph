@@ -205,6 +205,9 @@ impl ContextService {
             keep_from = i;
         }
 
+        let keep_from =
+            zeph_llm::tool_pairing::pair_safe_cut(window.messages, keep_from, history_start);
+
         if keep_from > history_start {
             let removed = keep_from - history_start;
             window.messages.drain(history_start..keep_from);
@@ -1913,6 +1916,58 @@ mod tests {
             Role::System,
             "system prompt must survive trim"
         );
+    }
+
+    #[test]
+    fn trim_messages_to_budget_never_orphans_tool_result() {
+        use zeph_llm::provider::MessagePart;
+
+        let tool_use = Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::ToolUse {
+                id: "t1".into(),
+                name: "shell".into(),
+                input: serde_json::json!({"command": "ls"}),
+            }],
+        );
+        let tool_result = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "ok".into(),
+                is_error: false,
+            }],
+        );
+        let reply = assistant("done");
+        let counter = make_counter();
+        // Fits the result and the reply, but not the ToolUse before them.
+        let budget =
+            counter.count_message_tokens(&tool_result) + counter.count_message_tokens(&reply);
+
+        let mut msgs = vec![
+            sys("system"),
+            user("question"),
+            tool_use,
+            tool_result,
+            reply,
+        ];
+        let mut cached = 0u64;
+        let mut completed = HashSet::new();
+        let mut window = make_window(&mut msgs, &mut cached, &mut completed);
+
+        ContextService::new().trim_messages_to_budget(&mut window, budget);
+
+        assert_eq!(
+            window.messages.len(),
+            4,
+            "only the ToolUse overshoots the budget"
+        );
+        let mut clone = window.messages.clone();
+        let report = zeph_llm::tool_pairing::repair_tool_pairs(
+            &mut clone,
+            zeph_llm::tool_pairing::OrphanAction::Delete,
+        );
+        assert_eq!(report.parts_repaired, 0, "trim left an orphaned ToolResult");
     }
 
     // AC-12: inserted_count must equal the number of non-None memory fields injected.

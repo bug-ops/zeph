@@ -1217,17 +1217,10 @@ mod tests {
     /// mandatory empty-blocks guard must skip emitting the message entirely rather than pushing
     /// an empty `Blocks(vec![])`.
     ///
-    /// N2 (impl-critic C4): the guard fixes the empty-`Blocks([])` 400, but does not by itself
-    /// guarantee the first *emitted* message has `role: "user"` — skipping a leading message can
-    /// promote a following `Assistant` message to `chat[0]`, which Anthropic also rejects. This
-    /// is a **pre-existing, un-widened gap**: `split_messages_structured` has never enforced a
-    /// leading-role invariant on its own (a message list beginning with `Assistant` and no
-    /// structured parts at all would hit exactly this today, empty-blocks guard or not) — it
-    /// relies entirely on upstream repair (`zeph_llm::tool_pairing::repair_window`,
-    /// `adjust_compact_end_for_tool_pairs`) to never hand it such a list. This PR does not close
-    /// that gap; it is tracked as a follow-up (enforcing a leading-role invariant inside
-    /// `split_messages_structured` itself is out of scope here — see the module's callers for
-    /// where that invariant is actually maintained today).
+    /// The raw split does not guarantee the first emitted message has `role: "user"` —
+    /// skipping a leading message can promote a following `Assistant` message to `chat[0]`.
+    /// The leading-`user` invariant is enforced one layer up, by
+    /// `GatedStructuredHistory::new` (see `leading_assistant_after_skipped_thinking_only_user_gets_anchor`).
     #[test]
     fn d4_empty_blocks_skip_can_promote_a_leading_assistant_message() {
         let messages = vec![
@@ -1244,8 +1237,8 @@ mod tests {
         assert_eq!(chat.len(), 1, "the empty-blocks message must be skipped");
         assert_eq!(
             chat[0].role, "assistant",
-            "known gap (N2, not closed by this PR): the skip can promote a leading Assistant \
-             message to chat[0], which Anthropic also rejects — see the doc comment above"
+            "the skip can promote a leading Assistant message to chat[0]; the history gate \
+             normalizes it — see the doc comment above"
         );
     }
 

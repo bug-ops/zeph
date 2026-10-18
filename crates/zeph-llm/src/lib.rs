@@ -129,7 +129,7 @@ pub use router::aware::RouterAware;
 pub use router::coe::{CoeConfig, CoeMetrics, CoeRouter};
 pub use stt::{SpeechToText, Transcription};
 pub use tool_pairing::{
-    OrphanAction, RepairReport, has_meaningful_content, repair_tool_pairs, repair_window,
-    unmatched_tool_result_ids, unmatched_tool_use_ids,
+    OrphanAction, RepairReport, has_meaningful_content, pair_safe_cut, repair_tool_pairs,
+    repair_window, unmatched_tool_result_ids, unmatched_tool_use_ids,
 };
 pub use zeph_config::{CacheTtl, GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};

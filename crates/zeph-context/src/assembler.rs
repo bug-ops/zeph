@@ -1025,57 +1025,19 @@ pub(crate) async fn fetch_cross_session(
     )
 }
 
-/// Maximum number of messages scanned backward by [`memory_first_keep_tail`] before
-/// stopping at the next non-`ToolResult` boundary, to avoid O(N) scans on long sessions.
-pub const MAX_KEEP_TAIL_SCAN: usize = 50;
-
 /// Compute how many tail messages to keep when the `MemoryFirst` strategy is active.
 ///
-/// Always keeps at least 2 messages. Extends the tail as long as the boundary message is
-/// a `ToolResult` (user message with a `ToolResult` part) to avoid splitting a tool-call
-/// round-trip. Capped at `MAX_KEEP_TAIL_SCAN` to prevent O(N) scans on long sessions.
+/// Always keeps at least 2 messages. The cut is placed by
+/// [`zeph_llm::tool_pairing::pair_safe_cut`], so the kept tail never starts between a
+/// `ToolUse` and its `ToolResult`.
 ///
 /// `history_start` is the index of the first non-system message (typically 1).
 #[must_use]
 pub fn memory_first_keep_tail(messages: &[Message], history_start: usize) -> usize {
-    use zeph_llm::provider::MessagePart;
-
-    let mut keep_tail = 2usize;
     let len = messages.len();
-    let max = len.saturating_sub(history_start);
-
-    while keep_tail < max {
-        let first_retained = &messages[len - keep_tail];
-        let is_tool_result = first_retained.role == Role::User
-            && first_retained
-                .parts
-                .iter()
-                .any(|p| matches!(p, MessagePart::ToolResult { .. }));
-
-        if is_tool_result {
-            keep_tail += 1;
-        } else {
-            break;
-        }
-
-        if keep_tail >= MAX_KEEP_TAIL_SCAN {
-            let preceding_idx = len.saturating_sub(keep_tail + 1);
-            if preceding_idx >= history_start {
-                let preceding = &messages[preceding_idx];
-                let is_tool_use = preceding.role == Role::Assistant
-                    && preceding
-                        .parts
-                        .iter()
-                        .any(|p| matches!(p, MessagePart::ToolUse { .. }));
-                if is_tool_use {
-                    keep_tail += 1;
-                }
-            }
-            break;
-        }
-    }
-
-    keep_tail
+    let cut = len.saturating_sub(2).max(history_start);
+    let cut = zeph_llm::tool_pairing::pair_safe_cut(messages, cut, history_start);
+    (len - cut).max(2)
 }
 
 #[cfg(test)]
