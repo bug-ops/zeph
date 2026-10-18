@@ -8,11 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `zeph-llm`, `zeph-core`, `zeph-memory`, `zeph-subagent`: per-iteration state (tool budget, LSP notes, hints) rides in a never-persisted `MessagePart::RuntimeNote` on the tail tool-result message, keeping the provider cache valid; removed `remove_lsp_messages` and `LSP_NOTE_PREFIX` (breaking) (#6786, #6817) (#PR)
-- `zeph-llm`: OpenAI-family, Gemini, Ollama and Candle builders skip hidden messages via `provider::AgentVisible`; Gemini gains tool-pair orphan repair (#6814) (#PR)
-- `zeph-agent-context`, `zeph-llm`, `zeph-common`: subgoal membership lives on `MessageMetadata::subgoal_id` instead of index spans; removed `SubgoalRegistry::{tag_range,rebuild_after_compaction,msg_to_subgoal}` (breaking) (#6816) (#PR)
-- `zeph-llm`, `zeph-core`, `zeph-agent-context`, `zeph-context`: server-side compaction keeps the system prompt, Knowledge block, latest turn input and the untrusted tag, with a new `context_floor` for head passes (#6815) (#PR)
-- `zeph-common`, `zeph-sanitizer`, `zeph-subagent`: delimiter-tag escaping covers whitespace, zero-width, fullwidth and NFKC variants via `zeph_common::delimiter` (#6818) (#PR)
+- `zeph-llm`, `zeph-core`, `zeph-memory`, `zeph-subagent`: per-iteration state (tool budget, LSP notes, hints) rides in a never-persisted `MessagePart::RuntimeNote` on the tail tool-result message, keeping the provider cache valid; removed `remove_lsp_messages` and `LSP_NOTE_PREFIX` (breaking) (#6786, #6817) (#6826)
+- `zeph-llm`: OpenAI-family, Gemini, Ollama and Candle builders skip hidden messages via `provider::AgentVisible`; Gemini gains tool-pair orphan repair (#6814) (#6826)
+- `zeph-agent-context`, `zeph-llm`, `zeph-common`: subgoal membership lives on `MessageMetadata::subgoal_id` instead of index spans; removed `SubgoalRegistry::{tag_range,rebuild_after_compaction,msg_to_subgoal}` (breaking) (#6816) (#6826)
+- `zeph-llm`, `zeph-core`, `zeph-agent-context`, `zeph-context`: server-side compaction keeps the system prompt, Knowledge block, latest turn input and the untrusted tag, with a new `context_floor` for head passes (#6815) (#6826)
+- `zeph-common`, `zeph-sanitizer`, `zeph-subagent`: delimiter-tag escaping covers whitespace, zero-width, fullwidth and NFKC variants via `zeph_common::delimiter` (#6818) (#6826)
 - `zeph-skills`: literal block scalar de-indent no longer panics on multibyte or non-ASCII whitespace indentation in SKILL.md frontmatter (#6805) (#PR)
 - `zeph-llm`: Claude request history now always leads with a `user` turn (anchor message inserted instead of sending a leading assistant turn) (#6784) (#PR)
 - `zeph-llm`, `zeph-agent-context`, `zeph-context`: history cuts (compaction, budget trim, memory-first drain) and subgoal reinsertion no longer split `ToolUse`/`ToolResult` pairs, via the new `tool_pairing::pair_safe_cut` (#6782) (#PR)
