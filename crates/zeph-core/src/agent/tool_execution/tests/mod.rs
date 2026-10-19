@@ -17,3 +17,4 @@ mod sanitize_and_native_tests;
 mod server_compaction_tests;
 mod shadow_memory_tests;
 mod tafc_and_record_outcomes_tests;
+mod turn_set_and_thinking_tests;

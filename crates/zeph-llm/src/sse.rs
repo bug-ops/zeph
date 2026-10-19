@@ -8,6 +8,7 @@ use zeph_config::StreamLimits;
 
 use crate::error::LlmError;
 use crate::provider::{ChatStream, StreamChunk, ThinkingBlock, ToolUseRequest};
+use crate::thinking_replay::{InputTransformation, ThinkingReplay};
 
 /// An internal SSE event emitted by `claude_sse_to_tool_stream`.
 ///
@@ -43,6 +44,8 @@ pub enum ToolSseEvent {
     ContentChunk(String),
     /// Server-side compaction summary.
     Compaction(String),
+    /// The provider dropped thinking blocks from the request (from `message_start`).
+    ThinkingReplay(ThinkingReplay),
     /// Parse error.
     Error(LlmError),
 }
@@ -63,6 +66,12 @@ struct ClaudeSseState {
     current_block_index: usize,
     /// `true` when the current block is a thinking block.
     in_thinking_block: bool,
+    /// Payload of the in-flight `redacted_thinking` block, emitted at `content_block_stop`.
+    redacted_thinking: Option<String>,
+    /// Set once a thinking block exceeded `max_thinking_bytes`. A truncated block fails its
+    /// signature check and every later block is bound to it, so all remaining thinking in the
+    /// response is dropped whole rather than truncated.
+    thinking_dropped: bool,
 }
 
 /// Convert a Claude streaming response into a `ChatStream`.
@@ -163,7 +172,7 @@ fn parse_claude_sse_events(
             vec![]
         }
         "content_block_stop" => {
-            if let Some(summary) = state.compaction_buf.take() {
+            if let Some(summary) = state.compaction_buf.take().filter(|s| !s.is_empty()) {
                 tracing::info!(
                     summary_len = summary.len(),
                     "Claude server-side compaction block completed in stream"
@@ -177,21 +186,14 @@ fn parse_claude_sse_events(
                 if let Some(delta) = event.delta {
                     match delta.delta_type.as_str() {
                         "text_delta" if !delta.text.is_empty() => {
-                            if let Some(ref mut buf) = state.compaction_buf {
-                                let remaining =
-                                    limits.max_compaction_bytes.saturating_sub(buf.len());
-                                if remaining == 0 {
-                                    tracing::warn!(
-                                        cap = limits.max_compaction_bytes,
-                                        "compaction buffer exceeded cap; discarding excess"
-                                    );
-                                } else {
-                                    let to_append = &delta.text[..delta.text.len().min(remaining)];
-                                    buf.push_str(to_append);
-                                }
-                                return vec![];
-                            }
                             return vec![Ok(StreamChunk::Content(delta.text))];
+                        }
+                        "compaction_delta" => {
+                            if let (Some(buf), Some(content)) =
+                                (state.compaction_buf.as_mut(), delta.content.as_deref())
+                            {
+                                append_capped(buf, content, limits.max_compaction_bytes);
+                            }
                         }
                         "thinking_delta" if !delta.thinking.is_empty() => {
                             return vec![Ok(StreamChunk::Thinking(delta.thinking))];
@@ -241,6 +243,7 @@ fn parse_claude_tool_sse_events(
     limits: &StreamLimits,
 ) -> Vec<ToolSseEvent> {
     match event_type {
+        "message_start" => parse_message_start(data),
         "content_block_start" => {
             let Ok(ev) = serde_json::from_str::<ClaudeContentBlockStartFull>(data) else {
                 return vec![];
@@ -248,6 +251,10 @@ fn parse_claude_tool_sse_events(
             state.current_block_index = ev.index;
             state.in_thinking_block = false;
             match ev.content_block.block_type.as_str() {
+                "redacted_thinking" => {
+                    state.redacted_thinking = ev.content_block.data;
+                    vec![]
+                }
                 "compaction" => {
                     state.compaction_buf = Some(String::new());
                     vec![]
@@ -275,7 +282,7 @@ fn parse_claude_tool_sse_events(
         }
         "content_block_stop" => {
             let mut events = vec![];
-            if let Some(summary) = state.compaction_buf.take() {
+            if let Some(summary) = state.compaction_buf.take().filter(|s| !s.is_empty()) {
                 tracing::info!(
                     summary_len = summary.len(),
                     "Claude server-side compaction block completed in tool stream"
@@ -290,13 +297,22 @@ fn parse_claude_tool_sse_events(
                     full_json: json,
                 });
             }
-            if let Some((thinking, signature)) = state.thinking_block.take()
-                && (!thinking.is_empty() || !signature.is_empty())
-            {
-                events.push(ToolSseEvent::ThinkingBlockDone(ThinkingBlock::Thinking {
-                    thinking,
-                    signature,
-                }));
+            let thinking_block = state.thinking_block.take();
+            let redacted = state.redacted_thinking.take();
+            if !state.thinking_dropped {
+                if let Some((thinking, signature)) = thinking_block
+                    && (!thinking.is_empty() || !signature.is_empty())
+                {
+                    events.push(ToolSseEvent::ThinkingBlockDone(ThinkingBlock::Thinking {
+                        thinking,
+                        signature,
+                    }));
+                }
+                if let Some(data) = redacted {
+                    events.push(ToolSseEvent::ThinkingBlockDone(ThinkingBlock::Redacted {
+                        data,
+                    }));
+                }
             }
             state.in_thinking_block = false;
             events
@@ -321,21 +337,14 @@ fn parse_tool_delta_event(
         return vec![];
     };
     match delta.delta_type.as_str() {
-        "text_delta" if !delta.text.is_empty() => {
-            if let Some(ref mut buf) = state.compaction_buf {
-                let remaining = limits.max_compaction_bytes.saturating_sub(buf.len());
-                if remaining > 0 {
-                    let to_append = &delta.text[..delta.text.len().min(remaining)];
-                    buf.push_str(to_append);
-                } else {
-                    tracing::warn!(
-                        cap = limits.max_compaction_bytes,
-                        "compaction buffer exceeded cap; discarding excess"
-                    );
-                }
-                return vec![];
+        "text_delta" if !delta.text.is_empty() => vec![ToolSseEvent::ContentChunk(delta.text)],
+        "compaction_delta" => {
+            if let (Some(buf), Some(content)) =
+                (state.compaction_buf.as_mut(), delta.content.as_deref())
+            {
+                append_capped(buf, content, limits.max_compaction_bytes);
             }
-            vec![ToolSseEvent::ContentChunk(delta.text)]
+            vec![]
         }
         "input_json_delta" if !delta.partial_json.is_empty() => {
             if let Some((_, _, _, ref mut json)) = state.tool_block {
@@ -355,12 +364,16 @@ fn parse_tool_delta_event(
             }]
         }
         "thinking_delta" if !delta.thinking.is_empty() => {
-            if let Some((ref mut t, _)) = state.thinking_block {
-                if t.len() >= limits.max_thinking_bytes {
+            if let Some((ref mut t, _)) = state.thinking_block
+                && !state.thinking_dropped
+            {
+                if t.len() + delta.thinking.len() > limits.max_thinking_bytes {
                     tracing::warn!(
                         cap = limits.max_thinking_bytes,
-                        "thinking buffer exceeded cap; discarding excess"
+                        "thinking block exceeded cap; dropping it and all later thinking in this response"
                     );
+                    state.thinking_dropped = true;
+                    t.clear();
                 } else {
                     t.push_str(&delta.thinking);
                 }
@@ -368,12 +381,36 @@ fn parse_tool_delta_event(
             vec![ToolSseEvent::ThinkingChunk(delta.thinking)]
         }
         "signature_delta" if !delta.signature.is_empty() => {
-            if let Some((_, ref mut s)) = state.thinking_block {
+            if let Some((_, ref mut s)) = state.thinking_block
+                && !state.thinking_dropped
+            {
                 s.push_str(&delta.signature);
             }
             vec![]
         }
         _ => vec![],
+    }
+}
+
+/// Append `add` to `buf` without letting `buf` exceed `cap` bytes, cutting on a char boundary.
+fn append_capped(buf: &mut String, add: &str, cap: usize) {
+    let remaining = cap.saturating_sub(buf.len());
+    if add.len() <= remaining {
+        buf.push_str(add);
+        return;
+    }
+    tracing::warn!(cap, "compaction buffer exceeded cap; discarding excess");
+    buf.push_str(&add[..add.floor_char_boundary(remaining)]);
+}
+
+/// Surface a `thinking_dropped` report from the `message_start` event, if any.
+fn parse_message_start(data: &str) -> Vec<ToolSseEvent> {
+    let Ok(ev) = serde_json::from_str::<ClaudeMessageStart>(data) else {
+        return vec![];
+    };
+    match ThinkingReplay::from_transformations(&ev.message.input_transformations) {
+        ThinkingReplay::Intact => vec![],
+        dropped @ ThinkingReplay::Dropped { .. } => vec![ToolSseEvent::ThinkingReplay(dropped)],
     }
 }
 
@@ -434,6 +471,18 @@ struct ClaudeStreamEvent {
     error: Option<ClaudeStreamError>,
 }
 
+/// `message_start` event: only the beta `input_transformations` report is consumed.
+#[derive(Deserialize)]
+struct ClaudeMessageStart {
+    message: ClaudeMessageStartBody,
+}
+
+#[derive(Deserialize)]
+struct ClaudeMessageStartBody {
+    #[serde(default)]
+    input_transformations: Vec<InputTransformation>,
+}
+
 /// Used for `content_block_start` events in the text-streaming path (type only).
 #[derive(Deserialize)]
 struct ClaudeContentBlockStart {
@@ -465,6 +514,9 @@ struct ClaudeContentBlockMetaFull {
     /// Present when `type == "tool_use"`.
     #[serde(default)]
     name: Option<String>,
+    /// Present when `type == "redacted_thinking"`.
+    #[serde(default)]
+    data: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -481,6 +533,9 @@ struct ClaudeDelta {
     /// Present in `signature_delta` events for thinking blocks.
     #[serde(default)]
     signature: String,
+    /// Present in `compaction_delta` events: the complete summary, sent in a single delta.
+    #[serde(default)]
+    content: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -741,7 +796,7 @@ mod tests {
     fn claude_compaction_block_start_sets_buf() {
         let mut state = ClaudeSseState::default();
         assert!(state.compaction_buf.is_none());
-        let data = r#"{"type":"content_block_start","index":0,"content_block":{"type":"compaction","text":""}}"#;
+        let data = r#"{"type":"content_block_start","index":0,"content_block":{"type":"compaction","content":null}}"#;
         let results = parse_claude_sse_events(
             &mut state,
             data,
@@ -773,7 +828,7 @@ mod tests {
             compaction_buf: Some(String::new()),
             ..Default::default()
         };
-        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Summary text"}}"#;
+        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":"Summary text"}}"#;
         let results = parse_claude_sse_events(
             &mut state,
             data,
@@ -790,7 +845,7 @@ mod tests {
             compaction_buf: Some("so far".to_owned()),
             ..Default::default()
         };
-        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" more"}}"#;
+        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":" more"}}"#;
         let results = parse_claude_sse_events(
             &mut state,
             data,
@@ -842,8 +897,7 @@ mod tests {
             ..Default::default()
         };
         // Two-byte push that would exceed cap.
-        let data =
-            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ab"}}"#;
+        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":"ab"}}"#;
         parse_claude_sse_events(
             &mut state,
             data,
@@ -858,7 +912,7 @@ mod tests {
     fn claude_full_compaction_sequence() {
         let mut state = ClaudeSseState::default();
         // 1. block_start with compaction type
-        let start = r#"{"type":"content_block_start","index":0,"content_block":{"type":"compaction","text":""}}"#;
+        let start = r#"{"type":"content_block_start","index":0,"content_block":{"type":"compaction","content":null}}"#;
         assert!(
             parse_claude_sse_events(
                 &mut state,
@@ -869,7 +923,7 @@ mod tests {
             .is_empty()
         );
         // 2. delta
-        let delta = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Summarized context"}}"#;
+        let delta = r#"{"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":"Summarized context"}}"#;
         assert!(
             parse_claude_sse_events(
                 &mut state,
@@ -1165,21 +1219,145 @@ mod tests {
         assert_eq!(buf, r#"{"k":1}"#);
     }
 
+    fn tool_events(state: &mut ClaudeSseState, event_type: &str, data: &str) -> Vec<ToolSseEvent> {
+        parse_claude_tool_sse_events(state, data, event_type, &StreamLimits::default())
+    }
+
+    fn done_blocks(events: &[ToolSseEvent]) -> Vec<&ThinkingBlock> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                ToolSseEvent::ThinkingBlockDone(b) => Some(b),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
-    fn thinking_buf_capped_at_1mib() {
-        let mut state = ClaudeSseState {
-            thinking_block: Some(("t".repeat(1024 * 1024), String::new())),
-            in_thinking_block: true,
-            ..Default::default()
-        };
-        let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"OVERFLOW"}}"#;
-        parse_tool_delta_event(&mut state, data, &StreamLimits::default());
-        let thinking_len = state.thinking_block.as_ref().unwrap().0.len();
-        assert_eq!(
-            thinking_len,
-            1024 * 1024,
-            "thinking buffer must not grow beyond 1 MiB"
+    fn thinking_over_cap_is_dropped_whole_with_later_blocks() {
+        let mut state = ClaudeSseState::default();
+        let start =
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}"#;
+        tool_events(&mut state, "content_block_start", start);
+        let big = format!(
+            r#"{{"type":"content_block_delta","index":0,"delta":{{"type":"thinking_delta","thinking":"{}"}}}}"#,
+            "t".repeat(1024 * 1024)
         );
+        tool_events(&mut state, "content_block_delta", &big);
+        let over = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"OVERFLOW"}}"#;
+        let chunks = tool_events(&mut state, "content_block_delta", over);
+        assert_eq!(chunks.len(), 1, "thinking text still streams to the UI");
+        assert!(state.thinking_dropped);
+        let sig = r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig"}}"#;
+        tool_events(&mut state, "content_block_delta", sig);
+        let stop = tool_events(&mut state, "content_block_stop", "{}");
+        assert!(
+            done_blocks(&stop).is_empty(),
+            "truncated block must not be replayed"
+        );
+
+        let start2 =
+            r#"{"type":"content_block_start","index":1,"content_block":{"type":"thinking"}}"#;
+        tool_events(&mut state, "content_block_start", start2);
+        let small = r#"{"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"ok"}}"#;
+        tool_events(&mut state, "content_block_delta", small);
+        tool_events(&mut state, "content_block_delta", sig);
+        let stop2 = tool_events(&mut state, "content_block_stop", "{}");
+        assert!(
+            done_blocks(&stop2).is_empty(),
+            "later thinking is bound to the dropped block"
+        );
+    }
+
+    #[test]
+    fn redacted_thinking_is_emitted_in_response_order() {
+        let mut state = ClaudeSseState::default();
+        let start = r#"{"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"opaque"}}"#;
+        assert!(tool_events(&mut state, "content_block_start", start).is_empty());
+        let stop = tool_events(&mut state, "content_block_stop", "{}");
+        assert_matches!(
+            done_blocks(&stop).as_slice(),
+            [ThinkingBlock::Redacted { data }] if data == "opaque"
+        );
+    }
+
+    #[test]
+    fn thinking_block_with_signature_is_kept() {
+        let mut state = ClaudeSseState::default();
+        let start =
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}"#;
+        tool_events(&mut state, "content_block_start", start);
+        let sig = r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig"}}"#;
+        tool_events(&mut state, "content_block_delta", sig);
+        let stop = tool_events(&mut state, "content_block_stop", "{}");
+        assert_matches!(
+            done_blocks(&stop).as_slice(),
+            [ThinkingBlock::Thinking { thinking, signature }] if thinking.is_empty() && signature == "sig"
+        );
+    }
+
+    #[test]
+    fn compaction_delta_in_tool_stream_emits_compaction_event() {
+        let mut state = ClaudeSseState::default();
+        let start = r#"{"type":"content_block_start","index":0,"content_block":{"type":"compaction","content":null}}"#;
+        tool_events(&mut state, "content_block_start", start);
+        let delta = r#"{"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":"the summary"}}"#;
+        assert!(tool_events(&mut state, "content_block_delta", delta).is_empty());
+        let stop = tool_events(&mut state, "content_block_stop", "{}");
+        assert_matches!(stop.as_slice(), [ToolSseEvent::Compaction(s)] if s == "the summary");
+    }
+
+    #[test]
+    fn empty_compaction_emits_nothing() {
+        let mut state = ClaudeSseState::default();
+        let start = r#"{"type":"content_block_start","index":0,"content_block":{"type":"compaction","content":null}}"#;
+        tool_events(&mut state, "content_block_start", start);
+        assert!(tool_events(&mut state, "content_block_stop", "{}").is_empty());
+
+        let mut text_state = ClaudeSseState::default();
+        parse_claude_sse_events(
+            &mut text_state,
+            start,
+            "content_block_start",
+            &StreamLimits::default(),
+        );
+        let chunks = parse_claude_sse_events(
+            &mut text_state,
+            "{}",
+            "content_block_stop",
+            &StreamLimits::default(),
+        );
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn compaction_truncation_respects_char_boundaries() {
+        let mut buf = String::new();
+        // 3-byte char; a cap of 4 bytes must cut after the first char, not mid-char.
+        append_capped(&mut buf, "€€", 4);
+        assert_eq!(buf, "€");
+        append_capped(&mut buf, "abcdef", 5);
+        assert_eq!(buf, "€ab");
+    }
+
+    #[test]
+    fn message_start_reports_dropped_thinking() {
+        let mut state = ClaudeSseState::default();
+        let data = r#"{"type":"message_start","message":{"id":"m","input_transformations":[{"type":"thinking_dropped","path":"messages.2.content.0","reason":"prefix_binding_mismatch"}]}}"#;
+        let events = tool_events(&mut state, "message_start", data);
+        assert_matches!(
+            events.as_slice(),
+            [ToolSseEvent::ThinkingReplay(ThinkingReplay::Dropped {
+                first_message_index: 2
+            })]
+        );
+    }
+
+    #[test]
+    fn message_start_without_transformations_is_silent() {
+        let mut state = ClaudeSseState::default();
+        let data = r#"{"type":"message_start","message":{"id":"m","input_transformations":[]}}"#;
+        assert!(tool_events(&mut state, "message_start", data).is_empty());
     }
 
     #[test]

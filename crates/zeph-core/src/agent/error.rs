@@ -147,6 +147,15 @@ impl AgentError {
         false
     }
 
+    /// Returns true if the provider rejected a thinking block bound to a different prefix.
+    #[must_use]
+    pub fn is_thinking_binding_mismatch(&self) -> bool {
+        if let Self::Llm(e) = self {
+            return e.is_thinking_binding_mismatch();
+        }
+        false
+    }
+
     /// Returns true if this error is `LlmError::NoProviders` (all configured backends unavailable).
     #[must_use]
     pub fn is_no_providers(&self) -> bool {

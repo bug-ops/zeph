@@ -100,7 +100,8 @@ embedding_model = "qwen3-embedding"
 # max_tokens = 4096
 # default = true
 # server_compaction = false             # Claude compact-2026-01-12 beta
-# enable_extended_context = false       # 1M token window (Claude Opus and Sonnet models, not Haiku)
+# server_compaction_trigger_tokens = 140000  # input tokens that trigger it (min 50000); default 70% of the context window
+# enable_extended_context = false       # lift the 200k window ceiling to the model's native 1M window
 # prompt_cache_ttl = "1h"              # "1h" = extended TTL beta (writes ~2× cost); omit for default ~5 min
 # thinking = { type = "enabled", budget_tokens = 10000 }
 

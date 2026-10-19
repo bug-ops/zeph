@@ -25,15 +25,14 @@ fn tool_output(name: &str) -> ToolOutput {
 }
 
 fn tool_use(id: &str) -> ChatResponse {
-    ChatResponse::ToolUse {
-        text: None,
-        tool_calls: vec![ToolUseRequest {
+    ChatResponse::tool_use(
+        None,
+        vec![ToolUseRequest {
             id: id.to_owned(),
             name: "tool_a".to_owned().into(),
             input: serde_json::json!({"arg": id}),
         }],
-        thinking_blocks: vec![],
-    }
+    )
 }
 
 type Recorded = Arc<Mutex<Vec<Vec<Message>>>>;
@@ -203,17 +202,16 @@ async fn window_exhaustion_hint_is_delivered_by_the_loop_exit_flush() {
 }
 
 fn two_calls() -> ChatResponse {
-    ChatResponse::ToolUse {
-        text: None,
-        tool_calls: (0..2)
+    ChatResponse::tool_use(
+        None,
+        (0..2)
             .map(|i| ToolUseRequest {
                 id: format!("w{i}"),
                 name: format!("tool_{i}").into(),
                 input: serde_json::json!({"arg": i}),
             })
             .collect(),
-        thinking_blocks: vec![],
-    }
+    )
 }
 
 #[tokio::test]

@@ -2357,15 +2357,14 @@ mod tests {
         use zeph_llm::provider::{ChatResponse, ToolUseRequest};
 
         let (mock, _counter) = MockProvider::default().with_tool_use(vec![
-            ChatResponse::ToolUse {
-                text: None,
-                tool_calls: vec![ToolUseRequest {
+            ChatResponse::tool_use(
+                None,
+                vec![ToolUseRequest {
                     id: "call-1".into(),
                     name: "bash".into(),
                     input: serde_json::json!({"command": "echo hi"}),
                 }],
-                thinking_blocks: vec![],
-            },
+            ),
             ChatResponse::Text("final answer".into()),
         ]);
 

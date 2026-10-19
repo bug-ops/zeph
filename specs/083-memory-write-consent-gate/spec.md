@@ -206,6 +206,10 @@ Wired through `AgentSessionConfig` (all four agent entry points: CLI/TUI, ACP, A
   (`load_history`/`load_history_filtered`/`message_by_id`) and propagated through both
   compaction and deferred tool-pair summarization — dropping it on any of these paths
   reopens a #6598-class bypass
+- The pinned focus Knowledge block (`complete_focus`/`compress_context` summaries) MUST carry
+  `trust_level = ExternalUntrusted`: any synthetic message that replaces tagged messages
+  inherits at least their worst tier, otherwise summarising untrusted content clears the
+  gate (#6823, same gap class as #6558)
 - An unrecognized/missing persisted `trust_level` MUST map to the most conservative tier
   (`ExternalUntrusted`), never to `Trusted` — fail-safe, not fail-open, for this gate
   specifically (contrast with [[004-9-memory-write-gate]]'s scoring, which is fail-open)

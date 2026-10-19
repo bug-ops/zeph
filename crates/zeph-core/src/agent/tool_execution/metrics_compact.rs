@@ -3,7 +3,8 @@
 
 use zeph_common::text::estimate_tokens;
 use zeph_llm::provider::{
-    ChatResponse, LlmProvider, Message, MessageMetadata, MessageOrigin, MessagePart, Role,
+    AssistantBlock, ChatResponse, LlmProvider, Message, MessageMetadata, MessageOrigin,
+    MessagePart, Role,
 };
 use zeph_sanitizer::{ContentSource, ContentSourceKind, ContentTrustLevel};
 
@@ -77,19 +78,24 @@ impl<C: Channel> Agent<C> {
     pub(super) async fn record_chat_metrics_and_compact(
         &mut self,
         start: std::time::Instant,
-        result: &ChatResponse,
+        result: &mut ChatResponse,
     ) -> Result<(), crate::agent::error::AgentError> {
         let elapsed = start.elapsed();
         let latency = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
         let prompt_estimate = self.runtime.providers.cached_prompt_tokens;
         let completion_heuristic = match result {
             ChatResponse::Text(t) => estimate_tokens(t) as u64,
-            ChatResponse::ToolUse {
-                text, tool_calls, ..
-            } => {
-                let text_tokens = estimate_tokens(text.as_deref().unwrap_or(""));
-                let calls_tokens: usize = tool_calls
+            ChatResponse::ToolUse { content, .. } => {
+                let text_tokens: usize = content
+                    .blocks()
                     .iter()
+                    .map(|b| match b {
+                        AssistantBlock::Text(t) => estimate_tokens(t),
+                        _ => 0,
+                    })
+                    .sum();
+                let calls_tokens: usize = content
+                    .tool_calls()
                     .map(|c| {
                         estimate_tokens(c.name.as_str()) + estimate_tokens(&c.input.to_string())
                     })
@@ -145,7 +151,9 @@ impl<C: Channel> Agent<C> {
         self.emit_usage_event().await;
 
         // C2: server-side compaction — prune old messages and insert synthetic compaction message.
-        if let Some(raw_summary) = self.provider.take_compaction_summary() {
+        // The summary rides on this very response, so no other caller of a shared provider
+        // can supply one.
+        if let Some(raw_summary) = result.take_compaction() {
             self.channel
                 .send_status_best_effort("Compacting context (server-side)...")
                 .await;
@@ -154,7 +162,11 @@ impl<C: Channel> Agent<C> {
                 messages_before = self.msg.messages.len(),
                 "server-side compaction received; pruning old messages"
             );
-            self.apply_raw_server_compaction(&raw_summary);
+            if self.apply_raw_server_compaction(&raw_summary) {
+                // The response's thinking was produced under the pre-compaction prefix, which
+                // the mirror just replaced; it must not be pushed behind the new prefix.
+                result.strip_thinking();
+            }
             self.update_metrics(|m| m.server_compaction_events += 1);
             self.channel.send_status_best_effort("").await;
         }
@@ -165,7 +177,14 @@ impl<C: Channel> Agent<C> {
     /// Sanitize a raw server-compaction summary and mirror it into history.
     ///
     /// SEC-COMPACT-01: the summary is sanitized as `McpResponse` (`ExternalUntrusted`).
-    pub(in crate::agent) fn apply_raw_server_compaction(&mut self, raw_summary: &str) {
+    ///
+    /// Returns `false` and leaves history untouched when the summary is blank:
+    /// mirroring it would replace the whole conversation with nothing.
+    pub(in crate::agent) fn apply_raw_server_compaction(&mut self, raw_summary: &str) -> bool {
+        if raw_summary.trim().is_empty() {
+            tracing::warn!("server compaction summary is empty; keeping history");
+            return false;
+        }
         let source = ContentSource::new(ContentSourceKind::McpResponse);
         let sanitized = self
             .services
@@ -173,6 +192,7 @@ impl<C: Channel> Agent<C> {
             .sanitizer
             .sanitize(raw_summary, source);
         self.apply_server_compaction(sanitized.body);
+        true
     }
 
     /// Replace the in-memory history with its server-compaction mirror and refresh the derived

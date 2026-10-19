@@ -114,6 +114,8 @@ pub struct AgentSessionConfig {
     pub store_config: zeph_config::CrossThreadStoreConfig,
     pub debug_config: DebugConfig,
     pub server_compaction: bool,
+    /// Explicit server-compaction trigger of the first provider that enables it, if configured.
+    pub server_compaction_trigger: Option<zeph_config::CompactionTrigger>,
 
     /// Inject `<budget>` XML into the volatile system prompt section (#2267).
     pub budget_hint_enabled: bool,
@@ -224,6 +226,12 @@ impl AgentSessionConfig {
             store_config: config.memory.store.clone(),
             debug_config: config.debug.clone(),
             server_compaction: config.llm.providers.iter().any(|e| e.server_compaction),
+            server_compaction_trigger: config
+                .llm
+                .providers
+                .iter()
+                .filter(|e| e.server_compaction)
+                .find_map(|e| e.server_compaction_trigger_tokens),
             budget_hint_enabled: config.agent.budget_hint_enabled,
             time_reminder_enabled: config.agent.time_reminder_enabled,
             time_reminder_interval_requests: config.agent.time_reminder_interval_requests,

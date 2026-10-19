@@ -5,6 +5,8 @@
 // Raised from 128: #[instrument] chain on the agent call stack deepens async state machines.
 #![recursion_limit = "256"]
 
+mod common;
+
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -37,11 +39,7 @@ fn tool_use_provider(final_text: &str) -> AnyProvider {
         input: serde_json::json!({}),
     };
     let (p, _) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call],
-            thinking_blocks: vec![],
-        },
+        ChatResponse::tool_use(None, vec![tool_call]),
         ChatResponse::Text(final_text.to_string()),
     ]);
     AnyProvider::Mock(p)
@@ -50,15 +48,14 @@ fn tool_use_provider(final_text: &str) -> AnyProvider {
 fn multi_tool_use_provider(iterations: usize, final_text: &str) -> AnyProvider {
     let mut responses = Vec::new();
     for i in 0..iterations {
-        responses.push(ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![ToolUseRequest {
+        responses.push(ChatResponse::tool_use(
+            None,
+            vec![ToolUseRequest {
                 id: format!("call{i}"),
                 name: "bash".into(),
                 input: serde_json::json!({}),
             }],
-            thinking_blocks: vec![],
-        });
+        ));
     }
     responses.push(ChatResponse::Text(final_text.to_string()));
     let (p, _) = MockProvider::default().with_tool_use(responses);
@@ -198,6 +195,9 @@ impl ToolExecutor for MockToolExecutor {
     ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
         std::future::ready(Ok(None))
     }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
+    }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
 
@@ -243,6 +243,9 @@ impl ToolExecutor for OutputToolExecutor {
             ..Default::default()
         })))
     }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
+    }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
 
@@ -285,6 +288,9 @@ impl ToolExecutor for EmptyOutputToolExecutor {
             claim_source: None,
             ..Default::default()
         })))
+    }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
@@ -329,6 +335,9 @@ impl ToolExecutor for ErrorOutputToolExecutor {
             ..Default::default()
         })))
     }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
+    }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
 
@@ -351,6 +360,9 @@ impl ToolExecutor for BlockedToolExecutor {
         std::future::ready(Err(ToolError::Blocked {
             command: "rm -rf /".into(),
         }))
+    }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
@@ -429,6 +441,9 @@ impl ToolExecutor for ConfirmToolExecutor {
     fn requires_confirmation(&self, _call: &ToolCall) -> bool {
         true
     }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
+    }
 }
 
 struct SandboxToolExecutor;
@@ -450,6 +465,9 @@ impl ToolExecutor for SandboxToolExecutor {
         std::future::ready(Err(ToolError::SandboxViolation {
             path: "/etc/passwd".into(),
         }))
+    }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
@@ -475,6 +493,9 @@ impl ToolExecutor for IoErrorToolExecutor {
             std::io::ErrorKind::NotFound,
             "command not found",
         ))))
+    }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
@@ -518,6 +539,9 @@ impl ToolExecutor for ExitCodeToolExecutor {
             claim_source: None,
             ..Default::default()
         })))
+    }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
@@ -928,16 +952,8 @@ async fn agent_process_response_with_tool_output() {
         input: serde_json::json!({}),
     };
     let (p, _) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call.clone()],
-            thinking_blocks: vec![],
-        },
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call.clone()],
-            thinking_blocks: vec![],
-        },
+        ChatResponse::tool_use(None, vec![tool_call.clone()]),
+        ChatResponse::tool_use(None, vec![tool_call.clone()]),
         ChatResponse::Text("done".to_string()),
     ]);
     let outputs = Arc::new(Mutex::new(Vec::new()));
@@ -968,21 +984,9 @@ async fn agent_process_response_tool_loop_max_iterations() {
         input: serde_json::json!({}),
     };
     let (p, _) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call.clone()],
-            thinking_blocks: vec![],
-        },
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call.clone()],
-            thinking_blocks: vec![],
-        },
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call],
-            thinking_blocks: vec![],
-        },
+        ChatResponse::tool_use(None, vec![tool_call.clone()]),
+        ChatResponse::tool_use(None, vec![tool_call.clone()]),
+        ChatResponse::tool_use(None, vec![tool_call]),
         ChatResponse::Text("done".to_string()),
     ]);
     let outputs = Arc::new(Mutex::new(Vec::new()));
@@ -2607,11 +2611,7 @@ mod self_learning {
             input: serde_json::json!({}),
         };
         let (p, _) = MockProvider::default().with_tool_use(vec![
-            ChatResponse::ToolUse {
-                text: None,
-                tool_calls: vec![tool_call],
-                thinking_blocks: vec![],
-            },
+            ChatResponse::tool_use(None, vec![tool_call]),
             ChatResponse::Text(final_text.to_string()),
         ]);
         AnyProvider::Mock(p)

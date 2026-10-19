@@ -120,9 +120,9 @@ impl ToolExecutor for DagAwareToolExecutor {
 }
 
 fn dag_tool_use_response() -> ChatResponse {
-    ChatResponse::ToolUse {
-        text: None,
-        tool_calls: vec![
+    ChatResponse::tool_use(
+        None,
+        vec![
             ToolUseRequest {
                 id: "tool_a_id".to_owned(),
                 name: "tool_a".to_owned().into(),
@@ -134,14 +134,13 @@ fn dag_tool_use_response() -> ChatResponse {
                 input: serde_json::json!({"source": "tool_a_id"}),
             },
         ],
-        thinking_blocks: vec![],
-    }
+    )
 }
 
 fn independent_tool_use_response() -> ChatResponse {
-    ChatResponse::ToolUse {
-        text: None,
-        tool_calls: vec![
+    ChatResponse::tool_use(
+        None,
+        vec![
             ToolUseRequest {
                 id: "tool_a_id".to_owned(),
                 name: "tool_a".to_owned().into(),
@@ -153,8 +152,7 @@ fn independent_tool_use_response() -> ChatResponse {
                 input: serde_json::json!({"arg": "independent"}),
             },
         ],
-        thinking_blocks: vec![],
-    }
+    )
 }
 
 #[tokio::test]

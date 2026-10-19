@@ -4,6 +4,8 @@
 // Raised from 128: #[instrument] chain on the agent call stack deepens async state machines.
 #![recursion_limit = "256"]
 
+mod common;
+
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -28,11 +30,7 @@ fn tool_use_provider(final_text: &str) -> AnyProvider {
         input: serde_json::json!({}),
     };
     let (p, _) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call],
-            thinking_blocks: vec![],
-        },
+        ChatResponse::tool_use(None, vec![tool_call]),
         ChatResponse::Text(final_text.to_string()),
     ]);
     AnyProvider::Mock(p)
@@ -150,6 +148,9 @@ impl ToolExecutor for InstrumentedMockExecutor {
             ..Default::default()
         }))
     }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
+    }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
 
@@ -171,6 +172,9 @@ impl ToolExecutor for BlockingMockExecutor {
         std::future::ready(Err(ToolError::Blocked {
             command: call.tool_id.to_string(),
         }))
+    }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }

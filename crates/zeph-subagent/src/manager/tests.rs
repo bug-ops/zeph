@@ -1114,15 +1114,14 @@ async fn tool_call_loop_two_turns() {
     mgr.definitions.push(sample_def());
 
     // First response: ToolUse with a shell call; second: Text with final answer.
-    let tool_response = ChatResponse::ToolUse {
-        text: None,
-        tool_calls: vec![ToolUseRequest {
+    let tool_response = ChatResponse::tool_use(
+        None,
+        vec![ToolUseRequest {
             id: "call-1".into(),
             name: "shell".into(),
             input: serde_json::json!({"command": "echo hi"}),
         }],
-        thinking_blocks: vec![],
-    };
+    );
     let (mock, _counter) = MockProvider::default().with_tool_use(vec![
         tool_response,
         ChatResponse::Text("final answer".into()),
@@ -3238,7 +3237,7 @@ impl zeph_llm::debug_dump::DebugDumpSink for RecordingDumpSink {
     fn dump_response(&self, id: u32, response: &ChatResponse) {
         let text = match response {
             ChatResponse::Text(t) => t.clone(),
-            ChatResponse::ToolUse { text, .. } => text.clone().unwrap_or_default(),
+            ChatResponse::ToolUse { content, .. } => content.text().unwrap_or_default(),
             _ => String::new(),
         };
         self.responses.lock().unwrap().push((id, text));
@@ -3401,15 +3400,14 @@ async fn run_agent_loop_executes_native_tool_call() {
 
     // Provider: first call returns ToolUse, second returns Text.
     let (mock, _counter) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![ToolUseRequest {
+        ChatResponse::tool_use(
+            None,
+            vec![ToolUseRequest {
                 id: "call-1".into(),
                 name: "shell".into(),
                 input: serde_json::json!({"command": "echo hi"}),
             }],
-            thinking_blocks: vec![],
-        },
+        ),
         ChatResponse::Text("all done".into()),
     ]);
 

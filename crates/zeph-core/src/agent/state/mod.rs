@@ -922,10 +922,13 @@ pub(crate) struct ToolState {
     pub(crate) tools_enabled: bool,
     /// Dynamic tool schema filter: pre-computed tool embeddings for per-turn filtering (#2020).
     pub(crate) tool_schema_filter: Option<zeph_tools::ToolSchemaFilter>,
-    /// Cached filtered tool IDs for the current user turn.
+    /// Tool IDs offered for the current user turn: the schema-filter result plus tools held back
+    /// only by unmet `requires` (those stay listed and are rejected at dispatch).
     pub(crate) cached_filtered_tool_ids: Option<HashSet<String>>,
+    /// Frozen tool set of the running tool loop; `None` between turns.
+    pub(crate) turn_tool_set: Option<crate::agent::turn_gate::TurnToolSet>,
     /// Tool dependency graph for sequential tool availability (#2024).
-    pub(crate) dependency_graph: Option<zeph_tools::ToolDependencyGraph>,
+    pub(crate) dependency_graph: Option<Arc<zeph_tools::ToolDependencyGraph>>,
     /// Always-on tool IDs, mirrored from the tool schema filter for dependency gate bypass.
     pub(crate) dependency_always_on: HashSet<String>,
     /// Tool IDs that completed successfully in the current session.
@@ -955,6 +958,7 @@ impl Default for ToolState {
             tools_enabled: true,
             tool_schema_filter: None,
             cached_filtered_tool_ids: None,
+            turn_tool_set: None,
             dependency_graph: None,
             dependency_always_on: HashSet::new(),
             completed_tool_ids: HashSet::new(),

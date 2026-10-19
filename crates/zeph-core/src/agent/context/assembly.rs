@@ -2224,7 +2224,14 @@ impl<C: Channel> Agent<C> {
                     for (tool_id, reason) in &result.inclusion_reasons {
                         tracing::debug!(tool_id, ?reason, "tool inclusion reason");
                     }
-                    self.services.tool_state.cached_filtered_tool_ids = Some(result.included);
+                    let mut offered = result.included;
+                    offered.extend(
+                        result
+                            .dependency_exclusions
+                            .iter()
+                            .map(|e| e.tool_id.to_string()),
+                    );
+                    self.services.tool_state.cached_filtered_tool_ids = Some(offered);
                 }
             }
             self.channel.send_status_best_effort("").await;
@@ -2340,6 +2347,7 @@ impl<C: Channel> Agent<C> {
         }
 
         let threshold = engine.confidence_threshold();
+        let paste_gate = self.paste_dispatch_gate();
 
         for skill in active_skills {
             let skill_name = &skill.meta.name;
@@ -2367,7 +2375,7 @@ impl<C: Channel> Agent<C> {
 
             for pred in &predictions {
                 if pred.confidence >= threshold {
-                    engine.try_dispatch(pred, skill_trust);
+                    engine.try_dispatch(pred, skill_trust, &paste_gate);
                 }
             }
         }

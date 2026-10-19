@@ -90,7 +90,7 @@ Agent<C: Channel> {
 ## Key Invariants
 
 - **System message is always `messages[0]`** — rebuilt each turn from config + skills + instructions
-- **Thinking blocks are forwarded verbatim** to the next request — never stripped or summarized
+- **Thinking blocks are forwarded verbatim, in response order,** within the current turn; they are only removed as a whole leading or trailing run when the prefix they were signed over changes (see 001)
 - **Provider can be swapped at runtime** via `provider_override` without restarting the agent
 - **Hot-reload events** (skills, instructions, config) are processed between turns, never mid-turn
 - **Message queue takes priority** over channel recv — injected messages run before user input
@@ -101,9 +101,11 @@ Agent<C: Channel> {
 
 - Token counting via `tiktoken-rs` against provider's `context_window()`
 - **Soft threshold (~60%)**: apply deferred tool pair summaries
+- **Mid-iteration edits are pressure-gated**: inside a tool loop history is only rewritten under token pressure (`DeferredApplyTrigger::TokenPressure` for deferred summaries, soft compaction). The pending-count trigger (`DeferredApplyTrigger::TokenOrCount`) runs at the turn boundary only. `prune_stale_tool_outputs` runs once per turn, first thing at the turn boundary, outside both the no-providers backoff skip and the `context_prep_timeout_secs` budget, so it always runs
+- Every in-turn rewrite calls `zeph_llm::provider::strip_thinking_from` with the lowest touched index (see `[[001-system-invariants/spec]]`); the stale thinking is removed once instead of being dropped by the provider on every request
 - **Hard threshold (~90%)**: run full compaction (summarize old turns, evict by Ebbinghaus policy)
 - Compaction result stored as `MessagePart::Compaction` — never removed from history
-- **Server-compaction mirror** (`metrics_compact.rs::mirror_server_compaction`): when the provider returns a compaction block, history becomes every `Role::System` message in order (system prompt, focus Knowledge block, recall, client summary), one `Assistant{Compaction}` message, and only the latest `MessageOrigin::TurnInput` message. The mid-loop tool pair is dropped with the rest (the summary covers it); the cut no longer keys on the last `User` message, which mid-loop is a `ToolResult` carrier. The compaction message is tagged `ExternalUntrusted` so `context_max_trust_level` keeps the `memory_save` confirmation gate closed (#6558). The subgoal registry is pruned (`SubgoalRegistry::prune`, not reset) and prompt-token/non-system counters are recomputed (#6815)
+- **Server-compaction mirror** (`metrics_compact.rs::mirror_server_compaction`): when the provider returns a compaction block, history becomes every `Role::System` message in order (system prompt, focus Knowledge block, recall, client summary), one `Assistant{Compaction}` message, and only the latest `MessageOrigin::TurnInput` message. The mid-loop tool pair is dropped with the rest (the summary covers it); the cut no longer keys on the last `User` message, which mid-loop is a `ToolResult` carrier. The compaction message is tagged `ExternalUntrusted` so `context_max_trust_level` keeps the `memory_save` confirmation gate closed (#6558). The subgoal registry is pruned (`SubgoalRegistry::prune`, not reset) and prompt-token/non-system counters are recomputed (#6815). A blank summary is refused and history is kept; the response that carried the compaction block has its thinking stripped before its assistant message is pushed, because that thinking was signed over the replaced prefix
 - **Runtime-note seam** (`runtime_note.rs`, `Agent::attach_runtime_note`, run once per dispatch in `process_single_native_turn` before `call_llm_durable`): replaces the per-iteration `remove_lsp_messages` + `Role::System` push in `llm_dispatch.rs`. On iteration 1 or later it appends one note to the tail tool-result message (last non-`System` message, agent-visible, `ToolResult` parts, no note yet) so the request prefix stays byte-identical. Sections: `ToolBudget(BudgetHint)` (from a turn-scoped `ToolLoopBudget { used }`, counted per dispatch at any depth, reset once at the real turn entry in `process_user_message_inner` via `begin_runtime_note_turn`, never in the re-entrant `process_response`, so a nested self-reflection pass shares the outer turn's budget and keeps queued hints; emitted only when remaining first crosses `ceil(max/2)`, `ceil(max/4)`, 3, 2, 1 — a deduplicated set below `max`), `Lsp(String)` (drained only when a target exists, deduplicated per turn by content hash), `UtilityHint(String)` (utility-gate hints queue here instead of being pushed as `System` messages). No note at iteration 0, on a reflection tail, or on a non-visible tail; pending sections wait for the next eligible tail, and a loop that stops without another dispatch (utility-window hard break, context nearly full) flushes hints and LSP notes onto the still-unsent tail tool-result message (`flush_runtime_note`); LSP notes no tail ever consumed are dropped at the next turn start. The budget is advisory and conservative: nested reflection loops enforce their own `max_iterations`. The system-prompt `BudgetHint` remains the turn-start snapshot via the shared `budget_hint_snapshot(used)`. Token accounting is incremental (the note's token delta is added to `cached_prompt_tokens`)
 - **Head injections**: `insert_at_context_floor` stamps `MessageOrigin::HeadInjection` on recall, summaries, cross-session and digest messages; together with `TurnInput` they are never subgoal-tagged, fidelity-scored, or selected for compression. A turn input that is superseded by the next turn becomes ordinary history and is tagged like any other message by the next subgoal extraction
 - **Subgoal transitions**: on a transition every message since the last extraction that is still untagged is tagged with the new subgoal (previously left untagged)
@@ -318,6 +320,13 @@ multiple concatenated wrappers from a multi-tool-call turn (#6584, fixed in #661
 - Every sink that appends an LLM-generated summary to the pinned Knowledge block MUST sanitize
   it first — `complete_focus_tool` and `handle_compress_context` both go through the same
   `WebScrape`/`ExternalUntrusted` sanitizer call
+- The Knowledge block is always tagged `ExternalUntrusted` (see 083), so
+  `context_max_trust_level` cannot return `Trusted` after untrusted content was summarised;
+  its rebuild stays `Role::System` at the context floor, a deliberate prefix edit (#6823)
+- The `start_focus` checkpoint is `MessageVisibility::Marker` (hidden from agent and user, never
+  sent to a provider); `complete_focus` does not echo the summary in its tool result
+- `inject_code_context` inserts via `insert_at_context_floor`, never at a fixed index, so it
+  cannot land in front of a server compaction block
 - NEVER let a truncated compaction-prompt message leave a spotlight wrapper
   (`<tool-output>`/`<external-data>`) open without its matching closing tag
 

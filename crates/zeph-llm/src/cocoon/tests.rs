@@ -694,7 +694,8 @@ mod integration {
         assert!(result.is_ok(), "chat_with_tools failed: {result:?}");
 
         match result.unwrap() {
-            ChatResponse::ToolUse { tool_calls, .. } => {
+            ChatResponse::ToolUse { content, .. } => {
+                let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
                 eprintln!(
                     "tool test received: ToolUse with {} call(s)",
                     tool_calls.len()

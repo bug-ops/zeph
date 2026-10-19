@@ -8,7 +8,7 @@
 //! ZEPH_CLAUDE_API_KEY=<key> cargo nextest run -p zeph-llm -- --ignored claude_live
 //! ```
 //!
-//! These cover the #5889 capability-gate change: `ThinkingCapability::prefers_effort` now
+//! These cover the #5889 capability-gate change: `ModelCapabilities::prefers_effort` now
 //! also covers Opus 4.7/4.8 and Sonnet 5, which reject `budget_tokens` outright (400) and
 //! must auto-convert `Extended` thinking config to an `effort` level. The same flag also
 //! gates trailing-assistant-message stripping (`no_prefill` in `build_request`), so a
@@ -50,7 +50,7 @@ async fn claude_live_opus_4_8_extended_thinking_converts_to_effort() {
         Err(err) => panic!(
             "chat request against claude-opus-4-8 with Extended{{budget_tokens}} thinking \
              failed: {err}\nIf this is a 400/422, prefers_effort likely stopped converting \
-             budget_tokens to effort for this model — check thinking_capability() in \
+             budget_tokens to effort for this model — check ClaudeModel::capabilities() in \
              crates/zeph-llm/src/claude/types.rs."
         ),
     }
@@ -80,7 +80,7 @@ async fn claude_live_sonnet_5_thinking_strips_trailing_assistant_prefill() {
             "chat request against claude-sonnet-5 with a trailing assistant message and \
              thinking enabled failed: {err}\nIf this is a 400, the no_prefill strip at \
              build_request (mod.rs) is not firing for this model — check that \
-             thinking_capability(\"claude-sonnet-5\").prefers_effort is true."
+             ClaudeModel::Sonnet5.capabilities().prefers_effort is true."
         ),
     }
 }

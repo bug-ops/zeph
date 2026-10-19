@@ -10,7 +10,7 @@
 //! - Extended and adaptive thinking (`claude-sonnet-5`, `claude-opus-4-8`)
 //! - Prompt caching (`cache_control` blocks) for cost reduction
 //! - Server-side context compaction (compact-2026-01-12 beta)
-//! - Extended context window (context-1m-2025-08-07 beta)
+//! - Extended context window (lifts the default 200k ceiling to the model's native window)
 //!
 //! # Configuration
 //!
@@ -38,7 +38,9 @@
 //! # }
 //! ```
 
+mod beta;
 mod cache;
+mod model;
 mod request;
 #[cfg(test)]
 mod tests;
@@ -46,7 +48,6 @@ mod types;
 
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex;
 
@@ -55,27 +56,29 @@ use crate::tool_desc::build_tool_description;
 use crate::usage::UsageTracker;
 
 use crate::provider::{
-    ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart, StatusTx,
-    ToolDefinition,
+    ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart, Role,
+    StatusTx, ToolDefinition,
 };
 use crate::retry::send_with_retry;
 use crate::sse::claude_sse_to_stream;
 
+use self::beta::{BetaFeature, BetaLatches, claude_error, names_rejected_header};
 use self::cache::{build_cache_control, log_cache_usage, split_system_into_blocks, tool_cache_key};
+use self::model::{CLAUDE_DEFAULT_WINDOW_CEILING, ClaudeModel, ModelCapabilities};
 use self::request::parse_tool_response;
 use self::types::{
-    AnthropicContentBlock, AnthropicTool, ApiMessage, ContextManagement, ContextManagementTrigger,
-    OutputConfig, RequestBody, StructuredApiMessage, SystemContentBlock, ToolApiResponse,
-    ToolChoice, ToolRequestBody, TypedToolRequestBody, VisionRequestBody,
+    AnthropicContentBlock, AnthropicTool, ApiMessage, BlockBinding, CompactTrigger, ContextEdit,
+    ContextManagement, OutputConfig, RequestBody, StructuredApiMessage, SystemContentBlock,
+    ThinkingParam, ThinkingType, ToolApiResponse, ToolChoice, ToolRequestBody,
+    TypedToolRequestBody, VisionRequestBody,
 };
 
-use self::types::{budget_to_effort, thinking_capability};
-use zeph_config::{CacheTtl, ThinkingConfig, ThinkingEffort};
+use self::types::budget_to_effort;
+use zeph_config::{CacheTtl, CompactionTrigger, ThinkingConfig, ThinkingEffort};
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const ANTHROPIC_BETA_INTERLEAVED_THINKING: &str = "interleaved-thinking-2025-05-14";
-const ANTHROPIC_BETA_COMPACT: &str = "compact-2026-01-12";
 const ANTHROPIC_BETA_EXTENDED_CONTEXT: &str = "context-1m-2025-08-07";
 const ANTHROPIC_BETA_EXTENDED_CACHE_TTL: &str = "extended-cache-ttl-2025-04-25";
 
@@ -123,11 +126,13 @@ pub struct ClaudeProvider {
     max_tool_description_bytes: usize,
     /// Enable Claude server-side context compaction (compact-2026-01-12 beta).
     server_compaction: bool,
-    /// Set to `true` at runtime when the API rejects the `compact-2026-01-12` beta header
-    /// (e.g. header deprecated/removed). Shared via `Arc` so clones observe the same state.
-    server_compaction_rejected: Arc<AtomicBool>,
-    /// Most recent compaction summary received from the API, if any.
-    last_compaction: Mutex<Option<String>>,
+    /// Explicit compaction trigger; `None` derives it from the context window.
+    server_compaction_trigger: Option<CompactionTrigger>,
+    /// Betas the API rejected at runtime (e.g. header deprecated or unsupported by a proxy).
+    /// Shared via `Arc` so clones observe the same state.
+    beta_latches: Arc<BetaLatches>,
+    /// Generation of `model`, parsed once at construction.
+    model_kind: ClaudeModel,
     enable_extended_context: bool,
     /// Prompt cache TTL variant. `None` means default (~5 min ephemeral).
     prompt_cache_ttl: Option<CacheTtl>,
@@ -161,14 +166,9 @@ impl fmt::Debug for ClaudeProvider {
             )
             .field("generation_overrides", &self.generation_overrides)
             .field("server_compaction", &self.server_compaction)
-            .field(
-                "server_compaction_rejected",
-                &self.server_compaction_rejected.load(Ordering::Relaxed),
-            )
-            .field(
-                "last_compaction",
-                &self.last_compaction.lock().as_ref().map(String::len),
-            )
+            .field("server_compaction_trigger", &self.server_compaction_trigger)
+            .field("beta_latches", &self.beta_latches)
+            .field("model_kind", &self.model_kind)
             .field("enable_extended_context", &self.enable_extended_context)
             .field("prompt_cache_ttl", &self.prompt_cache_ttl)
             .field("stream_limits", &self.stream_limits)
@@ -199,8 +199,9 @@ impl Clone for ClaudeProvider {
             tool_cache: Mutex::new(None),
             generation_overrides: self.generation_overrides.clone(),
             server_compaction: self.server_compaction,
-            server_compaction_rejected: Arc::clone(&self.server_compaction_rejected),
-            last_compaction: Mutex::new(None),
+            server_compaction_trigger: self.server_compaction_trigger,
+            beta_latches: Arc::clone(&self.beta_latches),
+            model_kind: self.model_kind,
             enable_extended_context: self.enable_extended_context,
             prompt_cache_ttl: self.prompt_cache_ttl,
             forward_output_schema: self.forward_output_schema,
@@ -211,6 +212,22 @@ impl Clone for ClaudeProvider {
             api_url: self.api_url.clone(),
         }
     }
+}
+
+/// How `chat_typed` makes the model answer through its submit tool.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TypedToolMode {
+    /// `tool_choice` names the tool.
+    Forced,
+    /// `tool_choice: auto` plus an instruction; for models that reject a forced choice.
+    Auto,
+}
+
+/// Thinking, sampling and effort parameters resolved for one request.
+struct ThinkingRequest {
+    thinking: Option<ThinkingParam>,
+    temperature: Option<f64>,
+    output_config: Option<OutputConfig>,
 }
 
 /// Per-family minimum non-stale `(major, minor)` for the modern
@@ -329,11 +346,12 @@ impl ClaudeProvider {
                 superseded; consider upgrading to {suggestion}",
             );
         }
+        let model_kind = ClaudeModel::from_model_id(&model);
         Self {
             client: crate::http::llm_client(600),
             api_key,
             model,
-            max_tokens,
+            max_tokens: Self::max_tokens_without_thinking(model_kind, max_tokens),
             base_max_tokens: max_tokens,
             thinking: None,
             status_tx: None,
@@ -345,14 +363,29 @@ impl ClaudeProvider {
             output_schema_hint_bytes: 1024,
             max_tool_description_bytes: usize::MAX,
             server_compaction: false,
-            server_compaction_rejected: Arc::new(AtomicBool::new(false)),
-            last_compaction: Mutex::new(None),
+            server_compaction_trigger: None,
+            beta_latches: Arc::new(BetaLatches::default()),
+            model_kind,
             enable_extended_context: false,
             prompt_cache_ttl: None,
             stream_limits: zeph_config::StreamLimits::default(),
             provider_name: "claude".to_owned(),
             api_url: API_URL.to_owned(),
         }
+    }
+
+    /// `max_tokens` when no thinking is configured: models that think unconditionally need the
+    /// same headroom as an explicit thinking setup, or the answer is starved of output tokens.
+    fn max_tokens_without_thinking(kind: ClaudeModel, base: u32) -> u32 {
+        if kind.capabilities().thinking_always_on {
+            base.max(MIN_MAX_TOKENS_WITH_THINKING)
+        } else {
+            base
+        }
+    }
+
+    fn capabilities(&self) -> ModelCapabilities {
+        self.model_kind.capabilities()
     }
 
     /// Override the Messages API base URL. Test-only: points requests at a mock HTTP server
@@ -428,17 +461,18 @@ impl ClaudeProvider {
         self
     }
 
-    /// Enable server-side context compaction (Claude compact-2026-01-12 beta).
+    /// Enable server-side context compaction (Claude `compact-2026-01-12` beta).
     ///
     /// When enabled, the API automatically summarizes long conversations and returns
     /// a `compaction` content block. Client-side compaction should be skipped when
-    /// this is active.
+    /// this is active. Models without server compaction support (Haiku 4.5, legacy
+    /// generations, unrecognised ids) keep it disabled.
     #[must_use]
     pub fn with_server_compaction(mut self, enabled: bool) -> Self {
-        if enabled && self.model.contains("haiku") {
+        if enabled && !self.capabilities().server_compaction {
             tracing::warn!(
                 model = %self.model,
-                "server-side compaction (compact-2026-01-12) not supported for Haiku models — \
+                "server-side compaction (compact-2026-01-12) is not supported for this model — \
                 disabling"
             );
             self.server_compaction = false;
@@ -448,74 +482,125 @@ impl ClaudeProvider {
         self
     }
 
+    /// Set the input-token count at which server-side compaction fires.
+    ///
+    /// `None` (the default) derives the trigger as 70% of [`LlmProvider::context_window`],
+    /// floored at the API minimum of 50 000 tokens, which keeps it below the agent's own
+    /// tool-loop stop line.
+    #[must_use]
+    pub fn with_server_compaction_trigger(mut self, trigger: Option<CompactionTrigger>) -> Self {
+        self.server_compaction_trigger = trigger;
+        self
+    }
+
+    /// The compaction trigger that requests will carry: the explicit setting or the derived
+    /// default.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::claude::ClaudeProvider;
+    ///
+    /// let provider = ClaudeProvider::new("key".into(), "claude-sonnet-5".into(), 4096)
+    ///     .with_server_compaction(true);
+    /// assert_eq!(provider.effective_compaction_trigger().get(), 140_000);
+    /// ```
+    #[must_use]
+    pub fn effective_compaction_trigger(&self) -> CompactionTrigger {
+        self.server_compaction_trigger.unwrap_or_else(|| {
+            let window = self
+                .context_window()
+                .and_then(|w| u32::try_from(w).ok())
+                .unwrap_or(CLAUDE_DEFAULT_WINDOW_CEILING.get());
+            CompactionTrigger::default_for_window(window)
+        })
+    }
+
     /// Return `true` when server-side compaction is enabled.
     #[must_use]
     pub fn server_compaction_enabled(&self) -> bool {
         self.server_compaction
     }
 
-    /// Return the compaction summary from the most recent API call, if a compaction occurred.
-    /// Clears the stored value after reading.
-    pub fn take_compaction_summary(&self) -> Option<String> {
-        self.last_compaction.lock().take()
-    }
-
     /// Return `true` if the `compact-2026-01-12` beta header was rejected by the API
     /// during a previous request this session.
     #[must_use]
     pub fn is_server_compaction_rejected(&self) -> bool {
-        self.server_compaction_rejected.load(Ordering::Relaxed)
+        self.beta_latches.is_rejected(BetaFeature::Compact)
     }
 
-    /// Detect whether a 400 response body indicates the `compact-2026-01-12` beta header
-    /// was rejected by the API.
-    fn is_compact_beta_rejection(status: reqwest::StatusCode, body: &str) -> bool {
-        status == reqwest::StatusCode::BAD_REQUEST
-            && (body.contains(ANTHROPIC_BETA_COMPACT)
-                || body.contains("unknown beta")
-                || body.contains("invalid beta")
-                || body.contains("context_management"))
+    fn compaction_active(&self) -> bool {
+        self.server_compaction && !self.beta_latches.is_rejected(BetaFeature::Compact)
     }
 
-    /// Handle a `compact-2026-01-12` beta rejection at a request call site.
+    fn thinking_binding_active(&self) -> bool {
+        self.capabilities().preserved_thinking
+            && !self.beta_latches.is_rejected(BetaFeature::ThinkingBinding)
+    }
+
+    /// Latchable betas that are part of the next request.
+    fn active_betas(&self) -> impl Iterator<Item = BetaFeature> {
+        [
+            self.compaction_active().then_some(BetaFeature::Compact),
+            self.thinking_binding_active()
+                .then_some(BetaFeature::ThinkingBinding),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
+    /// Handle a 400 that names one of the request's beta headers.
     ///
-    /// When `*retried` is still `false` and `status`/`text` indicate a beta rejection,
-    /// permanently disables server-side compaction for this session, warns once, sets
-    /// `*retried = true`, and returns `true` so the caller can `continue` its retry loop.
-    /// Returns `false` otherwise, in which case the caller must fall through to normal
-    /// error handling. `variant` labels the call site in the warning (e.g. `"streaming"`,
-    /// `"typed"`); pass `""` for the non-streaming, non-tool call site.
-    fn handle_compact_beta_rejection(
+    /// Latches each named beta off for the rest of the session, warns once per beta, and returns
+    /// `true` so the caller can retry without it. Returns `false` for a thinking-binding
+    /// mismatch (which also mentions a header but is not a rejection) and for any 400 that names
+    /// no active beta; the caller then surfaces the error. A latched beta is no longer sent, so
+    /// the retry cannot loop. `variant` labels the call site in the warning; pass `""` for the
+    /// plain chat call site.
+    fn handle_beta_rejection(
         &self,
         status: reqwest::StatusCode,
         text: &str,
-        retried: &mut bool,
         variant: &str,
     ) -> bool {
-        if *retried || !Self::is_compact_beta_rejection(status, text) {
-            return false;
+        let mut retry = false;
+        for beta in self.active_betas() {
+            if names_rejected_header(status, text, beta) && self.beta_latches.reject(beta) {
+                let suffix = if variant.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({variant})")
+                };
+                tracing::warn!(
+                    beta = beta.header(),
+                    "beta header rejected by Claude API{suffix}; disabling it for this session"
+                );
+                retry = true;
+            }
         }
-        self.server_compaction_rejected
-            .store(true, Ordering::Relaxed);
-        let suffix = if variant.is_empty() {
-            String::new()
-        } else {
-            format!(" ({variant})")
-        };
-        tracing::warn!(
-            "compact-2026-01-12 beta header rejected by Claude API{suffix}; \
-            disabling server-side compaction for this session. \
-            Update your config to set `server_compaction = false`."
-        );
-        *retried = true;
-        true
+        retry
     }
 
+    /// Lift the default 200k context-window ceiling to the model's native window.
+    ///
+    /// Current models have a 1M native window; without this the reported
+    /// [`LlmProvider::context_window`] is capped at 200k so budgets stay conservative. Legacy
+    /// Sonnet 4/4.5 additionally need the `context-1m-2025-08-07` beta, which is sent only when
+    /// this is enabled. Models whose window is 200k regardless (Haiku 4.5) ignore the flag.
     #[must_use]
     pub fn with_extended_context(mut self, enabled: bool) -> Self {
         self.enable_extended_context = enabled;
         if enabled {
-            tracing::info!("Claude extended context (1M) enabled");
+            let caps = self.capabilities();
+            if caps.extended_window() == caps.default_window() {
+                tracing::warn!(
+                    model = %self.model,
+                    "enable_extended_context has no effect for this model; \
+                    its context window is not extendable"
+                );
+            } else {
+                tracing::info!(model = %self.model, "Claude extended context window enabled");
+            }
         }
         self
     }
@@ -583,7 +668,8 @@ impl ClaudeProvider {
     /// `budget_tokens >= max_tokens` after the automatic 16 000-token floor is applied.
     pub fn set_thinking(&mut self, thinking: Option<ThinkingConfig>) -> Result<(), LlmError> {
         let Some(thinking) = thinking else {
-            self.max_tokens = self.base_max_tokens;
+            self.max_tokens =
+                Self::max_tokens_without_thinking(self.model_kind, self.base_max_tokens);
             self.thinking = None;
             return Ok(());
         };
@@ -768,14 +854,21 @@ impl ClaudeProvider {
         Ok(models)
     }
 
-    fn build_thinking_param(
-        &self,
-    ) -> (
-        Option<types::ThinkingParam>,
-        Option<f64>,
-        Option<ThinkingEffort>,
-    ) {
-        let cap = thinking_capability(&self.model);
+    /// Build the `thinking` request parameter and the matching `effort`.
+    ///
+    /// Models with preserved thinking get `block_binding: drop_block` (and an explicit
+    /// `adaptive` type when thinking is not configured) so a prefix change degrades to dropped
+    /// reasoning instead of a 400. Unrecognised models never get an implicit thinking parameter.
+    fn build_thinking_param(&self) -> (Option<ThinkingParam>, Option<f64>, Option<ThinkingEffort>) {
+        let cap = self.capabilities();
+        let block_binding = self
+            .thinking_binding_active()
+            .then_some(BlockBinding::DROP_BLOCK);
+        let adaptive = || ThinkingParam {
+            thinking_type: ThinkingType::Adaptive,
+            budget_tokens: None,
+            block_binding,
+        };
         match &self.thinking {
             Some(ThinkingConfig::Extended { budget_tokens }) if cap.prefers_effort => {
                 let effort = budget_to_effort(*budget_tokens);
@@ -785,44 +878,53 @@ impl ClaudeProvider {
                     ?effort,
                     "budget_tokens is unsupported for this model; auto-converting to effort"
                 );
-                (
-                    Some(types::ThinkingParam {
-                        thinking_type: "adaptive",
-                        budget_tokens: None,
-                    }),
-                    None,
-                    Some(effort),
-                )
+                (Some(adaptive()), None, Some(effort))
             }
             Some(ThinkingConfig::Extended { budget_tokens }) => (
-                Some(types::ThinkingParam {
-                    thinking_type: "enabled",
+                Some(ThinkingParam {
+                    thinking_type: ThinkingType::Enabled,
                     budget_tokens: Some(*budget_tokens),
+                    block_binding: None,
                 }),
                 None,
                 None,
             ),
-            Some(ThinkingConfig::Adaptive { effort }) => (
-                Some(types::ThinkingParam {
-                    thinking_type: "adaptive",
-                    budget_tokens: None,
-                }),
-                None,
-                *effort,
-            ),
+            Some(ThinkingConfig::Adaptive { effort }) => (Some(adaptive()), None, *effort),
             // Unknown future variants: treat as no thinking.
+            _ if block_binding.is_some() => (Some(adaptive()), None, None),
             _ => (None, None, None),
+        }
+    }
+
+    /// Thinking, sampling and effort parameters shared by every request body.
+    ///
+    /// `temperature` is dropped for models that reject sampling parameters; it is also never
+    /// sent beside a thinking parameter.
+    fn thinking_request(&self) -> ThinkingRequest {
+        let (thinking, mut temperature, effort) = self.build_thinking_param();
+        if thinking.is_none()
+            && let Some(Some(t)) = self.generation_overrides.as_ref().map(|ov| ov.temperature)
+        {
+            temperature = Some(t);
+        }
+        if self.capabilities().rejects_sampling {
+            temperature = None;
+        }
+        ThinkingRequest {
+            thinking,
+            temperature,
+            output_config: effort.map(|e| OutputConfig { effort: e }), // lgtm[rust/cleartext-logging]
         }
     }
 
     fn beta_header(&self, has_tools: bool) -> Option<String> {
         let mut headers: Vec<&str> = Vec::new();
+        let cap = self.capabilities();
 
-        if self.enable_extended_context {
+        if self.enable_extended_context && cap.needs_1m_beta {
             headers.push(ANTHROPIC_BETA_EXTENDED_CONTEXT);
         }
 
-        let cap = thinking_capability(&self.model);
         if self.thinking.is_some()
             && has_tools
             && cap.needs_interleaved_beta
@@ -831,9 +933,7 @@ impl ClaudeProvider {
             headers.push(ANTHROPIC_BETA_INTERLEAVED_THINKING);
         }
 
-        if self.server_compaction && !self.server_compaction_rejected.load(Ordering::Relaxed) {
-            headers.push(ANTHROPIC_BETA_COMPACT);
-        }
+        headers.extend(self.active_betas().map(BetaFeature::header));
 
         if self.prompt_cache_ttl.is_some_and(CacheTtl::requires_beta) {
             headers.push(ANTHROPIC_BETA_EXTENDED_CACHE_TTL);
@@ -849,20 +949,16 @@ impl ClaudeProvider {
     /// Build the `context_management` field for server-side compaction.
     /// Returns `None` when `server_compaction` is disabled or the beta header was rejected.
     fn context_management(&self) -> Option<ContextManagement> {
-        if !self.server_compaction || self.server_compaction_rejected.load(Ordering::Relaxed) {
+        if !self.compaction_active() {
             return None;
         }
-        let context_window =
-            u32::try_from(self.context_window().unwrap_or(200_000)).unwrap_or(200_000_u32);
-        // Default hard_compaction_threshold of 0.90 — matches client-side default.
-        // Multiply before dividing to preserve precision (avoid losing up to 99 tokens).
-        let trigger_tokens = context_window * 80 / 100;
         Some(ContextManagement {
-            trigger: ContextManagementTrigger {
-                kind: "input_tokens",
-                value: trigger_tokens,
-            },
-            pause_after_compaction: false,
+            edits: vec![ContextEdit::Compact {
+                trigger: CompactTrigger::InputTokens {
+                    value: self.effective_compaction_trigger(),
+                },
+                pause_after_compaction: false,
+            }],
         })
     }
 
@@ -993,7 +1089,7 @@ impl ClaudeProvider {
     /// `chat_with_tools`, `chat_with_tools_stream`, `chat_typed`, `debug_request_json`) so the
     /// gate cannot drift out of sync between call sites again (#5903, #6145, #6146).
     fn no_prefill(&self, thinking_param: Option<&types::ThinkingParam>) -> bool {
-        let cap = thinking_capability(&self.model);
+        let cap = self.capabilities();
         cap.rejects_prefill || (cap.prefers_effort && thinking_param.is_some())
     }
 
@@ -1040,10 +1136,19 @@ impl ClaudeProvider {
         thinking_param: Option<&types::ThinkingParam>,
         cache_tool_blocks: usize,
     ) -> (Option<Vec<SystemContentBlock>>, GatedStructuredHistory) {
-        use self::request::split_messages_structured;
+        use self::request::{ThinkingScope, split_messages_structured_scoped};
 
-        let (system, mut chat_messages) =
-            split_messages_structured(messages, self.cache_user_messages, self.prompt_cache_ttl);
+        let thinking_scope = if self.capabilities().preserved_thinking {
+            ThinkingScope::CurrentTurn
+        } else {
+            ThinkingScope::Verbatim
+        };
+        let (system, mut chat_messages) = split_messages_structured_scoped(
+            messages,
+            self.cache_user_messages,
+            self.prompt_cache_ttl,
+            thinking_scope,
+        );
         let system_blocks =
             system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
         Self::cap_block_cache_controls(
@@ -1075,13 +1180,11 @@ impl ClaudeProvider {
     }
 
     fn build_request(&self, messages: &[Message], stream: bool) -> reqwest::RequestBuilder {
-        let (thinking_param, mut temperature, effort) = self.build_thinking_param();
-        if thinking_param.is_none()
-            && let Some(Some(t)) = self.generation_overrides.as_ref().map(|ov| ov.temperature)
-        {
-            temperature = Some(t);
-        }
-        let output_config = effort.map(|e| OutputConfig { effort: e }); // lgtm[rust/cleartext-logging]
+        let ThinkingRequest {
+            thinking: thinking_param,
+            temperature,
+            output_config,
+        } = self.thinking_request();
 
         if Self::has_image_parts(messages) {
             let (system_blocks, chat_messages) =
@@ -1136,7 +1239,6 @@ impl ClaudeProvider {
 
     #[tracing::instrument(name = "llm.claude.send_request", skip_all)]
     async fn send_request(&self, messages: &[Message]) -> Result<String, LlmError> {
-        let mut retried = false;
         loop {
             let response = send_with_retry(
                 "Claude",
@@ -1150,11 +1252,11 @@ impl ClaudeProvider {
             let (status, text) = crate::http::read_response_body(response).await?;
 
             if !status.is_success() {
-                if self.handle_compact_beta_rejection(status, &text, &mut retried, "") {
+                if self.handle_beta_rejection(status, &text, "") {
                     continue;
                 }
                 tracing::error!("Claude API error {status}: {text}");
-                return Err(crate::http::map_error_response(status, &text, "claude"));
+                return Err(claude_error(status, &text));
             }
 
             if Self::has_image_parts(messages) {
@@ -1212,13 +1314,11 @@ impl ClaudeProvider {
     ) -> Result<crate::sse::ToolSseStream, LlmError> {
         let api_tools = self.get_or_build_api_tools(tools);
 
-        let (thinking_param, mut temperature, effort) = self.build_thinking_param();
-        if thinking_param.is_none()
-            && let Some(Some(t)) = self.generation_overrides.as_ref().map(|ov| ov.temperature)
-        {
-            temperature = Some(t);
-        }
-        let output_config = effort.map(|e| OutputConfig { effort: e });
+        let ThinkingRequest {
+            thinking: thinking_param,
+            temperature,
+            output_config,
+        } = self.thinking_request();
         let (system_blocks, chat_messages) =
             self.structured_history(messages, thinking_param.as_ref(), 1);
         let has_tools = !tools.is_empty();
@@ -1235,7 +1335,6 @@ impl ClaudeProvider {
             context_management: self.context_management(),
         };
 
-        let mut retried = false;
         loop {
             body.context_management = self.context_management();
             let beta = self.beta_header(has_tools);
@@ -1263,14 +1362,113 @@ impl ClaudeProvider {
             let status = response.status();
             if !status.is_success() {
                 let text = response.text().await.map_err(LlmError::Http)?;
-                if self.handle_compact_beta_rejection(status, &text, &mut retried, "tool stream") {
+                if self.handle_beta_rejection(status, &text, "tool stream") {
+                    body.thinking = self.build_thinking_param().0;
                     continue;
                 }
                 tracing::error!("Claude API error {status}: {text}");
-                return Err(crate::http::map_error_response(status, &text, "claude"));
+                return Err(claude_error(status, &text));
             }
 
             return Ok(claude_sse_to_tool_stream(response, &self.stream_limits));
+        }
+    }
+
+    /// Send one structured-output request and return the `input` of the first `tool_use` block.
+    ///
+    /// Returns `Ok(None)` when the response carries no `tool_use`. In [`TypedToolMode::Auto`] the
+    /// system prompt additionally instructs the model to call the tool, since `tool_choice`
+    /// cannot force it.
+    #[tracing::instrument(name = "llm.claude.typed_tool", skip_all)]
+    async fn call_typed_tool(
+        &self,
+        messages: &[Message],
+        tool: &ToolDefinition,
+        mode: TypedToolMode,
+    ) -> Result<Option<serde_json::Value>, LlmError> {
+        let api_tool = AnthropicTool {
+            name: tool.name.as_str(),
+            description: &tool.description,
+            input_schema: &tool.parameters,
+        };
+        let ThinkingRequest {
+            thinking: thinking_param,
+            temperature,
+            output_config,
+        } = self.thinking_request();
+        let (mut system_blocks, chat_messages) =
+            self.structured_history(messages, thinking_param.as_ref(), 0);
+        let tool_choice =
+            match mode {
+                TypedToolMode::Forced => ToolChoice::Tool {
+                    name: tool.name.as_str(),
+                },
+                TypedToolMode::Auto => {
+                    system_blocks.get_or_insert_with(Vec::new).push(SystemContentBlock {
+                    block_type: "text",
+                    text: format!(
+                        "You must answer by calling the `{}` tool exactly once; do not reply \
+                         with plain text.",
+                        tool.name.as_str()
+                    ),
+                    cache_control: None,
+                });
+                    ToolChoice::Auto
+                }
+            };
+        let mut body = TypedToolRequestBody {
+            model: &self.model,
+            max_tokens: self.max_tokens,
+            system: system_blocks,
+            messages: &chat_messages,
+            tools: &[api_tool],
+            tool_choice,
+            thinking: thinking_param,
+            output_config,
+            temperature,
+            context_management: None,
+        };
+        loop {
+            body.context_management = self.context_management();
+            let beta = self.beta_header(true);
+            let response = send_with_retry(
+                "Claude",
+                MAX_RETRIES,
+                self.status_tx.as_ref(),
+                Some(&self.usage),
+                || {
+                    let mut req = self
+                        .client
+                        .post(&self.api_url)
+                        .header("x-api-key", &self.api_key)
+                        .header("anthropic-version", ANTHROPIC_VERSION);
+                    if let Some(ref b) = beta {
+                        req = req.header("anthropic-beta", b);
+                    }
+                    req.header("content-type", "application/json")
+                        .json(&body)
+                        .send()
+                },
+            )
+            .await?;
+            let (status, text) = crate::http::read_response_body(response).await?;
+            if !status.is_success() {
+                if self.handle_beta_rejection(status, &text, "typed") {
+                    body.thinking = self.build_thinking_param().0;
+                    continue;
+                }
+                tracing::error!("Claude API error {status}: {text}");
+                return Err(claude_error(status, &text));
+            }
+            let resp: ToolApiResponse = serde_json::from_str(&text)?;
+            if let Some(ref usage) = resp.usage {
+                log_cache_usage(usage);
+                self.store_cache_usage(usage);
+            }
+            return Ok(resp.content.into_iter().find_map(|block| match block {
+                AnthropicContentBlock::ToolUse { input, .. } => Some(input),
+                _ => None,
+            }));
         }
     }
 
@@ -1279,7 +1477,6 @@ impl ClaudeProvider {
         &self,
         messages: &[Message],
     ) -> Result<reqwest::Response, LlmError> {
-        let mut retried = false;
         loop {
             let response = send_with_retry(
                 "Claude",
@@ -1293,11 +1490,11 @@ impl ClaudeProvider {
             let status = response.status();
             if !status.is_success() {
                 let text = response.text().await.map_err(LlmError::Http)?;
-                if self.handle_compact_beta_rejection(status, &text, &mut retried, "streaming") {
+                if self.handle_beta_rejection(status, &text, "streaming") {
                     continue;
                 }
                 tracing::error!("Claude API streaming request error {status}: {text}");
-                return Err(crate::http::map_error_response(status, &text, "claude"));
+                return Err(claude_error(status, &text));
             }
 
             return Ok(response);
@@ -1307,28 +1504,13 @@ impl ClaudeProvider {
 
 impl LlmProvider for ClaudeProvider {
     fn context_window(&self) -> Option<usize> {
-        if self.model.contains("opus")
-            || self.model.contains("sonnet")
-            || self.model.contains("haiku")
-        {
-            // Only Opus and Sonnet models support the 1M context window.
-            // Haiku does not support extended context even when the flag is set.
-            let supports_1m = self.enable_extended_context && !self.model.contains("haiku");
-            if supports_1m {
-                Some(1_000_000)
-            } else {
-                if self.enable_extended_context && self.model.contains("haiku") {
-                    tracing::warn!(
-                        model = %self.model,
-                        "enable_extended_context has no effect for Haiku models; \
-                        extended context (1M) is only supported by Claude Opus and Sonnet models"
-                    );
-                }
-                Some(200_000)
-            }
+        let cap = self.capabilities();
+        let window = if self.enable_extended_context {
+            cap.extended_window()
         } else {
-            None
-        }
+            cap.default_window()
+        };
+        window.map(|w| w.get() as usize)
     }
 
     #[tracing::instrument(
@@ -1381,7 +1563,6 @@ impl LlmProvider for ClaudeProvider {
         true
     }
 
-    #[allow(clippy::too_many_lines)] // retry loop + body construction are tightly coupled; extracting would obscure control flow
     async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
     where
         T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
@@ -1389,92 +1570,34 @@ impl LlmProvider for ClaudeProvider {
     {
         let (schema_value, _) = crate::provider::cached_schema::<T>()?;
         let type_name = crate::provider::short_type_name::<T>();
-        let tool_name = format!("submit_{type_name}");
         let tool = ToolDefinition {
-            name: tool_name.clone().into(),
+            name: format!("submit_{type_name}").into(),
             description: format!("Submit the structured {type_name} result"),
             parameters: schema_value,
             output_schema: None,
         };
-        let api_tool = AnthropicTool {
-            name: tool.name.as_str(),
-            description: &tool.description,
-            input_schema: &tool.parameters,
+        let mode = if self.capabilities().forbids_forced_tool_choice {
+            TypedToolMode::Auto
+        } else {
+            TypedToolMode::Forced
         };
-        let (thinking_param, mut temperature, effort) = self.build_thinking_param();
-        if thinking_param.is_none()
-            && let Some(Some(t)) = self.generation_overrides.as_ref().map(|ov| ov.temperature)
-        {
-            temperature = Some(t);
-        }
-        let output_config = effort.map(|e| OutputConfig { effort: e });
-        let (system_blocks, chat_messages) =
-            self.structured_history(messages, thinking_param.as_ref(), 0);
-        let tool_choice = ToolChoice {
-            r#type: "tool",
-            name: &tool_name,
-        };
-        let mut body = TypedToolRequestBody {
-            model: &self.model,
-            max_tokens: self.max_tokens,
-            system: system_blocks,
-            messages: &chat_messages,
-            tools: &[api_tool],
-            tool_choice,
-            thinking: thinking_param,
-            output_config,
-            temperature,
-            context_management: None,
-        };
-        let mut retried = false;
-        loop {
-            body.context_management = self.context_management();
-            let beta = self.beta_header(true);
-            let response = send_with_retry(
-                "Claude",
-                MAX_RETRIES,
-                self.status_tx.as_ref(),
-                Some(&self.usage),
-                || {
-                    let mut req = self
-                        .client
-                        .post(&self.api_url)
-                        .header("x-api-key", &self.api_key)
-                        .header("anthropic-version", ANTHROPIC_VERSION);
-                    if let Some(ref b) = beta {
-                        req = req.header("anthropic-beta", b);
-                    }
-                    req.header("content-type", "application/json")
-                        .json(&body)
-                        .send()
-                },
-            )
-            .await?;
-            let (status, text) = crate::http::read_response_body(response).await?;
-            if !status.is_success() {
-                if self.handle_compact_beta_rejection(status, &text, &mut retried, "typed") {
-                    continue;
-                }
-                tracing::error!("Claude API error {status}: {text}");
-                return Err(crate::http::map_error_response(status, &text, "claude"));
-            }
-            let resp: ToolApiResponse = serde_json::from_str(&text)?;
-            if let Some(ref usage) = resp.usage {
-                log_cache_usage(usage);
-                self.store_cache_usage(usage);
-            }
-            for block in resp.content {
-                if let AnthropicContentBlock::ToolUse { input, .. } = block {
-                    return serde_json::from_value::<T>(input)
-                        .map_err(|e| LlmError::StructuredParse(e.to_string()));
-                }
-            }
-            return Err(LlmError::StructuredParse(
-                "no tool_use block in response".into(),
-            ));
-        }
-    }
+        let no_tool_use = || LlmError::StructuredParse("no tool_use block in response".into());
 
+        let mut input = self.call_typed_tool(messages, &tool, mode).await?;
+        if input.is_none() && mode == TypedToolMode::Auto {
+            let mut nudged = messages.to_vec();
+            nudged.push(Message::from_legacy(
+                Role::User,
+                format!(
+                    "Respond by calling the `{}` tool with the result.",
+                    tool.name.as_str()
+                ),
+            ));
+            input = self.call_typed_tool(&nudged, &tool, mode).await?;
+        }
+        let input = input.ok_or_else(no_tool_use)?;
+        serde_json::from_value::<T>(input).map_err(|e| LlmError::StructuredParse(e.to_string()))
+    }
     fn supports_vision(&self) -> bool {
         true
     }
@@ -1495,23 +1618,17 @@ impl LlmProvider for ClaudeProvider {
         self.usage.last_ttft_ms()
     }
 
-    fn take_compaction_summary(&self) -> Option<String> {
-        ClaudeProvider::take_compaction_summary(self)
-    }
-
     fn debug_request_json(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
         stream: bool,
     ) -> serde_json::Value {
-        let (thinking_param, mut temperature, effort) = self.build_thinking_param();
-        if thinking_param.is_none()
-            && let Some(Some(t)) = self.generation_overrides.as_ref().map(|ov| ov.temperature)
-        {
-            temperature = Some(t);
-        }
-        let output_config = effort.map(|e| OutputConfig { effort: e });
+        let ThinkingRequest {
+            thinking: thinking_param,
+            temperature,
+            output_config,
+        } = self.thinking_request();
 
         if !tools.is_empty() {
             let (system_blocks, chat_messages) =
@@ -1579,13 +1696,11 @@ impl LlmProvider for ClaudeProvider {
     ) -> Result<ChatResponse, LlmError> {
         let api_tools = self.get_or_build_api_tools(tools);
 
-        let (thinking_param, mut temperature, effort) = self.build_thinking_param();
-        if thinking_param.is_none()
-            && let Some(Some(t)) = self.generation_overrides.as_ref().map(|ov| ov.temperature)
-        {
-            temperature = Some(t);
-        }
-        let output_config = effort.map(|e| OutputConfig { effort: e });
+        let ThinkingRequest {
+            thinking: thinking_param,
+            temperature,
+            output_config,
+        } = self.thinking_request();
         let (system_blocks, chat_messages) =
             self.structured_history(messages, thinking_param.as_ref(), 1);
         let has_tools = !tools.is_empty();
@@ -1602,7 +1717,6 @@ impl LlmProvider for ClaudeProvider {
             context_management: self.context_management(),
         };
 
-        let mut retried = false;
         loop {
             body.context_management = self.context_management();
             let beta = self.beta_header(has_tools);
@@ -1630,11 +1744,12 @@ impl LlmProvider for ClaudeProvider {
             let (status, text) = crate::http::read_response_body(response).await?;
 
             if !status.is_success() {
-                if self.handle_compact_beta_rejection(status, &text, &mut retried, "tool use") {
+                if self.handle_beta_rejection(status, &text, "tool use") {
+                    body.thinking = self.build_thinking_param().0;
                     continue;
                 }
                 tracing::error!("Claude API error {status}: {text}");
-                return Err(crate::http::map_error_response(status, &text, "claude"));
+                return Err(claude_error(status, &text));
             }
 
             let resp: ToolApiResponse = serde_json::from_str(&text)?;
@@ -1647,13 +1762,22 @@ impl LlmProvider for ClaudeProvider {
                 log_cache_usage(usage);
                 self.store_cache_usage(usage);
             }
-            let (parsed, compaction_summary) = parse_tool_response(resp);
-            if let Some(ref summary) = compaction_summary {
+            if let crate::ThinkingReplay::Dropped {
+                first_message_index,
+            } = resp.thinking_replay()
+            {
+                tracing::warn!(
+                    first_message_index,
+                    "Claude dropped thinking blocks whose prefix changed"
+                );
+            }
+            let (mut parsed, compaction_summary) = parse_tool_response(resp);
+            if let Some(summary) = compaction_summary {
                 tracing::info!(
                     summary_len = summary.len(),
-                    "storing server compaction summary"
+                    "carrying server compaction summary on the response"
                 );
-                *self.last_compaction.lock() = compaction_summary;
+                parsed.attach_compaction(summary);
             }
             tracing::debug!(?parsed, "parsed ChatResponse");
             return Ok(parsed);

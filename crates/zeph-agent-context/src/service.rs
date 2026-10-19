@@ -19,6 +19,7 @@ use crate::state::{
     ContextAssemblyView, ContextDelta, ContextSummarizationView, MessageWindowView,
     ProviderHandles, StatusSink,
 };
+use crate::summarization::DeferredApplyTrigger;
 
 /// Configuration parameters for semantic recall injection.
 ///
@@ -1441,10 +1442,15 @@ impl ContextService {
     /// Apply deferred summaries if context usage exceeds the soft compaction threshold.
     ///
     /// Two triggers: token pressure (above the soft threshold) and count pressure (pending
-    /// summaries >= `tool_call_cutoff`). This is Tier 0 — no LLM call. Does NOT set
-    /// `compacted_this_turn` so proactive/reactive compaction may still fire.
-    pub fn maybe_apply_deferred_summaries(&self, summ: &mut ContextSummarizationView<'_>) {
-        crate::summarization::deferred::maybe_apply_deferred_summaries(summ);
+    /// summaries >= `tool_call_cutoff`, only for [`DeferredApplyTrigger::TokenOrCount`]).
+    /// This is Tier 0 — no LLM call. Does NOT set `compacted_this_turn` so proactive/reactive
+    /// compaction may still fire.
+    pub fn maybe_apply_deferred_summaries(
+        &self,
+        summ: &mut ContextSummarizationView<'_>,
+        trigger: DeferredApplyTrigger,
+    ) {
+        crate::summarization::deferred::maybe_apply_deferred_summaries(summ, trigger);
     }
 
     /// Run unconditional LLM-based context compaction with an optional token budget.

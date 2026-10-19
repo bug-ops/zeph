@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use zeph_agent_context::DeferredApplyTrigger;
+
 use crate::agent::Agent;
 use crate::channel::Channel;
 
@@ -44,10 +46,13 @@ impl<C: Channel> Agent<C> {
         self.msg.recompute_non_system_count();
     }
 
-    pub(in crate::agent) fn maybe_apply_deferred_summaries(&mut self) {
+    pub(in crate::agent) fn maybe_apply_deferred_summaries(
+        &mut self,
+        trigger: DeferredApplyTrigger,
+    ) {
         let svc = zeph_agent_context::ContextService::new();
         let mut summ = self.summarization_view();
-        svc.maybe_apply_deferred_summaries(&mut summ);
+        svc.maybe_apply_deferred_summaries(&mut summ, trigger);
         self.msg.recompute_non_system_count();
     }
 }

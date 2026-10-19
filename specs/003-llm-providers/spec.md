@@ -104,6 +104,8 @@ AnyProvider { Ollama, Claude, OpenAi, Gemini, Candle (feature "candle"),
 - Block 2 (tools): serialized tool definitions, cached separately
 - Block 3 (volatile): instruction files, skill context — changes every turn, not cached
 - Max 4 `cache_control` breakpoints per request
+- The message-level breakpoint (`cache_user_messages`) sits on the last cache-capable block (`text` or `tool_result`) of the conversation tail, falling back to earlier blocks and messages when the tail ends in a thinking or `tool_use` block. A growing tool loop therefore reads the previous request's prefix from cache. The lookback window is 20 blocks, so an iteration that adds many blocks (about nine or more parallel tool calls) can miss the previous write; this costs cache hits, not correctness
+- Within one tool loop the `tools` array, system blocks and every message before the tail are byte-identical from one request to the next, except across a deliberate history rewrite: pressure-driven edits (see `[[002-agent-loop/spec]]`), `complete_focus` / `compress_context` (the Knowledge block is a `Role::System` message hoisted into `system`), and a growing secret-masking registry that rewrites earlier text
 
 ### Configurable Prompt Cache TTL
 
@@ -208,19 +210,49 @@ character.
 - The NDJSON stream parser MUST buffer across chunk boundaries and decode complete lines only —
   NEVER decode a chunk in isolation (risks silently dropping a split multi-byte character)
 
-## BetaHeaderRejected Retry (Claude)
+## Claude Model Capabilities, Window Ceiling and Server Compaction (#6822, #6825)
 
-When a Claude request fails with `LlmError::BetaHeaderRejected`, the provider automatically
-retries the same request without the offending beta header. This retry covers all three call
-paths: `chat_with_tools_stream`, `chat_typed`, and `chat_with_tools` (extended in commit #4591,
-#4607). The retry is transparent to callers.
+`ClaudeModel` (`claude/model.rs`) is a closed enum parsed once from the model id by `from_model_id`: provider prefixes (`anthropic.`, `us.anthropic.`), `@date` / `-v1:0` suffixes and `-YYYYMMDD` stamps are ignored, and the longest numeric version wins (`sonnet-5-5` is Sonnet 5.5, not Sonnet 5). `capabilities()` is one exhaustive match, so a new variant forces every capability to be decided. Variants: Haiku45, Haiku55, Sonnet46, Sonnet5, Sonnet55, Opus46, Opus47, Opus48, Opus5, Opus55, Fable5, Fable51, Mythos5, Mythos51, Legacy (anything older than 4.6 except Haiku 4.5), Unknown.
+
+| Capability | Models |
+|---|---|
+| `prefers_effort` (`Extended` is converted to adaptive + `effort`, no `budget_tokens`) | Opus46-48, Opus5, Opus55, Sonnet5, Sonnet55, Haiku55, Fable, Mythos, Unknown |
+| `rejects_prefill` | Sonnet46, Opus47+, all 5.x, Fable, Mythos, Haiku55, Unknown (Opus46 only while thinking is on) |
+| `rejects_sampling` (`temperature` is never sent) | Opus47+, all 5.x, Fable, Mythos, Haiku55, Unknown |
+| `thinking_always_on` (`max_tokens` is floored at 16 000 even without a thinking config) | Opus5, Opus55, Sonnet5, Sonnet55, Haiku55, Fable, Mythos |
+| `forbids_forced_tool_choice` | Opus55, Sonnet55, Fable51, Mythos51, Unknown |
+| `preserved_thinking` (`block_binding: drop_block`) | Fable51, Opus55, Sonnet55, Haiku55 |
+| `server_compaction` | every 4.6+ model, Fable, Mythos, Haiku55; not Haiku45, Legacy or Unknown |
+| `needs_interleaved_beta` (with `Extended` thinking and tools) | Sonnet46 |
+| `needs_1m_beta` (`context-1m-2025-08-07`) | Legacy only |
+| `native_window` | 1M for 4.6+, 5.x, Fable, Mythos, Haiku55; 200k for Haiku45 and Legacy (1M with `needs_1m_beta`); none for Unknown |
+
+`Unknown` is conservative: no `budget_tokens`, prefill or sampling parameters, `tool_choice: auto`, no implicit thinking parameter, no beta header, no server compaction, no context window.
+
+### Context window ceiling
+
+`ClaudeProvider::context_window()` returns the native window capped at `CLAUDE_DEFAULT_WINDOW_CEILING` (200 000, a `NonZeroU32`), so budgets stay at the long-standing 200k. `enable_extended_context = true` lifts the cap to the native window (1M on current models; Legacy gains it through the 1M beta, which is sent only when the flag is set and the model needs it; Haiku45 stays at 200k and warns). The ceiling is Claude-only: Gemini and OpenAI auto budgets are unchanged. A larger budget is also reachable via `memory.context_budget_tokens`.
+
+### Server compaction wire (`compact-2026-01-12`)
+
+- Request: `context_management: {"edits": [{"type": "compact_20260112", "trigger": {"type": "input_tokens", "value": N}, "pause_after_compaction": false}]}`. `N` is a `CompactionTrigger` (`zeph-config`, private field, `serde(try_from = "u32")`, minimum 50 000), set per provider with `server_compaction_trigger_tokens`. Unset means `max(50 000, 70% of context_window())` (140 000 at 200k), which stays below the tool-loop stop line (80% of the budget); a startup warning fires when an explicit trigger is at or above that line.
+- Response block: `{"type": "compaction", "content": "..."}`. Streaming delivers one `content_block_delta` with `delta.type = "compaction_delta"` and the whole summary in `delta.content`, bounded by `max_compaction_bytes` and cut on a char boundary. A missing, null or empty summary yields no `Compaction` part and no `StreamChunk::Compaction`.
+- `with_server_compaction(true)` is ignored with a warning on models without the `server_compaction` capability.
+
+### Beta latches
+
+`BetaFeature::{Compact, ThinkingBinding}` each own an `AtomicBool` latch shared by provider clones. A 400 whose body names an active beta's header latches that beta off for the session (warn once) and the request is retried without it. The latch is the one-shot guard: a latched beta is no longer sent, so a repeat cannot name it. Any other 400 (including `context_management` validation errors) surfaces as an error. A 400 reporting a thinking block "bound to a different conversation" is classified first, as `LlmError::ThinkingBindingMismatch`, because that message also names `thinking-binding-controls-2026-08-01` when the header was absent and must not be read as a header rejection.
+
+### Thinking binding wire
+
+On `preserved_thinking` models (while not latched) the request carries `thinking: {"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "drop_block"}}` (an explicit adaptive type when thinking is not configured, equal to the server default) and the `thinking-binding-controls-2026-08-01` beta. `block_binding` is only valid beside adaptive thinking. The response's `input_transformations` (top level, or `message_start.message` when streaming) is folded into `ThinkingReplay::{Intact, Dropped { first_message_index }}`; the index is in wire `messages[]` space, never greater than the history index, so stripping from it covers at least the dropped blocks. Recovery when thinking and history disagree: `ThinkingReplay::Dropped { first_message_index }` strips thinking from that index of the agent's history once (only for `prefix_binding_mismatch` and unknown reasons; `model_binding_mismatch` and `organization_binding_mismatch` drops leave history alone so a Router/Triage model switch does not wipe reasoning), before the response's own assistant message is pushed; `LlmError::ThinkingBindingMismatch` (beta latched off, unknown model, or a rewrite that escaped the seam) strips all thinking from history and retries the call once. `chat_typed` on `forbids_forced_tool_choice` models sends `tool_choice: auto` plus a must-call system instruction and retries once with a user nudge; a second miss returns `StructuredParse`.
 
 ### Key Invariants
 
-- Retry MUST cover ALL Claude call paths — single-path retry is incomplete
-- Retry is Claude-specific — NEVER apply `BetaHeaderRejected` retry logic to other providers
-- The retried request uses identical parameters except the beta header is omitted
-- Retry happens at most once per request — no retry loop
+- Capability decisions come only from `ClaudeModel::capabilities()` — NEVER from substring checks on the model id elsewhere
+- NEVER send `budget_tokens`, a prefill turn or `temperature` to a model whose capability forbids it, and NEVER send `block_binding` without adaptive thinking
+- NEVER read a thinking-binding mismatch as a beta-header rejection
+- A beta latch flips at most once; the retry it triggers cannot loop
 
 ## Tool-Call ID Uniqueness (OpenAI/Compatible) (#6506, #6501)
 
@@ -332,7 +364,8 @@ Request-time repair coverage per provider: Claude, OpenAI family, and Gemini = L
 ### Agent visibility (`zeph_llm::provider::AgentVisible`) (#6814)
 
 Messages with `MessageVisibility::UserOnly` (originals replaced by a deferred tool-pair summary)
-must never reach a provider. `AgentVisible<'a>` is the borrowed, filtered projection; its only
+and `MessageVisibility::Marker` (bookkeeping such as the focus checkpoint) must never reach a
+provider. `AgentVisible<'a>` is the borrowed, filtered projection; its only
 constructors filter (`AgentVisible::new`, `From<&[Message]>`), and exposes `iter`/`len`/`get`/
 `next_non_system`/`prev_non_system`. Every request builder converts through it: OpenAI
 `convert_messages`/`_vision`/`_structured`/image detection/`debug_request_json`, Gemini
@@ -412,7 +445,9 @@ Three layers, plus one prevention primitive:
 ## Claude Message Coalescing and Compaction Rendering (#6815)
 
 - `split_messages_structured` coalesces consecutive same-role `StructuredApiMessage`s into one multi-block message, deterministically, after Layer A downgrade and before the cache breakpoint/anchor. Dropped/hidden messages and a compaction block followed by assistant output otherwise leave adjacent same-role entries
-- Coalescing must keep thinking blocks first once thinking replay is fixed (`TODO(#6821)` in `claude/request.rs`)
+- Coalescing is order-preserving: blocks of merged messages are concatenated in message order, so thinking stays ahead of the text and `tool_use` blocks that followed it
+- Request-side thinking scope: on `preserved_thinking` models only assistant messages after the last `MessageOrigin::TurnInput` carry thinking blocks (`ThinkingScope::CurrentTurn`); other models forward thinking from every turn. Without a turn-input marker nothing is dropped
+- Tool responses carry `ChatResponse::ToolUse { content: AssistantContent, replay: ThinkingReplay }`: the thinking, text and `tool_use` blocks in the order the model produced them (streaming: arrival order), plus the provider's `input_transformations` verdict. The agent stores the blocks verbatim in one assistant message and never persists thinking
 - After a server-compaction mirror the request carries `system` (the System messages), an `assistant` turn starting with the `compaction` block, then the turn input; recall injected later lands after the compaction block (`context_floor`)
 - Gemini renders a `MessagePart::Compaction` part as a plain text part (previously dropped, leaving an empty turn)
 

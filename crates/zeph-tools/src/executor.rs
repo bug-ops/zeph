@@ -240,6 +240,10 @@ pub enum ClaimSource {
     Memory,
     /// Telegram moderation action (reaction deletion).
     Moderation,
+    /// Harness-authored placeholder for a call that was never executed (gate rejection,
+    /// utility-policy skip, quota stop). Never a real result: it must not satisfy a
+    /// prerequisite or enter the result cache.
+    Synthetic,
 }
 
 /// Structured result from tool execution.

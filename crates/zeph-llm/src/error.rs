@@ -92,6 +92,12 @@ pub enum LlmError {
     #[error("beta header rejected by API: {header}")]
     BetaHeaderRejected { header: String },
 
+    /// A thinking block in the request is bound to a different conversation prefix and the
+    /// provider rejected it (HTTP 400). Stripping thinking from the history and retrying once
+    /// recovers; the same request will fail again unchanged.
+    #[error("thinking block bound to a different conversation prefix")]
+    ThinkingBindingMismatch,
+
     /// The input itself is invalid (HTTP 400). Retrying with the same input on another
     /// provider will not help — the router should break the fallback loop immediately.
     #[error("invalid input for {provider}: {message}")]
@@ -136,6 +142,12 @@ impl LlmError {
     #[must_use]
     pub fn is_beta_header_rejected(&self) -> bool {
         matches!(self, Self::BetaHeaderRejected { .. })
+    }
+
+    /// Returns true if the provider rejected a thinking block bound to a different prefix.
+    #[must_use]
+    pub fn is_thinking_binding_mismatch(&self) -> bool {
+        matches!(self, Self::ThinkingBindingMismatch)
     }
 
     /// Returns true if this error indicates that the input itself is invalid (HTTP 400).

@@ -2123,9 +2123,9 @@ async fn chat_with_tools_handles_null_assistant_content() {
 
     let result = p.chat_with_tools(&messages, &tools).await.unwrap();
     match result {
-        ChatResponse::ToolUse {
-            text, tool_calls, ..
-        } => {
+        ChatResponse::ToolUse { content, .. } => {
+            let text = content.text();
+            let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
             assert_eq!(text, None);
             assert_eq!(tool_calls.len(), 1);
             assert_eq!(tool_calls[0].id, "call_123");
@@ -3194,4 +3194,36 @@ fn plain_openai_path_includes_the_runtime_note_text() {
         .debug_request_json(&messages, &[], false)
         .to_string();
     assert!(json.contains("NOTE"));
+}
+
+fn messages_with_marker_checkpoint() -> Vec<Message> {
+    vec![
+        Message::from_legacy(Role::System, "system prompt"),
+        Message::from_legacy(Role::User, "hello"),
+        Message {
+            role: Role::System,
+            content: "[focus checkpoint: MARKER-ONLY-TEXT]".into(),
+            parts: vec![],
+            metadata: MessageMetadata::marker(),
+        },
+    ]
+}
+
+#[test]
+fn marker_checkpoint_never_reaches_the_openai_request() {
+    let p = test_provider();
+    let messages = messages_with_marker_checkpoint();
+    for tools in [
+        vec![],
+        vec![ToolDefinition {
+            name: "bash".into(),
+            description: "d".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            output_schema: None,
+        }],
+    ] {
+        let json = p.debug_request_json(&messages, &tools, false).to_string();
+        assert!(!json.contains("MARKER-ONLY-TEXT"), "{json}");
+        assert!(json.contains("hello"));
+    }
 }

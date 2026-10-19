@@ -18,6 +18,7 @@ pub use zeph_common::ToolDefinition;
 
 use crate::embed::owned_strs;
 use crate::error::LlmError;
+use crate::thinking_replay::ThinkingReplay;
 
 static SCHEMA_CACHE: LazyLock<Mutex<HashMap<TypeId, (serde_json::Value, String)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -162,11 +163,215 @@ pub enum ThinkingBlock {
 /// token limit. Consumers can detect this substring to signal `MaxTokens` stop reason.
 pub const MAX_TOKENS_TRUNCATION_MARKER: &str = "max_tokens limit reached";
 
+/// One content block of an assistant response, in the order the model produced it.
+///
+/// Thinking blocks must be echoed verbatim and in position in the next request, so the
+/// response keeps the full block sequence rather than splitting it into per-kind lists.
+#[derive(Debug, Clone)]
+pub enum AssistantBlock {
+    /// Extended or adaptive reasoning block (plain or redacted).
+    Thinking(ThinkingBlock),
+    /// Assistant text.
+    Text(String),
+    /// Tool invocation request.
+    ToolUse(ToolUseRequest),
+}
+
+impl AssistantBlock {
+    fn as_tool_use(&self) -> Option<&ToolUseRequest> {
+        match self {
+            Self::ToolUse(call) => Some(call),
+            _ => None,
+        }
+    }
+
+    fn into_tool_use(self) -> Option<ToolUseRequest> {
+        match self {
+            Self::ToolUse(call) => Some(call),
+            _ => None,
+        }
+    }
+}
+
+impl From<&ThinkingBlock> for MessagePart {
+    fn from(block: &ThinkingBlock) -> Self {
+        match block {
+            ThinkingBlock::Thinking {
+                thinking,
+                signature,
+            } => Self::ThinkingBlock {
+                thinking: thinking.clone(),
+                signature: signature.clone(),
+            },
+            ThinkingBlock::Redacted { data } => Self::RedactedThinkingBlock { data: data.clone() },
+        }
+    }
+}
+
+/// Ordered content of an assistant tool-use response.
+///
+/// The block sequence is the single source of truth; [`text`](Self::text) and
+/// [`tool_calls`](Self::tool_calls) are derived views.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::{AssistantBlock, AssistantContent, ThinkingBlock, ToolUseRequest};
+///
+/// let call = ToolUseRequest {
+///     id: "t1".into(),
+///     name: "bash".into(),
+///     input: serde_json::json!({"command": "ls"}),
+/// };
+/// let mut content = AssistantContent::new(vec![
+///     AssistantBlock::Thinking(ThinkingBlock::Redacted { data: "opaque".into() }),
+///     AssistantBlock::Text("listing".into()),
+///     AssistantBlock::ToolUse(call),
+/// ]);
+/// assert_eq!(content.text().as_deref(), Some("listing"));
+/// assert_eq!(content.tool_calls().count(), 1);
+/// assert_eq!(content.thinking_blocks().count(), 1);
+///
+/// content.strip_thinking();
+/// assert_eq!(content.blocks().len(), 2);
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct AssistantContent(Vec<AssistantBlock>);
+
+impl AssistantContent {
+    /// Content of optional leading text followed by tool calls, with no thinking.
+    ///
+    /// For providers that do not report block order or thinking, and for tests.
+    #[must_use]
+    pub fn from_text_and_calls(text: Option<String>, tool_calls: Vec<ToolUseRequest>) -> Self {
+        Self(
+            text.map(AssistantBlock::Text)
+                .into_iter()
+                .chain(tool_calls.into_iter().map(AssistantBlock::ToolUse))
+                .collect(),
+        )
+    }
+
+    /// Wrap blocks already in response order.
+    #[must_use]
+    pub fn new(blocks: Vec<AssistantBlock>) -> Self {
+        Self(blocks)
+    }
+
+    /// Blocks in response order.
+    #[must_use]
+    pub fn blocks(&self) -> &[AssistantBlock] {
+        &self.0
+    }
+
+    /// Consume the content and return the blocks in response order.
+    #[must_use]
+    pub fn into_blocks(self) -> Vec<AssistantBlock> {
+        self.0
+    }
+
+    /// All text blocks concatenated, or `None` when the response carried no text.
+    #[must_use]
+    pub fn text(&self) -> Option<String> {
+        let mut parts = self.0.iter().filter_map(|b| match b {
+            AssistantBlock::Text(t) => Some(t.as_str()),
+            _ => None,
+        });
+        let first = parts.next()?;
+        Some(parts.fold(first.to_owned(), |mut acc, t| {
+            acc.push_str(t);
+            acc
+        }))
+    }
+
+    /// Consume the content and return its tool invocation requests in response order.
+    #[must_use]
+    pub fn into_tool_calls(self) -> Vec<ToolUseRequest> {
+        self.0
+            .into_iter()
+            .filter_map(AssistantBlock::into_tool_use)
+            .collect()
+    }
+
+    /// Tool invocation requests in response order.
+    pub fn tool_calls(&self) -> impl Iterator<Item = &ToolUseRequest> {
+        self.0.iter().filter_map(AssistantBlock::as_tool_use)
+    }
+
+    /// Drop every thinking block, keeping text and tool-use blocks in order.
+    ///
+    /// For responses whose thinking was produced under a prefix that has since been rewritten.
+    pub fn strip_thinking(&mut self) {
+        self.0.retain(|b| !matches!(b, AssistantBlock::Thinking(_)));
+    }
+
+    /// Thinking blocks in response order.
+    pub fn thinking_blocks(&self) -> impl Iterator<Item = &ThinkingBlock> {
+        self.0.iter().filter_map(|b| match b {
+            AssistantBlock::Thinking(t) => Some(t),
+            _ => None,
+        })
+    }
+}
+
+/// Accumulates streamed events into [`AssistantContent`], preserving arrival order.
+///
+/// Consecutive text chunks merge into one text block; a thinking or tool-use block starts a new
+/// entry, so a later text chunk opens a fresh text block.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::{AssistantBlock, AssistantContentBuilder, ThinkingBlock};
+///
+/// let mut builder = AssistantContentBuilder::default();
+/// builder.push_text("Hel");
+/// builder.push_text("lo");
+/// builder.push_thinking(ThinkingBlock::Redacted { data: "x".into() });
+/// builder.push_text("again");
+///
+/// let content = builder.build();
+/// assert!(matches!(
+///     content.blocks(),
+///     [AssistantBlock::Text(a), AssistantBlock::Thinking(_), AssistantBlock::Text(b)]
+///         if a == "Hello" && b == "again"
+/// ));
+/// ```
+#[derive(Debug, Default)]
+pub struct AssistantContentBuilder(Vec<AssistantBlock>);
+
+impl AssistantContentBuilder {
+    /// Append a text chunk, extending the trailing text block if there is one.
+    pub fn push_text(&mut self, chunk: &str) {
+        if let Some(AssistantBlock::Text(last)) = self.0.last_mut() {
+            last.push_str(chunk);
+        } else {
+            self.0.push(AssistantBlock::Text(chunk.to_owned()));
+        }
+    }
+
+    /// Append a completed thinking block.
+    pub fn push_thinking(&mut self, block: ThinkingBlock) {
+        self.0.push(AssistantBlock::Thinking(block));
+    }
+
+    /// Append a completed tool-use request.
+    pub fn push_tool_use(&mut self, call: ToolUseRequest) {
+        self.0.push(AssistantBlock::ToolUse(call));
+    }
+
+    /// Finish and return the ordered content.
+    #[must_use]
+    pub fn build(self) -> AssistantContent {
+        AssistantContent::new(self.0)
+    }
+}
+
 /// Response from [`LlmProvider::chat_with_tools`].
 ///
 /// When the model returns `ToolUse`, the caller must:
-/// 1. Execute each tool in `tool_calls`.
-/// 2. Append an `assistant` message with the original `tool_calls` and any `thinking_blocks`.
+/// 1. Execute each tool call in `content`.
+/// 2. Append an `assistant` message with the blocks of `content`, in order.
 /// 3. Append a `user` message containing [`MessagePart::ToolResult`] entries.
 /// 4. Call `chat_with_tools` again to continue the conversation.
 #[non_exhaustive]
@@ -176,13 +381,92 @@ pub enum ChatResponse {
     Text(String),
     /// Model requests one or more tool invocations.
     ToolUse {
-        /// Any text the model emitted before/alongside tool calls.
-        text: Option<String>,
-        tool_calls: Vec<ToolUseRequest>,
-        /// Thinking blocks from the model (empty when thinking is disabled).
-        /// Must be preserved verbatim in multi-turn requests.
-        thinking_blocks: Vec<ThinkingBlock>,
+        /// Thinking, text and tool-use blocks in the order the model emitted them.
+        content: AssistantContent,
+        /// Whether the provider kept the thinking blocks sent in the request.
+        replay: ThinkingReplay,
+        /// Server-side compaction summary produced while serving this very request, if any.
+        ///
+        /// Travels with the response instead of a provider-level slot, so a provider shared
+        /// by several conversations (a router, a subagent) cannot hand one conversation the
+        /// summary of another.
+        compaction: Option<String>,
     },
+}
+
+impl ChatResponse {
+    /// Drop thinking blocks from a tool-use response; no-op for text responses.
+    pub fn strip_thinking(&mut self) {
+        if let Self::ToolUse { content, .. } = self {
+            content.strip_thinking();
+        }
+    }
+
+    /// Build a tool-use response from optional leading text and tool calls.
+    ///
+    /// For providers that do not report block order or thinking, and for tests.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+    ///
+    /// let call = ToolUseRequest {
+    ///     id: "t1".into(),
+    ///     name: "bash".into(),
+    ///     input: serde_json::json!({}),
+    /// };
+    /// let resp = ChatResponse::tool_use(Some("running".into()), vec![call]);
+    /// let ChatResponse::ToolUse { content, .. } = resp else { unreachable!() };
+    /// assert_eq!(content.text().as_deref(), Some("running"));
+    /// assert_eq!(content.tool_calls().count(), 1);
+    /// ```
+    #[must_use]
+    pub fn tool_use(text: Option<String>, tool_calls: Vec<ToolUseRequest>) -> Self {
+        Self::ToolUse {
+            content: AssistantContent::from_text_and_calls(text, tool_calls),
+            replay: ThinkingReplay::Intact,
+            compaction: None,
+        }
+    }
+
+    /// Attach a server-side compaction summary to a tool-use response.
+    ///
+    /// A text response has nowhere to carry it, so it is dropped there with a warning (the next
+    /// request compacts again).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::provider::ChatResponse;
+    ///
+    /// let mut resp = ChatResponse::tool_use(None, vec![]);
+    /// resp.attach_compaction("summary".into());
+    /// assert_eq!(resp.take_compaction().as_deref(), Some("summary"));
+    /// assert_eq!(resp.take_compaction(), None, "taken once");
+    ///
+    /// let mut text = ChatResponse::Text("done".into());
+    /// text.attach_compaction("lost".into());
+    /// assert_eq!(text.take_compaction(), None);
+    /// ```
+    pub fn attach_compaction(&mut self, summary: String) {
+        if let Self::ToolUse { compaction, .. } = self {
+            *compaction = Some(summary);
+        } else {
+            tracing::warn!(
+                summary_len = summary.len(),
+                "compaction summary on a text-only response is not carried"
+            );
+        }
+    }
+
+    /// Take the server-side compaction summary out of the response, if it carries one.
+    pub fn take_compaction(&mut self) -> Option<String> {
+        match self {
+            Self::ToolUse { compaction, .. } => compaction.take(),
+            _ => None,
+        }
+    }
 }
 
 /// Boxed, type-erased future for an [`LlmProvider`] method returning `T`.
@@ -410,8 +694,10 @@ impl MessagePart {
     }
 
     /// Return a cloned copy of `parts` without anything that must never reach a persistence
-    /// sink: `Image` payloads (see [`strip_images`](Self::strip_images)) and
-    /// [`MessagePart::RuntimeNote`] (per-iteration state that is stale on restore).
+    /// sink: `Image` payloads (see [`strip_images`](Self::strip_images)),
+    /// [`MessagePart::RuntimeNote`] (per-iteration state that is stale on restore), and
+    /// thinking blocks (bound to the live conversation prefix, so useless after a restore, and
+    /// unscrubbed reasoning text).
     ///
     /// # Examples
     ///
@@ -429,7 +715,15 @@ impl MessagePart {
     pub fn strip_for_persistence(parts: &[MessagePart]) -> Vec<MessagePart> {
         parts
             .iter()
-            .filter(|p| !matches!(p, MessagePart::Image(_) | MessagePart::RuntimeNote { .. }))
+            .filter(|p| {
+                !matches!(
+                    p,
+                    MessagePart::Image(_)
+                        | MessagePart::RuntimeNote { .. }
+                        | MessagePart::ThinkingBlock { .. }
+                        | MessagePart::RedactedThinkingBlock { .. }
+                )
+            })
             .cloned()
             .collect()
     }
@@ -490,9 +784,8 @@ mod serde_bytes_base64 {
 
 /// Visibility of a message to agent and user.
 ///
-/// Replaces the former `(agent_visible: bool, user_visible: bool)` pair, which
-/// allowed the semantically invalid `(false, false)` combination. Every variant
-/// guarantees at least one consumer can see the message.
+/// Replaces the former `(agent_visible: bool, user_visible: bool)` pair. Only
+/// [`Marker`](MessageVisibility::Marker) is hidden from both consumers, and it is explicit.
 ///
 /// # Examples
 ///
@@ -513,6 +806,9 @@ pub enum MessageVisibility {
     AgentOnly,
     /// Visible to the user only (e.g. compacted originals shown in history).
     UserOnly,
+    /// Bookkeeping marker (e.g. a focus checkpoint): visible to neither the agent nor the user.
+    /// Kept in the in-memory history only so the agent loop can find it again.
+    Marker,
 }
 
 impl MessageVisibility {
@@ -544,6 +840,7 @@ impl MessageVisibility {
             MessageVisibility::Both => "both",
             MessageVisibility::AgentOnly => "agent_only",
             MessageVisibility::UserOnly => "user_only",
+            MessageVisibility::Marker => "marker",
         }
     }
 
@@ -555,6 +852,7 @@ impl MessageVisibility {
         match s {
             "agent_only" => MessageVisibility::AgentOnly,
             "user_only" => MessageVisibility::UserOnly,
+            "marker" => MessageVisibility::Marker,
             _ => MessageVisibility::Both,
         }
     }
@@ -671,6 +969,15 @@ impl MessageMetadata {
     pub fn user_only() -> Self {
         Self {
             visibility: MessageVisibility::UserOnly,
+            ..Self::default()
+        }
+    }
+
+    /// Bookkeeping marker hidden from both the agent and the user (e.g. a focus checkpoint).
+    #[must_use]
+    pub fn marker() -> Self {
+        Self {
+            visibility: MessageVisibility::Marker,
             ..Self::default()
         }
     }
@@ -858,6 +1165,50 @@ pub fn turn_query_message(messages: &[Message]) -> Option<&Message> {
                         .any(|p| matches!(p, MessagePart::ToolResult { .. }))
             })
         })
+}
+
+/// Remove thinking blocks from `messages[from..]` and return how many messages changed.
+///
+/// A thinking block is bound to the conversation prefix it was produced under. When history is
+/// edited at index `from` (prune, summary insertion, compaction, focus rewrite), every thinking
+/// block after the edit has a stale binding; stripping them once, as a history mutation, keeps
+/// later requests append-only instead of letting the provider drop the blocks on every call.
+/// Blocks before `from` are untouched.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::{Message, MessagePart, Role, strip_thinking_from};
+///
+/// let thinking = || MessagePart::ThinkingBlock {
+///     thinking: "plan".into(),
+///     signature: "sig".into(),
+/// };
+/// let text = || MessagePart::Text { text: "hi".into() };
+/// let mut msgs = vec![
+///     Message::from_parts(Role::Assistant, vec![thinking(), text()]),
+///     Message::from_parts(Role::Assistant, vec![thinking(), text()]),
+/// ];
+/// assert_eq!(strip_thinking_from(&mut msgs, 1), 1);
+/// assert_eq!(msgs[0].parts.len(), 2);
+/// assert_eq!(msgs[1].parts.len(), 1);
+/// ```
+pub fn strip_thinking_from(messages: &mut [Message], from: usize) -> usize {
+    let mut changed = 0;
+    for msg in messages.iter_mut().skip(from) {
+        let before = msg.parts.len();
+        msg.parts.retain(|p| {
+            !matches!(
+                p,
+                MessagePart::ThinkingBlock { .. } | MessagePart::RedactedThinkingBlock { .. }
+            )
+        });
+        if msg.parts.len() != before {
+            msg.rebuild_content();
+            changed += 1;
+        }
+    }
+    changed
 }
 
 /// Index of the first message that history-head passes may touch.
@@ -1339,12 +1690,6 @@ pub trait LlmProvider: Send + Sync {
     /// This trait method itself is not aware of that override; callers that need the true
     /// streaming value must go through that call site, not this one.
     fn last_ttft_ms(&self) -> Option<u64> {
-        None
-    }
-
-    /// Return the compaction summary from the most recent API call, if a server-side
-    /// compaction occurred (Claude compact-2026-01-12 beta). Clears the stored value.
-    fn take_compaction_summary(&self) -> Option<String> {
         None
     }
 
@@ -1926,15 +2271,14 @@ mod tests {
         let text = ChatResponse::Text("hello".into());
         assert_matches!(text, ChatResponse::Text(s) if s == "hello");
 
-        let tool_use = ChatResponse::ToolUse {
-            text: Some("I'll run that".into()),
-            tool_calls: vec![ToolUseRequest {
+        let tool_use = ChatResponse::tool_use(
+            Some("I'll run that".into()),
+            vec![ToolUseRequest {
                 id: "1".into(),
                 name: "bash".into(),
                 input: serde_json::json!({}),
             }],
-            thinking_blocks: vec![],
-        };
+        );
         assert_matches!(tool_use, ChatResponse::ToolUse { .. });
     }
 
@@ -2377,6 +2721,25 @@ mod tests {
     }
 
     #[test]
+    fn message_visibility_db_roundtrip_marker() {
+        assert_eq!(MessageVisibility::Marker.as_db_str(), "marker");
+        assert_eq!(
+            MessageVisibility::from_db_str("marker"),
+            MessageVisibility::Marker
+        );
+        assert!(!MessageVisibility::Marker.is_agent_visible());
+        assert!(!MessageVisibility::Marker.is_user_visible());
+    }
+
+    #[test]
+    fn marker_message_is_filtered_from_agent_visible() {
+        let mut m = Message::from_legacy(Role::System, "[focus checkpoint: x]");
+        m.metadata = MessageMetadata::marker();
+        let messages = vec![Message::from_legacy(Role::System, "sys"), m];
+        assert_eq!(AgentVisible::new(&messages).len(), 1);
+    }
+
+    #[test]
     fn message_visibility_db_roundtrip_agent_only() {
         assert_eq!(MessageVisibility::AgentOnly.as_db_str(), "agent_only");
         assert_eq!(
@@ -2558,9 +2921,115 @@ mod tests {
         ));
     }
 
+    fn thinking_part() -> MessagePart {
+        MessagePart::ThinkingBlock {
+            thinking: "t".into(),
+            signature: "s".into(),
+        }
+    }
+
     #[test]
-    fn strip_for_persistence_drops_notes_and_images_only() {
+    fn strip_thinking_from_keeps_everything_before_the_edit_point() {
+        let mut msgs = vec![
+            Message::from_parts(Role::Assistant, vec![thinking_part()]),
+            Message::from_parts(
+                Role::Assistant,
+                vec![thinking_part(), MessagePart::Text { text: "x".into() }],
+            ),
+            Message::from_parts(
+                Role::Assistant,
+                vec![
+                    MessagePart::RedactedThinkingBlock { data: "d".into() },
+                    MessagePart::Text { text: "y".into() },
+                ],
+            ),
+        ];
+        assert_eq!(strip_thinking_from(&mut msgs, 1), 2);
+        assert_eq!(msgs[0].parts.len(), 1, "before the edit point");
+        assert_eq!(msgs[1].parts.len(), 1);
+        assert_eq!(msgs[2].parts.len(), 1);
+        assert_eq!(msgs[1].content, "x");
+        assert_eq!(strip_thinking_from(&mut msgs, 1), 0, "idempotent");
+        assert_eq!(
+            strip_thinking_from(&mut msgs, 99),
+            0,
+            "out of range is a no-op"
+        );
+    }
+
+    #[test]
+    fn content_builder_preserves_arrival_order_and_merges_adjacent_text() {
+        let mut b = AssistantContentBuilder::default();
+        b.push_text("a");
+        b.push_text("b");
+        b.push_thinking(ThinkingBlock::Thinking {
+            thinking: "t".into(),
+            signature: "s".into(),
+        });
+        b.push_text("c");
+        b.push_tool_use(ToolUseRequest {
+            id: "1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({}),
+        });
+        let content = b.build();
+        assert!(matches!(
+            content.blocks(),
+            [
+                AssistantBlock::Text(a),
+                AssistantBlock::Thinking(_),
+                AssistantBlock::Text(c),
+                AssistantBlock::ToolUse(_),
+            ] if a == "ab" && c == "c"
+        ));
+        assert_eq!(content.text().as_deref(), Some("abc"));
+        assert_eq!(content.tool_calls().count(), 1);
+    }
+
+    #[test]
+    fn compaction_travels_with_a_tool_use_response_and_is_taken_once() {
+        let mut resp = ChatResponse::tool_use(None, vec![]);
+        resp.attach_compaction("summary".into());
+        assert_eq!(resp.take_compaction().as_deref(), Some("summary"));
+        assert_eq!(resp.take_compaction(), None);
+        let mut text = ChatResponse::Text("t".into());
+        text.attach_compaction("lost".into());
+        assert_eq!(text.take_compaction(), None);
+    }
+
+    #[test]
+    fn response_strip_thinking_keeps_other_blocks_in_order() {
+        let mut resp = ChatResponse::ToolUse {
+            content: AssistantContent::new(vec![
+                AssistantBlock::Thinking(ThinkingBlock::Redacted { data: "d".into() }),
+                AssistantBlock::Text("t".into()),
+                AssistantBlock::ToolUse(ToolUseRequest {
+                    id: "1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({}),
+                }),
+            ]),
+            replay: ThinkingReplay::Intact,
+            compaction: None,
+        };
+        resp.strip_thinking();
+        let ChatResponse::ToolUse { content, .. } = resp else {
+            panic!("expected ToolUse");
+        };
+        assert!(matches!(
+            content.blocks(),
+            [AssistantBlock::Text(_), AssistantBlock::ToolUse(_)]
+        ));
+    }
+
+    #[test]
+    fn strip_for_persistence_drops_notes_images_and_thinking_only() {
         let parts = vec![
+            MessagePart::ThinkingBlock {
+                thinking: "x".into(),
+                signature: "s".into(),
+            },
+            MessagePart::RedactedThinkingBlock { data: "d".into() },
             MessagePart::Text { text: "t".into() },
             MessagePart::RuntimeNote { text: "n".into() },
             MessagePart::Image(Box::new(ImageData {

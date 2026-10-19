@@ -200,7 +200,8 @@ embedding_model = "qwen3-embedding"    # model for text embeddings
 # model = "claude-sonnet-5"
 # max_tokens = 4096
 # server_compaction = false            # Enable Claude server-side context compaction (compact-2026-01-12 beta)
-# enable_extended_context = false      # Enable Claude 1M context window (context-1m-2025-08-07 beta, Opus and Sonnet models, not Haiku)
+# server_compaction_trigger_tokens = 140000  # Input tokens that trigger server compaction (minimum 50000); default 70% of the context window
+# enable_extended_context = false      # Lift the 200k window ceiling to the model's native window (1M on current models); sends context-1m-2025-08-07 only for legacy Sonnet 4/4.5
 # prompt_cache_ttl = "1h"              # "1h" = extended TTL beta (writes ~2× cost); omit or "ephemeral" for default ~5 min
 # default = true
 

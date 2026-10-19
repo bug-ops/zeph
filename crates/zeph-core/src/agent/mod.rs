@@ -72,6 +72,7 @@ pub mod trajectory;
 mod trajectory_commands;
 mod trust_commands;
 pub mod turn;
+pub(crate) mod turn_gate;
 mod utils;
 pub(crate) mod vigil;
 mod worktree_commands;
@@ -1284,6 +1285,11 @@ impl<C: Channel> Agent<C> {
             return Ok(());
         }
 
+        // Prune stale tool outputs before (and outside) the backoff- and timeout-guarded context
+        // preparation so it always runs, once per turn, never inside the tool loop.
+        let keep_recent = 2 * self.services.memory.persistence.tool_call_cutoff + 2;
+        self.prune_stale_tool_outputs(keep_recent);
+
         let t_ctx = std::time::Instant::now();
         tracing::debug!("turn timing: prepare_context start");
         self.advance_context_lifecycle_guarded(&text, trimmed).await;
@@ -1858,7 +1864,7 @@ impl<C: Channel> Agent<C> {
         // This is a pure in-memory operation (no LLM call) — summaries were pre-computed
         // during the tool loop. Intentionally does NOT set compacted_this_turn, so
         // proactive/reactive compaction may still fire if tokens remain above their thresholds.
-        self.maybe_apply_deferred_summaries();
+        self.maybe_apply_deferred_summaries(zeph_agent_context::DeferredApplyTrigger::TokenOrCount);
         self.flush_deferred_summaries().await;
 
         // Proactive compression fires first (if configured); if it runs, reactive is skipped.

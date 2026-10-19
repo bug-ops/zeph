@@ -112,6 +112,7 @@ pub mod sse;
 pub mod stt;
 #[cfg(test)]
 pub mod testing;
+pub mod thinking_replay;
 pub(crate) mod tool_desc;
 pub mod tool_pairing;
 pub(crate) mod usage;
@@ -123,11 +124,15 @@ pub use error::LlmError;
 pub use extractor::Extractor;
 pub use masking::{MaskedProvider, OutboundMasker, mask_messages};
 pub use openai::{CompletionTokensParam, OpenAiConfig};
-pub use provider::{ChatExtras, ChatStream, ImageData, LlmProvider, StreamChunk, ThinkingBlock};
+pub use provider::{
+    AssistantBlock, AssistantContent, AssistantContentBuilder, ChatExtras, ChatStream, ImageData,
+    LlmProvider, StreamChunk, ThinkingBlock,
+};
 pub use provider_dyn::LlmProviderDyn;
 pub use router::aware::RouterAware;
 pub use router::coe::{CoeConfig, CoeMetrics, CoeRouter};
 pub use stt::{SpeechToText, Transcription};
+pub use thinking_replay::ThinkingReplay;
 pub use tool_pairing::{
     OrphanAction, RepairReport, has_meaningful_content, pair_safe_cut, repair_tool_pairs,
     repair_window, unmatched_tool_result_ids, unmatched_tool_use_ids,

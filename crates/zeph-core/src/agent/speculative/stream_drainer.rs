@@ -16,12 +16,23 @@ use std::time::Duration;
 
 use tokio_stream::StreamExt;
 use tracing::debug;
-use zeph_llm::provider::{ChatResponse, ThinkingBlock, ToolUseRequest};
+use zeph_llm::provider::{AssistantContentBuilder, ChatResponse, ToolUseRequest};
 use zeph_llm::sse::{ToolSseEvent, ToolSseStream};
+use zeph_llm::thinking_replay::ThinkingReplay;
 
 use super::SpeculationEngine;
 use super::partial_json::{PartialJsonParser, PrefixState};
 use super::prediction::{Prediction, PredictionSource};
+use crate::agent::turn_gate::DispatchGate;
+
+/// Result of draining one tool stream.
+#[derive(Debug)]
+pub struct DrainedTurn {
+    /// The assembled response, identical to what `chat_with_tools` would return.
+    pub response: ChatResponse,
+    /// Elapsed milliseconds to the first SSE event, `None` if the stream yielded none.
+    pub ttft_ms: Option<u64>,
+}
 
 /// Drives a `ToolSseStream`, intercepts `InputJsonDelta` events for speculative dispatch,
 /// and reassembles a `ChatResponse` for the normal tool-dispatch path.
@@ -32,6 +43,9 @@ pub struct SpeculativeStreamDrainer {
     stream: ToolSseStream,
     engine: Arc<SpeculationEngine>,
     confidence_threshold: f32,
+    /// Dispatch gates applied before any speculative execution: speculation obeys the same
+    /// turn-set and `requires` rules as the normal path.
+    gate: DispatchGate,
     /// Per-tool-index partial JSON parser.
     parsers: HashMap<usize, PartialJsonParser>,
 }
@@ -51,8 +65,16 @@ impl SpeculativeStreamDrainer {
             stream,
             engine,
             confidence_threshold,
+            gate: DispatchGate::open(),
             parsers: HashMap::new(),
         }
+    }
+
+    /// Gate speculative dispatches with the snapshot taken for the current request.
+    #[must_use]
+    pub fn with_gate(mut self, gate: DispatchGate) -> Self {
+        self.gate = gate;
+        self
     }
 
     /// Drain the stream, firing speculative dispatches and building the final `ChatResponse`.
@@ -69,10 +91,11 @@ impl SpeculativeStreamDrainer {
     /// # Errors
     ///
     /// Returns an `LlmError` if the SSE stream signals a parse or API error.
-    pub async fn drive(mut self) -> Result<(ChatResponse, Option<u64>), zeph_llm::LlmError> {
-        let mut tool_calls: Vec<ToolUseRequest> = Vec::new();
-        let mut thinking_blocks: Vec<ThinkingBlock> = Vec::new();
-        let mut text_buf = String::new();
+    pub async fn drive(mut self) -> Result<DrainedTurn, zeph_llm::LlmError> {
+        let mut content = AssistantContentBuilder::default();
+        let mut has_tool_calls = false;
+        let mut replay = ThinkingReplay::Intact;
+        let mut compaction: Option<String> = None;
         // Map from tool index → (id, name) collected from ToolCallComplete.
         let mut tool_meta: HashMap<usize, (String, String)> = HashMap::new();
         // Track which tool indices have had their speculation fired.
@@ -107,10 +130,11 @@ impl SpeculativeStreamDrainer {
                             confidence: self.confidence_threshold,
                             source: PredictionSource::StreamPartial,
                         };
-                        if self
-                            .engine
-                            .try_dispatch(&pred, zeph_common::SkillTrustLevel::Trusted)
-                        {
+                        if self.engine.try_dispatch(
+                            &pred,
+                            zeph_common::SkillTrustLevel::Trusted,
+                            &self.gate,
+                        ) {
                             dispatched.insert(index);
                             debug!(tool = %name, index, "speculative dispatch fired from SSE delta");
                         }
@@ -128,23 +152,24 @@ impl SpeculativeStreamDrainer {
                     let input = serde_json::from_str(&full_json)
                         .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
-                    tool_calls.push(ToolUseRequest {
+                    has_tool_calls = true;
+                    content.push_tool_use(ToolUseRequest {
                         id,
                         name: name.into(),
                         input,
                     });
                 }
                 ToolSseEvent::ThinkingBlockDone(block) => {
-                    thinking_blocks.push(block);
+                    content.push_thinking(block);
+                }
+                ToolSseEvent::ThinkingReplay(r) => {
+                    replay = r;
                 }
                 ToolSseEvent::ContentChunk(text) => {
-                    text_buf.push_str(&text);
+                    content.push_text(&text);
                 }
-                ToolSseEvent::Compaction(_summary) => {
-                    // TODO: surface compaction summaries to the caller (follow-up).
-                    tracing::debug!(
-                        "compaction summary received during tool stream (not yet surfaced)"
-                    );
+                ToolSseEvent::Compaction(summary) => {
+                    compaction = Some(summary);
                 }
                 ToolSseEvent::Error(e) => {
                     return Err(e);
@@ -154,22 +179,17 @@ impl SpeculativeStreamDrainer {
             }
         }
 
-        let text = if text_buf.is_empty() {
-            None
-        } else {
-            Some(text_buf)
-        };
-
-        let response = if tool_calls.is_empty() {
-            ChatResponse::Text(text.unwrap_or_default())
-        } else {
+        let content = content.build();
+        let response = if has_tool_calls {
             ChatResponse::ToolUse {
-                text,
-                tool_calls,
-                thinking_blocks,
+                content,
+                replay,
+                compaction,
             }
+        } else {
+            ChatResponse::Text(content.text().unwrap_or_default())
         };
-        Ok((response, ttft_ms))
+        Ok(DrainedTurn { response, ttft_ms })
     }
 }
 
@@ -339,7 +359,9 @@ mod tests {
 
         let drainer =
             SpeculativeStreamDrainer::new(Box::pin(tokio_stream::iter(events)), engine, 0.0);
-        let (result, _ttft_ms) = drainer.drive().await.unwrap();
+        let DrainedTurn {
+            response: result, ..
+        } = drainer.drive().await.unwrap();
         // Drainer assembled a ToolUse response.
         assert_matches!(result, ChatResponse::ToolUse { .. });
         // SpyExec.is_tool_speculatable was called at least once (dispatch was attempted).
@@ -399,7 +421,11 @@ mod tests {
             SpeculativeConfig::default(),
         ));
         let drainer = SpeculativeStreamDrainer::new(Box::pin(tokio_stream::empty()), engine, 0.8);
-        let (result, ttft_ms) = drainer.drive().await.unwrap();
+        let DrainedTurn {
+            response: result,
+            ttft_ms,
+            ..
+        } = drainer.drive().await.unwrap();
         assert_matches!(result, ChatResponse::Text(s) if s.is_empty());
         assert_eq!(
             ttft_ms, None,
@@ -459,7 +485,11 @@ mod tests {
         let events = vec![ToolSseEvent::ContentChunk("Hello world".into())];
         let drainer =
             SpeculativeStreamDrainer::new(Box::pin(tokio_stream::iter(events)), engine, 0.8);
-        let (result, ttft_ms) = drainer.drive().await.unwrap();
+        let DrainedTurn {
+            response: result,
+            ttft_ms,
+            ..
+        } = drainer.drive().await.unwrap();
         assert_matches!(result, ChatResponse::Text(s) if s == "Hello world");
         assert!(
             ttft_ms.is_some(),
@@ -468,7 +498,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drive_tool_call_complete_returns_tool_use() {
+    async fn drive_tool_call_complete_returns_ordered_tool_use() {
         use std::sync::Arc;
         use zeph_config::tools::SpeculativeConfig;
         use zeph_tools::{ToolCall, ToolError, ToolExecutor, ToolOutput};
@@ -516,23 +546,146 @@ mod tests {
             Arc::new(NullExec),
             SpeculativeConfig::default(),
         ));
-        let events = vec![ToolSseEvent::ToolCallComplete {
-            index: 0,
-            id: "toolu_01".into(),
-            name: "bash".into(),
-            full_json: r#"{"command":"ls"}"#.into(),
-        }];
+        let thinking = |text: &str| zeph_llm::provider::ThinkingBlock::Thinking {
+            thinking: text.into(),
+            signature: "sig".into(),
+        };
+        let events = vec![
+            ToolSseEvent::ThinkingReplay(ThinkingReplay::Dropped {
+                first_message_index: 3,
+            }),
+            ToolSseEvent::ThinkingBlockDone(thinking("first")),
+            ToolSseEvent::ContentChunk("pl".into()),
+            ToolSseEvent::ContentChunk("an".into()),
+            ToolSseEvent::ThinkingBlockDone(thinking("second")),
+            ToolSseEvent::ToolCallComplete {
+                index: 3,
+                id: "toolu_01".into(),
+                name: "bash".into(),
+                full_json: r#"{"command":"ls"}"#.into(),
+            },
+        ];
         let drainer =
             SpeculativeStreamDrainer::new(Box::pin(tokio_stream::iter(events)), engine, 0.8);
-        let (result, _ttft_ms) = drainer.drive().await.unwrap();
-        match result {
-            ChatResponse::ToolUse { tool_calls, .. } => {
-                assert_eq!(tool_calls.len(), 1);
-                assert_eq!(tool_calls[0].id, "toolu_01");
-                assert_eq!(tool_calls[0].name, "bash");
+        let DrainedTurn {
+            response: result, ..
+        } = drainer.drive().await.unwrap();
+        let ChatResponse::ToolUse {
+            content, replay, ..
+        } = result
+        else {
+            panic!("expected ToolUse, got {result:?}");
+        };
+        assert_eq!(
+            replay,
+            ThinkingReplay::Dropped {
+                first_message_index: 3
             }
-            other => panic!("expected ToolUse, got {other:?}"),
-        }
+        );
+        assert!(matches!(
+            content.blocks(),
+            [
+                zeph_llm::provider::AssistantBlock::Thinking(
+                    zeph_llm::provider::ThinkingBlock::Thinking { thinking: a, .. }
+                ),
+                zeph_llm::provider::AssistantBlock::Text(t),
+                zeph_llm::provider::AssistantBlock::Thinking(
+                    zeph_llm::provider::ThinkingBlock::Thinking { thinking: b, .. }
+                ),
+                zeph_llm::provider::AssistantBlock::ToolUse(call),
+            ] if a == "first" && t == "plan" && b == "second"
+                && call.id == "toolu_01" && call.name == "bash"
+        ));
+    }
+
+    fn streamed_call_events() -> Vec<ToolSseEvent> {
+        vec![
+            ToolSseEvent::ToolBlockStart {
+                index: 0,
+                id: "toolu_01".into(),
+                name: "test".into(),
+            },
+            ToolSseEvent::InputJsonDelta {
+                index: 0,
+                delta: r#"{"command":"ls"}"#.into(),
+            },
+        ]
+    }
+
+    async fn drive_with_gate(gate: DispatchGate) -> Arc<super::super::SpeculationEngine> {
+        use zeph_config::tools::{SpeculationMode, SpeculativeConfig};
+
+        let engine = Arc::new(super::super::SpeculationEngine::new(
+            Arc::new(super::super::tests::AlwaysOkExecutor),
+            SpeculativeConfig {
+                mode: SpeculationMode::Decoding,
+                ..Default::default()
+            },
+        ));
+        let drainer = SpeculativeStreamDrainer::new(
+            Box::pin(tokio_stream::iter(streamed_call_events())),
+            Arc::clone(&engine),
+            0.0,
+        )
+        .with_gate(gate);
+        drainer.drive().await.unwrap();
+        engine
+    }
+
+    #[tokio::test]
+    async fn streamed_call_is_dispatched_speculatively_when_the_gate_is_open() {
+        let engine = drive_with_gate(DispatchGate::open()).await;
+        assert!(
+            !engine.cache.is_empty(),
+            "precondition: the call is speculatable"
+        );
+    }
+
+    #[tokio::test]
+    async fn streamed_call_outside_the_turn_set_is_not_dispatched() {
+        use crate::agent::turn_gate::{RequiresGate, TurnToolSet};
+
+        let engine = drive_with_gate(DispatchGate::new(
+            TurnToolSet::default(),
+            RequiresGate::open(),
+        ))
+        .await;
+        assert!(engine.cache.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stream_compaction_rides_on_the_response_and_only_on_that_one() {
+        use zeph_config::tools::SpeculativeConfig;
+
+        let drive = |events: Vec<ToolSseEvent>| async move {
+            let engine = Arc::new(super::super::SpeculationEngine::new(
+                Arc::new(super::super::tests::AlwaysOkExecutor),
+                SpeculativeConfig::default(),
+            ));
+            SpeculativeStreamDrainer::new(Box::pin(tokio_stream::iter(events)), engine, 0.8)
+                .drive()
+                .await
+                .unwrap()
+                .response
+        };
+        let call = || ToolSseEvent::ToolCallComplete {
+            index: 0,
+            id: "t".into(),
+            name: "bash".into(),
+            full_json: "{}".into(),
+        };
+
+        let with = drive(vec![ToolSseEvent::Compaction("summary".into()), call()]).await;
+        let ChatResponse::ToolUse { compaction, .. } = with else {
+            panic!("expected ToolUse");
+        };
+        assert_eq!(compaction.as_deref(), Some("summary"));
+
+        let without = drive(vec![call()]).await;
+        let ChatResponse::ToolUse { compaction, .. } = without else {
+            panic!("expected ToolUse");
+        };
+        assert_eq!(compaction, None, "a stream without compaction carries none");
     }
 
     #[tokio::test]

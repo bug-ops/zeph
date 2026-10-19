@@ -38,6 +38,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::Instant;
+
+use crate::agent::turn_gate::DispatchGate;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use zeph_common::SkillTrustLevel;
@@ -174,17 +176,28 @@ impl SpeculationEngine {
 
     /// Try to dispatch `prediction` speculatively.
     ///
-    /// Returns `false` when the call is skipped (not speculatable, trust gate, confirmation
-    /// gate, or circuit-breaker). Returns `true` when the handle was inserted in the cache.
+    /// Returns `false` when the call is skipped (not speculatable, trust gate, dispatch gate,
+    /// confirmation gate, or circuit-breaker). Returns `true` when the handle was inserted in
+    /// the cache. `gate` is the caller's snapshot of the turn-set and `requires` gates, so a
+    /// tool the normal path would reject is never executed speculatively either.
     ///
     /// The confirmation check is performed via `requires_confirmation_erased` — a pure policy
     /// query that does **not** execute the tool (fixes C1: no double side-effects).
-    pub fn try_dispatch(&self, prediction: &Prediction, trust_level: SkillTrustLevel) -> bool {
+    pub fn try_dispatch(
+        &self,
+        prediction: &Prediction,
+        trust_level: SkillTrustLevel,
+        gate: &DispatchGate,
+    ) -> bool {
         if trust_level != SkillTrustLevel::Trusted {
             return false;
         }
 
         let tool_id = &prediction.tool_id;
+        if let Err(rejection) = gate.check(tool_id.as_ref()) {
+            debug!(tool_id = %tool_id, %rejection, "speculative skip: dispatch gate");
+            return false;
+        }
         if !self.executor.is_tool_speculatable_erased(tool_id.as_ref()) {
             return false;
         }
@@ -307,7 +320,7 @@ mod tests {
     use super::*;
     use zeph_tools::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 
-    struct AlwaysOkExecutor;
+    pub(super) struct AlwaysOkExecutor;
 
     impl ToolExecutor for AlwaysOkExecutor {
         fn execute(
@@ -379,7 +392,8 @@ mod tests {
             source: prediction::PredictionSource::StreamPartial,
         };
 
-        let dispatched = engine.try_dispatch(&pred, SkillTrustLevel::Trusted);
+        let dispatched =
+            engine.try_dispatch(&pred, SkillTrustLevel::Trusted, &DispatchGate::open());
         let _ = dispatched;
     }
 
@@ -399,11 +413,66 @@ mod tests {
             source: prediction::PredictionSource::StreamPartial,
         };
 
-        let dispatched = engine.try_dispatch(&pred, SkillTrustLevel::Quarantined);
+        let dispatched =
+            engine.try_dispatch(&pred, SkillTrustLevel::Quarantined, &DispatchGate::open());
         assert!(
             !dispatched,
             "untrusted skill must not dispatch speculatively"
         );
+    }
+
+    fn test_prediction() -> Prediction {
+        Prediction {
+            tool_id: zeph_common::ToolName::new("test"),
+            args: serde_json::Map::new(),
+            confidence: 0.9,
+            source: prediction::PredictionSource::StreamPartial,
+        }
+    }
+
+    fn test_engine() -> SpeculationEngine {
+        let exec: Arc<dyn ErasedToolExecutor> = Arc::new(AlwaysOkExecutor);
+        SpeculationEngine::new(
+            exec,
+            SpeculativeConfig {
+                mode: SpeculationMode::Decoding,
+                ..Default::default()
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn tool_outside_the_turn_set_is_not_dispatched() {
+        use crate::agent::turn_gate::{RequiresGate, TurnToolSet};
+
+        let engine = test_engine();
+        let gate = DispatchGate::new(TurnToolSet::default(), RequiresGate::open());
+
+        assert!(!engine.try_dispatch(&test_prediction(), SkillTrustLevel::Trusted, &gate));
+        assert!(engine.cache.is_empty());
+    }
+
+    #[tokio::test]
+    async fn tool_with_unmet_requires_is_not_dispatched() {
+        use crate::agent::turn_gate::RequiresGate;
+        use std::collections::HashSet;
+
+        let engine = test_engine();
+        let graph = Arc::new(zeph_tools::ToolDependencyGraph::new(
+            [(
+                "test".to_owned(),
+                zeph_tools::ToolDependency {
+                    requires: vec!["read".to_owned()],
+                    prefers: Vec::new(),
+                },
+            )]
+            .into(),
+        ));
+        let requires = RequiresGate::snapshot(Some(&graph), &HashSet::new(), &HashSet::new(), None);
+        let gate = DispatchGate::requires_only(requires);
+
+        assert!(!engine.try_dispatch(&test_prediction(), SkillTrustLevel::Trusted, &gate));
+        assert!(engine.cache.is_empty());
     }
 
     #[tokio::test]
@@ -422,7 +491,7 @@ mod tests {
             source: prediction::PredictionSource::StreamPartial,
         };
 
-        engine.try_dispatch(&pred, SkillTrustLevel::Trusted);
+        engine.try_dispatch(&pred, SkillTrustLevel::Trusted, &DispatchGate::open());
         // After cancel_for the cache should be empty.
         engine.cancel_for(&zeph_common::ToolName::new("test"));
         assert!(
@@ -447,7 +516,7 @@ mod tests {
             source: prediction::PredictionSource::StreamPartial,
         };
 
-        engine.try_dispatch(&pred, SkillTrustLevel::Trusted);
+        engine.try_dispatch(&pred, SkillTrustLevel::Trusted, &DispatchGate::open());
         assert!(
             !engine.cache.is_empty(),
             "precondition: handle must be in cache before end_turn"

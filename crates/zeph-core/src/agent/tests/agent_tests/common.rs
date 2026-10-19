@@ -387,6 +387,13 @@ impl MockToolExecutor {
         self
     }
 
+    /// Advertise tools named `ids` as definitions. The native tool loop only accepts calls to
+    /// tools offered in its frozen turn set, so a test that makes the model call a tool must
+    /// advertise it.
+    pub(crate) fn advertising(self, ids: &[&'static str]) -> Self {
+        self.with_definitions(ids.iter().map(|id| test_tool_def(id)).collect())
+    }
+
     /// Sleep for `ms` milliseconds before returning a dispatch result, so timing-sensitive
     /// tests (e.g. the reformat-phase whole-phase budget guard, #5453) can advance real
     /// wall-clock time deterministically without a background sleep of their own.
@@ -430,6 +437,18 @@ impl ToolExecutor for MockToolExecutor {
         self.definitions.clone()
     }
     zeph_tools::tool_executor_no_inner_defaults!();
+}
+
+/// Minimal tool definition for tests that only need the tool to be offered to the model.
+pub(crate) fn test_tool_def(id: &'static str) -> zeph_tools::registry::ToolDef {
+    zeph_tools::registry::ToolDef {
+        id: id.into(),
+        description: "test tool".into(),
+        schema: schemars::Schema::default(),
+        invocation: zeph_tools::registry::InvocationHint::ToolCall,
+        output_schema: None,
+        server_id: None,
+    }
 }
 
 pub(crate) fn create_test_registry() -> SkillRegistry {

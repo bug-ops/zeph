@@ -8,7 +8,8 @@ use std::collections::HashSet;
 use base64::{Engine, engine::general_purpose::STANDARD};
 
 use crate::provider::{
-    AgentVisible, ChatResponse, Message, MessagePart, Role, ThinkingBlock, ToolUseRequest,
+    AgentVisible, AssistantBlock, AssistantContent, ChatResponse, Message, MessageOrigin,
+    MessagePart, Role, ThinkingBlock, ToolUseRequest,
 };
 use crate::tool_pairing::{
     downgraded_tool_result_text, downgraded_tool_use_text, unmatched_tool_result_ids,
@@ -75,10 +76,34 @@ pub(in crate::claude) fn split_messages(
 /// the no-prefill strip after this split (see its doc comment for why). See [`split_messages`]
 /// for why the `pub(in crate::claude)` visibility here is a documentation anchor, and for where
 /// the real compile-time guarantee (`GatedStructuredHistory`) lives (#6158).
+#[cfg(test)]
 pub(in crate::claude) fn split_messages_structured(
     messages: &[Message],
     cache_user_messages: bool,
     ttl: Option<CacheTtl>,
+) -> (Option<String>, Vec<StructuredApiMessage>) {
+    split_messages_structured_scoped(messages, cache_user_messages, ttl, ThinkingScope::Verbatim)
+}
+
+/// Which assistant messages keep their thinking blocks in a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::claude) enum ThinkingScope {
+    /// Forward thinking from every assistant message unchanged.
+    Verbatim,
+    /// Forward thinking only from assistant messages after the latest user turn input.
+    ///
+    /// Models with preserved thinking bind each block to its prefix; blocks from earlier turns
+    /// would be dropped by the provider anyway, and sending them would break prefix stability.
+    /// Without a turn-input marker nothing can be scoped and thinking is forwarded unchanged.
+    CurrentTurn,
+}
+
+/// [`split_messages_structured`] with explicit control over which thinking blocks are sent.
+pub(in crate::claude) fn split_messages_structured_scoped(
+    messages: &[Message],
+    cache_user_messages: bool,
+    ttl: Option<CacheTtl>,
+    thinking_scope: ThinkingScope,
 ) -> (Option<String>, Vec<StructuredApiMessage>) {
     let mut system_parts = Vec::new();
     let mut chat = Vec::new();
@@ -94,6 +119,13 @@ pub(in crate::claude) fn split_messages_structured(
         .iter()
         .filter(|m| m.role != Role::System)
         .collect();
+
+    let turn_start = match thinking_scope {
+        ThinkingScope::Verbatim => None,
+        ThinkingScope::CurrentTurn => visible
+            .iter()
+            .rposition(|m| m.metadata.origin == Some(MessageOrigin::TurnInput)),
+    };
 
     for (idx, &msg) in visible.iter().enumerate() {
         match msg.role {
@@ -137,6 +169,7 @@ pub(in crate::claude) fn split_messages_structured(
                     let blocks = convert_parts_to_blocks(
                         &msg.parts,
                         is_assistant,
+                        turn_start.is_none_or(|start| idx > start),
                         &orphaned_tool_use,
                         &orphaned_tool_result,
                     );
@@ -164,8 +197,8 @@ pub(in crate::claude) fn split_messages_structured(
 
     coalesce_same_role(&mut chat);
 
-    // Place 1 message-level cache breakpoint at the user message closest to position
-    // (total - 20) to maximize the 20-block lookback window coverage.
+    // One message-level cache breakpoint on the tail, so the next request of a growing tool
+    // loop reads everything up to the previous tail.
     if cache_user_messages && chat.len() > 1 {
         apply_cache_breakpoint(&mut chat, ttl);
     }
@@ -183,8 +216,8 @@ pub(in crate::claude) fn split_messages_structured(
 ///
 /// Dropped or hidden messages (and a server compaction block followed by assistant output)
 /// can leave adjacent same-role entries, which are valid for the Messages API only as separate
-/// blocks of one turn. Runs before the cache breakpoint so the breakpoint lands on the merged turn.
-// TODO(#6821): coalescing must keep thinking blocks first once thinking replay is fixed.
+/// blocks of one turn. Block order is preserved, so thinking stays ahead of the blocks that
+/// followed it. Runs before the cache breakpoint so the breakpoint lands on the merged turn.
 fn coalesce_same_role(chat: &mut Vec<StructuredApiMessage>) {
     let mut out: Vec<StructuredApiMessage> = Vec::with_capacity(chat.len());
     for msg in chat.drain(..) {
@@ -215,41 +248,45 @@ fn into_blocks(content: StructuredContent) -> Vec<AnthropicContentBlock> {
 
 pub(super) fn parse_tool_response(resp: ToolApiResponse) -> (ChatResponse, Option<String>) {
     let truncated = resp.stop_reason.as_deref() == Some("max_tokens");
+    let replay = resp.thinking_replay();
     let mut text_parts = Vec::new();
-    let mut tool_calls = Vec::new();
-    let mut thinking_blocks = Vec::new();
+    let mut blocks = Vec::new();
     let mut compaction_summary: Option<String> = None;
 
     for block in resp.content {
         match block {
-            AnthropicContentBlock::Text { text, .. } => text_parts.push(text),
+            AnthropicContentBlock::Text { text, .. } => {
+                text_parts.push(text.clone());
+                blocks.push(AssistantBlock::Text(text));
+            }
             AnthropicContentBlock::ToolUse { id, name, input } => {
-                tool_calls.push(ToolUseRequest {
+                blocks.push(AssistantBlock::ToolUse(ToolUseRequest {
                     id,
                     name: name.into(),
                     input,
-                });
+                }));
             }
             AnthropicContentBlock::Thinking {
                 thinking,
                 signature,
             } => {
                 tracing::debug!(len = thinking.len(), "Claude thinking block received");
-                thinking_blocks.push(ThinkingBlock::Thinking {
+                blocks.push(AssistantBlock::Thinking(ThinkingBlock::Thinking {
                     thinking,
                     signature,
-                });
+                }));
             }
             AnthropicContentBlock::RedactedThinking { data } => {
                 tracing::debug!("Claude redacted_thinking block received");
-                thinking_blocks.push(ThinkingBlock::Redacted { data });
+                blocks.push(AssistantBlock::Thinking(ThinkingBlock::Redacted { data }));
             }
-            AnthropicContentBlock::Compaction { summary } => {
+            AnthropicContentBlock::Compaction { content } => {
+                let summary = content.filter(|c| !c.is_empty());
                 tracing::info!(
-                    summary_len = summary.len(),
+                    summary_len = summary.as_deref().map_or(0, str::len),
                     "Claude server-side compaction block received"
                 );
-                compaction_summary = Some(summary);
+                compaction_summary = summary;
             }
             AnthropicContentBlock::ToolResult { .. } | AnthropicContentBlock::Image { .. } => {}
         }
@@ -258,9 +295,11 @@ pub(super) fn parse_tool_response(resp: ToolApiResponse) -> (ChatResponse, Optio
     // When response was cut off by max_tokens with pending tool calls, the tool
     // inputs are incomplete JSON. Discard them and surface the partial text so
     // the agent loop can retry rather than executing a malformed tool call.
-    if truncated && !tool_calls.is_empty() {
+    let content = AssistantContent::new(blocks);
+    let tool_count = content.tool_calls().count();
+    if truncated && tool_count > 0 {
         tracing::warn!(
-            tool_count = tool_calls.len(),
+            tool_count,
             "response truncated by max_tokens with pending tool calls; discarding incomplete tool use"
         );
         let combined = text_parts.join("");
@@ -275,7 +314,7 @@ pub(super) fn parse_tool_response(resp: ToolApiResponse) -> (ChatResponse, Optio
         );
     }
 
-    let response = if tool_calls.is_empty() {
+    let response = if tool_count == 0 {
         let combined = text_parts.join("");
         // Inject the truncation marker so the agent loop can emit StopReason::MaxTokens.
         let text = if truncated {
@@ -290,15 +329,10 @@ pub(super) fn parse_tool_response(resp: ToolApiResponse) -> (ChatResponse, Optio
         };
         ChatResponse::Text(text)
     } else {
-        let text = if text_parts.is_empty() {
-            None
-        } else {
-            Some(text_parts.join(""))
-        };
         ChatResponse::ToolUse {
-            text,
-            tool_calls,
-            thinking_blocks,
+            content,
+            replay,
+            compaction: None,
         }
     };
     (response, compaction_summary)
@@ -362,6 +396,7 @@ fn push_tool_result_block(
 /// Convert message parts into `AnthropicContentBlock`s, respecting tool-use/result pairing rules.
 ///
 /// - `is_assistant`: whether the message is from the assistant role
+/// - `keep_thinking`: whether thinking blocks of this (assistant) message are forwarded
 /// - `orphaned_tool_use_ids`: `tool_use` IDs from [`crate::tool_pairing::unmatched_tool_use_ids`]
 ///   to downgrade to text (empty when `!is_assistant`)
 /// - `orphaned_tool_result_ids`: `tool_result` IDs from
@@ -370,6 +405,7 @@ fn push_tool_result_block(
 pub(super) fn convert_parts_to_blocks(
     parts: &[MessagePart],
     is_assistant: bool,
+    keep_thinking: bool,
     orphaned_tool_use_ids: &HashSet<&str>,
     orphaned_tool_result_ids: &HashSet<&str>,
 ) -> Vec<AnthropicContentBlock> {
@@ -442,20 +478,20 @@ pub(super) fn convert_parts_to_blocks(
             MessagePart::ThinkingBlock {
                 thinking,
                 signature,
-            } if is_assistant => {
+            } if is_assistant && keep_thinking => {
                 blocks.push(AnthropicContentBlock::Thinking {
                     thinking: thinking.clone(),
                     signature: signature.clone(),
                 });
             }
-            MessagePart::RedactedThinkingBlock { data } if is_assistant => {
+            MessagePart::RedactedThinkingBlock { data } if is_assistant && keep_thinking => {
                 blocks.push(AnthropicContentBlock::RedactedThinking { data: data.clone() });
             }
             // Compaction blocks must be sent back verbatim in subsequent turns
             // so the Claude API can prune prior history correctly.
             MessagePart::Compaction { summary } if is_assistant => {
                 blocks.push(AnthropicContentBlock::Compaction {
-                    summary: summary.clone(),
+                    content: Some(summary.clone()),
                 });
             }
             // Runtime notes ride on the tail tool-result `user` message, after its
@@ -1058,74 +1094,69 @@ mod tests {
         );
     }
 
-    #[test]
-    fn split_messages_structured_two_messages_places_breakpoint_on_user() {
-        let messages = vec![
-            Message {
-                role: Role::User,
-                content: "first user".into(),
-                parts: vec![],
-                metadata: MessageMetadata::default(),
-            },
-            Message {
-                role: Role::Assistant,
-                content: "assistant reply".into(),
-                parts: vec![],
-                metadata: MessageMetadata::default(),
-            },
-        ];
-        let (_, chat) = split_messages_structured(&messages, true, None);
-        assert_eq!(chat.len(), 2);
-        // Breakpoint must be on the user message at index 0 (only user in range)
-        let user_json = serde_json::to_value(&chat[0]).unwrap();
-        assert!(
-            user_json.to_string().contains("cache_control"),
-            "user message must carry cache_control breakpoint"
-        );
-        let assistant_json = serde_json::to_value(&chat[1]).unwrap();
-        assert!(
-            !assistant_json.to_string().contains("cache_control"),
-            "assistant message must not have cache_control"
-        );
+    fn marked_indices(chat: &[StructuredApiMessage]) -> Vec<usize> {
+        chat.iter()
+            .enumerate()
+            .filter(|(_, m)| serde_json::to_string(m).unwrap().contains("cache_control"))
+            .map(|(i, _)| i)
+            .collect()
     }
 
     #[test]
-    fn split_messages_structured_breakpoint_targets_last_minus_20_position() {
-        // Build 25 messages: user/assistant alternating, user first
-        let mut messages = Vec::new();
-        for i in 0..25u32 {
-            let role = if i % 2 == 0 {
-                Role::User
-            } else {
-                Role::Assistant
-            };
-            let content = format!("message {i}");
-            messages.push(Message {
-                role,
-                content,
-                parts: vec![],
-                metadata: MessageMetadata::default(),
-            });
-        }
+    fn breakpoint_sits_on_the_tail_message() {
+        let messages = vec![
+            Message::from_legacy(Role::User, "first user"),
+            Message::from_legacy(Role::Assistant, "assistant reply"),
+            Message::from_legacy(Role::User, "second user"),
+        ];
         let (_, chat) = split_messages_structured(&messages, true, None);
-        assert_eq!(chat.len(), 25);
-        // target = 25 - 20 = 5; first user at or after index 5 is index 6 (even indices are user)
-        // Actually index 5 is assistant (odd), so search finds index 6 (user)
-        let mut breakpoint_idx = None;
-        for (i, msg) in chat.iter().enumerate() {
-            let json = serde_json::to_value(msg).unwrap();
-            if json.to_string().contains("cache_control") {
-                breakpoint_idx = Some(i);
-                break;
+        assert_eq!(marked_indices(&chat), [2]);
+    }
+
+    #[test]
+    fn breakpoint_stays_on_the_tail_of_a_long_history() {
+        let messages: Vec<Message> = (0..25u32)
+            .map(|i| {
+                let role = if i % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                };
+                Message::from_legacy(role, format!("message {i}"))
+            })
+            .collect();
+        let (_, chat) = split_messages_structured(&messages, true, None);
+        assert_eq!(marked_indices(&chat), [24]);
+    }
+
+    #[test]
+    fn breakpoint_on_trailing_assistant_falls_back_past_blocks_that_cannot_carry_it() {
+        let messages = vec![
+            Message::from_legacy(Role::User, "go"),
+            Message::from_parts(
+                Role::Assistant,
+                vec![
+                    MessagePart::Text {
+                        text: "plan".into(),
+                    },
+                    MessagePart::ThinkingBlock {
+                        thinking: "t".into(),
+                        signature: "s".into(),
+                    },
+                ],
+            ),
+        ];
+        let (_, chat) = split_messages_structured(&messages, true, None);
+        let StructuredContent::Blocks(blocks) = &chat[1].content else {
+            panic!("expected blocks");
+        };
+        assert!(matches!(
+            &blocks[0],
+            AnthropicContentBlock::Text {
+                cache_control: Some(_),
+                ..
             }
-        }
-        let idx = breakpoint_idx.expect("must have a breakpoint somewhere");
-        assert_eq!(
-            chat[idx].role, "user",
-            "breakpoint must be on a user message"
-        );
-        // Breakpoint index must be >= max(0, total-20) = 5
-        assert!(idx >= 5, "breakpoint must be at or after position total-20");
+        ));
     }
 
     #[test]
@@ -1211,8 +1242,8 @@ mod tests {
         // Assistant message: must contain a Compaction block with the original summary.
         if let StructuredContent::Blocks(blocks) = &chat[0].content {
             let has_compaction = blocks.iter().any(|b| {
-                matches!(b, AnthropicContentBlock::Compaction { summary }
-                    if summary == "History was compacted here.")
+                matches!(b, AnthropicContentBlock::Compaction { content: Some(c) }
+                    if c == "History was compacted here.")
             });
             assert!(
                 has_compaction,
@@ -1448,7 +1479,8 @@ mod tests {
         );
         msg.parts
             .push(MessagePart::RuntimeNote { text: "n".into() });
-        let blocks = convert_parts_to_blocks(&msg.parts, true, &HashSet::new(), &HashSet::new());
+        let blocks =
+            convert_parts_to_blocks(&msg.parts, true, true, &HashSet::new(), &HashSet::new());
         assert_eq!(blocks.len(), 1);
     }
 

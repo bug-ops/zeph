@@ -1316,7 +1316,7 @@ fn tier0_does_not_set_compacted_this_turn() {
             .compaction_state()
             .is_compacted_this_turn()
     );
-    agent.maybe_apply_deferred_summaries();
+    agent.maybe_apply_deferred_summaries(zeph_agent_context::DeferredApplyTrigger::TokenOrCount);
     assert!(
         !agent
             .context_manager
@@ -1355,7 +1355,7 @@ fn tier0_count_trigger_fires_without_budget_pressure() {
     // Token count well below budget threshold (simulates post-pruning state)
     agent.runtime.providers.cached_prompt_tokens = 5_000;
 
-    agent.maybe_apply_deferred_summaries();
+    agent.maybe_apply_deferred_summaries(zeph_agent_context::DeferredApplyTrigger::TokenOrCount);
 
     let summaries = agent
         .msg

@@ -174,11 +174,11 @@ pub use plugins::{PluginsConfig, ReputationConfig, ReputationEnforcement};
 pub use providers::default_stt_language;
 pub use providers::{
     BanditConfig, CacheTtl, CandleConfig, CandleDevice, CandleInlineConfig, CandleSource,
-    CascadeClassifierMode, CascadeConfig, CocoonPricing, CoeConfig, ComplexityRoutingConfig,
-    FAST_TIER_MODEL_HINTS, GeminiThinkingLevel, GenerationParams, GonkaNode, LlmConfig,
-    LlmRoutingStrategy, MAX_TOKENS_CAP, ProviderEntry, ProviderKind, ProviderName,
-    ProviderOverrides, RouterConfig, RouterStrategyConfig, StreamLimits, SttConfig, ThinkingConfig,
-    ThinkingEffort, TierMapping, validate_pool,
+    CascadeClassifierMode, CascadeConfig, CocoonPricing, CoeConfig, CompactionTrigger,
+    CompactionTriggerError, ComplexityRoutingConfig, FAST_TIER_MODEL_HINTS, GeminiThinkingLevel,
+    GenerationParams, GonkaNode, LlmConfig, LlmRoutingStrategy, MAX_TOKENS_CAP, ProviderEntry,
+    ProviderKind, ProviderName, ProviderOverrides, RouterConfig, RouterStrategyConfig,
+    StreamLimits, SttConfig, ThinkingConfig, ThinkingEffort, TierMapping, validate_pool,
 };
 pub use quality::{QualityConfig, TriggerPolicy};
 pub use rate_limit::RateLimitConfig;

@@ -386,7 +386,8 @@ always_on = ["memory_search", "memory_save", "load_skill", "scheduler"]
 
 - Filtering is applied after TAFC augmentation and before TAFC strip
 - Dependency gates (see below) are applied AFTER schema filtering — `apply()` is a separate composable step
-- Always-on and name-mentioned tools always bypass hard dependency gates
+- Always-on tools bypass hard dependency gates; a tool name mentioned in the query does NOT (`apply()` only skips `AlwaysOn`)
+- The tool array of one tool loop is frozen at iteration 0 (`TurnToolSet`, `agent/turn_gate.rs`): schema-filter `included` ∪ tools held back only by unmet `requires` ∪ the built-in focus/`compress_context`/`request_compaction` tools ∪ `memory_search` while the utility gate is enabled. It never changes between iterations, so the provider's cached request prefix stays valid. A tool dropped by the filter is unreachable for the whole turn
 - Filtering must not remove tools that the LLM already referenced in the current turn
 - NEVER filter when no query embedding is available — return full tool set
 
@@ -445,7 +446,7 @@ ttl_secs = 300  # 0 = never expire
 
 ### Overview
 
-Sequential tool availability control: some tools should only appear in the LLM's schema after prerequisite tools have been called. `requires` enforces hard gates (tool hidden until all prerequisites completed). `prefers` adds a soft similarity boost when prerequisites are met.
+Sequential tool availability control: some tools should only appear in the LLM's schema after prerequisite tools have been called. `requires` enforces hard gates (tool call rejected until all prerequisites completed; the tool stays listed in the frozen turn set). `prefers` adds a soft similarity boost when prerequisites are met.
 
 ### `ToolDependency` Config
 
@@ -464,7 +465,16 @@ prefers = ["list_files"]   # gets +0.15 similarity boost per satisfied prereq
 
 ### Deadlock Fallback
 
-If `apply()` would block ALL non-always-on tools (all have unmet hard gates), the dependency gates are disabled for that turn with a `WARN` log. This prevents the agent from having no callable tools.
+If `apply()` would block ALL non-always-on tools (all have unmet hard gates), the dependency gates are disabled for that turn with a `WARN` log. This prevents the agent from having no callable tools. The dispatch-time `RequiresGate` applies the same rule to its scope (the turn set): when every non-always-on tool in scope is blocked, the snapshot lets calls through. The built-in focus and `compress_context` tools are always in the turn set and never carry `requires`, so in practice something is always callable and the dispatch-time fallback does not fire; it remains as a guard for turn sets without built-ins.
+
+### Dispatch Gates
+
+Hard gates are enforced at dispatch, not by hiding tools:
+
+- `TurnSetGate` (`TurnToolSet::check`) rejects a call to a tool outside the frozen turn set
+- `RequiresGate` (a snapshot of the dependency graph, `completed_tool_ids` and `always_on`, rebuilt before every tool tier) rejects a call whose `requires` have not completed; a prerequisite completed in tier N unlocks its dependants in tier N+1 and in later iterations
+- `DispatchGate` combines both and guards the normal dispatch path (`check_call_gates`) and streaming speculation (`SpeculationEngine::try_dispatch` takes the snapshot as a parameter). PASTE pattern prediction runs before the turn set exists and applies `RequiresGate` only, failing closed with no deadlock fallback
+- A rejection is a policy decision: it becomes an `[error] Tool call to X was rejected: …` tool result (never a `ToolError`), so it triggers no retry, reformat or self-reflection phase, does not unlock dependants, and still counts against the session quota and the utility window
 
 ### Completed Tool Tracking
 
@@ -487,7 +497,8 @@ rules = {}
 ### Key Invariants
 
 - Dependency gates apply AFTER schema filtering — `apply()` is a separate post-filter step
-- Always-on and name-mentioned tools always bypass hard gates
+- Always-on tools bypass hard gates; name mentions do not
+- Hard gates are enforced at dispatch (`DispatchGate`); the tool array sent to the provider is never narrowed after iteration 0
 - `requires` cycles are broken at construction time — never at filter time
 - Deadlock fallback is mandatory — never leave the agent with zero callable tools
 - `completed_tool_ids` must be cleared on `/clear` — stale completed set causes gate bypass

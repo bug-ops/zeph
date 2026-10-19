@@ -70,15 +70,14 @@ impl ToolExecutor for CallableToolExecutor {
 }
 
 fn tool_use_response(tool_id: &str, tool_name: &str) -> ChatResponse {
-    ChatResponse::ToolUse {
-        text: None,
-        tool_calls: vec![ToolUseRequest {
+    ChatResponse::tool_use(
+        None,
+        vec![ToolUseRequest {
             id: tool_id.to_owned(),
             name: tool_name.into(),
             input: serde_json::json!({"arg": "val"}),
         }],
-        thinking_blocks: vec![],
-    }
+    )
 }
 
 #[tokio::test]

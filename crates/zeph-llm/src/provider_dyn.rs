@@ -157,9 +157,6 @@ pub trait LlmProviderDyn: private::Sealed + std::fmt::Debug + Send + Sync {
         None
     }
 
-    /// Return the compaction summary from the most recent API call, if available.
-    fn take_compaction_summary(&self) -> Option<String>;
-
     /// Send messages and return the assistant response together with per-call extras.
     ///
     /// # Errors
@@ -255,10 +252,6 @@ impl<T: LlmProvider + std::fmt::Debug + Send + Sync + 'static> LlmProviderDyn fo
 
     fn last_usage(&self) -> Option<(u64, u64)> {
         LlmProvider::last_usage(self)
-    }
-
-    fn take_compaction_summary(&self) -> Option<String> {
-        LlmProvider::take_compaction_summary(self)
     }
 
     fn chat_with_extras<'a>(
