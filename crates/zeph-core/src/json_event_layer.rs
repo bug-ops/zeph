@@ -155,4 +155,31 @@ mod tests {
         assert_eq!(call_ids, vec!["call-a", "call-b"]);
         assert_eq!(result_ids, vec!["call-a", "call-b"]);
     }
+
+    #[tokio::test]
+    async fn before_tool_redacts_json_escaped_secret_and_keeps_json_valid() {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::new(JsonEventSink::with_writer(SharedBuffer(buf.clone())));
+        let layer = JsonEventLayer::new(sink);
+        let ctx = LayerContext {
+            conversation_id: None,
+            turn_number: 0,
+        };
+        let mut call = make_call("shell", "call-a");
+        call.params.insert(
+            "cmd".to_owned(),
+            serde_json::json!("echo a\nsk-abc123def456 disk-usage"),
+        );
+
+        layer.before_tool(&ctx, &call).await;
+
+        let snapshot = buf.lock().unwrap().clone();
+        let line = String::from_utf8_lossy(&snapshot)
+            .lines()
+            .next()
+            .unwrap()
+            .to_owned();
+        let event: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(event["args"]["cmd"], "echo a\n[REDACTED] disk-usage");
+    }
 }

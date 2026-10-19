@@ -613,14 +613,136 @@ mod tests {
         }
 
         #[test]
-        fn scrub_content_result_never_contains_raw_secret(s in ".*") {
+        fn scrub_content_leaves_no_unprotected_secret_prefix(s in boundary_adjacent_text()) {
             let result = scrub_content(&s);
-            for prefix in SECRET_PREFIXES {
+            assert_no_unprotected_prefix(&result);
+        }
+
+        #[test]
+        fn scrub_content_leaves_no_unprotected_secret_prefix_in_free_text(s in ".*") {
+            let result = scrub_content(&s);
+            assert_no_unprotected_prefix(&result);
+        }
+    }
+
+    /// Up to 6 boundary-relevant characters (long enough for `\\xXX` and `\\uXXXX`), a secret
+    /// prefix, then a body that is sometimes long and digit-bearing, so prefixes land next to
+    /// every kind of boundary the generic `.*` strategy almost never produces.
+    fn boundary_adjacent_text() -> impl Strategy<Value = String> {
+        (
+            "[A-Za-z0-9\\\\%_ nrtbf0vxu=(\\-\\[;]{0,6}",
+            proptest::sample::select(SECRET_PREFIXES),
+            "[A-Za-z0-9_-]{0,24}",
+        )
+            .prop_map(|(lead, prefix, body)| format!("{lead}{prefix}{body}"))
+    }
+
+    /// Independent oracle that knows nothing about the escape boundary: after scrubbing, a
+    /// secret prefix may remain only when an alphanumeric directly precedes it and the run of
+    /// `[A-Za-z0-9_-]` after it has no key-shaped segment (16+ separator-free alphanumerics
+    /// with a digit).
+    fn assert_no_unprotected_prefix(text: &str) {
+        for prefix in SECRET_PREFIXES {
+            for (at, _) in text.match_indices(*prefix) {
+                let glued = text[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric());
+                assert!(glued, "prefix {prefix} after a boundary survived: {text:?}");
+                let run: String = text[at + prefix.len()..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+                    .collect();
                 assert!(
-                    !result.contains(*prefix),
-                    "scrub_content must redact prefix: {prefix}"
+                    !run.split(['-', '_'])
+                        .any(|seg| seg.len() >= 16 && seg.chars().any(|c| c.is_ascii_digit())),
+                    "key-shaped body after {prefix} survived: {text:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn scrub_content_keeps_hyphenated_words() {
+        for text in [
+            "disk-usage",
+            "disk-usage-table",
+            "recipe-create-task-list",
+            "shelf_x",
+        ] {
+            assert_eq!(scrub_content(text), text);
+        }
+    }
+
+    #[test]
+    fn scrub_content_redacts_real_keys_in_escaped_forms() {
+        for text in [
+            r#"{"k":"a\nsk-abc123def456"}"#,
+            "p%3Dsk-abc123def456",
+            r"a\tghp_0123456789",
+            "x sk-abc123def456",
+        ] {
+            let result = scrub_content(text);
+            assert!(result.contains("[REDACTED]"), "{text}");
+            assert!(
+                !result.contains("abc123def456") && !result.contains("0123456789"),
+                "{text} -> {result}"
+            );
+        }
+    }
+
+    #[test]
+    fn scrub_content_redacts_keys_after_ansi_qp_and_double_encoding() {
+        for text in [
+            "\x1b[32msk-abc123def456ghij\x1b[0m",
+            r"\x1b[33msk-abc123def456ghij",
+            r"\u001b[1;31msk-abc123def456ghij",
+            r"\u{1b}[0msk-abc123def456ghij",
+            "P=3Dsk-abc123def456ghij",
+            "p%253Dsk-abc123def456ghij",
+            r"\075sk-abc123def456ghij",
+            "token1sk-abc123def456ghij",
+        ] {
+            let result = scrub_content(text);
+            assert!(result.contains("[REDACTED]"), "{text}");
+            assert!(!result.contains("abc123def456"), "{text} -> {result}");
+        }
+    }
+
+    #[test]
+    fn redact_secrets_keeps_hyphenated_identifiers() {
+        for text in [
+            "task-runner-for-k8s-clusters",
+            "disk-cleanup-utility-v2",
+            "risk-assessment-2024-q3",
+            "/var/cache/pnpm_store_v3_linux_x64_node20",
+        ] {
+            assert_matches!(redact_secrets(text), Cow::Borrowed(_));
+        }
+    }
+
+    #[test]
+    fn scrub_content_redacts_every_glued_key_even_after_a_rejected_candidate() {
+        for text in [
+            "run-task-id=3Dsk-abc123def456ghij",
+            "?next=%2Ftask-list%253Fp%253Dsk-abc123def456ghij",
+            r"disk-a\075sk-abc123def456ghij",
+            "/opt/task-runner/out.log:P=3Dsk-abc123def456ghij",
+            "disk-a.bsk-abc123def456ghij",
+            "flask-app=3Dsk-abc123def456ghij",
+            "/disk-usage/x9sk-abc123def456ghij",
+            "token1sk-ant-api03-aB3dEf_gH1jKlMnOpQrStUvWxYz-0123456789",
+        ] {
+            let result = scrub_content(text);
+            assert!(!result.contains("abc123def456"), "{text} -> {result}");
+            assert!(!result.contains("0123456789"), "{text} -> {result}");
+        }
+    }
+
+    #[test]
+    fn scrub_content_keeps_digit_words_that_contain_a_prefix() {
+        for text in ["risk-2024-report", "whisk-proj-handover-notes", "abcsk-x"] {
+            assert_matches!(scrub_content(text), Cow::Borrowed(_));
         }
     }
 }

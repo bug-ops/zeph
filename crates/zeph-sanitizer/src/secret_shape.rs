@@ -19,21 +19,30 @@ use std::sync::LazyLock;
 use regex::Regex;
 use zeph_common::secrets::{
     AWS_SECRET_KEY_PATTERN, BEARER_TOKEN_PATTERN, JWT_PATTERN, PEM_PRIVATE_KEY_PATTERN,
-    PEM_PRIVATE_KEY_UNTERMINATED_PATTERN, SECRET_PREFIXES,
+    PEM_PRIVATE_KEY_UNTERMINATED_PATTERN, SECRET_PREFIXES, SECRET_TOKEN_GLUED_PATTERN,
+    SECRET_TOKEN_PATTERN, redact_glued_matches,
 };
 
-// Matches any secret prefix followed by non-whitespace/quote/bracket characters. A single
-// alternation pass covers every prefix in `SECRET_PREFIXES`; each prefix is regex-escaped
-// since e.g. `ya29.` contains a literal dot that must not be treated as "match any character".
-static SECRET_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    let pattern = SECRET_PREFIXES
-        .iter()
-        .map(|p| regex::escape(p))
-        .collect::<Vec<_>>()
-        .join("|");
-    let full = format!("(?:{pattern})[^\\s\"'`,;{{}}\\[\\]]*");
-    Regex::new(&full).expect("secret shape regex is valid")
+static SECRET_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(SECRET_TOKEN_PATTERN).expect("secret shape regex is valid"));
+
+static SECRET_GLUED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(SECRET_TOKEN_GLUED_PATTERN).expect("glued secret shape regex is valid")
 });
+
+/// Second tier: a prefix glued to an alphanumeric is redacted only when its body is key-shaped.
+fn redact_glued_tokens(text: &str) -> Cow<'_, str> {
+    redact_glued_matches(
+        text,
+        SECRET_GLUED_REGEX.captures_iter(text).filter_map(|caps| {
+            Some((
+                caps.get(0)?.range(),
+                caps.get(1)?.range(),
+                caps.get(2)?.range(),
+            ))
+        }),
+    )
+}
 
 static BEARER_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(BEARER_TOKEN_PATTERN).expect("bearer shape regex is valid"));
@@ -96,8 +105,13 @@ pub fn scrub_secret_shapes(text: &str) -> Cow<'_, str> {
         .iter()
         .any(|p| after_pem_fallback.contains(*p));
     let after_prefixes: Cow<'_, str> = if has_prefix_match {
-        match SECRET_REGEX.replace_all(after_pem_fallback.as_ref(), "[REDACTED]") {
-            Cow::Borrowed(_) => after_pem_fallback,
+        let tier1: Cow<'_, str> =
+            match SECRET_REGEX.replace_all(after_pem_fallback.as_ref(), "${1}[REDACTED]") {
+                Cow::Borrowed(_) => after_pem_fallback,
+                Cow::Owned(s) => Cow::Owned(s),
+            };
+        match redact_glued_tokens(tier1.as_ref()) {
+            Cow::Borrowed(_) => tier1,
             Cow::Owned(s) => Cow::Owned(s),
         }
     } else {
@@ -167,6 +181,147 @@ mod tests {
             let result = scrub_secret_shapes(&text);
             assert!(result.contains("[REDACTED]"), "failed for prefix: {prefix}");
             assert!(!result.contains(*prefix), "prefix not redacted: {prefix}");
+        }
+    }
+
+    #[test]
+    fn preserves_words_that_merely_contain_a_prefix() {
+        for text in [
+            "run disk-usage now",
+            "see disk-usage-table",
+            "recipe-create-task-list",
+            "a shelf_x item",
+        ] {
+            let result = scrub_secret_shapes(text);
+            assert_eq!(result, text);
+        }
+    }
+
+    #[test]
+    fn redacts_prefix_after_boundary_or_escape() {
+        for (text, kept) in [
+            ("x sk-a1", "x "),
+            ("KEY_sk-a1", "KEY_"),
+            ("(sk-a1)", "("),
+            ("=sk-a1", "="),
+            (r#"{"k":"a\nsk-proj-1"}"#, r#"{"k":"a\n"#),
+            (r"line\tghp_x1", r"line\t"),
+            (r"a\x0ask-a1", r"a\x0a"),
+            (r"a\u000ask-a1", r"a\u000a"),
+            ("p%3Dsk-proj-1", "p%3D"),
+        ] {
+            let result = scrub_secret_shapes(text);
+            assert!(result.contains("[REDACTED]"), "not redacted: {text}");
+            assert!(
+                result.starts_with(kept),
+                "boundary lost: {text} -> {result}"
+            );
+            assert!(
+                !result.contains("sk-") && !result.contains("ghp_"),
+                "{text} -> {result}"
+            );
+        }
+    }
+
+    #[test]
+    fn redacts_glued_prefix_with_key_shaped_body() {
+        for text in [
+            "\x1b[32msk-proj-0123456789abcdef\x1b[0m",
+            r"\x1b[33msk-proj-0123456789abcdef",
+            r"\u001b[1;31msk-proj-0123456789abcdef",
+            r"\u{1b}[0msk-proj-0123456789abcdef",
+            "P=3Dsk-proj-0123456789abcdef",
+            "p%253Dsk-proj-0123456789abcdef",
+            r"\075sk-proj-0123456789abcdef",
+            r"\U0000000Ask-proj-0123456789abcdef",
+            r"\ask-proj-0123456789abcdef",
+            "token1sk-proj-0123456789abcdef",
+            "id9ghp_0123456789abcdefghij",
+        ] {
+            let result = scrub_secret_shapes(text);
+            assert!(result.contains("[REDACTED]"), "not redacted: {text}");
+            assert!(!result.contains("0123456789"), "{text} -> {result}");
+        }
+    }
+
+    #[test]
+    fn glued_rejection_does_not_swallow_a_following_real_key() {
+        for text in [
+            "run-task-id=3Dsk-abc123def456ghij",
+            "?next=%2Ftask-list%253Fp%253Dsk-abc123def456ghij",
+            r"disk-a\075sk-abc123def456ghij",
+            "/opt/task-runner/out.log:P=3Dsk-abc123def456ghij",
+            "disk-a.bsk-abc123def456ghij",
+        ] {
+            let result = scrub_secret_shapes(text);
+            assert!(!result.contains("abc123def456"), "{text} -> {result}");
+        }
+    }
+
+    #[test]
+    fn non_secret_glued_words_keep_the_zero_alloc_path() {
+        for text in [
+            "see disk-usage and task-list",
+            "risk-2024-report",
+            "whisk-proj-notes",
+        ] {
+            assert!(
+                matches!(scrub_secret_shapes(text), Cow::Borrowed(_)),
+                "{text} must not allocate"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_hyphenated_identifiers_and_redacts_hyphenated_keys() {
+        for text in [
+            "task-runner-for-k8s-clusters",
+            "disk-cleanup-utility-v2",
+            "risk-assessment-2024-q3",
+            "/var/cache/pnpm_store_v3_linux_x64_node20",
+        ] {
+            assert!(
+                matches!(scrub_secret_shapes(text), Cow::Borrowed(_)),
+                "{text}"
+            );
+        }
+        for text in [
+            "x9sk-ant-api03-aB3dEf_gH1jKlMnOpQrStUvWxYz-0123456789",
+            "id9sk-proj-abc_def-0123456789abcdef_tail",
+        ] {
+            let result = scrub_secret_shapes(text);
+            assert!(!result.contains("0123456789"), "{text} -> {result}");
+        }
+    }
+
+    #[test]
+    fn rejected_glued_candidates_never_hide_a_later_key() {
+        for text in [
+            "run-task-id=3Dsk-abc123def456ghij",
+            "?next=%2Ftask-list%253Fp%253Dsk-abc123def456ghij",
+            r"disk-a\075sk-abc123def456ghij",
+            "/opt/task-runner/out.log:P=3Dsk-abc123def456ghij",
+            "disk-a.bsk-abc123def456ghij",
+            "flask-app=3Dsk-abc123def456ghij",
+            "/disk-usage/x9sk-abc123def456ghij",
+        ] {
+            let result = scrub_secret_shapes(text);
+            assert!(!result.contains("abc123def456"), "{text} -> {result}");
+        }
+    }
+
+    #[test]
+    fn keeps_glued_prefix_in_ordinary_words() {
+        for text in [
+            "disk-usage",
+            "disk-usage-table",
+            "recipe-create-task-list",
+            "risk-2024-report",
+            "whisk-proj-handover-notes",
+            "abcsk-x",
+            "shelf_x",
+        ] {
+            assert_eq!(scrub_secret_shapes(text), text);
         }
     }
 

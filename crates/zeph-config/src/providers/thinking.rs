@@ -63,6 +63,27 @@ pub enum CacheTtl {
     OneHour,
 }
 
+impl CacheTtl {
+    /// Lifetime of a cache entry after its last read or write.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use zeph_config::CacheTtl;
+    ///
+    /// assert_eq!(CacheTtl::Ephemeral.duration(), Duration::from_mins(5));
+    /// assert_eq!(CacheTtl::OneHour.duration(), Duration::from_hours(1));
+    /// ```
+    #[must_use]
+    pub fn duration(self) -> std::time::Duration {
+        match self {
+            Self::Ephemeral => std::time::Duration::from_mins(5),
+            Self::OneHour => std::time::Duration::from_hours(1),
+        }
+    }
+}
+
 /// Thinking level for Gemini models that support extended reasoning.
 ///
 /// Maps to `generationConfig.thinkingConfig.thinkingLevel` in the Gemini API.

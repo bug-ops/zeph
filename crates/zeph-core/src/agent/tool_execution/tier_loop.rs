@@ -2469,6 +2469,8 @@ impl<C: Channel> Agent<C> {
             "native tool loop iteration"
         );
 
+        self.apply_thinking_replay(chat_result.replay());
+
         if let zeph_llm::provider::ChatResponse::Text { text, .. } = &chat_result {
             // RV-1: response verification before delivery.
             if self.run_response_verification(text) {
@@ -2503,27 +2505,13 @@ impl<C: Channel> Agent<C> {
             return Ok(Some(()));
         }
 
-        let zeph_llm::provider::ChatResponse::ToolUse {
-            content, replay, ..
-        } = chat_result
-        else {
+        let zeph_llm::provider::ChatResponse::ToolUse { content, .. } = chat_result else {
             tracing::warn!(
                 response = %chat_result.log_summary(),
                 "unexpected ChatResponse variant in native tool loop"
             );
             return Ok(Some(()));
         };
-        if let ThinkingReplay::Dropped {
-            first_message_index,
-        } = replay
-        {
-            // The provider dropped the thinking from this history index on.
-            tracing::warn!(
-                first_message_index,
-                "provider dropped thinking blocks; stripping the same range from history"
-            );
-            zeph_llm::provider::strip_thinking_from(&mut self.msg.messages, first_message_index);
-        }
         let window_exhausted = self.handle_native_content(content).await?;
 
         // Mid-iteration history edits invalidate the cached prefix, so only real token pressure
@@ -2537,6 +2525,23 @@ impl<C: Channel> Agent<C> {
         }
 
         Ok(None)
+    }
+
+    /// Strip from history the thinking the provider reported dropping from this request.
+    ///
+    /// Runs for every response shape, so a text-only reply cannot leave stale thinking in
+    /// history for the next request's prefix guard to trip over.
+    fn apply_thinking_replay(&mut self, replay: ThinkingReplay) {
+        if let ThinkingReplay::Dropped {
+            first_message_index,
+        } = replay
+        {
+            tracing::warn!(
+                first_message_index,
+                "provider dropped thinking blocks; stripping the same range from history"
+            );
+            zeph_llm::provider::strip_thinking_from(&mut self.msg.messages, first_message_index);
+        }
     }
 
     /// Mid-iteration apply of deferred summaries plus soft compaction.

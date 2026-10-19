@@ -36,6 +36,8 @@ pub struct MockProvider {
     /// Value returned by `thinking_binding()`. Defaults to `Unbound` (the trait default); set
     /// via [`MockProvider::with_thinking_binding`] to test the thinking strip seams.
     pub thinking_binding: crate::provider::ThinkingBinding,
+    /// Value returned by `prefix_cache()`; set via [`MockProvider::with_prefix_cache`].
+    pub prefix_cache: crate::provider::PrefixCache,
     /// Value returned by `last_auxiliary_usage()`; set via
     /// [`MockProvider::with_auxiliary_usage`].
     pub auxiliary_usage: Option<crate::provider::AuxiliaryUsage>,
@@ -109,6 +111,7 @@ impl Default for MockProvider {
             context_window: None,
             supports_vision: false,
             thinking_binding: crate::provider::ThinkingBinding::Unbound,
+            prefix_cache: crate::provider::PrefixCache::None,
             auxiliary_usage: None,
             delay_ms: 0,
             errors: Arc::new(Mutex::new(VecDeque::new())),
@@ -447,6 +450,13 @@ impl MockProvider {
         self.thinking_binding = binding;
         self
     }
+
+    /// Set the [`PrefixCache`](crate::provider::PrefixCache) reported by `prefix_cache()`.
+    #[must_use]
+    pub fn with_prefix_cache(mut self, cache: crate::provider::PrefixCache) -> Self {
+        self.prefix_cache = cache;
+        self
+    }
 }
 
 impl LlmProvider for MockProvider {
@@ -580,6 +590,10 @@ impl LlmProvider for MockProvider {
 
     fn thinking_binding(&self) -> crate::provider::ThinkingBinding {
         self.thinking_binding
+    }
+
+    fn prefix_cache(&self) -> crate::provider::PrefixCache {
+        self.prefix_cache
     }
 
     fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {

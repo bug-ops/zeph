@@ -254,6 +254,7 @@ impl<C: Channel> Agent<C> {
                 .clone(),
             current_query: String::new(),
             thinking_binding: zeph_llm::provider::LlmProvider::thinking_binding(&self.provider),
+            soft_tier_gate: zeph_agent_context::SoftTierGate::Open,
         }
     }
 
@@ -4851,5 +4852,99 @@ mod tests {
             Some(zeph_common::SkillTrustLevel::Quarantined),
             "a load failure must reuse the previous snapshot, not fail open to an empty map"
         );
+    }
+
+    #[tokio::test]
+    async fn replace_fetch_failure_still_fails_the_turn() {
+        let provider = AnyProvider::Mock(MockProvider::with_responses(vec![]));
+        let memory = zeph_memory::semantic::SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            None,
+            provider.clone(),
+            "test-model",
+        )
+        .await
+        .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        memory.sqlite().pool().close().await;
+
+        let mut agent = Agent::new(
+            provider,
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(Arc::new(memory), cid, 50, 5, 50)
+        .with_context_budget(1_000, 0.0, 0.9, 2, 100);
+        assert!(!agent.msg.layout.is_append());
+
+        let result = agent.prepare_context("query").await;
+
+        assert!(
+            result.is_err(),
+            "the replace layout must keep propagating fetch errors"
+        );
+    }
+
+    #[tokio::test]
+    async fn append_fetch_failure_after_trim_keeps_the_trim_and_invalidates_the_prompt() {
+        let provider = AnyProvider::Mock(MockProvider::with_responses(vec![]));
+        let memory = zeph_memory::semantic::SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            None,
+            provider.clone(),
+            "test-model",
+        )
+        .await
+        .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        memory.sqlite().pool().close().await;
+
+        let mut agent = Agent::new(
+            provider,
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(Arc::new(memory), cid, 50, 5, 50)
+        .with_context_budget(1_000, 0.0, 0.9, 2, 100);
+        agent.services.memory.compaction.context_layout = zeph_config::ContextLayout::Append;
+        agent.ensure_layout_pinned();
+        agent.rebuild_system_prompt("warm up").await;
+        assert!(agent.msg.layout.rendered.is_some());
+
+        for i in 0..10 {
+            agent.msg.messages.push(Message::from_legacy(
+                Role::User,
+                format!("q{i} {}", "x".repeat(400)),
+            ));
+            agent.msg.messages.push(Message::from_legacy(
+                Role::Assistant,
+                format!("a{i} {}", "y".repeat(400)),
+            ));
+        }
+        agent.runtime.providers.cached_prompt_tokens = 10_000;
+        let before = agent.msg.messages.len();
+
+        agent
+            .prepare_context("query")
+            .await
+            .expect("a fetch failure after the trim must degrade, not fail the turn");
+
+        assert!(
+            agent.msg.messages.len() < before,
+            "the history trim must be kept"
+        );
+        assert!(
+            agent.msg.layout.rendered.is_none(),
+            "a trimmed history must invalidate the frozen prompt"
+        );
+        assert!(agent.msg.pending_preamble.retrieved.is_none());
     }
 }

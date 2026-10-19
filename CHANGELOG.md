@@ -16,9 +16,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `zeph-llm`, `zeph-core`: `chat_typed` returns `impl Future + Send` and `chat_typed_erased` is removed (breaking) (#6850)
 - `zeph-llm`: streamed Claude responses record merged usage (#6850)
+- `zeph-llm`, `zeph-core`: the "Cache expired" warning is keyed on the provider cache TTL (5 minutes by default) instead of `gap_threshold_minutes`; `gap_threshold_minutes` remains the fallback when the provider reports no TTL (breaking: `PrefixCache::Prefix { ttl }`) (#PR)
 
 ### Fixed
 
+- `zeph-common`, `zeph-sanitizer`, `zeph-memory`: secret redaction recognizes prefixes after JSON/repr escapes (`\n`, `\xXX`, `\uXXXX`, `%XX`); a prefix glued to an alphanumeric (ANSI, quoted-printable, double-encoded) is redacted only when its body is key-shaped, and ordinary words like `disk-usage` are left intact (#6857) (#PR)
+- `zeph-core`: `<active_skills>` is a state directive keyed on the sorted skill names, sent on change and cleared once (#6856) (#PR)
+- `zeph-agent-context`: in `append` a trim turn trims history before a single fetch, a fetch or tiered-recall failure keeps the trim and degrades the retrieved block (#6860) (#PR)
+- `zeph-agent-context`: tiered recall is deduplicated per item against history in `append` (#6853) (#PR)
+- `zeph-llm`, `zeph-core`, `zeph-agent-context`: in `append` an expired provider cache TTL opens the soft-band sweeps early (before the first request only) and the soft compaction tier waits while the cache is warm (breaking: `ChatResponse::Text` gains `replay`, `PrefixCache::Prefix` gains `ttl`) (#6852) (#PR)
+- `zeph-llm`, `zeph-core`, `zeph-subagent`: thinking dropped by the provider is stripped from history after text-only replies too (#6851) (#PR)
+- `zeph-core`: local Chrome trace regression tests and docs for late span fields; no code change, the report was not a bug (#6859) (#PR)
+- `zeph-config`: migration step 111 writes only the explanation comment, so `--migrate-config` no longer duplicates the three `context_layout` keys; configs already duplicated are not cleaned (#6858) (#PR)
 - `zeph-core`: speculative tool results commit only after pre-hooks, gates, cache, rate limiter and `before_tool` layers, with a bounded commit that cancels the speculative task on timeout (breaking: `SpeculativeStreamDrainer::new` takes the dispatch gate, `with_gate` removed) (#6827) (#6849)
 - `zeph-llm`, `zeph-core`: Claude server-compaction usage iterations are billed as auxiliary usage and never counted as context size (breaking: new `LlmProvider::last_auxiliary_usage`) (#6828) (#6849)
 - `zeph-subagent`: sub-agent tool loop replays thinking blocks in response order and strips them on history trim and binding mismatch (#6829) (#6849)

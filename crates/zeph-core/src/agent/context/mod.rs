@@ -7,7 +7,7 @@ mod layout;
 mod scrub;
 mod summarization;
 
-pub(crate) use layout::LayoutState;
+pub(crate) use layout::{CacheWarmth, LayoutState};
 
 pub(super) use crate::text::truncate_to_chars as truncate_chars;
 /// Re-exported so `agent::subagent_commands::parent_effective_trust_level`'s no-floor-wired

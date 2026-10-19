@@ -473,6 +473,8 @@ pub enum ChatResponse {
     Text {
         /// Response text.
         text: String,
+        /// Whether the provider kept the thinking blocks sent in the request.
+        replay: ThinkingReplay,
         /// Server-side compaction summary produced while serving this very request, if any.
         compaction: Option<String>,
     },
@@ -507,6 +509,7 @@ impl ChatResponse {
     pub fn text(text: impl Into<String>) -> Self {
         Self::Text {
             text: text.into(),
+            replay: ThinkingReplay::Intact,
             compaction: None,
         }
     }
@@ -526,8 +529,12 @@ impl ChatResponse {
     #[must_use]
     pub fn log_summary(&self) -> String {
         match self {
-            Self::Text { text, compaction } => format!(
-                "Text(text_bytes={}, compaction={})",
+            Self::Text {
+                text,
+                replay,
+                compaction,
+            } => format!(
+                "Text(text_bytes={}, replay={replay:?}, compaction={})",
                 text.len(),
                 compaction.is_some()
             ),
@@ -544,6 +551,33 @@ impl ChatResponse {
                     compaction.is_some()
                 )
             }
+        }
+    }
+
+    /// Which thinking blocks of the request the provider kept, whatever the response shape.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::ThinkingReplay;
+    /// use zeph_llm::provider::ChatResponse;
+    ///
+    /// let mut resp = ChatResponse::text("hi");
+    /// assert_eq!(resp.replay(), ThinkingReplay::Intact);
+    /// resp.set_replay(ThinkingReplay::Dropped { first_message_index: 2 });
+    /// assert_eq!(resp.replay(), ThinkingReplay::Dropped { first_message_index: 2 });
+    /// ```
+    #[must_use]
+    pub fn replay(&self) -> ThinkingReplay {
+        match self {
+            Self::Text { replay, .. } | Self::ToolUse { replay, .. } => *replay,
+        }
+    }
+
+    /// Overwrite the thinking-replay report of the response.
+    pub fn set_replay(&mut self, value: ThinkingReplay) {
+        match self {
+            Self::Text { replay, .. } | Self::ToolUse { replay, .. } => *replay = value,
         }
     }
 
@@ -913,27 +947,67 @@ pub enum PrefixCache {
     #[default]
     None,
     /// The provider caches the request prefix; rewriting history invalidates it.
-    Prefix,
+    Prefix {
+        /// How long an idle cache entry survives; `None` when the provider cannot say.
+        ttl: Option<std::time::Duration>,
+    },
 }
 
 impl PrefixCache {
     /// `Prefix` if either side is `Prefix`; used by routers that hold several providers.
     ///
+    /// Which member serves a request is not known up front, so a wrong TTL must not make the
+    /// caller rewrite a cache that is still alive: two known TTLs keep the longer one, and a
+    /// known TTL next to an unknown one becomes unknown.
+    ///
     /// # Examples
     ///
     /// ```
+    /// use std::time::Duration;
     /// use zeph_llm::provider::PrefixCache;
     ///
-    /// assert_eq!(PrefixCache::None.or(PrefixCache::Prefix), PrefixCache::Prefix);
+    /// let short = PrefixCache::Prefix { ttl: Some(Duration::from_mins(5)) };
+    /// let long = PrefixCache::Prefix { ttl: Some(Duration::from_hours(1)) };
+    /// let unknown = PrefixCache::Prefix { ttl: None };
+    /// assert_eq!(PrefixCache::None.or(short), short);
+    /// assert_eq!(long.or(short), long);
+    /// assert_eq!(short.or(unknown), unknown);
     /// assert_eq!(PrefixCache::None.or(PrefixCache::None), PrefixCache::None);
     /// ```
     #[must_use]
     pub fn or(self, other: Self) -> Self {
-        if self == Self::Prefix || other == Self::Prefix {
-            Self::Prefix
-        } else {
-            Self::None
+        match (self, other) {
+            (Self::None, o) | (o, Self::None) => o,
+            (Self::Prefix { ttl: a }, Self::Prefix { ttl: b }) => Self::Prefix {
+                ttl: a.zip(b).map(|(a, b)| a.max(b)),
+            },
         }
+    }
+
+    /// Idle lifetime of the cached prefix, if the provider caches one and reports a TTL.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use zeph_llm::provider::PrefixCache;
+    ///
+    /// let cache = PrefixCache::Prefix { ttl: Some(Duration::from_mins(5)) };
+    /// assert_eq!(cache.ttl(), Some(Duration::from_mins(5)));
+    /// assert_eq!(PrefixCache::None.ttl(), None);
+    /// ```
+    #[must_use]
+    pub fn ttl(self) -> Option<std::time::Duration> {
+        match self {
+            Self::None => None,
+            Self::Prefix { ttl } => ttl,
+        }
+    }
+
+    /// Whether the provider caches the request prefix.
+    #[must_use]
+    pub fn is_prefix(self) -> bool {
+        matches!(self, Self::Prefix { .. })
     }
 }
 
@@ -3566,6 +3640,26 @@ mod tests {
         assert!(!json.contains("request_policy"));
         let back: MessageMetadata = serde_json::from_str(&json).unwrap();
         assert!(back.request_policy.is_none());
+    }
+
+    #[test]
+    fn prefix_cache_or_never_shortens_a_ttl_to_an_unknown_or_smaller_one() {
+        use std::time::Duration;
+
+        let five = PrefixCache::Prefix {
+            ttl: Some(Duration::from_mins(5)),
+        };
+        let hour = PrefixCache::Prefix {
+            ttl: Some(Duration::from_hours(1)),
+        };
+        let unknown = PrefixCache::Prefix { ttl: None };
+        assert_eq!(five.or(hour), hour);
+        assert_eq!(hour.or(five), hour);
+        assert_eq!(five.or(unknown), unknown);
+        assert_eq!(unknown.or(five), unknown);
+        assert_eq!(PrefixCache::None.or(five), five);
+        assert_eq!(five.or(PrefixCache::None), five);
+        assert_eq!(unknown.or(unknown), unknown);
     }
 
     #[test]

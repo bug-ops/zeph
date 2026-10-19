@@ -9,7 +9,9 @@
 //! `Directives` [`TurnContextBlock`] on the turn input instead.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
+use zeph_agent_context::SoftTierGate;
 use zeph_common::SkillTrustLevel;
 use zeph_config::{ContextLayout, ContextStrategy};
 use zeph_context::manager::CompactionTier;
@@ -84,13 +86,58 @@ pub(crate) fn resolves_to_append(
     }
     match configured {
         ContextLayout::Append => true,
-        ContextLayout::Auto => cache == PrefixCache::Prefix,
+        ContextLayout::Auto => cache.is_prefix(),
         _ => false,
     }
 }
 
 /// Share of growth over the last sweep that re-arms the sweeps in the soft compaction band.
 const SWEEP_REARM_PERCENT: u64 = 110;
+
+/// Whether the provider's prefix cache is still alive, judged from the idle time since the last
+/// assistant reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CacheWarmth {
+    /// Idle for less than the cache TTL.
+    Warm,
+    /// Idle for at least the cache TTL; the next request pays for a full prefix write anyway.
+    Expired,
+    /// The provider reports no TTL, or no assistant reply exists yet.
+    Unknown,
+}
+
+impl CacheWarmth {
+    /// Classify `idle` against `ttl`; `Unknown` unless both are known.
+    pub(crate) fn classify(ttl: Option<Duration>, idle: Option<Duration>) -> Self {
+        match (ttl, idle) {
+            (Some(ttl), Some(idle)) if idle >= ttl => Self::Expired,
+            (Some(_), Some(_)) => Self::Warm,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Why this turn's sweeps may rewrite old messages, decided once at the start of the turn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum SweepGate {
+    /// No sweep may rewrite history.
+    #[default]
+    Closed,
+    /// The provider cache expired before the turn: only the sweeps that run before the turn's
+    /// first request or at the turn boundary may rewrite history, because the turn's own
+    /// requests re-warm the cache and a later rewrite would bust it again.
+    CacheExpired,
+    /// Token pressure (soft-band growth or the hard tier), or the `replace` layout: every sweep
+    /// may run.
+    Pressure,
+}
+
+impl SweepGate {
+    /// Whether the sweeps that run before the first request or at the turn boundary may run.
+    pub(crate) fn is_open(self) -> bool {
+        self != Self::Closed
+    }
+}
 
 /// Pinned layout, frozen prompt bookkeeping, scrub progress and sweep gate of one conversation.
 #[derive(Debug, Default)]
@@ -102,7 +149,7 @@ pub(crate) struct LayoutState {
     pub(super) scrub_progress: Option<ScrubProgress>,
     /// Skills whose body was sent, with the trust level they had then.
     pub(super) skill_sent: HashMap<String, SkillTrustLevel>,
-    sweeps_this_turn: bool,
+    sweep_gate: SweepGate,
     mid_swept_this_turn: bool,
     last_sweep_tokens: Option<u64>,
     /// Directive keys present in history when this turn's directives were built.
@@ -141,21 +188,38 @@ impl LayoutState {
     ///
     /// `append` sweeps once when the context enters the soft compaction band, then only after
     /// the prompt has grown by [`SWEEP_REARM_PERCENT`] over the size recorded after the last
-    /// sweep, or at the hard tier. Below the soft threshold the gate re-arms.
-    fn decide_sweeps(&mut self, tier: CompactionTier, tokens: u64) -> bool {
-        let allowed = match tier {
+    /// sweep, or at the hard tier. Below the soft threshold the gate re-arms. An
+    /// [`Expired`](CacheWarmth::Expired) cache opens the soft band without growth, but only as
+    /// [`SweepGate::CacheExpired`]: the turn's first request re-warms the cache, so later
+    /// sweeps need real pressure.
+    fn decide_sweeps(
+        &mut self,
+        tier: CompactionTier,
+        tokens: u64,
+        warmth: CacheWarmth,
+    ) -> SweepGate {
+        let gate = match tier {
             CompactionTier::None => {
                 self.last_sweep_tokens = None;
-                false
+                SweepGate::Closed
             }
-            CompactionTier::Soft => self.last_sweep_tokens.is_none_or(|last| {
-                tokens.saturating_mul(100) >= last.saturating_mul(SWEEP_REARM_PERCENT)
-            }),
-            _ => true,
+            CompactionTier::Soft => {
+                let grown = self.last_sweep_tokens.is_none_or(|last| {
+                    tokens.saturating_mul(100) >= last.saturating_mul(SWEEP_REARM_PERCENT)
+                });
+                if grown {
+                    SweepGate::Pressure
+                } else if warmth == CacheWarmth::Expired {
+                    SweepGate::CacheExpired
+                } else {
+                    SweepGate::Closed
+                }
+            }
+            _ => SweepGate::Pressure,
         };
-        self.sweeps_this_turn = allowed;
+        self.sweep_gate = gate;
         self.mid_swept_this_turn = false;
-        allowed
+        gate
     }
 }
 
@@ -230,31 +294,78 @@ impl<C: Channel> Agent<C> {
         name = "core.context.sweep_gate",
         skip_all,
         level = "debug",
-        fields(allowed = tracing::field::Empty)
+        fields(
+            allowed = tracing::field::Empty,
+            gate = tracing::field::Empty,
+            cache = tracing::field::Empty
+        )
     )]
     pub(in crate::agent) fn decide_sweeps(&mut self) -> bool {
-        let allowed = if self.msg.layout.is_append() {
+        let gate = if self.msg.layout.is_append() {
             let tokens = self.runtime.providers.cached_prompt_tokens;
             let tier = self.context_manager.compaction_tier(tokens);
-            self.msg.layout.decide_sweeps(tier, tokens)
+            let warmth = self.cache_warmth();
+            tracing::Span::current().record("cache", tracing::field::debug(warmth));
+            self.msg.layout.decide_sweeps(tier, tokens, warmth)
         } else {
-            self.msg.layout.sweeps_this_turn = true;
-            true
+            self.msg.layout.sweep_gate = SweepGate::Pressure;
+            SweepGate::Pressure
         };
-        tracing::Span::current().record("allowed", allowed);
-        allowed
+        tracing::Span::current().record("gate", tracing::field::debug(gate));
+        tracing::Span::current().record("allowed", gate.is_open());
+        gate.is_open()
     }
 
-    /// The decision of [`Self::decide_sweeps`] for the current turn.
+    /// Time since the last assistant reply, the single clock behind every cache-age decision.
+    ///
+    /// A turn that ends without pushing an assistant message (blocked reply, timeout, cancel)
+    /// leaves the clock unmoved although the server cache was refreshed, so the next turn may
+    /// read `Expired` on a warm cache. That costs at most one avoidable rewrite and is accepted.
+    pub(in crate::agent) fn assistant_idle(&self) -> Option<Duration> {
+        self.services
+            .session
+            .last_assistant_at
+            .map(|at| at.elapsed())
+    }
+
+    /// Warmth of the provider prefix cache; `Unknown` when the provider reports no TTL.
+    pub(in crate::agent) fn cache_warmth(&self) -> CacheWarmth {
+        CacheWarmth::classify(self.provider.prefix_cache().ttl(), self.assistant_idle())
+    }
+
+    /// Gate for the soft tier of `maybe_compact`.
+    ///
+    /// Deferred only in the `append` layout while the cache is known warm and the turn's sweep
+    /// gate is closed: a soft rewrite would then bust a live cache for no pressure relief the
+    /// hysteresis wants yet. Providers without a TTL keep the ungated behavior.
+    pub(in crate::agent) fn soft_tier_gate(&self) -> SoftTierGate {
+        if self.msg.layout.is_append()
+            && !self.sweeps_allowed()
+            && self.cache_warmth() == CacheWarmth::Warm
+        {
+            SoftTierGate::Deferred
+        } else {
+            SoftTierGate::Open
+        }
+    }
+
+    /// Whether the sweeps before the first request and at the turn boundary may run: the
+    /// decision of [`Self::decide_sweeps`] for the current turn, whatever its reason.
     pub(in crate::agent) fn sweeps_allowed(&self) -> bool {
-        self.msg.layout.sweeps_this_turn
+        self.msg.layout.sweep_gate.is_open()
+    }
+
+    /// Whether the sweeps that run after the turn's first request (mid-iteration, post-response
+    /// truncation) may run: only under token pressure, never for an expired cache alone.
+    pub(in crate::agent) fn pressure_sweeps_allowed(&self) -> bool {
+        self.msg.layout.sweep_gate == SweepGate::Pressure
     }
 
     /// Whether the mid-iteration summary apply and soft prune may rewrite history now.
     ///
     /// `replace` always allows it. `append` allows it at most once per turn, and only when the
-    /// turn's sweep gate is open or the hard tier is reached, so a tool loop inside the soft band
-    /// does not rewrite sent history on every iteration.
+    /// turn's sweep gate is open under pressure or the hard tier is reached, so a tool loop
+    /// inside the soft band does not rewrite sent history on every iteration.
     pub(in crate::agent) fn mid_iteration_sweep_allowed(&mut self) -> bool {
         if !self.msg.layout.is_append() {
             return true;
@@ -269,7 +380,7 @@ impl<C: Channel> Agent<C> {
         }
         let allowed = !self.msg.layout.mid_swept_this_turn
             && tier != CompactionTier::None
-            && self.msg.layout.sweeps_this_turn;
+            && self.pressure_sweeps_allowed();
         if allowed {
             self.msg.layout.mid_swept_this_turn = true;
         }
@@ -329,24 +440,22 @@ impl<C: Channel> Agent<C> {
 mod tests {
     use super::*;
 
+    const PREFIX: PrefixCache = PrefixCache::Prefix { ttl: None };
+
     #[test]
     fn append_resolution_follows_config_and_cache_support() {
         use ContextLayout::{Append, Auto, Replace};
         let full = ContextStrategy::FullHistory;
-        assert!(resolves_to_append(Auto, full, PrefixCache::Prefix));
+        assert!(resolves_to_append(Auto, full, PREFIX));
         assert!(!resolves_to_append(Auto, full, PrefixCache::None));
         assert!(resolves_to_append(Append, full, PrefixCache::None));
-        assert!(!resolves_to_append(Replace, full, PrefixCache::Prefix));
+        assert!(!resolves_to_append(Replace, full, PREFIX));
     }
 
     #[test]
     fn draining_strategies_force_replace() {
         for strategy in [ContextStrategy::MemoryFirst, ContextStrategy::Adaptive] {
-            assert!(!resolves_to_append(
-                ContextLayout::Append,
-                strategy,
-                PrefixCache::Prefix
-            ));
+            assert!(!resolves_to_append(ContextLayout::Append, strategy, PREFIX));
         }
     }
 
@@ -378,30 +487,80 @@ mod tests {
 
     #[test]
     fn sweep_gate_fires_on_entry_then_only_after_growth() {
+        use SweepGate::{Closed, Pressure};
         let mut state = LayoutState::default();
-        assert!(!state.decide_sweeps(CompactionTier::None, 100));
-        assert!(
-            state.decide_sweeps(CompactionTier::Soft, 700),
+        let decide = |state: &mut LayoutState, tier, tokens| {
+            state.decide_sweeps(tier, tokens, CacheWarmth::Unknown)
+        };
+        assert_eq!(decide(&mut state, CompactionTier::None, 100), Closed);
+        assert_eq!(
+            decide(&mut state, CompactionTier::Soft, 700),
+            Pressure,
             "entering the band sweeps"
         );
         state.last_sweep_tokens = Some(650);
-        assert!(
-            !state.decide_sweeps(CompactionTier::Soft, 660),
+        assert_eq!(
+            decide(&mut state, CompactionTier::Soft, 660),
+            Closed,
             "no sweep every turn"
         );
-        assert!(
-            state.decide_sweeps(CompactionTier::Soft, 720),
+        assert_eq!(
+            decide(&mut state, CompactionTier::Soft, 720),
+            Pressure,
             "10% growth re-arms"
         );
-        assert!(
-            state.decide_sweeps(CompactionTier::Hard, 660),
+        assert_eq!(
+            decide(&mut state, CompactionTier::Hard, 660),
+            Pressure,
             "hard tier always sweeps"
         );
-        assert!(!state.decide_sweeps(CompactionTier::None, 100));
+        assert_eq!(decide(&mut state, CompactionTier::None, 100), Closed);
         assert!(
             state.last_sweep_tokens.is_none(),
             "dropping below soft re-arms"
         );
+    }
+
+    #[test]
+    fn expired_cache_opens_only_the_pre_request_sweeps_without_growth() {
+        let mut state = LayoutState {
+            last_sweep_tokens: Some(650),
+            ..LayoutState::default()
+        };
+        let soft = |state: &mut LayoutState, warmth| {
+            state.decide_sweeps(CompactionTier::Soft, 660, warmth)
+        };
+        assert_eq!(soft(&mut state, CacheWarmth::Warm), SweepGate::Closed);
+        assert_eq!(soft(&mut state, CacheWarmth::Unknown), SweepGate::Closed);
+        assert_eq!(
+            soft(&mut state, CacheWarmth::Expired),
+            SweepGate::CacheExpired
+        );
+        assert_eq!(
+            state.decide_sweeps(CompactionTier::None, 100, CacheWarmth::Expired),
+            SweepGate::Closed,
+            "an expired cache does not sweep below the soft band"
+        );
+        state.last_sweep_tokens = Some(650);
+        assert_eq!(
+            state.decide_sweeps(CompactionTier::Soft, 720, CacheWarmth::Expired),
+            SweepGate::Pressure,
+            "growth wins over expiry"
+        );
+        assert_eq!(
+            state.decide_sweeps(CompactionTier::Hard, 660, CacheWarmth::Warm),
+            SweepGate::Pressure
+        );
+    }
+
+    #[test]
+    fn warmth_needs_both_ttl_and_idle_time() {
+        let ttl = Some(Duration::from_mins(5));
+        let idle = |mins| Some(Duration::from_mins(mins));
+        assert_eq!(CacheWarmth::classify(ttl, idle(4)), CacheWarmth::Warm);
+        assert_eq!(CacheWarmth::classify(ttl, idle(5)), CacheWarmth::Expired);
+        assert_eq!(CacheWarmth::classify(None, idle(60)), CacheWarmth::Unknown);
+        assert_eq!(CacheWarmth::classify(ttl, None), CacheWarmth::Unknown);
     }
 }
 
@@ -586,6 +745,112 @@ mod agent_tests {
         agent.note_sweep_done();
         agent.runtime.providers.cached_prompt_tokens = 660;
         assert!(!agent.decide_sweeps(), "the next turn in the band does not");
+    }
+
+    /// Cache lifetimes that avoid subtracting from `Instant::now()` (panics on short-uptime
+    /// Windows runners): a day is never reached within a test, zero is always reached.
+    const NEVER_EXPIRES: Duration = Duration::from_hours(24);
+
+    fn cache_with_ttl(ttl: Option<Duration>) -> PrefixCache {
+        PrefixCache::Prefix { ttl }
+    }
+
+    fn append_agent_in_soft_band(cache: PrefixCache) -> Agent<MockChannel> {
+        let mut agent = Agent::new(
+            AnyProvider::Mock(MockProvider::with_responses(vec![]).with_prefix_cache(cache)),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.services.memory.compaction.context_layout = ContextLayout::Append;
+        agent.ensure_layout_pinned();
+        agent.context_manager.budget = Some(zeph_context::budget::ContextBudget::new(1_000, 0.2));
+        agent.runtime.providers.cached_prompt_tokens = 700;
+        agent.services.session.last_assistant_at = Some(std::time::Instant::now());
+        agent.msg.layout.last_sweep_tokens = Some(690);
+        agent
+    }
+
+    #[test]
+    fn warm_cache_defers_the_soft_tier_until_it_expires() {
+        let mut warm = append_agent_in_soft_band(cache_with_ttl(Some(NEVER_EXPIRES)));
+        assert!(!warm.decide_sweeps());
+        assert_eq!(warm.soft_tier_gate(), SoftTierGate::Deferred);
+
+        let mut expired = append_agent_in_soft_band(cache_with_ttl(Some(Duration::ZERO)));
+        assert!(expired.decide_sweeps(), "an expired cache opens the gate");
+        assert_eq!(expired.soft_tier_gate(), SoftTierGate::Open);
+    }
+
+    #[test]
+    fn provider_without_ttl_keeps_the_ungated_soft_tier() {
+        let mut agent = append_agent_in_soft_band(cache_with_ttl(None));
+        assert!(
+            !agent.decide_sweeps(),
+            "falls back to the growth hysteresis"
+        );
+        assert_eq!(agent.cache_warmth(), CacheWarmth::Unknown);
+        assert_eq!(agent.soft_tier_gate(), SoftTierGate::Open);
+    }
+
+    #[test]
+    fn explicit_append_without_a_prefix_cache_never_defers_the_soft_tier() {
+        let mut agent = append_agent_in_soft_band(PrefixCache::None);
+        assert_eq!(agent.cache_warmth(), CacheWarmth::Unknown);
+        assert!(
+            !agent.decide_sweeps(),
+            "sweeps follow the growth hysteresis"
+        );
+        assert_eq!(agent.soft_tier_gate(), SoftTierGate::Open);
+    }
+
+    #[test]
+    fn expired_cache_leaves_mid_iteration_and_post_response_sweeps_closed() {
+        let mut agent = append_agent_in_soft_band(cache_with_ttl(Some(Duration::ZERO)));
+        assert!(agent.decide_sweeps());
+        assert_eq!(agent.msg.layout.sweep_gate, SweepGate::CacheExpired);
+        assert!(agent.sweeps_allowed(), "pre-request sweeps may run");
+        assert!(
+            !agent.pressure_sweeps_allowed(),
+            "post-response truncation needs pressure"
+        );
+        assert!(
+            !agent.mid_iteration_sweep_allowed(),
+            "the turn's first request re-warmed the cache"
+        );
+    }
+
+    #[test]
+    fn pressure_keeps_the_mid_iteration_sweep_once_per_turn() {
+        let mut agent = append_agent_in_soft_band(cache_with_ttl(Some(NEVER_EXPIRES)));
+        agent.runtime.providers.cached_prompt_tokens = 800;
+        assert!(agent.decide_sweeps());
+        assert_eq!(agent.msg.layout.sweep_gate, SweepGate::Pressure);
+        assert!(agent.pressure_sweeps_allowed());
+        assert!(agent.mid_iteration_sweep_allowed());
+        assert!(
+            !agent.mid_iteration_sweep_allowed(),
+            "at most once per turn"
+        );
+    }
+
+    #[test]
+    fn hard_tier_mid_iteration_sweep_is_never_rationed_for_an_expired_cache() {
+        let mut agent = append_agent_in_soft_band(cache_with_ttl(Some(Duration::ZERO)));
+        agent.runtime.providers.cached_prompt_tokens = 2_000;
+        assert!(agent.decide_sweeps());
+        assert!(agent.mid_iteration_sweep_allowed());
+        assert!(agent.mid_iteration_sweep_allowed());
+    }
+
+    #[test]
+    fn replace_layout_never_defers_the_soft_tier() {
+        let mut agent = agent_with(ContextLayout::Replace);
+        agent.ensure_layout_pinned();
+        agent.decide_sweeps();
+        assert_eq!(agent.soft_tier_gate(), SoftTierGate::Open);
     }
 
     #[test]

@@ -352,6 +352,26 @@ async fn provider_dropped_thinking_is_stripped_from_history_once() {
 
 #[tokio::test]
 #[allow(clippy::large_futures)]
+async fn text_reply_with_dropped_thinking_is_stripped_from_history() {
+    let mut response = ChatResponse::text("done");
+    response.set_replay(ThinkingReplay::Dropped {
+        first_message_index: 1,
+    });
+    let (mock, _) = MockProvider::with_responses(vec![]).with_tool_use(vec![response]);
+    let mut agent = agent_with(mock, MockToolExecutor::no_tools());
+    agent.msg.messages = history_with_thinking();
+
+    agent.process_response().await.unwrap();
+
+    assert_eq!(
+        thinking_count(&agent.msg.messages),
+        0,
+        "a text-only reply must strip the dropped thinking too"
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::large_futures)]
 async fn binding_mismatch_strips_all_thinking_and_retries_once() {
     let (mock, counter) = MockProvider::with_responses(vec!["recovered".into()])
         .with_errors(vec![LlmError::ThinkingBindingMismatch])

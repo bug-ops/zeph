@@ -5345,13 +5345,28 @@ fn step_110_idempotent_on_own_output() {
 // ── Step 111 — migrate_memory_context_layout (spec 088, #6846) ──────────────────────
 
 #[test]
-fn migrate_memory_context_layout_appends_advisory_block() {
-    let base = "[memory]\nhistory_limit = 50\n";
+fn migrate_memory_context_layout_writes_only_the_explanation_inside_memory() {
+    let base = "[memory]\nhistory_limit = 50\n\n[agent]\nname = \"Zeph\"\n";
     let result = migrate_memory_context_layout(base).unwrap();
     assert_eq!(result.changed_count, 1);
-    assert!(result.output.contains("# context_layout = \"auto\""));
-    assert!(result.output.contains("# turn_context_budget_ratio = 0.05"));
-    assert!(result.output.contains("# history_trim_watermark = 0.75"));
+    let memory_pos = result.output.find("[memory]").unwrap();
+    let marker_pos = result.output.find(CONTEXT_LAYOUT_MARKER).unwrap();
+    let agent_pos = result.output.find("[agent]").unwrap();
+    assert!(
+        memory_pos < marker_pos && marker_pos < agent_pos,
+        "{}",
+        result.output
+    );
+    for key in [
+        "context_layout",
+        "turn_context_budget_ratio",
+        "history_trim_watermark",
+    ] {
+        assert!(
+            !result.output.contains(&format!("# {key} =")),
+            "{key} line must come from the catch-all"
+        );
+    }
 }
 
 #[test]
@@ -5376,4 +5391,202 @@ fn migrate_memory_context_layout_noop_when_key_present() {
     let base = "[memory]\ncontext_layout = \"append\"\n";
     let result = migrate_memory_context_layout(base).unwrap();
     assert_eq!(result.changed_count, 0);
+}
+
+use super::memory::CONTEXT_LAYOUT_MARKER;
+
+/// Run every registered step and the catch-all pass, like `handle_migrate_config`.
+fn migrate_through_pipeline(src: &str) -> String {
+    let mut current = src.to_owned();
+    for migration in MIGRATIONS.iter() {
+        current = migration.apply(&current).unwrap().output;
+    }
+    ConfigMigrator::new().migrate(&current).unwrap().output
+}
+
+fn reference_default_line(key: &str) -> String {
+    let reference = include_str!("../../config/default.toml");
+    let prefix = format!("{key} = ");
+    let line = reference
+        .lines()
+        .find(|l| l.starts_with(&prefix))
+        .unwrap_or_else(|| panic!("{key} missing from default.toml"));
+    format!("# {line}")
+}
+
+const CONTEXT_LAYOUT_KEYS: [&str; 3] = [
+    "context_layout",
+    "turn_context_budget_ratio",
+    "history_trim_watermark",
+];
+
+fn assert_each_context_layout_key_once(output: &str) {
+    for key in CONTEXT_LAYOUT_KEYS {
+        let expected = reference_default_line(key);
+        assert_eq!(
+            output.lines().filter(|l| *l == expected).count(),
+            1,
+            "{key} must appear exactly once:\n{output}"
+        );
+        assert_eq!(
+            output.matches(&format!("{key} =")).count(),
+            1,
+            "{key}:\n{output}"
+        );
+    }
+}
+
+#[test]
+fn context_layout_keys_appear_once_after_the_full_pipeline() {
+    let old = "[memory]\nhistory_limit = 50\n\n[memory.graph]\nenabled = false\n\n[agent]\nname = \"Zeph\"\n";
+    let first = migrate_through_pipeline(old);
+    assert_each_context_layout_key_once(&first);
+    let line_pos = |header: &str| {
+        first
+            .lines()
+            .position(|l| l == header)
+            .unwrap_or_else(|| panic!("{header} header missing"))
+    };
+    let memory_pos = line_pos("[memory]");
+    let graph_pos = line_pos("[memory.graph]");
+    let marker_pos = first
+        .lines()
+        .position(|l| l.starts_with(CONTEXT_LAYOUT_MARKER))
+        .unwrap();
+    assert!(memory_pos < marker_pos && marker_pos < graph_pos, "{first}");
+}
+
+#[test]
+fn context_layout_pipeline_is_idempotent() {
+    let old = "[memory]\nhistory_limit = 50\n\n[agent]\nname = \"Zeph\"\n";
+    let first = migrate_through_pipeline(old);
+    let second = migrate_through_pipeline(&first);
+    assert_eq!(first, second);
+}
+
+#[test]
+fn context_layout_pipeline_keeps_a_single_explanation_for_a_config_migrated_by_the_old_step() {
+    let old_step_output = "[memory]\nhistory_limit = 50\n\n[agent]\nname = \"Zeph\"\n\n\
+        # Context layout (spec 088, #6846): how per-turn context reaches the model.\n\
+        # Add these keys under the [memory] table:\n\
+        # context_layout = \"auto\"          # auto | replace | append\n";
+    let output = migrate_through_pipeline(old_step_output);
+    assert_eq!(output.matches(CONTEXT_LAYOUT_MARKER).count(), 1, "{output}");
+}
+
+fn section_text<'a>(output: &'a str, header: &str) -> &'a str {
+    let start = output
+        .lines()
+        .scan(0, |off, l| {
+            let at = *off;
+            *off += l.len() + 1;
+            Some((at, l))
+        })
+        .find(|(_, l)| *l == header)
+        .map_or_else(|| panic!("{header} missing:\n{output}"), |(at, _)| at);
+    let rest = &output[start + header.len()..];
+    rest.find("\n[").map_or(rest, |end| &rest[..end])
+}
+
+#[test]
+fn migrate_memory_context_layout_ignores_header_text_inside_a_multiline_string() {
+    let src = "[agent]\ninstructions = \"\"\"\nPrefer [memory] recall.\n[x] checklist\n\"\"\"\n\n[memory]\nhistory_limit = 50\n";
+    let out = migrate_memory_context_layout(src).unwrap().output;
+    assert!(
+        out.starts_with(
+            "[agent]\ninstructions = \"\"\"\nPrefer [memory] recall.\n[x] checklist\n\"\"\"\n"
+        ),
+        "{out}"
+    );
+    assert!(
+        section_text(&out, "[memory]").contains(CONTEXT_LAYOUT_MARKER),
+        "{out}"
+    );
+    assert!(out.parse::<toml_edit::DocumentMut>().is_ok());
+}
+
+#[test]
+fn migrate_memory_context_layout_ignores_header_text_in_a_comment() {
+    let src = "# see [memory] below\n[agent]\nname = \"Zeph\"\n\n[memory]\nhistory_limit = 50\n";
+    let out = migrate_through_pipeline(src);
+    assert!(
+        !section_text(&out, "[agent]").contains("context_layout"),
+        "{out}"
+    );
+    assert_each_context_layout_key_once(&out);
+    assert!(
+        section_text(&out, "[memory]").contains(CONTEXT_LAYOUT_MARKER),
+        "{out}"
+    );
+}
+
+#[test]
+fn context_layout_pipeline_is_valid_for_an_implicit_memory_table() {
+    let src = "[memory.graph]\nenabled = false\n\n[agent]\nname = \"Zeph\"\n";
+    let first = migrate_through_pipeline(src);
+    assert!(first.parse::<toml_edit::DocumentMut>().is_ok(), "{first}");
+    assert_each_context_layout_key_once(&first);
+}
+
+#[test]
+fn migrate_memory_context_layout_skips_when_only_the_marker_is_present() {
+    let src = format!("[memory]\nhistory_limit = 50\n{CONTEXT_LAYOUT_MARKER}: edited by hand.\n");
+    assert!(!src.contains("context_layout"));
+    let result = migrate_memory_context_layout(&src).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn migrate_memory_context_layout_honours_escaped_quotes_in_a_multiline_string() {
+    let agent = "[agent]\ninstructions = \"\"\"\nsay \\\"\"\" then\n[memory]\n\"\"\"\n";
+    let src = format!("{agent}\n[memory]\nhistory_limit = 50\n");
+    let out = migrate_memory_context_layout(&src).unwrap().output;
+    assert!(out.starts_with(agent), "{out}");
+    let real_header = out.rfind("\n[memory]\n").unwrap();
+    assert!(
+        out.find(CONTEXT_LAYOUT_MARKER).unwrap() > real_header,
+        "{out}"
+    );
+}
+
+#[test]
+fn context_layout_pipeline_is_idempotent_for_an_indented_memory_header() {
+    let src = "  [memory]\n  history_limit = 50\n\n[agent]\nname = \"Zeph\"\n";
+    let first = migrate_through_pipeline(src);
+    assert_each_context_layout_key_once(&first);
+    assert_eq!(first, migrate_through_pipeline(&first));
+}
+
+#[test]
+fn section_helpers_ignore_single_element_array_rows_that_look_like_headers() {
+    for row in ["  [3]", "  [\"x\"]", "  [[1, 2], [3]]"] {
+        let src = format!(
+            "[memory]\nhistory_limit = 50\nmatrix = [\n{row},\n]\nafter = 1\n\n[agent]\nname = \"Zeph\"\n"
+        );
+        let body = section_body(&src, "memory");
+        assert!(
+            body.contains("after = 1"),
+            "row {row:?} cut the section short: {body:?}"
+        );
+        assert!(!body.contains("[agent]"), "{body:?}");
+        let out = insert_after_section(&src, "memory", "# note\n");
+        assert!(out.contains("after = 1\n\n# note\n[agent]"), "{out}");
+        assert!(
+            out.find("# note").unwrap() > out.find("after = 1").unwrap(),
+            "{out}"
+        );
+    }
+}
+
+#[test]
+fn section_helpers_recognise_a_header_with_a_hash_inside_a_quoted_key() {
+    let src = "[memory]\nhistory_limit = 50\n\n[a.\"x#1\"]\nk = 1\n";
+    let body = section_body(src, "memory");
+    assert_eq!(body, "history_limit = 50\n\n");
+    let out = insert_after_section(src, "memory", "# note\n");
+    assert!(
+        out.find("# note").unwrap() < out.find("[a.").unwrap(),
+        "{out}"
+    );
 }

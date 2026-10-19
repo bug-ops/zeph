@@ -34,6 +34,108 @@ pub const SECRET_PREFIXES: &[&str] = &[
     "dckr_pat_",
 ];
 
+/// Regex matching a [`SECRET_PREFIXES`] token together with its left boundary and body.
+///
+/// Capture group 1 is the boundary: start of text, any non-alphanumeric character, or an
+/// escape sequence whose final character is alphanumeric (`\n`, `\x0a`, `\u000a`, `%3D`).
+/// The escape forms are required because JSON-serialized and URL-encoded text puts a letter
+/// or digit directly in front of a secret (`"a\nsk-proj-1"`, `key%3Dsk-proj-1`). Replacing
+/// with `"${1}[REDACTED]"` keeps the boundary and redacts the token, so ordinary words that
+/// merely contain a prefix (`disk-usage`, `shelf_x`) are left alone.
+///
+/// The prefix alternation is the `regex::escape`d join of [`SECRET_PREFIXES`]; a unit test
+/// pins the equality so the two cannot drift. The body stops at whitespace, quotes, commas,
+/// semicolons, braces and brackets.
+pub const SECRET_TOKEN_PATTERN: &str = r#"(^|[^A-Za-z0-9]|\\[nrtbf0v]|\\x[0-9A-Fa-f]{2}|\\u[0-9A-Fa-f]{4}|%[0-9A-Fa-f]{2})(?:sk\-|sk_live_|sk_test_|AKIA|ghp_|gho_|\-\-\-\-\-BEGIN|xoxb\-|xoxp\-|AIza|ya29\.|glpat\-|hf_|npm_|dckr_pat_)[^\s"'`,;{}\[\]]*"#;
+
+/// Regex matching a [`SECRET_PREFIXES`] token glued directly to a preceding alphanumeric.
+///
+/// This is the second redaction tier next to [`SECRET_TOKEN_PATTERN`]: an encoding the boundary
+/// does not list (ANSI `\x1b[32m`, quoted-printable `=3D`, double percent-encoding, octal)
+/// leaves a letter or digit in front of a real key. Capture group 1 is that character, group 2
+/// the run of `[A-Za-z0-9_-]` after the prefix, exactly what [`is_secret_shaped_body`] judges.
+/// Callers redact a match only when that function accepts group 2, so words such as `disk-usage`
+/// or `risk-2024-report` stay intact, and replace with `"${1}[REDACTED]"`. Group 2 stops at the
+/// first other character, so a rejected match never swallows a real key that follows it in the
+/// same token (`run-task-id=3Dsk-...`).
+pub const SECRET_TOKEN_GLUED_PATTERN: &str = r"([A-Za-z0-9])(?:sk\-|sk_live_|sk_test_|AKIA|ghp_|gho_|\-\-\-\-\-BEGIN|xoxb\-|xoxp\-|AIza|ya29\.|glpat\-|hf_|npm_|dckr_pat_)([A-Za-z0-9_\-]*)";
+
+/// Minimum length of the separator-free alphanumeric segment that makes a body key-shaped.
+const GLUED_SEGMENT_MIN_LEN: usize = 16;
+
+/// Whether the body of a prefix glued to an alphanumeric looks like key material.
+///
+/// True when the leading run of `[A-Za-z0-9_-]` holds a separator-free alphanumeric segment (split
+/// on `-` and `_`) of at least 16 characters that contains a digit. Real keys carry such a
+/// segment (`sk-proj-0123456789abcdef`); hyphenated identifiers (`task-runner-for-k8s-clusters`,
+/// `risk-assessment-2024-q3`, `pnpm_store_v3_linux_x64_node20`) are built from short words.
+#[must_use]
+pub fn is_secret_shaped_body(body: &str) -> bool {
+    let run_len = body
+        .bytes()
+        .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+        .count();
+    body[..run_len].split(['-', '_']).any(|segment| {
+        segment.len() >= GLUED_SEGMENT_MIN_LEN && segment.bytes().any(|b| b.is_ascii_digit())
+    })
+}
+
+/// Redact the key-shaped matches of [`SECRET_TOKEN_GLUED_PATTERN`] in `text`.
+///
+/// `matches` yields, per regex match and in order, the byte ranges of the whole match, of capture
+/// group 1 (the alphanumeric that precedes the prefix) and of capture group 2 (the body run).
+/// Callers keep their own `captures_iter`, so `zeph-common` needs no `regex` dependency. A match
+/// whose body is not accepted by [`is_secret_shaped_body`] is left untouched; the preceding
+/// character is kept and the rest of the match becomes `[REDACTED]`.
+///
+/// Returns `Cow::Borrowed` when no match is key-shaped, so unchanged text costs no allocation.
+///
+/// # Examples
+///
+/// ```
+/// use std::borrow::Cow;
+/// use zeph_common::secrets::redact_glued_matches;
+///
+/// let text = "id9sk-proj-0123456789abcdef";
+/// let key = (2..27, 2..3, 6..27);
+/// assert_eq!(redact_glued_matches(text, [key.clone()]), "id9[REDACTED]");
+///
+/// let word = "disk-usage";
+/// let candidate = (1..10, 1..2, 5..10);
+/// assert!(matches!(redact_glued_matches(word, [candidate]), Cow::Borrowed(_)));
+/// ```
+#[must_use]
+pub fn redact_glued_matches<I>(text: &str, matches: I) -> std::borrow::Cow<'_, str>
+where
+    I: IntoIterator<
+        Item = (
+            std::ops::Range<usize>,
+            std::ops::Range<usize>,
+            std::ops::Range<usize>,
+        ),
+    >,
+{
+    let mut out: Option<String> = None;
+    let mut copied = 0;
+    for (whole, lead, body) in matches {
+        if !is_secret_shaped_body(&text[body]) {
+            continue;
+        }
+        let buf = out.get_or_insert_with(|| String::with_capacity(text.len()));
+        buf.push_str(&text[copied..whole.start]);
+        buf.push_str(&text[lead]);
+        buf.push_str("[REDACTED]");
+        copied = whole.end;
+    }
+    match out {
+        Some(mut buf) => {
+            buf.push_str(&text[copied..]);
+            std::borrow::Cow::Owned(buf)
+        }
+        None => std::borrow::Cow::Borrowed(text),
+    }
+}
+
 /// Absolute filesystem path prefixes redacted before persisting or displaying untrusted
 /// text, to avoid leaking local usernames or directory layout.
 pub const PATH_PREFIXES: &[&str] = &["/home/", "/Users/", "/root/", "/tmp/", "/var/"];
@@ -210,6 +312,83 @@ mod tests {
         let re = Regex::new(&full).expect("alternation built from SECRET_PREFIXES must compile");
         assert!(re.is_match("sk-abc123"));
         assert!(re.is_match("ya29.a0AfH6"));
+    }
+
+    #[test]
+    fn secret_token_pattern_equals_escaped_prefix_join() {
+        let alt = SECRET_PREFIXES
+            .iter()
+            .map(|p| regex::escape(p))
+            .collect::<Vec<_>>()
+            .join("|");
+        let expected = format!(
+            r#"(^|[^A-Za-z0-9]|\\[nrtbf0v]|\\x[0-9A-Fa-f]{{2}}|\\u[0-9A-Fa-f]{{4}}|%[0-9A-Fa-f]{{2}})(?:{alt})[^\s"'`,;{{}}\[\]]*"#
+        );
+        assert_eq!(SECRET_TOKEN_PATTERN, expected);
+        Regex::new(SECRET_TOKEN_PATTERN).expect("secret token pattern must compile");
+    }
+
+    #[test]
+    fn secret_token_pattern_respects_boundaries() {
+        let re = Regex::new(SECRET_TOKEN_PATTERN).unwrap();
+        for kept in [
+            "disk-usage",
+            "disk-usage-table",
+            "recipe-create-task-list",
+            "shelf_x",
+        ] {
+            assert!(!re.is_match(kept), "must not match {kept}");
+        }
+        for hit in [
+            "sk-a",
+            "x sk-a",
+            "KEY_sk-a",
+            "(sk-a)",
+            "=sk-a",
+            r#"{"k":"a\nsk-proj-1"}"#,
+            r"line\tghp_x",
+            r"a\x0ask-a",
+            r"a\u000ask-a",
+            "key%3Dsk-a",
+        ] {
+            assert!(re.is_match(hit), "must match {hit}");
+        }
+    }
+
+    #[test]
+    fn secret_token_glued_pattern_equals_escaped_prefix_join() {
+        let alt = SECRET_PREFIXES
+            .iter()
+            .map(|p| regex::escape(p))
+            .collect::<Vec<_>>()
+            .join("|");
+        let expected = format!(r"([A-Za-z0-9])(?:{alt})([A-Za-z0-9_\-]*)");
+        assert_eq!(SECRET_TOKEN_GLUED_PATTERN, expected);
+    }
+
+    #[test]
+    fn secret_shaped_body_needs_a_long_alphanumeric_segment_with_a_digit() {
+        for key in [
+            "proj-0123456789abcdef",
+            "abcdefghijklmnop1",
+            "ant-api03-aB3dEf_gH1jKlMnOpQrStUvWxYz-0123456789",
+            "x_0123456789abcdefghij_tail",
+        ] {
+            assert!(is_secret_shaped_body(key), "{key}");
+        }
+        for word in [
+            "usage-table",
+            "2024-report",
+            "proj-handover-notes-only",
+            "runner-for-k8s-clusters",
+            "cleanup-utility-v2",
+            "assessment-2024-q3",
+            "store_v3_linux_x64_node20",
+            "abcdefghijklmnopqrstuvwxyz",
+            "",
+        ] {
+            assert!(!is_secret_shaped_body(word), "{word}");
+        }
     }
 
     #[test]

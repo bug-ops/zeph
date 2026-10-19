@@ -25,6 +25,12 @@ endpoint = "http://localhost:4317"       # OTLP gRPC endpoint
 
 Traces flush gracefully on shutdown. Point `endpoint` at any OTLP-compatible collector (Jaeger, Grafana Tempo, etc.).
 
+## Local Chrome Traces
+
+With `[telemetry] enabled = true` and `backend = "local"` (feature `profiling`), Zeph writes Chrome JSON traces to `trace_dir`. Spans are recorded in async style: every span is a `b` (begin) event paired with an `e` (end) event that share an `id`, never a complete `X` event.
+
+Span fields are exported only with `include_args = true` (default `false`, because arguments can carry content). A field recorded after the span was created, such as a token count known only at the end of an operation, is written on the `e` event; the `b` event carries only the fields set at creation. Read both events, or the `e` event alone, when looking for late fields.
+
 ## Cost Tracking
 
 Per-model cost tracking with daily budget enforcement.

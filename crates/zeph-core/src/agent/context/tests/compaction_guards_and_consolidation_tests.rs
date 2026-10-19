@@ -451,6 +451,56 @@ async fn maybe_compact_soft_tier_prune_only_sets_compaction_badge_metrics() {
     );
 }
 
+/// `maybe_compact` must hand the agent's `soft_tier_gate()` to the service: a warm cache in the
+/// `append` layout defers the soft tier, an expired one lets it prune.
+#[tokio::test]
+async fn maybe_compact_applies_the_soft_tier_gate_in_append() {
+    use std::time::Duration;
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+    use zeph_llm::provider::PrefixCache;
+
+    async fn tokens_after(ttl: Duration) -> (u64, u64) {
+        let cache = PrefixCache::Prefix { ttl: Some(ttl) };
+        let provider =
+            AnyProvider::Mock(MockProvider::with_responses(vec![]).with_prefix_cache(cache));
+        let mut agent = Agent::new(
+            provider,
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_context_budget(1000, 0.20, 0.75, 4, 0);
+        agent.services.memory.compaction.context_layout = zeph_config::ContextLayout::Append;
+        agent.ensure_layout_pinned();
+        make_tool_pair_with_output(&mut agent, "shell");
+        for i in 0..10 {
+            agent.msg.messages.push(Message {
+                role: Role::User,
+                content: format!("message {i} padding"),
+                parts: vec![],
+                metadata: MessageMetadata::default(),
+            });
+        }
+        let initial_tokens = 650u64;
+        agent.runtime.providers.cached_prompt_tokens = initial_tokens;
+        agent.services.session.last_assistant_at = Some(std::time::Instant::now());
+        agent.note_sweep_done();
+        agent.decide_sweeps();
+
+        agent.maybe_compact().await.unwrap();
+        (initial_tokens, agent.runtime.providers.cached_prompt_tokens)
+    }
+
+    let (before, after) = Box::pin(tokens_after(Duration::from_hours(24))).await;
+    assert_eq!(after, before, "a warm cache defers the soft tier");
+
+    let (before, after) = Box::pin(tokens_after(Duration::ZERO)).await;
+    assert!(after < before, "an expired cache lets the soft tier prune");
+}
+
 /// Regression guard for #5773: when a compaction attempt does not free any tokens (guard
 /// short-circuits before the service runs), the badge fields must remain untouched.
 #[tokio::test]

@@ -51,8 +51,8 @@ pub use service::{ContextService, SemanticRecallParams};
 pub use state::{
     CompactionOutcome, CompactionPersistence, CompactionProbeCallback, ContextAssemblyView,
     ContextDelta, ContextSummarizationView, MessageWindowView, MetricsCallback, MetricsCounters,
-    ProbeOutcome, ProviderHandles, QdrantPersistFuture, SecurityEventSink, StatusSink,
-    ToolOutputArchive, TrustGate,
+    ProbeOutcome, ProviderHandles, QdrantPersistFuture, SecurityEventSink, SoftTierGate,
+    StatusSink, ToolOutputArchive, TrustGate,
 };
 pub use summarization::DeferredApplyTrigger;
 

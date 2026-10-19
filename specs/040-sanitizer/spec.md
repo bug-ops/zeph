@@ -548,7 +548,20 @@ and marker-anchored AWS secret access keys (`AWS_SECRET_KEY_PATTERN` — require
 avoid false positives on unrelated 40-char strings) — regardless of registration. Wired into
 the sub-agent live-transcript forward pipeline and the background sub-agent completion notice;
 `zeph-core::redact::redact_secrets` and `zeph-memory`'s `compression_guidelines` both delegate
-to the same function rather than duplicating the regex logic.
+to the same function rather than duplicating the regex logic. The prefix pass compiles
+`zeph_common::secrets::SECRET_TOKEN_PATTERN`: a boundary group (start, a non-alphanumeric
+character, a literal escape `\[nrtbf0v]`, `\xXX`, `\uXXXX` or a percent escape `%XX`) followed by the
+prefix alternation and the token body, replaced with `${1}[REDACTED]`. The boundary keeps
+escaped forms found in JSON and `repr` output redactable while a prefix glued inside a word
+(`disk-usage`, `abcsk-x`) is not a secret; a unit test pins the literal to the escaped
+`SECRET_PREFIXES` join. A second tier, `SECRET_TOKEN_GLUED_PATTERN`, catches a prefix that
+directly follows an alphanumeric after an encoding the boundary does not list (ANSI `\x1b[32m`,
+quoted-printable `=3D`, double percent-encoding, octal): the match is redacted only when
+`is_secret_shaped_body` accepts the body, i.e. its leading `[A-Za-z0-9_-]` run holds a
+separator-free alphanumeric segment (split on `-`/`_`) of at least 16 characters with a digit.
+The pattern's body group is that run only, so a rejected candidate never swallows a later key.
+`disk-usage`, `risk-assessment-2024-q3`, `task-runner-for-k8s-clusters` and `abcsk-x` stay
+intact (#6857).
 
 The two PEM passes run before the prefix/JWT/AWS passes: the terminated pattern first, then the
 unterminated-header fallback (matched against the terminated pass's already-redacted output, so
@@ -567,6 +580,7 @@ match cost linear on adversarially large input.
 - A PEM/SSH2 private-key body MUST be redacted as a whole span, not just its `-----BEGIN`/
   `-----END` markers — the unterminated-header fallback exists precisely because a body-only
   match on the terminated pattern misses truncated or adversarially-unterminated input
+- A secret prefix after any non-alphanumeric character or a listed escape sequence is always redacted; a prefix glued to preceding alphanumerics is redacted only when its body is key-shaped (a separator-free alphanumeric segment of at least 16 chars with a digit), so hyphenated identifiers and short or digit-free words (`abcsk-x`, `disk-usage`) are NOT redacted
 - AWS secret detection is marker-anchored (requires a recognizable key-name prefix), not
   shape-only — an unqualified 40-char base64-ish string is NOT redacted, to avoid mass false
   positives on unrelated tokens

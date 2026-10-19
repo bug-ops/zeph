@@ -1396,7 +1396,7 @@ impl<C: Channel> Agent<C> {
             // Detach learning tasks spawned this turn — they are fire-and-forget and must not
             // leak into the next turn's context.
             self.services.learning_engine.learning_tasks.detach_all();
-            if self.sweeps_allowed() {
+            if self.pressure_sweeps_allowed() {
                 self.truncate_old_tool_results();
                 self.recompute_prompt_tokens();
                 self.note_sweep_done();

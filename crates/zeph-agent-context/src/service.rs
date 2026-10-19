@@ -352,54 +352,8 @@ impl ContextService {
         memory: Option<&zeph_memory::semantic::SemanticMemory>,
     ) -> Result<Option<Message>, ContextError> {
         if params.tiered_config.enabled {
-            use tracing::Instrument as _;
-            let Some(mem) = memory else {
-                return Ok(None);
-            };
-            let result = tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                zeph_memory::recall_tiered(
-                    mem,
-                    params.query,
-                    params.conversation_id,
-                    params.tiered_classifier,
-                    params.tiered_validator,
-                    params.tiered_config,
-                    Some(params.token_budget),
-                )
-                .instrument(tracing::info_span!("agent_context.tiered_retrieval.recall")),
-            )
-            .await
-            .map_err(|_| {
-                tracing::warn!("tiered_retrieval: recall_tiered timed out after 30s");
-                ContextError::Memory(zeph_memory::MemoryError::Timeout(
-                    "recall_tiered timed out".to_owned(),
-                ))
-            })?
-            .map_err(ContextError::Memory)?;
-
-            tracing::debug!(
-                intent = %result.intent,
-                tokens_used = result.tokens_used,
-                tier_escalated = result.tier_escalated,
-                count = result.messages.len(),
-                "tiered_retrieval: recall complete"
-            );
-
-            if result.messages.is_empty() {
-                return Ok(None);
-            }
-
-            let recalled_text = result
-                .messages
-                .iter()
-                .map(|m| m.message.content.as_str())
-                .collect::<Vec<_>>()
-                .join("\n---\n");
-            Ok(Some(Message::from_legacy(
-                Role::User,
-                format!("{RECALL_PREFIX}{recalled_text}"),
-            )))
+            let items = self.load_tiered_recall_items(params, memory).await?;
+            Ok(format_tiered_recall(&items))
         } else {
             let (msg, _score) = crate::helpers::fetch_semantic_recall_raw(
                 memory,
@@ -416,6 +370,56 @@ impl ContextService {
             .await?;
             Ok(msg)
         }
+    }
+
+    /// Run `recall_tiered` and return the content of every recalled item, in rank order.
+    ///
+    /// Returns an empty list when there is no memory backend. Kept separate from formatting so
+    /// the `append` layout can deduplicate per item before the block is built.
+    async fn load_tiered_recall_items(
+        &self,
+        params: &SemanticRecallParams<'_>,
+        memory: Option<&zeph_memory::semantic::SemanticMemory>,
+    ) -> Result<Vec<String>, ContextError> {
+        use tracing::Instrument as _;
+        let Some(mem) = memory else {
+            return Ok(Vec::new());
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            zeph_memory::recall_tiered(
+                mem,
+                params.query,
+                params.conversation_id,
+                params.tiered_classifier,
+                params.tiered_validator,
+                params.tiered_config,
+                Some(params.token_budget),
+            )
+            .instrument(tracing::info_span!("agent_context.tiered_retrieval.recall")),
+        )
+        .await
+        .map_err(|_| {
+            tracing::warn!("tiered_retrieval: recall_tiered timed out after 30s");
+            ContextError::Memory(zeph_memory::MemoryError::Timeout(
+                "recall_tiered timed out".to_owned(),
+            ))
+        })?
+        .map_err(ContextError::Memory)?;
+
+        tracing::debug!(
+            intent = %result.intent,
+            tokens_used = result.tokens_used,
+            tier_escalated = result.tier_escalated,
+            count = result.messages.len(),
+            "tiered_retrieval: recall complete"
+        );
+
+        Ok(result
+            .messages
+            .into_iter()
+            .map(|m| m.message.content)
+            .collect())
     }
 
     /// Inject cross-session context messages into the window for the given query.
@@ -565,28 +569,12 @@ impl ContextService {
     /// # Errors
     ///
     /// Returns [`ContextError::Memory`] if recall fails or [`ContextError::Assembler`]
-    /// if the context assembler encounters an internal error.
+    /// if the context assembler encounters an internal error. In the `append` layout fetch
+    /// errors never surface: the history is already trimmed by then, so the turn degrades to a
+    /// [`ContextDelta`] without retrieved context that still reports `trimmed_messages`.
     #[allow(clippy::too_many_lines)] // sequential context-assembly pipeline; splitting would reduce readability
     #[tracing::instrument(name = "agent_context.service.prepare_context", skip_all, err)]
     pub async fn prepare_context(
-        &self,
-        query: &str,
-        window: &mut MessageWindowView<'_>,
-        view: &mut ContextAssemblyView<'_>,
-    ) -> Result<ContextDelta, ContextError> {
-        let mut delta = self.prepare_context_pass(query, window, view).await?;
-        if view.append.is_some() && delta.trimmed_messages > 0 {
-            // The trim removed messages that carried items the first pass treated as present;
-            // fetch again against the post-trim history so they are not lost for this turn.
-            let trimmed = delta.trimmed_messages;
-            delta = self.prepare_context_pass(query, window, view).await?;
-            delta.trimmed_messages = trimmed;
-        }
-        Ok(delta)
-    }
-
-    #[allow(clippy::too_many_lines)] // sequential context-assembly pipeline; splitting would reduce readability
-    async fn prepare_context_pass(
         &self,
         query: &str,
         window: &mut MessageWindowView<'_>,
@@ -697,7 +685,7 @@ impl ContextService {
                 },
             );
 
-        let memory_view = zeph_context::input::ContextMemoryView {
+        let mut memory_view = zeph_context::input::ContextMemoryView {
             memory: memory_backend,
             conversation_id: view.conversation_id.map(|c| c.0),
             recall_limit: view.recall_limit,
@@ -713,11 +701,36 @@ impl ContextService {
             memcot_config: view.memcot_config.clone(),
             memcot_state: view.memcot_state.clone(),
             tree_config: view.tree_config.clone(),
-            item_keys: ItemKeys::new(
-                view.append
-                    .map_or_else(HashSet::new, |_| present_retrieval_keys(window.messages)),
-            ),
+            item_keys: ItemKeys::default(),
         };
+
+        let allocation_mode =
+            view.append
+                .map_or(AllocationMode::Replace, |a| AllocationMode::Append {
+                    turn_cap: turn_cap(view.context_manager, a),
+                });
+
+        // In the append layout trim first: the allocation is independent of history, and the
+        // present-item keys must describe the post-trim history so one fetch is enough.
+        let mut trimmed_messages = 0;
+        if let (Some(append), Some(budget)) = (view.append, view.context_manager.budget.as_ref()) {
+            let turn = zeph_context::assembler::ContextAssembler::allocation(
+                budget,
+                &memory_view,
+                window.messages,
+                view.last_skills_prompt,
+                &*view.token_counter,
+                view.sidequest_turn_counter,
+                allocation_mode,
+            );
+            trimmed_messages = self.trim_history_to_watermark(
+                window,
+                turn.allocation.recent_history,
+                append.history_watermark,
+            );
+            recompute_prompt_tokens(window);
+            memory_view.item_keys = ItemKeys::new(present_retrieval_keys(window.messages));
+        }
 
         #[cfg(feature = "index")]
         let index_access = view.index;
@@ -749,14 +762,25 @@ impl ContextService {
             active_types: &active_types,
             router,
             planned_next_tools: view.planned_next_tools,
-            allocation_mode: view.append.map_or(AllocationMode::Replace, |a| {
-                AllocationMode::Append {
-                    turn_cap: turn_cap(view.context_manager, a),
-                }
-            }),
+            allocation_mode,
         };
 
-        let mut prepared = zeph_context::assembler::ContextAssembler::gather(&input).await?;
+        let mut prepared = match zeph_context::assembler::ContextAssembler::gather(&input).await {
+            Ok(prepared) => prepared,
+            Err(e) if view.append.is_some() => {
+                tracing::warn!(
+                    target: "agent_context.service.prepare_context",
+                    error = %e,
+                    trimmed_messages,
+                    "context fetch failed after history trim; sending the turn without retrieval"
+                );
+                return Ok(ContextDelta {
+                    trimmed_messages,
+                    ..ContextDelta::default()
+                });
+            }
+            Err(e) => return Err(e.into()),
+        };
 
         // When tiered retrieval is enabled, suppress the flat recall assembled above and
         // replace it with the tiered result injected directly into the window.  The span
@@ -780,16 +804,16 @@ impl ContextService {
         }
 
         if let Some(append) = view.append {
-            return self
+            return Ok(self
                 .collect_turn_context(
                     query,
                     append,
                     prepared,
                     &memory_view.item_keys,
-                    window,
+                    trimmed_messages,
                     view,
                 )
-                .await;
+                .await);
         }
 
         let (delta, inserted_count) = self.apply_prepared_context(window, view, prepared).await;
@@ -1038,11 +1062,39 @@ impl ContextService {
         sanitized.body
     }
 
+    /// Turn recalled tiered items into a sanitized section, skipping items already in history.
+    ///
+    /// Returns `None` when nothing new remains or the sanitized text is empty (its keys are then
+    /// forgotten so the items stay eligible).
+    async fn tiered_section(
+        &self,
+        items: Vec<String>,
+        keys: &ItemKeys,
+        view: &mut ContextAssemblyView<'_>,
+    ) -> Option<String> {
+        // TODO(#6864): exclude items already in history before the recall budget is spent.
+        let fresh = admit_new_items(keys, "tiered_recall", items);
+        let msg = format_tiered_recall(&fresh)?;
+        let sanitized = self
+            .sanitize_memory_message(
+                msg,
+                zeph_sanitizer::MemorySourceHint::ConversationHistory,
+                view,
+            )
+            .await;
+        if sanitized.content.is_empty() {
+            keys.discard("tiered_recall");
+            None
+        } else {
+            Some(sanitized.content)
+        }
+    }
+
     /// Build the `Retrieved` [`TurnContextBlock`] for the turn input (`append` layout).
     ///
     /// Sanitizes and scrubs every fetched section the same way the `replace` path does before
-    /// injection, concatenates them into one block stamped with the keys of the items it carries,
-    /// then trims history with the watermark hysteresis.
+    /// injection and concatenates them into one block stamped with the keys of the items it
+    /// carries. History is already trimmed by the caller; `trimmed_messages` is passed through.
     #[allow(clippy::too_many_lines)] // sequential section assembly: order matters
     #[tracing::instrument(
         name = "agent_context.service.collect_turn_context",
@@ -1055,9 +1107,9 @@ impl ContextService {
         append: AppendSettings,
         prepared: zeph_context::assembler::PreparedContext,
         keys: &ItemKeys,
-        window: &mut MessageWindowView<'_>,
+        trimmed_messages: usize,
         view: &mut ContextAssemblyView<'_>,
-    ) -> Result<ContextDelta, ContextError> {
+    ) -> ContextDelta {
         use zeph_sanitizer::MemorySourceHint;
 
         *view.last_recall_confidence = prepared.recall_confidence;
@@ -1135,8 +1187,6 @@ impl ContextService {
             }
         }
 
-        // ASSUMPTION: a tiered recall result is deduplicated as one whole item, because
-        // `recall_tiered` returns already-assembled messages without per-item identity.
         if view.tiered_retrieval_config.enabled {
             let params = SemanticRecallParams {
                 query,
@@ -1148,21 +1198,13 @@ impl ContextService {
                 tiered_validator: view.tiered_retrieval_validator.as_ref(),
                 tiered_config: &view.tiered_retrieval_config,
             };
-            if let Some(msg) = self
-                .run_tiered_recall(&params, window, view.memory.as_deref())
-                .await?
-                && !msg.content.is_empty()
-                && keys.admit("tiered_recall", &msg.content)
-            {
-                let sanitized = self
-                    .sanitize_memory_message(msg, MemorySourceHint::ConversationHistory, view)
-                    .await;
-                if sanitized.content.is_empty() {
-                    keys.discard("tiered_recall");
-                } else {
-                    sections.push(sanitized.content);
-                }
-            }
+            let loaded = self
+                .load_tiered_recall_items(&params, view.memory.as_deref())
+                .await;
+            sections.extend(
+                self.tiered_section(tiered_items_or_empty(loaded), keys, view)
+                    .await,
+            );
         }
 
         if let Some(text) = prepared.code_context {
@@ -1183,13 +1225,6 @@ impl ContextService {
         }
         sections.retain(|s| !s.is_empty());
 
-        let trimmed_messages = self.trim_history_to_watermark(
-            window,
-            prepared.recent_history_budget,
-            append.history_watermark,
-        );
-        recompute_prompt_tokens(window);
-
         let retrieved = (!sections.is_empty()).then(|| TurnContextBlock {
             kind: TurnContextKind::Retrieved,
             trust: TurnContextTrust::ExternalUntrusted,
@@ -1198,14 +1233,14 @@ impl ContextService {
         });
         let tokens = retrieved
             .as_ref()
-            .map_or(0, |b| window.token_counter.count_tokens(&b.text));
+            .map_or(0, |b| view.token_counter.count_tokens(&b.text));
         tracing::Span::current().record("turn_context_tokens", tokens);
 
-        Ok(ContextDelta {
+        ContextDelta {
             code_context: None,
             retrieved,
             trimmed_messages,
-        })
+        }
     }
 
     /// Sanitize a memory retrieval message before inserting it into the context window.
@@ -1420,6 +1455,8 @@ impl ContextService {
         }
 
         // T-07: AgeMem proactive regrade — fires before tier dispatch (INV-06, INV-11).
+        // TODO(#6863): the regrade rewrites sent history in the `append` layout and is
+        // neither sweep- nor cache-gated.
         // Skip when MemoryFirst is active; ContextSummarizationView does not carry
         // context_strategy, so we check the budget ratio directly via should_proactively_regrade.
         if let Some(ref fidelity_cfg) = summ.fidelity_config.clone()
@@ -1467,7 +1504,14 @@ impl ContextService {
             .compaction_tier(*summ.cached_prompt_tokens)
         {
             CompactionTier::Soft => {
-                self.do_soft_compaction(summ, status).await;
+                match summ.soft_tier_gate {
+                    crate::state::SoftTierGate::Open => {
+                        self.do_soft_compaction(summ, status).await;
+                    }
+                    crate::state::SoftTierGate::Deferred => {
+                        tracing::debug!("soft compaction deferred: provider prefix cache is warm");
+                    }
+                }
                 Ok(())
             }
             CompactionTier::Hard => self.do_hard_compaction(summ, status, in_cooldown).await,
@@ -1902,6 +1946,42 @@ pub fn present_retrieval_keys(messages: &[Message]) -> HashSet<RetrievalKey> {
     present_turn_context_keys(messages, TurnContextKind::Retrieved)
 }
 
+/// Keep only the items of `source` that are not already present in history, recording the keys
+/// of the kept ones.
+fn admit_new_items(keys: &ItemKeys, source: &'static str, items: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    items
+        .into_iter()
+        .filter(|item| seen.insert(item.clone()) && keys.admit(source, item))
+        .collect()
+}
+
+/// Degrade a failed tiered recall to "no items" so only the tiered section is lost.
+fn tiered_items_or_empty(loaded: Result<Vec<String>, ContextError>) -> Vec<String> {
+    loaded.unwrap_or_else(|e| {
+        tracing::warn!(
+            target: "agent_context.service.prepare_context",
+            error = %e,
+            "tiered recall failed; dropping the tiered section for this turn"
+        );
+        Vec::new()
+    })
+}
+
+/// Join recalled items into the single recall message, or `None` when there are none.
+///
+/// Items are separated by `\n---\n` after the [`RECALL_PREFIX`]; shared by the `replace`
+/// injection and the `append` layout so both emit the same bytes for the same items.
+fn format_tiered_recall(items: &[String]) -> Option<Message> {
+    if items.is_empty() {
+        return None;
+    }
+    Some(Message::from_legacy(
+        Role::User,
+        format!("{RECALL_PREFIX}{}", items.join("\n---\n")),
+    ))
+}
+
 /// Per-turn token cap of the `append` layout: `turn_budget_ratio` of the context budget.
 #[allow(
     clippy::cast_precision_loss,
@@ -2267,6 +2347,81 @@ mod tests {
                 MessagePart::Text { text: text.into() },
             ],
         )
+    }
+
+    #[test]
+    fn format_tiered_recall_is_none_without_items() {
+        assert!(format_tiered_recall(&[]).is_none());
+    }
+
+    #[test]
+    fn format_tiered_recall_joins_items_exactly_as_the_replace_layout_did() {
+        let items = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+        let msg = format_tiered_recall(&items).expect("items present");
+        assert_eq!(msg.role, Role::User);
+        assert_eq!(msg.content, format!("{RECALL_PREFIX}a\n---\nb\n---\nc"));
+    }
+
+    #[test]
+    fn admit_new_items_skips_items_already_in_history() {
+        let seen = ItemKeys::key("tiered_recall", "old");
+        let keys = ItemKeys::new([seen].into_iter().collect());
+        let fresh = admit_new_items(&keys, "tiered_recall", vec!["old".into(), "new".into()]);
+        assert_eq!(fresh, vec!["new".to_owned()]);
+        assert_eq!(
+            keys.take_emitted(),
+            vec![ItemKeys::key("tiered_recall", "new")]
+        );
+    }
+
+    #[test]
+    fn admit_new_items_drops_duplicates_within_one_batch() {
+        let keys = ItemKeys::default();
+        let fresh = admit_new_items(
+            &keys,
+            "tiered_recall",
+            vec!["a".into(), "a".into(), "b".into()],
+        );
+        assert_eq!(fresh, vec!["a".to_owned(), "b".to_owned()]);
+        assert_eq!(
+            keys.take_emitted().len(),
+            2,
+            "each distinct item is stamped once"
+        );
+    }
+
+    #[test]
+    fn tiered_items_or_empty_degrades_errors_and_keeps_items() {
+        assert_eq!(
+            tiered_items_or_empty(Ok(vec!["a".into()])),
+            vec!["a".to_owned()]
+        );
+        let err = ContextError::Memory(zeph_memory::MemoryError::Timeout("t".into()));
+        assert_eq!(tiered_items_or_empty(Err(err)), Vec::<String>::new());
+    }
+
+    #[test]
+    fn admit_new_items_overlap_across_turns_sends_only_the_difference() {
+        let turn1 = ItemKeys::default();
+        let first = admit_new_items(&turn1, "tiered_recall", vec!["a".into(), "b".into()]);
+        assert_eq!(first.len(), 2);
+
+        let in_history: HashSet<RetrievalKey> = turn1.take_emitted().into_iter().collect();
+        let turn2 = ItemKeys::new(in_history);
+        let second = admit_new_items(&turn2, "tiered_recall", vec!["b".into(), "c".into()]);
+        assert_eq!(second, vec!["c".to_owned()]);
+    }
+
+    #[test]
+    fn admit_new_items_keys_are_scoped_by_source() {
+        let flat = ItemKeys::key("recall", "same text");
+        let keys = ItemKeys::new([flat].into_iter().collect());
+        let fresh = admit_new_items(&keys, "tiered_recall", vec!["same text".into()]);
+        assert_eq!(
+            fresh.len(),
+            1,
+            "a flat-recall key must not suppress a tiered item"
+        );
     }
 
     #[test]
@@ -3403,7 +3558,7 @@ mod tests {
             ))
         }
 
-        struct NoopSink;
+        pub(super) struct NoopSink;
         impl SecurityEventSink for NoopSink {
             fn push(&mut self, _: SecurityEventCategory, _: &'static str, _: String) {}
         }
@@ -3412,7 +3567,7 @@ mod tests {
             Arc::new(TokenCounter::default())
         }
 
-        fn make_window<'a>(
+        pub(super) fn make_window<'a>(
             messages: &'a mut Vec<Message>,
             cached: &'a mut u64,
             completed: &'a mut HashSet<String>,
@@ -3445,7 +3600,7 @@ mod tests {
         /// `budget` is `Some` (so `prepare_context` does not early-return), `proactive_explorer`
         /// is configured with a mock LLM that returns a valid SKILL.md, and `skill_registry`
         /// starts pre-populated with `hub_dirs` to verify they survive the rebuild.
-        struct Fixture {
+        pub(super) struct Fixture {
             registry: Arc<RwLock<SkillRegistry>>,
             skill_paths: Vec<std::path::PathBuf>,
             hub_dir: tempfile::TempDir,
@@ -3455,7 +3610,7 @@ mod tests {
             explorer: Arc<ProactiveExplorer>,
         }
 
-        fn setup_fixture(mock_provider: MockProvider) -> Fixture {
+        pub(super) fn setup_fixture(mock_provider: MockProvider) -> Fixture {
             let skills_dir = tempfile::tempdir().expect("create skills tempdir");
             let hub_dir = tempfile::tempdir().expect("create hub tempdir");
             let skill_paths = vec![skills_dir.path().to_path_buf()];
@@ -3491,7 +3646,7 @@ mod tests {
         }
 
         #[allow(clippy::too_many_arguments)]
-        fn make_view<'a>(
+        pub(super) fn make_view<'a>(
             fixture: &'a Fixture,
             last_confidence: &'a mut Option<f32>,
             last_skills_prompt: &'a mut String,
@@ -3788,6 +3943,219 @@ mod tests {
         }
     }
 
+    /// `append` layout: the history trim runs before the single fetch (#6860).
+    mod append_trim_before_fetch_tests {
+        use std::collections::HashSet;
+
+        use zeph_context::budget::ContextBudget;
+        use zeph_context::input::ItemKeys;
+        use zeph_context::manager::ContextManager;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::Message;
+        use zeph_sanitizer::{ContentIsolationConfig, ContentSanitizer};
+
+        use super::super::*;
+        use super::prepare_context_proactive_explore_tests::{
+            NoopSink, make_view, make_window, setup_fixture,
+        };
+        use crate::helpers::RECALL_PREFIX;
+        use crate::helpers::SESSION_DIGEST_PREFIX;
+        use crate::state::AppendSettings;
+
+        use super::{assistant, sys, turn_input_with_keys, user};
+
+        const DIGEST: &str = "earlier we discussed the release checklist";
+
+        fn digest_key() -> RetrievalKey {
+            ItemKeys::key("digest", &format!("{SESSION_DIGEST_PREFIX}{DIGEST}"))
+        }
+
+        fn bulk_history(first: Message, turns: usize) -> Vec<Message> {
+            let mut msgs = vec![sys("system"), first];
+            for i in 0..turns {
+                msgs.push(user(&format!("question {i} {}", "x".repeat(400))));
+                msgs.push(assistant(&format!("answer {i} {}", "y".repeat(400))));
+            }
+            msgs
+        }
+
+        struct Env {
+            fixture: super::prepare_context_proactive_explore_tests::Fixture,
+            sanitizer: ContentSanitizer,
+            ctx_mgr: ContextManager,
+            sink: NoopSink,
+            confidence: Option<f32>,
+            skills_prompt: String,
+            skill_names: Vec<String>,
+        }
+
+        impl Env {
+            fn new() -> Self {
+                let mut ctx_mgr = ContextManager::new();
+                ctx_mgr.budget = Some(ContextBudget::new(1_000, 0.0));
+                Self {
+                    fixture: setup_fixture(MockProvider::with_responses(vec![])),
+                    sanitizer: ContentSanitizer::new(&ContentIsolationConfig::default()),
+                    ctx_mgr,
+                    sink: NoopSink,
+                    confidence: None,
+                    skills_prompt: String::new(),
+                    skill_names: Vec::new(),
+                }
+            }
+
+            fn view(&mut self) -> ContextAssemblyView<'_> {
+                let mut view = make_view(
+                    &self.fixture,
+                    &mut self.confidence,
+                    &mut self.skills_prompt,
+                    &mut self.skill_names,
+                    &self.sanitizer,
+                    &mut self.ctx_mgr,
+                    &mut self.sink,
+                );
+                view.proactive_explorer = None;
+                view.append = Some(APPEND);
+                view
+            }
+        }
+
+        const APPEND: AppendSettings = AppendSettings {
+            turn_budget_ratio: 0.1,
+            history_watermark: 0.5,
+        };
+
+        async fn run(msgs: &mut Vec<Message>, cached: u64) -> (ContextDelta, u64) {
+            let mut env = Env::new();
+            let mut cached_tokens = cached;
+            let mut completed = HashSet::new();
+            let mut window = make_window(msgs, &mut cached_tokens, &mut completed);
+            let mut view = env.view();
+            view.digest_enabled = true;
+            view.cached_session_digest = Some((DIGEST.to_owned(), 10));
+            let delta = ContextService::new()
+                .prepare_context("hello", &mut window, &mut view)
+                .await
+                .expect("append prepare_context must succeed");
+            (delta, view.metrics.sanitizer_runs)
+        }
+
+        #[tokio::test]
+        async fn tiered_section_skips_items_already_in_history() {
+            let mut env = Env::new();
+            let mut view = env.view();
+            let keys = ItemKeys::new(
+                [ItemKeys::key("tiered_recall", "old")]
+                    .into_iter()
+                    .collect(),
+            );
+            let text = ContextService::new()
+                .tiered_section(vec!["old".into(), "new".into()], &keys, &mut view)
+                .await
+                .expect("a new item remains");
+            assert!(text.contains("new") && !text.contains("old"));
+            assert_eq!(
+                keys.take_emitted(),
+                vec![ItemKeys::key("tiered_recall", "new")]
+            );
+        }
+
+        #[tokio::test]
+        async fn tiered_section_is_none_when_every_item_is_in_history() {
+            let mut env = Env::new();
+            let mut view = env.view();
+            let keys = ItemKeys::new(
+                [ItemKeys::key("tiered_recall", "old")]
+                    .into_iter()
+                    .collect(),
+            );
+            let section = ContextService::new()
+                .tiered_section(vec!["old".into()], &keys, &mut view)
+                .await;
+            assert!(section.is_none());
+            assert_eq!(keys.take_emitted(), Vec::<RetrievalKey>::new());
+        }
+
+        #[tokio::test]
+        async fn tiered_load_failure_drops_only_the_tiered_section() {
+            let provider = zeph_llm::any::AnyProvider::Mock(MockProvider::with_responses(vec![]));
+            let memory = zeph_memory::semantic::SemanticMemory::new(
+                ":memory:",
+                "http://127.0.0.1:1",
+                None,
+                provider,
+                "test-model",
+            )
+            .await
+            .unwrap();
+            memory.sqlite().pool().close().await;
+
+            let mut env = Env::new();
+            let mut view = env.view();
+            view.memory = Some(std::sync::Arc::new(memory));
+            view.tiered_retrieval_config.enabled = true;
+            let svc = ContextService::new();
+            let params = SemanticRecallParams {
+                query: "q",
+                token_budget: 100,
+                recall_limit: view.recall_limit,
+                context_format: view.context_format,
+                conversation_id: view.conversation_id,
+                tiered_classifier: None,
+                tiered_validator: None,
+                tiered_config: &view.tiered_retrieval_config,
+            };
+            assert!(
+                svc.load_tiered_recall_items(&params, view.memory.as_deref())
+                    .await
+                    .is_err(),
+                "precondition: the tiered load must fail"
+            );
+
+            let prepared = zeph_context::assembler::PreparedContext {
+                summaries: Some(Message::from_legacy(Role::User, "kept summary")),
+                ..Default::default()
+            };
+            let keys = ItemKeys::default();
+            let delta = svc
+                .collect_turn_context("q", APPEND, prepared, &keys, 3, &mut view)
+                .await;
+            let block = delta.retrieved.expect("other sections survive");
+            assert!(block.text.contains("kept summary"));
+            assert!(!block.text.contains(RECALL_PREFIX));
+            assert_eq!(delta.trimmed_messages, 3);
+        }
+
+        #[tokio::test]
+        async fn trim_turn_fetches_and_sanitizes_once() {
+            let mut msgs = bulk_history(user("first"), 10);
+            let (delta, sanitizer_runs) = run(&mut msgs, 10_000).await;
+            assert!(delta.trimmed_messages > 0, "history must be trimmed");
+            assert_eq!(
+                sanitizer_runs, 1,
+                "one fetch pass means one digest sanitize"
+            );
+            assert_eq!(delta.retrieved.expect("digest block").keys.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn item_trimmed_out_of_history_is_sent_again_in_the_same_turn() {
+            let mut msgs = bulk_history(turn_input_with_keys("old", &[digest_key().0]), 10);
+            let (delta, _) = run(&mut msgs, 10_000).await;
+            assert!(delta.trimmed_messages > 0);
+            let block = delta.retrieved.expect("trimmed item must be re-admitted");
+            assert_eq!(block.keys, vec![digest_key()]);
+        }
+
+        #[tokio::test]
+        async fn item_still_in_history_is_not_sent_again() {
+            let mut msgs = bulk_history(turn_input_with_keys("old", &[digest_key().0]), 1);
+            let (delta, _) = run(&mut msgs, 10).await;
+            assert_eq!(delta.trimmed_messages, 0);
+            assert!(delta.retrieved.is_none());
+        }
+    }
+
     /// Regression coverage for #5773: pruning never routes through
     /// `finalize_compacted_messages`, so `prune_tool_outputs` must write the freed amount
     /// back to `cached_prompt_tokens` itself. Exercises both the low-level dispatcher
@@ -3900,6 +4268,7 @@ mod tests {
                     fidelity_compress_provider: None,
                     current_query: String::new(),
                     thinking_binding: zeph_llm::provider::ThinkingBinding::Unbound,
+                    soft_tier_gate: crate::state::SoftTierGate::Open,
                 }
             }
         }
@@ -4046,6 +4415,39 @@ mod tests {
             );
         }
 
+        async fn tokens_after_soft_pass(gate: crate::SoftTierGate) -> (u64, u64) {
+            let body = "large tool output ".repeat(200);
+            let mut ctx_mgr = ContextManager::new();
+            ctx_mgr.budget = Some(ContextBudget::new(1000, 0.2));
+            ctx_mgr.soft_compaction_threshold = 0.5;
+            ctx_mgr.hard_compaction_threshold = 0.9;
+            ctx_mgr.prune_protect_tokens = 0;
+
+            let initial_tokens = 700u64;
+            let mut fixture = Fixture::new(
+                messages_with_one_tool_output(&body),
+                initial_tokens,
+                ctx_mgr,
+            );
+            let mut view = fixture.view();
+            view.soft_tier_gate = gate;
+
+            ContextService::new()
+                .maybe_compact(&mut view, &NoopStatus)
+                .await
+                .unwrap();
+            (initial_tokens, *view.cached_prompt_tokens)
+        }
+
+        #[tokio::test]
+        async fn deferred_gate_skips_the_soft_tier_only() {
+            let (before, after) = tokens_after_soft_pass(crate::SoftTierGate::Deferred).await;
+            assert_eq!(after, before, "a deferred soft tier must not prune");
+
+            let (before, after) = tokens_after_soft_pass(crate::SoftTierGate::Open).await;
+            assert!(after < before, "an open soft tier prunes");
+        }
+
         #[tokio::test]
         async fn soft_compaction_deferred_summary_keeps_subgoal_membership_exact() {
             use zeph_llm::provider::MessagePart;
@@ -4154,6 +4556,43 @@ mod tests {
                     .compaction_state()
                     .is_compacted_this_turn(),
                 "pruning-satisfied Hard tier must still mark the turn as compacted"
+            );
+        }
+
+        #[tokio::test]
+        async fn deferred_soft_gate_does_not_hold_back_the_hard_tier() {
+            let body = "large tool output ".repeat(400);
+            let expected_freed = TokenCounter::default().count_tokens(&body);
+
+            let mut ctx_mgr = ContextManager::new();
+            ctx_mgr.budget = Some(ContextBudget::new(1_000_000, 0.2));
+            ctx_mgr.soft_compaction_threshold = 0.5;
+            ctx_mgr.hard_compaction_threshold = 0.6;
+            ctx_mgr.prune_protect_tokens = 0;
+
+            let initial_tokens = 600_000u64 + (expected_freed as u64 / 2);
+            assert_eq!(
+                ctx_mgr.compaction_tier(initial_tokens),
+                CompactionTier::Hard
+            );
+
+            let mut fixture = Fixture::new(
+                messages_with_one_tool_output(&body),
+                initial_tokens,
+                ctx_mgr,
+            );
+            let mut view = fixture.view();
+            view.soft_tier_gate = crate::SoftTierGate::Deferred;
+
+            ContextService::new()
+                .maybe_compact(&mut view, &NoopStatus)
+                .await
+                .unwrap();
+
+            assert_eq!(
+                *view.cached_prompt_tokens,
+                initial_tokens - u64::try_from(expected_freed).unwrap(),
+                "the hard tier must run even while the soft tier is deferred"
             );
         }
 

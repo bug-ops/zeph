@@ -11,7 +11,8 @@ use zeph_db::sql;
 use regex::Regex;
 use zeph_common::secrets::{
     BEARER_TOKEN_PATTERN, JWT_PATTERN, PATH_PREFIXES, PEM_PRIVATE_KEY_PATTERN,
-    PEM_PRIVATE_KEY_UNTERMINATED_PATTERN, SECRET_PREFIXES,
+    PEM_PRIVATE_KEY_UNTERMINATED_PATTERN, SECRET_TOKEN_GLUED_PATTERN, SECRET_TOKEN_PATTERN,
+    redact_glued_matches,
 };
 use zeph_common::text::truncate_to_bytes_ref;
 
@@ -19,17 +20,25 @@ use crate::error::MemoryError;
 use crate::store::SqliteStore;
 use crate::types::ConversationId;
 
-// Prefixes come from zeph_common::secrets::SECRET_PREFIXES (the canonical, unescaped
-// list shared with zeph-core::redact — see #5917) and are regex-escaped here since e.g.
-// `ya29.` contains a literal dot.
-static SECRET_RE: LazyLock<Regex> = LazyLock::new(|| {
-    let alt = SECRET_PREFIXES
-        .iter()
-        .map(|p| regex::escape(p))
-        .collect::<Vec<_>>()
-        .join("|");
-    Regex::new(&format!(r#"(?:{alt})[^\s"'`,;\{{\}}\[\]]*"#)).expect("secret regex")
-});
+static SECRET_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(SECRET_TOKEN_PATTERN).expect("secret regex"));
+
+static SECRET_GLUED_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(SECRET_TOKEN_GLUED_PATTERN).expect("glued secret regex"));
+
+/// Second tier: a prefix glued to an alphanumeric is redacted only when its body is key-shaped.
+fn redact_glued_secrets(text: &str) -> Cow<'_, str> {
+    redact_glued_matches(
+        text,
+        SECRET_GLUED_RE.captures_iter(text).filter_map(|caps| {
+            Some((
+                caps.get(0)?.range(),
+                caps.get(1)?.range(),
+                caps.get(2)?.range(),
+            ))
+        }),
+    )
+}
 
 static PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
     let alt = PATH_PREFIXES.join("|");
@@ -76,8 +85,13 @@ pub(crate) fn redact_sensitive(text: &str) -> Cow<'_, str> {
             Cow::Borrowed(_) => s_pem,
             Cow::Owned(o) => Cow::Owned(o),
         };
-    let s0: Cow<'_, str> = match SECRET_RE.replace_all(s_pem_fallback.as_ref(), "[REDACTED]") {
-        Cow::Borrowed(_) => s_pem_fallback,
+    let s_tier1: Cow<'_, str> =
+        match SECRET_RE.replace_all(s_pem_fallback.as_ref(), "${1}[REDACTED]") {
+            Cow::Borrowed(_) => s_pem_fallback,
+            Cow::Owned(o) => Cow::Owned(o),
+        };
+    let s0: Cow<'_, str> = match redact_glued_secrets(s_tier1.as_ref()) {
+        Cow::Borrowed(_) => s_tier1,
         Cow::Owned(o) => Cow::Owned(o),
     };
     let s1: Cow<'_, str> = match PATH_RE.replace_all(s0.as_ref(), "[PATH]") {
@@ -770,6 +784,60 @@ mod tests {
             !result.contains("sk-abc123"),
             "original key must not appear"
         );
+    }
+
+    #[test]
+    fn redact_sensitive_keeps_hyphenated_words_and_redacts_escaped_secrets() {
+        assert_eq!(
+            redact_sensitive("run disk-usage and disk-usage-table"),
+            "run disk-usage and disk-usage-table"
+        );
+        let result = redact_sensitive(r"out\nsk-abc123 and key%3Dsk-def456");
+        assert_eq!(result, r"out\n[REDACTED] and key%3D[REDACTED]");
+    }
+
+    #[test]
+    fn redact_sensitive_redacts_glued_key_shaped_tokens_only() {
+        let result = redact_sensitive("\x1b[32msk-abc123def456ghij\x1b[0m and risk-2024-report");
+        assert!(!result.contains("abc123def456"), "{result}");
+        assert!(result.contains("risk-2024-report"), "{result}");
+    }
+
+    #[test]
+    fn redact_sensitive_glued_rejection_neither_swallows_a_key_nor_allocates() {
+        let result = redact_sensitive("run-task-id=3Dsk-abc123def456ghij");
+        assert!(!result.contains("abc123def456"), "{result}");
+        assert!(matches!(
+            redact_sensitive("see disk-usage and risk-2024-report"),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn redact_sensitive_keeps_hyphenated_identifiers() {
+        for text in [
+            "task-runner-for-k8s-clusters",
+            "disk-cleanup-utility-v2",
+            "risk-assessment-2024-q3",
+        ] {
+            assert!(matches!(redact_sensitive(text), Cow::Borrowed(_)), "{text}");
+        }
+    }
+
+    #[test]
+    fn redact_sensitive_rejected_glued_candidates_never_hide_a_later_key() {
+        for text in [
+            "run-task-id=3Dsk-abc123def456ghij",
+            "?next=%2Ftask-list%253Fp%253Dsk-abc123def456ghij",
+            r"disk-a\075sk-abc123def456ghij",
+            "/opt/task-runner/out.log:P=3Dsk-abc123def456ghij",
+            "disk-a.bsk-abc123def456ghij",
+            "flask-app=3Dsk-abc123def456ghij",
+            "/disk-usage/x9sk-abc123def456ghij",
+        ] {
+            let result = redact_sensitive(text);
+            assert!(!result.contains("abc123def456"), "{text} -> {result}");
+        }
     }
 
     #[test]

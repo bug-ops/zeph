@@ -1359,6 +1359,119 @@ mod tests {
         );
     }
 
+    /// Flush the Chrome guard held in `cell` (closing the JSON array) and parse the trace file
+    /// written to `dir`.
+    #[cfg(feature = "profiling")]
+    fn flush_and_read_trace(
+        cell: &ChromeGuardCell,
+        dir: &std::path::Path,
+    ) -> Vec<serde_json::Value> {
+        let guard = cell
+            .lock()
+            .take()
+            .expect("guard cell still holds the guard");
+        drop(guard);
+
+        let json_files: Vec<_> = std::fs::read_dir(dir)
+            .expect("read dir")
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+            .collect();
+        assert!(!json_files.is_empty(), "expected a .json trace file");
+        let contents = std::fs::read_to_string(json_files[0].path()).expect("read trace file");
+        serde_json::from_str(&contents).expect("trace file must be a valid JSON array")
+    }
+
+    /// Verify #6859: with `include_args = true`, a field recorded after the span was created is
+    /// exported on the `e` (close) event, not on the `b` (open) event. Readers that inspect only
+    /// `b` events therefore miss late fields; with the default `include_args = false` no args are
+    /// exported at all.
+    #[cfg(feature = "profiling")]
+    #[test]
+    fn chrome_layer_exports_late_recorded_fields_on_the_end_event() {
+        use zeph_core::config::{TelemetryBackend, TelemetryConfig};
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let telemetry = TelemetryConfig {
+            enabled: true,
+            backend: TelemetryBackend::Local,
+            trace_dir: dir.path().to_path_buf(),
+            include_args: true,
+            ..TelemetryConfig::default()
+        };
+        let mut layers: Vec<
+            Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>,
+        > = Vec::new();
+        let cell = build_chrome_layer(&telemetry, &mut layers).expect("guard cell");
+        let subscriber = tracing_subscriber::registry().with(layers);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!(
+                "test.late.fields",
+                early = 1_u64,
+                late = tracing::field::Empty
+            );
+            span.record("late", 42_u64);
+        });
+
+        let events = flush_and_read_trace(&cell, dir.path());
+        let named = |ph: &str| {
+            events
+                .iter()
+                .find(|e| e["ph"] == ph && e["name"] == "test.late.fields")
+                .unwrap_or_else(|| panic!("no {ph} event: {events:?}"))
+        };
+        let begin = named("b");
+        let end = named("e");
+        assert_eq!(begin["args"]["early"], "1");
+        assert!(begin["args"].get("late").is_none(), "b event: {begin}");
+        assert_eq!(end["args"]["early"], "1");
+        assert_eq!(end["args"]["late"], "42", "e event: {end}");
+    }
+
+    /// Verify #6859: the default `include_args = false` exports no args on the span's `b`/`e`
+    /// events. Like the sibling #6682 test this only runs with `--features profiling`, which the
+    /// CI test set does not enable.
+    #[cfg(feature = "profiling")]
+    #[test]
+    fn chrome_layer_exports_no_args_by_default() {
+        use zeph_core::config::{TelemetryBackend, TelemetryConfig};
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let telemetry = TelemetryConfig {
+            enabled: true,
+            backend: TelemetryBackend::Local,
+            trace_dir: dir.path().to_path_buf(),
+            ..TelemetryConfig::default()
+        };
+        let mut layers: Vec<
+            Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync>,
+        > = Vec::new();
+        let cell = build_chrome_layer(&telemetry, &mut layers).expect("guard cell");
+        let subscriber = tracing_subscriber::registry().with(layers);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("test.late.fields", late = tracing::field::Empty);
+            span.record("late", 42_u64);
+        });
+
+        let events = flush_and_read_trace(&cell, dir.path());
+        let span_events: Vec<_> = events
+            .iter()
+            .filter(|e| e["name"] == "test.late.fields")
+            .collect();
+        assert_eq!(
+            span_events
+                .iter()
+                .map(|e| e["ph"].as_str())
+                .collect::<Vec<_>>(),
+            [Some("b"), Some("e")],
+            "expected one b and one e event: {events:?}"
+        );
+        assert!(
+            span_events.iter().all(|e| e.get("args").is_none()),
+            "default include_args = false must export no span args: {events:?}"
+        );
+    }
+
     /// Verify #6682: `TraceStyle::Async` records paired `ph:"b"`/`"e"` events sharing an `id`
     /// (never a fragmented `ph:"X"` complete event), confirming the layer is actually configured
     /// as documented rather than only asserting it via code reading. Drives a real span through
@@ -1386,21 +1499,7 @@ mod tests {
             tracing::info!("inside span");
         });
 
-        let guard = cell
-            .lock()
-            .take()
-            .expect("guard cell still holds the guard");
-        drop(guard); // flush and close the JSON array
-
-        let json_files: Vec<_> = std::fs::read_dir(dir.path())
-            .expect("read dir")
-            .filter_map(std::result::Result::ok)
-            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
-            .collect();
-        assert!(!json_files.is_empty(), "expected a .json trace file");
-        let contents = std::fs::read_to_string(json_files[0].path()).expect("read trace file");
-        let events: Vec<serde_json::Value> =
-            serde_json::from_str(&contents).expect("trace file must be a valid JSON array");
+        let events = flush_and_read_trace(&cell, dir.path());
 
         assert!(
             events.iter().all(|e| e["ph"] != "X"),
