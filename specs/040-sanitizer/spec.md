@@ -554,14 +554,26 @@ character, a literal escape `\[nrtbf0v]`, `\xXX`, `\uXXXX` or a percent escape `
 prefix alternation and the token body, replaced with `${1}[REDACTED]`. The boundary keeps
 escaped forms found in JSON and `repr` output redactable while a prefix glued inside a word
 (`disk-usage`, `abcsk-x`) is not a secret; a unit test pins the literal to the escaped
-`SECRET_PREFIXES` join. A second tier, `SECRET_TOKEN_GLUED_PATTERN`, catches a prefix that
-directly follows an alphanumeric after an encoding the boundary does not list (ANSI `\x1b[32m`,
-quoted-printable `=3D`, double percent-encoding, octal): the match is redacted only when
-`is_secret_shaped_body` accepts the body, i.e. its leading `[A-Za-z0-9_-]` run holds a
-separator-free alphanumeric segment (split on `-`/`_`) of at least 16 characters with a digit.
-The pattern's body group is that run only, so a rejected candidate never swallows a later key.
-`disk-usage`, `risk-assessment-2024-q3`, `task-runner-for-k8s-clusters` and `abcsk-x` stay
-intact (#6857).
+`SECRET_PREFIXES` join. A second tier catches a prefix that directly follows an alphanumeric
+after an encoding the boundary does not list (ANSI `\x1b[32m`, quoted-printable `=3D`,
+double percent-encoding, octal), in two passes run in this order (`GluedTier::PASSES`). The
+distinctive pass (`SECRET_TOKEN_GLUED_DISTINCTIVE_PATTERN`, prefixes `DISTINCTIVE_SECRET_PREFIXES`:
+`glpat-`, `AKIA`, `AIza`, `dckr_pat_`, `ghp_`, `gho_`, `xoxb-`, `xoxp-`, `ya29.`, `sk_live_`,
+`sk_test_`) redacts a body run of at least 16 `[A-Za-z0-9_-]` characters holding an
+uppercase letter or a digit, so lowercase snake identifiers (`disk_test_results_summary_report`)
+stay intact. The ambiguous pass (`SECRET_TOKEN_GLUED_AMBIGUOUS_PATTERN`, prefixes
+`AMBIGUOUS_SECRET_PREFIXES`: `sk-`, `hf_`, `npm_`, `-----BEGIN`, which also start ordinary words)
+redacts a body whose separator-free segment (split on `-`/`_`) has 16+ characters with a digit, or
+30+ characters with both letter cases (`hf_` tokens are letters only). Each pattern's body group is
+the run only, and the distinctive pass runs first, so neither a rejected candidate nor a rejected
+ambiguous run swallows a key that follows or is nested in it. A unit test pins both literals to
+their escaped prefix joins and the two lists to a partition of `SECRET_PREFIXES`. GitHub
+fine-grained tokens are matched by shape, independent of the token version
+(`GITHUB_FINE_GRAINED_PAT_PATTERN`: `github_pat_`, 22 base62, `_`, 20+ base62), so
+`load_github_pat_from_env` and prose are not secrets while a glued token is still redacted. The
+compiled pipeline (GitHub shape, boundary tier, glued tiers) lives in
+`zeph_common::secret_redact::redact_prefixed_secrets`, called by both consumers. `disk-usage`,
+`risk-assessment-2024-q3`, `task-runner-for-k8s-clusters` and `abcsk-x` stay intact (#6857, #6865).
 
 The two PEM passes run before the prefix/JWT/AWS passes: the terminated pattern first, then the
 unterminated-header fallback (matched against the terminated pass's already-redacted output, so

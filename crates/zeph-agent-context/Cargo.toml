@@ -36,6 +36,7 @@ sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "tls-rustls"] 
 tempfile.workspace = true
 tokio-util.workspace = true
 zeph-llm = { workspace = true, features = ["testing"] }
+zeph-memory = { workspace = true, features = ["testing"] }
 
 [features]
 sqlite = ["zeph-memory/sqlite", "zeph-sanitizer/sqlite", "zeph-skills/sqlite"]

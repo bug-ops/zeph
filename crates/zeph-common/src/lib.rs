@@ -35,6 +35,7 @@ pub mod policy;
 pub mod quarantine;
 pub mod sanitize;
 pub mod secret;
+pub mod secret_redact;
 pub mod secrets;
 pub mod security;
 pub mod security_event;

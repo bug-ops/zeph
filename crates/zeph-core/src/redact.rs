@@ -130,7 +130,7 @@ pub fn redact_binary_blobs(text: &str) -> Cow<'_, str> {
 mod tests {
     use super::*;
     use std::assert_matches;
-    use zeph_common::secrets::SECRET_PREFIXES;
+    use zeph_common::secrets::{DISTINCTIVE_SECRET_PREFIXES, SECRET_PREFIXES};
 
     #[test]
     fn redacts_openai_key() {
@@ -632,17 +632,19 @@ mod tests {
         (
             "[A-Za-z0-9\\\\%_ nrtbf0vxu=(\\-\\[;]{0,6}",
             proptest::sample::select(SECRET_PREFIXES),
-            "[A-Za-z0-9_-]{0,24}",
+            "[A-Za-z0-9_-]{0,40}",
         )
             .prop_map(|(lead, prefix, body)| format!("{lead}{prefix}{body}"))
     }
 
     /// Independent oracle that knows nothing about the escape boundary: after scrubbing, a
     /// secret prefix may remain only when an alphanumeric directly precedes it and the run of
-    /// `[A-Za-z0-9_-]` after it has no key-shaped segment (16+ separator-free alphanumerics
-    /// with a digit).
+    /// `[A-Za-z0-9_-]` after it is not key-shaped. A distinctive prefix needs a 16+ run with an
+    /// uppercase letter or digit; an ambiguous one a separator-free segment of 16+ with a digit
+    /// or of 30+ with both letter cases.
     fn assert_no_unprotected_prefix(text: &str) {
         for prefix in SECRET_PREFIXES {
+            let distinctive = DISTINCTIVE_SECRET_PREFIXES.contains(prefix);
             for (at, _) in text.match_indices(*prefix) {
                 let glued = text[..at]
                     .chars()
@@ -653,9 +655,21 @@ mod tests {
                     .chars()
                     .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
                     .collect();
+                let key_shaped = if distinctive {
+                    run.len() >= 16
+                        && run
+                            .chars()
+                            .any(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                } else {
+                    run.split(['-', '_']).any(|seg| {
+                        (seg.len() >= 16 && seg.chars().any(|c| c.is_ascii_digit()))
+                            || (seg.len() >= 30
+                                && seg.chars().any(|c| c.is_ascii_uppercase())
+                                && seg.chars().any(|c| c.is_ascii_lowercase()))
+                    })
+                };
                 assert!(
-                    !run.split(['-', '_'])
-                        .any(|seg| seg.len() >= 16 && seg.chars().any(|c| c.is_ascii_digit())),
+                    !key_shaped,
                     "key-shaped body after {prefix} survived: {text:?}"
                 );
             }

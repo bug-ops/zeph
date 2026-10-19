@@ -20,6 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-agent-context`: in `append` the proactive fidelity regrade follows the soft-tier gate and no longer rewrites sent history while the provider cache is warm (#6863)
+- `zeph-memory`, `zeph-agent-context`: tiered recall drops items already in history before the token budget is applied (#6864)
+- `zeph-subagent`: the streamed subagent turn keeps `ThinkingReplay` so dropped thinking is stripped from its history (#6862)
+- `zeph-common`, `zeph-sanitizer`, `zeph-memory`: glued-prefix redaction catches `hf_`, `glpat-`, `dckr_pat_`, `AIza`, `AKIA` keys, also nested in an ordinary-looking run, and matches GitHub fine-grained tokens by shape; the pipeline moves to `zeph_common::secret_redact` (breaking: `SECRET_TOKEN_GLUED_PATTERN` split into distinctive and ambiguous patterns, `zeph-common` depends on `regex`) (#6865)
 - `zeph-common`, `zeph-sanitizer`, `zeph-memory`: secret redaction recognizes prefixes after JSON/repr escapes (`\n`, `\xXX`, `\uXXXX`, `%XX`); a prefix glued to an alphanumeric (ANSI, quoted-printable, double-encoded) is redacted only when its body is key-shaped, and ordinary words like `disk-usage` are left intact (#6857) (#6866)
 - `zeph-core`: `<active_skills>` is a state directive keyed on the sorted skill names, sent on change and cleared once (#6856) (#6866)
 - `zeph-agent-context`: in `append` a trim turn trims history before a single fetch, a fetch or tiered-recall failure keeps the trim and degrades the retrieved block (#6860) (#6866)

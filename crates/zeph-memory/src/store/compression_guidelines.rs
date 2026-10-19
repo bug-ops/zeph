@@ -9,36 +9,16 @@ use std::sync::LazyLock;
 use zeph_db::sql;
 
 use regex::Regex;
+use zeph_common::secret_redact::redact_prefixed_secrets;
 use zeph_common::secrets::{
     BEARER_TOKEN_PATTERN, JWT_PATTERN, PATH_PREFIXES, PEM_PRIVATE_KEY_PATTERN,
-    PEM_PRIVATE_KEY_UNTERMINATED_PATTERN, SECRET_TOKEN_GLUED_PATTERN, SECRET_TOKEN_PATTERN,
-    redact_glued_matches,
+    PEM_PRIVATE_KEY_UNTERMINATED_PATTERN,
 };
 use zeph_common::text::truncate_to_bytes_ref;
 
 use crate::error::MemoryError;
 use crate::store::SqliteStore;
 use crate::types::ConversationId;
-
-static SECRET_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(SECRET_TOKEN_PATTERN).expect("secret regex"));
-
-static SECRET_GLUED_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(SECRET_TOKEN_GLUED_PATTERN).expect("glued secret regex"));
-
-/// Second tier: a prefix glued to an alphanumeric is redacted only when its body is key-shaped.
-fn redact_glued_secrets(text: &str) -> Cow<'_, str> {
-    redact_glued_matches(
-        text,
-        SECRET_GLUED_RE.captures_iter(text).filter_map(|caps| {
-            Some((
-                caps.get(0)?.range(),
-                caps.get(1)?.range(),
-                caps.get(2)?.range(),
-            ))
-        }),
-    )
-}
 
 static PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
     let alt = PATH_PREFIXES.join("|");
@@ -85,13 +65,8 @@ pub(crate) fn redact_sensitive(text: &str) -> Cow<'_, str> {
             Cow::Borrowed(_) => s_pem,
             Cow::Owned(o) => Cow::Owned(o),
         };
-    let s_tier1: Cow<'_, str> =
-        match SECRET_RE.replace_all(s_pem_fallback.as_ref(), "${1}[REDACTED]") {
-            Cow::Borrowed(_) => s_pem_fallback,
-            Cow::Owned(o) => Cow::Owned(o),
-        };
-    let s0: Cow<'_, str> = match redact_glued_secrets(s_tier1.as_ref()) {
-        Cow::Borrowed(_) => s_tier1,
+    let s0: Cow<'_, str> = match redact_prefixed_secrets(s_pem_fallback.as_ref()) {
+        Cow::Borrowed(_) => s_pem_fallback,
         Cow::Owned(o) => Cow::Owned(o),
     };
     let s1: Cow<'_, str> = match PATH_RE.replace_all(s0.as_ref(), "[PATH]") {

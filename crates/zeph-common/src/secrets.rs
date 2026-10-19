@@ -7,11 +7,16 @@
 //! secrets and filesystem paths before persisting or displaying untrusted text. Each
 //! crate previously carried its own hand-rolled copy of these lists, and the copies had
 //! already begun to drift from each other (see #5917). This module is the single source
-//! of truth for the raw prefixes/patterns; consumers compile their own `regex::Regex`
-//! instances from these constants — `zeph-common` does not depend on `regex` outside of
-//! tests, matching the pattern established by [`crate::patterns`].
+//! of truth for the raw prefixes/patterns. This module holds only constants and pure
+//! functions; [`crate::secret_redact`] compiles the prefix patterns and applies them in order,
+//! while consumers compile their own `regex::Regex` instances for the remaining ones.
 
 /// Prefixes of API keys, tokens, and other secret material recognized across Zeph.
+///
+/// The glued-prefix tier splits this list into [`DISTINCTIVE_SECRET_PREFIXES`] and
+/// [`AMBIGUOUS_SECRET_PREFIXES`]; a test pins the two as a partition of this list. GitHub
+/// fine-grained tokens are not listed: `github_pat_` also starts ordinary identifiers, so they
+/// are matched by shape ([`GITHUB_FINE_GRAINED_PAT_PATTERN`]).
 ///
 /// Each entry is a literal prefix, not regex-escaped. Consumers building a regex
 /// alternation from this list must escape entries themselves (e.g. via `regex::escape`),
@@ -48,45 +53,142 @@ pub const SECRET_PREFIXES: &[&str] = &[
 /// semicolons, braces and brackets.
 pub const SECRET_TOKEN_PATTERN: &str = r#"(^|[^A-Za-z0-9]|\\[nrtbf0v]|\\x[0-9A-Fa-f]{2}|\\u[0-9A-Fa-f]{4}|%[0-9A-Fa-f]{2})(?:sk\-|sk_live_|sk_test_|AKIA|ghp_|gho_|\-\-\-\-\-BEGIN|xoxb\-|xoxp\-|AIza|ya29\.|glpat\-|hf_|npm_|dckr_pat_)[^\s"'`,;{}\[\]]*"#;
 
-/// Regex matching a [`SECRET_PREFIXES`] token glued directly to a preceding alphanumeric.
+/// Prefixes distinctive enough that a glued match is a key once its body run looks random
+/// (`glpat-`, `AKIA`, ...).
+pub const DISTINCTIVE_SECRET_PREFIXES: &[&str] = &[
+    "sk_live_",
+    "sk_test_",
+    "AKIA",
+    "ghp_",
+    "gho_",
+    "xoxb-",
+    "xoxp-",
+    "AIza",
+    "ya29.",
+    "glpat-",
+    "dckr_pat_",
+];
+
+/// Prefixes that also start ordinary words (`task-`, `pnpm_`, `chf_`); a glued match needs a
+/// long, key-shaped body.
+pub const AMBIGUOUS_SECRET_PREFIXES: &[&str] = &["sk-", "-----BEGIN", "hf_", "npm_"];
+
+/// Regex matching a [`DISTINCTIVE_SECRET_PREFIXES`] token glued directly to a preceding
+/// alphanumeric; see [`GluedTier::Distinctive`].
 ///
 /// This is the second redaction tier next to [`SECRET_TOKEN_PATTERN`]: an encoding the boundary
 /// does not list (ANSI `\x1b[32m`, quoted-printable `=3D`, double percent-encoding, octal)
 /// leaves a letter or digit in front of a real key. Capture group 1 is that character, group 2
-/// the run of `[A-Za-z0-9_-]` after the prefix, exactly what [`is_secret_shaped_body`] judges.
-/// Callers redact a match only when that function accepts group 2, so words such as `disk-usage`
-/// or `risk-2024-report` stay intact, and replace with `"${1}[REDACTED]"`. Group 2 stops at the
-/// first other character, so a rejected match never swallows a real key that follows it in the
-/// same token (`run-task-id=3Dsk-...`).
-pub const SECRET_TOKEN_GLUED_PATTERN: &str = r"([A-Za-z0-9])(?:sk\-|sk_live_|sk_test_|AKIA|ghp_|gho_|\-\-\-\-\-BEGIN|xoxb\-|xoxp\-|AIza|ya29\.|glpat\-|hf_|npm_|dckr_pat_)([A-Za-z0-9_\-]*)";
+/// the run of `[A-Za-z0-9_-]` after the prefix. Callers redact a match only when
+/// [`GluedTier::accepts`] takes group 2 and replace with `"${1}[REDACTED]"`.
+pub const SECRET_TOKEN_GLUED_DISTINCTIVE_PATTERN: &str = r"([A-Za-z0-9])(?:sk_live_|sk_test_|AKIA|ghp_|gho_|xoxb\-|xoxp\-|AIza|ya29\.|glpat\-|dckr_pat_)([A-Za-z0-9_\-]*)";
 
-/// Minimum length of the separator-free alphanumeric segment that makes a body key-shaped.
+/// Regex matching an [`AMBIGUOUS_SECRET_PREFIXES`] token glued directly to a preceding
+/// alphanumeric; see [`GluedTier::Ambiguous`].
+///
+/// Run only after the distinctive pass: a rejected ambiguous match consumes its whole body run,
+/// so a distinctive key nested in it (`ask-ab_cglpat-...`) must already be redacted.
+pub const SECRET_TOKEN_GLUED_AMBIGUOUS_PATTERN: &str =
+    r"([A-Za-z0-9])(?:sk\-|\-\-\-\-\-BEGIN|hf_|npm_)([A-Za-z0-9_\-]*)";
+
+/// Regex matching a GitHub fine-grained personal access token by shape, whatever its version:
+/// `github_pat_`, 22 base62 characters, `_`, then the 59-character secret (20+ accepted).
+///
+/// Needs no boundary group: the shape is specific enough that `load_github_pat_from_env` and
+/// prose such as "the `github_pat_` prefix" never match, and a token glued to a preceding
+/// alphanumeric still does.
+pub const GITHUB_FINE_GRAINED_PAT_PATTERN: &str = r"github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{20,}";
+
+/// Minimum body run of a distinctive glued key; the shortest real body is the 16-character
+/// `AKIA` access key id.
+const GLUED_DISTINCTIVE_MIN_LEN: usize = 16;
+
+/// Minimum length of a separator-free segment with a digit that makes an ambiguous body a key.
 const GLUED_SEGMENT_MIN_LEN: usize = 16;
 
-/// Whether the body of a prefix glued to an alphanumeric looks like key material.
+/// Length at which a separator-free segment holding both letter cases is a key on its own (`hf_`
+/// tokens are 34 letters with no digit).
+const GLUED_SEGMENT_LONG_LEN: usize = 30;
+
+/// Which glued-prefix pattern a match came from, and so how strictly its body is judged.
 ///
-/// True when the leading run of `[A-Za-z0-9_-]` holds a separator-free alphanumeric segment (split
-/// on `-` and `_`) of at least 16 characters that contains a digit. Real keys carry such a
-/// segment (`sk-proj-0123456789abcdef`); hyphenated identifiers (`task-runner-for-k8s-clusters`,
-/// `risk-assessment-2024-q3`, `pnpm_store_v3_linux_x64_node20`) are built from short words.
-#[must_use]
-pub fn is_secret_shaped_body(body: &str) -> bool {
-    let run_len = body
-        .bytes()
-        .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
-        .count();
-    body[..run_len].split(['-', '_']).any(|segment| {
-        segment.len() >= GLUED_SEGMENT_MIN_LEN && segment.bytes().any(|b| b.is_ascii_digit())
-    })
+/// Passes run in [`GluedTier::PASSES`] order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GluedTier {
+    /// [`SECRET_TOKEN_GLUED_DISTINCTIVE_PATTERN`]: a body run of 16+ characters holding an
+    /// uppercase letter or a digit. Lowercase snake identifiers (`disk_test_results_summary`)
+    /// stay intact.
+    Distinctive,
+    /// [`SECRET_TOKEN_GLUED_AMBIGUOUS_PATTERN`]: a separator-free segment (split on `-`/`_`) of
+    /// 16+ characters with a digit, or of 30+ characters with both letter cases. Hyphenated
+    /// identifiers (`task-runner-for-k8s-clusters`, `pnpm_store_v3_linux_x64_node20`) are built
+    /// from short words.
+    Ambiguous,
 }
 
-/// Redact the key-shaped matches of [`SECRET_TOKEN_GLUED_PATTERN`] in `text`.
+impl GluedTier {
+    /// Tiers in the order they must be applied.
+    pub const PASSES: [Self; 2] = [Self::Distinctive, Self::Ambiguous];
+
+    /// The regex of this tier.
+    #[must_use]
+    pub const fn pattern(self) -> &'static str {
+        match self {
+            Self::Distinctive => SECRET_TOKEN_GLUED_DISTINCTIVE_PATTERN,
+            Self::Ambiguous => SECRET_TOKEN_GLUED_AMBIGUOUS_PATTERN,
+        }
+    }
+
+    /// Whether `body` (the text after the prefix) looks like key material for this tier.
+    ///
+    /// Only the leading run of `[A-Za-z0-9_-]` is judged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::secrets::GluedTier;
+    ///
+    /// assert!(GluedTier::Ambiguous.accepts("proj-0123456789abcdef"));
+    /// assert!(!GluedTier::Ambiguous.accepts("assessment-2024-q3"));
+    /// assert!(GluedTier::Distinctive.accepts("aB3dEf_gH1jKlMnO"));
+    /// assert!(!GluedTier::Distinctive.accepts("some_long_identifier_name"));
+    /// ```
+    #[must_use]
+    pub fn accepts(self, body: &str) -> bool {
+        let run = &body[..glued_run_len(body)];
+        match self {
+            Self::Distinctive => {
+                run.len() >= GLUED_DISTINCTIVE_MIN_LEN
+                    && run
+                        .bytes()
+                        .any(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+            }
+            Self::Ambiguous => run.split(['-', '_']).any(|segment| {
+                (segment.len() >= GLUED_SEGMENT_MIN_LEN
+                    && segment.bytes().any(|b| b.is_ascii_digit()))
+                    || (segment.len() >= GLUED_SEGMENT_LONG_LEN
+                        && segment.bytes().any(|b| b.is_ascii_uppercase())
+                        && segment.bytes().any(|b| b.is_ascii_lowercase()))
+            }),
+        }
+    }
+}
+
+/// Length of the leading run of `[A-Za-z0-9_-]` in `body`.
+fn glued_run_len(body: &str) -> usize {
+    body.bytes()
+        .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+        .count()
+}
+
+/// Redact the key-shaped matches of one glued-prefix `tier` in `text`.
 ///
-/// `matches` yields, per regex match and in order, the byte ranges of the whole match, of capture
-/// group 1 (the alphanumeric that precedes the prefix) and of capture group 2 (the body run).
-/// Callers keep their own `captures_iter`, so `zeph-common` needs no `regex` dependency. A match
-/// whose body is not accepted by [`is_secret_shaped_body`] is left untouched; the preceding
-/// character is kept and the rest of the match becomes `[REDACTED]`.
+/// `matches` yields, per regex match of [`GluedTier::pattern`] and in order, the byte ranges of
+/// the whole match, of capture group 1 (the alphanumeric that precedes the prefix) and of capture
+/// group 2 (the body run). Callers keep their own `captures_iter`, so `zeph-common` needs no
+/// `regex` dependency, and apply [`GluedTier::PASSES`] in order. A match whose body is not
+/// accepted by [`GluedTier::accepts`] is left untouched; the preceding character is kept and the
+/// rest of an accepted match becomes `[REDACTED]`.
 ///
 /// Returns `Cow::Borrowed` when no match is key-shaped, so unchanged text costs no allocation.
 ///
@@ -94,18 +196,24 @@ pub fn is_secret_shaped_body(body: &str) -> bool {
 ///
 /// ```
 /// use std::borrow::Cow;
-/// use zeph_common::secrets::redact_glued_matches;
+/// use zeph_common::secrets::{GluedTier, redact_glued_matches};
 ///
 /// let text = "id9sk-proj-0123456789abcdef";
 /// let key = (2..27, 2..3, 6..27);
-/// assert_eq!(redact_glued_matches(text, [key.clone()]), "id9[REDACTED]");
+/// assert_eq!(
+///     redact_glued_matches(text, GluedTier::Ambiguous, [key.clone()]),
+///     "id9[REDACTED]"
+/// );
 ///
 /// let word = "disk-usage";
 /// let candidate = (1..10, 1..2, 5..10);
-/// assert!(matches!(redact_glued_matches(word, [candidate]), Cow::Borrowed(_)));
+/// assert!(matches!(
+///     redact_glued_matches(word, GluedTier::Ambiguous, [candidate]),
+///     Cow::Borrowed(_)
+/// ));
 /// ```
 #[must_use]
-pub fn redact_glued_matches<I>(text: &str, matches: I) -> std::borrow::Cow<'_, str>
+pub fn redact_glued_matches<I>(text: &str, tier: GluedTier, matches: I) -> std::borrow::Cow<'_, str>
 where
     I: IntoIterator<
         Item = (
@@ -118,7 +226,7 @@ where
     let mut out: Option<String> = None;
     let mut copied = 0;
     for (whole, lead, body) in matches {
-        if !is_secret_shaped_body(&text[body]) {
+        if !tier.accepts(&text[body]) {
             continue;
         }
         let buf = out.get_or_insert_with(|| String::with_capacity(text.len()));
@@ -355,26 +463,62 @@ mod tests {
         }
     }
 
-    #[test]
-    fn secret_token_glued_pattern_equals_escaped_prefix_join() {
-        let alt = SECRET_PREFIXES
+    fn glued_pattern(prefixes: &[&str]) -> String {
+        let alt = prefixes
             .iter()
             .map(|p| regex::escape(p))
             .collect::<Vec<_>>()
             .join("|");
-        let expected = format!(r"([A-Za-z0-9])(?:{alt})([A-Za-z0-9_\-]*)");
-        assert_eq!(SECRET_TOKEN_GLUED_PATTERN, expected);
+        format!(r"([A-Za-z0-9])(?:{alt})([A-Za-z0-9_\-]*)")
     }
 
     #[test]
-    fn secret_shaped_body_needs_a_long_alphanumeric_segment_with_a_digit() {
+    fn glued_patterns_equal_escaped_prefix_joins() {
+        assert_eq!(
+            SECRET_TOKEN_GLUED_DISTINCTIVE_PATTERN,
+            glued_pattern(DISTINCTIVE_SECRET_PREFIXES)
+        );
+        assert_eq!(
+            SECRET_TOKEN_GLUED_AMBIGUOUS_PATTERN,
+            glued_pattern(AMBIGUOUS_SECRET_PREFIXES)
+        );
+        for tier in GluedTier::PASSES {
+            Regex::new(tier.pattern()).expect("glued pattern must compile");
+        }
+    }
+
+    #[test]
+    fn glued_prefix_lists_partition_secret_prefixes() {
+        let mut split: Vec<&str> = DISTINCTIVE_SECRET_PREFIXES
+            .iter()
+            .chain(AMBIGUOUS_SECRET_PREFIXES)
+            .copied()
+            .collect();
+        let mut all: Vec<&str> = SECRET_PREFIXES.to_vec();
+        split.sort_unstable();
+        all.sort_unstable();
+        assert_eq!(split, all);
+    }
+
+    #[test]
+    fn ambiguous_tier_needs_a_long_segment_with_a_digit_or_both_cases() {
+        let digit_15 = "a1cdefghijklmno";
+        let digit_16 = "a1cdefghijklmnop";
+        let mixed_29 = format!("A{}", "b".repeat(28));
+        let mixed_30 = format!("A{}", "b".repeat(29));
+        let lower_30 = "b".repeat(30);
+        assert!(!GluedTier::Ambiguous.accepts(digit_15));
+        assert!(GluedTier::Ambiguous.accepts(digit_16));
+        assert!(!GluedTier::Ambiguous.accepts(&mixed_29));
+        assert!(GluedTier::Ambiguous.accepts(&mixed_30));
+        assert!(!GluedTier::Ambiguous.accepts(&lower_30));
         for key in [
             "proj-0123456789abcdef",
-            "abcdefghijklmnop1",
             "ant-api03-aB3dEf_gH1jKlMnOpQrStUvWxYz-0123456789",
             "x_0123456789abcdefghij_tail",
+            "AbCdEfGhIjKlMnOpQrStUvWxYzAbCdEfGh",
         ] {
-            assert!(is_secret_shaped_body(key), "{key}");
+            assert!(GluedTier::Ambiguous.accepts(key), "{key}");
         }
         for word in [
             "usage-table",
@@ -385,10 +529,60 @@ mod tests {
             "assessment-2024-q3",
             "store_v3_linux_x64_node20",
             "abcdefghijklmnopqrstuvwxyz",
+            "sqlalchemyintegrationguideforbeginners",
             "",
         ] {
-            assert!(!is_secret_shaped_body(word), "{word}");
+            assert!(!GluedTier::Ambiguous.accepts(word), "{word}");
         }
+    }
+
+    #[test]
+    fn distinctive_tier_needs_sixteen_chars_with_an_uppercase_letter_or_digit() {
+        assert!(!GluedTier::Distinctive.accepts("aB3dEf_gH1jKlMn"));
+        assert!(GluedTier::Distinctive.accepts("aB3dEf_gH1jKlMnO"));
+        assert!(GluedTier::Distinctive.accepts("ab-cd_ef-gh_ij-kl_m1"));
+        assert!(GluedTier::Distinctive.accepts("ab-cd_ef-gh_ij-kl_mN"));
+        for word in [
+            "test_results_summary_report",
+            "something_long_identifier_name",
+            "rotation_schedule_doc",
+            "",
+        ] {
+            assert!(!GluedTier::Distinctive.accepts(word), "{word}");
+        }
+    }
+
+    #[test]
+    fn redact_glued_matches_applies_the_tier_rule() {
+        let text = "x9glpat-aB_cd-efghijklmnopqr";
+        assert_eq!(
+            redact_glued_matches(
+                text,
+                GluedTier::Distinctive,
+                [(1..text.len(), 1..2, 8..text.len())]
+            ),
+            "x9[REDACTED]"
+        );
+
+        let lower = "x9glpat-ab_cd-efghijklmnopqr";
+        assert!(matches!(
+            redact_glued_matches(
+                lower,
+                GluedTier::Distinctive,
+                [(1..lower.len(), 1..2, 8..lower.len())]
+            ),
+            std::borrow::Cow::Borrowed(_)
+        ));
+
+        let ambiguous = "x9sk-aB3_cd-efghijklmnopqr";
+        assert!(matches!(
+            redact_glued_matches(
+                ambiguous,
+                GluedTier::Ambiguous,
+                [(1..ambiguous.len(), 1..2, 5..ambiguous.len())]
+            ),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     #[test]

@@ -35,6 +35,8 @@ regexes = [
   '''eyJhbGciOi\.\.\.''',
   '''ZEPH_A2A_IBCT_KEY''',
   '''VAULT_A2A_IBCT_KEY_1''',
+  # #6865: dummy glued-prefix redaction fixtures in zeph-common secrets tests.
+  '''glpat-[aA][bB]_cd-efghijklmnopqr''',
   # #6592 follow-up: fake PEM private-key bodies used across the new PEM-detector unit
   # tests in zeph-common, zeph-sanitizer, zeph-subagent, zeph-core, and zeph-memory. Every
   # value below is a truncated, non-functional fixture (verified via `gitleaks detect`), not
