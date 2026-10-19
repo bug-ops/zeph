@@ -5,6 +5,8 @@
 // Raised from 128: #[instrument] chain on the agent call stack deepens async state machines.
 #![recursion_limit = "256"]
 
+mod common;
+
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -193,6 +195,9 @@ impl ToolExecutor for MockToolExecutor {
     ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
         std::future::ready(Ok(None))
     }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
+    }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
 
@@ -238,6 +243,9 @@ impl ToolExecutor for OutputToolExecutor {
             ..Default::default()
         })))
     }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
+    }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
 
@@ -280,6 +288,9 @@ impl ToolExecutor for EmptyOutputToolExecutor {
             claim_source: None,
             ..Default::default()
         })))
+    }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
@@ -324,6 +335,9 @@ impl ToolExecutor for ErrorOutputToolExecutor {
             ..Default::default()
         })))
     }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
+    }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
 
@@ -346,6 +360,9 @@ impl ToolExecutor for BlockedToolExecutor {
         std::future::ready(Err(ToolError::Blocked {
             command: "rm -rf /".into(),
         }))
+    }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
@@ -424,6 +441,9 @@ impl ToolExecutor for ConfirmToolExecutor {
     fn requires_confirmation(&self, _call: &ToolCall) -> bool {
         true
     }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
+    }
 }
 
 struct SandboxToolExecutor;
@@ -445,6 +465,9 @@ impl ToolExecutor for SandboxToolExecutor {
         std::future::ready(Err(ToolError::SandboxViolation {
             path: "/etc/passwd".into(),
         }))
+    }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
@@ -470,6 +493,9 @@ impl ToolExecutor for IoErrorToolExecutor {
             std::io::ErrorKind::NotFound,
             "command not found",
         ))))
+    }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
@@ -513,6 +539,9 @@ impl ToolExecutor for ExitCodeToolExecutor {
             claim_source: None,
             ..Default::default()
         })))
+    }
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        common::bash_tool_defs()
     }
     zeph_tools::tool_executor_no_inner_defaults!();
 }
