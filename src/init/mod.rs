@@ -277,6 +277,7 @@ pub(crate) struct WizardState {
     pub(crate) quality_latency_budget_ms: u64,
     // Context strategy (#2288)
     pub(crate) context_strategy: String,
+    pub(crate) context_layout: String,
     // MCP tool discovery (#2321)
     pub(crate) mcp_discovery_strategy: String,
     pub(crate) mcp_discovery_top_k: usize,
@@ -570,6 +571,7 @@ impl Default for WizardState {
             quality_trigger: "has_retrieval".to_owned(),
             quality_latency_budget_ms: 4_000,
             context_strategy: "full_history".to_owned(),
+            context_layout: "auto".to_owned(),
             mcp_discovery_strategy: "none".to_owned(),
             mcp_discovery_top_k: 10,
             mcp_discovery_provider: String::new(),
@@ -1134,6 +1136,11 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         _ => TriggerPolicy::HasRetrieval,
     };
     config.quality.latency_budget_ms = state.quality_latency_budget_ms;
+    config.memory.context_layout = match state.context_layout.as_str() {
+        "replace" => zeph_config::ContextLayout::Replace,
+        "append" => zeph_config::ContextLayout::Append,
+        _ => zeph_config::ContextLayout::Auto,
+    };
     config.memory.context_strategy = match state.context_strategy.as_str() {
         "memory_first" => zeph_core::config::ContextStrategy::MemoryFirst,
         "adaptive" => zeph_core::config::ContextStrategy::Adaptive,

@@ -1,0 +1,118 @@
+---
+source: crates/zeph-llm/src/claude/prefix_tests.rs
+expression: "wire(\"claude-sonnet-4-6\")"
+---
+{
+  "model": "claude-sonnet-4-6",
+  "max_tokens": 4096,
+  "system": [
+    {
+      "type": "text",
+      "text": "system prompt\n\ninterior system"
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": "first question"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "thinking about first",
+          "signature": "sig-first"
+        },
+        {
+          "type": "tool_use",
+          "id": "t1",
+          "name": "lookup",
+          "input": {
+            "q": "first"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "t1",
+          "content": "result one"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "thinking about first answer",
+          "signature": "sig-first answer"
+        },
+        {
+          "type": "text",
+          "text": "first answer"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "second question"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "thinking about second",
+          "signature": "sig-second"
+        },
+        {
+          "type": "tool_use",
+          "id": "t2",
+          "name": "lookup",
+          "input": {
+            "q": "second"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "t2",
+          "content": "result two"
+        },
+        {
+          "type": "text",
+          "text": "<budget>3</budget>",
+          "cache_control": {
+            "type": "ephemeral"
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "lookup",
+      "description": "look something up",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string"
+          }
+        }
+      },
+      "cache_control": {
+        "type": "ephemeral"
+      }
+    }
+  ]
+}

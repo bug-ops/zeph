@@ -197,6 +197,11 @@ impl TokenCounter {
             // Runtime note rides on the tail tool-result message as an extra text block.
             MessagePart::RuntimeNote { text } => RUNTIME_NOTE_OVERHEAD + self.count_tokens(text),
 
+            // Per-turn context rides on the turn input as extra text blocks.
+            MessagePart::TurnContext(block) => {
+                RUNTIME_NOTE_OVERHEAD + self.count_tokens(&block.text)
+            }
+
             // Forward-compatibility: unknown future variants have no known token count.
             _ => 0,
         }
@@ -572,6 +577,31 @@ mod tests {
         assert_eq!(
             counter.count_message_tokens(&msg),
             before + RUNTIME_NOTE_OVERHEAD + counter.count_tokens(text)
+        );
+    }
+
+    #[test]
+    fn turn_context_part_counts_overhead_plus_text_tokens() {
+        use zeph_llm::provider::{TurnContextBlock, TurnContextKind, TurnContextTrust};
+
+        let counter = TokenCounter::new();
+        let text = "[semantic recall]\n- [user] remembered fact\n";
+        let block = TurnContextBlock {
+            kind: TurnContextKind::Retrieved,
+            trust: TurnContextTrust::ExternalUntrusted,
+            text: text.into(),
+            keys: vec![],
+        };
+        let msg = Message::from_parts(
+            Role::User,
+            vec![
+                MessagePart::TurnContext(block),
+                MessagePart::Text { text: "hi".into() },
+            ],
+        );
+        assert_eq!(
+            counter.count_message_tokens(&msg),
+            RUNTIME_NOTE_OVERHEAD + counter.count_tokens(text) + counter.count_tokens("hi")
         );
     }
 }

@@ -35,7 +35,7 @@ impl<C: Channel> Agent<C> {
         );
         match tokio::time::timeout(
             timeout_dur,
-            provider.chat_typed_erased::<zeph_memory::StructuredSummary>(chat_messages),
+            provider.chat_typed::<zeph_memory::StructuredSummary>(chat_messages),
         )
         .await
         {

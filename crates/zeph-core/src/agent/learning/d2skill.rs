@@ -4,7 +4,7 @@
 use super::super::{Agent, Channel};
 use super::super::{Message, Role};
 use super::background::StemTaskArgs;
-use zeph_llm::provider::MessageMetadata;
+use zeph_llm::provider::{LlmProvider as _, MessageMetadata};
 
 impl<C: Channel> Agent<C> {
     /// Fire-and-forget `D2Skill` correction extraction.
@@ -47,7 +47,7 @@ impl<C: Channel> Agent<C> {
                 metadata: MessageMetadata::default(),
             }];
             let result = match provider
-                .chat_typed_erased::<zeph_skills::evolution::CorrectionExtractionResult>(&messages)
+                .chat_typed::<zeph_skills::evolution::CorrectionExtractionResult>(&messages)
                 .await
             {
                 Ok(r) => r,

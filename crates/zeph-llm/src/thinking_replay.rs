@@ -26,16 +26,66 @@ pub enum ThinkingReplay {
     /// Every thinking block was accepted, or the model does not run the check.
     #[default]
     Intact,
-    /// Thinking was dropped starting at this index of the request's `messages` array.
+    /// Thinking was dropped starting at this index of the `messages` slice passed to the provider.
     ///
-    /// The index is in the wire `messages[]` space (system messages hoisted out, hidden
-    /// messages filtered, adjacent same-role messages coalesced), which is never greater than
-    /// the corresponding history index. Stripping thinking from this index onward therefore
-    /// covers at least the dropped blocks.
+    /// Providers translate the wire `messages[]` position they dropped from back to the index
+    /// of the history message that produced it (hidden messages filtered, system messages
+    /// hoisted, adjacent same-role messages coalesced), so stripping thinking from this index
+    /// onward covers the dropped blocks.
     Dropped {
-        /// First wire-message index whose thinking was dropped.
+        /// First history-message index whose thinking was dropped.
         first_message_index: usize,
     },
+}
+
+impl ThinkingReplay {
+    /// Combine two reports of the same request: the lower dropped index wins.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::ThinkingReplay::{Dropped, Intact};
+    ///
+    /// assert_eq!(Intact.merge(Intact), Intact);
+    /// assert_eq!(
+    ///     Intact.merge(Dropped { first_message_index: 4 }),
+    ///     Dropped { first_message_index: 4 }
+    /// );
+    /// assert_eq!(
+    ///     Dropped { first_message_index: 7 }.merge(Dropped { first_message_index: 2 }),
+    ///     Dropped { first_message_index: 2 }
+    /// );
+    /// ```
+    #[must_use]
+    pub fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Intact, o) | (o, Self::Intact) => o,
+            (
+                Self::Dropped {
+                    first_message_index: a,
+                },
+                Self::Dropped {
+                    first_message_index: b,
+                },
+            ) => Self::Dropped {
+                first_message_index: a.min(b),
+            },
+        }
+    }
+
+    /// Rewrite the dropped index with `f`, e.g. to translate a wire position into a history
+    /// index. [`Intact`](Self::Intact) is returned unchanged.
+    #[must_use]
+    pub fn map_index(self, f: impl FnOnce(usize) -> usize) -> Self {
+        match self {
+            Self::Intact => Self::Intact,
+            Self::Dropped {
+                first_message_index,
+            } => Self::Dropped {
+                first_message_index: f(first_message_index),
+            },
+        }
+    }
 }
 
 /// Why the provider dropped a thinking block.

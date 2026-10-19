@@ -19,6 +19,10 @@ pub(super) const ANTHROPIC_BETA_THINKING_BINDING: &str = "thinking-binding-contr
 /// Marker of the 400 returned when a thinking block's prefix binding no longer matches.
 const BINDING_MISMATCH_MARKER: &str = "bound to a different conversation";
 
+/// Lowercased fragments that must all occur in the 400 for a `role: "system"` message inside
+/// `messages[]`.
+const MID_SYSTEM_MARKERS: [&str; 3] = ["role", "system", "not supported"];
+
 /// A beta that the provider can switch off at runtime when the API (or a proxy) rejects it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BetaFeature {
@@ -53,6 +57,8 @@ impl BetaFeature {
 pub(super) struct BetaLatches {
     compact: AtomicBool,
     thinking_binding: AtomicBool,
+    /// The API answered 400 to a `role: "system"` message inside `messages[]`.
+    mid_conversation_system: AtomicBool,
 }
 
 impl BetaLatches {
@@ -71,6 +77,26 @@ impl BetaLatches {
     pub(super) fn reject(&self, feature: BetaFeature) -> bool {
         !self.flag(feature).swap(true, Ordering::Relaxed)
     }
+
+    pub(super) fn mid_conversation_system_rejected(&self) -> bool {
+        self.mid_conversation_system.load(Ordering::Relaxed)
+    }
+
+    /// Latch mid-conversation system messages as unsupported. Returns `true` only for the call
+    /// that flipped it.
+    pub(super) fn reject_mid_conversation_system(&self) -> bool {
+        !self.mid_conversation_system.swap(true, Ordering::Relaxed)
+    }
+}
+
+/// Whether a 400 body reports that a `role: "system"` message inside `messages[]` is not
+/// supported.
+pub(super) fn is_mid_conversation_system_rejection(status: StatusCode, body: &str) -> bool {
+    if status != StatusCode::BAD_REQUEST {
+        return false;
+    }
+    let lower = body.to_ascii_lowercase();
+    MID_SYSTEM_MARKERS.iter().all(|m| lower.contains(m))
 }
 
 /// Whether a 400 body reports a thinking block bound to a different conversation prefix.
@@ -191,6 +217,27 @@ mod tests {
                 "{unrelated}"
             );
         }
+    }
+
+    #[test]
+    fn mid_conversation_system_rejection_detection() {
+        let status = StatusCode::BAD_REQUEST;
+        let body =
+            r#"{"error":{"message":"messages.3: role 'system' is not supported for this model"}}"#;
+        assert!(is_mid_conversation_system_rejection(status, body));
+        assert!(!is_mid_conversation_system_rejection(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            body
+        ));
+        assert!(!is_mid_conversation_system_rejection(
+            status,
+            "temperature: not supported"
+        ));
+        let latches = BetaLatches::default();
+        assert!(!latches.mid_conversation_system_rejected());
+        assert!(latches.reject_mid_conversation_system());
+        assert!(!latches.reject_mid_conversation_system());
+        assert!(latches.mid_conversation_system_rejected());
     }
 
     #[test]

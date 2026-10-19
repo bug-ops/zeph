@@ -300,6 +300,18 @@ impl Config {
                 self.memory.hard_compaction_threshold
             )));
         }
+        let turn_ratio = self.memory.turn_context_budget_ratio;
+        if !turn_ratio.is_finite() || turn_ratio <= 0.0 || turn_ratio > 0.25 {
+            return Err(ConfigError::Validation(format!(
+                "turn_context_budget_ratio must be in (0.0, 0.25], got {turn_ratio}"
+            )));
+        }
+        let watermark = self.memory.history_trim_watermark;
+        if !watermark.is_finite() || watermark <= 0.0 || watermark > 1.0 {
+            return Err(ConfigError::Validation(format!(
+                "history_trim_watermark must be in (0.0, 1.0], got {watermark}"
+            )));
+        }
         if self.memory.soft_compaction_threshold >= self.memory.hard_compaction_threshold {
             return Err(ConfigError::Validation(format!(
                 "soft_compaction_threshold ({}) must be less than hard_compaction_threshold ({})",
@@ -1615,6 +1627,32 @@ weight = 0.3
             err.contains("elevated_at") && err.contains("high_at"),
             "expected trajectory threshold-ordering error, got: {err}"
         );
+    }
+
+    #[test]
+    fn validate_rejects_out_of_range_turn_context_budget_ratio() {
+        for bad in [0.0, -0.1, 0.26, f32::NAN] {
+            let mut cfg = Config::default();
+            cfg.memory.turn_context_budget_ratio = bad;
+            let err = cfg.validate().unwrap_err().to_string();
+            assert!(err.contains("turn_context_budget_ratio"), "got: {err}");
+        }
+        let mut cfg = Config::default();
+        cfg.memory.turn_context_budget_ratio = 0.25;
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_out_of_range_history_trim_watermark() {
+        for bad in [0.0, 1.01, f32::INFINITY] {
+            let mut cfg = Config::default();
+            cfg.memory.history_trim_watermark = bad;
+            let err = cfg.validate().unwrap_err().to_string();
+            assert!(err.contains("history_trim_watermark"), "got: {err}");
+        }
+        let mut cfg = Config::default();
+        cfg.memory.history_trim_watermark = 1.0;
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

@@ -209,6 +209,7 @@ fn part_text_mut(part: &mut MessagePart) -> Option<&mut String> {
         MessagePart::ToolOutput { body, .. } => Some(body),
         MessagePart::ToolResult { content, .. } => Some(content),
         MessagePart::Compaction { summary } => Some(summary),
+        MessagePart::TurnContext(block) => Some(&mut block.text),
         _ => None,
     }
 }
@@ -225,6 +226,7 @@ fn part_text_ref(part: &MessagePart) -> Option<&str> {
         MessagePart::ToolOutput { body, .. } => Some(body.as_str()),
         MessagePart::ToolResult { content, .. } => Some(content.as_str()),
         MessagePart::Compaction { summary } => Some(summary.as_str()),
+        MessagePart::TurnContext(block) => Some(block.text.as_str()),
         _ => None,
     }
 }
@@ -259,6 +261,20 @@ impl LlmProvider for MaskedProvider {
         let masked = self.mask_messages(messages);
         LlmProviderDyn::chat_stream(self.inner.as_ref(), masked.as_deref().unwrap_or(messages))
             .await
+    }
+
+    #[tracing::instrument(name = "llm.masked.chat_typed", skip_all)]
+    async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
+    where
+        T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
+        Self: Sized,
+    {
+        let masked = self.mask_messages(messages);
+        LlmProviderDyn::chat_typed_boxed::<T>(
+            self.inner.as_ref(),
+            masked.as_deref().unwrap_or(messages),
+        )
+        .await
     }
 
     fn supports_streaming(&self) -> bool {
@@ -331,6 +347,10 @@ impl LlmProvider for MaskedProvider {
         LlmProvider::thinking_binding(self.inner.as_ref())
     }
 
+    fn prefix_cache(&self) -> crate::provider::PrefixCache {
+        LlmProvider::prefix_cache(self.inner.as_ref())
+    }
+
     fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {
         LlmProvider::last_auxiliary_usage(self.inner.as_ref())
     }
@@ -397,6 +417,28 @@ mod tests {
         let sent = recorded.lock().unwrap();
         assert!(!sent[0][0].content.contains("SECRET_VALUE"));
         assert!(sent[0][0].content.contains("<MASKED>"));
+    }
+
+    #[tokio::test]
+    async fn chat_masks_turn_context_text() {
+        use crate::provider::{MessagePart, TurnContextBlock, TurnContextKind, TurnContextTrust};
+
+        let (mock, recorded) = MockProvider::with_responses(vec!["ok".into()]).with_recording();
+        let mp = masked(AnyProvider::Mock(mock));
+        let messages = vec![Message::from_parts(
+            Role::User,
+            vec![MessagePart::TurnContext(TurnContextBlock {
+                kind: TurnContextKind::Retrieved,
+                trust: TurnContextTrust::ExternalUntrusted,
+                text: "recalled SECRET_VALUE".into(),
+                keys: vec![],
+            })],
+        )];
+        LlmProvider::chat(&mp, &messages).await.unwrap();
+        let sent = recorded.lock().unwrap();
+        let rendered = sent[0][0].to_request_text();
+        assert!(!rendered.contains("SECRET_VALUE"));
+        assert!(rendered.contains("<MASKED>"));
     }
 
     #[tokio::test]

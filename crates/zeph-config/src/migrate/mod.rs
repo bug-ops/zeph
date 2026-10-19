@@ -62,14 +62,14 @@ pub use mcp::{
 };
 pub use memory::{
     migrate_fidelity_timeout_defaults, migrate_focus_auto_consolidate_min_window,
-    migrate_forgetting_config, migrate_memory_consent_gate_config, migrate_memory_graph_config,
-    migrate_memory_graph_recall_include_imported, migrate_memory_hebbian_config,
-    migrate_memory_hebbian_consolidation_config, migrate_memory_hebbian_spread_config,
-    migrate_memory_persona_config, migrate_memory_reasoning_config,
-    migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
-    migrate_memory_retrieval_query_bias, migrate_memory_store_config,
-    migrate_memory_store_max_namespace_rows, migrate_memory_type_aware_compose_config,
-    migrate_qdrant_api_key, migrate_qdrant_timeout_secs,
+    migrate_forgetting_config, migrate_memory_consent_gate_config, migrate_memory_context_layout,
+    migrate_memory_graph_config, migrate_memory_graph_recall_include_imported,
+    migrate_memory_hebbian_config, migrate_memory_hebbian_consolidation_config,
+    migrate_memory_hebbian_spread_config, migrate_memory_persona_config,
+    migrate_memory_reasoning_config, migrate_memory_reasoning_judge_config,
+    migrate_memory_retrieval_config, migrate_memory_retrieval_query_bias,
+    migrate_memory_store_config, migrate_memory_store_max_namespace_rows,
+    migrate_memory_type_aware_compose_config, migrate_qdrant_api_key, migrate_qdrant_timeout_secs,
 };
 pub use plugins::migrate_plugins_reputation_config;
 pub use serve::migrate_serve_config;
@@ -665,8 +665,8 @@ use steps::{
     MigrateHooksTurnComplete, MigrateIntegrityConfig, MigrateKnowledgeConfig,
     MigrateLlmStreamLimits, MigrateMagicDocsConfig, MigrateMcpElicitationConfig,
     MigrateMcpMaxConnectAttempts, MigrateMcpMediaConfig, MigrateMcpRetryAndToolTimeout,
-    MigrateMcpTrustLevels, MigrateMemoryConsentGateConfig, MigrateMemoryGraph,
-    MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
+    MigrateMcpTrustLevels, MigrateMemoryConsentGateConfig, MigrateMemoryContextLayout,
+    MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
     MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
     MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
     MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig, MigrateMemoryStoreMaxNamespaceRows,
@@ -924,6 +924,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 110 — add a server_compaction_trigger_tokens hint to Claude provider
             // entries with server_compaction = true (#6825)
             Box::new(MigrateClaudeCompactionTrigger),
+            // Step 111 — add a [memory] context_layout advisory block (spec 088, #6846)
+            Box::new(MigrateMemoryContextLayout),
         ]
     });
 

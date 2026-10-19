@@ -1039,7 +1039,7 @@ impl LlmProvider for OpenAiProvider {
 
     async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
     where
-        T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
+        T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
         Self: Sized,
     {
         let (raw_schema, _) = crate::provider::cached_schema::<T>()?;
@@ -1292,7 +1292,7 @@ impl OpenAiProvider {
     /// Returns [`LlmError::StructuredParse`] if schema extraction or serialisation fails.
     pub(crate) fn build_typed_chat_body<T>(&self, messages: &[Message]) -> Result<Vec<u8>, LlmError>
     where
-        T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
+        T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
     {
         let (raw_schema, _) = crate::provider::cached_schema::<T>()?;
         let mut schema_value = raw_schema;
@@ -1377,12 +1377,7 @@ fn convert_messages_vision<'a>(messages: impl Into<AgentVisible<'a>>) -> Vec<Vis
             let has_images = msg.parts.iter().any(|p| matches!(p, MessagePart::Image(_)));
             if has_images {
                 let mut parts = Vec::new();
-                let text_str: String = msg
-                    .parts
-                    .iter()
-                    .filter_map(MessagePart::as_plain_text)
-                    .collect::<Vec<_>>()
-                    .join("");
+                let text_str = msg.plain_text_with_turn_context();
                 if !text_str.is_empty() {
                     parts.push(OpenAiContentPart::Text { text: text_str });
                 }
@@ -1762,7 +1757,7 @@ fn convert_messages_structured<'a>(
             };
             result.push(StructuredApiMessage {
                 role: role.to_owned(),
-                content: Some(msg.to_llm_content().to_owned()),
+                content: Some(msg.to_request_text().into_owned()),
                 tool_calls: None,
                 tool_call_id: None,
             });

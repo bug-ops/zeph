@@ -285,6 +285,11 @@ where
         config.memory.context_strategy,
         config.memory.crossover_turn_threshold,
     )
+    .with_context_layout(
+        config.memory.context_layout,
+        config.memory.turn_context_budget_ratio,
+        config.memory.history_trim_watermark,
+    )
     .with_retrieval_config(config.memory.retrieval.context_format)
     .with_tiered_retrieval_providers(
         config.memory.tiered_retrieval.clone(),

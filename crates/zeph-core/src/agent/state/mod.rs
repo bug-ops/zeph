@@ -1209,9 +1209,29 @@ pub(crate) struct MessageState {
     /// [`MessageState::recompute_non_system_count`] after a batch mutation (O(n), but never on
     /// the `/history` read path this field exists to speed up).
     pub(crate) non_system_count: usize,
+    /// Pinned context layout, frozen-prompt key and scrub marker of the current conversation
+    /// (spec 088). Reset by `/clear` and `/new`.
+    pub(crate) layout: crate::agent::context::LayoutState,
+    /// Per-turn context for the turn input currently being built (`append` layout).
+    ///
+    /// Filled by `rebuild_system_prompt` (directives) and `prepare_context` (retrieved), consumed
+    /// by `build_user_message`.
+    pub(crate) pending_preamble: zeph_agent_context::state::TurnPreamble,
 }
 
 impl MessageState {
+    /// Write the per-request policy into `messages[0].metadata` right before a provider call.
+    ///
+    /// `None` restores the provider's default behavior (`replace` layout).
+    pub(crate) fn stamp_request_policy(
+        &mut self,
+        policy: Option<zeph_llm::provider::RequestPolicy>,
+    ) {
+        if let Some(head) = self.messages.first_mut() {
+            head.metadata.request_policy = policy;
+        }
+    }
+
     /// O(1) count of non-system messages — see [`Self::non_system_count`].
     pub(crate) fn non_system_len(&self) -> usize {
         self.non_system_count

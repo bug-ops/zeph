@@ -693,4 +693,38 @@ mod tests {
             );
         }
     }
+
+    /// `zeph_llm::provider::TurnContextTrust` mirrors `ContentTrustLevel` (zeph-llm cannot depend
+    /// on this crate), so the two must agree on every discriminant.
+    #[test]
+    fn turn_context_trust_mirrors_content_trust_level() {
+        use zeph_llm::provider::TurnContextTrust;
+
+        let pairs = [
+            (ContentTrustLevel::Trusted, TurnContextTrust::Trusted),
+            (
+                ContentTrustLevel::LocalUntrusted,
+                TurnContextTrust::LocalUntrusted,
+            ),
+            (
+                ContentTrustLevel::ExternalUntrusted,
+                TurnContextTrust::ExternalUntrusted,
+            ),
+        ];
+        for (level, mirror) in pairs {
+            assert_eq!(level as u8, mirror.as_u8(), "{level:?}");
+            assert_eq!(TurnContextTrust::from_u8_or_untrusted(level as u8), mirror);
+        }
+        // Exhaustive over the source enum: a new variant fails to compile here until mirrored.
+        let _ = |level: ContentTrustLevel| match level {
+            ContentTrustLevel::Trusted
+            | ContentTrustLevel::LocalUntrusted
+            | ContentTrustLevel::ExternalUntrusted => (),
+        };
+        assert_eq!(
+            TurnContextTrust::from_u8_or_untrusted(u8::MAX),
+            TurnContextTrust::ExternalUntrusted,
+            "unknown levels fail closed"
+        );
+    }
 }

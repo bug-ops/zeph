@@ -565,7 +565,7 @@ async fn score_case_with_provider(
     let start = std::time::Instant::now();
     let output: JudgeOutput = match tokio::time::timeout(
         std::time::Duration::from_secs(timeout_secs),
-        judge.chat_typed_erased(&messages),
+        judge.chat_typed(&messages),
     )
     .await
     {

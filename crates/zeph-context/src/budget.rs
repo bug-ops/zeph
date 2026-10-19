@@ -10,6 +10,31 @@
 
 use zeph_common::memory::TokenCounting;
 
+/// How a turn's memory slots are sized relative to history.
+///
+/// `Replace` is the legacy split. `Append` (the `append` context layout) caps the per-turn
+/// memory slots at `turn_cap` tokens because the injected context stays in history, and hands
+/// every remaining token to `recent_history`.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_context::budget::AllocationMode;
+///
+/// assert_eq!(AllocationMode::default(), AllocationMode::Replace);
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AllocationMode {
+    /// Legacy percentage split of the available tokens.
+    #[default]
+    Replace,
+    /// Per-turn memory slots share `turn_cap` tokens; history gets the rest.
+    Append {
+        /// Token cap for all per-turn memory slots together.
+        turn_cap: usize,
+    },
+}
+
 /// Per-slot token budget produced by [`ContextBudget::allocate`].
 ///
 /// All fields are in tokens. Zero means the slot is disabled or budget-exhausted for this turn.
@@ -184,11 +209,6 @@ impl ContextBudget {
     /// assert_eq!(alloc.recent_history, 0);
     /// ```
     #[must_use]
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
-    )]
     pub fn allocate_with_opts(
         &self,
         system_prompt: &str,
@@ -197,6 +217,54 @@ impl ContextBudget {
         graph_enabled: bool,
         digest_tokens: usize,
         memory_first: bool,
+    ) -> BudgetAllocation {
+        self.allocate_with_mode(
+            system_prompt,
+            skills_prompt,
+            tc,
+            graph_enabled,
+            digest_tokens,
+            memory_first,
+            AllocationMode::Replace,
+        )
+    }
+
+    /// Like [`allocate_with_opts`](Self::allocate_with_opts) with an explicit [`AllocationMode`].
+    ///
+    /// `MemoryFirst` ignores `mode`: it drains history every turn and always uses the legacy
+    /// split.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use zeph_context::budget::{AllocationMode, ContextBudget};
+    /// # struct Tc;
+    /// # impl zeph_common::memory::TokenCounting for Tc {
+    /// #     fn count_tokens(&self, t: &str) -> usize { t.split_whitespace().count() }
+    /// #     fn count_tool_schema_tokens(&self, v: &serde_json::Value) -> usize { v.to_string().len() }
+    /// # }
+    /// let budget = ContextBudget::new(100_000, 0.15);
+    /// let alloc = budget.allocate_with_mode(
+    ///     "", "", &Tc, false, 0, false, AllocationMode::Append { turn_cap: 5_000 },
+    /// );
+    /// assert!(alloc.summaries + alloc.semantic_recall + alloc.cross_session + alloc.code_context <= 5_000);
+    /// ```
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::too_many_arguments
+    )]
+    pub fn allocate_with_mode(
+        &self,
+        system_prompt: &str,
+        skills_prompt: &str,
+        tc: &dyn TokenCounting,
+        graph_enabled: bool,
+        digest_tokens: usize,
+        memory_first: bool,
+        mode: AllocationMode,
     ) -> BudgetAllocation {
         if self.max_tokens == 0 {
             return BudgetAllocation {
@@ -247,6 +315,24 @@ impl ContextBudget {
                         0,
                     )
                 }
+            } else if let AllocationMode::Append { turn_cap } = mode {
+                // Both legacy memory splits sum to 50 weight points; the cap is shared in
+                // the same proportions and history keeps everything else.
+                let cap = turn_cap.min(available);
+                let (w_sum, w_rec, w_cross, w_code, w_graph) = if graph_enabled {
+                    (7, 7, 3, 29, 4)
+                } else {
+                    (8, 8, 4, 30, 0)
+                };
+                let share = |w: usize| cap * w / 50;
+                (
+                    share(w_sum),
+                    share(w_rec),
+                    share(w_cross),
+                    share(w_code),
+                    share(w_graph),
+                    available - cap,
+                )
             } else if graph_enabled {
                 // When graph is enabled: take 4% for graph facts, reduce other slices by 1% each.
                 (
@@ -347,6 +433,65 @@ mod tests {
         assert!(alloc.graph_facts > 0);
         assert_eq!(alloc.summaries, (8_000_f32 * 0.07) as usize);
         assert_eq!(alloc.graph_facts, (8_000_f32 * 0.04) as usize);
+    }
+
+    #[test]
+    fn append_mode_caps_memory_slots_and_gives_history_the_rest() {
+        let tc = NaiveTc;
+        let budget = ContextBudget::new(10_000, 0.20).with_graph_enabled(true);
+        let alloc = budget.allocate_with_mode(
+            "",
+            "",
+            &tc,
+            true,
+            0,
+            false,
+            AllocationMode::Append { turn_cap: 500 },
+        );
+        let memory = alloc.summaries
+            + alloc.semantic_recall
+            + alloc.cross_session
+            + alloc.code_context
+            + alloc.graph_facts;
+        assert!(memory <= 500, "memory slots {memory} exceed the cap");
+        assert!(memory >= 490, "split should use almost the whole cap");
+        assert_eq!(alloc.recent_history, 8_000 - 500);
+        assert_eq!(alloc.code_context, 500 * 29 / 50);
+    }
+
+    #[test]
+    fn append_mode_cap_is_clamped_to_available_tokens() {
+        let tc = NaiveTc;
+        let budget = ContextBudget::new(1_000, 0.20);
+        let alloc = budget.allocate_with_mode(
+            "",
+            "",
+            &tc,
+            false,
+            0,
+            false,
+            AllocationMode::Append { turn_cap: 50_000 },
+        );
+        assert_eq!(alloc.recent_history, 0);
+        assert!(alloc.code_context <= 800);
+    }
+
+    #[test]
+    fn append_mode_is_ignored_by_memory_first() {
+        let tc = NaiveTc;
+        let budget = ContextBudget::new(10_000, 0.20);
+        let legacy = budget.allocate_with_opts("", "", &tc, false, 0, true);
+        let append = budget.allocate_with_mode(
+            "",
+            "",
+            &tc,
+            false,
+            0,
+            true,
+            AllocationMode::Append { turn_cap: 100 },
+        );
+        assert_eq!(legacy.summaries, append.summaries);
+        assert_eq!(append.recent_history, 0);
     }
 
     #[test]

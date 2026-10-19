@@ -544,7 +544,7 @@ impl ToolApiResponse {
 
 #[derive(Deserialize, Debug)]
 #[allow(clippy::struct_field_names)]
-pub(super) struct ApiUsage {
+pub(crate) struct ApiUsage {
     #[serde(default)]
     pub input_tokens: u64,
     #[serde(default)]
@@ -561,7 +561,7 @@ pub(super) struct ApiUsage {
 
 /// One entry of `usage.iterations`.
 #[derive(Deserialize, Debug, Clone)]
-pub(super) struct UsageIteration {
+pub(crate) struct UsageIteration {
     #[serde(rename = "type", default)]
     pub kind: IterationKind,
     #[serde(default, rename = "input_tokens")]
@@ -577,7 +577,7 @@ pub(super) struct UsageIteration {
 /// Kind of a usage iteration. Only compaction iterations bill outside the top-level counters.
 #[derive(Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum IterationKind {
+pub(crate) enum IterationKind {
     #[default]
     Message,
     Compaction,
@@ -610,6 +610,54 @@ impl ApiUsage {
             }
         }
         total
+    }
+}
+
+/// Usage as carried by streaming events.
+///
+/// `message_start` reports the input side and `message_delta` the final output side (and, on
+/// newer API versions, the rest too), so every counter is optional and a later event only
+/// overrides what it actually reports.
+#[derive(Deserialize, Debug, Default, Clone)]
+pub(crate) struct StreamUsage {
+    #[serde(default)]
+    input_tokens: Option<u64>,
+    #[serde(default)]
+    output_tokens: Option<u64>,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u64>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u64>,
+    #[serde(default)]
+    iterations: Vec<UsageIteration>,
+}
+
+impl StreamUsage {
+    /// Fold a later event's usage in: reported counters replace earlier ones, a non-empty
+    /// `iterations` list replaces the earlier list.
+    pub(crate) fn merge(&mut self, later: Self) {
+        self.input_tokens = later.input_tokens.or(self.input_tokens);
+        self.output_tokens = later.output_tokens.or(self.output_tokens);
+        self.cache_creation_input_tokens = later
+            .cache_creation_input_tokens
+            .or(self.cache_creation_input_tokens);
+        self.cache_read_input_tokens = later
+            .cache_read_input_tokens
+            .or(self.cache_read_input_tokens);
+        if !later.iterations.is_empty() {
+            self.iterations = later.iterations;
+        }
+    }
+
+    /// The merged counters as the non-streaming usage shape, unreported counters as zero.
+    pub(crate) fn to_api_usage(&self) -> ApiUsage {
+        ApiUsage {
+            input_tokens: self.input_tokens.unwrap_or_default(),
+            output_tokens: self.output_tokens.unwrap_or_default(),
+            cache_creation_input_tokens: self.cache_creation_input_tokens.unwrap_or_default(),
+            cache_read_input_tokens: self.cache_read_input_tokens.unwrap_or_default(),
+            iterations: self.iterations.clone(),
+        }
     }
 }
 

@@ -383,7 +383,7 @@ pub async fn generate_probe_questions(
     }];
 
     let mut output: ProbeQuestionsOutput = provider
-        .chat_typed_erased::<ProbeQuestionsOutput>(&msgs)
+        .chat_typed::<ProbeQuestionsOutput>(&msgs)
         .await
         .map_err(MemoryError::Llm)?;
 
@@ -429,7 +429,7 @@ pub async fn answer_probe_questions(
     }];
 
     let output: ProbeAnswersOutput = provider
-        .chat_typed_erased::<ProbeAnswersOutput>(&msgs)
+        .chat_typed::<ProbeAnswersOutput>(&msgs)
         .await
         .map_err(MemoryError::Llm)?;
 

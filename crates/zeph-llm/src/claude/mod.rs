@@ -40,8 +40,13 @@
 
 mod beta;
 mod cache;
+mod guard;
 mod model;
+#[cfg(test)]
+mod prefix_tests;
 mod request;
+#[cfg(test)]
+mod stream_usage_tests;
 mod structured;
 #[cfg(test)]
 mod tests;
@@ -63,10 +68,16 @@ use crate::provider::{
 use crate::retry::send_with_retry;
 use crate::sse::claude_sse_to_stream;
 
-use self::beta::{BetaFeature, BetaLatches, claude_error, names_rejected_header};
+use self::beta::{
+    BetaFeature, BetaLatches, claude_error, is_mid_conversation_system_rejection,
+    names_rejected_header,
+};
 use self::cache::{build_cache_control, log_cache_usage, split_system_into_blocks, tool_cache_key};
+use self::guard::{PrefixGuard, WireFingerprint};
 use self::model::{CLAUDE_DEFAULT_WINDOW_CEILING, ClaudeModel, ModelCapabilities};
-use self::request::parse_tool_response;
+use self::request::{
+    DirectiveRendering, SplitHistory, SplitOptions, WireHistory, parse_tool_response,
+};
 use self::types::{
     AnthropicContentBlock, AnthropicTool, ApiMessage, BlockBinding, CompactTrigger, ContextEdit,
     ContextManagement, OutputConfig, OutputFormat, RequestBody, StructuredApiMessage,
@@ -112,7 +123,7 @@ pub struct ClaudeProvider {
     pub(crate) status_tx: Option<StatusTx>,
     /// Whether to attach `cache_control` to user messages in multi-turn conversations.
     cache_user_messages: bool,
-    usage: UsageTracker,
+    usage: Arc<UsageTracker>,
     /// Cached pre-serialized tool definitions. Keyed by hash of names+schemas; invalidated when the set changes.
     tool_cache: Mutex<Option<(u64, Vec<serde_json::Value>)>>,
     generation_overrides: Option<GenerationOverrides>,
@@ -144,6 +155,10 @@ pub struct ClaudeProvider {
     /// Messages API base URL. Always [`API_URL`] in production; overridable only under
     /// `#[cfg(test)]` via `with_api_url` so tests can point requests at a mock HTTP server.
     api_url: String,
+    /// Wire-prefix fingerprints of the last successful tool-path request per conversation.
+    /// Clones start empty, so a provider shared by several conversations keeps them apart by
+    /// [`crate::provider::ConversationKey`] while a subagent clone never inherits the parent's.
+    prefix_guard: PrefixGuard,
 }
 
 impl fmt::Debug for ClaudeProvider {
@@ -178,6 +193,7 @@ impl fmt::Debug for ClaudeProvider {
             )
             .field("provider_name", &self.provider_name)
             .field("api_url", &self.api_url)
+            .field("prefix_guard", &self.prefix_guard)
             .finish()
     }
 }
@@ -193,7 +209,7 @@ impl Clone for ClaudeProvider {
             thinking: self.thinking.clone(),
             status_tx: self.status_tx.clone(),
             cache_user_messages: self.cache_user_messages,
-            usage: UsageTracker::default(),
+            usage: Arc::new(UsageTracker::default()),
             tool_cache: Mutex::new(None),
             generation_overrides: self.generation_overrides.clone(),
             server_compaction: self.server_compaction,
@@ -208,6 +224,7 @@ impl Clone for ClaudeProvider {
             stream_limits: self.stream_limits.clone(),
             provider_name: self.provider_name.clone(),
             api_url: self.api_url.clone(),
+            prefix_guard: PrefixGuard::default(),
         }
     }
 }
@@ -276,7 +293,7 @@ fn stale_model_suggestion(model: &str) -> Option<&'static str> {
 /// #6155/#6156 (#6158).
 #[derive(serde::Serialize)]
 #[serde(transparent)]
-pub(in crate::claude) struct GatedStructuredHistory(Vec<StructuredApiMessage>);
+pub(in crate::claude) struct GatedStructuredHistory(WireHistory);
 
 /// Placeholder user turn prepended when a history would otherwise lead with a non-`user`
 /// role, which the Claude Messages API rejects.
@@ -285,18 +302,31 @@ pub(in crate::claude) const LEADING_USER_ANCHOR: &str = "[earlier conversation c
 impl GatedStructuredHistory {
     /// Guarantees the history is empty or leads with a `user` message. An anchor is
     /// inserted instead of dropping messages, so no tool pair or compaction block is severed.
-    fn new(mut chat: Vec<StructuredApiMessage>) -> Self {
-        if chat.first().is_some_and(|m| m.role != "user") {
+    fn new(mut wire: WireHistory) -> Self {
+        if wire.messages().first().is_some_and(|m| m.role != "user") {
             tracing::debug!("claude history led with a non-user turn; inserting user anchor");
-            chat.insert(
-                0,
-                StructuredApiMessage {
-                    role: "user".to_owned(),
-                    content: types::StructuredContent::Text(LEADING_USER_ANCHOR.to_owned()),
-                },
-            );
+            wire.insert_front_user(LEADING_USER_ANCHOR);
         }
-        Self(chat)
+        Self(wire)
+    }
+
+    /// The wire entries and their mapping back to source-history indices.
+    pub(in crate::claude) fn wire(&self) -> &WireHistory {
+        &self.0
+    }
+
+    /// Drop thinking from every `assistant` entry at or after `from`; see
+    /// [`WireHistory::drop_thinking_from`].
+    fn drop_thinking_from(&mut self, from: usize) -> bool {
+        self.0.drop_thinking_from(from)
+    }
+
+    /// Whether any wire entry is a mid-conversation `system` message.
+    fn has_mid_conversation_system(&self) -> bool {
+        self.0
+            .messages()
+            .iter()
+            .any(|m| m.role == request::WIRE_SYSTEM_ROLE)
     }
 }
 
@@ -327,6 +357,93 @@ impl<'m> GatedPlainHistory<'m> {
     }
 }
 
+pub(crate) use self::types::StreamUsage;
+
+/// Publish `usage` as the last response's usage: counters, cache counters and the compaction
+/// iterations billed on top of them.
+fn record_api_usage(tracker: &UsageTracker, usage: &types::ApiUsage) {
+    tracker.record_cache(
+        usage.cache_creation_input_tokens,
+        usage.cache_read_input_tokens,
+    );
+    tracker.record_usage(usage.input_tokens, usage.output_tokens);
+    tracker.record_auxiliary(usage.auxiliary());
+}
+
+/// Record the usage a streamed response has reported so far, after `message_start` and again
+/// after `message_delta`; the second call carries the final counters and `iterations`.
+#[tracing::instrument(name = "llm.claude.stream_usage", skip_all)]
+pub(crate) fn record_stream_usage(tracker: &UsageTracker, usage: &StreamUsage) {
+    let api = usage.to_api_usage();
+    log_cache_usage(&api);
+    record_api_usage(tracker, &api);
+}
+
+/// A tool-path wire history together with what the prefix guard decided about it.
+struct GuardedHistory {
+    system: Option<Vec<SystemContentBlock>>,
+    history: GatedStructuredHistory,
+    guard: GuardOutcome,
+}
+
+/// Result of the prefix guard for one request, applied once the API accepted the request.
+#[derive(Default)]
+struct GuardOutcome {
+    /// Fingerprint of the body actually sent; `None` when no [`RequestPolicy`] was stamped.
+    ///
+    /// [`RequestPolicy`]: crate::provider::RequestPolicy
+    pending: Option<(crate::provider::ConversationKey, WireFingerprint)>,
+    /// Thinking the guard removed from the wire, as a history index.
+    dropped: crate::ThinkingReplay,
+}
+
+impl GuardOutcome {
+    /// Remember the sent body as the latest successful request of its conversation.
+    fn commit(&self, guard: &PrefixGuard) {
+        if let Some((key, fingerprint)) = &self.pending {
+            guard.store(*key, fingerprint.clone());
+        }
+    }
+
+    /// The server's report (a wire index) in history space, combined with the guard's own drop.
+    fn merged_replay(
+        &self,
+        server: crate::ThinkingReplay,
+        wire: &WireHistory,
+    ) -> crate::ThinkingReplay {
+        server
+            .map_index(|wire_index| wire.history_index_of(wire_index))
+            .merge(self.dropped)
+    }
+}
+
+/// Translate the wire index of a streamed [`ToolSseEvent::ThinkingReplay`] into a history index
+/// and, when the guard dropped thinking itself, emit that first as a synthetic event; the
+/// consumer keeps the lowest index.
+///
+/// [`ToolSseEvent::ThinkingReplay`]: crate::sse::ToolSseEvent::ThinkingReplay
+fn translate_replay_events(
+    events: crate::sse::ToolSseStream,
+    history_indices: Vec<usize>,
+    guard_dropped: crate::ThinkingReplay,
+) -> crate::sse::ToolSseStream {
+    use crate::sse::ToolSseEvent;
+    use tokio_stream::StreamExt;
+
+    let translated = events.map(move |event| match event {
+        ToolSseEvent::ThinkingReplay(replay) => ToolSseEvent::ThinkingReplay(
+            replay.map_index(|i| history_indices.get(i).copied().unwrap_or(0)),
+        ),
+        other => other,
+    });
+    match guard_dropped {
+        crate::ThinkingReplay::Intact => Box::pin(translated),
+        dropped @ crate::ThinkingReplay::Dropped { .. } => {
+            Box::pin(tokio_stream::once(ToolSseEvent::ThinkingReplay(dropped)).chain(translated))
+        }
+    }
+}
+
 impl ClaudeProvider {
     const MAX_CACHE_CONTROL_BLOCKS: usize = 4;
 
@@ -354,7 +471,7 @@ impl ClaudeProvider {
             thinking: None,
             status_tx: None,
             cache_user_messages: true,
-            usage: UsageTracker::default(),
+            usage: Arc::new(UsageTracker::default()),
             tool_cache: Mutex::new(None),
             generation_overrides: None,
             forward_output_schema: false,
@@ -369,6 +486,7 @@ impl ClaudeProvider {
             stream_limits: zeph_config::StreamLimits::default(),
             provider_name: "claude".to_owned(),
             api_url: API_URL.to_owned(),
+            prefix_guard: PrefixGuard::default(),
         }
     }
 
@@ -991,13 +1109,7 @@ impl ClaudeProvider {
     }
 
     fn store_cache_usage(&self, usage: &types::ApiUsage) {
-        self.usage.record_cache(
-            usage.cache_creation_input_tokens,
-            usage.cache_read_input_tokens,
-        );
-        self.usage
-            .record_usage(usage.input_tokens, usage.output_tokens);
-        self.usage.record_auxiliary(usage.auxiliary());
+        record_api_usage(&self.usage, usage);
     }
 
     fn has_image_parts(messages: &[Message]) -> bool {
@@ -1009,7 +1121,7 @@ impl ClaudeProvider {
     fn cap_block_cache_controls(
         tool_blocks: usize,
         system_blocks: Option<&[SystemContentBlock]>,
-        chat_messages: Option<&mut Vec<StructuredApiMessage>>,
+        chat_messages: Option<&mut [StructuredApiMessage]>,
     ) {
         let tagged_blocks = tool_blocks
             + system_blocks.map_or(0, |system| {
@@ -1028,12 +1140,12 @@ impl ClaudeProvider {
         Self::retain_last_message_cache_controls(chat_messages, remaining);
     }
 
-    fn clear_message_cache_controls(chat_messages: Option<&mut Vec<StructuredApiMessage>>) {
+    fn clear_message_cache_controls(chat_messages: Option<&mut [StructuredApiMessage]>) {
         Self::retain_last_message_cache_controls(chat_messages, 0);
     }
 
     fn retain_last_message_cache_controls(
-        chat_messages: Option<&mut Vec<StructuredApiMessage>>,
+        chat_messages: Option<&mut [StructuredApiMessage]>,
         keep: usize,
     ) {
         let mut seen = 0usize;
@@ -1084,15 +1196,9 @@ impl ClaudeProvider {
 
     /// Strip trailing assistant messages from a structured chat history when [`Self::no_prefill`]
     /// requires the request to end on a non-assistant turn.
-    fn strip_trailing_assistant_structured(
-        no_prefill: bool,
-        chat_messages: &mut Vec<StructuredApiMessage>,
-    ) {
-        if !no_prefill {
-            return;
-        }
-        while chat_messages.last().is_some_and(|m| m.role == "assistant") {
-            chat_messages.pop();
+    fn strip_trailing_assistant_structured(no_prefill: bool, wire: &mut WireHistory) {
+        if no_prefill {
+            wire.strip_trailing_assistant();
         }
     }
 
@@ -1124,32 +1230,132 @@ impl ClaudeProvider {
         messages: &[Message],
         thinking_param: Option<&types::ThinkingParam>,
         cache_tool_blocks: usize,
+        directives: DirectiveRendering,
     ) -> (Option<Vec<SystemContentBlock>>, GatedStructuredHistory) {
-        use self::request::{ThinkingScope, split_messages_structured_scoped};
+        use self::request::split_messages_structured_scoped;
+        use crate::provider::ThinkingScope;
 
-        let thinking_scope = if self.capabilities().preserved_thinking {
-            ThinkingScope::CurrentTurn
-        } else {
-            ThinkingScope::Verbatim
+        let thinking_scope = match Self::request_policy(messages) {
+            Some(policy) => policy.thinking,
+            None if self.capabilities().preserved_thinking => ThinkingScope::CurrentTurn,
+            None => ThinkingScope::Verbatim,
         };
-        let (system, mut chat_messages) = split_messages_structured_scoped(
+        let SplitHistory { system, mut wire } = split_messages_structured_scoped(
             messages,
-            self.cache_user_messages,
-            self.prompt_cache_ttl,
-            thinking_scope,
+            SplitOptions {
+                cache_user_messages: self.cache_user_messages,
+                ttl: self.prompt_cache_ttl,
+                thinking_scope,
+                directives,
+            },
         );
         let system_blocks =
             system.map(|s| split_system_into_blocks(&s, &self.model, self.prompt_cache_ttl));
         Self::cap_block_cache_controls(
             cache_tool_blocks,
             system_blocks.as_deref(),
-            Some(&mut chat_messages),
+            Some(wire.messages_mut()),
         );
-        Self::strip_trailing_assistant_structured(
-            self.no_prefill(thinking_param),
-            &mut chat_messages,
-        );
-        (system_blocks, GatedStructuredHistory::new(chat_messages))
+        Self::strip_trailing_assistant_structured(self.no_prefill(thinking_param), &mut wire);
+        (system_blocks, GatedStructuredHistory::new(wire))
+    }
+
+    /// The policy the agent stamped on `messages[0]` for this request, if any.
+    fn request_policy(messages: &[Message]) -> Option<crate::provider::RequestPolicy> {
+        messages.first().and_then(|m| m.metadata.request_policy)
+    }
+
+    /// How directives are placed on the tool-path wire: as a mid-conversation system message
+    /// when the model accepts it and the API has not rejected it yet, as user text otherwise.
+    fn directive_rendering(&self) -> DirectiveRendering {
+        if self.capabilities().mid_conversation_system
+            && !self.beta_latches.mid_conversation_system_rejected()
+        {
+            DirectiveRendering::SystemMessage
+        } else {
+            DirectiveRendering::UserText
+        }
+    }
+
+    /// [`Self::structured_history`] for the tool path, plus the per-conversation prefix guard.
+    ///
+    /// With a [`crate::provider::RequestPolicy`] on `messages[0]` the wire projection is
+    /// compared with the last successful request of the same conversation. On divergence the
+    /// thinking blocks from the divergence point on are dropped from the wire (a trailing run,
+    /// which the API accepts) and reported through [`GuardedHistory::guard`]; the fingerprint of
+    /// what is actually sent is committed only after the API accepted the request.
+    fn guarded_history(
+        &self,
+        messages: &[Message],
+        thinking_param: Option<&types::ThinkingParam>,
+        tools: &[ToolDefinition],
+    ) -> GuardedHistory {
+        let (system, mut history) =
+            self.structured_history(messages, thinking_param, 1, self.directive_rendering());
+        let Some(policy) = Self::request_policy(messages) else {
+            return GuardedHistory {
+                system,
+                history,
+                guard: GuardOutcome::default(),
+            };
+        };
+        let tools_key = tool_cache_key(tools);
+        let mut fingerprint =
+            WireFingerprint::of(system.as_deref(), tools_key, history.wire().messages());
+        let mut dropped = crate::ThinkingReplay::Intact;
+        if let Some(divergence) = self
+            .prefix_guard
+            .previous(policy.conversation)
+            .and_then(|previous| fingerprint.divergence_from(&previous))
+        {
+            let history_index = history.wire().history_index_of(divergence.wire_index);
+            let removed = history.drop_thinking_from(divergence.wire_index);
+            tracing::info_span!(
+                "llm.claude.prefix_guard",
+                reason = divergence.reason.as_str(),
+                wire_index = divergence.wire_index,
+                history_index,
+                thinking_dropped = removed,
+            )
+            .in_scope(|| tracing::info!("request no longer extends the previous prefix"));
+            if removed {
+                fingerprint =
+                    WireFingerprint::of(system.as_deref(), tools_key, history.wire().messages());
+                dropped = crate::ThinkingReplay::Dropped {
+                    first_message_index: history_index,
+                };
+            }
+        }
+        GuardedHistory {
+            system,
+            history,
+            guard: GuardOutcome {
+                pending: Some((policy.conversation, fingerprint)),
+                dropped,
+            },
+        }
+    }
+
+    /// Whether a non-success response means the API does not take a `system` message inside
+    /// `messages[]`; latches the fallback so the next attempt renders directives as user text.
+    fn latch_mid_conversation_system(
+        &self,
+        status: reqwest::StatusCode,
+        body: &str,
+        history: &GatedStructuredHistory,
+    ) -> bool {
+        if !history.has_mid_conversation_system()
+            || !is_mid_conversation_system_rejection(status, body)
+        {
+            return false;
+        }
+        if self.beta_latches.reject_mid_conversation_system() {
+            tracing::warn!(
+                model = %self.model,
+                "API rejected a mid-conversation system message; rendering directives as user text"
+            );
+        }
+        true
     }
 
     /// Split `messages` into a system prompt and a plain chat history, with the no-prefill gate
@@ -1176,8 +1382,12 @@ impl ClaudeProvider {
         } = self.thinking_request();
 
         if Self::has_image_parts(messages) {
-            let (system_blocks, chat_messages) =
-                self.structured_history(messages, thinking_param.as_ref(), 0);
+            let (system_blocks, chat_messages) = self.structured_history(
+                messages,
+                thinking_param.as_ref(),
+                0,
+                DirectiveRendering::UserText,
+            );
             let beta = self.beta_header(false);
             let body = VisionRequestBody {
                 model: &self.model,
@@ -1233,7 +1443,7 @@ impl ClaudeProvider {
                 "Claude",
                 MAX_RETRIES,
                 self.status_tx.as_ref(),
-                Some(&self.usage),
+                Some(self.usage.as_ref()),
                 || self.build_request(messages, false).send(),
             )
             .await?;
@@ -1312,36 +1522,38 @@ impl ClaudeProvider {
         tools: &[ToolDefinition],
     ) -> Result<crate::sse::ToolSseStream, LlmError> {
         let api_tools = self.get_or_build_api_tools(tools);
-
-        let ThinkingRequest {
-            thinking: thinking_param,
-            temperature,
-            output_config,
-        } = self.thinking_request();
-        let (system_blocks, chat_messages) =
-            self.structured_history(messages, thinking_param.as_ref(), 1);
         let has_tools = !tools.is_empty();
-        let mut body = ToolRequestBody {
-            model: &self.model,
-            max_tokens: self.max_tokens,
-            system: system_blocks,
-            messages: &chat_messages,
-            tools: &api_tools,
-            stream: true,
-            thinking: thinking_param,
-            output_config,
-            temperature,
-            context_management: self.context_management(),
-        };
+        self.usage.clear_response();
 
         loop {
-            body.context_management = self.context_management();
+            let ThinkingRequest {
+                thinking: thinking_param,
+                temperature,
+                output_config,
+            } = self.thinking_request();
+            let GuardedHistory {
+                system,
+                history,
+                guard,
+            } = self.guarded_history(messages, thinking_param.as_ref(), tools);
+            let body = ToolRequestBody {
+                model: &self.model,
+                max_tokens: self.max_tokens,
+                system,
+                messages: &history,
+                tools: &api_tools,
+                stream: true,
+                thinking: thinking_param,
+                output_config,
+                temperature,
+                context_management: self.context_management(),
+            };
             let beta = self.beta_header(has_tools);
             let response = send_with_retry(
                 "Claude",
                 MAX_RETRIES,
                 self.status_tx.as_ref(),
-                Some(&self.usage),
+                Some(self.usage.as_ref()),
                 || {
                     let mut req = self
                         .client
@@ -1361,18 +1573,27 @@ impl ClaudeProvider {
             let status = response.status();
             if !status.is_success() {
                 let text = response.text().await.map_err(LlmError::Http)?;
-                if self.handle_beta_rejection(status, &text, "tool stream") {
-                    body.thinking = self.build_thinking_param().0;
+                if self.handle_beta_rejection(status, &text, "tool stream")
+                    || self.latch_mid_conversation_system(status, &text, &history)
+                {
                     continue;
                 }
                 tracing::error!("Claude API error {status}: {text}");
                 return Err(claude_error(status, &text));
             }
 
-            return Ok(claude_sse_to_tool_stream(
+            let dropped = guard.dropped;
+            guard.commit(&self.prefix_guard);
+            let events = claude_sse_to_tool_stream(
                 response,
                 &self.stream_limits,
                 &self.provider_name,
+                Arc::clone(&self.usage),
+            );
+            return Ok(translate_replay_events(
+                events,
+                history.wire().history_indices().to_vec(),
+                dropped,
             ));
         }
     }
@@ -1399,8 +1620,12 @@ impl ClaudeProvider {
             temperature,
             output_config,
         } = self.thinking_request();
-        let (mut system_blocks, chat_messages) =
-            self.structured_history(messages, thinking_param.as_ref(), 0);
+        let (mut system_blocks, chat_messages) = self.structured_history(
+            messages,
+            thinking_param.as_ref(),
+            0,
+            DirectiveRendering::UserText,
+        );
         let tool_choice =
             match mode {
                 TypedToolMode::Forced => ToolChoice::Tool {
@@ -1437,7 +1662,7 @@ impl ClaudeProvider {
                 "Claude",
                 MAX_RETRIES,
                 self.status_tx.as_ref(),
-                Some(&self.usage),
+                Some(self.usage.as_ref()),
                 || {
                     let mut req = self
                         .client
@@ -1494,8 +1719,12 @@ impl ClaudeProvider {
             temperature,
             output_config,
         } = self.thinking_request();
-        let (system_blocks, chat_messages) =
-            self.structured_history(messages, thinking_param.as_ref(), 0);
+        let (system_blocks, chat_messages) = self.structured_history(
+            messages,
+            thinking_param.as_ref(),
+            0,
+            DirectiveRendering::UserText,
+        );
         let mut output_config = output_config.unwrap_or(OutputConfig {
             effort: None,
             format: None,
@@ -1516,7 +1745,7 @@ impl ClaudeProvider {
                 "Claude",
                 MAX_RETRIES,
                 self.status_tx.as_ref(),
-                Some(&self.usage),
+                Some(self.usage.as_ref()),
                 || {
                     let mut req = self
                         .client
@@ -1572,7 +1801,7 @@ impl ClaudeProvider {
                 "Claude",
                 MAX_RETRIES,
                 self.status_tx.as_ref(),
-                Some(&self.usage),
+                Some(self.usage.as_ref()),
                 || self.build_request(messages, true).send(),
             )
             .await?;
@@ -1618,11 +1847,13 @@ impl LlmProvider for ClaudeProvider {
         fields(provider = self.name(), model = self.model_identifier())
     )]
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
+        self.usage.clear_response();
         let response = self.send_stream_request(messages).await?;
         Ok(claude_sse_to_stream(
             response,
             &self.stream_limits,
             &self.provider_name,
+            Arc::clone(&self.usage),
         ))
     }
 
@@ -1659,7 +1890,7 @@ impl LlmProvider for ClaudeProvider {
 
     async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
     where
-        T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
+        T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
         Self: Sized,
     {
         let (schema_value, _) = crate::provider::cached_schema::<T>()?;
@@ -1731,6 +1962,14 @@ impl LlmProvider for ClaudeProvider {
         }
     }
 
+    fn prefix_cache(&self) -> crate::provider::PrefixCache {
+        if self.cache_user_messages {
+            crate::provider::PrefixCache::Prefix
+        } else {
+            crate::provider::PrefixCache::None
+        }
+    }
+
     fn debug_request_json(
         &self,
         messages: &[Message],
@@ -1744,8 +1983,12 @@ impl LlmProvider for ClaudeProvider {
         } = self.thinking_request();
 
         if !tools.is_empty() {
-            let (system_blocks, chat_messages) =
-                self.structured_history(messages, thinking_param.as_ref(), 1);
+            let (system_blocks, chat_messages) = self.structured_history(
+                messages,
+                thinking_param.as_ref(),
+                1,
+                self.directive_rendering(),
+            );
             let api_tools = self.get_or_build_api_tools(tools);
             let body = ToolRequestBody {
                 model: &self.model,
@@ -1764,8 +2007,12 @@ impl LlmProvider for ClaudeProvider {
         }
 
         if Self::has_image_parts(messages) {
-            let (system_blocks, chat_messages) =
-                self.structured_history(messages, thinking_param.as_ref(), 0);
+            let (system_blocks, chat_messages) = self.structured_history(
+                messages,
+                thinking_param.as_ref(),
+                0,
+                DirectiveRendering::UserText,
+            );
             let body = VisionRequestBody {
                 model: &self.model,
                 max_tokens: self.max_tokens,
@@ -1808,36 +2055,37 @@ impl LlmProvider for ClaudeProvider {
         tools: &[ToolDefinition],
     ) -> Result<ChatResponse, LlmError> {
         let api_tools = self.get_or_build_api_tools(tools);
-
-        let ThinkingRequest {
-            thinking: thinking_param,
-            temperature,
-            output_config,
-        } = self.thinking_request();
-        let (system_blocks, chat_messages) =
-            self.structured_history(messages, thinking_param.as_ref(), 1);
         let has_tools = !tools.is_empty();
-        let mut body = ToolRequestBody {
-            model: &self.model,
-            max_tokens: self.max_tokens,
-            system: system_blocks,
-            messages: &chat_messages,
-            tools: &api_tools,
-            stream: false,
-            thinking: thinking_param,
-            output_config,
-            temperature,
-            context_management: self.context_management(),
-        };
 
         loop {
-            body.context_management = self.context_management();
+            let ThinkingRequest {
+                thinking: thinking_param,
+                temperature,
+                output_config,
+            } = self.thinking_request();
+            let GuardedHistory {
+                system,
+                history,
+                guard,
+            } = self.guarded_history(messages, thinking_param.as_ref(), tools);
+            let body = ToolRequestBody {
+                model: &self.model,
+                max_tokens: self.max_tokens,
+                system,
+                messages: &history,
+                tools: &api_tools,
+                stream: false,
+                thinking: thinking_param,
+                output_config,
+                temperature,
+                context_management: self.context_management(),
+            };
             let beta = self.beta_header(has_tools);
             let response = send_with_retry(
                 "Claude",
                 MAX_RETRIES,
                 self.status_tx.as_ref(),
-                Some(&self.usage),
+                Some(self.usage.as_ref()),
                 || {
                     let mut req = self
                         .client
@@ -1857,8 +2105,9 @@ impl LlmProvider for ClaudeProvider {
             let (status, text) = crate::http::read_response_body(response).await?;
 
             if !status.is_success() {
-                if self.handle_beta_rejection(status, &text, "tool use") {
-                    body.thinking = self.build_thinking_param().0;
+                if self.handle_beta_rejection(status, &text, "tool use")
+                    || self.latch_mid_conversation_system(status, &text, &history)
+                {
                     continue;
                 }
                 tracing::error!("Claude API error {status}: {text}");
@@ -1889,7 +2138,11 @@ impl LlmProvider for ClaudeProvider {
                 resp.stop_reason.as_deref(),
                 resp.stop_details.as_ref(),
             )?;
-            let parsed = parse_tool_response(resp);
+            let mut parsed = parse_tool_response(resp);
+            if let ChatResponse::ToolUse { replay, .. } = &mut parsed {
+                *replay = guard.merged_replay(*replay, history.wire());
+            }
+            guard.commit(&self.prefix_guard);
             tracing::debug!(summary = %parsed.log_summary(), "parsed ChatResponse");
             return Ok(parsed);
         }

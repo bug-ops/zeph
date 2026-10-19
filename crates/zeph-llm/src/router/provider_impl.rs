@@ -821,4 +821,13 @@ impl LlmProvider for RouterProvider {
             crate::provider::ThinkingBinding::Unbound
         }
     }
+
+    fn prefix_cache(&self) -> crate::provider::PrefixCache {
+        self.state
+            .providers
+            .iter()
+            .fold(crate::provider::PrefixCache::None, |acc, p| {
+                acc.or(p.prefix_cache())
+            })
+    }
 }

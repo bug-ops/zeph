@@ -9,7 +9,11 @@
 //! `MemoryState` before each assembly pass.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::sync::Arc;
+
+use parking_lot::Mutex;
+use zeph_llm::provider::RetrievalKey;
 
 use zeph_common::PlannedToolHint;
 use zeph_common::memory::{CompressionLevel, ContextMemoryBackend, FunctionalType};
@@ -17,7 +21,95 @@ use zeph_config::{
     DocumentConfig, GraphConfig, PersonaConfig, ReasoningConfig, TrajectoryConfig, TreeConfig,
 };
 
+use crate::budget::AllocationMode;
 use crate::manager::ContextManager;
+
+/// Item-level delta state for one assembly pass (`append` context layout).
+///
+/// `exclude` holds the keys of items already present in live history; fetchers skip those items
+/// before truncating to budget, so the freed tokens go to new items. Every item a fetcher does
+/// emit is recorded and read back with [`take_emitted`](Self::take_emitted) so the caller can
+/// stamp the keys on the resulting `TurnContext` block.
+///
+/// The default value excludes nothing, which keeps the `replace` layout byte-identical.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_context::input::ItemKeys;
+///
+/// let key = ItemKeys::key("recall", "- [user] hello\n");
+/// let keys = ItemKeys::new([key].into_iter().collect());
+/// assert!(keys.is_excluded(key));
+/// keys.record("recall", ItemKeys::key("recall", "other"));
+/// assert_eq!(keys.take_emitted().len(), 1);
+/// ```
+#[derive(Debug, Default)]
+pub struct ItemKeys {
+    exclude: HashSet<RetrievalKey>,
+    emitted: Mutex<Vec<(&'static str, RetrievalKey)>>,
+}
+
+impl ItemKeys {
+    /// Create a filter that skips every key in `exclude`.
+    #[must_use]
+    pub fn new(exclude: HashSet<RetrievalKey>) -> Self {
+        Self {
+            exclude,
+            emitted: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Content hash of one retrieved item, scoped by its `source` label.
+    #[must_use]
+    pub fn key(source: &str, content: &str) -> RetrievalKey {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(source.as_bytes());
+        hasher.update(&[0]);
+        hasher.update(content.as_bytes());
+        let hash = hasher.finalize();
+        let mut head = [0u8; 8];
+        head.copy_from_slice(&hash.as_bytes()[..8]);
+        RetrievalKey(u64::from_le_bytes(head))
+    }
+
+    /// Whether `key` is already present in history and must not be sent again.
+    #[must_use]
+    pub fn is_excluded(&self, key: RetrievalKey) -> bool {
+        self.exclude.contains(&key)
+    }
+
+    /// Record that the item behind `key` was emitted by the fetcher for `source`.
+    pub fn record(&self, source: &'static str, key: RetrievalKey) {
+        self.emitted.lock().push((source, key));
+    }
+
+    /// Admit a whole-content item: `true` and recorded unless it is already present in history.
+    #[must_use]
+    pub fn admit(&self, source: &'static str, content: &str) -> bool {
+        let key = Self::key(source, content);
+        if self.is_excluded(key) {
+            return false;
+        }
+        self.record(source, key);
+        true
+    }
+
+    /// Forget the keys recorded for `source` (its section ended up empty after sanitization, so
+    /// its items must stay eligible for a later turn).
+    pub fn discard(&self, source: &str) {
+        self.emitted.lock().retain(|(s, _)| *s != source);
+    }
+
+    /// Drain the keys recorded so far.
+    #[must_use]
+    pub fn take_emitted(&self) -> Vec<RetrievalKey> {
+        std::mem::take(&mut *self.emitted.lock())
+            .into_iter()
+            .map(|(_, key)| key)
+            .collect()
+    }
+}
 
 /// All borrowed data needed to assemble context for one agent turn.
 ///
@@ -73,6 +165,8 @@ pub struct ContextAssemblyInput<'a> {
     ///
     /// Pass `&[]` when no DAG context is available (PAACE data structure only in MVP).
     pub planned_next_tools: &'a [PlannedToolHint],
+    /// How the memory slots are sized against history for this turn.
+    pub allocation_mode: AllocationMode,
 }
 
 /// Configuration extracted from `LearningEngine` needed by correction recall.
@@ -133,6 +227,10 @@ pub struct ContextMemoryView {
     // ── subsystem fields ──────────────────────────────────────────────────────
     /// `TiMem` temporal-hierarchical memory tree configuration.
     pub tree_config: TreeConfig,
+
+    // ── item delta ────────────────────────────────────────────────────────────
+    /// Item-level delta state; the default excludes nothing (`replace` layout).
+    pub item_keys: ItemKeys,
 }
 
 /// Read-only access to a code-index retriever.

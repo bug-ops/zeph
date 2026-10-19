@@ -223,8 +223,7 @@ impl SemanticMemory {
         let timeout = std::time::Duration::from_secs(timeout_secs);
         match tokio::time::timeout(
             timeout,
-            self.provider
-                .chat_typed_erased::<StructuredSummary>(chat_messages),
+            self.provider.chat_typed::<StructuredSummary>(chat_messages),
         )
         .await
         {

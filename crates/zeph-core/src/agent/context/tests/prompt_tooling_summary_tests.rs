@@ -1493,3 +1493,66 @@ async fn g3_active_goal_appears_after_volatile_marker() {
         "goal text must appear in system prompt"
     );
 }
+
+fn agent_with_six_pending_summaries(layout: zeph_config::ContextLayout) -> Agent<MockChannel> {
+    let mut agent = Agent::new(
+        mock_provider(vec![]),
+        MockChannel::new(vec![]),
+        create_test_registry(),
+        None,
+        5,
+        MockToolExecutor::no_tools(),
+    )
+    .with_context_budget(100_000, 0.20, 0.80, 4, 0);
+    agent.services.memory.compaction.context_layout = layout;
+    agent.context_manager.soft_compaction_threshold = 0.70;
+    agent.ensure_layout_pinned();
+    for (i, label) in ["a", "b", "c", "d", "e", "f"].into_iter().enumerate() {
+        make_tool_pair(&mut agent, label);
+        agent.msg.messages[2 * (i + 1)].metadata.deferred_summary = Some(format!("s_{label}"));
+    }
+    agent.runtime.providers.cached_prompt_tokens = 5_000;
+    agent
+}
+
+fn summary_count(agent: &Agent<MockChannel>) -> usize {
+    agent
+        .msg
+        .messages
+        .iter()
+        .filter(|m| {
+            m.parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Summary { .. }))
+        })
+        .count()
+}
+
+#[test]
+fn append_layout_does_not_apply_deferred_summaries_on_the_count_trigger() {
+    let mut agent = agent_with_six_pending_summaries(zeph_config::ContextLayout::Append);
+    assert!(!agent.decide_sweeps());
+    agent.apply_deferred_summaries_for_turn();
+    assert_eq!(
+        summary_count(&agent),
+        0,
+        "sent tool pairs must not be rewritten"
+    );
+}
+
+#[test]
+fn replace_layout_still_applies_deferred_summaries_on_the_count_trigger() {
+    let mut agent = agent_with_six_pending_summaries(zeph_config::ContextLayout::Replace);
+    assert!(agent.decide_sweeps());
+    agent.apply_deferred_summaries_for_turn();
+    assert_eq!(summary_count(&agent), 6);
+}
+
+#[test]
+fn append_layout_applies_deferred_summaries_under_token_pressure() {
+    let mut agent = agent_with_six_pending_summaries(zeph_config::ContextLayout::Append);
+    agent.runtime.providers.cached_prompt_tokens = 75_000;
+    assert!(agent.decide_sweeps());
+    agent.apply_deferred_summaries_for_turn();
+    assert_eq!(summary_count(&agent), 6);
+}

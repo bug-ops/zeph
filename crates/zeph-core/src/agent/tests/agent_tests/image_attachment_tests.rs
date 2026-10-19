@@ -149,7 +149,11 @@ fn build_user_message_attaches_image_when_provider_vision_capable() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    let msg = agent.build_user_message("look at this", vec![sample_image_part()]);
+    let msg = agent.build_user_message(
+        "look at this",
+        vec![sample_image_part()],
+        zeph_agent_context::state::TurnPreamble::default(),
+    );
 
     assert_eq!(msg.role, Role::User);
     assert_eq!(
@@ -173,7 +177,11 @@ fn build_user_message_drops_image_when_provider_not_vision_capable() {
     let executor = MockToolExecutor::no_tools();
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    let msg = agent.build_user_message("look at this", vec![sample_image_part()]);
+    let msg = agent.build_user_message(
+        "look at this",
+        vec![sample_image_part()],
+        zeph_agent_context::state::TurnPreamble::default(),
+    );
 
     assert_eq!(msg.role, Role::User);
     assert_eq!(msg.content, "look at this");

@@ -84,6 +84,10 @@ Active skills are injected into the volatile section of the system prompt (after
 - Tool definitions from skills are merged into the main tool catalog for the turn
 - Skills can define `env` variables that are passed to the tool executor via `set_skill_env()`
 
+### Injection in the `append` layout (#6846)
+
+With `[memory] context_layout = append` (`[[088-prompt-cache-prefix-stability/spec]]`) the system prompt is frozen per conversation and carries the skill catalog only. Matched skills reach the model through the turn `Directives` block: a names-only `<active_skills>` line every turn, plus the bodies of skills not already present in history (key = name + body hash). Catalog, trust or registry changes between boundaries arrive as delta sections of the next `Directives` block; the frozen prompt is re-rendered only at session start, `/clear`, hard compaction, `complete_focus`/`compress_context` and history trim. `reload_skills()` no longer writes `messages[0]` in this layout.
+
 ## Construction-Time / Reload-Time Skill Prompt Contract (#6413)
 
 Full-body skill injection (previous section) requires a per-turn `query` to run the matcher and
@@ -105,6 +109,7 @@ Contract for both call sites:
   text, not the full unfiltered registry blob
 - Full skill bodies are injected exclusively by the next `rebuild_system_prompt(query)` call, once
   a real per-turn query exists to run the matcher against
+- In the `append` layout the contract holds a fortiori: `reload_skills()` and construction never write `messages[0]` after the conversation is pinned, and the catalog-only rule applies to the frozen prompt render
 - Any code path that mutates `messages[0]` outside `push_message`'s incremental accounting (e.g.
   `reload_skills()`) MUST recompute the cached prompt-token count from the mutated message
   afterward — a stale count is a state-consistency bug even though it self-corrects on the next
@@ -963,7 +968,7 @@ Stage-1 regex patterns would catch.
 
 ### `SkillSemanticScanner`
 
-`crates/zeph-skills/src/semantic_scanner.rs`. Uses `chat_typed_erased` with a configurable
+`crates/zeph-skills/src/semantic_scanner.rs`. Uses `chat_typed` with a configurable
 fast provider. Content cap: 8 KiB with head+tail sampling for larger skills.
 
 XML delimiter-escape neutralization: any `</skill_content>` sequences in the skill body are

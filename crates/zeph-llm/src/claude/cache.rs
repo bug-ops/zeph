@@ -171,8 +171,16 @@ pub(super) fn split_system_into_blocks(
 /// previous request's prefix from cache and only the new blocks are processed fresh. Thinking and
 /// `tool_use` blocks cannot carry `cache_control`, so a tail message ending in one falls back to
 /// its last text or `tool_result` block, and then to the previous message.
+///
+/// Mid-conversation `system` messages are skipped: they are cheap directives that follow the
+/// turn input, so the breakpoint stays on the last conversational message and the next request
+/// still reads it from cache.
 pub(super) fn apply_cache_breakpoint(chat: &mut [StructuredApiMessage], ttl: Option<CacheTtl>) {
-    for msg in chat.iter_mut().rev() {
+    for msg in chat
+        .iter_mut()
+        .rev()
+        .filter(|m| m.role != super::request::WIRE_SYSTEM_ROLE)
+    {
         match &mut msg.content {
             StructuredContent::Blocks(blocks) => {
                 let capable = blocks.iter_mut().rev().find_map(|block| match block {

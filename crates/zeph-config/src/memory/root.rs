@@ -13,8 +13,8 @@ use zeph_common::secret::Secret;
 
 use super::{
     AdmissionConfig, AutoDreamConfig, CategoryConfig, CompressionConfig,
-    CompressionGuidelinesConfig, ConsentGateConfig, ConsolidationConfig, ContextStrategy,
-    CrossThreadStoreConfig, DigestConfig, DocumentConfig, EmGraphConfig,
+    CompressionGuidelinesConfig, ConsentGateConfig, ConsolidationConfig, ContextLayout,
+    ContextStrategy, CrossThreadStoreConfig, DigestConfig, DocumentConfig, EmGraphConfig,
     EpisodicConsolidationConfig, EvictionConfig, FiveSignalConfig, ForgettingConfig, GraphConfig,
     HebbianConfig, MemCotConfig, MicrocompactConfig, OpticalForgettingConfig, PersonaConfig,
     ReasoningConfig, RetrievalConfig, RetrievalFailuresConfig, SemanticConfig, SessionsConfig,
@@ -300,6 +300,17 @@ pub struct MemoryConfig {
     /// Number of turns at which `Adaptive` strategy switches to `MemoryFirst`. Default: `20`.
     #[serde(default = "default_crossover_turn_threshold")]
     pub crossover_turn_threshold: u32,
+    /// How per-turn context reaches the model (spec 088). Default: `auto`.
+    #[serde(default)]
+    pub context_layout: ContextLayout,
+    /// Per-turn context cap in the `append` layout, as a share of the context budget.
+    /// Must be in `(0.0, 0.25]`. Default: `0.05`.
+    #[serde(default = "default_turn_context_budget_ratio")]
+    pub turn_context_budget_ratio: f32,
+    /// Share of the history slot a trim brings history down to in the `append` layout.
+    /// Must be in `(0.0, 1.0]`. Default: `0.75`.
+    #[serde(default = "default_history_trim_watermark")]
+    pub history_trim_watermark: f32,
     /// All-Mem lifelong memory consolidation sweep.
     ///
     /// When `consolidation.enabled = true`, a background loop clusters semantically similar
@@ -548,6 +559,14 @@ pub struct MemoryConfig {
     /// `audit_all = true`.
     #[serde(default)]
     pub consent_gate: ConsentGateConfig,
+}
+
+fn default_turn_context_budget_ratio() -> f32 {
+    0.05
+}
+
+fn default_history_trim_watermark() -> f32 {
+    0.75
 }
 
 fn default_crossover_turn_threshold() -> u32 {

@@ -248,6 +248,7 @@ impl<C: crate::channel::Channel> Agent<C> {
         let mut out = String::from("Session status:\n\n");
         let _ = writeln!(out, "Provider:  {}", self.provider.name());
         let _ = writeln!(out, "Model:     {}", self.runtime.config.model_name);
+        let _ = writeln!(out, "Layout:    {}", self.context_layout_status());
         let _ = writeln!(out, "Uptime:    {uptime}s");
         let _ = writeln!(out, "Turns:     {msg_count}");
         let _ = writeln!(out, "API calls: {}", metrics.api_calls);

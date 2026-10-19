@@ -193,12 +193,13 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Appends the stable MCP server instructions to `system_prompt` and returns the prompt for
-    /// the tools matched to `query`, which varies per turn and belongs in the volatile block.
+    /// the tools matched to `query` (which varies per turn and belongs in the volatile block)
+    /// together with the matched tools themselves.
     pub(super) async fn append_mcp_prompt(
         &mut self,
         query: &str,
         system_prompt: &mut String,
-    ) -> String {
+    ) -> (String, Vec<zeph_mcp::McpTool>) {
         let matched_tools = self.match_mcp_tools(query).await;
         let active_mcp: Vec<String> = matched_tools
             .iter()
@@ -247,9 +248,12 @@ impl<C: Channel> Agent<C> {
                 mcp_tools = ?tool_names,
                 "matched items"
             );
-            return zeph_mcp::format_mcp_tools_prompt(&matched_tools);
+            return (
+                zeph_mcp::format_mcp_tools_prompt(&matched_tools),
+                matched_tools,
+            );
         }
-        String::new()
+        (String::new(), Vec::new())
     }
 
     async fn match_mcp_tools(&self, query: &str) -> Vec<zeph_mcp::McpTool> {

@@ -9,7 +9,7 @@
 //! see that module for the orchestration entry point that calls into these phases.
 
 use tracing::Instrument;
-use zeph_llm::provider::{Message, Role};
+use zeph_llm::provider::{LlmProvider as _, Message, Role};
 use zeph_tools::executor::ToolCall;
 
 use super::retry_backoff_ms;
@@ -277,7 +277,7 @@ impl<C: Channel> Agent<C> {
         let reformat = tokio::select! {
             r = tokio::time::timeout(
                 std::time::Duration::from_secs(timeout_secs),
-                provider.chat_typed_erased::<ReformattedArguments>(&messages),
+                provider.chat_typed::<ReformattedArguments>(&messages),
             ) => match r {
                 Ok(Ok(reformat)) => reformat,
                 Ok(Err(e)) => {

@@ -40,7 +40,7 @@ use std::time::Duration;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use zeph_llm::any::AnyProvider;
-use zeph_llm::provider::{Message, Role};
+use zeph_llm::provider::{LlmProvider as _, Message, Role};
 
 use crate::error::SkillError;
 
@@ -97,7 +97,7 @@ pub enum ScanVerdict {
 
 /// Internal typed response from the LLM.
 ///
-/// `chat_typed_erased` requires `Deserialize + JsonSchema`.
+/// `chat_typed` requires `Deserialize + JsonSchema`.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 struct ScanResult {
     /// One of `"allow"`, `"warn"`, or `"block"`.
@@ -110,7 +110,7 @@ struct ScanResult {
 ///
 /// Calls an LLM with a structured prompt that delimits the untrusted SKILL.md content
 /// using XML tags, preventing prompt injection from overriding the scanner's verdict.
-/// Uses [`AnyProvider::chat_typed_erased`] for structured JSON output.
+/// Uses [`AnyProvider::chat_typed`] for structured JSON output.
 ///
 /// # Examples
 ///
@@ -178,7 +178,7 @@ impl SkillSemanticScanner {
 
         let result = tokio::time::timeout(
             SCAN_TIMEOUT,
-            self.provider.chat_typed_erased::<ScanResult>(&messages),
+            self.provider.chat_typed::<ScanResult>(&messages),
         )
         .await
         .map_err(|_| {

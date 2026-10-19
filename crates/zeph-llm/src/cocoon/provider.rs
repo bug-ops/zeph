@@ -553,7 +553,7 @@ impl LlmProvider for CocoonProvider {
 
     async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
     where
-        T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
+        T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
         Self: Sized,
     {
         let span = tracing::info_span!("llm.cocoon.request", op = "chat_typed");

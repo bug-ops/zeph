@@ -383,6 +383,8 @@ impl<C: Channel> Agent<C> {
                 history_preloaded: false,
                 history_cursor: 0,
                 non_system_count: 0,
+                layout: crate::agent::context::LayoutState::default(),
+                pending_preamble: zeph_agent_context::state::TurnPreamble::default(),
             },
             context_manager: context_manager::ContextManager::new(),
             tool_orchestrator: tool_orchestrator::ToolOrchestrator::new(),
@@ -1288,8 +1290,13 @@ impl<C: Channel> Agent<C> {
 
         // Prune stale tool outputs before (and outside) the backoff- and timeout-guarded context
         // preparation so it always runs, once per turn, never inside the tool loop.
-        let keep_recent = 2 * self.services.memory.persistence.tool_call_cutoff + 2;
-        self.prune_stale_tool_outputs(keep_recent);
+        // In the `append` layout rewriting old messages busts the prompt cache, so the sweeps
+        // run only once the context is under pressure (#6563).
+        self.ensure_layout_pinned();
+        if self.decide_sweeps() {
+            let keep_recent = 2 * self.services.memory.persistence.tool_call_cutoff + 2;
+            self.prune_stale_tool_outputs(keep_recent);
+        }
 
         let t_ctx = std::time::Instant::now();
         tracing::debug!("turn timing: prepare_context start");
@@ -1313,7 +1320,8 @@ impl<C: Channel> Agent<C> {
         // user message MUST be merged into a single user-role block to satisfy the strict
         // user/assistant alternation rule (Anthropic Messages API — N1 invariant).
         let merged_text = self.build_user_message_text_with_bg_completions(&text);
-        let user_msg = self.build_user_message(&merged_text, image_parts);
+        let preamble = std::mem::take(&mut self.msg.pending_preamble);
+        let user_msg = self.build_user_message(&merged_text, image_parts, preamble);
 
         // Extract URLs from user input and add to user_provided_urls for grounding checks.
         // URL set was cleared in begin_turn; re-populate for this turn.
@@ -1388,7 +1396,11 @@ impl<C: Channel> Agent<C> {
             // Detach learning tasks spawned this turn — they are fire-and-forget and must not
             // leak into the next turn's context.
             self.services.learning_engine.learning_tasks.detach_all();
-            self.truncate_old_tool_results();
+            if self.sweeps_allowed() {
+                self.truncate_old_tool_results();
+                self.recompute_prompt_tokens();
+                self.note_sweep_done();
+            }
             // MagicDocs: spawn background doc updates if any are due (#2702).
             self.maybe_update_magic_docs();
             // Compression spectrum: fire-and-forget promotion scan (#3305).
@@ -1773,6 +1785,8 @@ impl<C: Channel> Agent<C> {
         // Extract before rebuild_system_prompt so the value is not tainted
         // by the secrets-bearing system prompt (ConversationId is just an i64).
         let conv_id = self.services.memory.persistence.conversation_id;
+        self.msg.pending_preamble = zeph_agent_context::state::TurnPreamble::default();
+        self.ensure_layout_pinned();
         // ORDERING DEPENDENCY (#6361): rebuild_system_prompt's time-reminder injection reads
         // `sidequest.turn_counter` BEFORE it is incremented by `sidequest.tick()` below — this
         // is why `0.is_multiple_of(N) == true` fires the reminder on turn 1. Moving
@@ -1796,9 +1810,11 @@ impl<C: Channel> Agent<C> {
             self.services.focus.tick();
 
             // SideQuest eviction: runs every N user turns when enabled.
-            // Skipped when is_compacted_this_turn (focus truncation or prior eviction ran).
+            // Skipped when is_compacted_this_turn (focus truncation or prior eviction ran) and,
+            // in the `append` layout, when the sweep gate is closed (it rewrites sent history).
             let sidequest_should_fire = self.services.sidequest.tick();
             if sidequest_should_fire
+                && self.sweeps_allowed()
                 && !self
                     .context_manager
                     .compaction_state()
@@ -1865,13 +1881,17 @@ impl<C: Channel> Agent<C> {
 
         // Time-based microcompact (#2699): strip stale low-value tool outputs before compaction.
         // Zero-LLM-cost; runs only when session gap exceeds configured threshold.
-        self.maybe_time_based_microcompact();
+        if self.sweeps_allowed() {
+            self.maybe_time_based_microcompact();
+        }
 
         // Tier 0: batch-apply deferred tool summaries when approaching context limit.
         // This is a pure in-memory operation (no LLM call) — summaries were pre-computed
         // during the tool loop. Intentionally does NOT set compacted_this_turn, so
         // proactive/reactive compaction may still fire if tokens remain above their thresholds.
-        self.maybe_apply_deferred_summaries(zeph_agent_context::DeferredApplyTrigger::TokenOrCount);
+        // The count trigger would rewrite sent tool pairs in the `append` layout; there only the
+        // sweep gate (token pressure with hysteresis) may apply them.
+        self.apply_deferred_summaries_for_turn();
         self.flush_deferred_summaries().await;
 
         // Proactive compression fires first (if configured); if it runs, reactive is skipped.
@@ -1886,6 +1906,10 @@ impl<C: Channel> Agent<C> {
         if let Err(e) = Box::pin(self.prepare_context(trimmed)).await {
             tracing::warn!("context preparation failed: {e:#}");
         }
+        // Compaction and trim above may have invalidated the frozen prompt; re-render it now so
+        // the system change lands in the request that is rewritten anyway.
+        self.rerender_invalidated_prompt().await;
+        self.rebuild_directives_if_history_changed().await;
 
         // MAR: propagate top-1 recall confidence to the router for cost-aware routing.
         self.provider
@@ -1894,27 +1918,41 @@ impl<C: Channel> Agent<C> {
         self.services.learning_engine.reset_reflection();
     }
 
+    /// Build the turn input, attaching the `append` layout's per-turn context blocks.
+    ///
+    /// With an empty `preamble` the message is exactly what the `replace` layout always built.
     fn build_user_message(
         &mut self,
         text: &str,
         image_parts: Vec<zeph_llm::provider::MessagePart>,
+        preamble: zeph_agent_context::state::TurnPreamble,
     ) -> Message {
+        use zeph_llm::provider::MessagePart;
+
         let mut all_image_parts = std::mem::take(&mut self.msg.pending_image_parts);
         all_image_parts.extend(image_parts);
 
-        let mut msg = if !all_image_parts.is_empty() && self.provider.supports_vision() {
-            let mut parts = vec![zeph_llm::provider::MessagePart::Text {
+        let has_preamble = preamble.directives.is_some() || preamble.retrieved.is_some();
+        let has_images = !all_image_parts.is_empty() && self.provider.supports_vision();
+        if !all_image_parts.is_empty() && !has_images {
+            tracing::warn!(
+                count = all_image_parts.len(),
+                "image attachments dropped: provider does not support vision"
+            );
+        }
+
+        let mut msg = if has_images || has_preamble {
+            let mut parts = Vec::new();
+            parts.extend(preamble.retrieved.map(MessagePart::TurnContext));
+            parts.push(MessagePart::Text {
                 text: text.to_owned(),
-            }];
-            parts.extend(all_image_parts);
+            });
+            parts.extend(preamble.directives.map(MessagePart::TurnContext));
+            if has_images {
+                parts.extend(all_image_parts);
+            }
             Message::from_parts(Role::User, parts)
         } else {
-            if !all_image_parts.is_empty() {
-                tracing::warn!(
-                    count = all_image_parts.len(),
-                    "image attachments dropped: provider does not support vision"
-                );
-            }
             Message {
                 role: Role::User,
                 content: text.to_owned(),

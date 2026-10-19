@@ -396,6 +396,21 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Configure the context layout (`[memory] context_layout`, spec 088) and its tunables.
+    #[must_use]
+    pub fn with_context_layout(
+        mut self,
+        layout: crate::config::ContextLayout,
+        turn_context_budget_ratio: f32,
+        history_trim_watermark: f32,
+    ) -> Self {
+        let compaction = &mut self.services.memory.compaction;
+        compaction.context_layout = layout;
+        compaction.turn_context_budget_ratio = turn_context_budget_ratio;
+        compaction.history_trim_watermark = history_trim_watermark;
+        self
+    }
+
     /// Set the document indexing configuration for `MagicDocs` and RAG.
     #[must_use]
     pub fn with_document_config(mut self, config: crate::config::DocumentConfig) -> Self {

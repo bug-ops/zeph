@@ -359,12 +359,16 @@ impl<C: Channel> Agent<C> {
             .skill
             .last_skills_prompt
             .clone_from(&skills_prompt);
-        let system_prompt = build_system_prompt(&skills_prompt, None);
-        self.msg.set_system_prompt(system_prompt);
-        // The mutation above bypasses `push_message`'s incremental token accounting, so the
-        // cached prompt-token count must be recomputed explicitly or it goes stale until the
-        // next turn's `rebuild_system_prompt` overwrites it (#6413).
-        self.recompute_prompt_tokens();
+        // The `append` layout never rewrites the frozen prompt mid-conversation: the changed
+        // catalog reaches the model as a delta directive on the next turn (spec 088).
+        if !self.msg.layout.is_append() {
+            let system_prompt = build_system_prompt(&skills_prompt, None);
+            self.msg.set_system_prompt(system_prompt);
+            // The mutation above bypasses `push_message`'s incremental token accounting, so the
+            // cached prompt-token count must be recomputed explicitly or it goes stale until the
+            // next turn's `rebuild_system_prompt` overwrites it (#6413).
+            self.recompute_prompt_tokens();
+        }
 
         // Re-emit the catalog so an open TUI mention picker's Skills tab (spec 084 §6)
         // picks up additions/removals/blocked-status changes on hot-reload, not just at

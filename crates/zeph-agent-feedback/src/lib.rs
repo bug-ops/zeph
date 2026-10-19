@@ -39,7 +39,7 @@ use tokio::time::Instant;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use zeph_llm::any::AnyProvider;
-use zeph_llm::provider::{Message, MessageMetadata, Role};
+use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
 
 use regex::Regex;
 
@@ -721,10 +721,9 @@ impl JudgeDetector {
         timeout: Duration,
     ) -> Result<JudgeVerdict, JudgeError> {
         let messages = Self::build_messages(user_message, assistant_response);
-        let verdict: JudgeVerdict =
-            tokio::time::timeout(timeout, provider.chat_typed_erased(&messages))
-                .await
-                .map_err(|_| JudgeError::Timeout)??;
+        let verdict: JudgeVerdict = tokio::time::timeout(timeout, provider.chat_typed(&messages))
+            .await
+            .map_err(|_| JudgeError::Timeout)??;
 
         tracing::debug!(
             is_correction = verdict.is_correction,

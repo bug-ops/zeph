@@ -53,7 +53,7 @@ pub struct SummarizationDeps {
     pub on_anchored_summary: Option<Arc<dyn Fn(&AnchoredSummary, bool) + Send + Sync>>,
 }
 
-/// Attempt structured summarization via `chat_typed_erased::<AnchoredSummary>()`.
+/// Attempt structured summarization via `chat_typed::<AnchoredSummary>()`.
 ///
 /// Returns `Ok(AnchoredSummary)` on success, `Err` when mandatory fields are missing
 /// or the LLM fails. The caller is responsible for falling back to prose on `Err`.
@@ -76,7 +76,7 @@ pub async fn summarize_structured(
         }];
         let summary: AnchoredSummary = tokio::time::timeout(
             deps.llm_timeout,
-            deps.provider.chat_typed_erased::<AnchoredSummary>(&msgs),
+            deps.provider.chat_typed::<AnchoredSummary>(&msgs),
         )
         .await
         .map_err(|_| zeph_llm::LlmError::Timeout)??;
@@ -287,7 +287,7 @@ async fn try_structured_consolidation(deps: &SummarizationDeps, numbered: &str) 
         match tokio::time::timeout(
             timeout,
             deps.provider
-                .chat_typed_erased::<AnchoredSummary>(&anchored_msgs),
+                .chat_typed::<AnchoredSummary>(&anchored_msgs),
         )
         .await
         {

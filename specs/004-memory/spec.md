@@ -80,6 +80,11 @@ SemanticMemory (Arc)
 - Visibility SQL predicates are derived from `MessageVisibility::ALL` and `is_agent_visible`/`is_user_visible` (`NOT IN (hidden variants)`), never hand-listed: a `Marker` row is hidden from both the agent-visible and user-visible queries (#6838)
 - Conversation identified by `ConversationId`; one per agent session
 
+### Context Injection Site (`[memory] context_layout`)
+- `replace` (legacy): recalled, code, graph and cross-session context is injected at the context floor and removed/re-injected every turn
+- `append` (`[[088-prompt-cache-prefix-stability/spec]]`): the same sections are attached to the turn-input message as one `MessagePart::TurnContext(Retrieved)` block, capped by `turn_context_budget_ratio`. Each item carries a content-hash `RetrievalKey`; items whose key is already present in a `TurnContext` part at or after `context_floor` are skipped by the fetchers, so recurring hits are not re-sent every turn
+- `TurnContext` parts are never persisted and never summarizer input (`flatten_parts` excludes them)
+
 ### Admission Control
 - Not all messages admitted to memory (noise filtering via A-MAC)
 - Five-factor scoring (A-MAC paper, arXiv:2603.04549): `future_utility` (0.30, LLM-estimated reuse

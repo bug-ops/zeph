@@ -21,7 +21,9 @@
 //!
 //! `LlmProvider::chat_typed<T: DeserializeOwned>` cannot be part of a dyn-safe trait
 //! because it carries a generic type parameter. Use the free function
-//! [`chat_typed_dyn`] instead when working with `dyn LlmProviderDyn`.
+//! [`chat_typed_dyn`] instead when working with `dyn LlmProviderDyn`. For a concrete
+//! provider that must keep its native structured output behind a boxed future (wrappers),
+//! use [`LlmProviderDyn::chat_typed_boxed`].
 //!
 //! ## Examples
 //!
@@ -152,6 +154,9 @@ pub trait LlmProviderDyn: private::Sealed + std::fmt::Debug + Send + Sync {
     /// See [`LlmProvider::thinking_binding`].
     fn thinking_binding(&self) -> crate::provider::ThinkingBinding;
 
+    /// See [`LlmProvider::prefix_cache`].
+    fn prefix_cache(&self) -> crate::provider::PrefixCache;
+
     /// See [`LlmProvider::last_auxiliary_usage`].
     fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage>;
 
@@ -187,6 +192,24 @@ pub trait LlmProviderDyn: private::Sealed + std::fmt::Debug + Send + Sync {
 
     /// Whether this provider supports native structured output.
     fn supports_structured_output(&self) -> bool;
+
+    /// [`LlmProvider::chat_typed`] behind a named [`BoxFuture`].
+    ///
+    /// Reaches the provider's native structured-output override (unlike [`chat_typed_dyn`],
+    /// which always uses the prompt path). The named boxed future also breaks the recursive
+    /// opaque-type cycle that wrappers holding an `AnyProvider` (`MaskedProvider`) would
+    /// otherwise create. Unavailable on trait objects (`Self: Sized`).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`LlmProvider::chat_typed`].
+    fn chat_typed_boxed<'a, T>(
+        &'a self,
+        messages: &'a [Message],
+    ) -> BoxFuture<'a, Result<T, LlmError>>
+    where
+        T: DeserializeOwned + schemars::JsonSchema + Send + 'static,
+        Self: Sized;
 }
 
 impl<T: LlmProvider + std::fmt::Debug + Send + Sync + 'static> LlmProviderDyn for T {
@@ -264,6 +287,10 @@ impl<T: LlmProvider + std::fmt::Debug + Send + Sync + 'static> LlmProviderDyn fo
         LlmProvider::thinking_binding(self)
     }
 
+    fn prefix_cache(&self) -> crate::provider::PrefixCache {
+        LlmProvider::prefix_cache(self)
+    }
+
     fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {
         LlmProvider::last_auxiliary_usage(self)
     }
@@ -290,6 +317,17 @@ impl<T: LlmProvider + std::fmt::Debug + Send + Sync + 'static> LlmProviderDyn fo
 
     fn supports_structured_output(&self) -> bool {
         LlmProvider::supports_structured_output(self)
+    }
+
+    fn chat_typed_boxed<'a, U>(
+        &'a self,
+        messages: &'a [Message],
+    ) -> BoxFuture<'a, Result<U, LlmError>>
+    where
+        U: DeserializeOwned + schemars::JsonSchema + Send + 'static,
+        Self: Sized,
+    {
+        Box::pin(LlmProvider::chat_typed::<U>(self, messages))
     }
 }
 

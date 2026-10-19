@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `zeph-config`, `zeph-core`: `[memory] context_layout` keeps the Claude prompt cache valid across turns (breaking: new `MessagePart` variant) (#6850)
+- `zeph-llm`: `LlmProvider::prefix_cache` and per-request `RequestPolicy` (#6850)
+- `zeph-llm`: `llm.claude.prefix_guard` span for prefix invalidation (#6850)
+
+### Changed
+
+- `zeph-llm`, `zeph-core`: `chat_typed` returns `impl Future + Send` and `chat_typed_erased` is removed (breaking) (#6850)
+- `zeph-llm`: streamed Claude responses record merged usage (#6850)
+
 ### Fixed
 
 - `zeph-core`: speculative tool results commit only after pre-hooks, gates, cache, rate limiter and `before_tool` layers, with a bounded commit that cancels the speculative task on timeout (breaking: `SpeculativeStreamDrainer::new` takes the dispatch gate, `with_gate` removed) (#6827) (#6849)

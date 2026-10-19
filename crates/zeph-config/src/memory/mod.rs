@@ -67,7 +67,7 @@ pub use retrieval::{
     TieredRetrievalConfig, TypeAwareComposeConfig,
 };
 pub use root::{MemoryConfig, VectorBackend};
-pub use session::{ContextStrategy, DocumentConfig, SemanticConfig, SessionsConfig};
+pub use session::{ContextLayout, ContextStrategy, DocumentConfig, SemanticConfig, SessionsConfig};
 pub use store::CrossThreadStoreConfig;
 
 pub(crate) fn default_embed_timeout_secs() -> u64 {

@@ -342,7 +342,7 @@ impl LlmProvider for CompatibleProvider {
 
     async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
     where
-        T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
+        T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
         Self: Sized,
     {
         self.inner.chat_typed(messages).await

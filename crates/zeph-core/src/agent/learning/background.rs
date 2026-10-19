@@ -152,7 +152,7 @@ async fn arise_check_domain_gate(args: &AriseTaskArgs, generated: &str) -> bool 
     }];
     match args
         .provider
-        .chat_typed_erased::<zeph_skills::evolution::DomainGateResult>(&gate_messages)
+        .chat_typed::<zeph_skills::evolution::DomainGateResult>(&gate_messages)
         .await
     {
         Ok(gate) if !gate.domain_relevant => {
@@ -426,7 +426,7 @@ pub(super) async fn erl_reflection_task(args: ErlTaskArgs) {
     }];
     let result = match args
         .provider
-        .chat_typed_erased::<zeph_skills::erl::ReflectionResult>(&messages)
+        .chat_typed::<zeph_skills::erl::ReflectionResult>(&messages)
         .await
     {
         Ok(r) => r,

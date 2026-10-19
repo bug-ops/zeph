@@ -857,6 +857,14 @@ impl LlmProvider for TriageRouter {
         }
     }
 
+    fn prefix_cache(&self) -> crate::provider::PrefixCache {
+        self.tier_providers
+            .iter()
+            .fold(crate::provider::PrefixCache::None, |acc, (_, p)| {
+                acc.or(p.prefix_cache())
+            })
+    }
+
     fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {
         let idx = self.last_provider_idx.load(Ordering::Relaxed);
         if idx == NO_LAST_PROVIDER {

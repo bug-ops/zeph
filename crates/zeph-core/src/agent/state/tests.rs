@@ -59,6 +59,8 @@ fn make_message_state() -> MessageState {
         history_preloaded: false,
         history_cursor: 0,
         non_system_count: 0,
+        layout: crate::agent::context::LayoutState::default(),
+        pending_preamble: zeph_agent_context::state::TurnPreamble::default(),
     }
 }
 

@@ -333,3 +333,42 @@ fn trim_parent_messages_partial_prune_keeps_text() {
         .any(|p| matches!(p, MessagePart::Text { text } if text == "also some user text"));
     assert!(has_text, "Text part must survive after orphan removal");
 }
+
+#[test]
+fn trim_parent_messages_strips_turn_context_and_estimate_counts_it() {
+    use zeph_llm::provider::{TurnContextBlock, TurnContextKind, TurnContextTrust};
+
+    let block = |kind| {
+        MessagePart::TurnContext(TurnContextBlock {
+            kind,
+            trust: TurnContextTrust::ExternalUntrusted,
+            text: "parent memory and directives".to_owned(),
+            keys: vec![],
+        })
+    };
+    let turn_input = Message::from_parts(
+        Role::User,
+        vec![
+            block(TurnContextKind::Retrieved),
+            MessagePart::Text {
+                text: "task".to_owned(),
+            },
+            block(TurnContextKind::Directives),
+        ],
+    );
+    let plain = text_msg(Role::User, "task");
+    assert_eq!(
+        estimate_parts_size(&turn_input),
+        estimate_parts_size(&plain) + 2 * "parent memory and directives".len()
+    );
+
+    let mut parent = vec![turn_input, text_msg(Role::Assistant, "done")];
+    trim_parent_messages(&mut parent, usize::MAX);
+    assert!(
+        parent
+            .iter()
+            .flat_map(|m| &m.parts)
+            .all(|p| !matches!(p, MessagePart::TurnContext(_))),
+        "a subagent must not inherit the parent's turn context"
+    );
+}

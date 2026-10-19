@@ -126,6 +126,8 @@ impl MessageAccess for MessageAccessImpl<'_> {
         if let Some(sp) = system_prompt {
             self.msg.messages.push(sp);
         }
+        // A new conversation re-pins its context layout on the first turn (spec 088).
+        self.msg.layout.reset();
         // Clear tool dependency state (reset between conversations).
         self.tool_state.completed_tool_ids.clear();
         // Recompute cached prompt token count after truncation.

@@ -354,6 +354,14 @@ auto_budget = true
 soft_compaction_threshold = 0.60
 # Hard compaction threshold (0.0-1.0): full LLM summarization when context usage exceeds this.
 hard_compaction_threshold = 0.90
+# How per-turn context reaches the model: auto | replace | append.
+# append keeps the prompt cache valid across turns; auto picks it when the provider caches prefixes.
+# Pinned per conversation; a change applies after /clear.
+context_layout = "auto"
+# Per-turn context cap in the append layout, as a share of the context budget (0, 0.25].
+turn_context_budget_ratio = 0.05
+# Share of the history slot a trim brings history down to in the append layout (0, 1].
+history_trim_watermark = 0.75
 # Number of recent messages to preserve during compaction
 compaction_preserve_tail = 6
 # Turns to skip after a successful compaction (cooldown guard).

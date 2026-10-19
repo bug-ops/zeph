@@ -33,6 +33,24 @@ pub(crate) struct UsageTracker {
 }
 
 impl UsageTracker {
+    /// Forget the usage of the previous response, keeping only the time-to-first-byte.
+    ///
+    /// Called when a streamed call opens, so a stream that fails before reporting any usage
+    /// leaves no values from an earlier call behind. The TTFB survives because the HTTP layer
+    /// records it for the request that is about to be sent.
+    pub(crate) fn clear_response(&self) {
+        if let Ok(mut g) = self.last_usage.lock() {
+            *g = None;
+        }
+        if let Ok(mut g) = self.last_cache.lock() {
+            *g = None;
+        }
+        if let Ok(mut g) = self.last_reasoning.lock() {
+            *g = None;
+        }
+        self.record_auxiliary(None);
+    }
+
     /// Record the auxiliary usage of the most recent response; `None` clears the previous value.
     pub(crate) fn record_auxiliary(&self, usage: Option<crate::provider::AuxiliaryUsage>) {
         if let Ok(mut g) = self.last_auxiliary.lock() {
@@ -126,6 +144,22 @@ mod tests {
             Some(7),
             "issue #6549 D-S2: a later attempt's TTFB must overwrite an earlier one"
         );
+    }
+
+    #[test]
+    fn clear_response_keeps_only_ttft() {
+        let tracker = UsageTracker::default();
+        tracker.record_usage(1, 2);
+        tracker.record_cache(3, 4);
+        tracker.record_reasoning(5);
+        tracker.record_auxiliary(Some(crate::provider::AuxiliaryUsage::default()));
+        tracker.record_ttft(9);
+        tracker.clear_response();
+        assert_eq!(tracker.last_usage(), None);
+        assert_eq!(tracker.last_cache_usage(), None);
+        assert_eq!(tracker.last_reasoning(), None);
+        assert_eq!(tracker.last_auxiliary(), None);
+        assert_eq!(tracker.last_ttft_ms(), Some(9));
     }
 
     #[test]
