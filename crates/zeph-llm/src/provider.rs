@@ -759,6 +759,7 @@ impl<'a> AgentVisible<'a> {
     }
 
     /// Iterate over the visible messages in order.
+    #[allow(clippy::must_use_candidate)]
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = &'a Message> + '_ {
         self.0.iter().copied()
     }
