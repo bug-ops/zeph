@@ -24,7 +24,7 @@ use zeph_common::memory::{
 };
 use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 
-use crate::budget::BudgetAllocation;
+use crate::budget::{AllocationMode, BudgetAllocation, ContextBudget};
 use crate::error::AssemblerError;
 use crate::input::{ContextAssemblyInput, ItemKeys};
 use crate::slot::ContextSlot;
@@ -354,7 +354,122 @@ async fn drive_fetchers(
     Ok(())
 }
 
+/// Budget split and effective strategy of one turn, as returned by
+/// [`ContextAssembler::allocation`].
+///
+/// The `append` layout reads `allocation.recent_history` to trim history to its budget before
+/// the single retrieval fetch.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_context::assembler::TurnAllocation;
+///
+/// fn history_budget(turn: &TurnAllocation) -> usize {
+///     turn.allocation.recent_history
+/// }
+/// ```
+#[derive(Debug)]
+pub struct TurnAllocation {
+    /// Token split across the context sources.
+    pub allocation: BudgetAllocation,
+    /// Whether the effective strategy is `MemoryFirst` for this turn.
+    pub memory_first: bool,
+}
+
 impl ContextAssembler {
+    /// Compute the per-turn budget split and the effective context strategy.
+    ///
+    /// Pure: depends on the system prompt (first message), skills prompt, session digest and
+    /// strategy, never on history length or retrieval results. Callers that must trim history
+    /// before fetching (the `append` layout) use it to learn `recent_history` up front;
+    /// [`ContextAssembler::gather`] calls it internally, so both always agree.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use zeph_config::{
+    /// #     ContextStrategy, DocumentConfig, GraphConfig, MemCotConfig, PersonaConfig,
+    /// #     ReasoningConfig, TrajectoryConfig, TreeConfig,
+    /// # };
+    /// # use zeph_context::budget::{AllocationMode, ContextBudget};
+    /// # use zeph_context::assembler::ContextAssembler;
+    /// # use zeph_context::input::{ContextMemoryView, ItemKeys};
+    /// # use zeph_llm::provider::{Message, Role};
+    /// # struct Tc;
+    /// # impl zeph_common::memory::TokenCounting for Tc {
+    /// #     fn count_tokens(&self, t: &str) -> usize { t.split_whitespace().count() }
+    /// #     fn count_tool_schema_tokens(&self, v: &serde_json::Value) -> usize { v.to_string().len() }
+    /// # }
+    /// # let memory = ContextMemoryView {
+    /// #     memory: None,
+    /// #     conversation_id: None,
+    /// #     recall_limit: 10,
+    /// #     cross_session_score_threshold: 0.5,
+    /// #     context_strategy: ContextStrategy::default(),
+    /// #     crossover_turn_threshold: 5,
+    /// #     cached_session_digest: None,
+    /// #     graph_config: GraphConfig::default(),
+    /// #     document_config: DocumentConfig::default(),
+    /// #     persona_config: PersonaConfig::default(),
+    /// #     trajectory_config: TrajectoryConfig::default(),
+    /// #     reasoning_config: ReasoningConfig::default(),
+    /// #     memcot_config: MemCotConfig::default(),
+    /// #     memcot_state: None,
+    /// #     tree_config: TreeConfig::default(),
+    /// #     item_keys: ItemKeys::default(),
+    /// # };
+    /// let budget = ContextBudget::new(10_000, 0.1);
+    /// let messages = [Message::from_legacy(Role::System, "You are a helpful agent.")];
+    ///
+    /// let turn = ContextAssembler::allocation(
+    ///     &budget,
+    ///     &memory,
+    ///     &messages,
+    ///     "skills",
+    ///     &Tc,
+    ///     0,
+    ///     AllocationMode::Append { turn_cap: 500 },
+    /// );
+    ///
+    /// assert!(turn.allocation.recent_history > 0);
+    /// assert!(!turn.memory_first);
+    /// ```
+    #[must_use]
+    pub fn allocation(
+        budget: &ContextBudget,
+        memory: &crate::input::ContextMemoryView,
+        messages: &[Message],
+        skills_prompt: &str,
+        tc: &dyn TokenCounting,
+        sidequest_turn_counter: u64,
+        mode: AllocationMode,
+    ) -> TurnAllocation {
+        let memory_first = resolve_effective_strategy(memory, sidequest_turn_counter)
+            == zeph_config::ContextStrategy::MemoryFirst;
+        let system_prompt = messages
+            .first()
+            .filter(|m| m.role == Role::System)
+            .map_or("", |m| m.content.as_str());
+        let digest_tokens = memory
+            .cached_session_digest
+            .as_ref()
+            .map_or(0, |(_, tokens)| *tokens);
+        let allocation = budget.allocate_with_mode(
+            system_prompt,
+            skills_prompt,
+            tc,
+            memory.graph_config.enabled,
+            digest_tokens,
+            memory_first,
+            mode,
+        );
+        TurnAllocation {
+            allocation,
+            memory_first,
+        }
+    }
+
     /// Gather all context sources concurrently and return a [`PreparedContext`].
     ///
     /// Returns an empty `PreparedContext` immediately when `context_manager.budget` is `None`.
@@ -377,27 +492,16 @@ impl ContextAssembler {
         let memory = input.memory;
         let tc = input.token_counter;
 
-        let effective_strategy = resolve_effective_strategy(memory, input.sidequest_turn_counter);
-        let memory_first = effective_strategy == zeph_config::ContextStrategy::MemoryFirst;
-
-        let system_prompt = input
-            .messages
-            .first()
-            .filter(|m| m.role == Role::System)
-            .map_or("", |m| m.content.as_str());
-
-        let digest_tokens = memory
-            .cached_session_digest
-            .as_ref()
-            .map_or(0, |(_, tokens)| *tokens);
-
-        let alloc = budget.allocate_with_mode(
-            system_prompt,
+        let TurnAllocation {
+            allocation: alloc,
+            memory_first,
+        } = Self::allocation(
+            budget,
+            memory,
+            input.messages,
             input.skills_prompt,
             tc,
-            memory.graph_config.enabled,
-            digest_tokens,
-            memory_first,
+            input.sidequest_turn_counter,
             input.allocation_mode,
         );
 
@@ -1516,6 +1620,54 @@ mod tests {
     // finding S3: a count-proxy would stay green even if the gate scheduled the wrong fetcher).
     // This test drives the real `gather()` entry point end-to-end and asserts on the resulting
     // `PreparedContext` slots directly.
+
+    #[tokio::test]
+    async fn allocation_matches_the_history_budget_gather_reports() {
+        let memory = empty_view();
+        let mut context_manager = crate::manager::ContextManager::new();
+        context_manager.budget = Some(crate::budget::ContextBudget::new(10_000, 0.1));
+        let tc = NaiveTokenCounter;
+        let messages = [Message::from_legacy(
+            Role::System,
+            "You are a helpful agent.",
+        )];
+        let mode = crate::budget::AllocationMode::Append { turn_cap: 500 };
+
+        let turn = ContextAssembler::allocation(
+            context_manager.budget.as_ref().unwrap(),
+            &memory,
+            &messages,
+            "skills",
+            &tc,
+            0,
+            mode,
+        );
+        let input = crate::input::ContextAssemblyInput {
+            memory: &memory,
+            context_manager: &context_manager,
+            token_counter: &tc,
+            skills_prompt: "skills",
+            index: None,
+            correction_config: None,
+            sidequest_turn_counter: 0,
+            messages: &messages,
+            query: "q",
+            scrub: |s| s.into(),
+            active_levels: &[],
+            active_types: &[],
+            router: Box::new(NoopRouter),
+            planned_next_tools: &[],
+            allocation_mode: mode,
+        };
+        let prepared = ContextAssembler::gather(&input).await.unwrap();
+
+        assert!(turn.allocation.recent_history > 0);
+        assert_eq!(
+            prepared.recent_history_budget,
+            turn.allocation.recent_history
+        );
+        assert_eq!(prepared.memory_first, turn.memory_first);
+    }
 
     #[tokio::test]
     async fn gather_with_user_fact_active_type_excludes_other_slots_sc4() {

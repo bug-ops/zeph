@@ -1008,18 +1008,24 @@ pub fn migrate_memory_consent_gate_config(toml_src: &str) -> Result<MigrationRes
     })
 }
 
-/// Add a commented advisory for `context_layout`, `turn_context_budget_ratio` and
-/// `history_trim_watermark` under `[memory]` if absent (spec 088, #6846).
+/// Marker line of the step 111 explanation; its presence anywhere means the step already ran.
+pub(super) const CONTEXT_LAYOUT_MARKER: &str = "# Context layout (spec 088, #6846)";
+
+/// Add an explanatory comment inside `[memory]` for `context_layout`,
+/// `turn_context_budget_ratio` and `history_trim_watermark` (spec 088, #6846).
 ///
-/// The fields have serde defaults so existing configs parse unchanged; this step only
-/// surfaces them for users upgrading from older configs.
+/// The fields have serde defaults so existing configs parse unchanged. This step only writes the
+/// explanation; the commented `# key = value` lines come from the catch-all
+/// [`ConfigMigrator`](super::ConfigMigrator) pass, so each key appears exactly once. Configs
+/// that an earlier version of this step already migrated carry the marker (or the key) outside
+/// `[memory]` and are left untouched.
 ///
 /// # Errors
 ///
 /// Returns `MigrateError::Parse` if the TOML cannot be parsed.
 pub fn migrate_memory_context_layout(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    // Idempotency: comments are invisible to toml_edit, so check the raw source.
-    if toml_src.contains("context_layout") {
+    // Idempotency: comments are invisible to toml_edit, so check the whole raw source.
+    if toml_src.contains("context_layout") || toml_src.contains(CONTEXT_LAYOUT_MARKER) {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
             changed_count: 0,
@@ -1036,15 +1042,17 @@ pub fn migrate_memory_context_layout(toml_src: &str) -> Result<MigrationResult, 
         });
     }
 
-    let comment = "\n# Context layout (spec 088, #6846): how per-turn context reaches the model.\n\
+    let comment = format!(
+        "{CONTEXT_LAYOUT_MARKER}: how per-turn context reaches the model.\n\
          # append keeps the prompt cache valid across turns; auto picks it when the provider\n\
          # caches prefixes. Pinned per conversation; a change applies after /clear.\n\
-         # Add these keys under the [memory] table:\n\
-         # context_layout = \"auto\"          # auto | replace | append\n\
-         # turn_context_budget_ratio = 0.05   # per-turn context cap, (0, 0.25]\n\
-         # history_trim_watermark = 0.75      # trim target share of the history slot, (0, 1]\n";
-    let raw = doc.to_string();
-    let output = format!("{raw}{comment}");
+         # Related keys follow: context_layout, turn_context_budget_ratio, history_trim_watermark.\n"
+    );
+    let mut raw = doc.to_string();
+    if !raw.ends_with('\n') {
+        raw.push('\n');
+    }
+    let output = insert_after_section(&raw, "memory", &comment);
 
     Ok(MigrationResult {
         output,

@@ -1964,7 +1964,9 @@ impl LlmProvider for ClaudeProvider {
 
     fn prefix_cache(&self) -> crate::provider::PrefixCache {
         if self.cache_user_messages {
-            crate::provider::PrefixCache::Prefix
+            crate::provider::PrefixCache::Prefix {
+                ttl: Some(self.prompt_cache_ttl.unwrap_or_default().duration()),
+            }
         } else {
             crate::provider::PrefixCache::None
         }
@@ -2139,9 +2141,7 @@ impl LlmProvider for ClaudeProvider {
                 resp.stop_details.as_ref(),
             )?;
             let mut parsed = parse_tool_response(resp);
-            if let ChatResponse::ToolUse { replay, .. } = &mut parsed {
-                *replay = guard.merged_replay(*replay, history.wire());
-            }
+            parsed.set_replay(guard.merged_replay(parsed.replay(), history.wire()));
             guard.commit(&self.prefix_guard);
             tracing::debug!(summary = %parsed.log_summary(), "parsed ChatResponse");
             return Ok(parsed);

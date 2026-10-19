@@ -545,15 +545,14 @@ pub(super) fn parse_tool_response(resp: ToolApiResponse) -> ChatResponse {
             "response truncated by max_tokens with pending tool calls; discarding incomplete tool use"
         );
         let combined = text_parts.join("");
-        return with_compaction(
-            ChatResponse::text(if combined.is_empty() {
-                "[Response truncated: max_tokens limit reached. Please reduce the request scope.]"
-                    .to_owned()
-            } else {
-                combined
-            }),
-            compaction_summary,
-        );
+        let mut response = ChatResponse::text(if combined.is_empty() {
+            "[Response truncated: max_tokens limit reached. Please reduce the request scope.]"
+                .to_owned()
+        } else {
+            combined
+        });
+        response.set_replay(replay);
+        return with_compaction(response, compaction_summary);
     }
 
     let response = if tool_count == 0 {
@@ -569,7 +568,9 @@ pub(super) fn parse_tool_response(resp: ToolApiResponse) -> ChatResponse {
         } else {
             combined
         };
-        ChatResponse::text(text)
+        let mut response = ChatResponse::text(text);
+        response.set_replay(replay);
+        response
     } else {
         ChatResponse::ToolUse {
             content,

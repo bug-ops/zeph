@@ -326,6 +326,19 @@ pub struct ContextDelta {
     pub trimmed_messages: usize,
 }
 
+/// Whether the soft compaction tier may rewrite history on this call.
+///
+/// The caller closes the gate while the provider prefix cache is still warm, so a soft rewrite
+/// would only invalidate a cache that has not yet expired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SoftTierGate {
+    /// The soft tier runs as usual.
+    #[default]
+    Open,
+    /// The soft tier is skipped; the hard tier is unaffected.
+    Deferred,
+}
+
 /// Borrow-lens over all fields needed for compaction and summarization operations.
 ///
 /// Every field maps to a specific sub-field of `Agent<C>` and uses a type from a
@@ -460,6 +473,11 @@ pub struct ContextSummarizationView<'a> {
     /// Thinking-signature binding of the conversation provider (not the summarization
     /// provider). Gates the thinking strip after every history prefix edit.
     pub thinking_binding: zeph_llm::provider::ThinkingBinding,
+
+    // ── Soft tier gate ────────────────────────────────────────────────────────
+    /// Whether `maybe_compact` may run the soft tier. Does not affect mid-iteration soft
+    /// compaction or the hard tier.
+    pub soft_tier_gate: SoftTierGate,
 }
 
 impl ContextSummarizationView<'_> {

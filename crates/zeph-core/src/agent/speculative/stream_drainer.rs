@@ -184,6 +184,7 @@ impl SpeculativeStreamDrainer {
             }
         } else {
             let mut response = ChatResponse::text(content.text().unwrap_or_default());
+            response.set_replay(replay);
             if let Some(summary) = compaction {
                 response.attach_compaction(summary);
             }
@@ -711,6 +712,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn text_response_keeps_the_stream_thinking_replay() {
+        use zeph_config::tools::SpeculativeConfig;
+
+        let engine = Arc::new(super::super::SpeculationEngine::new(
+            Arc::new(super::super::tests::AlwaysOkExecutor),
+            SpeculativeConfig::default(),
+        ));
+        let events = vec![
+            ToolSseEvent::ThinkingReplay(ThinkingReplay::Dropped {
+                first_message_index: 2,
+            }),
+            ToolSseEvent::ContentChunk("plain answer".into()),
+        ];
+        let response = SpeculativeStreamDrainer::new(
+            Box::pin(tokio_stream::iter(events)),
+            engine,
+            0.8,
+            DispatchGate::open(),
+        )
+        .drive()
+        .await
+        .unwrap()
+        .response;
+
+        assert_matches!(response, ChatResponse::Text { .. });
+        assert_eq!(
+            response.replay(),
+            ThinkingReplay::Dropped {
+                first_message_index: 2
+            }
+        );
+    }
+
+    #[tokio::test]
     async fn text_response_keeps_the_stream_compaction() {
         use zeph_config::tools::SpeculativeConfig;
 
@@ -733,7 +768,10 @@ mod tests {
         .unwrap()
         .response;
 
-        let ChatResponse::Text { text, compaction } = response else {
+        let ChatResponse::Text {
+            text, compaction, ..
+        } = response
+        else {
             panic!("expected Text");
         };
         assert_eq!(text, "plain answer");

@@ -253,6 +253,8 @@ async fn drive_tool_stream(
             // drive`'s same limitation — not yet surfaced to the caller). Any future
             // `#[non_exhaustive]` variant is likewise a no-op here rather than a compile
             // error on an upstream addition.
+            // TODO(#6862): `ThinkingReplay` is dropped here, so a streamed subagent turn
+            // never learns which thinking the provider discarded.
             _ => {}
         }
     }
@@ -641,18 +643,15 @@ enum TurnOutcome {
 
 /// Strip from `messages` the thinking the provider reported dropping from this request.
 fn strip_dropped_thinking(messages: &mut [Message], response: &ChatResponse) {
-    if let ChatResponse::ToolUse {
-        replay: ThinkingReplay::Dropped {
-            first_message_index,
-        },
-        ..
-    } = response
+    if let ThinkingReplay::Dropped {
+        first_message_index,
+    } = response.replay()
     {
         tracing::warn!(
             first_message_index,
             "provider dropped thinking blocks; stripping the same range from history"
         );
-        strip_thinking_from(messages, *first_message_index);
+        strip_thinking_from(messages, first_message_index);
     }
 }
 
@@ -1404,6 +1403,27 @@ mod trim_message_history_tests {
         let (result, calls, _) = run_retry(2, true).await;
         assert!(result.is_err_and(|e| e.is_thinking_binding_mismatch()));
         assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn dropped_thinking_is_stripped_for_text_and_tool_use_responses() {
+        let dropped = ThinkingReplay::Dropped {
+            first_message_index: 1,
+        };
+        let mut text = ChatResponse::text("done");
+        text.set_replay(dropped);
+        let mut tool_use = ChatResponse::tool_use(None, vec![]);
+        tool_use.set_replay(dropped);
+
+        for response in [text, tool_use] {
+            let mut messages = history_with_thinking(true);
+            strip_dropped_thinking(&mut messages, &response);
+            assert!(!has_thinking(&messages), "{response:?}");
+        }
+
+        let mut kept = history_with_thinking(true);
+        strip_dropped_thinking(&mut kept, &ChatResponse::text("done"));
+        assert!(has_thinking(&kept), "an intact response strips nothing");
     }
 
     #[test]

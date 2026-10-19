@@ -11,6 +11,7 @@ use super::types::{
 };
 use super::*;
 use crate::CacheTtl;
+use crate::ThinkingReplay;
 use crate::provider::{ImageData, MessageMetadata, Role, ThinkingBlock};
 use crate::testing::TEST_CLAUDE_MODEL;
 use tokio_stream::StreamExt;
@@ -550,6 +551,70 @@ fn parse_tool_response_text_only() {
     let compaction = result.take_compaction();
     assert_matches!(result, ChatResponse::Text { text: s, .. } if s == "Hello");
     assert!(compaction.is_none());
+}
+
+fn response_with_dropped_thinking(
+    content: &serde_json::Value,
+    stop_reason: &str,
+) -> ToolApiResponse {
+    serde_json::from_value(serde_json::json!({
+        "content": content,
+        "stop_reason": stop_reason,
+        "input_transformations": [{
+            "type": "thinking_dropped",
+            "path": "messages.3.content.0",
+            "reason": "prefix_binding_mismatch"
+        }]
+    }))
+    .unwrap()
+}
+
+#[test]
+fn parse_tool_response_text_reports_the_dropped_thinking() {
+    let resp = response_with_dropped_thinking(
+        &serde_json::json!([{"type": "text", "text": "Hello"}]),
+        "end_turn",
+    );
+    let result = parse_tool_response(resp);
+    assert_matches!(result, ChatResponse::Text { .. });
+    assert_eq!(
+        result.replay(),
+        ThinkingReplay::Dropped {
+            first_message_index: 3
+        }
+    );
+}
+
+#[test]
+fn parse_tool_response_max_tokens_text_reports_the_dropped_thinking() {
+    let resp = response_with_dropped_thinking(
+        &serde_json::json!([{"type": "text", "text": "cut off"}]),
+        "max_tokens",
+    );
+    let result = parse_tool_response(resp);
+    assert_matches!(result, ChatResponse::Text { .. });
+    assert_eq!(
+        result.replay(),
+        ThinkingReplay::Dropped {
+            first_message_index: 3
+        }
+    );
+}
+
+#[test]
+fn parse_tool_response_truncated_tool_use_reports_the_dropped_thinking() {
+    let resp = response_with_dropped_thinking(
+        &serde_json::json!([{"type": "tool_use", "id": "t1", "name": "bash", "input": {}}]),
+        "max_tokens",
+    );
+    let result = parse_tool_response(resp);
+    assert_matches!(result, ChatResponse::Text { .. });
+    assert_eq!(
+        result.replay(),
+        ThinkingReplay::Dropped {
+            first_message_index: 3
+        }
+    );
 }
 
 #[test]

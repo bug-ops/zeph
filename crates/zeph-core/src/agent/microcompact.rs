@@ -11,22 +11,30 @@
 //! `find_preceding_tool_use_name`, `LOW_VALUE_TOOLS`, `CLEARED_SENTINEL_PREFIX`) live in
 //! [`zeph_context::microcompact`].
 
+use crate::agent::context::CacheWarmth;
 use crate::channel::Channel;
 use zeph_context::microcompact::sweep_stale_tool_outputs;
 
 impl<C: Channel> super::Agent<C> {
     /// Returns a warning string when the prompt cache has likely expired due to session idle time.
     ///
-    /// Returns `None` when microcompact is disabled, `last_assistant_at` is `None`,
-    /// or the elapsed gap is below the threshold.
+    /// Returns `None` when microcompact is disabled, `last_assistant_at` is `None`, or the
+    /// cache is still warm. Judges by the provider's cache TTL; falls back to
+    /// `gap_threshold_minutes` when the provider reports none.
     pub(super) fn cache_expiry_warning(&self) -> Option<String> {
         let cfg = &self.services.memory.subsystems.microcompact_config;
         if !cfg.enabled {
             return None;
         }
-        let last_at = self.services.session.last_assistant_at?;
-        let elapsed_mins = last_at.elapsed().as_secs_f64() / 60.0;
-        if elapsed_mins < f64::from(cfg.gap_threshold_minutes) {
+        let idle = self.assistant_idle()?;
+        let expired = match self.cache_warmth() {
+            CacheWarmth::Expired => true,
+            CacheWarmth::Warm => false,
+            CacheWarmth::Unknown => {
+                idle.as_secs_f64() / 60.0 >= f64::from(cfg.gap_threshold_minutes)
+            }
+        };
+        if !expired {
             return None;
         }
         let tokens = if self.runtime.providers.cached_prompt_tokens > 0 {
@@ -55,11 +63,11 @@ impl<C: Channel> super::Agent<C> {
             return;
         }
 
-        let Some(last_at) = self.services.session.last_assistant_at else {
+        let Some(idle) = self.assistant_idle() else {
             return;
         };
 
-        let elapsed_mins = last_at.elapsed().as_secs_f64() / 60.0;
+        let elapsed_mins = idle.as_secs_f64() / 60.0;
         if elapsed_mins < f64::from(cfg.gap_threshold_minutes) {
             return;
         }
@@ -142,6 +150,57 @@ mod tests {
         });
         agent.services.session.last_assistant_at = Some(std::time::Instant::now());
         assert!(agent.cache_expiry_warning().is_none());
+    }
+
+    /// Agent whose last reply is "just now"; the TTL (zero expires at once, a day never does)
+    /// and the gap threshold (0 or 60 minutes) stand in for idle time, so no test subtracts from
+    /// `Instant::now()`.
+    fn agent_with_cache(
+        ttl: Option<std::time::Duration>,
+        gap_threshold_minutes: u32,
+    ) -> Agent<MockChannel> {
+        let cache = zeph_llm::provider::PrefixCache::Prefix { ttl };
+        let mut agent = Agent::new(
+            zeph_llm::any::AnyProvider::Mock(
+                zeph_llm::mock::MockProvider::with_responses(vec![]).with_prefix_cache(cache),
+            ),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.services.memory.subsystems.microcompact_config = MicrocompactConfig {
+            enabled: true,
+            gap_threshold_minutes,
+            keep_recent: 1,
+        };
+        agent.services.session.last_assistant_at = Some(std::time::Instant::now());
+        agent
+    }
+
+    const DAY: std::time::Duration = std::time::Duration::from_hours(24);
+
+    #[test]
+    fn cache_expiry_warning_follows_the_provider_ttl() {
+        assert!(
+            agent_with_cache(Some(DAY), 0)
+                .cache_expiry_warning()
+                .is_none(),
+            "inside the TTL the gap threshold is irrelevant"
+        );
+        assert!(
+            agent_with_cache(Some(std::time::Duration::ZERO), 60)
+                .cache_expiry_warning()
+                .is_some(),
+            "past the TTL the warning fires before the gap threshold"
+        );
+    }
+
+    #[test]
+    fn cache_expiry_warning_falls_back_to_gap_threshold_without_ttl() {
+        assert!(agent_with_cache(None, 60).cache_expiry_warning().is_none());
+        assert!(agent_with_cache(None, 0).cache_expiry_warning().is_some());
     }
 
     #[test]

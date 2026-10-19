@@ -375,41 +375,155 @@ fn merge_table_commented(
     (count, comments)
 }
 
+/// Byte range of `[section]` in `doc`: from the start of its header line to the start of the next
+/// `[...]` header (or the end of the document).
+///
+/// Header lines are recognised only at bracket depth 0 outside multi-line string values, so a
+/// `[memory]` inside a comment, a string or a multi-line array is never mistaken for the section.
+fn section_span(doc: &str, section: &str) -> Option<std::ops::Range<usize>> {
+    let header = format!("[{section}]");
+    let mut lines = top_level_lines(doc);
+    let start = lines.find(|(_, line)| {
+        line.trim_start()
+            .strip_prefix(header.as_str())
+            .is_some_and(|rest| rest.trim_start().is_empty() || rest.trim_start().starts_with('#'))
+    })?;
+    let end = lines
+        .find(|(_, line)| line.trim_start().starts_with('['))
+        .map_or(doc.len(), |(offset, _)| offset);
+    Some(start.0..end)
+}
+
+/// Lexical state carried from one line of a TOML document to the next.
+#[derive(Debug, Clone, Copy, Default)]
+struct ScanState {
+    /// Multi-line string delimiter still open.
+    open_string: Option<&'static str>,
+    /// Nesting depth of `[` brackets (multi-line arrays) outside strings and comments.
+    depth: usize,
+}
+
+impl ScanState {
+    fn at_top_level(self) -> bool {
+        self.open_string.is_none() && self.depth == 0
+    }
+}
+
+/// Lines of `doc` that begin at bracket depth 0 outside a multi-line string, with their byte
+/// offsets. Rows of a multi-line array (`  [3],`) are therefore never reported.
+fn top_level_lines(doc: &str) -> impl Iterator<Item = (usize, &str)> {
+    let mut state = ScanState::default();
+    let mut offset = 0;
+    doc.split_inclusive('\n').filter_map(move |line| {
+        let at = offset;
+        offset += line.len();
+        let starts_at_top = state.at_top_level();
+        state = scan_line(line, state);
+        starts_at_top.then_some((at, line.trim_end_matches(['\r', '\n'])))
+    })
+}
+
+/// Byte index of the closing `delim` in `rest`; backslash escapes are honoured in `"""` strings.
+fn find_string_close(rest: &str, delim: &str) -> Option<usize> {
+    let mut escaped = false;
+    for (i, c) in rest.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if delim == "\"\"\"" && c == '\\' {
+            escaped = true;
+        } else if rest[i..].starts_with(delim) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// State at the end of `line`, given the state before it.
+///
+/// Quoted keys and values are skipped as units, so a `#` or bracket inside quotes (`[a."x#1"]`)
+/// neither starts a comment nor changes the depth.
+fn scan_line(line: &str, mut state: ScanState) -> ScanState {
+    let mut rest = line;
+    while !rest.is_empty() {
+        if let Some(delim) = state.open_string {
+            let Some(i) = find_string_close(rest, delim) else {
+                return state;
+            };
+            state.open_string = None;
+            rest = &rest[i + delim.len()..];
+            continue;
+        }
+        let Some(i) = rest.find(['#', '"', '\'', '[', ']']) else {
+            return state;
+        };
+        let (token, tail) = rest[i..].split_at(1);
+        match token {
+            "#" => return state,
+            "[" => {
+                state.depth += 1;
+                rest = tail;
+            }
+            "]" => {
+                state.depth = state.depth.saturating_sub(1);
+                rest = tail;
+            }
+            q => {
+                if rest[i..].starts_with(&q.repeat(3)) {
+                    state.open_string = Some(if q == "\"" { "\"\"\"" } else { "\'\'\'" });
+                    rest = &rest[i + 3..];
+                } else {
+                    rest = skip_single_line_string(tail, q);
+                }
+            }
+        }
+    }
+    state
+}
+
+/// Remainder of a single-line string after its opening quote `q`.
+fn skip_single_line_string<'a>(tail: &'a str, q: &str) -> &'a str {
+    let mut escaped = false;
+    for (i, c) in tail.char_indices() {
+        if q == "\"" && c == '\\' && !escaped {
+            escaped = true;
+            continue;
+        }
+        if !escaped && tail[i..].starts_with(q) {
+            return &tail[i + q.len()..];
+        }
+        escaped = false;
+    }
+    ""
+}
+
 /// Return the body of `[section]` in `doc` — the text between the section header line
 /// and the next top-level `[...]` header (or end of document).
 ///
 /// Used to scope idempotency guards to a single section so that a comment present in
 /// one section does not suppress insertion into a different section with the same key name.
 fn section_body<'a>(doc: &'a str, section: &str) -> &'a str {
-    let header = format!("[{section}]");
-    let Some(section_start) = doc.find(&header) else {
-        return "";
-    };
-    let body_start = section_start + header.len();
-    let body_end = doc[body_start..]
-        .find("\n[")
-        .map_or(doc.len(), |r| body_start + r);
-    &doc[body_start..body_end]
+    section_span(doc, section).map_or("", |span| {
+        let header_end = doc[span.start..]
+            .find('\n')
+            .map_or(span.end, |i| span.start + i + 1);
+        &doc[header_end.min(span.end)..span.end]
+    })
 }
 
 /// Insert `text` after the last line belonging to `[section_name]` and before the next
 /// top-level `[section]` header (or at the end of the file if no such header follows).
 ///
 /// This is a purely textual operation: it does not parse TOML, making it immune to
-/// `toml_edit` decor round-trip loss.
+/// `toml_edit` decor round-trip loss. The header is matched at the start of a line outside
+/// multi-line strings; when it is absent (the table is implicit, or only mentioned in a comment
+/// or string) the text is appended at the end of the file.
 fn insert_after_section(raw: &str, section_name: &str, text: &str) -> String {
-    let header = format!("[{section_name}]");
-    let Some(section_start) = raw.find(&header) else {
-        return format!("{raw}{text}");
-    };
-    // Find the next top-level section `[...]` after `section_start`.
-    let search_from = section_start + header.len();
-    // Look for `\n[` which signals a new top-level section.
-    let insert_pos = raw[search_from..]
-        .find("\n[")
-        .map_or(raw.len(), |rel| search_from + rel + 1);
-    let mut out = String::with_capacity(raw.len() + text.len());
+    let insert_pos = section_span(raw, section_name).map_or(raw.len(), |span| span.end);
+    let mut out = String::with_capacity(raw.len() + text.len() + 1);
     out.push_str(&raw[..insert_pos]);
+    if insert_pos == raw.len() && !raw.is_empty() && !raw.ends_with('\n') {
+        out.push('\n');
+    }
     out.push_str(text);
     out.push_str(&raw[insert_pos..]);
     out

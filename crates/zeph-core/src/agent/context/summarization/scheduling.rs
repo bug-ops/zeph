@@ -33,7 +33,9 @@ impl<C: Channel> Agent<C> {
         let msg_count_before = self.msg.messages.len();
         let tokens_before = self.runtime.providers.cached_prompt_tokens;
 
+        let soft_tier_gate = self.soft_tier_gate();
         let mut summ = self.summarization_view();
+        summ.soft_tier_gate = soft_tier_gate;
         svc.maybe_compact(&mut summ, &status)
             .await
             .map_err(|e| crate::agent::error::AgentError::ContextError(format!("{e:#}")))?;

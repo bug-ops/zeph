@@ -30,7 +30,8 @@ use crate::agent::Agent;
 use crate::channel::Channel;
 
 /// Sources whose section is state compared with the last value sent.
-const STATE_SOURCES: [&str; 6] = [
+const STATE_SOURCES: [&str; 7] = [
+    "active_skills",
     "environment",
     "catalog_update",
     "instructions_update",
@@ -474,12 +475,12 @@ impl<C: Channel> Agent<C> {
         self.msg.layout.directive_basis = Some(present.clone());
         let mut b = DirectiveBuilder::new(&present, &last_state);
 
-        if !self.services.skill.active_skill_names.is_empty() {
-            b.always(format!(
-                "<active_skills>{}</active_skills>",
-                self.services.skill.active_skill_names.join(", ")
-            ));
-        }
+        b.state(
+            "active_skills",
+            self.active_skills_text(input.skill_fallback_mode),
+            TurnContextTrust::Trusted,
+            StateBaseline::Always,
+        );
         if let Some((prev, current)) = render {
             self.add_prompt_deltas(&mut b, prev, current, input);
         }
@@ -510,6 +511,21 @@ impl<C: Channel> Agent<C> {
             }
         }
         self.msg.pending_preamble.directives = block;
+    }
+
+    /// The `<active_skills>` line, or an empty string when there is nothing to announce.
+    ///
+    /// Names are sorted in a local copy so a pure reorder by the matcher is not re-sent;
+    /// `active_skill_names` itself keeps its match order (corrections attribute to its first
+    /// entry). In fallback mode the list is the whole catalog, so nothing is announced.
+    fn active_skills_text(&self, skill_fallback_mode: bool) -> String {
+        let names = &self.services.skill.active_skill_names;
+        if skill_fallback_mode || names.is_empty() {
+            return String::new();
+        }
+        let mut sorted: Vec<&str> = names.iter().map(String::as_str).collect();
+        sorted.sort_unstable();
+        format!("<active_skills>{}</active_skills>", sorted.join(", "))
     }
 
     /// Delta sections for session-scoped prompt inputs that differ from the last render.
@@ -1085,6 +1101,72 @@ mod tests {
         let text = run_turn(&mut agent, input).await;
         assert!(text.contains("<active_skills>alpha, beta</active_skills>"));
         assert!(!text.contains("<available_skills>"));
+    }
+
+    #[tokio::test]
+    async fn active_skills_line_is_sent_only_when_it_changes() {
+        let mut agent = append_agent();
+        agent.services.skill.active_skill_names = vec!["beta".into(), "alpha".into()];
+        let t1 = run_turn(&mut agent, inputs("c", &[], vec![])).await;
+        assert!(t1.contains("<active_skills>alpha, beta</active_skills>"));
+
+        agent.services.skill.active_skill_names = vec!["alpha".into(), "beta".into()];
+        let t2 = run_turn(&mut agent, inputs("c", &[], vec![])).await;
+        assert!(
+            !t2.contains("active_skills"),
+            "a pure reorder is not a change: {t2}"
+        );
+
+        agent.services.skill.active_skill_names = vec!["gamma".into()];
+        let t3 = run_turn(&mut agent, inputs("c", &[], vec![])).await;
+        assert!(t3.contains("<active_skills>gamma</active_skills>"));
+
+        agent.services.skill.active_skill_names = vec!["alpha".into(), "beta".into()];
+        let t4 = run_turn(&mut agent, inputs("c", &[], vec![])).await;
+        assert!(
+            t4.contains("<active_skills>alpha, beta</active_skills>"),
+            "A-B-A is announced"
+        );
+    }
+
+    #[tokio::test]
+    async fn active_skills_keeps_match_order_in_agent_state() {
+        let mut agent = append_agent();
+        agent.services.skill.active_skill_names = vec!["zeta".into(), "alpha".into()];
+        run_turn(&mut agent, inputs("c", &[], vec![])).await;
+        assert_eq!(
+            agent
+                .services
+                .skill
+                .active_skill_names
+                .first()
+                .map(String::as_str),
+            Some("zeta")
+        );
+    }
+
+    #[tokio::test]
+    async fn active_skills_is_not_sent_in_fallback_mode() {
+        let mut agent = append_agent();
+        agent.services.skill.active_skill_names = vec!["alpha".into(), "beta".into()];
+        let mut input = inputs("c", &[], vec![]);
+        input.skill_fallback_mode = true;
+        let text = run_turn(&mut agent, input).await;
+        assert!(!text.contains("active_skills"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn active_skills_entering_fallback_mode_clears_the_sent_list_once() {
+        let mut agent = append_agent();
+        agent.services.skill.active_skill_names = vec!["alpha".into()];
+        run_turn(&mut agent, inputs("c", &[], vec![])).await;
+
+        let mut input = inputs("c", &[], vec![]);
+        input.skill_fallback_mode = true;
+        let t2 = run_turn(&mut agent, input.clone()).await;
+        assert!(t2.contains("<active_skills_cleared/>"));
+        let t3 = run_turn(&mut agent, input).await;
+        assert!(!t3.contains("active_skills"));
     }
 
     #[tokio::test]

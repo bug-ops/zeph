@@ -901,6 +901,7 @@ mod tests {
                     fidelity_compress_provider: None,
                     current_query: String::new(),
                     thinking_binding: zeph_llm::provider::ThinkingBinding::Unbound,
+                    soft_tier_gate: crate::state::SoftTierGate::Open,
                 }
             }
         }

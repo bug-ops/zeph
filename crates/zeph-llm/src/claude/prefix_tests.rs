@@ -124,6 +124,24 @@ fn provider(model: &str) -> ClaudeProvider {
     ClaudeProvider::new("key".into(), model.into(), 4096).with_cache_user_messages(true)
 }
 
+#[test]
+fn prefix_cache_reports_the_configured_ttl() {
+    use crate::provider::PrefixCache;
+    use std::time::Duration;
+
+    let ttl = |p: ClaudeProvider| p.prefix_cache().ttl();
+    assert_eq!(
+        ttl(provider("claude-opus-5-5")),
+        Some(Duration::from_mins(5))
+    );
+    assert_eq!(
+        ttl(provider("claude-opus-5-5").with_prompt_cache_ttl(Some(CacheTtl::OneHour))),
+        Some(Duration::from_hours(1))
+    );
+    let uncached = provider("claude-opus-5-5").with_cache_user_messages(false);
+    assert_eq!(uncached.prefix_cache(), PrefixCache::None);
+}
+
 fn wire_messages(provider: &ClaudeProvider, messages: &[Message]) -> Vec<serde_json::Value> {
     let json = provider.debug_request_json(messages, &tools(), false);
     json["messages"].as_array().cloned().unwrap_or_default()
@@ -447,6 +465,36 @@ mod over_the_wire {
         server
     }
 
+    /// First request answered with a tool use (stores the fingerprint), every later one with
+    /// `text` and `stop_reason`.
+    async fn server_tool_use_then_text(text: &str, stop_reason: &str) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(claude_tool_use_response(
+                "lookup",
+                "t9",
+                &serde_json::json!({"q": "x"}),
+            ))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "msg_text",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-opus-5-5",
+                "content": [{"type": "text", "text": text}],
+                "stop_reason": stop_reason,
+                "usage": {"input_tokens": 10, "output_tokens": 5}
+            })))
+            .mount(&server)
+            .await;
+        server
+    }
+
     fn provider_for(server: &MockServer) -> ClaudeProvider {
         provider("claude-opus-5-5").with_api_url(format!("{}/v1/messages", server.uri()))
     }
@@ -487,14 +535,10 @@ mod over_the_wire {
         history
     }
 
-    /// Send `history` and return the thinking replay the provider reported.
+    /// Send `history` and return the thinking replay the provider reported, whatever the
+    /// response shape.
     async fn send(p: &ClaudeProvider, history: &[Message]) -> ThinkingReplay {
-        let ChatResponse::ToolUse { replay, .. } =
-            p.chat_with_tools(history, &tools()).await.unwrap()
-        else {
-            panic!("expected a tool-use response");
-        };
-        replay
+        p.chat_with_tools(history, &tools()).await.unwrap().replay()
     }
 
     fn without_cache_control(value: &mut serde_json::Value) {
@@ -668,6 +712,51 @@ mod over_the_wire {
         let replay = send(&p, &stamp(changed, 1)).await;
         assert_eq!(replay, ThinkingReplay::Intact);
         assert_eq!(thinking_blocks(&bodies(&server).await[2]), 2);
+    }
+
+    #[tokio::test]
+    async fn text_reply_reports_the_guard_drop() {
+        let server = server_tool_use_then_text("all done", "end_turn").await;
+        let p = provider_for(&server);
+        p.chat_with_tools(&stamp(extended(two_turn_history()), 1), &tools())
+            .await
+            .unwrap();
+
+        let mut changed = extended(two_turn_history());
+        changed[3] = tool_result("t1", "a different result");
+        let response = p
+            .chat_with_tools(&stamp(changed, 1), &tools())
+            .await
+            .unwrap();
+        assert!(matches!(response, ChatResponse::Text { .. }));
+        assert_eq!(
+            response.replay(),
+            ThinkingReplay::Dropped {
+                first_message_index: 3
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn truncated_text_reply_reports_the_guard_drop() {
+        let server = server_tool_use_then_text("cut off", "max_tokens").await;
+        let p = provider_for(&server);
+        p.chat_with_tools(&stamp(two_turn_history(), 1), &tools())
+            .await
+            .unwrap();
+        let mut changed = two_turn_history();
+        changed[0] = Message::from_legacy(Role::System, "another system prompt");
+        let response = p
+            .chat_with_tools(&stamp(changed, 1), &tools())
+            .await
+            .unwrap();
+        assert!(matches!(response, ChatResponse::Text { .. }));
+        assert_eq!(
+            response.replay(),
+            ThinkingReplay::Dropped {
+                first_message_index: 1
+            }
+        );
     }
 
     #[tokio::test]
