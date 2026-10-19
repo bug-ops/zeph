@@ -765,6 +765,221 @@ pub enum MessagePart {
     /// ([`MessagePart::strip_for_persistence`]); provider request builders send it through
     /// [`MessagePart::as_request_text`] / [`Message::to_request_text`].
     RuntimeNote { text: String },
+    /// Per-turn context the agent attaches to a turn input in the `append` context layout
+    /// (retrieved memory/code, delta directives).
+    ///
+    /// Like [`MessagePart::RuntimeNote`] it is never part of `Message::content`, never
+    /// user-visible, never persisted and never fed to a summarizer; request builders send it
+    /// through [`Message::to_request_text`] or render it position-aware.
+    ///
+    /// Never deserialized: a stored or imported `parts_json` must not be able to materialize a
+    /// directive that the request builders would send with system authority.
+    #[serde(skip_deserializing)]
+    TurnContext(TurnContextBlock),
+}
+
+/// Role a [`TurnContextBlock`] plays in the request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum TurnContextKind {
+    /// Operator-authority directives (skill bodies, environment, notices, budget, time).
+    Directives,
+    /// Retrieved data (memory, code index, graph); carries no instruction authority.
+    Retrieved,
+}
+
+/// Content-trust tier of a [`TurnContextBlock`], the minimum over its sections.
+///
+/// Mirrors `zeph_sanitizer::ContentTrustLevel` (which this crate cannot depend on); the
+/// discriminants are identical so the two convert through `u8`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+#[repr(u8)]
+pub enum TurnContextTrust {
+    /// System-authored or direct user content.
+    Trusted = 0,
+    /// Output of local executors.
+    LocalUntrusted = 1,
+    /// External sources: web, MCP, A2A, memory retrieval.
+    ExternalUntrusted = 2,
+}
+
+impl TurnContextTrust {
+    /// The `u8` discriminant, identical to `zeph_sanitizer::ContentTrustLevel as u8`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::provider::TurnContextTrust;
+    ///
+    /// assert_eq!(TurnContextTrust::ExternalUntrusted.as_u8(), 2);
+    /// ```
+    #[must_use]
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// Inverse of [`as_u8`](Self::as_u8); `None` for an unknown discriminant.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::provider::TurnContextTrust;
+    ///
+    /// assert_eq!(TurnContextTrust::from_u8(1), Some(TurnContextTrust::LocalUntrusted));
+    /// assert_eq!(TurnContextTrust::from_u8(9), None);
+    /// ```
+    #[must_use]
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Trusted),
+            1 => Some(Self::LocalUntrusted),
+            2 => Some(Self::ExternalUntrusted),
+            _ => None,
+        }
+    }
+
+    /// Like [`from_u8`](Self::from_u8) but fails closed: an unknown discriminant is treated as
+    /// the least trusted tier, so it can never gain system authority.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::provider::TurnContextTrust;
+    ///
+    /// assert_eq!(TurnContextTrust::from_u8_or_untrusted(0), TurnContextTrust::Trusted);
+    /// assert_eq!(TurnContextTrust::from_u8_or_untrusted(200), TurnContextTrust::ExternalUntrusted);
+    /// ```
+    #[must_use]
+    pub fn from_u8_or_untrusted(value: u8) -> Self {
+        Self::from_u8(value).unwrap_or(Self::ExternalUntrusted)
+    }
+}
+
+/// Content hash of one retrieved item, used to avoid re-injecting an item that is already
+/// present in the live history (item-level delta).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RetrievalKey(pub u64);
+
+/// One block of per-turn context attached to a turn input. See [`MessagePart::TurnContext`].
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::{
+///     Message, MessagePart, RetrievalKey, Role, TurnContextBlock, TurnContextKind,
+///     TurnContextTrust,
+/// };
+///
+/// let block = TurnContextBlock {
+///     kind: TurnContextKind::Retrieved,
+///     trust: TurnContextTrust::ExternalUntrusted,
+///     text: "recalled fact".to_owned(),
+///     keys: vec![RetrievalKey(1)],
+/// };
+/// let msg = Message::from_parts(
+///     Role::User,
+///     vec![MessagePart::TurnContext(block), MessagePart::Text { text: "hi".to_owned() }],
+/// );
+/// assert_eq!(msg.content, "hi");
+/// assert_eq!(msg.to_request_text(), "recalled fact\nhi");
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct TurnContextBlock {
+    /// Whether the block carries directives or retrieved data.
+    ///
+    /// Serialized as `context_kind`: `kind` is the tag of [`MessagePart`] and a duplicate key
+    /// would make the JSON ambiguous.
+    #[serde(rename = "context_kind")]
+    pub kind: TurnContextKind,
+    /// Minimum trust tier over the block's sections.
+    pub trust: TurnContextTrust,
+    /// Rendered, sanitized text sent to the provider.
+    pub text: String,
+    /// Keys of the retrieved items contained in `text`.
+    pub keys: Vec<RetrievalKey>,
+}
+
+/// Whether the provider reuses a cached request prefix across calls.
+///
+/// Drives the `auto` context layout: a [`Prefix`](Self::Prefix) provider benefits from an
+/// append-only request, others do not.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PrefixCache {
+    /// No prefix cache (or none worth preserving).
+    #[default]
+    None,
+    /// The provider caches the request prefix; rewriting history invalidates it.
+    Prefix,
+}
+
+impl PrefixCache {
+    /// `Prefix` if either side is `Prefix`; used by routers that hold several providers.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::provider::PrefixCache;
+    ///
+    /// assert_eq!(PrefixCache::None.or(PrefixCache::Prefix), PrefixCache::Prefix);
+    /// assert_eq!(PrefixCache::None.or(PrefixCache::None), PrefixCache::None);
+    /// ```
+    #[must_use]
+    pub fn or(self, other: Self) -> Self {
+        if self == Self::Prefix || other == Self::Prefix {
+            Self::Prefix
+        } else {
+            Self::None
+        }
+    }
+}
+
+/// Which assistant messages keep their thinking blocks in a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ThinkingScope {
+    /// Forward thinking from every assistant message unchanged.
+    Verbatim,
+    /// Forward thinking only from assistant messages after the latest user turn input.
+    ///
+    /// Models with preserved thinking bind each block to its prefix; blocks from earlier turns
+    /// would be dropped by the provider anyway, and sending them would break prefix stability.
+    /// Without a turn-input marker nothing can be scoped and thinking is forwarded unchanged.
+    CurrentTurn,
+}
+
+/// Identity of one conversation, so per-conversation provider state (the prefix guard) is not
+/// shared between conversations that use the same provider instance.
+///
+/// A fresh random value is generated whenever the layout is pinned (session start, `/clear`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ConversationKey(pub u64);
+
+/// Per-request policy the agent stamps on `messages[0]` right before a provider call.
+///
+/// Absent policy means today's behavior: the provider picks its [`ThinkingScope`] from the model
+/// and runs no prefix guard.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::{ConversationKey, RequestPolicy, ThinkingScope};
+///
+/// let policy = RequestPolicy {
+///     thinking: ThinkingScope::Verbatim,
+///     conversation: ConversationKey(7),
+/// };
+/// assert_eq!(policy.conversation, ConversationKey(7));
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RequestPolicy {
+    /// Thinking forwarding scope for this request.
+    pub thinking: ThinkingScope,
+    /// Conversation this request belongs to.
+    pub conversation: ConversationKey,
 }
 
 impl MessagePart {
@@ -840,8 +1055,8 @@ impl MessagePart {
 
     /// Return a cloned copy of `parts` without anything that must never reach a persistence
     /// sink: `Image` payloads (see [`strip_images`](Self::strip_images)),
-    /// [`MessagePart::RuntimeNote`] (per-iteration state that is stale on restore), and
-    /// thinking blocks (bound to the live conversation prefix, so useless after a restore, and
+    /// [`MessagePart::RuntimeNote`] and [`MessagePart::TurnContext`] (per-iteration/per-turn
+    /// state that is stale on restore), and thinking blocks (bound to the live conversation prefix, so useless after a restore, and
     /// unscrubbed reasoning text).
     ///
     /// # Examples
@@ -865,6 +1080,7 @@ impl MessagePart {
                     p,
                     MessagePart::Image(_)
                         | MessagePart::RuntimeNote { .. }
+                        | MessagePart::TurnContext(_)
                         | MessagePart::ThinkingBlock { .. }
                         | MessagePart::RedactedThinkingBlock { .. }
                 )
@@ -1082,6 +1298,11 @@ pub struct MessageMetadata {
     /// message through drains, reinserts, and deferred-summary insertions.
     #[serde(skip)]
     pub subgoal_id: Option<zeph_common::SubgoalId>,
+    /// Per-request provider policy, stamped on `messages[0]` right before a provider call.
+    ///
+    /// In-memory only — never serialized.
+    #[serde(skip)]
+    pub request_policy: Option<RequestPolicy>,
 }
 
 impl Default for MessageMetadata {
@@ -1098,6 +1319,7 @@ impl Default for MessageMetadata {
             trust_level: None,
             origin: None,
             subgoal_id: None,
+            request_policy: None,
         }
     }
 }
@@ -1512,8 +1734,41 @@ impl Message {
         &self.content
     }
 
-    /// Text a content-based request builder sends for this message: `content` followed by the
-    /// text of every [`MessagePart::RuntimeNote`]. Borrows `content` when there is no note.
+    /// Texts of this message's [`MessagePart::TurnContext`] blocks of the given kind, in order.
+    pub fn turn_context_texts(&self, kind: TurnContextKind) -> impl Iterator<Item = &str> + Clone {
+        self.parts.iter().filter_map(move |p| match p {
+            MessagePart::TurnContext(b) if b.kind == kind => Some(b.text.as_str()),
+            _ => None,
+        })
+    }
+
+    /// Text for builders that render plain text parts themselves (for example next to images):
+    /// the [`TurnContextKind::Retrieved`] texts, the plain text parts joined without a
+    /// separator, then the [`TurnContextKind::Directives`] texts, joined by newlines.
+    pub(crate) fn plain_text_with_turn_context(&self) -> String {
+        let plain: String = self
+            .parts
+            .iter()
+            .filter_map(MessagePart::as_plain_text)
+            .collect();
+        let mut out = String::new();
+        let pieces = self
+            .turn_context_texts(TurnContextKind::Retrieved)
+            .chain(std::iter::once(plain.as_str()))
+            .chain(self.turn_context_texts(TurnContextKind::Directives));
+        for piece in pieces.filter(|p| !p.is_empty()) {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(piece);
+        }
+        out
+    }
+
+    /// Text a content-based request builder sends for this message: the text of every
+    /// [`TurnContextKind::Retrieved`] block, then `content`, then every
+    /// [`TurnContextKind::Directives`] block, then every [`MessagePart::RuntimeNote`], joined by
+    /// newlines. Borrows `content` when the message carries none of them.
     ///
     /// # Examples
     ///
@@ -1535,19 +1790,31 @@ impl Message {
     /// ```
     #[must_use]
     pub fn to_request_text(&self) -> std::borrow::Cow<'_, str> {
-        let mut notes = self.parts.iter().filter_map(|p| match p {
+        let retrieved = self.turn_context_texts(TurnContextKind::Retrieved);
+        let directives = self.turn_context_texts(TurnContextKind::Directives);
+        let notes = self.parts.iter().filter_map(|p| match p {
             MessagePart::RuntimeNote { text } => Some(text.as_str()),
             _ => None,
         });
-        let Some(first) = notes.next() else {
+        if retrieved
+            .clone()
+            .chain(directives.clone())
+            .chain(notes.clone())
+            .next()
+            .is_none()
+        {
             return std::borrow::Cow::Borrowed(self.content.as_str());
-        };
-        let mut out = self.content.clone();
-        for note in std::iter::once(first).chain(notes) {
+        }
+        let mut out = String::new();
+        let pieces = retrieved
+            .chain(std::iter::once(self.content.as_str()))
+            .chain(directives)
+            .chain(notes);
+        for piece in pieces {
             if !out.is_empty() {
                 out.push('\n');
             }
-            out.push_str(note);
+            out.push_str(piece);
         }
         std::borrow::Cow::Owned(out)
     }
@@ -1656,7 +1923,8 @@ impl Message {
                 MessagePart::ThinkingBlock { .. }
                 | MessagePart::RedactedThinkingBlock { .. }
                 | MessagePart::Compaction { .. }
-                | MessagePart::RuntimeNote { .. } => {}
+                | MessagePart::RuntimeNote { .. }
+                | MessagePart::TurnContext(_) => {}
             }
         }
         out
@@ -1869,6 +2137,13 @@ pub trait LlmProvider: Send + Sync {
         ThinkingBinding::Unbound
     }
 
+    /// Whether this provider reuses a cached request prefix across calls.
+    ///
+    /// Routers report [`PrefixCache::Prefix`] when any member does; wrappers delegate.
+    fn prefix_cache(&self) -> PrefixCache {
+        PrefixCache::None
+    }
+
     /// Usage billed outside the top-level request counters during the last call (for example
     /// server-side compaction iterations). `None` when the provider reports none.
     fn last_auxiliary_usage(&self) -> Option<AuxiliaryUsage> {
@@ -1957,41 +2232,54 @@ pub trait LlmProvider: Send + Sync {
     /// This method requires `Self: Sized` and is therefore unavailable on trait objects.
     /// Use [`chat_typed_dyn`](crate::provider_dyn::chat_typed_dyn) when working with
     /// `Arc<dyn LlmProviderDyn>`.
-    #[allow(async_fn_in_trait)]
-    async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, LlmError>
+    ///
+    /// The returned future is `Send`, so generic callers can run it on a multi-threaded runtime
+    /// and [`LlmProviderDyn::chat_typed_boxed`](crate::provider_dyn::LlmProviderDyn::chat_typed_boxed)
+    /// can box it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LlmError::StructuredParse`] when the response cannot be parsed as `T` after
+    /// one retry; propagates any underlying provider error.
+    fn chat_typed<T>(
+        &self,
+        messages: &[Message],
+    ) -> impl Future<Output = Result<T, LlmError>> + Send
     where
-        T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
+        T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
         Self: Sized,
     {
-        let (_, schema_json) = cached_schema::<T>()?;
-        let type_name = short_type_name::<T>();
+        async move {
+            let (_, schema_json) = cached_schema::<T>()?;
+            let type_name = short_type_name::<T>();
 
-        let mut augmented = messages.to_vec();
-        let instruction = format!(
-            "Respond with a valid JSON object matching this schema. \
-             Output ONLY the JSON, no markdown fences or extra text.\n\n\
-             Type: {type_name}\nSchema:\n```json\n{schema_json}\n```"
-        );
-        augmented.insert(0, Message::from_legacy(Role::System, instruction));
+            let mut augmented = messages.to_vec();
+            let instruction = format!(
+                "Respond with a valid JSON object matching this schema. \
+                 Output ONLY the JSON, no markdown fences or extra text.\n\n\
+                 Type: {type_name}\nSchema:\n```json\n{schema_json}\n```"
+            );
+            augmented.insert(0, Message::from_legacy(Role::System, instruction));
 
-        let raw = self.chat(&augmented).await?;
-        let cleaned = strip_json_fences(&raw);
-        match serde_json::from_str::<T>(cleaned) {
-            Ok(val) => Ok(val),
-            Err(first_err) => {
-                augmented.push(Message::from_legacy(Role::Assistant, &raw));
-                augmented.push(Message::from_legacy(
-                    Role::User,
-                    format!(
-                        "Your response was not valid JSON. Error: {first_err}. \
-                         Please output ONLY valid JSON matching the schema."
-                    ),
-                ));
-                let retry_raw = self.chat(&augmented).await?;
-                let retry_cleaned = strip_json_fences(&retry_raw);
-                serde_json::from_str::<T>(retry_cleaned).map_err(|e| {
-                    LlmError::StructuredParse(format!("parse failed after retry: {e}"))
-                })
+            let raw = self.chat(&augmented).await?;
+            let cleaned = strip_json_fences(&raw);
+            match serde_json::from_str::<T>(cleaned) {
+                Ok(val) => Ok(val),
+                Err(first_err) => {
+                    augmented.push(Message::from_legacy(Role::Assistant, &raw));
+                    augmented.push(Message::from_legacy(
+                        Role::User,
+                        format!(
+                            "Your response was not valid JSON. Error: {first_err}. \
+                             Please output ONLY valid JSON matching the schema."
+                        ),
+                    ));
+                    let retry_raw = self.chat(&augmented).await?;
+                    let retry_cleaned = strip_json_fences(&retry_raw);
+                    serde_json::from_str::<T>(retry_cleaned).map_err(|e| {
+                        LlmError::StructuredParse(format!("parse failed after retry: {e}"))
+                    })
+                }
             }
         }
     }
@@ -3248,6 +3536,36 @@ mod tests {
         let stripped = MessagePart::strip_for_persistence(&parts);
         assert_eq!(stripped.len(), 1);
         assert!(matches!(stripped[0], MessagePart::Text { .. }));
+    }
+
+    #[test]
+    fn turn_context_is_request_only() {
+        let msg = crate::testing::turn_context_message();
+        assert_eq!(msg.content, "question", "never part of content");
+        assert_eq!(msg.parts[1].as_plain_text(), Some("question"));
+        assert_eq!(msg.parts[0].as_plain_text(), None);
+        assert_eq!(
+            msg.to_request_text(),
+            crate::testing::TURN_CONTEXT_REQUEST_TEXT
+        );
+        let persisted = MessagePart::strip_for_persistence(&msg.parts);
+        assert_eq!(persisted.len(), 1);
+        assert!(matches!(persisted[0], MessagePart::Text { .. }));
+    }
+
+    #[test]
+    fn request_metadata_is_never_serialized() {
+        let metadata = MessageMetadata {
+            request_policy: Some(RequestPolicy {
+                thinking: ThinkingScope::Verbatim,
+                conversation: ConversationKey(1),
+            }),
+            ..MessageMetadata::default()
+        };
+        let json = serde_json::to_string(&metadata).unwrap();
+        assert!(!json.contains("request_policy"));
+        let back: MessageMetadata = serde_json::from_str(&json).unwrap();
+        assert!(back.request_policy.is_none());
     }
 
     #[test]

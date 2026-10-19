@@ -106,6 +106,11 @@ The `Channel` trait (`crates/zeph-core/src/channel.rs`) is the only I/O boundary
 - Site rule: `MessagePart` is `#[non_exhaustive]`, so a wildcard arm silently drops a note or leaks it. Every consumer names `RuntimeNote` explicitly: request builders (Claude text block after the `tool_result` blocks, OpenAI `user` message after the `tool` messages, Gemini text part after `functionResponse`, Ollama `user` message after the `tool` message, Candle template), `masking.rs` (both text accessors), `TokenCounter`, subagent size estimate and `trim_parent_messages` (strips), debug dump (labelled), persistence sinks (SQLite, session log, subagent transcript), Layer B repair, ACP/TUI display (`as_plain_text` exclusion)
 - Rendering: `<runtime-note id="{nonce}">…</runtime-note>` where the nonce is a per-session uuid generated once (stable prefix) and named in the system prompt as the only genuine id. Agent-authored text inside a section (LSP, hints) is escaped with `DelimiterTag::RuntimeNote`; tool output is NOT escaped for this tag, so file reads and edits stay byte-exact and a forged note is distinguishable only by its id (see `[[040-sanitizer/spec]]`)
 
+- `MessagePart::TurnContext(TurnContextBlock { kind: Directives | Retrieved, trust, text, keys })` is the per-turn context of the `append` layout (see `[[088-prompt-cache-prefix-stability/spec]]`). Contract: attached only to the turn-input `User` message built by `build_user_message`, at most one `Directives` and one `Retrieved` block per message; append-only after the send; excluded from `flatten_parts`/`Message::content`/`as_plain_text`/`strip_for_persistence`; included by `Message::to_request_text`; counted by `TokenCounter`; never persisted and never summarizer input. `trust` is the minimum over the sections it holds
+- Site rule: every consumer names `TurnContext` explicitly, including every content-based request branch (Claude `request.rs`, OpenAI, Gemini, Ollama, Candle, Cocoon, Gonka) through `to_request_text`, `masking.rs`, `TokenCounter`, subagent size estimate and `trim_parent_messages` (strips), debug dump, persistence sinks, Layer B repair and ACP/TUI display
+- `RequestPolicy { thinking: ThinkingScope, conversation: ConversationKey }` is written to `messages[0].metadata.request_policy` (`#[serde(skip)]`, never persisted) by `MessageState::stamp_request_policy` immediately before every provider call. `Some` only in a pinned `append` conversation (`ThinkingScope::Verbatim`); `None` keeps the provider's model-based scope, so `replace` requests stay byte-identical to the pre-layout baseline
+- Interior `System` messages exist only at rewrite time (compaction, focus knowledge block); no turn-scoped `System` message is ever pushed beyond index 0. Directives are rendered as a wire-level mid-conversation system message by the Claude builder only, never stored as an interior `System` message
+
 **NEVER**: remove a thinking block from the middle of a turn (a gap), reorder thinking relative to the text and `tool_use` blocks of its response, strip compaction markers, or reorder the system message. Thinking is only ever removed as a whole leading run (earlier turns) or a whole trailing run (history rewrite), because each block is signed over everything before it.
 
 ## 5. Tool Execution Contract
@@ -132,6 +137,7 @@ The `Channel` trait (`crates/zeph-core/src/channel.rs`) is the only I/O boundary
 - Tool pair summarization is **deferred**: stored on the message, applied when context pressure rises (not eagerly)
 - Compaction thresholds: soft at ~60% context used, hard at ~90% — both must be honored
 - Three recall sources (injected in order): semantic recall → code context → graph facts
+- Injection site depends on the pinned `[memory] context_layout` (`[[088-prompt-cache-prefix-stability/spec]]`): `replace` injects recalled context at the context floor and rebuilds the system prompt per turn; `append` attaches it to the turn-input message as `MessagePart::TurnContext`, capped by `turn_context_budget_ratio` and deduplicated per item by content key. The layout is pinned per conversation (session start, `/clear`)
 
 **NEVER**: delete messages, skip deferred summary application at context pressure, or mix up recall source order.
 
@@ -148,6 +154,8 @@ The `Channel` trait (`crates/zeph-core/src/channel.rs`) is the only I/O boundary
   the initial prompt at agent construction and any hot-reload rebuild that runs before the first
   per-turn query is available — see `specs/005-skills/spec.md` § Construction-Time / Reload-Time
   Skill Prompt Contract for the catalog-only fallback used when no query exists yet (#6413)
+
+- In the `append` layout skill bodies reach the model only through the turn `Directives` block (not already-present bodies, keyed by name + body hash); the frozen system prompt carries the catalog only and a per-turn `<active_skills>` names line
 
 **NEVER**: inject more than `max_active_skills` into a single turn; inject full skill bodies into
 a system prompt built without a per-turn query (construction, hot-reload); do not block on skill

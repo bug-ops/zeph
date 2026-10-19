@@ -1065,6 +1065,11 @@ fn part_to_block(part: &MessagePart, is_assistant: bool) -> Option<serde_json::V
         MessagePart::RuntimeNote { text } if !is_assistant => {
             Some(serde_json::json!({ "type": "text", "text": text, "label": "[runtime note]" }))
         }
+        MessagePart::TurnContext(block) if !is_assistant => Some(serde_json::json!({
+            "type": "text",
+            "text": block.text,
+            "label": format!("[turn context: {:?}]", block.kind),
+        })),
         MessagePart::ThinkingBlock { .. }
         | MessagePart::RedactedThinkingBlock { .. }
         | MessagePart::Compaction { .. }

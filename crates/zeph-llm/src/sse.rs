@@ -1,14 +1,18 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::sync::Arc;
+
 use eventsource_stream::Eventsource;
 use serde::Deserialize;
 use tokio_stream::StreamExt;
 use zeph_config::StreamLimits;
 
+use crate::claude::StreamUsage;
 use crate::error::{LlmError, StopDetails, check_refusal};
 use crate::provider::{ChatStream, StreamChunk, ThinkingBlock, ToolUseRequest};
 use crate::thinking_replay::{InputTransformation, ThinkingReplay};
+use crate::usage::UsageTracker;
 
 /// An internal SSE event emitted by `claude_sse_to_tool_stream`.
 ///
@@ -77,6 +81,10 @@ struct ClaudeSseState {
     /// signature check and every later block is bound to it, so all remaining thinking in the
     /// response is dropped whole rather than truncated.
     thinking_dropped: bool,
+    /// Where the usage the stream reports is recorded; `None` records nothing.
+    usage: Option<Arc<UsageTracker>>,
+    /// Usage reported so far by `message_start` and `message_delta`, merged.
+    stream_usage: StreamUsage,
 }
 
 /// Convert a Claude streaming response into a `ChatStream`.
@@ -84,12 +92,13 @@ pub(crate) fn claude_sse_to_stream(
     response: reqwest::Response,
     limits: &StreamLimits,
     provider: &str,
+    usage: Arc<UsageTracker>,
 ) -> ChatStream {
     let limits = limits.clone();
     let provider = provider.to_owned();
     let event_stream = response.bytes_stream().eventsource();
     let s = async_stream::stream! {
-        let mut state = ClaudeSseState { provider, ..Default::default() };
+        let mut state = ClaudeSseState { provider, usage: Some(usage), ..Default::default() };
         let mut pinned = std::pin::pin!(event_stream);
         while let Some(event) = pinned.next().await {
             match event {
@@ -114,12 +123,13 @@ pub(crate) fn claude_sse_to_tool_stream(
     response: reqwest::Response,
     limits: &StreamLimits,
     provider: &str,
+    usage: Arc<UsageTracker>,
 ) -> ToolSseStream {
     let limits = limits.clone();
     let provider = provider.to_owned();
     let event_stream = response.bytes_stream().eventsource();
     let s = async_stream::stream! {
-        let mut state = ClaudeSseState { provider, ..Default::default() };
+        let mut state = ClaudeSseState { provider, usage: Some(usage), ..Default::default() };
         let mut pinned = std::pin::pin!(event_stream);
         while let Some(event) = pinned.next().await {
             match event {
@@ -170,6 +180,10 @@ fn parse_claude_sse_events(
     limits: &StreamLimits,
 ) -> Vec<Result<StreamChunk, LlmError>> {
     match event_type {
+        "message_start" => {
+            record_message_start_usage(state, data);
+            vec![]
+        }
         "content_block_start" => {
             match serde_json::from_str::<ClaudeContentBlockStart>(data) {
                 Ok(ev) if ev.content_block.block_type == "compaction" => {
@@ -190,10 +204,7 @@ fn parse_claude_sse_events(
             }
             vec![]
         }
-        "message_delta" => refusal_from_message_delta(&state.provider, data)
-            .map(Err)
-            .into_iter()
-            .collect(),
+        "message_delta" => on_message_delta(state, data).map(Err).into_iter().collect(),
         "content_block_delta" => match serde_json::from_str::<ClaudeStreamEvent>(data) {
             Ok(event) => {
                 if let Some(delta) = event.delta {
@@ -256,7 +267,7 @@ fn parse_claude_tool_sse_events(
     limits: &StreamLimits,
 ) -> Vec<ToolSseEvent> {
     match event_type {
-        "message_start" => parse_message_start(data),
+        "message_start" => parse_message_start(state, data),
         "content_block_start" => {
             let Ok(ev) = serde_json::from_str::<ClaudeContentBlockStartFull>(data) else {
                 return vec![];
@@ -340,7 +351,7 @@ fn parse_claude_tool_sse_events(
             events
         }
         "content_block_delta" => parse_tool_delta_event(state, data, limits),
-        "message_delta" => refusal_from_message_delta(&state.provider, data)
+        "message_delta" => on_message_delta(state, data)
             .map(ToolSseEvent::Error)
             .into_iter()
             .collect(),
@@ -431,11 +442,29 @@ fn drop_thinking(state: &mut ClaudeSseState, cap: usize) {
     state.redacted_thinking = None;
 }
 
-/// Parse a `message_delta` event and return [`LlmError::Refused`] when it reports a refusal.
-fn refusal_from_message_delta(provider: &str, data: &str) -> Option<LlmError> {
+/// Merge the usage an event reports into the stream's running total and record it.
+fn record_reported_usage(state: &mut ClaudeSseState, reported: Option<StreamUsage>) {
+    let (Some(tracker), Some(reported)) = (state.usage.clone(), reported) else {
+        return;
+    };
+    state.stream_usage.merge(reported);
+    crate::claude::record_stream_usage(&tracker, &state.stream_usage);
+}
+
+/// Record the usage carried by a `message_start` event.
+fn record_message_start_usage(state: &mut ClaudeSseState, data: &str) {
+    if let Ok(ev) = serde_json::from_str::<ClaudeMessageStart>(data) {
+        record_reported_usage(state, ev.message.usage);
+    }
+}
+
+/// Handle a `message_delta` event: record its usage (a refused response is billed too), then
+/// return [`LlmError::Refused`] when it reports a refusal.
+fn on_message_delta(state: &mut ClaudeSseState, data: &str) -> Option<LlmError> {
     let ev = serde_json::from_str::<ClaudeMessageDelta>(data).ok()?;
+    record_reported_usage(state, ev.usage);
     check_refusal(
-        provider,
+        &state.provider,
         ev.delta.stop_reason.as_deref(),
         ev.delta.stop_details.as_ref(),
     )
@@ -453,11 +482,12 @@ fn append_capped(buf: &mut String, add: &str, cap: usize) {
     buf.push_str(&add[..add.floor_char_boundary(remaining)]);
 }
 
-/// Surface a `thinking_dropped` report from the `message_start` event, if any.
-fn parse_message_start(data: &str) -> Vec<ToolSseEvent> {
+/// Record the usage of a `message_start` event and surface its `thinking_dropped` report, if any.
+fn parse_message_start(state: &mut ClaudeSseState, data: &str) -> Vec<ToolSseEvent> {
     let Ok(ev) = serde_json::from_str::<ClaudeMessageStart>(data) else {
         return vec![];
     };
+    record_reported_usage(state, ev.message.usage);
     match ThinkingReplay::from_transformations(&ev.message.input_transformations) {
         ThinkingReplay::Intact => vec![],
         dropped @ ThinkingReplay::Dropped { .. } => vec![ToolSseEvent::ThinkingReplay(dropped)],
@@ -521,7 +551,7 @@ struct ClaudeStreamEvent {
     error: Option<ClaudeStreamError>,
 }
 
-/// `message_start` event: only the beta `input_transformations` report is consumed.
+/// `message_start` event: the beta `input_transformations` report and the usage are consumed.
 #[derive(Deserialize)]
 struct ClaudeMessageStart {
     message: ClaudeMessageStartBody,
@@ -531,12 +561,16 @@ struct ClaudeMessageStart {
 struct ClaudeMessageStartBody {
     #[serde(default)]
     input_transformations: Vec<InputTransformation>,
+    #[serde(default)]
+    usage: Option<StreamUsage>,
 }
 
-/// `message_delta` event: only the stop reason and its details are consumed.
+/// `message_delta` event: the stop reason, its details and the usage are consumed.
 #[derive(Deserialize)]
 struct ClaudeMessageDelta {
     delta: ClaudeMessageDeltaBody,
+    #[serde(default)]
+    usage: Option<StreamUsage>,
 }
 
 #[derive(Deserialize)]

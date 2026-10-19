@@ -72,7 +72,7 @@ impl<'a, P: LlmProvider> Extractor<'a, P> {
     #[tracing::instrument(name = "llm.extractor.extract", skip_all)]
     pub async fn extract<T>(&self, input: &str) -> Result<T, LlmError>
     where
-        T: DeserializeOwned + JsonSchema + 'static,
+        T: DeserializeOwned + JsonSchema + Send + 'static,
     {
         let mut messages = Vec::new();
         if let Some(ref preamble) = self.preamble {

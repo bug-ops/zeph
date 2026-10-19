@@ -1270,6 +1270,12 @@ mod tests {
     }
 
     #[test]
+    fn convert_message_sends_turn_context() {
+        let cm = convert_message(&crate::testing::turn_context_message());
+        assert_eq!(cm.content, crate::testing::TURN_CONTEXT_REQUEST_TEXT);
+    }
+
+    #[test]
     fn convert_message_preserves_content() {
         let msg = Message {
             role: Role::User,

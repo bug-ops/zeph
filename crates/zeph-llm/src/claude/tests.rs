@@ -2477,7 +2477,7 @@ fn no_prefill_true_for_sonnet_4_6_without_thinking() {
 
 #[test]
 fn strip_trailing_assistant_structured_removes_only_trailing_run() {
-    let mut messages = vec![
+    let mut wire = request::WireHistory::from_messages(vec![
         StructuredApiMessage {
             role: "user".into(),
             content: StructuredContent::Text("hi".into()),
@@ -2494,25 +2494,26 @@ fn strip_trailing_assistant_structured_removes_only_trailing_run() {
             role: "assistant".into(),
             content: StructuredContent::Text("trailing".into()),
         },
-    ];
-    ClaudeProvider::strip_trailing_assistant_structured(true, &mut messages);
+    ]);
+    ClaudeProvider::strip_trailing_assistant_structured(true, &mut wire);
     assert_eq!(
-        messages.len(),
+        wire.messages().len(),
         3,
         "only the trailing assistant run is stripped"
     );
-    assert_eq!(messages.last().unwrap().role, "user");
+    assert_eq!(wire.messages().last().unwrap().role, "user");
+    assert_eq!(wire.history_indices(), [0, 1, 2]);
 }
 
 #[test]
 fn strip_trailing_assistant_structured_noop_when_gate_false() {
-    let mut messages = vec![StructuredApiMessage {
+    let mut wire = request::WireHistory::from_messages(vec![StructuredApiMessage {
         role: "assistant".into(),
         content: StructuredContent::Text("trailing".into()),
-    }];
-    ClaudeProvider::strip_trailing_assistant_structured(false, &mut messages);
+    }]);
+    ClaudeProvider::strip_trailing_assistant_structured(false, &mut wire);
     assert_eq!(
-        messages.len(),
+        wire.messages().len(),
         1,
         "no_prefill=false must never strip messages"
     );
@@ -3648,7 +3649,8 @@ fn leading_assistant_after_skipped_thinking_only_user_gets_anchor() {
         Message::from_legacy(Role::Assistant, "hello"),
         Message::from_legacy(Role::User, "next"),
     ];
-    let (_, history) = anchor_provider().structured_history(&messages, None, 0);
+    let (_, history) =
+        anchor_provider().structured_history(&messages, None, 0, DirectiveRendering::UserText);
     let items = history_items(&history);
     assert_eq!(items.len(), 3);
     assert_eq!(items[0]["role"], "user");
@@ -3667,7 +3669,8 @@ fn server_compaction_shape_gets_anchor_and_keeps_compaction_block() {
         ),
         Message::from_legacy(Role::User, "continue"),
     ];
-    let (_, history) = anchor_provider().structured_history(&messages, None, 0);
+    let (_, history) =
+        anchor_provider().structured_history(&messages, None, 0, DirectiveRendering::UserText);
     let items = history_items(&history);
     assert_eq!(items.len(), 3);
     assert_eq!(items[0]["content"], LEADING_USER_ANCHOR);
@@ -3702,7 +3705,8 @@ fn leading_tool_pair_keeps_native_blocks_behind_anchor() {
             }],
         ),
     ];
-    let (_, history) = anchor_provider().structured_history(&messages, None, 0);
+    let (_, history) =
+        anchor_provider().structured_history(&messages, None, 0, DirectiveRendering::UserText);
     let items = history_items(&history);
     assert_eq!(items.len(), 3);
     assert_eq!(items[0]["content"], LEADING_USER_ANCHOR);
@@ -3719,7 +3723,8 @@ fn no_prefill_all_assistant_history_stays_empty() {
         provider.no_prefill(None),
         "fixture model must reject prefill"
     );
-    let (_, history) = provider.structured_history(&messages, None, 0);
+    let (_, history) =
+        provider.structured_history(&messages, None, 0, DirectiveRendering::UserText);
     assert_eq!(history_items(&history), Vec::<serde_json::Value>::new());
 }
 
@@ -3729,7 +3734,8 @@ fn leading_user_anchor_carries_no_cache_control() {
         Message::from_legacy(Role::Assistant, "hello"),
         Message::from_legacy(Role::User, "next"),
     ];
-    let (_, history) = anchor_provider().structured_history(&messages, None, 4);
+    let (_, history) =
+        anchor_provider().structured_history(&messages, None, 4, DirectiveRendering::UserText);
     let items = history_items(&history);
     assert_eq!(items[0]["content"], LEADING_USER_ANCHOR);
     assert!(!items[0].to_string().contains("cache_control"));
@@ -4145,6 +4151,71 @@ async fn chat_typed_uses_structured_outputs_on_models_that_forbid_forced_choice(
     );
     assert!(body.get("tool_choice").is_none());
     assert!(body.get("tools").is_none());
+}
+
+#[derive(Debug)]
+struct SecretMasker;
+
+impl crate::masking::OutboundMasker for SecretMasker {
+    fn mask(&self, text: &str) -> Option<String> {
+        text.contains("hunter2")
+            .then(|| text.replace("hunter2", "[MASKED]"))
+    }
+}
+
+fn assert_send<T: Send>(_: &T) {}
+
+#[tokio::test]
+async fn masked_claude_chat_typed_reaches_structured_outputs_with_masked_content() {
+    let server = mock_messages(serde_json::json!({
+        "id": "m", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
+        "content": [{"type": "text", "text": "{\"value\":\"ok\"}"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    }))
+    .await;
+    let provider = crate::any::AnyProvider::Claude(
+        ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 1024)
+            .with_api_url(format!("{}/v1/messages", server.uri())),
+    )
+    .masked(std::sync::Arc::new(SecretMasker));
+
+    let messages = [Message::from_legacy(Role::User, "password is hunter2")];
+    let fut = provider.chat_typed::<TypedOut>(&messages);
+    assert_send(&fut);
+    let out = fut.await.unwrap();
+    assert_eq!(out.value, "ok");
+
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 1);
+    let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_eq!(body["output_config"]["format"]["type"], "json_schema");
+    let sent = body["messages"].to_string();
+    assert!(sent.contains("[MASKED]"), "masked content expected: {sent}");
+    assert!(!sent.contains("hunter2"), "secret leaked: {sent}");
+}
+
+#[tokio::test]
+async fn any_claude_chat_typed_reaches_native_override() {
+    let server = mock_messages(serde_json::json!({
+        "id": "m", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
+        "content": [{"type": "text", "text": "{\"value\":\"ok\"}"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    }))
+    .await;
+    let provider = crate::any::AnyProvider::Claude(
+        ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 1024)
+            .with_api_url(format!("{}/v1/messages", server.uri())),
+    );
+    let out: TypedOut = provider
+        .chat_typed(&[Message::from_legacy(Role::User, "go")])
+        .await
+        .unwrap();
+    assert_eq!(out.value, "ok");
+    let reqs = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_eq!(body["output_config"]["format"]["type"], "json_schema");
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]

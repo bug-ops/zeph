@@ -15,6 +15,37 @@ use wiremock::ResponseTemplate;
 /// model string but do not assert on model freshness. Update in one place.
 pub const TEST_CLAUDE_MODEL: &str = "claude-sonnet-5";
 
+/// Text a builder must send for [`turn_context_message`]: retrieved data, the user text, then
+/// the directives, joined by newlines.
+pub const TURN_CONTEXT_REQUEST_TEXT: &str = "retrieved\nquestion\ndirectives";
+
+/// A user turn input with a `Retrieved` block before and a `Directives` block after its text.
+#[must_use]
+pub fn turn_context_message() -> crate::provider::Message {
+    use crate::provider::{
+        Message, MessagePart, Role, TurnContextBlock, TurnContextKind, TurnContextTrust,
+    };
+
+    let block = |kind, text: &str| {
+        MessagePart::TurnContext(TurnContextBlock {
+            kind,
+            trust: TurnContextTrust::Trusted,
+            text: text.to_owned(),
+            keys: vec![],
+        })
+    };
+    Message::from_parts(
+        Role::User,
+        vec![
+            block(TurnContextKind::Retrieved, "retrieved"),
+            MessagePart::Text {
+                text: "question".to_owned(),
+            },
+            block(TurnContextKind::Directives, "directives"),
+        ],
+    )
+}
+
 // ---------------------------------------------------------------------------
 // OpenAI-compatible response shapes
 // ---------------------------------------------------------------------------

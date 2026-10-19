@@ -9,7 +9,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 
 use crate::provider::{
     AgentVisible, AssistantBlock, AssistantContent, ChatResponse, Message, MessageOrigin,
-    MessagePart, Role, ThinkingBlock, ToolUseRequest,
+    MessagePart, Role, ThinkingBlock, ThinkingScope, ToolUseRequest, TurnContextKind,
+    TurnContextTrust,
 };
 use crate::tool_pairing::{
     downgraded_tool_result_text, downgraded_tool_use_text, unmatched_tool_result_ids,
@@ -69,6 +70,201 @@ pub(in crate::claude) fn split_messages(
     (system, chat)
 }
 
+/// How a turn input's [`TurnContextKind::Directives`] block is placed on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::claude) enum DirectiveRendering {
+    /// A `role: "system"` message right after the turn input, when the turn input is the last
+    /// message or is followed by an assistant message; user text after the turn input otherwise.
+    SystemMessage,
+    /// Always user text after the turn input (model without mid-conversation system support, or
+    /// after the API rejected it).
+    UserText,
+}
+
+/// Inputs of [`split_messages_structured_scoped`] that shape the wire history.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::claude) struct SplitOptions {
+    pub cache_user_messages: bool,
+    pub ttl: Option<CacheTtl>,
+    pub thinking_scope: ThinkingScope,
+    pub directives: DirectiveRendering,
+}
+
+/// Wire `messages[]` together with, for each entry, the index in the source history of the
+/// message it was built from (the first one, for coalesced entries).
+///
+/// The two vectors are private so they cannot fall out of step; every mutation goes through
+/// methods that keep them aligned.
+#[derive(Debug, Default)]
+pub(in crate::claude) struct WireHistory {
+    chat: Vec<StructuredApiMessage>,
+    history_index: Vec<usize>,
+}
+
+impl serde::Serialize for WireHistory {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.chat.serialize(serializer)
+    }
+}
+
+impl WireHistory {
+    fn push(&mut self, message: StructuredApiMessage, history_index: usize) {
+        self.chat.push(message);
+        self.history_index.push(history_index);
+    }
+
+    pub(in crate::claude) fn messages(&self) -> &[StructuredApiMessage] {
+        &self.chat
+    }
+
+    pub(in crate::claude) fn messages_mut(&mut self) -> &mut [StructuredApiMessage] {
+        &mut self.chat
+    }
+
+    /// Index in the source history of the message behind wire entry `wire_index`.
+    ///
+    /// An index past the end maps to 0, which makes a caller strip a superset.
+    pub(in crate::claude) fn history_index_of(&self, wire_index: usize) -> usize {
+        self.history_index.get(wire_index).copied().unwrap_or(0)
+    }
+
+    /// Source-history index of every wire entry, in wire order.
+    pub(in crate::claude) fn history_indices(&self) -> &[usize] {
+        &self.history_index
+    }
+
+    /// Wrap plain wire messages with an identity mapping.
+    #[cfg(test)]
+    pub(in crate::claude) fn from_messages(chat: Vec<StructuredApiMessage>) -> Self {
+        let history_index = (0..chat.len()).collect();
+        Self {
+            chat,
+            history_index,
+        }
+    }
+
+    /// Insert a placeholder `user` entry in front. It maps to history index 0.
+    pub(in crate::claude) fn insert_front_user(&mut self, text: &str) {
+        self.chat.insert(
+            0,
+            StructuredApiMessage {
+                role: "user".to_owned(),
+                content: StructuredContent::Text(text.to_owned()),
+            },
+        );
+        self.history_index.insert(0, 0);
+    }
+
+    /// Drop trailing `assistant` entries (prefill is rejected by some models).
+    pub(in crate::claude) fn strip_trailing_assistant(&mut self) {
+        while self.chat.last().is_some_and(|m| m.role == "assistant") {
+            self.chat.pop();
+            self.history_index.pop();
+        }
+    }
+
+    /// Merge consecutive same-role entries into one multi-block entry.
+    ///
+    /// Dropped or hidden messages (and a server compaction block followed by assistant output)
+    /// can leave adjacent same-role entries, which are valid for the Messages API only as
+    /// separate blocks of one turn. Block order is preserved, so thinking stays ahead of the
+    /// blocks that followed it. `system` entries are never merged.
+    fn coalesce_same_role(&mut self) {
+        let mut chat: Vec<StructuredApiMessage> = Vec::with_capacity(self.chat.len());
+        let mut index: Vec<usize> = Vec::with_capacity(self.chat.len());
+        for (msg, hist) in self.chat.drain(..).zip(self.history_index.drain(..)) {
+            match chat.last_mut() {
+                Some(prev) if prev.role == msg.role && msg.role != WIRE_SYSTEM_ROLE => {
+                    let mut blocks = into_blocks(std::mem::replace(
+                        &mut prev.content,
+                        StructuredContent::Blocks(Vec::new()),
+                    ));
+                    blocks.extend(into_blocks(msg.content));
+                    prev.content = StructuredContent::Blocks(blocks);
+                }
+                _ => {
+                    chat.push(msg);
+                    index.push(hist);
+                }
+            }
+        }
+        self.chat = chat;
+        self.history_index = index;
+    }
+
+    /// Remove thinking blocks from every `assistant` entry at or after `from`; the dropped run
+    /// is a suffix of the conversation, which the API accepts. Returns whether anything was
+    /// removed. Entries left without blocks are removed and neighbours re-coalesced.
+    pub(in crate::claude) fn drop_thinking_from(&mut self, from: usize) -> bool {
+        let mut removed = false;
+        for msg in self.chat.iter_mut().skip(from) {
+            if msg.role != "assistant" {
+                continue;
+            }
+            if let StructuredContent::Blocks(blocks) = &mut msg.content {
+                let before = blocks.len();
+                blocks.retain(|b| {
+                    !matches!(
+                        b,
+                        AnthropicContentBlock::Thinking { .. }
+                            | AnthropicContentBlock::RedactedThinking { .. }
+                    )
+                });
+                removed |= blocks.len() != before;
+            }
+        }
+        if removed {
+            let keep: Vec<bool> = self
+                .chat
+                .iter()
+                .map(|m| !matches!(&m.content, StructuredContent::Blocks(b) if b.is_empty()))
+                .collect();
+            let mut flags = keep.iter();
+            self.chat.retain(|_| *flags.next().unwrap_or(&true));
+            let mut flags = keep.iter();
+            self.history_index
+                .retain(|_| *flags.next().unwrap_or(&true));
+            self.coalesce_same_role();
+            self.demote_misplaced_system();
+        }
+        removed
+    }
+
+    /// Turn every `system` entry that does not directly follow a `user` entry and precede an
+    /// `assistant` entry (or the end) into a `user` entry, merged with its neighbours.
+    ///
+    /// The API only accepts a mid-conversation system message in that slot. Which entries
+    /// survive depends on the wire being built (an empty assistant reply or a dropped
+    /// thinking-only turn emits nothing), so placement is decided here, on the built wire.
+    pub(in crate::claude) fn demote_misplaced_system(&mut self) {
+        let mut demoted = false;
+        for i in 0..self.chat.len() {
+            let after_user = i
+                .checked_sub(1)
+                .and_then(|p| self.chat.get(p))
+                .is_some_and(|m| m.role == "user");
+            let before_assistant_or_end =
+                self.chat.get(i + 1).is_none_or(|n| n.role == "assistant");
+            if self.chat[i].role == WIRE_SYSTEM_ROLE && !(after_user && before_assistant_or_end) {
+                "user".clone_into(&mut self.chat[i].role);
+                demoted = true;
+            }
+        }
+        if demoted {
+            self.coalesce_same_role();
+        }
+    }
+}
+
+/// Wire role of a mid-conversation system message.
+pub(in crate::claude) const WIRE_SYSTEM_ROLE: &str = "system";
+
+/// The system prompt and the wire history built from `messages`.
+pub(in crate::claude) struct SplitHistory {
+    pub system: Option<String>,
+    pub wire: WireHistory,
+}
+
 /// Raw structured message split, with no no-prefill gating applied.
 ///
 /// Not re-exported at `claude` module top level and not meant to be called directly from a
@@ -82,125 +278,188 @@ pub(in crate::claude) fn split_messages_structured(
     cache_user_messages: bool,
     ttl: Option<CacheTtl>,
 ) -> (Option<String>, Vec<StructuredApiMessage>) {
-    split_messages_structured_scoped(messages, cache_user_messages, ttl, ThinkingScope::Verbatim)
+    let SplitHistory { system, wire } = split_messages_structured_scoped(
+        messages,
+        SplitOptions {
+            cache_user_messages,
+            ttl,
+            thinking_scope: ThinkingScope::Verbatim,
+            directives: DirectiveRendering::UserText,
+        },
+    );
+    (system, wire.chat)
 }
 
-/// Which assistant messages keep their thinking blocks in a request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::claude) enum ThinkingScope {
-    /// Forward thinking from every assistant message unchanged.
-    Verbatim,
-    /// Forward thinking only from assistant messages after the latest user turn input.
-    ///
-    /// Models with preserved thinking bind each block to its prefix; blocks from earlier turns
-    /// would be dropped by the provider anyway, and sending them would break prefix stability.
-    /// Without a turn-input marker nothing can be scoped and thinking is forwarded unchanged.
-    CurrentTurn,
+/// Whether the visible message at `pos` is last, or directly followed by an `assistant` message.
+///
+/// Only there is a `role: "system"` directive valid next to cached history: an abandoned turn
+/// input (cancelled or timed out) is followed by the next turn input, so it renders as user
+/// text and coalesces with it.
+// TODO(#6846): turn-scoped Time/Budget directives via `clear_at` (beta
+// mid-conversation-system-clear-at-2026-08-21) once cache eligibility of cleared messages is known.
+fn directive_system_slot(visible: &[(usize, &Message)], pos: usize) -> bool {
+    visible
+        .get(pos + 1)
+        .is_none_or(|(_, next)| next.role == Role::Assistant)
 }
 
-/// [`split_messages_structured`] with explicit control over which thinking blocks are sent.
-pub(in crate::claude) fn split_messages_structured_scoped(
-    messages: &[Message],
-    cache_user_messages: bool,
-    ttl: Option<CacheTtl>,
-    thinking_scope: ThinkingScope,
-) -> (Option<String>, Vec<StructuredApiMessage>) {
-    let mut system_parts = Vec::new();
-    let mut chat = Vec::new();
-
-    let agent_visible = AgentVisible::new(messages);
-    for msg in agent_visible.iter().filter(|m| m.role == Role::System) {
-        system_parts.push(msg.to_llm_content());
+fn text_block(text: &str) -> AnthropicContentBlock {
+    AnthropicContentBlock::Text {
+        text: text.to_owned(),
+        cache_control: None,
     }
+}
 
-    // Collect only agent-visible non-system messages so that idx-based peek always lands on a
-    // user or assistant message (RC4: system messages in `visible` would break +1 index peek).
-    let visible: Vec<&Message> = agent_visible
-        .iter()
-        .filter(|m| m.role != Role::System)
+/// Append the wire entries of the visible message at `pos`: the message itself and, when its
+/// directives qualify, a trailing mid-conversation `system` entry.
+fn push_visible_message(
+    wire: &mut WireHistory,
+    visible: &[(usize, &Message)],
+    pos: usize,
+    turn_start: Option<usize>,
+    directive_rendering: DirectiveRendering,
+) {
+    let (history_idx, msg) = visible[pos];
+    let is_assistant = msg.role == Role::Assistant;
+    let role = if is_assistant { "assistant" } else { "user" };
+    let retrieved: Vec<&str> = msg.turn_context_texts(TurnContextKind::Retrieved).collect();
+    let directives: Vec<&str> = msg
+        .turn_context_texts(TurnContextKind::Directives)
         .collect();
+    let directives_trusted = msg.parts.iter().all(|p| {
+        !matches!(
+            p,
+            MessagePart::TurnContext(b)
+                if b.kind == TurnContextKind::Directives && b.trust != TurnContextTrust::Trusted
+        )
+    });
+    let directive_message = !is_assistant
+        && !directives.is_empty()
+        && directives_trusted
+        && directive_rendering == DirectiveRendering::SystemMessage
+        && directive_system_slot(visible, pos);
+    let has_structured_parts = msg.parts.iter().any(|p| {
+        matches!(
+            p,
+            MessagePart::ToolUse { .. }
+                | MessagePart::ToolResult { .. }
+                | MessagePart::Image(_)
+                | MessagePart::ThinkingBlock { .. }
+                | MessagePart::RedactedThinkingBlock { .. }
+                | MessagePart::Compaction { .. }
+                | MessagePart::RuntimeNote { .. }
+                | MessagePart::TurnContext(_)
+        )
+    });
 
-    let turn_start = match thinking_scope {
-        ThinkingScope::Verbatim => None,
-        ThinkingScope::CurrentTurn => visible
-            .iter()
-            .rposition(|m| m.metadata.origin == Some(MessageOrigin::TurnInput)),
-    };
-
-    for (idx, &msg) in visible.iter().enumerate() {
-        match msg.role {
-            Role::System => {} // already extracted above
-            Role::User | Role::Assistant => {
-                let role = if msg.role == Role::User {
-                    "user"
-                } else {
-                    "assistant"
-                };
-                let has_structured_parts = msg.parts.iter().any(|p| {
-                    matches!(
-                        p,
-                        MessagePart::ToolUse { .. }
-                            | MessagePart::ToolResult { .. }
-                            | MessagePart::Image(_)
-                            | MessagePart::ThinkingBlock { .. }
-                            | MessagePart::RedactedThinkingBlock { .. }
-                            | MessagePart::Compaction { .. }
-                            | MessagePart::RuntimeNote { .. }
-                    )
-                });
-
-                if has_structured_parts {
-                    let is_assistant = msg.role == Role::Assistant;
-                    // Layer A (zeph_llm::tool_pairing), adjacency-scoped against the immediate
-                    // neighbour in `visible` — never a global id set (#6770). Always an
-                    // explicitly computed set, never `Option`, so a call site cannot silently
-                    // reopen the RC1 400 via a defaulted/empty set.
-                    let orphaned_tool_use: HashSet<&str> = if is_assistant {
-                        unmatched_tool_use_ids(msg, visible.get(idx + 1).copied())
-                    } else {
-                        HashSet::new()
-                    };
-                    let orphaned_tool_result: HashSet<&str> = if is_assistant {
-                        HashSet::new()
-                    } else {
-                        let prev = idx.checked_sub(1).and_then(|i| visible.get(i)).copied();
-                        unmatched_tool_result_ids(msg, prev)
-                    };
-                    let blocks = convert_parts_to_blocks(
-                        &msg.parts,
-                        is_assistant,
-                        turn_start.is_none_or(|start| idx > start),
-                        &orphaned_tool_use,
-                        &orphaned_tool_result,
-                    );
-                    // D4 (mandatory): never emit a StructuredApiMessage with an empty block
-                    // list — Anthropic rejects an empty content array. Consistent with the
-                    // non-structured branch below, which already skips whitespace-only text.
-                    if !blocks.is_empty() {
-                        chat.push(StructuredApiMessage {
-                            role: role.to_owned(),
-                            content: StructuredContent::Blocks(blocks),
-                        });
-                    }
-                } else {
-                    let text = msg.to_llm_content();
-                    if !text.trim().is_empty() {
-                        chat.push(StructuredApiMessage {
-                            role: role.to_owned(),
-                            content: StructuredContent::Text(text.to_owned()),
-                        });
-                    }
-                }
-            }
+    if has_structured_parts {
+        // Layer A (zeph_llm::tool_pairing), adjacency-scoped against the immediate
+        // neighbour in `visible` — never a global id set (#6770). Always an
+        // explicitly computed set, never `Option`, so a call site cannot silently
+        // reopen the RC1 400 via a defaulted/empty set.
+        let orphaned_tool_use: HashSet<&str> = if is_assistant {
+            unmatched_tool_use_ids(msg, visible.get(pos + 1).map(|&(_, m)| m))
+        } else {
+            HashSet::new()
+        };
+        let orphaned_tool_result: HashSet<&str> = if is_assistant {
+            HashSet::new()
+        } else {
+            let prev = pos
+                .checked_sub(1)
+                .and_then(|i| visible.get(i))
+                .map(|&(_, m)| m);
+            unmatched_tool_result_ids(msg, prev)
+        };
+        let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
+        if !is_assistant {
+            blocks.extend(retrieved.iter().map(|t| text_block(t)));
+        }
+        blocks.extend(convert_parts_to_blocks(
+            &msg.parts,
+            is_assistant,
+            turn_start.is_none_or(|start| pos > start),
+            &orphaned_tool_use,
+            &orphaned_tool_result,
+        ));
+        if !is_assistant && !directive_message {
+            blocks.extend(directives.iter().map(|t| text_block(t)));
+        }
+        // D4 (mandatory): never emit a StructuredApiMessage with an empty block
+        // list — Anthropic rejects an empty content array. Consistent with the
+        // non-structured branch below, which already skips whitespace-only text.
+        if !blocks.is_empty() {
+            wire.push(
+                StructuredApiMessage {
+                    role: role.to_owned(),
+                    content: StructuredContent::Blocks(blocks),
+                },
+                history_idx,
+            );
+        }
+    } else {
+        let text = msg.to_request_text();
+        if !text.trim().is_empty() {
+            wire.push(
+                StructuredApiMessage {
+                    role: role.to_owned(),
+                    content: StructuredContent::Text(text.into_owned()),
+                },
+                history_idx,
+            );
         }
     }
 
-    coalesce_same_role(&mut chat);
+    if directive_message {
+        wire.push(
+            StructuredApiMessage {
+                role: WIRE_SYSTEM_ROLE.to_owned(),
+                content: StructuredContent::Text(directives.join("\n\n")),
+            },
+            history_idx,
+        );
+    }
+}
+
+/// [`split_messages_structured`] with explicit control over thinking forwarding, directive
+/// rendering and the cache breakpoint.
+pub(in crate::claude) fn split_messages_structured_scoped(
+    messages: &[Message],
+    opts: SplitOptions,
+) -> SplitHistory {
+    let mut system_parts = Vec::new();
+    let mut visible: Vec<(usize, &Message)> = Vec::new();
+    for (idx, msg) in messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.metadata.visibility.is_agent_visible())
+    {
+        if msg.role == Role::System {
+            system_parts.push(msg.to_llm_content());
+        } else {
+            visible.push((idx, msg));
+        }
+    }
+
+    let turn_start = match opts.thinking_scope {
+        ThinkingScope::Verbatim => None,
+        ThinkingScope::CurrentTurn => visible
+            .iter()
+            .rposition(|(_, m)| m.metadata.origin == Some(MessageOrigin::TurnInput)),
+    };
+
+    let mut wire = WireHistory::default();
+    for pos in 0..visible.len() {
+        push_visible_message(&mut wire, &visible, pos, turn_start, opts.directives);
+    }
+
+    wire.coalesce_same_role();
+    wire.demote_misplaced_system();
 
     // One message-level cache breakpoint on the tail, so the next request of a growing tool
     // loop reads everything up to the previous tail.
-    if cache_user_messages && chat.len() > 1 {
-        apply_cache_breakpoint(&mut chat, ttl);
+    if opts.cache_user_messages && wire.chat.len() > 1 {
+        apply_cache_breakpoint(wire.messages_mut(), opts.ttl);
     }
 
     let system = if system_parts.is_empty() {
@@ -209,31 +468,7 @@ pub(in crate::claude) fn split_messages_structured_scoped(
         Some(system_parts.join("\n\n"))
     };
 
-    (system, chat)
-}
-
-/// Merge consecutive same-role messages into one multi-block message.
-///
-/// Dropped or hidden messages (and a server compaction block followed by assistant output)
-/// can leave adjacent same-role entries, which are valid for the Messages API only as separate
-/// blocks of one turn. Block order is preserved, so thinking stays ahead of the blocks that
-/// followed it. Runs before the cache breakpoint so the breakpoint lands on the merged turn.
-fn coalesce_same_role(chat: &mut Vec<StructuredApiMessage>) {
-    let mut out: Vec<StructuredApiMessage> = Vec::with_capacity(chat.len());
-    for msg in chat.drain(..) {
-        match out.last_mut() {
-            Some(prev) if prev.role == msg.role => {
-                let mut blocks = into_blocks(std::mem::replace(
-                    &mut prev.content,
-                    StructuredContent::Blocks(Vec::new()),
-                ));
-                blocks.extend(into_blocks(msg.content));
-                prev.content = StructuredContent::Blocks(blocks);
-            }
-            _ => out.push(msg),
-        }
-    }
-    *chat = out;
+    SplitHistory { system, wire }
 }
 
 fn into_blocks(content: StructuredContent) -> Vec<AnthropicContentBlock> {
@@ -517,11 +752,13 @@ pub(super) fn convert_parts_to_blocks(
                 });
             }
             // Compaction blocks in user messages, thinking blocks, and notes on assistant
-            // messages are silently dropped.
+            // messages are silently dropped. Turn context is placed by the caller, around the
+            // blocks of the whole message.
             MessagePart::Compaction { .. }
             | MessagePart::ThinkingBlock { .. }
             | MessagePart::RedactedThinkingBlock { .. }
-            | MessagePart::RuntimeNote { .. } => {}
+            | MessagePart::RuntimeNote { .. }
+            | MessagePart::TurnContext(_) => {}
         }
     }
     blocks

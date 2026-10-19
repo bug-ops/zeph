@@ -260,17 +260,6 @@ impl AnyProvider {
         }
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if the provider fails or the response cannot be parsed.
-    #[tracing::instrument(name = "llm.any.chat_typed_erased", skip_all)]
-    pub async fn chat_typed_erased<T>(&self, messages: &[Message]) -> Result<T, crate::LlmError>
-    where
-        T: DeserializeOwned + JsonSchema + 'static,
-    {
-        delegate_provider!(self, |p| p.chat_typed::<T>(messages).await)
-    }
-
     /// Fetch available models from this provider and update the disk cache.
     ///
     /// Returns an empty list for providers that do not support remote model discovery
@@ -809,8 +798,21 @@ impl LlmProvider for AnyProvider {
         delegate_provider!(self, |p| p.last_usage())
     }
 
+    #[tracing::instrument(name = "llm.any.chat_typed", skip_all)]
+    async fn chat_typed<T>(&self, messages: &[Message]) -> Result<T, crate::LlmError>
+    where
+        T: DeserializeOwned + JsonSchema + Send + 'static,
+        Self: Sized,
+    {
+        delegate_provider!(self, |p| p.chat_typed::<T>(messages).await)
+    }
+
     fn thinking_binding(&self) -> crate::provider::ThinkingBinding {
         delegate_provider!(self, |p| p.thinking_binding())
+    }
+
+    fn prefix_cache(&self) -> crate::provider::PrefixCache {
+        delegate_provider!(self, |p| p.prefix_cache())
     }
 
     fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {
@@ -1156,7 +1158,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_typed_erased_dispatches_to_mock() {
+    async fn chat_typed_dispatches_to_mock() {
         #[derive(Debug, serde::Deserialize, schemars::JsonSchema, PartialEq)]
         struct TestOutput {
             value: String,
@@ -1166,7 +1168,7 @@ mod tests {
             crate::mock::MockProvider::with_responses(vec![r#"{"value": "from_mock"}"#.into()]);
         let provider = AnyProvider::Mock(mock);
         let messages = vec![Message::from_legacy(Role::User, "test")];
-        let result: TestOutput = provider.chat_typed_erased(&messages).await.unwrap();
+        let result: TestOutput = provider.chat_typed(&messages).await.unwrap();
         assert_eq!(
             result,
             TestOutput {

@@ -91,6 +91,8 @@ impl<C: Channel> Agent<C> {
             return Ok(None);
         }
 
+        self.prepare_request_state();
+
         tracing::debug!(
             tool_count = tool_defs.len(),
             provider_name = self.provider.name(),

@@ -102,6 +102,31 @@ pub enum ContextStrategy {
     Adaptive,
 }
 
+/// How per-turn context reaches the model (spec 088, #6846).
+///
+/// The effective layout is pinned per conversation at session start and on `/clear`;
+/// `Auto` is resolved at that point from the provider's prefix-cache support.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_config::ContextLayout;
+///
+/// assert_eq!(ContextLayout::default(), ContextLayout::Auto);
+/// ```
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ContextLayout {
+    /// `Append` when the active provider caches prefixes, otherwise `Replace`.
+    #[default]
+    Auto,
+    /// Rebuild the system prompt and re-inject recalled context every turn.
+    Replace,
+    /// Freeze the system prompt and append per-turn context to the turn input.
+    Append,
+}
+
 /// Session list and auto-title configuration, nested under `[memory.sessions]` in TOML.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]

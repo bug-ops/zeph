@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        110,
-        "MIGRATIONS registry must contain all 110 sequential steps"
+        111,
+        "MIGRATIONS registry must contain all 111 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -2210,7 +2210,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 110);
+    assert_eq!(MIGRATIONS.len(), 111);
 }
 
 /// Mirrors the SC-003 wire-X-into-registry check below for `MigrateTuiPanelSizing` (#6675):
@@ -2416,6 +2416,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_agents_peer_messaging_config",
         "migrate_memory_store_max_namespace_rows",
         "migrate_claude_compaction_trigger",
+        "migrate_memory_context_layout",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -5339,4 +5340,40 @@ fn step_110_idempotent_on_own_output() {
     let second = migrate_claude_compaction_trigger(&first.output).expect("second migrate");
     assert_eq!(second.changed_count, 0);
     assert_eq!(second.output, first.output);
+}
+
+// ── Step 111 — migrate_memory_context_layout (spec 088, #6846) ──────────────────────
+
+#[test]
+fn migrate_memory_context_layout_appends_advisory_block() {
+    let base = "[memory]\nhistory_limit = 50\n";
+    let result = migrate_memory_context_layout(base).unwrap();
+    assert_eq!(result.changed_count, 1);
+    assert!(result.output.contains("# context_layout = \"auto\""));
+    assert!(result.output.contains("# turn_context_budget_ratio = 0.05"));
+    assert!(result.output.contains("# history_trim_watermark = 0.75"));
+}
+
+#[test]
+fn migrate_memory_context_layout_idempotent() {
+    let base = "[memory]\nhistory_limit = 50\n";
+    let first = migrate_memory_context_layout(base).unwrap();
+    let second = migrate_memory_context_layout(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0);
+    assert_eq!(second.output, first.output);
+}
+
+#[test]
+fn migrate_memory_context_layout_noop_without_memory_section() {
+    let base = "[agent]\nname = \"Zeph\"\n";
+    let result = migrate_memory_context_layout(base).unwrap();
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, base);
+}
+
+#[test]
+fn migrate_memory_context_layout_noop_when_key_present() {
+    let base = "[memory]\ncontext_layout = \"append\"\n";
+    let result = migrate_memory_context_layout(base).unwrap();
+    assert_eq!(result.changed_count, 0);
 }

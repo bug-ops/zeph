@@ -1175,6 +1175,35 @@ fn convert_messages_structured_with_tool_parts() {
 }
 
 #[test]
+fn turn_context_reaches_every_openai_conversion() {
+    use crate::testing::{TURN_CONTEXT_REQUEST_TEXT, turn_context_message};
+
+    let messages = vec![turn_context_message()];
+    assert_eq!(
+        convert_messages(&messages)[0].content,
+        TURN_CONTEXT_REQUEST_TEXT
+    );
+    assert_eq!(
+        convert_messages_structured(&messages)[0].content.as_deref(),
+        Some(TURN_CONTEXT_REQUEST_TEXT)
+    );
+    let with_image = {
+        let mut msg = turn_context_message();
+        msg.parts.push(MessagePart::Image(Box::new(ImageData {
+            data: vec![1, 2, 3],
+            mime_type: "image/png".into(),
+        })));
+        msg
+    };
+    let vision = convert_messages_vision(&[with_image]);
+    assert_matches!(
+        vision[0].content.as_slice(),
+        [OpenAiContentPart::Text { text }, OpenAiContentPart::ImageUrl { .. }]
+            if text == TURN_CONTEXT_REQUEST_TEXT
+    );
+}
+
+#[test]
 fn convert_messages_structured_plain_messages() {
     let messages = vec![Message::from_legacy(Role::User, "hello")];
     let result = convert_messages_structured(&messages);

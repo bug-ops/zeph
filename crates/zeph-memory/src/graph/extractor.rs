@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use zeph_llm::LlmError;
 use zeph_llm::any::AnyProvider;
-use zeph_llm::provider::{Message, Role};
+use zeph_llm::provider::{LlmProvider as _, Message, Role};
 
 use crate::error::MemoryError;
 
@@ -166,8 +166,7 @@ impl GraphExtractor {
 
         match tokio::time::timeout(
             std::time::Duration::from_secs(self.llm_timeout_secs),
-            self.provider
-                .chat_typed_erased::<ExtractionResult>(&messages),
+            self.provider.chat_typed::<ExtractionResult>(&messages),
         )
         .await
         {

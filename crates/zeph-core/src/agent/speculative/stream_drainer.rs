@@ -158,7 +158,7 @@ impl SpeculativeStreamDrainer {
                     content.push_thinking(block);
                 }
                 ToolSseEvent::ThinkingReplay(r) => {
-                    replay = r;
+                    replay = replay.merge(r);
                 }
                 ToolSseEvent::TextBlockStart => content.begin_text_block(),
                 ToolSseEvent::ContentChunk(text) => {

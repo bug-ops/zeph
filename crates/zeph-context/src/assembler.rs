@@ -26,7 +26,7 @@ use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
 
 use crate::budget::BudgetAllocation;
 use crate::error::AssemblerError;
-use crate::input::ContextAssemblyInput;
+use crate::input::{ContextAssemblyInput, ItemKeys};
 use crate::slot::ContextSlot;
 
 /// Map a slice of active compression levels to per-tier boolean flags.
@@ -258,7 +258,9 @@ fn schedule_context_fetchers<'r>(
                 tracing::warn!("code RAG fetch timed out ({MEMORY_FETCH_TIMEOUT_MS}ms)");
                 Ok(None)
             };
-            result.map(ContextSlot::CodeContext)
+            result
+                .map(|text| text.filter(|t| memory.item_keys.admit("code", t)))
+                .map(ContextSlot::CodeContext)
         }));
     }
     if declarative_active
@@ -389,13 +391,14 @@ impl ContextAssembler {
             .as_ref()
             .map_or(0, |(_, tokens)| *tokens);
 
-        let alloc = budget.allocate_with_opts(
+        let alloc = budget.allocate_with_mode(
             system_prompt,
             input.skills_prompt,
             tc,
             memory.graph_config.enabled,
             digest_tokens,
             memory_first,
+            input.allocation_mode,
         );
 
         let (recall_limit, min_sim) = correction_params(input.correction_config.as_ref());
@@ -575,7 +578,12 @@ pub(crate) async fn fetch_graph_facts(
     let mut body = String::from(GRAPH_FACTS_PREFIX);
     let mut tokens_so_far = tc.count_tokens(&body);
 
+    let mut emitted_any = false;
     for rf in &recalled {
+        let fact_key = ItemKeys::key("graph", &rf.fact);
+        if memory.item_keys.is_excluded(fact_key) {
+            continue;
+        }
         let fact_text = rf.fact.replace(['\n', '\r', '<', '>'], " ");
         let line = if let Some(score) = rf.activation_score {
             format!(
@@ -591,6 +599,8 @@ pub(crate) async fn fetch_graph_facts(
         }
         body.push_str(&line);
         tokens_so_far += line_tokens;
+        memory.item_keys.record("graph", fact_key);
+        emitted_any = true;
 
         // Append ZoomOut neighbors after the head fact.
         for nb in &rf.neighbors {
@@ -618,7 +628,7 @@ pub(crate) async fn fetch_graph_facts(
         }
     }
 
-    if body == GRAPH_FACTS_PREFIX {
+    if !emitted_any {
         return Ok(None);
     }
 
@@ -631,22 +641,33 @@ pub(crate) async fn fetch_graph_facts(
 /// budget" (persona facts, trajectory hints, tree memory, semantic recall, document RAG,
 /// summaries, cross-session recall). Returns `None` when no line fit (i.e. the body is
 /// still just `prefix`), signalling the caller to skip injection entirely.
+///
+/// Lines whose [`ItemKeys`] key (scoped by `source`) is already present in history are skipped
+/// before the budget check, so a repeated item never consumes budget a new one could use.
+/// Emitted lines are recorded in `keys`.
 fn append_budgeted_lines(
+    source: &'static str,
     prefix: &str,
     lines: impl Iterator<Item = String>,
     budget_tokens: usize,
     tc: &dyn TokenCounting,
+    keys: &ItemKeys,
 ) -> Option<String> {
     let mut body = String::from(prefix);
     let mut tokens_so_far = tc.count_tokens(&body);
 
     for line in lines {
+        let key = ItemKeys::key(source, &line);
+        if keys.is_excluded(key) {
+            continue;
+        }
         let line_tokens = tc.count_tokens(&line);
         if tokens_so_far + line_tokens > budget_tokens {
             break;
         }
         body.push_str(&line);
         tokens_so_far += line_tokens;
+        keys.record(source, key);
     }
 
     if body == prefix { None } else { Some(body) }
@@ -701,10 +722,15 @@ pub(crate) async fn fetch_persona_facts(
     let lines = facts
         .iter()
         .map(|fact| format!("[{}] {}\n", fact.category, fact.content));
-    Ok(
-        append_budgeted_lines(crate::slot::PERSONA_PREFIX, lines, budget_tokens, tc)
-            .map(|body| Message::from_legacy(Role::System, body)),
+    Ok(append_budgeted_lines(
+        "persona",
+        crate::slot::PERSONA_PREFIX,
+        lines,
+        budget_tokens,
+        tc,
+        &memory.item_keys,
     )
+    .map(|body| Message::from_legacy(Role::System, body)))
 }
 
 #[tracing::instrument(name = "context.trajectory_hints", skip_all)]
@@ -740,10 +766,15 @@ pub(crate) async fn fetch_trajectory_hints(
         .filter(|e| e.confidence >= min_conf)
         .take(top_k)
         .map(|entry| format!("- {}: {}\n", entry.intent, entry.outcome));
-    Ok(
-        append_budgeted_lines(crate::slot::TRAJECTORY_PREFIX, lines, budget_tokens, tc)
-            .map(|body| Message::from_legacy(Role::System, body)),
+    Ok(append_budgeted_lines(
+        "trajectory",
+        crate::slot::TRAJECTORY_PREFIX,
+        lines,
+        budget_tokens,
+        tc,
+        &memory.item_keys,
     )
+    .map(|body| Message::from_legacy(Role::System, body)))
 }
 
 #[tracing::instrument(name = "context.tree_memory", skip_all)]
@@ -770,10 +801,15 @@ pub(crate) async fn fetch_tree_memory(
         .iter()
         .take(top_k)
         .map(|node| format!("- {}\n", node.content));
-    Ok(
-        append_budgeted_lines(crate::slot::TREE_MEMORY_PREFIX, lines, budget_tokens, tc)
-            .map(|body| Message::from_legacy(Role::System, body)),
+    Ok(append_budgeted_lines(
+        "tree",
+        crate::slot::TREE_MEMORY_PREFIX,
+        lines,
+        budget_tokens,
+        tc,
+        &memory.item_keys,
     )
+    .map(|body| Message::from_legacy(Role::System, body)))
 }
 
 #[tracing::instrument(name = "context.reasoning_strategies", skip_all)]
@@ -812,12 +848,17 @@ pub(crate) async fn fetch_reasoning_strategies(
         // from reaching the system prompt (mirrors fetch_graph_facts scrub pattern).
         let safe_summary = s.summary.replace(['\n', '\r', '<', '>'], " ");
         let line = format!("- [{}] {}\n", s.outcome, safe_summary);
+        let key = ItemKeys::key("reasoning", &line);
+        if memory.item_keys.is_excluded(key) {
+            continue;
+        }
         let line_tokens = tc.count_tokens(&line);
         if tokens_so_far + line_tokens > budget_tokens {
             break;
         }
         body.push_str(&line);
         tokens_so_far += line_tokens;
+        memory.item_keys.record("reasoning", key);
         injected_ids.push(s.id.clone());
     }
 
@@ -864,9 +905,16 @@ pub(crate) async fn fetch_corrections(
     }
     let mut text = String::from(CORRECTIONS_PREFIX);
     for c in &corrections {
-        text.push_str("- Past user correction: \"");
-        text.push_str(&scrub(&c.correction_text));
-        text.push_str("\"\n");
+        let line = format!(
+            "- Past user correction: \"{}\"\n",
+            scrub(&c.correction_text)
+        );
+        if memory.item_keys.admit("correction", &line) {
+            text.push_str(&line);
+        }
+    }
+    if text == CORRECTIONS_PREFIX {
+        return Ok(None);
     }
     Ok(Some(Message::from_legacy(Role::System, text)))
 }
@@ -904,7 +952,14 @@ pub(crate) async fn fetch_semantic_recall(
         })
         .map(|item| format!("- [{}] {}\n", item.role, item.content));
 
-    match append_budgeted_lines(RECALL_PREFIX, lines, token_budget, tc) {
+    match append_budgeted_lines(
+        "recall",
+        RECALL_PREFIX,
+        lines,
+        token_budget,
+        tc,
+        &memory.item_keys,
+    ) {
         Some(text) => Ok((
             Some(Message::from_parts(
                 Role::System,
@@ -946,14 +1001,20 @@ pub(crate) async fn fetch_document_rag(
         .filter(|chunk| !chunk.text.is_empty())
         .map(|chunk| format!("{}\n", chunk.text));
 
-    Ok(
-        append_budgeted_lines(DOCUMENT_RAG_PREFIX, lines, token_budget, tc).map(|text| Message {
-            role: Role::System,
-            content: text,
-            parts: vec![],
-            metadata: MessageMetadata::default(),
-        }),
+    Ok(append_budgeted_lines(
+        "doc_rag",
+        DOCUMENT_RAG_PREFIX,
+        lines,
+        token_budget,
+        tc,
+        &memory.item_keys,
     )
+    .map(|text| Message {
+        role: Role::System,
+        content: text,
+        parts: vec![],
+        metadata: MessageMetadata::default(),
+    }))
 }
 
 #[tracing::instrument(name = "context.summaries", skip_all)]
@@ -980,10 +1041,15 @@ pub(crate) async fn fetch_summaries(
         format!("- Messages {first}-{last}: {}\n", summary.content)
     });
 
-    Ok(
-        append_budgeted_lines(SUMMARY_PREFIX, lines, token_budget, tc)
-            .map(|text| Message::from_parts(Role::System, vec![MessagePart::Summary { text }])),
+    Ok(append_budgeted_lines(
+        "summary",
+        SUMMARY_PREFIX,
+        lines,
+        token_budget,
+        tc,
+        &memory.item_keys,
     )
+    .map(|text| Message::from_parts(Role::System, vec![MessagePart::Summary { text }])))
 }
 
 #[tracing::instrument(name = "context.cross_session", skip_all)]
@@ -1018,11 +1084,15 @@ pub(crate) async fn fetch_cross_session(
         .iter()
         .map(|item| format!("- {}\n", item.summary_text));
 
-    Ok(
-        append_budgeted_lines(CROSS_SESSION_PREFIX, lines, token_budget, tc).map(|text| {
-            Message::from_parts(Role::System, vec![MessagePart::CrossSession { text }])
-        }),
+    Ok(append_budgeted_lines(
+        "cross_session",
+        CROSS_SESSION_PREFIX,
+        lines,
+        token_budget,
+        tc,
+        &memory.item_keys,
     )
+    .map(|text| Message::from_parts(Role::System, vec![MessagePart::CrossSession { text }])))
 }
 
 /// Compute how many tail messages to keep when the `MemoryFirst` strategy is active.
@@ -1077,6 +1147,7 @@ mod tests {
             memcot_config: zeph_config::MemCotConfig::default(),
             memcot_state: None,
             tree_config: TreeConfig::default(),
+            item_keys: ItemKeys::default(),
         }
     }
 
@@ -1484,6 +1555,7 @@ mod tests {
             active_types: &active_types,
             router: Box::new(NoopRouter),
             planned_next_tools: &[],
+            allocation_mode: crate::budget::AllocationMode::Replace,
         };
 
         let prepared = ContextAssembler::gather(&input).await.unwrap();
@@ -2772,7 +2844,14 @@ mod tests {
     #[test]
     fn append_budgeted_lines_empty_input_returns_none() {
         let tc = NaiveTokenCounter;
-        let result = append_budgeted_lines("prefix\n", std::iter::empty(), 1000, &tc);
+        let result = append_budgeted_lines(
+            "t",
+            "prefix\n",
+            std::iter::empty(),
+            1000,
+            &tc,
+            &ItemKeys::default(),
+        );
         assert!(result.is_none());
     }
 
@@ -2784,7 +2863,15 @@ mod tests {
             "two\n".to_string(),
             "three\n".to_string(),
         ];
-        let result = append_budgeted_lines("prefix\n", lines.into_iter(), 1000, &tc).unwrap();
+        let result = append_budgeted_lines(
+            "t",
+            "prefix\n",
+            lines.into_iter(),
+            1000,
+            &tc,
+            &ItemKeys::default(),
+        )
+        .unwrap();
         assert!(result.starts_with("prefix\n"));
         assert!(result.contains("one"));
         assert!(result.contains("two"));
@@ -2799,7 +2886,15 @@ mod tests {
         // Budget fits prefix + exactly the first line; the second must be dropped.
         let budget = tc.count_tokens(prefix) + tc.count_tokens(first);
         let lines = vec![first.to_string(), "two extra words here\n".to_string()];
-        let result = append_budgeted_lines(prefix, lines.into_iter(), budget, &tc).unwrap();
+        let result = append_budgeted_lines(
+            "t",
+            prefix,
+            lines.into_iter(),
+            budget,
+            &tc,
+            &ItemKeys::default(),
+        )
+        .unwrap();
         assert!(result.contains("one"), "first line must fit in budget");
         assert!(
             !result.contains("two extra words"),
@@ -2811,7 +2906,62 @@ mod tests {
     fn append_budgeted_lines_zero_budget_returns_none() {
         let tc = NaiveTokenCounter;
         let lines = vec!["one\n".to_string()];
-        let result = append_budgeted_lines("prefix\n", lines.into_iter(), 0, &tc);
+        let result = append_budgeted_lines(
+            "t",
+            "prefix\n",
+            lines.into_iter(),
+            0,
+            &tc,
+            &ItemKeys::default(),
+        );
         assert!(result.is_none(), "no line can fit within a zero budget");
+    }
+
+    #[test]
+    fn append_budgeted_lines_skips_excluded_items_and_spends_budget_on_new_ones() {
+        let tc = NaiveTokenCounter;
+        let seen = ItemKeys::key("t", "old item words\n");
+        let keys = ItemKeys::new([seen].into_iter().collect());
+        let prefix = "prefix\n";
+        let budget = tc.count_tokens(prefix) + tc.count_tokens("new item\n");
+        let lines = vec!["old item words\n".to_string(), "new item\n".to_string()];
+        let result =
+            append_budgeted_lines("t", prefix, lines.into_iter(), budget, &tc, &keys).unwrap();
+        assert!(
+            !result.contains("old item"),
+            "excluded item must be skipped"
+        );
+        assert!(
+            result.contains("new item"),
+            "freed budget must go to the new item"
+        );
+        assert_eq!(keys.take_emitted(), vec![ItemKeys::key("t", "new item\n")]);
+    }
+
+    #[test]
+    fn append_budgeted_lines_returns_none_when_every_item_is_excluded() {
+        let tc = NaiveTokenCounter;
+        let seen = ItemKeys::key("t", "one\n");
+        let keys = ItemKeys::new([seen].into_iter().collect());
+        let lines = vec!["one\n".to_string()];
+        assert!(
+            append_budgeted_lines("t", "prefix\n", lines.into_iter(), 1000, &tc, &keys).is_none()
+        );
+        assert_eq!(keys.take_emitted(), Vec::new());
+    }
+
+    #[test]
+    fn item_keys_are_scoped_by_source() {
+        assert_ne!(ItemKeys::key("recall", "x"), ItemKeys::key("summary", "x"));
+        assert_eq!(ItemKeys::key("recall", "x"), ItemKeys::key("recall", "x"));
+    }
+
+    #[test]
+    fn item_keys_discard_forgets_one_source_only() {
+        let keys = ItemKeys::default();
+        assert!(keys.admit("recall", "a"));
+        assert!(keys.admit("summary", "b"));
+        keys.discard("recall");
+        assert_eq!(keys.take_emitted(), vec![ItemKeys::key("summary", "b")]);
     }
 }

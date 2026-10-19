@@ -105,7 +105,7 @@ use super::{
     migrate_integrity_config, migrate_knowledge_config, migrate_llm_stream_limits,
     migrate_magic_docs_config, migrate_mcp_elicitation_config, migrate_mcp_max_connect_attempts,
     migrate_mcp_media_config, migrate_mcp_retry_and_tool_timeout, migrate_mcp_trust_levels,
-    migrate_memory_consent_gate_config, migrate_memory_graph_config,
+    migrate_memory_consent_gate_config, migrate_memory_context_layout, migrate_memory_graph_config,
     migrate_memory_graph_recall_include_imported, migrate_memory_hebbian_config,
     migrate_memory_hebbian_consolidation_config, migrate_memory_hebbian_spread_config,
     migrate_memory_persona_config, migrate_memory_reasoning_config,
@@ -1421,5 +1421,17 @@ impl Migration for MigrateClaudeCompactionTrigger {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_claude_compaction_trigger(toml_src)
+    }
+}
+
+/// Step 111 — add a `[memory]` `context_layout` advisory block (spec 088, issue #6846).
+pub(super) struct MigrateMemoryContextLayout;
+impl Migration for MigrateMemoryContextLayout {
+    fn name(&self) -> &'static str {
+        "migrate_memory_context_layout"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_memory_context_layout(toml_src)
     }
 }

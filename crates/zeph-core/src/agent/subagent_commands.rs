@@ -1289,6 +1289,7 @@ pub(crate) fn estimate_parts_size(m: &zeph_llm::provider::Message) -> usize {
             | MessagePart::Summary { text }
             | MessagePart::CrossSession { text }
             | MessagePart::RuntimeNote { text } => text.len(),
+            MessagePart::TurnContext(block) => block.text.len(),
             MessagePart::ToolOutput { body, .. } => body.len(),
             MessagePart::ToolUse { id, name, input } => {
                 50 + id.len() + name.len() + input.to_string().len()
@@ -1352,11 +1353,16 @@ pub(crate) fn trim_parent_messages(msgs: &mut Vec<zeph_llm::provider::Message>, 
     use zeph_llm::provider::{MessagePart, Role};
     use zeph_llm::tool_pairing::{OrphanAction, repair_window};
 
-    // Runtime notes carry the parent's stale per-iteration state (tool budget); a subagent
-    // must never inherit them.
+    // Runtime notes carry the parent's stale per-iteration state (tool budget) and turn
+    // context carries the parent's directives and retrieved memory; a subagent must never
+    // inherit either.
     for m in msgs.iter_mut() {
-        m.parts
-            .retain(|p| !matches!(p, MessagePart::RuntimeNote { .. }));
+        m.parts.retain(|p| {
+            !matches!(
+                p,
+                MessagePart::RuntimeNote { .. } | MessagePart::TurnContext(_)
+            )
+        });
     }
 
     // Token-budget cap: keep the most recent messages that fit within max_chars.

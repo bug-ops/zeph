@@ -32,7 +32,7 @@ use zeph_context::manager::ContextManager;
 use zeph_context::summarization::SummarizationDeps;
 use zeph_context::typed_page::TypedPagesState;
 use zeph_llm::any::AnyProvider;
-use zeph_llm::provider::Message;
+use zeph_llm::provider::{Message, TurnContextBlock};
 use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::{ConversationId, TokenCounter};
 use zeph_sanitizer::ContentSanitizer;
@@ -272,6 +272,41 @@ pub struct ContextAssemblyView<'a> {
     /// registered here so they remain tracked and abortable instead of being silently
     /// dropped when `PreparedContext` goes out of scope.
     pub task_supervisor: Arc<TaskSupervisor>,
+
+    // ── Context layout (spec 088) ──────────────────────────────────────────────────────
+    /// `Some` when the conversation is pinned to the `append` layout: retrieved context is
+    /// returned as a [`TurnContextBlock`] instead of being injected at the context floor.
+    pub append: Option<AppendSettings>,
+}
+
+/// Tunables of the `append` context layout, resolved from `[memory]` config.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_agent_context::state::AppendSettings;
+///
+/// let s = AppendSettings { turn_budget_ratio: 0.05, history_watermark: 0.75 };
+/// assert!(s.turn_budget_ratio < s.history_watermark);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AppendSettings {
+    /// `[memory] turn_context_budget_ratio`: per-turn context cap as a share of the budget.
+    pub turn_budget_ratio: f32,
+    /// `[memory] history_trim_watermark`: share of the history slot a trim brings history to.
+    pub history_watermark: f32,
+}
+
+/// Per-turn context attached to the turn input in the `append` layout.
+///
+/// `retrieved` comes from [`ContextDelta::retrieved`]; `directives` is built by `zeph-core`,
+/// which owns the skill, MCP, environment and notice state.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TurnPreamble {
+    /// Delta directives block (skills, MCP tools, environment, notices).
+    pub directives: Option<TurnContextBlock>,
+    /// Retrieved memory, code and graph context block.
+    pub retrieved: Option<TurnContextBlock>,
 }
 
 /// Values produced by [`crate::service::ContextService::prepare_context`] that must be applied by the caller.
@@ -285,6 +320,10 @@ pub struct ContextDelta {
     ///
     /// `None` when no code context was fetched or the fetch returned empty.
     pub code_context: Option<String>,
+    /// Retrieved-context block for the turn input (`append` layout only).
+    pub retrieved: Option<TurnContextBlock>,
+    /// Number of history messages a watermark trim removed this turn (`append` layout only).
+    pub trimmed_messages: usize,
 }
 
 /// Borrow-lens over all fields needed for compaction and summarization operations.

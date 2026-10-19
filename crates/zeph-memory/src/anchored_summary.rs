@@ -21,8 +21,7 @@ mod tests {
                 "crates/zeph-core/src/agent/context/summarization.rs".into(),
             ],
             decisions_made: vec![
-                "Decision: use chat_typed_erased — Reason: provider-agnostic structured output"
-                    .into(),
+                "Decision: use chat_typed — Reason: provider-agnostic structured output".into(),
             ],
             open_questions: vec!["Should we add per-provider fallback config?".into()],
             next_steps: vec!["Run pre-commit checks".into(), "Create PR".into()],

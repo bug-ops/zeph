@@ -11,7 +11,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use crate::error::LlmError;
 use crate::provider::{
     AgentVisible, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart,
-    Role, StatusTx, ToolDefinition, ToolUseRequest,
+    Role, StatusTx, ToolDefinition, ToolUseRequest, TurnContextKind,
 };
 use crate::retry::send_with_retry;
 use crate::sse::gemini_sse_to_stream;
@@ -985,16 +985,20 @@ fn convert_message_parts(
 ) -> Vec<GeminiPart> {
     if msg.parts.is_empty() {
         // Legacy message: use content field as plain text.
-        let text = msg.content.clone();
+        let text = msg.to_request_text().into_owned();
         if text.is_empty() {
             return vec![];
         }
         return vec![text_part(text)];
     }
 
-    let mut result = Vec::new();
+    let mut result: Vec<GeminiPart> = msg
+        .turn_context_texts(TurnContextKind::Retrieved)
+        .map(|t| text_part(t.to_owned()))
+        .collect();
     for part in &msg.parts {
         match part {
+            MessagePart::TurnContext(_) => {}
             MessagePart::Text { text } => {
                 if !text.is_empty() {
                     result.push(text_part(text.clone()));
@@ -1077,6 +1081,10 @@ fn convert_message_parts(
             }
         }
     }
+    result.extend(
+        msg.turn_context_texts(TurnContextKind::Directives)
+            .map(|t| text_part(t.to_owned())),
+    );
     result
 }
 

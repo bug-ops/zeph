@@ -88,6 +88,9 @@ pub(super) struct ModelCapabilities {
     pub extended_ttl_beta: bool,
     /// Supports `output_config.format` JSON-schema structured outputs (no forced tool choice).
     pub structured_outputs: bool,
+    /// Accepts a `role: "system"` message between conversation turns (mid-conversation system
+    /// directives). Other models receive the same text as user content.
+    pub mid_conversation_system: bool,
     /// Needs the `context-1m-2025-08-07` beta to reach a 1M window.
     pub needs_1m_beta: bool,
     /// Context window without any beta, `None` when unknown.
@@ -123,6 +126,7 @@ impl ModelCapabilities {
         extended_ttl_beta: false,
         needs_1m_beta: false,
         structured_outputs: false,
+        mid_conversation_system: false,
         native_window: None,
     };
 
@@ -226,9 +230,20 @@ impl ClaudeModel {
                 native_window: Some(WINDOW_1M),
                 ..none
             },
-            Self::Opus47 | Self::Opus48 => ModelCapabilities::STRICT,
-            Self::Opus5 | Self::Sonnet5 | Self::Fable5 | Self::Mythos5 => ModelCapabilities::GEN5,
-            Self::Opus55 | Self::Sonnet55 | Self::Fable51 => ModelCapabilities::GEN5_BOUND,
+            Self::Opus47 => ModelCapabilities::STRICT,
+            Self::Opus48 => ModelCapabilities {
+                mid_conversation_system: true,
+                ..ModelCapabilities::STRICT
+            },
+            Self::Sonnet5 => ModelCapabilities::GEN5,
+            Self::Opus5 | Self::Fable5 | Self::Mythos5 => ModelCapabilities {
+                mid_conversation_system: true,
+                ..ModelCapabilities::GEN5
+            },
+            Self::Opus55 | Self::Sonnet55 | Self::Fable51 => ModelCapabilities {
+                mid_conversation_system: true,
+                ..ModelCapabilities::GEN5_BOUND
+            },
             Self::Haiku55 => ModelCapabilities {
                 preserved_thinking: true,
                 ..ModelCapabilities::GEN5
@@ -236,6 +251,7 @@ impl ClaudeModel {
             Self::Mythos51 => ModelCapabilities {
                 forbids_forced_tool_choice: true,
                 structured_outputs: true,
+                mid_conversation_system: true,
                 ..ModelCapabilities::GEN5
             },
             Self::Unknown => ModelCapabilities {
@@ -333,6 +349,33 @@ mod tests {
             ClaudeModel::Opus48,
         ] {
             assert!(!m.capabilities().forbids_forced_tool_choice, "{m:?}");
+        }
+    }
+
+    #[test]
+    fn mid_conversation_system_matrix() {
+        for m in [
+            ClaudeModel::Opus5,
+            ClaudeModel::Opus55,
+            ClaudeModel::Opus48,
+            ClaudeModel::Fable5,
+            ClaudeModel::Fable51,
+            ClaudeModel::Mythos5,
+            ClaudeModel::Mythos51,
+            ClaudeModel::Sonnet55,
+        ] {
+            assert!(m.capabilities().mid_conversation_system, "{m:?}");
+        }
+        for m in [
+            ClaudeModel::Sonnet5,
+            ClaudeModel::Haiku55,
+            ClaudeModel::Haiku45,
+            ClaudeModel::Opus47,
+            ClaudeModel::Opus46,
+            ClaudeModel::Legacy,
+            ClaudeModel::Unknown,
+        ] {
+            assert!(!m.capabilities().mid_conversation_system, "{m:?}");
         }
     }
 

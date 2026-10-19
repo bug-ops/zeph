@@ -1007,3 +1007,48 @@ pub fn migrate_memory_consent_gate_config(toml_src: &str) -> Result<MigrationRes
         sections_changed: vec!["memory.consent_gate".to_owned()],
     })
 }
+
+/// Add a commented advisory for `context_layout`, `turn_context_budget_ratio` and
+/// `history_trim_watermark` under `[memory]` if absent (spec 088, #6846).
+///
+/// The fields have serde defaults so existing configs parse unchanged; this step only
+/// surfaces them for users upgrading from older configs.
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_memory_context_layout(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    // Idempotency: comments are invisible to toml_edit, so check the raw source.
+    if toml_src.contains("context_layout") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    if !doc.contains_key("memory") {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "\n# Context layout (spec 088, #6846): how per-turn context reaches the model.\n\
+         # append keeps the prompt cache valid across turns; auto picks it when the provider\n\
+         # caches prefixes. Pinned per conversation; a change applies after /clear.\n\
+         # Add these keys under the [memory] table:\n\
+         # context_layout = \"auto\"          # auto | replace | append\n\
+         # turn_context_budget_ratio = 0.05   # per-turn context cap, (0, 0.25]\n\
+         # history_trim_watermark = 0.75      # trim target share of the history slot, (0, 1]\n";
+    let raw = doc.to_string();
+    let output = format!("{raw}{comment}");
+
+    Ok(MigrationResult {
+        output,
+        changed_count: 1,
+        sections_changed: vec!["memory".to_owned()],
+    })
+}

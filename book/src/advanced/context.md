@@ -65,6 +65,25 @@ When `context_budget_tokens > 0`, the context window is structured as:
 └─────────────────────────────────────────────────┘
 ```
 
+## Context Layout and Prompt Caching
+
+`[memory] context_layout` selects how per-turn context reaches the model:
+
+```toml
+[memory]
+context_layout = "auto"             # auto | replace | append
+turn_context_budget_ratio = 0.05    # per-turn context cap as a share of the budget (0, 0.25]
+history_trim_watermark = 0.75       # a trim brings history down to this share of its slot (0, 1]
+```
+
+| Layout | Behavior |
+|--------|----------|
+| `replace` | The system prompt is rebuilt and recalled context re-injected every turn. |
+| `append` | The system prompt is frozen for the conversation; per-turn context is attached to your message. Consecutive requests extend each other, so Claude's prompt cache and preserved thinking stay valid. |
+| `auto` | `append` when the active provider caches prefixes (Claude with `cache_user_messages`), otherwise `replace`. |
+
+The layout is pinned when a conversation starts and on `/clear`; changing `context_layout` at runtime takes effect after the next `/clear`. `memory_first` and `adaptive` strategies always use `replace`. `/status` shows the effective layout. In `append`, items already sent in earlier turns are not repeated, and old tool output is pruned only under context pressure.
+
 ## Context Strategy Modes
 
 The `[memory.context_strategy]` setting controls how Zeph assembles the conversation history portion of the context window.

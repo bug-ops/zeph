@@ -3,10 +3,16 @@
 
 //! [`ContextService`] — stateless façade for agent context-assembly operations.
 
-use zeph_context::budget::ContextBudget;
+use std::collections::HashSet;
+
+use zeph_context::budget::{AllocationMode, ContextBudget};
 use zeph_context::fidelity::FidelityScorer;
+use zeph_context::input::ItemKeys;
 use zeph_llm::LlmProvider;
-use zeph_llm::provider::{Message, MessagePart, Role, context_floor, insert_at_context_floor};
+use zeph_llm::provider::{
+    Message, MessagePart, RetrievalKey, Role, TurnContextBlock, TurnContextKind, TurnContextTrust,
+    context_floor, insert_at_context_floor,
+};
 use zeph_skills::registry::SkillRegistry;
 
 use crate::error::ContextError;
@@ -16,7 +22,7 @@ use crate::helpers::{
     SUMMARY_PREFIX, TRAJECTORY_PREFIX, TREE_MEMORY_PREFIX,
 };
 use crate::state::{
-    ContextAssemblyView, ContextDelta, ContextSummarizationView, MessageWindowView,
+    AppendSettings, ContextAssemblyView, ContextDelta, ContextSummarizationView, MessageWindowView,
     ProviderHandles, StatusSink,
 };
 use crate::summarization::DeferredApplyTrigger;
@@ -173,13 +179,7 @@ impl ContextService {
             return;
         }
 
-        // Find the first non-system message index (skip system prefix).
-        let history_start = window
-            .messages
-            .iter()
-            .position(|m| m.role != Role::System)
-            .unwrap_or(window.messages.len())
-            .max(context_floor(window.messages));
+        let history_start = history_start(window.messages);
 
         if history_start >= window.messages.len() {
             return;
@@ -212,6 +212,53 @@ impl ContextService {
                 "trimmed messages to fit context budget"
             );
         }
+    }
+
+    /// Trim history with hysteresis (`append` layout).
+    ///
+    /// Does nothing while history fits in `slot` tokens. Once it overflows, trims down to
+    /// `slot * watermark` so the following turns append without trimming again. Returns the
+    /// number of removed messages.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    #[tracing::instrument(
+        name = "agent_context.service.trim_history",
+        skip_all,
+        fields(removed = tracing::field::Empty, target = tracing::field::Empty)
+    )]
+    pub fn trim_history_to_watermark(
+        &self,
+        window: &mut MessageWindowView<'_>,
+        slot: usize,
+        watermark: f32,
+    ) -> usize {
+        // `cached_prompt_tokens` already includes the system prompt, so history fits whenever
+        // it does; this skips the whole-history token count on the common turn.
+        if slot == 0 || usize::try_from(*window.cached_prompt_tokens).is_ok_and(|t| t <= slot) {
+            return 0;
+        }
+        let start = history_start(window.messages);
+        let total: usize = window
+            .messages
+            .get(start..)
+            .unwrap_or_default()
+            .iter()
+            .map(|m| window.token_counter.count_message_tokens(m))
+            .sum();
+        if total <= slot {
+            return 0;
+        }
+        let target = (slot as f32 * watermark) as usize;
+        let before = window.messages.len();
+        self.trim_messages_to_budget(window, target);
+        let removed = before - window.messages.len();
+        let span = tracing::Span::current();
+        span.record("removed", removed);
+        span.record("target", target);
+        removed
     }
 
     // ── prepare_context family (PR2) ─────────────────────────────────────────
@@ -527,24 +574,45 @@ impl ContextService {
         window: &mut MessageWindowView<'_>,
         view: &mut ContextAssemblyView<'_>,
     ) -> Result<ContextDelta, ContextError> {
+        let mut delta = self.prepare_context_pass(query, window, view).await?;
+        if view.append.is_some() && delta.trimmed_messages > 0 {
+            // The trim removed messages that carried items the first pass treated as present;
+            // fetch again against the post-trim history so they are not lost for this turn.
+            let trimmed = delta.trimmed_messages;
+            delta = self.prepare_context_pass(query, window, view).await?;
+            delta.trimmed_messages = trimmed;
+        }
+        Ok(delta)
+    }
+
+    #[allow(clippy::too_many_lines)] // sequential context-assembly pipeline; splitting would reduce readability
+    async fn prepare_context_pass(
+        &self,
+        query: &str,
+        window: &mut MessageWindowView<'_>,
+        view: &mut ContextAssemblyView<'_>,
+    ) -> Result<ContextDelta, ContextError> {
         if view.context_manager.budget.is_none() {
             return Ok(ContextDelta::default());
         }
 
-        // Remove stale injected messages before concurrent fetch.
-        self.remove_session_digest_message(window);
-        self.remove_summary_messages(window);
-        self.remove_cross_session_messages(window);
-        self.remove_recall_messages(window);
-        self.remove_document_rag_messages(window);
-        self.remove_correction_messages(window);
-        self.remove_code_context_messages(window);
-        self.remove_graph_facts_messages(window);
-        self.remove_persona_facts_messages(window);
-        self.remove_trajectory_hints_messages(window);
-        self.remove_tree_memory_messages(window);
-        if view.reasoning_config.enabled {
-            self.remove_reasoning_strategies_messages(window);
+        // Remove stale injected messages before concurrent fetch. In the `append` layout
+        // nothing is injected at the floor, so there is nothing to remove.
+        if view.append.is_none() {
+            self.remove_session_digest_message(window);
+            self.remove_summary_messages(window);
+            self.remove_cross_session_messages(window);
+            self.remove_recall_messages(window);
+            self.remove_document_rag_messages(window);
+            self.remove_correction_messages(window);
+            self.remove_code_context_messages(window);
+            self.remove_graph_facts_messages(window);
+            self.remove_persona_facts_messages(window);
+            self.remove_trajectory_hints_messages(window);
+            self.remove_tree_memory_messages(window);
+            if view.reasoning_config.enabled {
+                self.remove_reasoning_strategies_messages(window);
+            }
         }
 
         // Proactive world-knowledge exploration (feature-gated, #3320).
@@ -645,6 +713,10 @@ impl ContextService {
             memcot_config: view.memcot_config.clone(),
             memcot_state: view.memcot_state.clone(),
             tree_config: view.tree_config.clone(),
+            item_keys: ItemKeys::new(
+                view.append
+                    .map_or_else(HashSet::new, |_| present_retrieval_keys(window.messages)),
+            ),
         };
 
         #[cfg(feature = "index")]
@@ -677,6 +749,11 @@ impl ContextService {
             active_types: &active_types,
             router,
             planned_next_tools: view.planned_next_tools,
+            allocation_mode: view.append.map_or(AllocationMode::Replace, |a| {
+                AllocationMode::Append {
+                    turn_cap: turn_cap(view.context_manager, a),
+                }
+            }),
         };
 
         let mut prepared = zeph_context::assembler::ContextAssembler::gather(&input).await?;
@@ -700,6 +777,19 @@ impl ContextService {
                     let _ = handle.await;
                 },
             ));
+        }
+
+        if let Some(append) = view.append {
+            return self
+                .collect_turn_context(
+                    query,
+                    append,
+                    prepared,
+                    &memory_view.item_keys,
+                    window,
+                    view,
+                )
+                .await;
         }
 
         let (delta, inserted_count) = self.apply_prepared_context(window, view, prepared).await;
@@ -775,7 +865,7 @@ impl ContextService {
     ) -> (ContextDelta, usize) {
         use std::borrow::Cow;
         use zeph_llm::provider::{Message, MessageMetadata, Role};
-        use zeph_sanitizer::{ContentSource, ContentSourceKind, MemorySourceHint};
+        use zeph_sanitizer::MemorySourceHint;
 
         // Store top-1 recall score for MAR routing signal.
         *view.last_recall_confidence = prepared.recall_confidence;
@@ -859,41 +949,9 @@ impl ContextService {
         }
 
         // Code context: sanitize inline, return body to caller via ContextDelta.
-        let code_context = if let Some(text) = prepared.code_context {
-            let sanitized = view
-                .sanitizer
-                .sanitize(&text, ContentSource::new(ContentSourceKind::ToolResult));
-            view.metrics.sanitizer_runs += 1;
-            if !sanitized.injection_flags.is_empty() {
-                tracing::warn!(
-                    flags = sanitized.injection_flags.len(),
-                    "injection patterns detected in code RAG context"
-                );
-                view.metrics.sanitizer_injection_flags += sanitized.injection_flags.len() as u64;
-                let detail = sanitized
-                    .injection_flags
-                    .first()
-                    .map_or_else(String::new, |f| {
-                        format!("Detected pattern: {}", f.pattern_name)
-                    });
-                view.security_events.push(
-                    zeph_common::SecurityEventCategory::InjectionFlag,
-                    "code_rag",
-                    detail,
-                );
-            }
-            if sanitized.was_truncated {
-                view.metrics.sanitizer_truncations += 1;
-                view.security_events.push(
-                    zeph_common::SecurityEventCategory::Truncation,
-                    "code_rag",
-                    "Content truncated to max_content_size".to_string(),
-                );
-            }
-            Some(sanitized.body)
-        } else {
-            None
-        };
+        let code_context = prepared
+            .code_context
+            .map(|text| Self::sanitize_code_context(&text, view));
 
         if !prepared.memory_first {
             self.trim_messages_to_budget(window, prepared.recent_history_budget);
@@ -934,7 +992,220 @@ impl ContextService {
 
         recompute_prompt_tokens(window);
 
-        (ContextDelta { code_context }, inserted_count)
+        (
+            ContextDelta {
+                code_context,
+                ..ContextDelta::default()
+            },
+            inserted_count,
+        )
+    }
+
+    /// Sanitize a code-index RAG body (defense-in-depth, same rules as memory retrieval).
+    fn sanitize_code_context(text: &str, view: &mut ContextAssemblyView<'_>) -> String {
+        use zeph_sanitizer::{ContentSource, ContentSourceKind};
+
+        let sanitized = view
+            .sanitizer
+            .sanitize(text, ContentSource::new(ContentSourceKind::ToolResult));
+        view.metrics.sanitizer_runs += 1;
+        if !sanitized.injection_flags.is_empty() {
+            tracing::warn!(
+                flags = sanitized.injection_flags.len(),
+                "injection patterns detected in code RAG context"
+            );
+            view.metrics.sanitizer_injection_flags += sanitized.injection_flags.len() as u64;
+            let detail = sanitized
+                .injection_flags
+                .first()
+                .map_or_else(String::new, |f| {
+                    format!("Detected pattern: {}", f.pattern_name)
+                });
+            view.security_events.push(
+                zeph_common::SecurityEventCategory::InjectionFlag,
+                "code_rag",
+                detail,
+            );
+        }
+        if sanitized.was_truncated {
+            view.metrics.sanitizer_truncations += 1;
+            view.security_events.push(
+                zeph_common::SecurityEventCategory::Truncation,
+                "code_rag",
+                "Content truncated to max_content_size".to_string(),
+            );
+        }
+        sanitized.body
+    }
+
+    /// Build the `Retrieved` [`TurnContextBlock`] for the turn input (`append` layout).
+    ///
+    /// Sanitizes and scrubs every fetched section the same way the `replace` path does before
+    /// injection, concatenates them into one block stamped with the keys of the items it carries,
+    /// then trims history with the watermark hysteresis.
+    #[allow(clippy::too_many_lines)] // sequential section assembly: order matters
+    #[tracing::instrument(
+        name = "agent_context.service.collect_turn_context",
+        skip_all,
+        fields(turn_context_tokens = tracing::field::Empty)
+    )]
+    async fn collect_turn_context(
+        &self,
+        query: &str,
+        append: AppendSettings,
+        prepared: zeph_context::assembler::PreparedContext,
+        keys: &ItemKeys,
+        window: &mut MessageWindowView<'_>,
+        view: &mut ContextAssemblyView<'_>,
+    ) -> Result<ContextDelta, ContextError> {
+        use zeph_sanitizer::MemorySourceHint;
+
+        *view.last_recall_confidence = prepared.recall_confidence;
+        let mut sections: Vec<String> = Vec::new();
+
+        if view.digest_enabled
+            && let Some((digest_text, _)) = view.cached_session_digest.clone()
+        {
+            let text = format!("{}{digest_text}", crate::helpers::SESSION_DIGEST_PREFIX);
+            if keys.admit("digest", &text) {
+                let msg = Message::from_legacy(Role::User, text);
+                let sanitized = self
+                    .sanitize_memory_message(msg, MemorySourceHint::LlmSummary, view)
+                    .await;
+                sections.push(sanitized.content);
+            }
+        }
+
+        let slots = [
+            (
+                "graph",
+                prepared.graph_facts,
+                MemorySourceHint::ExternalContent,
+            ),
+            (
+                "doc_rag",
+                prepared.doc_rag,
+                MemorySourceHint::ExternalContent,
+            ),
+            (
+                "correction",
+                prepared.corrections,
+                MemorySourceHint::ConversationHistory,
+            ),
+            (
+                "recall",
+                prepared.recall,
+                MemorySourceHint::ConversationHistory,
+            ),
+            (
+                "cross_session",
+                prepared.cross_session,
+                MemorySourceHint::LlmSummary,
+            ),
+            ("summary", prepared.summaries, MemorySourceHint::LlmSummary),
+            (
+                "persona",
+                prepared.persona_facts,
+                MemorySourceHint::ExternalContent,
+            ),
+            (
+                "trajectory",
+                prepared.trajectory_hints,
+                MemorySourceHint::ExternalContent,
+            ),
+            (
+                "tree",
+                prepared.tree_memory,
+                MemorySourceHint::ExternalContent,
+            ),
+            (
+                "reasoning",
+                prepared.reasoning_hints,
+                MemorySourceHint::ExternalContent,
+            ),
+        ];
+        for (source, opt_msg, hint) in slots {
+            if let Some(msg) = opt_msg {
+                let sanitized = self.sanitize_memory_message(msg, hint, view).await;
+                if sanitized.content.is_empty() {
+                    keys.discard(source);
+                } else {
+                    sections.push(sanitized.content);
+                }
+            }
+        }
+
+        // ASSUMPTION: a tiered recall result is deduplicated as one whole item, because
+        // `recall_tiered` returns already-assembled messages without per-item identity.
+        if view.tiered_retrieval_config.enabled {
+            let params = SemanticRecallParams {
+                query,
+                token_budget: turn_cap(view.context_manager, append),
+                recall_limit: view.recall_limit,
+                context_format: view.context_format,
+                conversation_id: view.conversation_id,
+                tiered_classifier: view.tiered_retrieval_classifier.as_ref(),
+                tiered_validator: view.tiered_retrieval_validator.as_ref(),
+                tiered_config: &view.tiered_retrieval_config,
+            };
+            if let Some(msg) = self
+                .run_tiered_recall(&params, window, view.memory.as_deref())
+                .await?
+                && !msg.content.is_empty()
+                && keys.admit("tiered_recall", &msg.content)
+            {
+                let sanitized = self
+                    .sanitize_memory_message(msg, MemorySourceHint::ConversationHistory, view)
+                    .await;
+                if sanitized.content.is_empty() {
+                    keys.discard("tiered_recall");
+                } else {
+                    sections.push(sanitized.content);
+                }
+            }
+        }
+
+        if let Some(text) = prepared.code_context {
+            let body = Self::sanitize_code_context(&text, view);
+            if body.is_empty() {
+                keys.discard("code");
+            } else {
+                sections.push(body);
+            }
+        }
+
+        if view.redact_credentials {
+            for section in &mut sections {
+                if let std::borrow::Cow::Owned(s) = (view.scrub)(section) {
+                    *section = s;
+                }
+            }
+        }
+        sections.retain(|s| !s.is_empty());
+
+        let trimmed_messages = self.trim_history_to_watermark(
+            window,
+            prepared.recent_history_budget,
+            append.history_watermark,
+        );
+        recompute_prompt_tokens(window);
+
+        let retrieved = (!sections.is_empty()).then(|| TurnContextBlock {
+            kind: TurnContextKind::Retrieved,
+            trust: TurnContextTrust::ExternalUntrusted,
+            text: sections.join("\n"),
+            keys: keys.take_emitted(),
+        });
+        let tokens = retrieved
+            .as_ref()
+            .map_or(0, |b| window.token_counter.count_tokens(&b.text));
+        tracing::Span::current().record("turn_context_tokens", tokens);
+
+        Ok(ContextDelta {
+            code_context: None,
+            retrieved,
+            trimmed_messages,
+        })
     }
 
     /// Sanitize a memory retrieval message before inserting it into the context window.
@@ -1583,6 +1854,66 @@ impl StatusSink for TxStatusSink {
 
 // ── Free functions (helpers shared across service methods) ────────────────────
 
+/// Index of the first history message: past the system prefix and any compaction block.
+fn history_start(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .position(|m| m.role != Role::System)
+        .unwrap_or(messages.len())
+        .max(context_floor(messages))
+}
+
+/// Keys of every `kind` item already present in live history (at or after the context floor).
+///
+/// Read from `TurnContext` parts rather than a separate ledger, so compaction and trim drop
+/// the keys together with the messages that carried them.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_agent_context::service::present_turn_context_keys;
+/// use zeph_llm::provider::TurnContextKind;
+///
+/// assert!(present_turn_context_keys(&[], TurnContextKind::Directives).is_empty());
+/// ```
+#[must_use]
+pub fn present_turn_context_keys(
+    messages: &[Message],
+    kind: TurnContextKind,
+) -> HashSet<RetrievalKey> {
+    let floor = context_floor(messages);
+    messages
+        .iter()
+        .skip(floor)
+        .flat_map(|m| m.parts.iter())
+        .filter_map(|p| match p {
+            MessagePart::TurnContext(block) if block.kind == kind => {
+                Some(block.keys.iter().copied())
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// Keys of every retrieved item already present in live history.
+#[must_use]
+pub fn present_retrieval_keys(messages: &[Message]) -> HashSet<RetrievalKey> {
+    present_turn_context_keys(messages, TurnContextKind::Retrieved)
+}
+
+/// Per-turn token cap of the `append` layout: `turn_budget_ratio` of the context budget.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn turn_cap(manager: &zeph_context::manager::ContextManager, append: AppendSettings) -> usize {
+    manager.budget.as_ref().map_or(0, |b| {
+        (b.max_tokens() as f32 * append.turn_budget_ratio) as usize
+    })
+}
+
 /// Recompute `cached_prompt_tokens` from the current message list.
 ///
 /// Called after every mutation that changes the message count or content, so the
@@ -1916,6 +2247,110 @@ mod tests {
         );
     }
 
+    fn turn_input_with_keys(text: &str, keys: &[u64]) -> Message {
+        use zeph_llm::provider::{TurnContextBlock, TurnContextKind, TurnContextTrust};
+        Message::from_parts(
+            Role::User,
+            vec![
+                MessagePart::TurnContext(TurnContextBlock {
+                    kind: TurnContextKind::Retrieved,
+                    trust: TurnContextTrust::ExternalUntrusted,
+                    text: "recalled".into(),
+                    keys: keys.iter().copied().map(RetrievalKey).collect(),
+                }),
+                MessagePart::TurnContext(TurnContextBlock {
+                    kind: TurnContextKind::Directives,
+                    trust: TurnContextTrust::Trusted,
+                    text: "directive".into(),
+                    keys: vec![RetrievalKey(999)],
+                }),
+                MessagePart::Text { text: text.into() },
+            ],
+        )
+    }
+
+    #[test]
+    fn present_retrieval_keys_collects_retrieved_blocks_only() {
+        let msgs = vec![
+            sys("system"),
+            turn_input_with_keys("one", &[1, 2]),
+            assistant("a"),
+            turn_input_with_keys("two", &[3]),
+        ];
+        let keys = present_retrieval_keys(&msgs);
+        let expected: HashSet<RetrievalKey> = [1, 2, 3].into_iter().map(RetrievalKey).collect();
+        assert_eq!(keys, expected, "directive keys must not count as retrieved");
+    }
+
+    #[test]
+    fn present_retrieval_keys_ignores_blocks_before_the_context_floor() {
+        let msgs = vec![
+            sys("system"),
+            turn_input_with_keys("old", &[7]),
+            compaction_block(),
+            turn_input_with_keys("new", &[8]),
+        ];
+        let keys = present_retrieval_keys(&msgs);
+        assert!(!keys.contains(&RetrievalKey(7)));
+        assert!(keys.contains(&RetrievalKey(8)));
+    }
+
+    #[test]
+    fn trim_history_to_watermark_is_a_noop_while_history_fits() {
+        let mut msgs = vec![sys("system"), user("hello"), assistant("hi")];
+        let mut cached = 0u64;
+        let mut completed = HashSet::new();
+        let mut window = make_window(&mut msgs, &mut cached, &mut completed);
+        let removed = ContextService::new().trim_history_to_watermark(&mut window, 10_000, 0.5);
+        assert_eq!(removed, 0);
+        assert_eq!(window.messages.len(), 3);
+    }
+
+    #[test]
+    fn trim_history_to_watermark_trims_below_the_slot_with_headroom() {
+        let mut msgs = vec![sys("system")];
+        for i in 0..40 {
+            msgs.push(user(&format!(
+                "question number {i} with some padding words"
+            )));
+            msgs.push(assistant(&format!(
+                "answer number {i} with some padding words"
+            )));
+        }
+        let mut cached = 0u64;
+        let mut completed = HashSet::new();
+        let mut window = make_window(&mut msgs, &mut cached, &mut completed);
+        let counter = make_counter();
+        let total: usize = window.messages[1..]
+            .iter()
+            .map(|m| counter.count_message_tokens(m))
+            .sum();
+        let slot = total - 10;
+        *window.cached_prompt_tokens = total as u64;
+
+        // A cached prompt size under the slot short-circuits before any history scan.
+        *window.cached_prompt_tokens = slot as u64;
+        assert_eq!(
+            ContextService::new().trim_history_to_watermark(&mut window, slot, 0.5),
+            0
+        );
+        *window.cached_prompt_tokens = total as u64;
+
+        let removed = ContextService::new().trim_history_to_watermark(&mut window, slot, 0.5);
+        assert!(removed > 0, "overflowing history must be trimmed");
+        let after: usize = window.messages[1..]
+            .iter()
+            .map(|m| counter.count_message_tokens(m))
+            .sum();
+        assert!(
+            after <= slot / 2 + 40,
+            "history must land near slot * watermark"
+        );
+
+        let again = ContextService::new().trim_history_to_watermark(&mut window, slot, 0.5);
+        assert_eq!(again, 0, "the next turn must not trim again");
+    }
+
     fn compaction_block() -> Message {
         Message::from_parts(
             Role::Assistant,
@@ -2165,6 +2600,7 @@ mod tests {
                 planned_next_tools: &[],
                 status_tx: None,
                 task_supervisor: make_task_supervisor(),
+                append: None,
             };
 
             match op {
@@ -2452,6 +2888,7 @@ mod tests {
                 planned_next_tools: &[],
                 status_tx: None,
                 task_supervisor: make_task_supervisor(),
+                append: None,
             }
         }
 
@@ -2694,6 +3131,7 @@ mod tests {
                 planned_next_tools: &[],
                 status_tx: None,
                 task_supervisor: make_task_supervisor(),
+                append: None,
             };
 
             let result = ContextService::new()
@@ -2778,6 +3216,7 @@ mod tests {
                 planned_next_tools: &[],
                 status_tx: None,
                 task_supervisor: make_task_supervisor(),
+                append: None,
             };
 
             let result = ContextService::new()
@@ -2869,6 +3308,7 @@ mod tests {
                 planned_next_tools: &[],
                 status_tx: None,
                 task_supervisor: make_task_supervisor(),
+                append: None,
             };
 
             let result = ContextService::new()
@@ -3111,6 +3551,7 @@ mod tests {
                 planned_next_tools: &[],
                 status_tx: None,
                 task_supervisor: make_task_supervisor(),
+                append: None,
             }
         }
 

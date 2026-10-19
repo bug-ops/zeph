@@ -2517,8 +2517,7 @@ impl<C: Channel> Agent<C> {
             first_message_index,
         } = replay
         {
-            // The provider dropped the thinking from this wire index on (never above the
-            // history index, so this strips at least the dropped blocks).
+            // The provider dropped the thinking from this history index on.
             tracing::warn!(
                 first_message_index,
                 "provider dropped thinking blocks; stripping the same range from history"
@@ -2530,15 +2529,7 @@ impl<C: Channel> Agent<C> {
         // Mid-iteration history edits invalidate the cached prefix, so only real token pressure
         // applies them here; stale-output pruning runs once at the turn boundary instead.
         self.maybe_summarize_tool_pair().await;
-        self.maybe_apply_deferred_summaries(
-            zeph_agent_context::DeferredApplyTrigger::TokenPressure,
-        );
-        self.flush_deferred_summaries().await;
-        // Mid-iteration soft compaction: fires after summarization so fresh results are
-        // either summarized or protected before pruning. Does not touch turn counters,
-        // cooldown, or trigger Hard tier (no LLM call during tool loop).
-        self.maybe_soft_compact_mid_iteration();
-        self.flush_deferred_summaries().await;
+        self.apply_mid_iteration_compaction().await;
 
         if window_exhausted {
             self.flush_runtime_note();
@@ -2546,6 +2537,25 @@ impl<C: Channel> Agent<C> {
         }
 
         Ok(None)
+    }
+
+    /// Mid-iteration apply of deferred summaries plus soft compaction.
+    ///
+    /// Fires after summarization so fresh results are either summarized or protected before
+    /// pruning. Does not touch turn counters, cooldown, or trigger the Hard tier (no LLM call
+    /// during the tool loop). In the `append` layout it runs behind the sweep gate, at most once
+    /// per turn.
+    pub(crate) async fn apply_mid_iteration_compaction(&mut self) {
+        if !self.mid_iteration_sweep_allowed() {
+            return;
+        }
+        self.maybe_apply_deferred_summaries(
+            zeph_agent_context::DeferredApplyTrigger::TokenPressure,
+        );
+        self.flush_deferred_summaries().await;
+        self.maybe_soft_compact_mid_iteration();
+        self.flush_deferred_summaries().await;
+        self.note_sweep_done();
     }
 }
 

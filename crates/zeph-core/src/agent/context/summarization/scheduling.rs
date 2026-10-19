@@ -65,6 +65,7 @@ impl<C: Channel> Agent<C> {
             self.update_metrics(|m| m.context_compactions += 1);
         }
         if hard_fired {
+            self.msg.layout.invalidate_prompt();
             let turns_segment = turns_before.unwrap_or(0);
             self.update_metrics(|m| {
                 m.compaction_hard_count += 1;

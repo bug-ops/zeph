@@ -217,7 +217,11 @@ async fn turn_input_is_stamped_and_superseded_across_real_turns() {
         0,
         3,
     );
-    let built = agent.build_user_message("direct", vec![]);
+    let built = agent.build_user_message(
+        "direct",
+        vec![],
+        zeph_agent_context::state::TurnPreamble::default(),
+    );
     assert_eq!(built.metadata.origin, Some(MessageOrigin::TurnInput));
 
     agent

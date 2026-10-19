@@ -43,6 +43,12 @@ pub(crate) struct MemoryCompactionState {
     pub(crate) context_strategy: crate::config::ContextStrategy,
     /// Turn threshold for `Adaptive` strategy crossover (#2288).
     pub(crate) crossover_turn_threshold: u32,
+    /// Configured `[memory] context_layout`; the effective layout is pinned per conversation.
+    pub(crate) context_layout: zeph_config::ContextLayout,
+    /// `[memory] turn_context_budget_ratio` (`append` layout).
+    pub(crate) turn_context_budget_ratio: f32,
+    /// `[memory] history_trim_watermark` (`append` layout).
+    pub(crate) history_trim_watermark: f32,
     /// CAM fidelity scoring configuration (#4547).
     ///
     /// `None` means fidelity scoring is not configured (disabled).
@@ -76,6 +82,9 @@ impl Default for MemoryCompactionState {
             cached_session_digest: None,
             context_strategy: crate::config::ContextStrategy::default(),
             crossover_turn_threshold: 20,
+            context_layout: zeph_config::ContextLayout::default(),
+            turn_context_budget_ratio: 0.05,
+            history_trim_watermark: 0.75,
             fidelity_config: None,
             fidelity_semantic_provider: None,
             fidelity_compress_provider: None,

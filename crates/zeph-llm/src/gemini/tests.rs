@@ -91,6 +91,17 @@ fn test_system_instruction_extraction() {
 }
 
 #[test]
+fn turn_context_is_sent_around_the_user_text() {
+    let (_, contents) = convert_messages(&[crate::testing::turn_context_message()]);
+    let texts: Vec<_> = contents[0]
+        .parts
+        .iter()
+        .filter_map(|p| p.text.as_deref())
+        .collect();
+    assert_eq!(texts, ["retrieved", "question", "directives"]);
+}
+
+#[test]
 fn test_empty_system_omitted() {
     let messages = vec![msg(Role::System, ""), msg(Role::User, "Hello")];
     let (system, _) = convert_messages(&messages);

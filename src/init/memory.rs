@@ -245,6 +245,18 @@ pub(super) fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
         .interact()?;
     strategy_options[strategy_idx].clone_into(&mut state.context_strategy);
 
+    let layout_options = ["auto", "replace", "append"];
+    let layout_idx = Select::new()
+        .with_prompt(
+            "Context layout (auto: append when the provider caches prefixes, else replace; \
+             replace: rebuild the prompt every turn; append: keep the prompt cache valid \
+             across turns)",
+        )
+        .items(layout_options)
+        .default(0)
+        .interact()?;
+    layout_options[layout_idx].clone_into(&mut state.context_layout);
+
     state.fidelity_enabled = Confirm::new()
         .with_prompt(
             "Enable Context-Adaptive Memory (CAM) fidelity scoring? (assigns Full/Compressed/\

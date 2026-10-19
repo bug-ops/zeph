@@ -25,6 +25,10 @@ impl<C: Channel> Agent<C> {
         let budget_tokens = resolve_context_budget(&config, &self.provider);
         self.runtime.config.security = config.security;
         self.runtime.config.timeouts = config.timeouts;
+        if !self.runtime.config.redact_credentials && config.memory.redact_credentials {
+            // Enabling redaction by reload scrubs the whole window once (one guard event).
+            self.msg.layout.invalidate_scrub_marker();
+        }
         self.runtime.config.redact_credentials = config.memory.redact_credentials;
         self.services.memory.persistence.history_limit = config.memory.history_limit;
         self.services.memory.persistence.recall_limit = config.memory.semantic.recall_limit;
@@ -104,6 +108,14 @@ impl<C: Channel> Agent<C> {
                 self.services.memory.extraction.rpe_router = None;
             }
             self.services.memory.extraction.graph_config = graph_cfg.clone();
+        }
+        {
+            // `context_layout` only changes what the next pin resolves to: the running
+            // conversation keeps its layout until `/clear` (reported as `layout_pending`).
+            let compaction = &mut self.services.memory.compaction;
+            compaction.context_layout = config.memory.context_layout;
+            compaction.turn_context_budget_ratio = config.memory.turn_context_budget_ratio;
+            compaction.history_trim_watermark = config.memory.history_trim_watermark;
         }
         self.context_manager.soft_compaction_threshold = config.memory.soft_compaction_threshold;
         self.context_manager.hard_compaction_threshold = config.memory.hard_compaction_threshold;

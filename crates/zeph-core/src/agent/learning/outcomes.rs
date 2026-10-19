@@ -176,7 +176,7 @@ impl<C: Channel> Agent<C> {
                 }];
                 match self
                     .provider
-                    .chat_typed_erased::<zeph_skills::evolution::SkillEvaluation>(&eval_messages)
+                    .chat_typed::<zeph_skills::evolution::SkillEvaluation>(&eval_messages)
                     .await
                 {
                     Ok(eval) if !eval.should_improve => {
@@ -385,7 +385,7 @@ impl<C: Channel> Agent<C> {
             }];
             match self
                 .provider
-                .chat_typed_erased::<zeph_skills::evolution::DomainGateResult>(&gate_messages)
+                .chat_typed::<zeph_skills::evolution::DomainGateResult>(&gate_messages)
                 .await
             {
                 Ok(gate) if !gate.domain_relevant => {

@@ -18,6 +18,7 @@ use zeph_common::text::truncate_chars;
 
 use crate::any::AnyProvider;
 use crate::error::LlmError;
+use crate::provider::LlmProvider;
 
 use super::ClassifierTask;
 use super::metrics::ClassifierMetrics;
@@ -99,7 +100,7 @@ impl LlmClassifier {
     ) -> Result<FeedbackVerdict, LlmError> {
         let t0 = std::time::Instant::now();
         let messages = build_judge_messages(user_message, assistant_response);
-        let verdict: FeedbackVerdict = self.provider.chat_typed_erased(&messages).await?;
+        let verdict: FeedbackVerdict = self.provider.chat_typed(&messages).await?;
         let elapsed = t0.elapsed();
         let latency_ms = elapsed.as_millis();
 

@@ -236,6 +236,14 @@ AND it returns false for results with meaningful content
 - Blocks 1-2 MUST be byte-identical across turns unless session-scoped inputs change (instruction files, skill registry or trust, MCP server set, project context, repo-map TTL refresh); per-turn query results (matched skills, matched MCP tools) MUST NOT appear in them
 - Deferred (#6830 part B): caching of the message history across turns; until then only tools and blocks 1-2 hit the provider cache
 
+### Context layout, allocator mode and watermark (#6846, #6563)
+- `BudgetAllocation::allocate` takes `AllocationMode { Replace, Append { turn_cap } }`. `Replace` is the legacy split. In `Append`, memory slots split `turn_cap = turn_context_budget_ratio * max_tokens` using the existing ratios normalized; `recent_history` receives all remaining tokens because injections live in history
+- `ContextMemoryView.item_keys: ItemKeys` (exclude set plus emitted-key recorder) is applied per item in every fetcher before formatting and truncation, so freed budget goes to new items; the emitted keys are stamped on the `Retrieved` block. Present keys are read from `TurnContext` parts at or after `context_floor` (no separate ledger). `ContextAssemblyInput.allocation_mode` carries the `AllocationMode`
+- `ContextService::prepare_context` returns `TurnPreamble { directives, retrieved }` in `append`; each section is sanitized and scrubbed before it is attached
+- History trim in `append` runs on `history_trim_watermark` hysteresis: a trim brings history to `slot * watermark`, so following turns append without trimming. Tool-output sweeps are behind the hysteresis gate described in spec 088 section 7 (once on entering the soft band, re-armed by 10% growth, always at the hard tier)
+- Delta directive keys: skill body = name + body hash, MCP tool = per tool, other sections = content hash
+- Summarizer input never includes `TurnContext` (excluded by construction in `flatten_parts`/`as_plain_text`)
+
 ### Never
 - Add a dependency on `zeph-core`
 - Perform channel I/O or logging to users inside `ContextAssembler::gather()`
