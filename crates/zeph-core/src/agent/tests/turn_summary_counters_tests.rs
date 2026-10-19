@@ -50,17 +50,16 @@ fn tool_output(name: &str, summary: &str) -> ToolOutput {
 /// (`crate::agent::tool_execution::tier_loop`) counts the whole batch in a single call, so this
 /// is the shape needed to catch off-by-one/batch-counting bugs.
 fn tool_use_batch(n: usize) -> ChatResponse {
-    ChatResponse::ToolUse {
-        text: None,
-        tool_calls: (0..n)
+    ChatResponse::tool_use(
+        None,
+        (0..n)
             .map(|i| ToolUseRequest {
                 id: format!("call-{i}"),
                 name: format!("tool_{i}").into(),
                 input: serde_json::json!({"arg": i}),
             })
             .collect(),
-        thinking_blocks: vec![],
-    }
+    )
 }
 
 /// Baseline (AC #1): a turn with zero tool calls must report `turn_tool_calls == 0` and exactly

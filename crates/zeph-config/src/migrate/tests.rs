@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        109,
-        "MIGRATIONS registry must contain all 109 sequential steps"
+        110,
+        "MIGRATIONS registry must contain all 110 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -2210,7 +2210,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 109);
+    assert_eq!(MIGRATIONS.len(), 110);
 }
 
 /// Mirrors the SC-003 wire-X-into-registry check below for `MigrateTuiPanelSizing` (#6675):
@@ -2415,6 +2415,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_tui_panel_sizing",
         "migrate_agents_peer_messaging_config",
         "migrate_memory_store_max_namespace_rows",
+        "migrate_claude_compaction_trigger",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -5292,4 +5293,50 @@ fn step_106_idempotent_on_own_output() {
         second.output, first.output,
         "output must be unchanged on second run"
     );
+}
+
+#[test]
+fn step_110_hints_trigger_on_claude_entry_with_server_compaction() {
+    let src = "[[llm.providers]]\ntype = \"claude\"\nserver_compaction = true\nmodel = \"x\"\n\n\
+               [[llm.providers]]\ntype = \"openai\"\nserver_compaction = true\n";
+    let result = migrate_claude_compaction_trigger(src).expect("migrate");
+    assert_eq!(result.changed_count, 1);
+    assert_eq!(
+        result
+            .output
+            .matches("server_compaction_trigger_tokens")
+            .count(),
+        1,
+        "only the claude entry is annotated"
+    );
+    assert!(
+        result.output.parse::<toml_edit::DocumentMut>().is_ok(),
+        "output must stay valid TOML"
+    );
+}
+
+#[test]
+fn step_110_keeps_an_existing_trailing_comment() {
+    let src = "[[llm.providers]]\ntype = \"claude\"\nserver_compaction = true # my own note\n";
+    let result = migrate_claude_compaction_trigger(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_110_noop_without_claude_server_compaction() {
+    let src = "[[llm.providers]]\ntype = \"claude\"\nmodel = \"x\"\n";
+    let result = migrate_claude_compaction_trigger(src).expect("migrate");
+    assert_eq!(result.changed_count, 0);
+    assert_eq!(result.output, src);
+}
+
+#[test]
+fn step_110_idempotent_on_own_output() {
+    let src = "[[llm.providers]]\ntype = \"claude\"\nserver_compaction = true\n";
+    let first = migrate_claude_compaction_trigger(src).expect("migrate");
+    assert_eq!(first.changed_count, 1);
+    let second = migrate_claude_compaction_trigger(&first.output).expect("second migrate");
+    assert_eq!(second.changed_count, 0);
+    assert_eq!(second.output, first.output);
 }

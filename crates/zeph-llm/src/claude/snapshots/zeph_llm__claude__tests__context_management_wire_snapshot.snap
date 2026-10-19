@@ -1,0 +1,16 @@
+---
+source: crates/zeph-llm/src/claude/tests.rs
+expression: json
+---
+{
+  "edits": [
+    {
+      "type": "compact_20260112",
+      "trigger": {
+        "type": "input_tokens",
+        "value": 140000
+      },
+      "pause_after_compaction": false
+    }
+  ]
+}

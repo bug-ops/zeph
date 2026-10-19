@@ -35,6 +35,16 @@ pub(crate) fn prune_tool_outputs(
     min_to_free: usize,
 ) -> usize {
     use zeph_config::PruningStrategy;
+    // Strategies differ in which outputs they pick, but all of them only touch outputs that are
+    // not pruned yet, so the first such output is a lower bound on the edit point.
+    let first_prunable = summ.messages.iter().position(|m| {
+        m.parts.iter().any(|p| {
+            matches!(
+                p,
+                MessagePart::ToolOutput { body, compacted_at: None, .. } if !body.is_empty()
+            )
+        })
+    });
     let freed = match &summ.context_manager.compression.pruning_strategy {
         PruningStrategy::TaskAware => prune_tool_outputs_scored(summ, min_to_free),
         PruningStrategy::Mig => prune_tool_outputs_mig(summ, min_to_free),
@@ -46,6 +56,9 @@ pub(crate) fn prune_tool_outputs(
         *summ.cached_prompt_tokens = summ
             .cached_prompt_tokens
             .saturating_sub(u64::try_from(freed).unwrap_or(u64::MAX));
+        if let Some(from) = first_prunable {
+            zeph_llm::provider::strip_thinking_from(summ.messages, from);
+        }
     }
     freed
 }

@@ -32,6 +32,8 @@ mod provider_override_masking_tests;
 #[cfg(test)]
 mod provider_override_timing_tests;
 #[cfg(test)]
+mod prune_turn_boundary_tests;
+#[cfg(test)]
 mod runtime_note_loop_tests;
 #[cfg(test)]
 mod runtime_note_tests;

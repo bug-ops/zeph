@@ -738,11 +738,7 @@ impl LlmProvider for OllamaProvider {
             Some(response.message.content)
         };
 
-        Ok(ChatResponse::ToolUse {
-            text,
-            tool_calls,
-            thinking_blocks: vec![],
-        })
+        Ok(ChatResponse::tool_use(text, tool_calls))
     }
 
     #[tracing::instrument(
@@ -1731,7 +1727,8 @@ mod tests {
             .expect("chat_with_tools should succeed against a live Ollama server");
 
         match response {
-            ChatResponse::ToolUse { tool_calls, .. } => {
+            ChatResponse::ToolUse { content, .. } => {
+                let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
                 assert!(!tool_calls.is_empty());
                 assert_eq!(tool_calls[0].name.as_str(), "get_weather");
             }

@@ -54,5 +54,6 @@ pub use state::{
     ProbeOutcome, ProviderHandles, QdrantPersistFuture, SecurityEventSink, StatusSink,
     ToolOutputArchive, TrustGate,
 };
+pub use summarization::DeferredApplyTrigger;
 
 pub use retrieved::{RetrievedContext, collect_retrieved_context};

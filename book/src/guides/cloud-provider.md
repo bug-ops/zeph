@@ -19,7 +19,8 @@ type = "claude"
 model = "claude-sonnet-5"
 max_tokens = 4096
 # server_compaction = true          # Server-side context compaction (Claude API beta)
-# enable_extended_context = true    # 1M token context window (Claude Opus and Sonnet models, not Haiku)
+# server_compaction_trigger_tokens = 140000  # optional; minimum 50000
+# enable_extended_context = true    # lift the 200k window ceiling to the model's native window
 ```
 
 Claude does not support embeddings. Use a multi-provider setup to combine Claude chat with Ollama embeddings, or use OpenAI embeddings.
@@ -28,11 +29,13 @@ Claude does not support embeddings. Use a multi-provider setup to combine Claude
 
 Enable `server_compaction = true` to let the Claude API manage context length on the server side. When the context approaches the model's limit, Claude produces a compact summary in-place. Zeph surfaces the compaction event in the TUI and via the `server_compaction_events` metric.
 
-> **Note:** Server compaction is not supported on Haiku models. When enabled on Haiku, Zeph emits a `WARN` and falls back to client-side compaction automatically.
+`server_compaction_trigger_tokens` sets the input-token count at which the API compacts. The API rejects values below 50 000, so Zeph rejects them when loading the config. When unset, the trigger is 70% of the model's context window (140 000 at the default 200k window, never below 50 000), which stays below the point where the tool loop stops at 80% of the context budget. Zeph warns at startup when an explicit trigger is at or above that stop line.
 
-### 1M Extended Context
+> **Note:** Server compaction needs a model that supports it (Claude 4.6 and later, including Haiku 5.5; not Haiku 4.5 or older generations). On an unsupported model Zeph emits a `WARN` and falls back to client-side compaction. If the API (or a proxy in front of it) rejects the `compact-2026-01-12` beta header, Zeph disables server compaction for the rest of the session and retries once without it.
 
-For Claude Opus and Sonnet models (not Haiku), enable `enable_extended_context = true` to unlock the 1M token context window. The `auto_budget` feature scales accordingly. Enable with `--extended-context` CLI flag or in the provider entry in config.
+### Extended Context Window
+
+Current Claude models have a 1M-token native context window, but Zeph caps the window it plans against at 200k so budgets stay conservative. Set `enable_extended_context = true` to lift that cap to the model's native window; the `auto_budget` feature scales accordingly. Models whose window is 200k regardless (Haiku 4.5) ignore the flag, and legacy Sonnet 4/4.5 additionally send the `context-1m-2025-08-07` beta header. You can also raise the budget directly with `memory.context_budget_tokens`. Enable with the `--extended-context` CLI flag or in the provider entry in config.
 
 ## Gemini
 

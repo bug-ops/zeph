@@ -163,6 +163,26 @@ pub(super) fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
         .default(false)
         .interact()?;
 
+    if state.server_compaction_enabled {
+        let tokens: u32 = Input::new()
+            .with_prompt(
+                "Server compaction trigger in input tokens (0 = 70% of the context window, \
+                 otherwise at least 50000)",
+            )
+            .default(0u32)
+            .validate_with(|v: &u32| {
+                if *v == 0 || zeph_config::CompactionTrigger::new(*v).is_ok() {
+                    Ok(())
+                } else {
+                    Err("must be 0 or at least 50000")
+                }
+            })
+            .interact_text()?;
+        state.server_compaction_trigger = (tokens != 0)
+            .then(|| zeph_config::CompactionTrigger::new(tokens))
+            .transpose()?;
+    }
+
     state.shutdown_summary = Confirm::new()
         .with_prompt(
             "Store a session summary on shutdown? (enables cross-session recall for short sessions, \

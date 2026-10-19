@@ -37,11 +37,7 @@ fn tool_use_provider(final_text: &str) -> AnyProvider {
         input: serde_json::json!({}),
     };
     let (p, _) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call],
-            thinking_blocks: vec![],
-        },
+        ChatResponse::tool_use(None, vec![tool_call]),
         ChatResponse::Text(final_text.to_string()),
     ]);
     AnyProvider::Mock(p)
@@ -50,15 +46,14 @@ fn tool_use_provider(final_text: &str) -> AnyProvider {
 fn multi_tool_use_provider(iterations: usize, final_text: &str) -> AnyProvider {
     let mut responses = Vec::new();
     for i in 0..iterations {
-        responses.push(ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![ToolUseRequest {
+        responses.push(ChatResponse::tool_use(
+            None,
+            vec![ToolUseRequest {
                 id: format!("call{i}"),
                 name: "bash".into(),
                 input: serde_json::json!({}),
             }],
-            thinking_blocks: vec![],
-        });
+        ));
     }
     responses.push(ChatResponse::Text(final_text.to_string()));
     let (p, _) = MockProvider::default().with_tool_use(responses);
@@ -928,16 +923,8 @@ async fn agent_process_response_with_tool_output() {
         input: serde_json::json!({}),
     };
     let (p, _) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call.clone()],
-            thinking_blocks: vec![],
-        },
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call.clone()],
-            thinking_blocks: vec![],
-        },
+        ChatResponse::tool_use(None, vec![tool_call.clone()]),
+        ChatResponse::tool_use(None, vec![tool_call.clone()]),
         ChatResponse::Text("done".to_string()),
     ]);
     let outputs = Arc::new(Mutex::new(Vec::new()));
@@ -968,21 +955,9 @@ async fn agent_process_response_tool_loop_max_iterations() {
         input: serde_json::json!({}),
     };
     let (p, _) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call.clone()],
-            thinking_blocks: vec![],
-        },
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call.clone()],
-            thinking_blocks: vec![],
-        },
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call],
-            thinking_blocks: vec![],
-        },
+        ChatResponse::tool_use(None, vec![tool_call.clone()]),
+        ChatResponse::tool_use(None, vec![tool_call.clone()]),
+        ChatResponse::tool_use(None, vec![tool_call]),
         ChatResponse::Text("done".to_string()),
     ]);
     let outputs = Arc::new(Mutex::new(Vec::new()));
@@ -2607,11 +2582,7 @@ mod self_learning {
             input: serde_json::json!({}),
         };
         let (p, _) = MockProvider::default().with_tool_use(vec![
-            ChatResponse::ToolUse {
-                text: None,
-                tool_calls: vec![tool_call],
-                thinking_blocks: vec![],
-            },
+            ChatResponse::tool_use(None, vec![tool_call]),
             ChatResponse::Text(final_text.to_string()),
         ]);
         AnyProvider::Mock(p)

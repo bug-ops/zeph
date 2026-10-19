@@ -175,6 +175,8 @@ pub(crate) struct WizardState {
     // Server-side compaction
     pub(crate) gemini_thinking_level: Option<GeminiThinkingLevel>,
     pub(crate) server_compaction_enabled: bool,
+    /// Server-compaction trigger; `None` derives it from the context window.
+    pub(crate) server_compaction_trigger: Option<zeph_config::CompactionTrigger>,
     // LSP code intelligence via mcpls
     pub(crate) mcpls_enabled: bool,
     pub(crate) mcpls_workspace_roots: Vec<String>,
@@ -493,6 +495,7 @@ impl Default for WizardState {
             memory_tiers_promotion_min_sessions: 3,
             gemini_thinking_level: None,
             server_compaction_enabled: false,
+            server_compaction_trigger: None,
             mcpls_enabled: false,
             mcpls_workspace_roots: Vec::new(),
             mcp_remote_servers: Vec::new(),
@@ -968,6 +971,10 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             },
             thinking: state.thinking.clone(),
             server_compaction: state.server_compaction_enabled,
+            server_compaction_trigger_tokens: state
+                .server_compaction_enabled
+                .then_some(state.server_compaction_trigger)
+                .flatten(),
             enable_extended_context: state.enable_extended_context,
             reasoning_effort: state.reasoning_effort.clone(),
             thinking_level: state.gemini_thinking_level,
@@ -2637,6 +2644,31 @@ mod tests {
         assert_eq!(
             config.llm.providers[0].model.as_deref(),
             Some("claude-sonnet-4-5-20250929")
+        );
+    }
+
+    #[test]
+    fn build_config_wires_server_compaction_trigger_only_when_enabled() {
+        let mut state = WizardState {
+            server_compaction_trigger: zeph_config::CompactionTrigger::new(120_000).ok(),
+            ..single_provider_state()
+        };
+        assert!(
+            build_config(&state).llm.providers[0]
+                .server_compaction_trigger_tokens
+                .is_none()
+        );
+        state.server_compaction_enabled = true;
+        let trigger = build_config(&state).llm.providers[0].server_compaction_trigger_tokens;
+        assert_eq!(
+            trigger.map(zeph_config::CompactionTrigger::get),
+            Some(120_000)
+        );
+        state.server_compaction_trigger = None;
+        assert!(
+            build_config(&state).llm.providers[0]
+                .server_compaction_trigger_tokens
+                .is_none()
         );
     }
 

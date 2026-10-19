@@ -11,8 +11,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CacheTtl, CandleInlineConfig, GeminiThinkingLevel, ProviderKind, ThinkingConfig, default_true,
-    is_true,
+    CacheTtl, CandleInlineConfig, CompactionTrigger, GeminiThinkingLevel, ProviderKind,
+    ThinkingConfig, default_true, is_true,
 };
 
 /// A single Gonka network node endpoint.
@@ -108,6 +108,14 @@ pub struct ProviderEntry {
     pub thinking: Option<ThinkingConfig>,
     #[serde(default)]
     pub server_compaction: bool,
+    /// Input-token count at which server-side compaction fires (minimum 50 000).
+    ///
+    /// `None` derives the trigger as 70% of the provider's context window, floored at 50 000.
+    /// Only consulted when `server_compaction = true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_compaction_trigger_tokens: Option<CompactionTrigger>,
+    /// Lift the default 200k context-window ceiling to the model's native window (1M on
+    /// current models; also sends the 1M beta header for legacy Sonnet 4/4.5).
     #[serde(default)]
     pub enable_extended_context: bool,
     /// Prompt cache TTL variant. `None` keeps the default ~5-minute ephemeral TTL.
@@ -223,6 +231,7 @@ impl Default for ProviderEntry {
             default: false,
             thinking: None,
             server_compaction: false,
+            server_compaction_trigger_tokens: None,
             enable_extended_context: false,
             prompt_cache_ttl: None,
             reasoning_effort: None,
@@ -260,6 +269,10 @@ impl std::fmt::Debug for ProviderEntry {
             .field("default", &self.default)
             .field("thinking", &self.thinking)
             .field("server_compaction", &self.server_compaction)
+            .field(
+                "server_compaction_trigger_tokens",
+                &self.server_compaction_trigger_tokens,
+            )
             .field("enable_extended_context", &self.enable_extended_context)
             .field("prompt_cache_ttl", &self.prompt_cache_ttl)
             .field("reasoning_effort", &self.reasoning_effort)

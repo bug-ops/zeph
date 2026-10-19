@@ -11,10 +11,11 @@ use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{
-    ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart, Role, ThinkingBlock,
-    ToolDefinition, ToolUseRequest,
+    AssistantContentBuilder, ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart,
+    Role, ThinkingBlock, ToolDefinition, ToolUseRequest,
 };
 use zeph_llm::sse::{ToolSseEvent, ToolSseStream};
+use zeph_llm::thinking_replay::ThinkingReplay;
 use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
 use zeph_tools::executor::{ErasedToolExecutor, ToolCall};
 
@@ -196,7 +197,7 @@ fn build_effective_system_prompt(
 /// assembling the same [`ChatResponse`] shape [`LlmProvider::chat_with_tools`] would return.
 ///
 /// Forwarded deltas are display-only (see `forward.rs` module docs' "Design contract"
-/// section): `text_buf`/`thinking_blocks`/`tool_calls` are accumulated locally regardless of
+/// section): the ordered response blocks are accumulated locally regardless of
 /// whether any individual delta actually made it onto the (tail-drop) forward channel, so a
 /// dropped delta only ever produces a display gap — the `ChatResponse` this function returns
 /// is unaffected and remains the sole input to the next turn's LLM context.
@@ -213,21 +214,20 @@ async fn drive_tool_stream(
     mut stream: ToolSseStream,
     forward: &ForwardSender,
 ) -> Result<ChatResponse, zeph_llm::LlmError> {
-    let mut tool_calls: Vec<ToolUseRequest> = Vec::new();
-    let mut thinking_blocks: Vec<ThinkingBlock> = Vec::new();
-    let mut text_buf = String::new();
+    let mut content = AssistantContentBuilder::default();
+    let mut has_tool_calls = false;
 
     while let Some(event) = stream.next().await {
         match event {
             ToolSseEvent::ContentChunk(text) => {
                 forward.send_text(&text);
-                text_buf.push_str(&text);
+                content.push_text(&text);
             }
             ToolSseEvent::ThinkingChunk(text) => {
                 forward.send_thinking(&text);
             }
             ToolSseEvent::ThinkingBlockDone(block) => {
-                thinking_blocks.push(block);
+                content.push_thinking(block);
             }
             ToolSseEvent::ToolCallComplete {
                 id,
@@ -237,7 +237,8 @@ async fn drive_tool_stream(
             } => {
                 let input = serde_json::from_str(&full_json)
                     .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-                tool_calls.push(ToolUseRequest {
+                has_tool_calls = true;
+                content.push_tool_use(ToolUseRequest {
                     id,
                     name: name.into(),
                     input,
@@ -254,19 +255,16 @@ async fn drive_tool_stream(
         }
     }
 
-    let text = if text_buf.is_empty() {
-        None
-    } else {
-        Some(text_buf)
-    };
-    if tool_calls.is_empty() {
-        Ok(ChatResponse::Text(text.unwrap_or_default()))
-    } else {
+    if has_tool_calls {
         Ok(ChatResponse::ToolUse {
-            text,
-            tool_calls,
-            thinking_blocks,
+            content: content.build(),
+            replay: ThinkingReplay::Intact,
+            compaction: None,
         })
+    } else {
+        Ok(ChatResponse::Text(
+            content.build().text().unwrap_or_default(),
+        ))
     }
 }
 
@@ -669,7 +667,7 @@ async fn run_turn(
 
     let response_text = match &response {
         ChatResponse::Text(t) => t.clone(),
-        ChatResponse::ToolUse { text, .. } => text.as_deref().unwrap_or_default().to_owned(),
+        ChatResponse::ToolUse { content, .. } => content.text().unwrap_or_default(),
         _ => String::new(),
     };
 
@@ -687,11 +685,8 @@ async fn run_turn(
     // `handle_tool_step` below.
     if !streamed && let Some(f) = forward {
         f.send_text(&response_text);
-        if let ChatResponse::ToolUse {
-            thinking_blocks, ..
-        } = &response
-        {
-            for block in thinking_blocks {
+        if let ChatResponse::ToolUse { content, .. } = &response {
+            for block in content.thinking_blocks() {
                 if let ThinkingBlock::Thinking { thinking, .. } = block {
                     f.send_thinking(thinking);
                 }
@@ -783,11 +778,9 @@ async fn handle_tool_step(
             messages.push(make_message(Role::Assistant, text));
             true
         }
-        ChatResponse::ToolUse {
-            text,
-            tool_calls,
-            thinking_blocks: _,
-        } => {
+        ChatResponse::ToolUse { content, .. } => {
+            let text = content.text();
+            let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
             let mut assistant_parts: Vec<MessagePart> = Vec::new();
             if let Some(ref t) = text
                 && !t.is_empty()
@@ -2152,15 +2145,14 @@ mod handle_tool_step_granted_secrets_tests {
     }
 
     fn tool_use_response() -> ChatResponse {
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![ToolUseRequest {
+        ChatResponse::tool_use(
+            None,
+            vec![ToolUseRequest {
                 id: "call-1".into(),
                 name: "shell".into(),
                 input: serde_json::json!({"command": "echo $SOME_VAULT_KEY"}),
             }],
-            thinking_blocks: vec![],
-        }
+        )
     }
 
     #[tokio::test]
@@ -2929,7 +2921,8 @@ mod token_streaming_tests {
             .expect("stream must assemble successfully");
 
         match response {
-            ChatResponse::ToolUse { tool_calls, .. } => {
+            ChatResponse::ToolUse { content, .. } => {
+                let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
                 assert_eq!(tool_calls.len(), 1);
                 assert_eq!(tool_calls[0].name.as_str(), "shell");
                 assert_eq!(tool_calls[0].input["cmd"], "ls");

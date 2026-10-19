@@ -543,6 +543,7 @@ fn parse_tool_response_text_only() {
         }],
         stop_reason: None,
         usage: None,
+        input_transformations: Vec::new(),
     };
     let (result, compaction) = parse_tool_response(resp);
     assert_matches!(result, ChatResponse::Text(s) if s == "Hello");
@@ -565,12 +566,12 @@ fn parse_tool_response_with_tool_use() {
         ],
         stop_reason: None,
         usage: None,
+        input_transformations: Vec::new(),
     };
     let (result, compaction) = parse_tool_response(resp);
-    if let ChatResponse::ToolUse {
-        text, tool_calls, ..
-    } = result
-    {
+    if let ChatResponse::ToolUse { content, .. } = result {
+        let text = content.text();
+        let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
         assert_eq!(text.unwrap(), "I'll run that");
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0].name, "bash");
@@ -591,12 +592,12 @@ fn parse_tool_response_tool_use_only() {
         }],
         stop_reason: None,
         usage: None,
+        input_transformations: Vec::new(),
     };
     let (result, compaction) = parse_tool_response(resp);
-    if let ChatResponse::ToolUse {
-        text, tool_calls, ..
-    } = result
-    {
+    if let ChatResponse::ToolUse { content, .. } = result {
+        let text = content.text();
+        let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
         assert!(text.is_none());
         assert_eq!(tool_calls.len(), 1);
     } else {
@@ -617,10 +618,11 @@ fn parse_tool_response_json_deserialization() {
 fn parse_tool_response_with_compaction() {
     let resp = ToolApiResponse {
         content: vec![AnthropicContentBlock::Compaction {
-            summary: "Context was summarized for efficiency.".into(),
+            content: Some("Context was summarized for efficiency.".into()),
         }],
         stop_reason: None,
         usage: None,
+        input_transformations: Vec::new(),
     };
     let (result, compaction) = parse_tool_response(resp);
     assert_matches!(result, ChatResponse::Text(ref s) if s.is_empty());
@@ -1237,6 +1239,10 @@ fn thinking_config_adaptive_deserializes() {
     );
 }
 
+fn thinking_capability(model: &str) -> ModelCapabilities {
+    ClaudeModel::from_model_id(model).capabilities()
+}
+
 #[test]
 fn thinking_capability_sonnet_4_6_needs_interleaved_beta() {
     let cap = thinking_capability("claude-sonnet-4-6-20250514");
@@ -1306,7 +1312,7 @@ fn build_thinking_param_opus_extended_converts_to_adaptive() {
         .unwrap();
     let (param, _temp, effort) = p.build_thinking_param();
     let param = param.unwrap();
-    assert_eq!(param.thinking_type, "adaptive");
+    assert_eq!(param.thinking_type, ThinkingType::Adaptive);
     assert!(param.budget_tokens.is_none());
     assert_eq!(effort, Some(ThinkingEffort::Medium));
 }
@@ -1320,7 +1326,7 @@ fn build_thinking_param_opus_adaptive_unchanged() {
         .unwrap();
     let (param, _temp, effort) = p.build_thinking_param();
     let param = param.unwrap();
-    assert_eq!(param.thinking_type, "adaptive");
+    assert_eq!(param.thinking_type, ThinkingType::Adaptive);
     assert!(param.budget_tokens.is_none());
     assert_eq!(effort, Some(ThinkingEffort::High));
 }
@@ -1334,7 +1340,7 @@ fn build_thinking_param_sonnet_extended_unchanged() {
         .unwrap();
     let (param, _temp, effort) = p.build_thinking_param();
     let param = param.unwrap();
-    assert_eq!(param.thinking_type, "enabled");
+    assert_eq!(param.thinking_type, ThinkingType::Enabled);
     assert_eq!(param.budget_tokens, Some(5_000));
     assert!(effort.is_none());
 }
@@ -1417,7 +1423,7 @@ fn with_thinking_keeps_max_tokens_when_already_high() {
 fn set_thinking_none_restores_base_max_tokens_after_enable() {
     // S1 regression: enable (bumps max_tokens to the 16k floor) → off must restore the
     // originally configured max_tokens, not leave it stuck at the floor.
-    let mut provider = ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 1024);
+    let mut provider = ClaudeProvider::new("k".into(), "claude-haiku-4-5-20251001".into(), 1024);
     provider
         .set_thinking(Some(ThinkingConfig::Extended {
             budget_tokens: 8000,
@@ -1437,7 +1443,7 @@ fn set_thinking_none_restores_base_max_tokens_after_enable() {
 fn set_thinking_enable_disable_enable_is_idempotent() {
     // S1: repeated enable/disable cycles must never ratchet max_tokens upward permanently —
     // every `Some(_)` step recomputes from the immutable base_max_tokens baseline.
-    let mut provider = ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 1024);
+    let mut provider = ClaudeProvider::new("k".into(), "claude-haiku-4-5-20251001".into(), 1024);
     for budget in [8000, 12_000, 4000] {
         provider
             .set_thinking(Some(ThinkingConfig::Extended {
@@ -1515,14 +1521,14 @@ fn current_thinking_budget_and_effort_none_when_disabled() {
 
 #[test]
 fn build_thinking_param_extended_returns_enabled_with_budget() {
-    let provider = ClaudeProvider::new("k".into(), "m".into(), 16_000)
+    let provider = ClaudeProvider::new("k".into(), "claude-haiku-4-5-20251001".into(), 16_000)
         .with_thinking(ThinkingConfig::Extended {
             budget_tokens: 5000,
         })
         .unwrap();
     let (param, temp, effort) = provider.build_thinking_param();
     let param = param.unwrap();
-    assert_eq!(param.thinking_type, "enabled");
+    assert_eq!(param.thinking_type, ThinkingType::Enabled);
     assert_eq!(param.budget_tokens, Some(5000));
     assert!(temp.is_none());
     assert!(effort.is_none());
@@ -1535,7 +1541,7 @@ fn build_thinking_param_adaptive_returns_adaptive_type() {
         .unwrap();
     let (param, temp, effort) = provider.build_thinking_param();
     let param = param.unwrap();
-    assert_eq!(param.thinking_type, "adaptive");
+    assert_eq!(param.thinking_type, ThinkingType::Adaptive);
     assert!(param.budget_tokens.is_none());
     assert!(temp.is_none());
     assert!(effort.is_none());
@@ -1550,7 +1556,7 @@ fn build_thinking_param_adaptive_with_effort_returns_effort() {
         .unwrap();
     let (param, temp, effort) = provider.build_thinking_param();
     let param = param.unwrap();
-    assert_eq!(param.thinking_type, "adaptive");
+    assert_eq!(param.thinking_type, ThinkingType::Adaptive);
     assert!(param.budget_tokens.is_none());
     assert!(temp.is_none());
     assert_eq!(effort, Some(ThinkingEffort::High));
@@ -1559,8 +1565,9 @@ fn build_thinking_param_adaptive_with_effort_returns_effort() {
 #[test]
 fn build_thinking_param_adaptive_serializes_correctly() {
     let param = ThinkingParam {
-        thinking_type: "adaptive",
+        thinking_type: ThinkingType::Adaptive,
         budget_tokens: None,
+        block_binding: None,
     };
     let json = serde_json::to_value(&param).unwrap();
     assert_eq!(json, serde_json::json!({"type": "adaptive"}));
@@ -1626,8 +1633,8 @@ fn extended_context_disabled_no_beta_header() {
 
 #[test]
 fn extended_context_enabled_includes_beta_header() {
-    let provider =
-        ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 1024).with_extended_context(true);
+    let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-5-20250929".into(), 1024)
+        .with_extended_context(true);
     let beta = provider.beta_header(true);
     assert!(
         beta.as_deref()
@@ -1638,14 +1645,14 @@ fn extended_context_enabled_includes_beta_header() {
 #[test]
 fn extended_context_with_interleaved_thinking_combines_headers() {
     let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 16_000)
-        .with_extended_context(true)
+        .with_prompt_cache_ttl(Some(CacheTtl::OneHour))
         .with_thinking(ThinkingConfig::Extended {
             budget_tokens: 5000,
         })
         .unwrap();
     let beta = provider.beta_header(true);
     let beta_str = beta.expect("beta header should be present");
-    assert!(beta_str.contains(ANTHROPIC_BETA_EXTENDED_CONTEXT));
+    assert!(beta_str.contains(ANTHROPIC_BETA_EXTENDED_CACHE_TTL));
     assert!(beta_str.contains(ANTHROPIC_BETA_INTERLEAVED_THINKING));
     // Both betas must be comma-separated in a single header value
     assert!(beta_str.contains(','));
@@ -1688,14 +1695,12 @@ fn parse_tool_response_with_thinking_blocks() {
         ],
         stop_reason: None,
         usage: None,
+        input_transformations: Vec::new(),
     };
     let (result, _) = parse_tool_response(resp);
-    if let ChatResponse::ToolUse {
-        thinking_blocks,
-        tool_calls,
-        ..
-    } = result
-    {
+    if let ChatResponse::ToolUse { content, .. } = result {
+        let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
+        let thinking_blocks: Vec<_> = content.thinking_blocks().cloned().collect();
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(thinking_blocks.len(), 1);
         if let ThinkingBlock::Thinking {
@@ -1727,6 +1732,7 @@ fn parse_tool_response_with_redacted_thinking() {
         ],
         stop_reason: None,
         usage: None,
+        input_transformations: Vec::new(),
     };
     let (result, _) = parse_tool_response(resp);
     // No tool calls, so returns Text; thinking is dropped for text-only responses
@@ -1791,7 +1797,7 @@ fn build_request_does_not_include_anthropic_beta_header() {
 
 #[test]
 fn build_request_with_extended_context_includes_beta_header() {
-    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 256)
+    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-5-20250929".into(), 256)
         .with_extended_context(true);
     let messages = vec![Message {
         role: Role::User,
@@ -2711,54 +2717,51 @@ fn with_server_compaction_haiku_stays_disabled() {
 }
 
 #[test]
-fn take_compaction_summary_empty_when_none() {
-    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024);
-    assert!(provider.take_compaction_summary().is_none());
-}
-
-#[test]
-fn take_compaction_summary_returns_and_clears() {
-    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024);
-    *provider.last_compaction.lock() = Some("Summary text".to_owned());
-    let result = provider.take_compaction_summary();
-    assert_eq!(result.as_deref(), Some("Summary text"));
-    // Second call must return None (consumed).
-    assert!(provider.take_compaction_summary().is_none());
-}
-
-#[test]
 fn context_management_absent_when_disabled() {
     let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024);
     assert!(provider.context_management().is_none());
 }
 
-#[test]
-fn context_management_present_when_enabled() {
-    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
-        .with_server_compaction(true);
-    let cm = provider.context_management().unwrap();
-    // trigger value = context_window * 80 / 100 = 200_000 * 80 / 100 = 160_000
-    assert_eq!(cm.trigger.value, 160_000);
+fn compaction_trigger_value(provider: &ClaudeProvider) -> u64 {
+    let json = serde_json::to_value(provider.context_management().unwrap()).unwrap();
+    json["edits"][0]["trigger"]["value"].as_u64().unwrap()
 }
 
 #[test]
-fn context_management_serializes_correctly() {
-    let cm = ContextManagement {
-        trigger: ContextManagementTrigger {
-            kind: "input_tokens",
-            value: 160_000,
-        },
-        pause_after_compaction: false,
-    };
-    let json = serde_json::to_value(&cm).unwrap();
-    // The API rejects a top-level "type" field on context_management.
-    assert!(
-        json.get("type").is_none(),
-        "context_management must not have a top-level 'type' field"
-    );
-    assert_eq!(json["trigger"]["type"], "input_tokens");
-    assert_eq!(json["trigger"]["value"], 160_000);
-    assert_eq!(json["pause_after_compaction"], false);
+fn compaction_default_trigger_is_seventy_percent_of_window() {
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
+        .with_server_compaction(true);
+    assert_eq!(compaction_trigger_value(&provider), 140_000);
+    let extended = provider.with_extended_context(true);
+    assert_eq!(compaction_trigger_value(&extended), 700_000);
+}
+
+#[test]
+fn compaction_explicit_trigger_overrides_default() {
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
+        .with_server_compaction(true)
+        .with_server_compaction_trigger(Some(CompactionTrigger::new(60_000).unwrap()));
+    assert_eq!(compaction_trigger_value(&provider), 60_000);
+}
+
+#[test]
+fn context_management_wire_snapshot() {
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
+        .with_server_compaction(true);
+    let json = serde_json::to_string_pretty(&provider.context_management().unwrap()).unwrap();
+    insta::assert_snapshot!(json);
+}
+
+#[test]
+fn thinking_binding_wire_snapshot() {
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 4096)
+        .with_thinking(ThinkingConfig::Adaptive {
+            effort: Some(ThinkingEffort::High),
+        })
+        .unwrap();
+    let (param, _, _) = provider.build_thinking_param();
+    let json = serde_json::to_string_pretty(&param.unwrap()).unwrap();
+    insta::assert_snapshot!(json);
 }
 
 #[test]
@@ -2784,10 +2787,44 @@ fn beta_header_excludes_compact_when_disabled() {
 
 #[test]
 fn compaction_content_block_deserialized() {
-    let json = r#"{"type":"compaction","summary":"Context summary here"}"#;
+    let json = r#"{"type":"compaction","content":"Context summary here"}"#;
     let block: AnthropicContentBlock = serde_json::from_str(json).unwrap();
-    assert!(
-        matches!(block, AnthropicContentBlock::Compaction { summary } if summary == "Context summary here")
+    assert!(matches!(
+        block,
+        AnthropicContentBlock::Compaction { content: Some(c) } if c == "Context summary here"
+    ));
+}
+
+#[test]
+fn compaction_content_block_null_content_yields_no_summary() {
+    let json = r#"{"content":[{"type":"compaction","content":null}],"stop_reason":"end_turn"}"#;
+    let resp: ToolApiResponse = serde_json::from_str(json).unwrap();
+    let (_, compaction) = parse_tool_response(resp);
+    assert!(compaction.is_none());
+}
+
+#[test]
+fn compaction_content_block_serializes_with_content_field() {
+    let block = AnthropicContentBlock::Compaction {
+        content: Some("sum".into()),
+    };
+    assert_eq!(
+        serde_json::to_value(&block).unwrap(),
+        serde_json::json!({"type": "compaction", "content": "sum"})
+    );
+}
+
+#[test]
+fn tool_response_reports_dropped_thinking() {
+    let json = r#"{"content":[],"input_transformations":[
+        {"type":"thinking_dropped","path":"messages.4.content.0","reason":"prefix_binding_mismatch"}
+    ]}"#;
+    let resp: ToolApiResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        resp.thinking_replay(),
+        crate::ThinkingReplay::Dropped {
+            first_message_index: 4
+        }
     );
 }
 
@@ -2804,10 +2841,7 @@ fn server_compaction_not_rejected_by_default() {
 fn beta_header_excluded_after_rejection() {
     let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_server_compaction(true);
-    // Simulate API rejection.
-    provider
-        .server_compaction_rejected
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    provider.beta_latches.reject(BetaFeature::Compact);
     let header = provider.beta_header(false).unwrap_or_default();
     assert!(
         !header.contains("compact-2026-01-12"),
@@ -2819,9 +2853,7 @@ fn beta_header_excluded_after_rejection() {
 fn context_management_absent_after_rejection() {
     let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_server_compaction(true);
-    provider
-        .server_compaction_rejected
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    provider.beta_latches.reject(BetaFeature::Compact);
     assert!(
         provider.context_management().is_none(),
         "context_management must be None after beta header rejection"
@@ -2829,70 +2861,11 @@ fn context_management_absent_after_rejection() {
 }
 
 #[test]
-fn is_compact_beta_rejection_detects_unknown_beta() {
-    assert!(ClaudeProvider::is_compact_beta_rejection(
-        reqwest::StatusCode::BAD_REQUEST,
-        r#"{"type":"error","error":{"type":"invalid_request_error","message":"unknown beta: compact-2026-01-12"}}"#
-    ));
-}
-
-#[test]
-fn is_compact_beta_rejection_detects_invalid_beta_keyword() {
-    assert!(ClaudeProvider::is_compact_beta_rejection(
-        reqwest::StatusCode::BAD_REQUEST,
-        r#"{"error":{"message":"invalid beta header supplied"}}"#
-    ));
-}
-
-#[test]
-fn is_compact_beta_rejection_ignores_non_400() {
-    assert!(!ClaudeProvider::is_compact_beta_rejection(
-        reqwest::StatusCode::UNAUTHORIZED,
-        "unknown beta: compact-2026-01-12"
-    ));
-}
-
-#[test]
-fn is_compact_beta_rejection_ignores_unrelated_400() {
-    assert!(!ClaudeProvider::is_compact_beta_rejection(
-        reqwest::StatusCode::BAD_REQUEST,
-        r#"{"error":{"message":"invalid parameter: model"}}"#
-    ));
-}
-
-#[test]
-fn is_compact_beta_rejection_detects_context_management_extra_inputs() {
-    assert!(ClaudeProvider::is_compact_beta_rejection(
-        reqwest::StatusCode::BAD_REQUEST,
-        r#"{"type":"error","error":{"type":"invalid_request_error","message":"context_management.type: Extra inputs are not permitted"}}"#
-    ));
-}
-
-#[test]
-fn is_compact_beta_rejection_detects_context_management_generic() {
-    assert!(ClaudeProvider::is_compact_beta_rejection(
-        reqwest::StatusCode::BAD_REQUEST,
-        r#"{"type":"error","error":{"type":"invalid_request_error","message":"context_management: field not allowed"}}"#
-    ));
-}
-
-#[test]
-fn is_compact_beta_rejection_ignores_unrelated_no_context_management() {
-    assert!(!ClaudeProvider::is_compact_beta_rejection(
-        reqwest::StatusCode::BAD_REQUEST,
-        r#"{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: field required"}}"#
-    ));
-}
-
-#[test]
 fn clone_shares_rejection_flag() {
     let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_server_compaction(true);
     let clone = provider.clone();
-    // Set flag on original; clone must see it.
-    provider
-        .server_compaction_rejected
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    provider.beta_latches.reject(BetaFeature::Compact);
     assert!(
         clone.is_server_compaction_rejected(),
         "clone must share the rejection Arc"
@@ -2900,59 +2873,441 @@ fn clone_shares_rejection_flag() {
 }
 
 #[test]
-fn handle_compact_beta_rejection_sets_flags_and_returns_true_on_first_rejection() {
+fn handle_beta_rejection_latches_named_beta_once() {
     let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_server_compaction(true);
-    let mut retried = false;
-    let handled = provider.handle_compact_beta_rejection(
-        reqwest::StatusCode::BAD_REQUEST,
-        "unknown beta: compact-2026-01-12",
-        &mut retried,
-        "typed",
-    );
-    assert!(handled, "must return true on first observed rejection");
-    assert!(retried, "must flip the retry-once flag");
+    let body = "Unexpected value(s) `compact-2026-01-12` for the `anthropic-beta` header.";
+    assert!(provider.handle_beta_rejection(reqwest::StatusCode::BAD_REQUEST, body, "typed"));
+    assert!(provider.is_server_compaction_rejected());
     assert!(
-        provider.is_server_compaction_rejected(),
-        "must permanently disable server-side compaction"
+        !provider.handle_beta_rejection(reqwest::StatusCode::BAD_REQUEST, body, "typed"),
+        "a latched beta is no longer sent, so a repeat must not retry"
     );
 }
 
 #[test]
-fn handle_compact_beta_rejection_returns_false_when_already_retried() {
+fn handle_beta_rejection_ignores_validation_errors_that_name_no_header() {
     let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
         .with_server_compaction(true);
-    let mut retried = true;
-    let handled = provider.handle_compact_beta_rejection(
-        reqwest::StatusCode::BAD_REQUEST,
-        "unknown beta: compact-2026-01-12",
-        &mut retried,
-        "",
-    );
-    assert!(!handled, "must not retry a second time");
-    assert!(
-        !provider.is_server_compaction_rejected(),
-        "must not touch the rejection flag once retry budget is exhausted"
-    );
-}
-
-#[test]
-fn handle_compact_beta_rejection_returns_false_for_non_rejection_error() {
-    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
-        .with_server_compaction(true);
-    let mut retried = false;
-    let handled = provider.handle_compact_beta_rejection(
-        reqwest::StatusCode::BAD_REQUEST,
+    for body in [
+        r#"{"error":{"message":"context_management.edits.0.trigger.value: must be at least 50000"}}"#,
+        r#"{"error":{"message":"unknown beta"}}"#,
         r#"{"error":{"message":"max_tokens: field required"}}"#,
-        &mut retried,
-        "streaming",
-    );
-    assert!(
-        !handled,
-        "unrelated 400s must fall through to normal error handling"
-    );
-    assert!(!retried);
+    ] {
+        assert!(!provider.handle_beta_rejection(reqwest::StatusCode::BAD_REQUEST, body, ""));
+    }
     assert!(!provider.is_server_compaction_rejected());
+}
+
+#[test]
+fn handle_beta_rejection_ignores_non_400() {
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
+        .with_server_compaction(true);
+    assert!(!provider.handle_beta_rejection(
+        reqwest::StatusCode::UNAUTHORIZED,
+        "compact-2026-01-12",
+        ""
+    ));
+}
+
+#[test]
+fn binding_mismatch_is_not_read_as_binding_header_rejection() {
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 4096);
+    let body = "messages.1.content.0: Invalid `signature` in `thinking` block. The block is bound \
+                to a different conversation. That setting requires the \
+                `thinking-binding-controls-2026-08-01` value in the `anthropic-beta` header.";
+    assert!(!provider.handle_beta_rejection(reqwest::StatusCode::BAD_REQUEST, body, ""));
+    assert!(
+        !provider
+            .beta_latches
+            .is_rejected(BetaFeature::ThinkingBinding)
+    );
+}
+
+#[test]
+fn binding_header_rejection_latches_and_drops_block_binding() {
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 4096);
+    assert!(
+        provider
+            .beta_header(false)
+            .unwrap()
+            .contains("thinking-binding-controls-2026-08-01")
+    );
+    let body = "Unexpected value(s) `thinking-binding-controls-2026-08-01` for the \
+                `anthropic-beta` header.";
+    assert!(provider.handle_beta_rejection(reqwest::StatusCode::BAD_REQUEST, body, ""));
+    assert!(provider.beta_header(false).is_none());
+    assert!(provider.build_thinking_param().0.is_none());
+}
+
+#[test]
+fn with_server_compaction_requires_model_support() {
+    for (model, expected) in [
+        ("claude-haiku-4-5-20251001", false),
+        ("claude-sonnet-4-5-20250929", false),
+        ("claude-opus-9", false),
+        ("claude-haiku-5-5", true),
+        ("claude-opus-4-6", true),
+    ] {
+        let provider =
+            ClaudeProvider::new("key".into(), model.into(), 1024).with_server_compaction(true);
+        assert_eq!(provider.server_compaction_enabled(), expected, "{model}");
+    }
+}
+
+// --- thinking binding, sampling, headroom ---
+
+#[test]
+fn preserved_thinking_model_sends_drop_block_with_explicit_adaptive() {
+    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-5-5".into(), 4096);
+    let (param, _, effort) = provider.build_thinking_param();
+    let json = serde_json::to_value(param.unwrap()).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "type": "adaptive",
+            "block_binding": {"prefix_mismatch_behavior": "drop_block"}
+        })
+    );
+    assert!(effort.is_none());
+    assert!(
+        provider
+            .beta_header(true)
+            .unwrap()
+            .contains("thinking-binding-controls-2026-08-01")
+    );
+}
+
+#[test]
+fn non_preserved_models_never_send_block_binding() {
+    for model in [
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-mythos-5-1",
+        "claude-sonnet-4-6",
+        "claude-future-9",
+    ] {
+        let provider = ClaudeProvider::new("key".into(), model.into(), 4096)
+            .with_thinking(ThinkingConfig::Adaptive { effort: None })
+            .unwrap();
+        let json = serde_json::to_value(provider.build_thinking_param().0.unwrap()).unwrap();
+        assert!(json.get("block_binding").is_none(), "{model}");
+        assert!(provider.beta_header(true).is_none(), "{model}");
+    }
+}
+
+#[test]
+fn unknown_model_gets_no_implicit_thinking_param() {
+    let provider = ClaudeProvider::new("key".into(), "claude-future-9".into(), 4096);
+    assert!(provider.build_thinking_param().0.is_none());
+}
+
+#[test]
+fn extended_thinking_on_opus_5_5_converts_to_effort_with_binding() {
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 32_000)
+        .with_thinking(ThinkingConfig::Extended {
+            budget_tokens: 20_000,
+        })
+        .unwrap();
+    let (param, _, effort) = provider.build_thinking_param();
+    let param = param.unwrap();
+    assert_eq!(param.thinking_type, ThinkingType::Adaptive);
+    assert!(param.budget_tokens.is_none());
+    assert!(param.block_binding.is_some());
+    assert_eq!(effort, Some(ThinkingEffort::High));
+}
+
+#[test]
+fn sampling_models_never_send_temperature() {
+    let overrides = GenerationOverrides {
+        temperature: Some(0.2),
+        ..GenerationOverrides::default()
+    };
+    for (model, sent) in [
+        ("claude-opus-5-5", false),
+        ("claude-sonnet-5", false),
+        ("claude-haiku-5-5", false),
+        ("claude-future-9", false),
+        ("claude-sonnet-4-6", true),
+        ("claude-haiku-4-5-20251001", true),
+    ] {
+        let provider = ClaudeProvider::new("key".into(), model.into(), 1024)
+            .with_generation_overrides(overrides.clone());
+        let body =
+            provider.debug_request_json(&[Message::from_legacy(Role::User, "hi")], &[], false);
+        assert_eq!(body.get("temperature").is_some(), sent, "{model}");
+    }
+}
+
+#[test]
+fn always_on_thinking_models_get_max_tokens_headroom() {
+    let always_on = ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 1024);
+    assert_eq!(always_on.max_tokens, MIN_MAX_TOKENS_WITH_THINKING);
+    let mut explicit = ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 1024);
+    explicit.set_thinking(None).unwrap();
+    assert_eq!(explicit.max_tokens, MIN_MAX_TOKENS_WITH_THINKING);
+
+    let optional = ClaudeProvider::new("key".into(), "claude-opus-4-6".into(), 1024);
+    assert_eq!(optional.max_tokens, 1024);
+}
+
+// --- context window ceiling ---
+
+#[test]
+fn context_window_is_capped_at_200k_unless_extended() {
+    for (model, default_window, extended_window) in [
+        ("claude-opus-5-5", Some(200_000), Some(1_000_000)),
+        ("claude-sonnet-4-6", Some(200_000), Some(1_000_000)),
+        ("claude-fable-5-1", Some(200_000), Some(1_000_000)),
+        ("claude-haiku-5-5", Some(200_000), Some(1_000_000)),
+        ("claude-haiku-4-5-20251001", Some(200_000), Some(200_000)),
+        ("claude-sonnet-4-5-20250929", Some(200_000), Some(1_000_000)),
+        ("claude-future-9", None, None),
+        ("gpt-4o", None, None),
+    ] {
+        let provider = ClaudeProvider::new("key".into(), model.into(), 1024);
+        assert_eq!(provider.context_window(), default_window, "{model}");
+        let provider = provider.with_extended_context(true);
+        assert_eq!(provider.context_window(), extended_window, "{model}");
+    }
+}
+
+#[test]
+fn extended_context_beta_header_only_for_models_that_need_it() {
+    let legacy = ClaudeProvider::new("key".into(), "claude-sonnet-4-5-20250929".into(), 1024)
+        .with_extended_context(true);
+    assert!(
+        legacy
+            .beta_header(false)
+            .unwrap()
+            .contains("context-1m-2025-08-07")
+    );
+    let current = ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 1024)
+        .with_extended_context(true);
+    assert!(
+        !current
+            .beta_header(false)
+            .unwrap_or_default()
+            .contains("context-1m-2025-08-07")
+    );
+}
+
+// --- wire-level: beta latch retry and structured output ---
+
+fn error_400(message: &str) -> wiremock::ResponseTemplate {
+    wiremock::ResponseTemplate::new(400).set_body_json(serde_json::json!({
+        "type": "error",
+        "error": {"type": "invalid_request_error", "message": message}
+    }))
+}
+
+#[tokio::test]
+async fn rejected_compact_beta_retries_once_without_it() {
+    use crate::testing::claude_tool_use_response;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(error_400(
+            "Unexpected value(s) `compact-2026-01-12` for the `anthropic-beta` header.",
+        ))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(claude_tool_use_response(
+            "t",
+            "toolu_1",
+            &serde_json::json!({}),
+        ))
+        .mount(&server)
+        .await;
+
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
+        .with_api_url(format!("{}/v1/messages", server.uri()))
+        .with_server_compaction(true);
+    let messages = vec![Message::from_legacy(Role::User, "hi")];
+    let result = provider.chat_with_tools(&messages, &[]).await;
+    assert!(result.is_ok(), "{result:?}");
+    assert!(provider.is_server_compaction_rejected());
+
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 2);
+    let first: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    let second: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert_eq!(
+        first["context_management"]["edits"][0]["type"],
+        "compact_20260112"
+    );
+    assert!(second.get("context_management").is_none());
+    assert!(reqs[1].headers.get("anthropic-beta").is_none());
+}
+
+#[tokio::test]
+async fn context_management_validation_400_surfaces_without_retry() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(error_400(
+            "context_management.edits.0.trigger.value: must be at least 50000",
+        ))
+        .mount(&server)
+        .await;
+
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 1024)
+        .with_api_url(format!("{}/v1/messages", server.uri()))
+        .with_server_compaction(true);
+    let messages = vec![Message::from_legacy(Role::User, "hi")];
+    let result = provider.chat_with_tools(&messages, &[]).await;
+    assert_matches!(result, Err(LlmError::ApiError { status: 400, .. }));
+    assert!(!provider.is_server_compaction_rejected());
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn binding_mismatch_400_maps_to_typed_error() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(error_400(
+            "messages.1.content.0: Invalid `signature` in `thinking` block. The block is bound \
+             to a different conversation. Remove the block.",
+        ))
+        .mount(&server)
+        .await;
+
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 1024)
+        .with_api_url(format!("{}/v1/messages", server.uri()));
+    let messages = vec![Message::from_legacy(Role::User, "hi")];
+    let result = provider.chat_with_tools(&messages, &[]).await;
+    assert_matches!(result, Err(LlmError::ThinkingBindingMismatch));
+    assert!(
+        !provider
+            .beta_latches
+            .is_rejected(BetaFeature::ThinkingBinding)
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema, PartialEq)]
+struct TypedOut {
+    value: String,
+}
+
+#[tokio::test]
+async fn chat_typed_forces_tool_choice_on_models_that_accept_it() {
+    use crate::testing::claude_tool_use_response;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(claude_tool_use_response(
+            "submit_TypedOut",
+            "toolu_1",
+            &serde_json::json!({"value": "ok"}),
+        ))
+        .mount(&server)
+        .await;
+
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-5".into(), 1024)
+        .with_api_url(format!("{}/v1/messages", server.uri()));
+    let out: TypedOut = provider
+        .chat_typed(&[Message::from_legacy(Role::User, "go")])
+        .await
+        .unwrap();
+    assert_eq!(out.value, "ok");
+
+    let reqs = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_eq!(
+        body["tool_choice"],
+        serde_json::json!({"type": "tool", "name": "submit_TypedOut"})
+    );
+}
+
+#[tokio::test]
+async fn chat_typed_uses_auto_and_retries_once_when_forced_choice_is_forbidden() {
+    use crate::testing::{claude_messages_response, claude_tool_use_response};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(claude_messages_response("plain text, no tool"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(claude_tool_use_response(
+            "submit_TypedOut",
+            "toolu_1",
+            &serde_json::json!({"value": "second"}),
+        ))
+        .mount(&server)
+        .await;
+
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 1024)
+        .with_api_url(format!("{}/v1/messages", server.uri()));
+    let out: TypedOut = provider
+        .chat_typed(&[Message::from_legacy(Role::User, "go")])
+        .await
+        .unwrap();
+    assert_eq!(out.value, "second");
+
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 2);
+    let first: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    let second: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert_eq!(first["tool_choice"], serde_json::json!({"type": "auto"}));
+    assert!(
+        first["system"]
+            .to_string()
+            .contains("calling the `submit_TypedOut` tool")
+    );
+    let nudge = second["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(nudge["role"], "user");
+    assert!(nudge.to_string().contains("submit_TypedOut"));
+}
+
+#[tokio::test]
+async fn chat_typed_second_miss_returns_structured_parse() {
+    use crate::testing::claude_messages_response;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(claude_messages_response("still no tool"))
+        .mount(&server)
+        .await;
+
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 1024)
+        .with_api_url(format!("{}/v1/messages", server.uri()));
+    let result: Result<TypedOut, _> = provider
+        .chat_typed(&[Message::from_legacy(Role::User, "go")])
+        .await;
+    assert_matches!(result, Err(LlmError::StructuredParse(_)));
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
 }
 
 #[test]
@@ -3410,5 +3765,209 @@ fn debug_request_json_omits_user_only_messages() {
         let json = tools_json.to_string();
         assert!(json.contains("visible question"));
         assert!(!json.contains("SECRET-HIDDEN-ORIGINAL"));
+    }
+}
+
+// --- append-only tool loop requests, ordered thinking replay ---
+
+fn turn_input(text: &str) -> Message {
+    Message {
+        metadata: MessageMetadata {
+            origin: Some(crate::provider::MessageOrigin::TurnInput),
+            ..MessageMetadata::default()
+        },
+        ..Message::from_legacy(Role::User, text)
+    }
+}
+
+fn assistant_tool_step(id: &str, thinking: &str) -> [Message; 2] {
+    [
+        Message::from_parts(
+            Role::Assistant,
+            vec![
+                MessagePart::ThinkingBlock {
+                    thinking: thinking.into(),
+                    signature: format!("sig-{thinking}"),
+                },
+                MessagePart::ToolUse {
+                    id: id.into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "ls", "all": true}),
+                },
+            ],
+        ),
+        Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: id.into(),
+                content: "ok".into(),
+                is_error: false,
+            }],
+        ),
+    ]
+}
+
+fn bash_tool() -> ToolDefinition {
+    ToolDefinition {
+        name: "bash".into(),
+        description: "Run shell commands".into(),
+        parameters: serde_json::json!({"type": "object"}),
+        output_schema: None,
+    }
+}
+
+fn loop_history(steps: usize) -> Vec<Message> {
+    let mut messages = vec![
+        Message::from_legacy(Role::System, "system"),
+        turn_input("go"),
+    ];
+    for i in 0..steps {
+        messages.extend(assistant_tool_step(
+            &format!("toolu_{i}"),
+            &format!("think {i}"),
+        ));
+    }
+    messages
+}
+
+#[test]
+fn next_iteration_request_only_appends_to_the_previous_one() {
+    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-5-5".into(), 4096)
+        .with_cache_user_messages(false);
+    let tools = [bash_tool()];
+    let k = provider.debug_request_json(&loop_history(2), &tools, false);
+    let k1 = provider.debug_request_json(&loop_history(3), &tools, false);
+
+    assert_eq!(k["tools"], k1["tools"]);
+    assert_eq!(k["system"], k1["system"]);
+    let (old, new) = (
+        k["messages"].as_array().unwrap(),
+        k1["messages"].as_array().unwrap(),
+    );
+    assert_eq!(new.len(), old.len() + 2);
+    assert_eq!(
+        &new[..old.len()],
+        old.as_slice(),
+        "earlier messages must not change"
+    );
+}
+
+#[test]
+fn cache_breakpoint_moves_to_the_new_tail() {
+    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-5-5".into(), 4096)
+        .with_cache_user_messages(true);
+    let tools = [bash_tool()];
+    for steps in [2, 3] {
+        let body = provider.debug_request_json(&loop_history(steps), &tools, false);
+        let messages = body["messages"].as_array().unwrap();
+        let (last, rest) = messages.split_last().unwrap();
+        assert!(
+            last.to_string().contains("cache_control"),
+            "tail must be marked"
+        );
+        assert!(
+            rest.iter()
+                .all(|m| !m.to_string().contains("cache_control")),
+            "no older message may be marked"
+        );
+    }
+}
+
+fn thinking_texts(body: &serde_json::Value) -> Vec<String> {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["content"].as_array())
+        .flatten()
+        .filter(|b| b["type"] == "thinking")
+        .map(|b| b["thinking"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+fn two_turn_history() -> Vec<Message> {
+    let mut messages = vec![
+        Message::from_legacy(Role::System, "system"),
+        turn_input("one"),
+    ];
+    messages.extend(assistant_tool_step("toolu_a", "old turn"));
+    messages.push(Message::from_legacy(Role::Assistant, "answer one"));
+    messages.push(turn_input("two"));
+    messages.extend(assistant_tool_step("toolu_b", "current turn"));
+    messages
+}
+
+#[test]
+fn preserved_thinking_models_send_only_current_turn_thinking() {
+    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-5-5".into(), 4096);
+    let body = provider.debug_request_json(&two_turn_history(), &[bash_tool()], false);
+    assert_eq!(thinking_texts(&body), ["current turn"]);
+}
+
+#[test]
+fn other_models_forward_thinking_from_every_turn() {
+    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-4-6".into(), 4096);
+    let body = provider.debug_request_json(&two_turn_history(), &[bash_tool()], false);
+    assert_eq!(thinking_texts(&body), ["old turn", "current turn"]);
+}
+
+#[test]
+fn tool_response_keeps_blocks_in_response_order() {
+    let json = r#"{"content":[
+        {"type":"thinking","thinking":"a","signature":"s1"},
+        {"type":"text","text":"plan"},
+        {"type":"thinking","thinking":"b","signature":"s2"},
+        {"type":"tool_use","id":"toolu_1","name":"bash","input":{"command":"ls"}}
+    ],"input_transformations":[
+        {"type":"thinking_dropped","path":"messages.2.content.0","reason":"prefix_binding_mismatch"}
+    ]}"#;
+    let resp: ToolApiResponse = serde_json::from_str(json).unwrap();
+    let (parsed, _) = parse_tool_response(resp);
+    let ChatResponse::ToolUse {
+        content, replay, ..
+    } = parsed
+    else {
+        panic!("expected ToolUse");
+    };
+    assert!(matches!(
+        content.blocks(),
+        [
+            crate::provider::AssistantBlock::Thinking(ThinkingBlock::Thinking { thinking: a, .. }),
+            crate::provider::AssistantBlock::Text(t),
+            crate::provider::AssistantBlock::Thinking(ThinkingBlock::Thinking { thinking: b, .. }),
+            crate::provider::AssistantBlock::ToolUse(_),
+        ] if a == "a" && t == "plan" && b == "b"
+    ));
+    assert_eq!(
+        replay,
+        crate::ThinkingReplay::Dropped {
+            first_message_index: 2
+        }
+    );
+}
+
+fn messages_with_marker_checkpoint() -> Vec<Message> {
+    vec![
+        Message::from_legacy(Role::System, "system prompt"),
+        Message::from_legacy(Role::User, "hello"),
+        Message {
+            role: Role::System,
+            content: "[focus checkpoint: MARKER-ONLY-TEXT]".into(),
+            parts: vec![],
+            metadata: MessageMetadata::marker(),
+        },
+    ]
+}
+
+#[test]
+fn marker_checkpoint_never_reaches_the_claude_request() {
+    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-5-5".into(), 4096);
+    let messages = messages_with_marker_checkpoint();
+    for tools in [vec![], vec![bash_tool()]] {
+        let json = provider
+            .debug_request_json(&messages, &tools, false)
+            .to_string();
+        assert!(!json.contains("MARKER-ONLY-TEXT"), "{json}");
+        assert!(json.contains("hello"));
     }
 }

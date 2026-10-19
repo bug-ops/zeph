@@ -35,17 +35,16 @@ fn tool_output(name: &str, summary: &str) -> ToolOutput {
 }
 
 fn tool_use_batch(n: usize) -> ChatResponse {
-    ChatResponse::ToolUse {
-        text: None,
-        tool_calls: (0..n)
+    ChatResponse::tool_use(
+        None,
+        (0..n)
             .map(|i| ToolUseRequest {
                 id: format!("call-{i}"),
                 name: format!("tool_{i}").into(),
                 input: serde_json::json!({"arg": i}),
             })
             .collect(),
-        thinking_blocks: vec![],
-    }
+    )
 }
 
 /// Extracts the `<remaining_tool_calls>N</remaining_tool_calls>` value from the agent's current

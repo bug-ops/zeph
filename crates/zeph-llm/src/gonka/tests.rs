@@ -496,7 +496,8 @@ async fn gonka_tools_chat_with_tools_returns_tool_use() {
     let result = provider.chat_with_tools(&messages, &[tool]).await.unwrap();
 
     match result {
-        ChatResponse::ToolUse { tool_calls, .. } => {
+        ChatResponse::ToolUse { content, .. } => {
+            let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
             assert_eq!(tool_calls.len(), 1);
             assert_eq!(tool_calls[0].id, "call_abc123");
             assert_eq!(tool_calls[0].name.as_ref(), "get_weather");

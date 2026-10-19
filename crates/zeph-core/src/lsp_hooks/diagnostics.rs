@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+use serde::Deserialize;
+use serde::de::{Deserializer, IgnoredAny};
 use zeph_mcp::McpCaller;
 use zeph_memory::TokenCounter;
 
@@ -13,11 +15,77 @@ use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
 
 use super::LspNote;
 
-/// Minimum integer severity value that passes the configured filter.
+/// Diagnostic severity as received from the LSP bridge.
 ///
-/// LSP severity levels: 1=Error, 2=Warning, 3=Information, 4=Hint.
-/// Lower numbers are more severe.
-fn severity_threshold(min: DiagnosticSeverity) -> u64 {
+/// mcpls serializes severity as a lowercase string (`"error"`); raw LSP uses the
+/// integers 1..=4. Missing or unrecognized values are treated as `Error` so that
+/// a diagnostic is never silently dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LspSeverity {
+    Error,
+    Warning,
+    Info,
+    Hint,
+}
+
+impl LspSeverity {
+    /// Lower rank is more severe.
+    fn rank(self) -> u8 {
+        match self {
+            Self::Error => 1,
+            Self::Warning => 2,
+            Self::Info => 3,
+            Self::Hint => 4,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+            Self::Info => "info",
+            Self::Hint => "hint",
+        }
+    }
+
+    fn from_number(n: u64) -> Self {
+        match n {
+            2 => Self::Warning,
+            3 => Self::Info,
+            4 => Self::Hint,
+            _ => Self::Error,
+        }
+    }
+
+    fn from_text(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "warning" | "warn" => Self::Warning,
+            "information" | "info" => Self::Info,
+            "hint" => Self::Hint,
+            _ => Self::Error,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for LspSeverity {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Number(u64),
+            Text(String),
+            Other(IgnoredAny),
+        }
+        Ok(match Raw::deserialize(deserializer)? {
+            Raw::Number(n) => Self::from_number(n),
+            Raw::Text(s) => Self::from_text(&s),
+            Raw::Other(_) => Self::Error,
+        })
+    }
+}
+
+/// Rank of the configured minimum severity, comparable with [`LspSeverity::rank`].
+fn threshold_rank(min: DiagnosticSeverity) -> u8 {
     match min {
         DiagnosticSeverity::Error => 1,
         DiagnosticSeverity::Warning => 2,
@@ -26,25 +94,41 @@ fn severity_threshold(min: DiagnosticSeverity) -> u64 {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct WirePosition {
+    #[serde(default)]
+    line: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct WireRange {
+    start: WirePosition,
+}
+
+/// One diagnostic entry as returned by `get_diagnostics`; unknown fields are ignored.
+#[derive(Debug, Deserialize)]
+pub(super) struct WireDiagnostic {
+    #[serde(default = "default_severity")]
+    severity: LspSeverity,
+    message: Option<String>,
+    range: Option<WireRange>,
+}
+
+fn default_severity() -> LspSeverity {
+    LspSeverity::Error
+}
+
 /// Format a single diagnostic entry into a display line.
 ///
 /// Extracted for unit testing independently of MCP calls.
-pub(super) fn format_diagnostic(file_path: &str, d: &serde_json::Value) -> String {
+pub(super) fn format_diagnostic(file_path: &str, d: &WireDiagnostic) -> String {
     // LSP lines are 0-indexed; add 1 for display.
     let line = d
-        .pointer("/range/start/line")
-        .and_then(serde_json::Value::as_u64)
-        .map_or(0, |l| l + 1);
-    let severity_str = match d.get("severity").and_then(serde_json::Value::as_u64) {
-        Some(1) => "error",
-        Some(2) => "warning",
-        Some(3) => "info",
-        _ => "hint",
-    };
-    let message = d
-        .get("message")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("(no message)");
+        .range
+        .as_ref()
+        .map_or(0, |r| r.start.line.saturating_add(1));
+    let severity_str = d.severity.label();
+    let message = d.message.as_deref().unwrap_or("(no message)");
     // Truncate message before formatting to avoid unbounded allocations.
     let safe_message: String = message.chars().take(200).collect();
     // Sanitize file_path: strip newlines/CR that could break line-oriented output.
@@ -59,11 +143,17 @@ pub(super) fn format_diagnostic(file_path: &str, d: &serde_json::Value) -> Strin
 ///
 /// Handles both the legacy bare-array format and the v0.3.6+ object wrapper
 /// `{"diagnostics": [...]}`. Returns `None` if the text cannot be parsed or
-/// the resolved value is not a JSON array.
-fn parse_diagnostics_json(json_text: &str) -> Option<Vec<serde_json::Value>> {
+/// the resolved value is not a JSON array. Entries that are not valid diagnostics are skipped.
+fn parse_diagnostics_json(json_text: &str) -> Option<Vec<WireDiagnostic>> {
     let parsed: serde_json::Value = serde_json::from_str(json_text).ok()?;
-    let array = parsed.get("diagnostics").unwrap_or(&parsed);
-    serde_json::from_value(array.clone()).ok()
+    let array = parsed.get("diagnostics").unwrap_or(&parsed).as_array()?;
+    // One malformed entry (e.g. a `MarkupContent` message) must not drop the whole batch.
+    Some(
+        array
+            .iter()
+            .filter_map(|item| WireDiagnostic::deserialize(item).ok())
+            .collect(),
+    )
 }
 
 /// Fetch diagnostics for `file_path` from the configured mcpls MCP server.
@@ -117,17 +207,13 @@ pub(super) async fn fetch_diagnostics(
         return None;
     };
 
-    let threshold = severity_threshold(config.diagnostics.min_severity);
+    let threshold = threshold_rank(config.diagnostics.min_severity);
     let max_per_file = config.diagnostics.max_per_file;
     let total_diagnostics = diagnostics.len();
 
     let lines: Vec<String> = diagnostics
         .iter()
-        .filter(|d| {
-            d.get("severity")
-                .and_then(serde_json::Value::as_u64)
-                .is_some_and(|s| s <= threshold)
-        })
+        .filter(|d| d.severity.rank() <= threshold)
         .take(max_per_file)
         .map(|d| format_diagnostic(file_path, d))
         .collect();
@@ -180,20 +266,59 @@ pub(super) async fn fetch_diagnostics(
 mod tests {
     use super::*;
 
-    fn diag(severity: u64, message: &str, line: u64) -> serde_json::Value {
-        serde_json::json!({
+    fn diag(severity: u64, message: &str, line: u64) -> WireDiagnostic {
+        serde_json::from_value(serde_json::json!({
             "severity": severity,
             "message": message,
             "range": { "start": { "line": line } }
-        })
+        }))
+        .unwrap()
+    }
+
+    fn wire(v: serde_json::Value) -> WireDiagnostic {
+        serde_json::from_value(v).unwrap()
     }
 
     #[test]
-    fn severity_threshold_values() {
-        assert_eq!(severity_threshold(DiagnosticSeverity::Error), 1);
-        assert_eq!(severity_threshold(DiagnosticSeverity::Warning), 2);
-        assert_eq!(severity_threshold(DiagnosticSeverity::Info), 3);
-        assert_eq!(severity_threshold(DiagnosticSeverity::Hint), 4);
+    fn threshold_rank_values() {
+        assert_eq!(threshold_rank(DiagnosticSeverity::Error), 1);
+        assert_eq!(threshold_rank(DiagnosticSeverity::Warning), 2);
+        assert_eq!(threshold_rank(DiagnosticSeverity::Info), 3);
+        assert_eq!(threshold_rank(DiagnosticSeverity::Hint), 4);
+    }
+
+    #[test]
+    fn severity_parses_strings_and_integers() {
+        let cases = [
+            (serde_json::json!("error"), LspSeverity::Error),
+            (serde_json::json!("warning"), LspSeverity::Warning),
+            (serde_json::json!("information"), LspSeverity::Info),
+            (serde_json::json!("info"), LspSeverity::Info),
+            (serde_json::json!("hint"), LspSeverity::Hint),
+            (serde_json::json!("ERROR"), LspSeverity::Error),
+            (serde_json::json!(1), LspSeverity::Error),
+            (serde_json::json!(2), LspSeverity::Warning),
+            (serde_json::json!(3), LspSeverity::Info),
+            (serde_json::json!(4), LspSeverity::Hint),
+        ];
+        for (raw, expected) in cases {
+            let d = wire(serde_json::json!({ "severity": raw.clone() }));
+            assert_eq!(d.severity, expected, "severity {raw}");
+        }
+    }
+
+    #[test]
+    fn severity_missing_or_unknown_counts_as_error() {
+        for d in [
+            serde_json::json!({}),
+            serde_json::json!({ "severity": null }),
+            serde_json::json!({ "severity": "bogus" }),
+            serde_json::json!({ "severity": 0 }),
+            serde_json::json!({ "severity": 9 }),
+            serde_json::json!({ "severity": [1] }),
+        ] {
+            assert_eq!(wire(d).severity, LspSeverity::Error);
+        }
     }
 
     #[test]
@@ -230,14 +355,14 @@ mod tests {
 
     #[test]
     fn format_diagnostic_no_message_field() {
-        let d = serde_json::json!({ "severity": 1, "range": { "start": { "line": 0 } } });
+        let d = wire(serde_json::json!({ "severity": 1, "range": { "start": { "line": 0 } } }));
         let line = format_diagnostic("f.rs", &d);
         assert!(line.contains("(no message)"));
     }
 
     #[test]
     fn format_diagnostic_missing_range() {
-        let d = serde_json::json!({ "severity": 1, "message": "oops" });
+        let d = wire(serde_json::json!({ "severity": 1, "message": "oops" }));
         let line = format_diagnostic("f.rs", &d);
         // line defaults to 0 when range is absent
         assert_eq!(line, "f.rs:0 error: oops");
@@ -322,6 +447,89 @@ mod tests {
         let result = parse_diagnostics_json(json);
         assert!(result.is_some(), "bare array must be parsed");
         assert_eq!(result.unwrap().len(), 1);
+    }
+
+    fn mcpls_payload(severity: &str) -> String {
+        serde_json::json!({
+            "diagnostics": [{
+                "code": "E0308",
+                "message": "mismatched types",
+                "range": { "start": { "line": 9, "character": 4 }, "end": { "line": 9, "character": 8 } },
+                "severity": severity,
+                "source": "rustc"
+            }]
+        })
+        .to_string()
+    }
+
+    async fn fetch_with_min(
+        payload: &str,
+        min: DiagnosticSeverity,
+    ) -> Option<crate::lsp_hooks::LspNote> {
+        use zeph_sanitizer::ContentIsolationConfig;
+
+        let mock = RecordingCaller::new().with_text(payload);
+        let mut config = LspConfig::default();
+        config.diagnostics.min_severity = min;
+        let tc = Arc::new(TokenCounter::default());
+        let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+        fetch_diagnostics(&mock, &config, "src/lib.rs", &tc, &sanitizer).await
+    }
+
+    #[tokio::test]
+    async fn fetch_diagnostics_keeps_mcpls_string_severity() {
+        let note = fetch_with_min(&mcpls_payload("error"), DiagnosticSeverity::Error)
+            .await
+            .expect("string-severity error diagnostic must be surfaced");
+        assert_eq!(note.kind, "diagnostics");
+        assert!(
+            note.content
+                .contains("src/lib.rs:10 error: mismatched types")
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_diagnostics_threshold_filtering() {
+        use DiagnosticSeverity::{Error, Hint, Info, Warning};
+        let cases = [
+            ("error", Error, true),
+            ("warning", Error, false),
+            ("warning", Warning, true),
+            ("information", Warning, false),
+            ("information", Info, true),
+            ("hint", Info, false),
+            ("hint", Hint, true),
+        ];
+        for (sev, min, kept) in cases {
+            let note = fetch_with_min(&mcpls_payload(sev), min).await;
+            assert_eq!(note.is_some(), kept, "severity {sev} vs min {min:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_diagnostics_missing_severity_kept_at_error_threshold() {
+        let payload = r#"[{"message":"no severity","range":{"start":{"line":0}}}]"#;
+        let note = fetch_with_min(payload, DiagnosticSeverity::Error).await;
+        assert!(note.is_some());
+    }
+
+    #[test]
+    fn parse_diagnostics_json_skips_only_the_malformed_entry() {
+        let json = r#"[
+            {"severity": 1, "message": "first", "range": {"start": {"line": 0}}},
+            {"severity": 1, "message": {"kind": "markdown", "value": "rich"}},
+            {"severity": 1, "message": "third", "range": {"start": {"line": -4}}},
+            {"severity": 2, "message": "fourth", "range": {"start": {"line": 3}}}
+        ]"#;
+        let parsed = parse_diagnostics_json(json).expect("array");
+        let messages: Vec<_> = parsed.iter().filter_map(|d| d.message.as_deref()).collect();
+        assert_eq!(messages, ["first", "fourth"]);
+    }
+
+    #[test]
+    fn huge_line_number_does_not_overflow_when_formatted() {
+        let d = wire(serde_json::json!({"message": "m", "range": {"start": {"line": u64::MAX}}}));
+        assert!(format_diagnostic("f.rs", &d).starts_with(&format!("f.rs:{}", u64::MAX)));
     }
 
     #[test]

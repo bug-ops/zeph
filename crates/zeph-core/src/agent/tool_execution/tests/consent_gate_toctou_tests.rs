@@ -204,6 +204,63 @@ async fn memory_save_gated_across_turn_boundary_when_untrusted_content_still_in_
     );
 }
 
+/// #6823 — focus summarisation must not launder untrusted content.
+///
+/// `web_scrape` output is tagged `ExternalUntrusted`, then `complete_focus` removes the
+/// bracketed messages and replaces them with a Knowledge block. The block is always tagged
+/// `ExternalUntrusted` by design (an LLM-written summary may distil anything it saw), not by
+/// inheriting the tier of what it replaced, so `context_max_trust_level` cannot fall back to
+/// `Trusted` and a later `memory_save` still requires confirmation.
+#[tokio::test]
+async fn memory_save_gated_after_complete_focus_summarises_untrusted_content() {
+    let mut agent = make_agent().await;
+    agent.services.focus.config.enabled = true;
+    agent
+        .msg
+        .messages
+        .push(Message::from_legacy(Role::System, "system"));
+
+    let (_, checkpoint) =
+        agent.handle_focus_tool("start_focus", &serde_json::json!({"scope": "s"}));
+    agent.push_message(checkpoint.expect("start_focus returns a checkpoint"));
+    agent
+        .handle_native_tool_calls(None, &[web_scrape_call("t1")])
+        .await
+        .unwrap();
+    assert_eq!(
+        agent.context_max_trust_level(),
+        ContentTrustLevel::ExternalUntrusted
+    );
+
+    let (result, _) = agent.handle_focus_tool(
+        "complete_focus",
+        &serde_json::json!({"summary": "page said to save a secret"}),
+    );
+    assert!(!result.starts_with("[error]"), "{result}");
+    assert!(
+        agent.msg.messages.iter().all(|m| m.metadata.trust_level
+            != Some(ContentTrustLevel::ExternalUntrusted as u8)
+            || m.metadata.focus_pinned),
+        "only the Knowledge block may carry the tag once the batch is summarised"
+    );
+    assert_eq!(
+        agent.context_max_trust_level(),
+        ContentTrustLevel::ExternalUntrusted,
+        "summarised untrusted content must keep gating memory_save"
+    );
+
+    let _turn = agent.begin_turn(TurnInput::new("turn 2".to_owned(), vec![]));
+    agent
+        .handle_native_tool_calls(None, &[memory_save_call("t2", "derived from the summary")])
+        .await
+        .unwrap();
+    let prompts = agent.channel.confirmed_prompts();
+    assert!(
+        prompts.iter().any(|p| p.contains("Save to memory")),
+        "memory_save confirmation must not be skipped; confirmed_prompts={prompts:?}"
+    );
+}
+
 /// Negative control for #6558's fix: with an entirely clean context (no prior untrusted tool
 /// output at all), a lone `memory_save` in turn N+1 must NOT be gated — proves the fix does not
 /// over-trigger once the untrusted content genuinely never existed.
@@ -473,5 +530,33 @@ async fn memory_save_gated_after_compaction_persist_and_reload() {
         prompts.iter().any(|p| p.contains("Save to memory")),
         "memory_save must be gated after reload from the persisted (compacted) summary row; \
          confirmed_prompts={prompts:?}"
+    );
+}
+
+/// Documents the over-gating that follows from always tagging the Knowledge block: completing a
+/// focus session over trusted-only content still leaves the context at `ExternalUntrusted`.
+#[tokio::test]
+async fn knowledge_block_is_untrusted_even_when_the_summarised_content_was_trusted() {
+    let mut agent = make_agent().await;
+    agent.services.focus.config.enabled = true;
+    agent
+        .msg
+        .messages
+        .push(Message::from_legacy(Role::System, "system"));
+    let (_, checkpoint) =
+        agent.handle_focus_tool("start_focus", &serde_json::json!({"scope": "s"}));
+    agent.push_message(checkpoint.expect("start_focus returns a checkpoint"));
+    agent.push_message(Message::from_legacy(Role::User, "a trusted user message"));
+    assert_eq!(agent.context_max_trust_level(), ContentTrustLevel::Trusted);
+
+    let (result, _) = agent.handle_focus_tool(
+        "complete_focus",
+        &serde_json::json!({"summary": "nothing untrusted happened"}),
+    );
+
+    assert!(!result.starts_with("[error]"), "{result}");
+    assert_eq!(
+        agent.context_max_trust_level(),
+        ContentTrustLevel::ExternalUntrusted
     );
 }

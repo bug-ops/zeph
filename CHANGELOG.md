@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-llm`, `zeph-core`: tool-use responses keep thinking in response order; it is stripped once on mid-turn history rewrites and never persisted (breaking: `ChatResponse::ToolUse` shape) (#6821)
+- `zeph-core`: the tool array is frozen per turn and `requires`/turn-set rules are enforced at dispatch; mid-turn history edits need token pressure (#6820)
+- `zeph-llm`: Claude cache breakpoint moves to the conversation tail; server compaction summaries travel on the response (breaking: `take_compaction_summary` removed) (#6820)
+- `zeph-llm`, `zeph-config`, `zeph-core`: Claude server compaction uses the current wire format and a validated `server_compaction_trigger_tokens` (breaking: `ProviderEntry` field) (#6825)
+- `zeph-llm`: Claude model capabilities come from a closed `ClaudeModel` table; the window is capped at 200k unless `enable_extended_context` (#6822)
+- `zeph-core`: the focus Knowledge block is `ExternalUntrusted` and `complete_focus` no longer echoes the summary (#6823)
+- `zeph-llm`, `zeph-core`: focus checkpoint is hidden from provider requests via `MessageVisibility::Marker` (breaking: new variant) (#6820)
+- `zeph-core`: LSP diagnostics accept string and numeric severities, so mcpls diagnostics are no longer dropped (#6824)
 - `zeph-llm`, `zeph-core`, `zeph-memory`, `zeph-subagent`: per-iteration state (tool budget, LSP notes, hints) rides in a never-persisted `MessagePart::RuntimeNote` on the tail tool-result message, keeping the provider cache valid; removed `remove_lsp_messages` and `LSP_NOTE_PREFIX` (breaking) (#6786, #6817) (#6826)
 - `zeph-llm`: OpenAI-family, Gemini, Ollama and Candle builders skip hidden messages via `provider::AgentVisible`; Gemini gains tool-pair orphan repair (#6814) (#6826)
 - `zeph-agent-context`, `zeph-llm`, `zeph-common`: subgoal membership lives on `MessageMetadata::subgoal_id` instead of index spans; removed `SubgoalRegistry::{tag_range,rebuild_after_compaction,msg_to_subgoal}` (breaking) (#6816) (#6826)

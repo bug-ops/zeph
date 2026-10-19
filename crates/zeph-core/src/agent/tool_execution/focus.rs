@@ -52,7 +52,7 @@ impl<C: Channel> Agent<C> {
             metadata: zeph_llm::provider::MessageMetadata {
                 focus_pinned: true,
                 focus_marker_id: Some(marker),
-                ..zeph_llm::provider::MessageMetadata::agent_only()
+                ..zeph_llm::provider::MessageMetadata::marker()
             },
         };
 
@@ -60,6 +60,20 @@ impl<C: Channel> Agent<C> {
             format!("Focus session started. Checkpoint ID: {marker}. Scope: {scope}"),
             Some(checkpoint_msg),
         )
+    }
+
+    fn dump_focus_knowledge(&self) {
+        if let Some(ref d) = self.runtime.debug.debug_dumper {
+            let kb = self
+                .services
+                .focus
+                .knowledge_blocks
+                .iter()
+                .map(|b| b.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n---\n");
+            d.dump_focus_knowledge(&kb);
+        }
     }
 
     /// Execute the `complete_focus` branch: finalize the session and rebuild the knowledge block.
@@ -77,6 +91,15 @@ impl<C: Channel> Agent<C> {
         if !self.services.focus.is_active() {
             return (
                 "[error] No active focus session. Call start_focus first.".to_string(),
+                None,
+            );
+        }
+
+        // An empty summary would drop the (possibly untrusted) phase without leaving a
+        // tagged Knowledge block behind, so context trust would silently fall back to Trusted.
+        if summary.trim().is_empty() {
+            return (
+                "[error] complete_focus requires a non-empty summary.".to_string(),
                 None,
             );
         }
@@ -104,11 +127,6 @@ impl<C: Channel> Agent<C> {
             );
         };
 
-        // The checkpoint and bracketed messages are removed from history.
-        // The slice is available for future semantic use but not re-summarized here
-        // to avoid LLM overhead.
-        let _ = self.msg.messages[checkpoint_pos + 1..].to_vec();
-
         // Sanitize the LLM-supplied summary before storing it to the pinned Knowledge
         // block. The summary may summarize transitive external content (web scrapes,
         // MCP responses), so use WebScrape (ExternalUntrusted trust level) for stricter
@@ -123,20 +141,15 @@ impl<C: Channel> Agent<C> {
             )
             .body;
 
-        self.services
-            .focus
-            .append_llm_knowledge(sanitized_summary.clone());
-        if let Some(ref d) = self.runtime.debug.debug_dumper {
-            let kb = self
-                .services
-                .focus
-                .knowledge_blocks
-                .iter()
-                .map(|b| b.content.as_str())
-                .collect::<Vec<_>>()
-                .join("\n---\n");
-            d.dump_focus_knowledge(&kb);
+        // The Knowledge block is what keeps the removed phase tagged untrusted and strips stale
+        // thinking, so nothing is removed unless it was stored.
+        if !self.services.focus.append_llm_knowledge(sanitized_summary) {
+            return (
+                "[error] The summary was rejected; the focus session stays open.".to_string(),
+                None,
+            );
         }
+        self.dump_focus_knowledge();
         self.services.focus.complete();
 
         // Remove the checkpoint and all messages after it (bracketed phase cleanup).
@@ -192,22 +205,34 @@ impl<C: Channel> Agent<C> {
         self.rebuild_knowledge_block();
 
         (
-            format!("Focus session complete. Knowledge block updated with: {sanitized_summary}"),
+            "Focus session complete. Knowledge block updated.".to_string(),
             None,
         )
     }
 
     /// Remove any existing (non-checkpoint) Knowledge block and insert an updated one after the
     /// system prompt. Called after focus completion and context compression.
+    ///
+    /// The insertion point is at the context floor, ahead of everything those two rewrites
+    /// touch, so stripping thinking from it also covers the re-pushed assistant message of
+    /// `complete_focus` and every message behind the removals of `compress_context`.
     pub(crate) fn rebuild_knowledge_block(&mut self) {
+        let is_knowledge_block = |m: &zeph_llm::provider::Message| {
+            m.metadata.focus_pinned && m.metadata.focus_marker_id.is_none()
+        };
         // Remove any existing Knowledge block (focus_pinned=true, no marker_id).
         // Checkpoints have focus_marker_id set and must be preserved.
-        self.msg
-            .messages
-            .retain(|m| !(m.metadata.focus_pinned && m.metadata.focus_marker_id.is_none()));
+        let mut first_edit = self.msg.messages.iter().position(is_knowledge_block);
+        self.msg.messages.retain(|m| !is_knowledge_block(m));
         if let Some(kb_msg) = self.services.focus.build_knowledge_message() {
             // Insert the Knowledge block right after the system prompt / compaction block.
+            let floor = zeph_llm::provider::context_floor(&self.msg.messages);
+            first_edit = Some(first_edit.map_or(floor, |i| i.min(floor)));
             zeph_llm::provider::insert_at_context_floor(&mut self.msg.messages, kb_msg);
+        }
+        // A deliberate prefix edit: thinking after it is bound to the old prefix.
+        if let Some(from) = first_edit {
+            zeph_llm::provider::strip_thinking_from(&mut self.msg.messages, from);
         }
         self.msg.recompute_non_system_count();
         self.recompute_prompt_tokens();
@@ -299,7 +324,10 @@ impl<C: Channel> Agent<C> {
             )
             .body;
 
-        self.services.focus.append_llm_knowledge(sanitized_summary);
+        if !self.services.focus.append_llm_knowledge(sanitized_summary) {
+            self.services.focus.release_compression();
+            return "[error] The summary was rejected; nothing was compressed.".to_string();
+        }
         self.apply_compression_removals(to_remove_indices);
 
         self.context_manager.set_compaction_state(
@@ -459,7 +487,10 @@ impl<C: Channel> Agent<C> {
         self.persist_message(Role::User, &user_msg.content, &user_msg.parts, false)
             .await;
         match insert_at {
-            Some(index) => self.insert_message(index, user_msg),
+            Some(index) => {
+                self.insert_message(index, user_msg);
+                zeph_llm::provider::strip_thinking_from(&mut self.msg.messages, index);
+            }
             None => self.push_message(user_msg),
         }
     }

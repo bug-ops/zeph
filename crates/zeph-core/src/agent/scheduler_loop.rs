@@ -1729,9 +1729,9 @@ impl<C: crate::channel::Channel> Agent<C> {
                     tracing::debug!(iteration, "inline tool loop: text response, returning");
                     return Ok(InlineLoopOutcome { text, tool_trace });
                 }
-                ChatResponse::ToolUse {
-                    text, tool_calls, ..
-                } => {
+                ChatResponse::ToolUse { content, .. } => {
+                    let text = content.text();
+                    let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
                     tracing::debug!(
                         iteration,
                         tools = ?tool_calls.iter().map(|tc| &tc.name).collect::<Vec<_>>(),
@@ -3900,15 +3900,14 @@ mod tests {
         // tool call itself is rejected by the executor below, simulating a policy_blocked
         // denial (same `is_error: true` transcript shape either way; see policy_gate.rs).
         let (mock, _counter) = MockProvider::default().with_tool_use(vec![
-            ChatResponse::ToolUse {
-                text: None,
-                tool_calls: vec![ToolUseRequest {
+            ChatResponse::tool_use(
+                None,
+                vec![ToolUseRequest {
                     id: "call-1".into(),
                     name: "write".into(),
                     input: serde_json::json!({ "path": "out.txt" }),
                 }],
-                thinking_blocks: vec![],
-            },
+            ),
             ChatResponse::Text("done".into()),
         ]);
         let provider = AnyProvider::Mock(mock);
@@ -3992,9 +3991,9 @@ mod tests {
         // Both tool calls narrated in the same turn: the read succeeds, the write is
         // policy-blocked by the executor below.
         let (mock, _counter) = MockProvider::default().with_tool_use(vec![
-            ChatResponse::ToolUse {
-                text: None,
-                tool_calls: vec![
+            ChatResponse::tool_use(
+                None,
+                vec![
                     ToolUseRequest {
                         id: "call-1".into(),
                         name: "read".into(),
@@ -4006,8 +4005,7 @@ mod tests {
                         input: serde_json::json!({ "path": "out.txt" }),
                     },
                 ],
-                thinking_blocks: vec![],
-            },
+            ),
             ChatResponse::Text("done".into()),
         ]);
         let provider = AnyProvider::Mock(mock);
@@ -4088,9 +4086,9 @@ mod tests {
             DagScheduler::new(graph, &config, Box::new(RuleBasedRouter), vec![], None).unwrap();
 
         let (mock, _counter) = MockProvider::default().with_tool_use(vec![
-            ChatResponse::ToolUse {
-                text: None,
-                tool_calls: vec![
+            ChatResponse::tool_use(
+                None,
+                vec![
                     ToolUseRequest {
                         id: "call-1".into(),
                         name: "read".into(),
@@ -4102,8 +4100,7 @@ mod tests {
                         input: serde_json::json!({ "path": "out.txt" }),
                     },
                 ],
-                thinking_blocks: vec![],
-            },
+            ),
             ChatResponse::Text("done".into()),
         ]);
         let provider = AnyProvider::Mock(mock);
@@ -4186,15 +4183,14 @@ mod tests {
         .unwrap();
 
         let (mock, _counter) = MockProvider::default().with_tool_use(vec![
-            ChatResponse::ToolUse {
-                text: None,
-                tool_calls: vec![ToolUseRequest {
+            ChatResponse::tool_use(
+                None,
+                vec![ToolUseRequest {
                     id: "call-1".into(),
                     name: "read".into(),
                     input: serde_json::json!({ "path": "in.txt" }),
                 }],
-                thinking_blocks: vec![],
-            },
+            ),
             ChatResponse::Text("done".into()),
         ]);
         let provider = AnyProvider::Mock(mock);

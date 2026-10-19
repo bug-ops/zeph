@@ -403,6 +403,9 @@ fn finalize_compacted_messages(
             .insert(floor + 1 + pinned_count + i, active_msg);
     }
 
+    // Everything after the summary now sits behind a rewritten prefix.
+    zeph_llm::provider::strip_thinking_from(summ.messages, floor);
+
     // Rebuild subgoal index map after index invalidation from drain + reinsert.
     if summ
         .context_manager

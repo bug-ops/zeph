@@ -8,6 +8,7 @@
 //! family, with all public types re-exported here so the historical
 //! `zeph_config::providers::*` paths remain stable:
 //!
+//! - `compaction` — validated Claude server-side compaction trigger
 //! - `thinking` — reasoning-effort and prompt-cache enums embedded in provider entries
 //! - `llm` — the root `[llm]` config, provider-kind selector, streaming limits, STT
 //! - `router` — multi-provider routing strategy configuration
@@ -15,6 +16,7 @@
 //! - `entry` — the unified [`ProviderEntry`] and pool validation
 
 mod candle;
+mod compaction;
 mod entry;
 mod llm;
 mod router;
@@ -26,6 +28,7 @@ mod tests;
 pub use candle::{
     CandleConfig, CandleDevice, CandleInlineConfig, CandleSource, GenerationParams, MAX_TOKENS_CAP,
 };
+pub use compaction::{CompactionTrigger, CompactionTriggerError};
 pub use entry::{CocoonPricing, GonkaNode, ProviderEntry, ProviderOverrides, validate_pool};
 pub use llm::{
     FAST_TIER_MODEL_HINTS, LlmConfig, ProviderKind, StreamLimits, SttConfig, default_stt_language,

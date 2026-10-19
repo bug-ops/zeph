@@ -141,6 +141,19 @@ pub(crate) struct KnowledgeBlock {
     pub(crate) source: KnowledgeBlockSource,
 }
 
+/// Metadata for the pinned Knowledge block.
+///
+/// The block holds LLM-written summaries of tool output and web content that may have been
+/// condensed from untrusted sources, so it is always tagged `ExternalUntrusted`. Scanning
+/// `Agent::context_max_trust_level` therefore keeps gating `memory_save` after the original
+/// tagged messages were removed (#6823, same gap class as #6558).
+fn knowledge_block_metadata() -> MessageMetadata {
+    MessageMetadata {
+        trust_level: Some(zeph_sanitizer::ContentTrustLevel::ExternalUntrusted as u8),
+        ..MessageMetadata::focus_pinned()
+    }
+}
+
 /// Tracks the state of the active focus session.
 // Fields and methods below are consumed by context-compression feature paths.
 pub(crate) struct FocusState {
@@ -320,7 +333,7 @@ impl FocusState {
             role: Role::System,
             content: body,
             parts: vec![],
-            metadata: MessageMetadata::focus_pinned(),
+            metadata: knowledge_block_metadata(),
         })
     }
 
@@ -401,6 +414,17 @@ mod tests {
         assert!(msg.content.starts_with(KNOWLEDGE_BLOCK_PREFIX));
         assert!(msg.content.contains("my summary"));
         assert!(msg.metadata.focus_pinned);
+    }
+
+    #[test]
+    fn build_knowledge_message_is_external_untrusted() {
+        let mut state = FocusState::new(FocusConfig::default());
+        state.append_llm_knowledge("summary".to_string());
+        let msg = state.build_knowledge_message().unwrap();
+        assert_eq!(
+            msg.metadata.trust_level,
+            Some(zeph_sanitizer::ContentTrustLevel::ExternalUntrusted as u8)
+        );
     }
 
     // SEC-CC-01: append_knowledge must enforce max_knowledge_tokens cap (FIFO eviction).

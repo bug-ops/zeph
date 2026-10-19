@@ -1248,3 +1248,74 @@ pub fn migrate_eval_model_to_provider(toml_src: &str) -> Result<MigrationResult,
         sections_changed: vec!["experiments.eval_provider".to_owned()],
     })
 }
+
+/// Step 110: add an advisory `server_compaction_trigger_tokens` hint to Claude provider
+/// entries that enable `server_compaction`.
+///
+/// The hint is a trailing comment on the `server_compaction` line, so the active config is
+/// unchanged and the default trigger (70% of the context window, floored at 50 000) keeps
+/// applying. Idempotent: any existing mention of the key skips the step.
+///
+/// # Errors
+///
+/// Returns [`MigrateError::Parse`] when `toml_src` is not valid TOML.
+pub fn migrate_claude_compaction_trigger(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    const KEY: &str = "server_compaction_trigger_tokens";
+    let unchanged = || MigrationResult {
+        output: toml_src.to_owned(),
+        changed_count: 0,
+        sections_changed: Vec::new(),
+    };
+    if toml_src.contains(KEY) {
+        return Ok(unchanged());
+    }
+
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    let Some(providers) = doc
+        .get_mut("llm")
+        .and_then(toml_edit::Item::as_table_mut)
+        .and_then(|llm| llm.get_mut("providers"))
+        .and_then(toml_edit::Item::as_array_of_tables_mut)
+    else {
+        return Ok(unchanged());
+    };
+
+    let mut changed_count = 0;
+    for entry in providers.iter_mut() {
+        let is_claude = entry.get("type").and_then(toml_edit::Item::as_str) == Some("claude");
+        if !is_claude {
+            continue;
+        }
+        let Some(value) = entry
+            .get_mut("server_compaction")
+            .and_then(toml_edit::Item::as_value_mut)
+        else {
+            continue;
+        };
+        if value.as_bool() != Some(true) {
+            continue;
+        }
+        // Never overwrite a comment the user already put on that line.
+        let has_comment = value
+            .decor()
+            .suffix()
+            .and_then(toml_edit::RawString::as_str)
+            .is_some_and(|s| s.contains('#'));
+        if has_comment {
+            continue;
+        }
+        value.decor_mut().set_suffix(format!(
+            " # optional: {KEY} = 140000 (minimum 50000; default is 70% of the context window)"
+        ));
+        changed_count += 1;
+    }
+
+    if changed_count == 0 {
+        return Ok(unchanged());
+    }
+    Ok(MigrationResult {
+        output: doc.to_string(),
+        changed_count,
+        sections_changed: vec!["llm.providers".to_owned()],
+    })
+}

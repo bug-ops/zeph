@@ -72,15 +72,14 @@ async fn pre_execution_block_writes_audit_entry() {
     // Provider returns one tool call with /etc/passwd as the file_path — triggers FirewallVerifier
     // (glob pattern matches the exact path value), then returns text to end the loop.
     let (mock, _counter) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![ToolUseRequest {
+        ChatResponse::tool_use(
+            None,
+            vec![ToolUseRequest {
                 id: "call-block".to_owned(),
                 name: "read_file".to_owned().into(),
                 input: serde_json::json!({"file_path": "/etc/passwd"}),
             }],
-            thinking_blocks: vec![],
-        },
+        ),
         ChatResponse::Text("done".into()),
     ]);
     let provider = AnyProvider::Mock(mock);

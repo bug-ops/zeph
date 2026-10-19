@@ -914,10 +914,9 @@ fn test_parse_single_function_call() {
     };
     let result = parse_tool_response(resp).unwrap();
     assert_matches!(result, ChatResponse::ToolUse { .. });
-    if let ChatResponse::ToolUse {
-        tool_calls, text, ..
-    } = result
-    {
+    if let ChatResponse::ToolUse { content, .. } = result {
+        let text = content.text();
+        let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0].name, "get_weather");
         assert_eq!(tool_calls[0].input["location"], "Tokyo");
@@ -957,7 +956,8 @@ fn test_parse_multiple_function_calls() {
         usage_metadata: None,
     };
     let result = parse_tool_response(resp).unwrap();
-    if let ChatResponse::ToolUse { tool_calls, .. } = result {
+    if let ChatResponse::ToolUse { content, .. } = result {
+        let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
         assert_eq!(tool_calls.len(), 2);
         assert_eq!(tool_calls[0].name, "tool_a");
         assert_eq!(tool_calls[1].name, "tool_b");
@@ -995,10 +995,9 @@ fn test_parse_mixed_text_and_function_call() {
         usage_metadata: None,
     };
     let result = parse_tool_response(resp).unwrap();
-    if let ChatResponse::ToolUse {
-        tool_calls, text, ..
-    } = result
-    {
+    if let ChatResponse::ToolUse { content, .. } = result {
+        let text = content.text();
+        let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(text.as_deref(), Some("I'll look that up."));
     } else {
@@ -1048,7 +1047,8 @@ fn test_parse_null_args_uses_empty_object() {
         usage_metadata: None,
     };
     let result = parse_tool_response(resp).unwrap();
-    if let ChatResponse::ToolUse { tool_calls, .. } = result {
+    if let ChatResponse::ToolUse { content, .. } = result {
+        let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
         assert_eq!(
             tool_calls[0].input,
             serde_json::Value::Object(serde_json::Map::default())
@@ -1238,7 +1238,8 @@ async fn test_chat_with_tools_returns_tool_use() {
 
     let result = p.chat_with_tools(&messages, &tools).await.unwrap();
     assert_matches!(result, ChatResponse::ToolUse { .. });
-    if let ChatResponse::ToolUse { tool_calls, .. } = result {
+    if let ChatResponse::ToolUse { content, .. } = result {
+        let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0].name, "get_weather");
         assert_eq!(tool_calls[0].input["location"], "Berlin");
@@ -2172,4 +2173,27 @@ fn runtime_note_is_a_text_part_after_the_function_response_in_the_same_content()
         last.parts[1].text.as_deref(),
         Some("<runtime-note>NOTE</runtime-note>")
     );
+}
+
+fn messages_with_marker_checkpoint() -> Vec<Message> {
+    vec![
+        Message::from_legacy(Role::System, "system prompt"),
+        Message::from_legacy(Role::User, "hello"),
+        Message {
+            role: Role::System,
+            content: "[focus checkpoint: MARKER-ONLY-TEXT]".into(),
+            parts: vec![],
+            metadata: MessageMetadata::marker(),
+        },
+    ]
+}
+
+#[test]
+fn marker_checkpoint_never_reaches_the_gemini_request() {
+    let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
+    let json = p
+        .debug_request_json(&messages_with_marker_checkpoint(), &[], false)
+        .to_string();
+    assert!(!json.contains("MARKER-ONLY-TEXT"), "{json}");
+    assert!(json.contains("hello"));
 }

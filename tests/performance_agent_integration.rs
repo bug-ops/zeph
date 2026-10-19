@@ -28,11 +28,7 @@ fn tool_use_provider(final_text: &str) -> AnyProvider {
         input: serde_json::json!({}),
     };
     let (p, _) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call],
-            thinking_blocks: vec![],
-        },
+        ChatResponse::tool_use(None, vec![tool_call]),
         ChatResponse::Text(final_text.to_string()),
     ]);
     AnyProvider::Mock(p)

@@ -1,13 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::collections::HashSet;
+
 use futures::FutureExt as _;
 use tracing::Instrument;
 use zeph_durable::{EffectIntentSubClass, OnAmbiguous, StepDescriptor};
-use zeph_llm::provider::{Message, MessagePart, Role};
+use zeph_llm::ThinkingReplay;
+use zeph_llm::provider::{AssistantBlock, AssistantContent, Message, MessagePart, Role};
 use zeph_tools::ExecutionContext;
 use zeph_tools::executor::ToolCall;
 
+use zeph_common::ToolName;
 use zeph_llm::provider::ToolDefinition;
 
 use super::{
@@ -15,6 +19,7 @@ use super::{
     strip_tafc_fields, tool_args_hash,
 };
 use crate::agent::Agent;
+use crate::agent::turn_gate::{DispatchGate, RequiresGate, TurnToolSet};
 use crate::channel::{Channel, StopHint, ToolStartEvent};
 
 /// Build MAGE hard-block tier results when `is_blocked()` fired at dispatch time.
@@ -361,18 +366,21 @@ impl<C: Channel> Agent<C> {
         name = "core.tool.handle_native_tool_calls",
         skip_all,
         level = "debug",
-        fields(tool_count = tool_calls.len()),
+        fields(tool_count = content.tool_calls().count()),
         err
     )]
     /// Returns `true` when the utility-window was exhausted and the outer iteration loop
     /// should break immediately after this batch.
-    pub(super) async fn handle_native_tool_calls(
+    pub(super) async fn handle_native_content(
         &mut self,
-        text: Option<&str>,
-        tool_calls: &[zeph_llm::provider::ToolUseRequest],
+        content: AssistantContent,
     ) -> Result<bool, crate::agent::error::AgentError> {
         let t_tool_exec = std::time::Instant::now();
         tracing::debug!("turn timing: tool_exec start");
+
+        self.push_assistant_tool_use_message(&content).await?;
+        let tool_calls = content.into_tool_calls();
+        let tool_calls = tool_calls.as_slice();
 
         // Issues #6558/#6569 (write-time memory-consent gate TOCTOU): ratchet the shared
         // trust slot to this batch's worst case BEFORE any tool call below — including
@@ -381,11 +389,6 @@ impl<C: Channel> Agent<C> {
         // via `join_all` and `MemoryToolExecutor` cannot observe `self.msg` to check for
         // itself. See `ratchet_memory_consent_trust_for_dispatch`'s doc comment.
         self.ratchet_memory_consent_trust_for_dispatch(tool_calls);
-
-        // Scan for image-exfiltration in accompanying text, send to channel, persist
-        // the assistant ToolUse message.
-        self.push_assistant_tool_use_message(text, tool_calls)
-            .await?;
 
         // Build calls, assign IDs, run exfiltration guard, gate checks (pre-exec/utility/
         // quota/repeat/cache), and inject skill env. Extracted to keep this function under
@@ -499,40 +502,46 @@ impl<C: Channel> Agent<C> {
         Ok(window_exhausted)
     }
 
+    /// Push the assistant turn with its blocks in response order.
+    ///
+    /// Text is scanned for markdown image exfiltration (S4). A scrubbed text block changes the
+    /// prefix every later thinking block was bound to, so those blocks are dropped. Thinking is
+    /// kept in memory only; `persist_message` strips it.
     async fn push_assistant_tool_use_message(
         &mut self,
-        text: Option<&str>,
-        tool_calls: &[zeph_llm::provider::ToolUseRequest],
+        content: &AssistantContent,
     ) -> Result<(), crate::agent::error::AgentError> {
-        // S4: scan text accompanying ToolUse responses for markdown image exfiltration.
-        let cleaned_text: Option<String> = if let Some(t) = text
-            && !t.is_empty()
-        {
-            Some(self.scan_output_and_warn(t))
-        } else {
-            None
-        };
+        let mut parts: Vec<MessagePart> = Vec::new();
+        let mut display = String::new();
+        let mut text_rewritten = false;
+        for block in content.blocks() {
+            match block {
+                AssistantBlock::Thinking(thinking) if !text_rewritten => {
+                    parts.push(MessagePart::from(thinking));
+                }
+                AssistantBlock::Thinking(_) => {}
+                AssistantBlock::Text(text) if text.is_empty() => {}
+                AssistantBlock::Text(text) => {
+                    let cleaned = self.scan_output_and_warn(text);
+                    text_rewritten |= cleaned != *text;
+                    if !cleaned.is_empty() {
+                        display.push_str(&cleaned);
+                        parts.push(MessagePart::Text { text: cleaned });
+                    }
+                }
+                AssistantBlock::ToolUse(tc) => parts.push(MessagePart::ToolUse {
+                    id: tc.id.clone(),
+                    name: tc.name.to_string(),
+                    input: tc.input.clone(),
+                }),
+            }
+        }
 
-        if let Some(ref t) = cleaned_text
-            && !t.is_empty()
-        {
-            let display = self.maybe_redact(t);
+        if !display.is_empty() {
+            let display = self.maybe_redact(&display);
             self.channel.send(&display).await?;
         }
 
-        let mut parts: Vec<MessagePart> = Vec::new();
-        if let Some(ref t) = cleaned_text
-            && !t.is_empty()
-        {
-            parts.push(MessagePart::Text { text: t.clone() });
-        }
-        for tc in tool_calls {
-            parts.push(MessagePart::ToolUse {
-                id: tc.id.clone(),
-                name: tc.name.to_string(),
-                input: tc.input.clone(),
-            });
-        }
         let assistant_msg = Message::from_parts(Role::Assistant, parts);
         self.persist_message(
             Role::Assistant,
@@ -1277,6 +1286,7 @@ impl<C: Channel> Agent<C> {
         has_failed_dep: bool,
         quota_blocked: bool,
         pre_exec_blocked: &[bool],
+        gate: &DispatchGate,
         utility_actions: &[zeph_tools::UtilityAction],
         repeat_blocked: &[bool],
         pending_system_hints: &mut Vec<String>,
@@ -1329,6 +1339,20 @@ impl<C: Channel> Agent<C> {
                              The requested operation is not permitted.",
                             tc.name
                         ),
+                    ),
+                ),
+                reason,
+            )));
+        }
+        if let Err(rejection) = gate.check(tc.name.as_str()) {
+            tracing::warn!(tool = %tc.name, %rejection, "dispatch gate rejected tool call");
+            let reason = rejection.to_string();
+            return Ok(Some((
+                ready_fut(
+                    idx,
+                    skipped_output(
+                        tc.name.clone(),
+                        format!("[error] Tool call to {} was rejected: {reason}.", tc.name),
                     ),
                 ),
                 reason,
@@ -1487,6 +1511,7 @@ impl<C: Channel> Agent<C> {
         // Phase 2: per-index gate checks, cache lookups, and execution-future construction.
         // Stays sequential — it needs `&mut self` throughout, and each idx's control flow
         // depends on that same idx's own PreToolUse hook outcome computed in Phase 1 above.
+        let gate = self.dispatch_gate();
         let mut tier_futs: Vec<(usize, ToolExecFut)> = Vec::with_capacity(tier_indices.len());
         for (tier_local_idx, &idx) in tier_indices.iter().enumerate() {
             let tc = &tool_calls[idx];
@@ -1525,6 +1550,7 @@ impl<C: Channel> Agent<C> {
                     has_failed_dep,
                     quota_blocked,
                     pre_exec_blocked,
+                    &gate,
                     utility_actions,
                     repeat_blocked,
                     pending_system_hints,
@@ -1692,6 +1718,10 @@ impl<C: Channel> Agent<C> {
                 Ok(Some(out)) => out.summary.starts_with("[error]"),
                 Ok(None) => false,
             };
+            let is_synthetic_skip = matches!(
+                &result,
+                Ok(Some(out)) if out.claim_source == Some(zeph_tools::ClaimSource::Synthetic)
+            );
             if is_failed {
                 failed_ids.insert(tool_calls[idx].id.clone());
             }
@@ -1707,17 +1737,20 @@ impl<C: Channel> Agent<C> {
                     tool_calls[idx].name.as_str(),
                     mcp_tool_ids.contains(tool_calls[idx].name.as_str()),
                 )
+                && !is_synthetic_skip
                 && let Ok(Some(ref out)) = result
-                && !out.summary.starts_with("[skipped]")
-                && !out.summary.starts_with("[stopped]")
             {
                 let key =
                     zeph_tools::CacheKey::new(tool_calls[idx].name.to_string(), args_hashes[idx]);
                 self.tool_orchestrator.result_cache.put(key, out.clone());
             }
 
-            // Record successful tool completions for the dependency graph (#2024).
-            if !is_failed && self.services.tool_state.dependency_graph.is_some() {
+            // Record successful tool completions for the dependency graph (#2024). A skipped
+            // prerequisite never ran, so it must not unlock its dependants.
+            if !is_failed
+                && !is_synthetic_skip
+                && self.services.tool_state.dependency_graph.is_some()
+            {
                 self.services
                     .tool_state
                     .completed_tool_ids
@@ -2168,7 +2201,7 @@ pub(super) fn skipped_output(
         terminal_id: None,
         locations: None,
         raw_response: None,
-        claim_source: None,
+        claim_source: Some(zeph_tools::ClaimSource::Synthetic),
         ..Default::default()
     }
 }
@@ -2178,6 +2211,90 @@ fn ready_fut(idx: usize, out: zeph_tools::ToolOutput) -> (usize, ToolExecFut) {
 }
 
 impl<C: Channel> Agent<C> {
+    /// Full tool definition list for the turn plus the names that must stay offered even when
+    /// the schema filter dropped them: the built-in focus/compaction tools, and `memory_search`
+    /// while the utility gate may mandate a retrieval call.
+    #[tracing::instrument(name = "core.tool.collect_turn_tool_defs", skip_all, level = "debug")]
+    fn collect_turn_tool_defs(&self) -> (Vec<ToolDefinition>, HashSet<ToolName>) {
+        let mut always_present = HashSet::new();
+        // `[tools] enabled = false` (#6386): omit every tool definition so the LLM request
+        // carries no tools at all and the model cannot attempt a tool call.
+        if !self.services.tool_state.tools_enabled {
+            return (Vec::new(), always_present);
+        }
+        let tafc = &self.tool_orchestrator.tafc;
+        let mut tool_defs: Vec<ToolDefinition> = self
+            .tool_executor
+            .tool_definitions_erased()
+            .iter()
+            .map(|def| super::tool_def_to_definition_with_tafc(def, tafc))
+            .collect();
+
+        let mut builtins = Vec::new();
+        // Focus tools (#1850), `compress_context` (#2218), and ARC `request_compaction` (#4020).
+        if self.services.focus.config.enabled {
+            builtins.extend(crate::agent::focus::focus_tool_definitions());
+        }
+        builtins.push(crate::agent::focus::compress_context_tool_definition());
+        if self
+            .services
+            .memory
+            .subsystems
+            .arc_config
+            .allow_agent_compaction
+        {
+            builtins.push(crate::agent::focus::request_compaction_tool_definition());
+        }
+        always_present.extend(builtins.iter().map(|d| d.name.clone()));
+        tool_defs.extend(builtins);
+
+        if self.tool_orchestrator.utility_scorer.is_enabled() {
+            always_present.insert(ToolName::new("memory_search"));
+        }
+        (tool_defs, always_present)
+    }
+
+    /// Test entry point taking text and calls as separate arguments.
+    #[cfg(test)]
+    pub(super) async fn handle_native_tool_calls(
+        &mut self,
+        text: Option<&str>,
+        tool_calls: &[zeph_llm::provider::ToolUseRequest],
+    ) -> Result<bool, crate::agent::error::AgentError> {
+        let content =
+            AssistantContent::from_text_and_calls(text.map(str::to_owned), tool_calls.to_vec());
+        self.handle_native_content(content).await
+    }
+
+    /// Snapshot of the dispatch gates for the running tool loop; rebuilt per tier so
+    /// prerequisites completed in one tier unlock their dependants in the next.
+    pub(in crate::agent) fn dispatch_gate(&self) -> DispatchGate {
+        let state = &self.services.tool_state;
+        let requires = RequiresGate::snapshot(
+            state.dependency_graph.as_ref(),
+            &state.completed_tool_ids,
+            &state.dependency_always_on,
+            state.turn_tool_set.as_ref(),
+        );
+        match state.turn_tool_set.clone() {
+            Some(set) => DispatchGate::new(set, requires),
+            None => DispatchGate::requires_only(requires),
+        }
+    }
+
+    /// Gate for PASTE predictions, which fire before the turn's tool set exists: only
+    /// `requires` is enforced (fail closed, no deadlock fallback); turn-set membership of PASTE
+    /// results is the commit path's concern.
+    pub(in crate::agent) fn paste_dispatch_gate(&self) -> DispatchGate {
+        let state = &self.services.tool_state;
+        DispatchGate::requires_only(RequiresGate::snapshot(
+            state.dependency_graph.as_ref(),
+            &state.completed_tool_ids,
+            &state.dependency_always_on,
+            None,
+        ))
+    }
+
     #[tracing::instrument(name = "core.tool.native_loop", skip_all, level = "debug", err)]
     pub(super) async fn process_response_native_tools(
         &mut self,
@@ -2187,58 +2304,20 @@ impl<C: Channel> Agent<C> {
         self.tool_orchestrator.clear_utility_state();
         self.tool_orchestrator.reset_hook_block_count();
 
-        // `mut` required when context-compression is enabled to inject focus tool definitions.
-        let tafc = &self.tool_orchestrator.tafc;
-        let mut tool_defs: Vec<ToolDefinition> = Vec::new();
-
-        // `[tools] enabled = false` (#6386): omit every tool definition so the LLM request
-        // carries no tools at all and the model cannot attempt a tool call.
-        if self.services.tool_state.tools_enabled {
-            tool_defs = self
-                .tool_executor
-                .tool_definitions_erased()
-                .iter()
-                .map(|def| super::tool_def_to_definition_with_tafc(def, tafc))
-                .collect();
-
-            // Inject focus tool definitions when the feature is enabled and configured (#1850).
-            if self.services.focus.config.enabled {
-                tool_defs.extend(crate::agent::focus::focus_tool_definitions());
-            }
-
-            // Inject compress_context tool — always available when context-compression is enabled (#2218).
-            tool_defs.push(crate::agent::focus::compress_context_tool_definition());
-
-            // Inject request_compaction tool when ARC agent-initiated compaction is enabled (#4020).
-            if self
-                .services
-                .memory
-                .subsystems
-                .arc_config
-                .allow_agent_compaction
-            {
-                tool_defs.push(crate::agent::focus::request_compaction_tool_definition());
-            }
-        }
-
-        // Pre-compute the full tool set for iterations 1+ before filtering.
-        let all_tool_defs = tool_defs.clone();
-
-        // Iteration 0: apply dynamic tool schema filter (#2020) if cached IDs are available.
-        if let Some(ref filtered_ids) = self.services.tool_state.cached_filtered_tool_ids {
-            tool_defs.retain(|d| filtered_ids.contains(d.name.as_str()));
-            tracing::debug!(
-                filtered = tool_defs.len(),
-                total = all_tool_defs.len(),
-                "tool schema filter: iteration 0 using filtered tool set"
-            );
-        }
-
-        tracing::debug!(
-            tool_count = tool_defs.len(),
-            tools = ?tool_defs.iter().map(|t| &t.name).collect::<Vec<_>>(),
-            "native tool_use: collected tool definitions"
+        let (all_tool_defs, always_present) = self.collect_turn_tool_defs();
+        let turn_set = TurnToolSet::resolve(
+            &all_tool_defs,
+            self.services.tool_state.cached_filtered_tool_ids.as_ref(),
+            &always_present,
         );
+        let turn_defs = turn_set.select(&all_tool_defs);
+        tracing::debug!(
+            tool_count = turn_defs.len(),
+            total = all_tool_defs.len(),
+            tools = ?turn_defs.iter().map(|t| &t.name).collect::<Vec<_>>(),
+            "native tool_use: froze turn tool set"
+        );
+        self.services.tool_state.turn_tool_set = Some(turn_set);
 
         let query_embedding = match self.check_response_cache().await? {
             CacheCheckResult::Hit(cached) => {
@@ -2263,23 +2342,9 @@ impl<C: Channel> Agent<C> {
                 tracing::info!("native tool loop cancelled by user");
                 break;
             }
-            // Iteration 0 uses filtered tool_defs (schema filter + dependency gates).
-            // Iterations 1+ expand to the full set but still apply hard dependency gates
-            // so tools with unmet `requires` cannot re-enter through the expansion path (#2024).
-            let defs_for_iter: Vec<ToolDefinition>;
-            let defs_for_turn: &[ToolDefinition] = if iteration == 0 {
-                &tool_defs
-            } else {
-                defs_for_iter = build_gated_defs_for_iteration(
-                    iteration,
-                    &all_tool_defs,
-                    &self.services.tool_state,
-                );
-                &defs_for_iter
-            };
             // None = continue loop, Some(()) = return Ok, Err = propagate
             if self
-                .process_single_native_turn(defs_for_turn, iteration, query_embedding.clone())
+                .process_single_native_turn(&turn_defs, iteration, query_embedding.clone())
                 .await?
                 .is_some()
             {
@@ -2450,9 +2515,7 @@ impl<C: Channel> Agent<C> {
         }
 
         let zeph_llm::provider::ChatResponse::ToolUse {
-            text,
-            tool_calls,
-            thinking_blocks,
+            content, replay, ..
         } = chat_result
         else {
             tracing::warn!(
@@ -2461,16 +2524,26 @@ impl<C: Channel> Agent<C> {
             );
             return Ok(Some(()));
         };
-        self.preserve_thinking_blocks(thinking_blocks);
-        let window_exhausted = self
-            .handle_native_tool_calls(text.as_deref(), &tool_calls)
-            .await?;
+        if let ThinkingReplay::Dropped {
+            first_message_index,
+        } = replay
+        {
+            // The provider dropped the thinking from this wire index on (never above the
+            // history index, so this strips at least the dropped blocks).
+            tracing::warn!(
+                first_message_index,
+                "provider dropped thinking blocks; stripping the same range from history"
+            );
+            zeph_llm::provider::strip_thinking_from(&mut self.msg.messages, first_message_index);
+        }
+        let window_exhausted = self.handle_native_content(content).await?;
 
-        // Summarize before pruning; apply deferred summaries after pruning.
+        // Mid-iteration history edits invalidate the cached prefix, so only real token pressure
+        // applies them here; stale-output pruning runs once at the turn boundary instead.
         self.maybe_summarize_tool_pair().await;
-        let keep_recent = 2 * self.services.memory.persistence.tool_call_cutoff + 2;
-        self.prune_stale_tool_outputs(keep_recent);
-        self.maybe_apply_deferred_summaries();
+        self.maybe_apply_deferred_summaries(
+            zeph_agent_context::DeferredApplyTrigger::TokenPressure,
+        );
         self.flush_deferred_summaries().await;
         // Mid-iteration soft compaction: fires after summarization so fresh results are
         // either summarized or protected before pruning. Does not touch turn counters,
@@ -2485,58 +2558,6 @@ impl<C: Channel> Agent<C> {
 
         Ok(None)
     }
-}
-
-/// Build the tool definition slice for iterations 1+ of the native tool loop.
-///
-/// Applies hard dependency-gate filtering when a dependency graph is configured, ensuring tools
-/// with unmet `requires` cannot re-enter through the expansion path after iteration 0 (#2024).
-///
-/// Returns the allowed set as an owned `Vec`; the caller holds a reference into it.
-/// When no dependency graph is present the full `all_tool_defs` slice is returned as-is (cloned).
-fn build_gated_defs_for_iteration(
-    iteration: usize,
-    all_tool_defs: &[ToolDefinition],
-    tool_state: &crate::agent::state::ToolState,
-) -> Vec<ToolDefinition> {
-    let Some(ref dep_graph) = tool_state.dependency_graph else {
-        return all_tool_defs.to_vec();
-    };
-    if dep_graph.is_empty() {
-        return all_tool_defs.to_vec();
-    }
-
-    let names: Vec<&str> = all_tool_defs.iter().map(|d| d.name.as_str()).collect();
-    let allowed = dep_graph.filter_tool_names(
-        &names,
-        &tool_state.completed_tool_ids,
-        &tool_state.dependency_always_on,
-    );
-    let allowed_set: std::collections::HashSet<&str> = allowed.into_iter().collect();
-
-    // Deadlock fallback: if all non-always-on tools would be blocked, use the full set.
-    let non_ao_allowed = allowed_set
-        .iter()
-        .filter(|n| !tool_state.dependency_always_on.contains(**n))
-        .count();
-    let non_ao_total = all_tool_defs
-        .iter()
-        .filter(|d| !tool_state.dependency_always_on.contains(d.name.as_str()))
-        .count();
-    if non_ao_allowed == 0 && non_ao_total > 0 {
-        tracing::warn!(
-            iteration,
-            "tool dependency graph: all non-always-on tools gated on iter 1+; \
-             disabling hard gates for this iteration"
-        );
-        return all_tool_defs.to_vec();
-    }
-
-    all_tool_defs
-        .iter()
-        .filter(|d| allowed_set.contains(d.name.as_str()))
-        .cloned()
-        .collect()
 }
 
 #[cfg(test)]

@@ -51,10 +51,10 @@ pub use integrity::migrate_integrity_config;
 /// Advisory `GonkaGate` migration is crate-internal (registered via the [`MIGRATIONS`] registry).
 pub(crate) use llm::migrate_gonkagate_to_gonka;
 pub use llm::{
-    migrate_cocoon_provider_notice, migrate_cocoon_show_balance, migrate_embed_provider_rename,
-    migrate_eval_model_to_provider, migrate_llm_stream_limits, migrate_llm_to_providers,
-    migrate_orchestration_orchestrator_provider, migrate_planner_model_to_provider,
-    migrate_provider_max_concurrent, migrate_stt_to_provider,
+    migrate_claude_compaction_trigger, migrate_cocoon_provider_notice, migrate_cocoon_show_balance,
+    migrate_embed_provider_rename, migrate_eval_model_to_provider, migrate_llm_stream_limits,
+    migrate_llm_to_providers, migrate_orchestration_orchestrator_provider,
+    migrate_planner_model_to_provider, migrate_provider_max_concurrent, migrate_stt_to_provider,
 };
 pub use mcp::{
     migrate_mcp_elicitation_config, migrate_mcp_max_connect_attempts, migrate_mcp_media_config,
@@ -655,17 +655,18 @@ use steps::{
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
     MigrateAgentTimeReminder, MigrateAgentsDelegationMode, MigrateAgentsMaxSpawnsPerSession,
     MigrateAgentsPeerMessagingConfig, MigrateAutodreamConfig, MigrateCavemanConfig,
-    MigrateCocoonProviderNotice, MigrateCocoonShowBalance, MigrateCompressionPredictorConfig,
-    MigrateDatabaseUrl, MigrateDeepLinkConfig, MigrateDurableConfig, MigrateDurableHwmAdvisory,
-    MigrateDurableKeyRotation, MigrateDurableSharedDb, MigrateDurableStaleRunningAfterSecs,
-    MigrateEgressConfig, MigrateEmbedProviderRename, MigrateEvalModelToProvider,
-    MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow,
-    MigrateForgettingConfig, MigrateGoalsConfig, MigrateGonkagateToGonka,
-    MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateIntegrityConfig,
-    MigrateKnowledgeConfig, MigrateLlmStreamLimits, MigrateMagicDocsConfig,
-    MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpMediaConfig,
-    MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels, MigrateMemoryConsentGateConfig,
-    MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
+    MigrateClaudeCompactionTrigger, MigrateCocoonProviderNotice, MigrateCocoonShowBalance,
+    MigrateCompressionPredictorConfig, MigrateDatabaseUrl, MigrateDeepLinkConfig,
+    MigrateDurableConfig, MigrateDurableHwmAdvisory, MigrateDurableKeyRotation,
+    MigrateDurableSharedDb, MigrateDurableStaleRunningAfterSecs, MigrateEgressConfig,
+    MigrateEmbedProviderRename, MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults,
+    MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
+    MigrateGoalsConfig, MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig,
+    MigrateHooksTurnComplete, MigrateIntegrityConfig, MigrateKnowledgeConfig,
+    MigrateLlmStreamLimits, MigrateMagicDocsConfig, MigrateMcpElicitationConfig,
+    MigrateMcpMaxConnectAttempts, MigrateMcpMediaConfig, MigrateMcpRetryAndToolTimeout,
+    MigrateMcpTrustLevels, MigrateMemoryConsentGateConfig, MigrateMemoryGraph,
+    MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
     MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
     MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
     MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig, MigrateMemoryStoreMaxNamespaceRows,
@@ -920,6 +921,9 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             // Step 109 — insert active max_namespace_rows = 256 into an existing active
             // [memory.store] table that lacks it (#6774)
             Box::new(MigrateMemoryStoreMaxNamespaceRows),
+            // Step 110 — add a server_compaction_trigger_tokens hint to Claude provider
+            // entries with server_compaction = true (#6825)
+            Box::new(MigrateClaudeCompactionTrigger),
         ]
     });
 

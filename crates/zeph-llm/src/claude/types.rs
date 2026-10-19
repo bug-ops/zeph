@@ -5,52 +5,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::thinking_replay::{InputTransformation, ThinkingReplay};
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
-use zeph_config::ThinkingEffort;
-
-pub(super) struct ThinkingCapability {
-    /// Requires `interleaved-thinking-2025-05-14` beta header when `tool_use` is present.
-    pub needs_interleaved_beta: bool,
-    /// Opus 4.6 and the 4.7+/5 generation use `effort` instead of `budget_tokens`
-    /// (4.7+/5 reject `budget_tokens` outright); `Extended` config is auto-converted.
-    pub prefers_effort: bool,
-    /// Rejects assistant prefill (trailing assistant message, HTTP 400) unconditionally,
-    /// independent of whether thinking is enabled. Covers Sonnet 4.6+ and the
-    /// Opus 4.7+/Sonnet 5 generation. Opus 4.6 is intentionally excluded: it only
-    /// rejects prefill while thinking is active, gated by `prefers_effort` instead.
-    pub rejects_prefill: bool,
-}
-
-pub(super) fn thinking_capability(model: &str) -> ThinkingCapability {
-    // Legacy Sonnet 4.6 with tools needs the interleaved-thinking-2025-05-14 beta
-    // header. Opus 4.7+/4.8 and Sonnet 5 enable interleaved thinking automatically
-    // under adaptive thinking (no header), so they are intentionally NOT listed.
-    let needs_interleaved_beta = model.contains("claude-sonnet-4-6");
-
-    // Opus 4.6 deprecates budget_tokens in favor of effort; Opus 4.7/4.8 and
-    // Sonnet 5 REMOVE budget_tokens entirely (400 if sent), so `Extended` config
-    // MUST auto-convert to an effort level for these models.
-    let prefers_effort = model.contains("claude-opus-4-6")
-        || model.contains("claude-opus-4-7")
-        || model.contains("claude-opus-4-8")
-        || model.contains("claude-sonnet-5");
-
-    // Sonnet 4.6+ and the entire Opus 4.7+/Sonnet 5 generation reject assistant
-    // prefill outright (400), regardless of thinking state. Opus 4.6 is excluded
-    // here on purpose: unlike the models below it only rejects prefill while
-    // thinking is enabled, which is already covered by `prefers_effort`.
-    let rejects_prefill = model.contains("claude-sonnet-4-6")
-        || model.contains("claude-opus-4-7")
-        || model.contains("claude-opus-4-8")
-        || model.contains("claude-sonnet-5");
-
-    ThinkingCapability {
-        needs_interleaved_beta,
-        prefers_effort,
-        rejects_prefill,
-    }
-}
+use zeph_config::{CompactionTrigger, ThinkingEffort};
 
 /// Maps a `budget_tokens` value to a `ThinkingEffort` level for models that prefer effort-based thinking.
 pub(super) fn budget_to_effort(budget_tokens: u32) -> ThinkingEffort {
@@ -351,21 +310,31 @@ the agent's public endpoint URL.
 
 // ── Context management ────────────────────────────────────────────────────────
 
-/// Request field for Claude server-side context management (compact-2026-01-12 beta).
+/// Request field for Claude server-side context management (`compact-2026-01-12` beta).
 ///
-/// Note: the API does not accept a top-level `"type"` discriminator on this object — only
-/// `trigger` and `pause_after_compaction` are allowed.
+/// Serializes as `{"edits": [{"type": "compact_20260112", "trigger": {...}, ...}]}`.
 #[derive(Serialize, Clone, Debug)]
 pub(super) struct ContextManagement {
-    pub trigger: ContextManagementTrigger,
-    pub pause_after_compaction: bool,
+    pub edits: Vec<ContextEdit>,
 }
 
+/// One entry of `context_management.edits`.
 #[derive(Serialize, Clone, Debug)]
-pub(super) struct ContextManagementTrigger {
-    #[serde(rename = "type")]
-    pub kind: &'static str,
-    pub value: u32,
+#[serde(tag = "type")]
+pub(super) enum ContextEdit {
+    /// Server-side summarisation once input tokens reach the trigger.
+    #[serde(rename = "compact_20260112")]
+    Compact {
+        trigger: CompactTrigger,
+        pause_after_compaction: bool,
+    },
+}
+
+/// Compaction trigger; `input_tokens` is the only kind the API supports.
+#[derive(Serialize, Clone, Debug)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(super) enum CompactTrigger {
+    InputTokens { value: CompactionTrigger },
 }
 
 // ── Wire types ────────────────────────────────────────────────────────────────
@@ -400,9 +369,41 @@ pub(super) struct CacheControl {
 #[derive(Serialize)]
 pub(super) struct ThinkingParam {
     #[serde(rename = "type")]
-    pub thinking_type: &'static str,
+    pub thinking_type: ThinkingType,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_tokens: Option<u32>,
+    /// Prefix-binding policy; only valid beside `adaptive` thinking and the
+    /// `thinking-binding-controls-2026-08-01` beta header.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_binding: Option<BlockBinding>,
+}
+
+/// Wire value of `thinking.type`.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ThinkingType {
+    Enabled,
+    Adaptive,
+}
+
+/// `thinking.block_binding`: drop a thinking block whose prefix changed instead of failing the
+/// request with a 400.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct BlockBinding {
+    pub prefix_mismatch_behavior: PrefixMismatchBehavior,
+}
+
+impl BlockBinding {
+    pub(super) const DROP_BLOCK: Self = Self {
+        prefix_mismatch_behavior: PrefixMismatchBehavior::DropBlock,
+    };
+}
+
+/// Wire value of `block_binding.prefix_mismatch_behavior`.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum PrefixMismatchBehavior {
+    DropBlock,
 }
 
 /// Serialization-only parameter for Claude's `output_config` request field.
@@ -453,8 +454,12 @@ pub(super) enum AnthropicContentBlock {
     },
     /// Server-side compaction block returned by the Claude API (compact-2026-01-12 beta).
     /// Must be preserved verbatim and sent back in subsequent turns.
+    ///
+    /// `content` is `null` or absent when the API produced no summary; such a block carries no
+    /// information and is never sent back.
     Compaction {
-        summary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
     },
 }
 
@@ -496,6 +501,17 @@ pub(super) struct ToolApiResponse {
     pub stop_reason: Option<String>,
     #[serde(default)]
     pub usage: Option<ApiUsage>,
+    /// Present under the `thinking-binding-controls-2026-08-01` beta: what the API changed in
+    /// the request before the model saw it.
+    #[serde(default)]
+    pub input_transformations: Vec<InputTransformation>,
+}
+
+impl ToolApiResponse {
+    /// Summarise `input_transformations` as the replay state of the request's thinking.
+    pub(super) fn thinking_replay(&self) -> ThinkingReplay {
+        ThinkingReplay::from_transformations(&self.input_transformations)
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -597,10 +613,14 @@ pub(super) struct TypedToolRequestBody<'a> {
     pub context_management: Option<ContextManagement>,
 }
 
-#[derive(Serialize)]
-pub(super) struct ToolChoice<'a> {
-    pub r#type: &'a str,
-    pub name: &'a str,
+/// Wire `tool_choice`: force one named tool, or let the model decide.
+#[derive(Serialize, Clone, Copy)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(super) enum ToolChoice<'a> {
+    /// Force the named tool. Rejected with 400 by models that forbid forced tool choice.
+    Tool { name: &'a str },
+    /// The model may answer in text or call any tool; accepted by every model.
+    Auto,
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────

@@ -191,13 +191,12 @@ impl DebugDumper {
     pub(crate) fn chat_response_dump_text(response: &ChatResponse) -> String {
         match response {
             ChatResponse::Text(t) => t.clone(),
-            ChatResponse::ToolUse {
-                text, tool_calls, ..
-            } => {
-                let calls = serde_json::to_string_pretty(tool_calls).unwrap_or_default();
+            ChatResponse::ToolUse { content, .. } => {
+                let tool_calls: Vec<_> = content.tool_calls().collect();
+                let calls = serde_json::to_string_pretty(&tool_calls).unwrap_or_default();
                 format!(
                     "{}\n\n---TOOL_CALLS---\n{calls}",
-                    text.as_deref().unwrap_or("")
+                    content.text().as_deref().unwrap_or("")
                 )
             }
             _ => String::new(),

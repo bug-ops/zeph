@@ -165,28 +165,36 @@ pub(super) fn split_system_into_blocks(
     blocks
 }
 
+/// Mark the last cache-capable block of the final message that has one.
+///
+/// The marker sits on the conversation tail: each request of a growing tool loop then reads the
+/// previous request's prefix from cache and only the new blocks are processed fresh. Thinking and
+/// `tool_use` blocks cannot carry `cache_control`, so a tail message ending in one falls back to
+/// its last text or `tool_result` block, and then to the previous message.
 pub(super) fn apply_cache_breakpoint(chat: &mut [StructuredApiMessage], ttl: Option<CacheTtl>) {
-    let target = chat.len().saturating_sub(20);
-    let breakpoint_idx = (target..chat.len())
-        .find(|&i| chat[i].role == "user")
-        .unwrap_or(0);
-    let msg = &mut chat[breakpoint_idx];
-    match &mut msg.content {
-        StructuredContent::Blocks(blocks) => {
-            if let Some(
-                AnthropicContentBlock::Text { cache_control, .. }
-                | AnthropicContentBlock::ToolResult { cache_control, .. },
-            ) = blocks.last_mut()
-            {
-                *cache_control = Some(build_cache_control(ttl));
+    for msg in chat.iter_mut().rev() {
+        match &mut msg.content {
+            StructuredContent::Blocks(blocks) => {
+                let capable = blocks.iter_mut().rev().find_map(|block| match block {
+                    AnthropicContentBlock::Text { cache_control, .. }
+                    | AnthropicContentBlock::ToolResult { cache_control, .. } => {
+                        Some(cache_control)
+                    }
+                    _ => None,
+                });
+                if let Some(cache_control) = capable {
+                    *cache_control = Some(build_cache_control(ttl));
+                    return;
+                }
             }
-        }
-        StructuredContent::Text(text) => {
-            let owned = std::mem::take(text);
-            msg.content = StructuredContent::Blocks(vec![AnthropicContentBlock::Text {
-                text: owned,
-                cache_control: Some(build_cache_control(ttl)),
-            }]);
+            StructuredContent::Text(text) => {
+                let owned = std::mem::take(text);
+                msg.content = StructuredContent::Blocks(vec![AnthropicContentBlock::Text {
+                    text: owned,
+                    cache_control: Some(build_cache_control(ttl)),
+                }]);
+                return;
+            }
         }
     }
 }

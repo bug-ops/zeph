@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use tracing::Instrument;
-use zeph_llm::provider::{
-    ChatResponse, LlmProvider, MessagePart, Role, ThinkingBlock, ToolDefinition,
-};
+use zeph_llm::provider::{ChatResponse, LlmProvider, ToolDefinition};
 
 use crate::agent::Agent;
+use crate::agent::speculative::stream_drainer::DrainedTurn;
 use crate::channel::Channel;
 
 impl<C: Channel> Agent<C> {
@@ -22,9 +21,24 @@ impl<C: Channel> Agent<C> {
         tool_defs: &[ToolDefinition],
         max_attempts: usize,
     ) -> Result<Option<ChatResponse>, crate::agent::error::AgentError> {
+        let mut thinking_stripped = false;
         for attempt in 0..max_attempts {
             match self.call_chat_with_tools(tool_defs).await {
                 Ok(result) => return Ok(result),
+                Err(e)
+                    if e.is_thinking_binding_mismatch()
+                        && !thinking_stripped
+                        && attempt + 1 < max_attempts =>
+                {
+                    // Recovery when `drop_block` is unavailable (beta latched off, unknown model)
+                    // or a history rewrite escaped the seam: drop all thinking, retry once.
+                    tracing::warn!(
+                        attempt,
+                        "thinking binding mismatch; stripping thinking from history and retrying"
+                    );
+                    zeph_llm::provider::strip_thinking_from(&mut self.msg.messages, 0);
+                    thinking_stripped = true;
+                }
                 Err(e) if e.is_context_length_error() && attempt + 1 < max_attempts => {
                     tracing::warn!(
                         attempt,
@@ -113,7 +127,7 @@ impl<C: Channel> Agent<C> {
         // `chat*`/`debug_request_json` call, so no explicit masking step is needed here.
         let dump_id = self.prepare_chat_debug_dump(tool_defs, memcot_state_for_dump.as_deref());
 
-        let Some(result) = self
+        let Some(mut result) = self
             .dispatch_chat_with_tools(tool_defs, llm_timeout, llm_span)
             .await?
         else {
@@ -121,7 +135,8 @@ impl<C: Channel> Agent<C> {
         };
 
         self.sync_secret_mask_metric();
-        self.record_chat_metrics_and_compact(start, &result).await?;
+        self.record_chat_metrics_and_compact(start, &mut result)
+            .await?;
 
         // Accumulate LLM chat latency into the per-turn timing accumulator (#2820).
         let llm_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -175,7 +190,8 @@ impl<C: Channel> Agent<C> {
             let threshold = engine.confidence_threshold();
             let drainer = crate::agent::speculative::stream_drainer::SpeculativeStreamDrainer::new(
                 stream, engine, threshold,
-            );
+            )
+            .with_gate(self.dispatch_gate());
             let drain_fut = tokio::time::timeout(llm_timeout, drainer.drive().instrument(llm_span));
             let timeout_result = tokio::select! {
                 r = drain_fut => r,
@@ -187,7 +203,10 @@ impl<C: Channel> Agent<C> {
                 }
             };
             return match timeout_result {
-                Ok(Ok((resp, ttft_ms))) => {
+                Ok(Ok(DrainedTurn {
+                    response: resp,
+                    ttft_ms,
+                })) => {
                     // Issue #6549: true TTFT from the speculative stream, consumed by the
                     // next build_usage_record call in record_chat_metrics_and_compact.
                     self.runtime.metrics.stream_ttft_ms = ttft_ms;
@@ -301,38 +320,5 @@ impl<C: Channel> Agent<C> {
                     memcot_state,
                 })
             })
-    }
-
-    pub(super) fn preserve_thinking_blocks(&mut self, blocks: Vec<ThinkingBlock>) {
-        if blocks.is_empty() {
-            return;
-        }
-        if let Some(last) = self.msg.messages.last_mut()
-            && last.role == Role::Assistant
-        {
-            let mut thinking_parts: Vec<MessagePart> = blocks
-                .into_iter()
-                .filter_map(|b| match b {
-                    ThinkingBlock::Thinking {
-                        thinking,
-                        signature,
-                    } => Some(MessagePart::ThinkingBlock {
-                        thinking,
-                        signature,
-                    }),
-                    ThinkingBlock::Redacted { data } => {
-                        Some(MessagePart::RedactedThinkingBlock { data })
-                    }
-                    unknown => {
-                        tracing::debug!(variant = ?unknown, "discarding unknown ThinkingBlock variant");
-                        None
-                    }
-                })
-                .collect();
-            // Thinking blocks must appear before text/tool_use in the assistant message.
-            thinking_parts.append(&mut last.parts);
-            last.parts = thinking_parts;
-            last.rebuild_content();
-        }
     }
 }

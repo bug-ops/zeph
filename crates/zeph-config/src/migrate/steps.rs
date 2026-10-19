@@ -93,12 +93,13 @@ use super::{
     migrate_acp_subagents_config, migrate_agent_budget_hint, migrate_agent_retry_to_tools_retry,
     migrate_agent_time_reminder, migrate_agents_delegation_mode,
     migrate_agents_max_spawns_per_session, migrate_agents_peer_messaging_config,
-    migrate_autodream_config, migrate_caveman_config, migrate_cocoon_provider_notice,
-    migrate_cocoon_show_balance, migrate_compression_predictor_config, migrate_database_url,
-    migrate_deep_link_config, migrate_durable_config, migrate_durable_hwm_advisory,
-    migrate_durable_key_rotation, migrate_durable_shared_db,
-    migrate_durable_stale_running_after_secs, migrate_egress_config, migrate_embed_provider_rename,
-    migrate_eval_model_to_provider, migrate_fidelity_timeout_defaults, migrate_five_signal_config,
+    migrate_autodream_config, migrate_caveman_config, migrate_claude_compaction_trigger,
+    migrate_cocoon_provider_notice, migrate_cocoon_show_balance,
+    migrate_compression_predictor_config, migrate_database_url, migrate_deep_link_config,
+    migrate_durable_config, migrate_durable_hwm_advisory, migrate_durable_key_rotation,
+    migrate_durable_shared_db, migrate_durable_stale_running_after_secs, migrate_egress_config,
+    migrate_embed_provider_rename, migrate_eval_model_to_provider,
+    migrate_fidelity_timeout_defaults, migrate_five_signal_config,
     migrate_focus_auto_consolidate_min_window, migrate_forgetting_config, migrate_goals_config,
     migrate_hooks_permission_denied_config, migrate_hooks_turn_complete_config,
     migrate_integrity_config, migrate_knowledge_config, migrate_llm_stream_limits,
@@ -1407,5 +1408,18 @@ impl Migration for MigrateMemoryStoreMaxNamespaceRows {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_memory_store_max_namespace_rows(toml_src)
+    }
+}
+
+/// Step 110 — add an advisory `server_compaction_trigger_tokens` hint to Claude provider
+/// entries with `server_compaction = true`.
+pub(super) struct MigrateClaudeCompactionTrigger;
+impl Migration for MigrateClaudeCompactionTrigger {
+    fn name(&self) -> &'static str {
+        "migrate_claude_compaction_trigger"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_claude_compaction_trigger(toml_src)
     }
 }

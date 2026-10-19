@@ -399,11 +399,7 @@ async fn agent_handles_tool_execution_success() {
         input: serde_json::json!({}),
     };
     let (mock, _) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call],
-            thinking_blocks: vec![],
-        },
+        ChatResponse::tool_use(None, vec![tool_call]),
         ChatResponse::Text("done".into()),
     ]);
     let registry = create_test_registry();
@@ -423,6 +419,8 @@ async fn agent_handles_tool_execution_success() {
 
     let agent_channel = MockChannel::new(vec!["execute tool".to_string()]);
     let sent = agent_channel.sent.clone();
+
+    let executor = executor.advertising(&["bash"]);
 
     let mut agent = Agent::new(
         AnyProvider::Mock(mock),
@@ -453,11 +451,7 @@ async fn agent_handles_tool_blocked_error() {
         input: serde_json::json!({}),
     };
     let (mock, _) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call],
-            thinking_blocks: vec![],
-        },
+        ChatResponse::tool_use(None, vec![tool_call]),
         ChatResponse::Text("done".into()),
     ]);
     let registry = create_test_registry();
@@ -467,6 +461,8 @@ async fn agent_handles_tool_blocked_error() {
 
     let agent_channel = MockChannel::new(vec!["test".to_string()]);
     let sent = agent_channel.sent.clone();
+
+    let executor = executor.advertising(&["bash"]);
 
     let mut agent = Agent::new(
         AnyProvider::Mock(mock),
@@ -497,11 +493,7 @@ async fn agent_handles_tool_sandbox_violation() {
         input: serde_json::json!({}),
     };
     let (mock, _) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call],
-            thinking_blocks: vec![],
-        },
+        ChatResponse::tool_use(None, vec![tool_call]),
         ChatResponse::Text("done".into()),
     ]);
     let registry = create_test_registry();
@@ -511,6 +503,8 @@ async fn agent_handles_tool_sandbox_violation() {
 
     let agent_channel = MockChannel::new(vec!["test".to_string()]);
     let sent = agent_channel.sent.clone();
+
+    let executor = executor.advertising(&["bash"]);
 
     let mut agent = Agent::new(
         AnyProvider::Mock(mock),
@@ -544,11 +538,7 @@ async fn agent_handles_tool_confirmation_approved() {
         input: serde_json::json!({}),
     };
     let (mock, _) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call],
-            thinking_blocks: vec![],
-        },
+        ChatResponse::tool_use(None, vec![tool_call]),
         ChatResponse::Text("done".into()),
     ]);
     let registry = create_test_registry();
@@ -584,11 +574,7 @@ async fn agent_handles_tool_confirmation_denied() {
         input: serde_json::json!({}),
     };
     let (mock, _) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call],
-            thinking_blocks: vec![],
-        },
+        ChatResponse::tool_use(None, vec![tool_call]),
         ChatResponse::Text("done".into()),
     ]);
     let registry = create_test_registry();
@@ -598,6 +584,8 @@ async fn agent_handles_tool_confirmation_denied() {
 
     let agent_channel = MockChannel::new(vec!["test".to_string()]).with_confirmations(vec![false]);
     let sent = agent_channel.sent.clone();
+
+    let executor = executor.advertising(&["bash"]);
 
     let mut agent = Agent::new(
         AnyProvider::Mock(mock),
@@ -814,11 +802,7 @@ async fn agent_handles_tool_execution_error() {
         input: serde_json::json!({}),
     };
     let (mock, _) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call],
-            thinking_blocks: vec![],
-        },
+        ChatResponse::tool_use(None, vec![tool_call]),
         ChatResponse::Text("done".into()),
     ]);
     let registry = create_test_registry();
@@ -826,6 +810,8 @@ async fn agent_handles_tool_execution_error() {
 
     let agent_channel = MockChannel::new(vec!["test".to_string()]);
     let sent = agent_channel.sent.clone();
+
+    let executor = executor.advertising(&["bash"]);
 
     let mut agent = Agent::new(
         AnyProvider::Mock(mock),
@@ -859,11 +845,7 @@ async fn agent_processes_multi_turn_tool_execution() {
     };
     // Native path: LLM returns ToolUse first, then a final Text after tool results.
     let (mock, _) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call],
-            thinking_blocks: vec![],
-        },
+        ChatResponse::tool_use(None, vec![tool_call]),
         ChatResponse::Text("step complete".into()),
     ]);
     let channel = MockChannel::new(vec!["start task".to_string()]);

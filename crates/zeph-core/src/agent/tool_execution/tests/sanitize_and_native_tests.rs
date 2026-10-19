@@ -1009,11 +1009,7 @@ async fn native_tool_use_cache_stores_only_text_responses() {
         input: serde_json::json!({}),
     };
     let (mock, call_count) = MockProvider::with_responses(vec![]).with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call],
-            thinking_blocks: vec![],
-        },
+        ChatResponse::tool_use(None, vec![tool_call]),
         ChatResponse::Text("final text answer".into()),
     ]);
     let provider = AnyProvider::Mock(mock);
@@ -1603,11 +1599,7 @@ async fn magic_doc_registered_after_single_read_then_respond_turn() {
         input: serde_json::json!({"file_path": "/docs/readme.md"}),
     };
     let (mock, call_count) = MockProvider::with_responses(vec![]).with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call],
-            thinking_blocks: vec![],
-        },
+        ChatResponse::tool_use(None, vec![tool_call]),
         ChatResponse::Text("Here's a summary of the file.".into()),
     ]);
     let provider = AnyProvider::Mock(mock);
@@ -1615,6 +1607,7 @@ async fn magic_doc_registered_after_single_read_then_respond_turn() {
     let channel = MockChannel::new(vec![]);
     let registry = create_test_registry();
     let executor = MockToolExecutor::with_output("read", "# MAGIC DOC: readme\nSome content.");
+    let executor = executor.advertising(&["read"]);
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
 
     agent.services.memory.subsystems.magic_docs_config.enabled = true;
@@ -1784,18 +1777,15 @@ async fn magic_doc_registered_when_tool_result_is_final_message_of_max_iteration
     // Only ONE ToolUse response is queued: with max_iterations = 1, the native loop calls
     // chat_with_tools exactly once, processes the tool result, then exhausts its iteration
     // budget and exits — the provider is never asked for a follow-up terminal response.
-    let (mock, call_count) =
-        MockProvider::with_responses(vec![]).with_tool_use(vec![ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![tool_call],
-            thinking_blocks: vec![],
-        }]);
+    let (mock, call_count) = MockProvider::with_responses(vec![])
+        .with_tool_use(vec![ChatResponse::tool_use(None, vec![tool_call])]);
     let provider = AnyProvider::Mock(mock);
 
     let channel = MockChannel::new(vec![]);
     let registry = create_test_registry();
     let executor =
         MockToolExecutor::with_output("read", "# MAGIC DOC: architecture\nSome content.");
+    let executor = executor.advertising(&["read"]);
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
 
     agent.services.memory.subsystems.magic_docs_config.enabled = true;

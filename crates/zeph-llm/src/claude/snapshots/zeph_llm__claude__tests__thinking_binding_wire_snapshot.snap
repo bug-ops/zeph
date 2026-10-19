@@ -1,0 +1,10 @@
+---
+source: crates/zeph-llm/src/claude/tests.rs
+expression: json
+---
+{
+  "type": "adaptive",
+  "block_binding": {
+    "prefix_mismatch_behavior": "drop_block"
+  }
+}

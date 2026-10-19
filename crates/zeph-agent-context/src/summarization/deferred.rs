@@ -219,6 +219,7 @@ pub(crate) fn apply_deferred_summaries(summ: &mut ContextSummarizationView<'_>) 
     targets.sort_by_key(|target| Reverse(target.0));
 
     let count = targets.len();
+    let first_touched = targets.iter().map(|target| target.1).min();
     for (resp_idx, req_idx, summary) in targets {
         let req_db_id = summ.messages[req_idx].metadata.db_id;
         let resp_db_id = summ.messages[resp_idx].metadata.db_id;
@@ -258,6 +259,10 @@ pub(crate) fn apply_deferred_summaries(summ: &mut ContextSummarizationView<'_>) 
             },
         };
         summ.messages.insert(resp_idx + 1, summary_msg);
+    }
+
+    if let Some(from) = first_touched {
+        zeph_llm::provider::strip_thinking_from(summ.messages, from);
     }
 
     // Recompute token count after message list mutation.
@@ -309,8 +314,22 @@ pub(crate) async fn flush_deferred_summaries(
     Ok(())
 }
 
+/// Which pressure signals may trigger the batch application of deferred tool summaries.
+///
+/// Applying a summary rewrites history mid-prefix, which invalidates the provider's cached
+/// request prefix and the thinking bindings after the edit. Inside a tool loop only genuine
+/// token pressure justifies that; the turn boundary may also flush on pending count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeferredApplyTrigger {
+    /// Apply on token pressure (soft or hard tier) or when the pending count reaches the cutoff.
+    TokenOrCount,
+    /// Apply on token pressure only; the pending count is ignored.
+    TokenPressure,
+}
+
 /// Apply deferred summaries if context usage exceeds the soft compaction threshold,
-/// or when enough summaries have accumulated to prevent content loss from pruning.
+/// or (for [`DeferredApplyTrigger::TokenOrCount`]) when enough summaries have accumulated to
+/// prevent content loss from pruning.
 ///
 /// Two triggers:
 /// - Token pressure: `cached_prompt_tokens > budget * soft_compaction_threshold`
@@ -319,7 +338,10 @@ pub(crate) async fn flush_deferred_summaries(
 /// This is Tier 0 — a pure in-memory operation with no LLM call. Does NOT set
 /// `compacted_this_turn` so that proactive/reactive compaction may also fire
 /// in the same turn if tokens remain above their respective thresholds.
-pub(crate) fn maybe_apply_deferred_summaries(summ: &mut ContextSummarizationView<'_>) {
+pub(crate) fn maybe_apply_deferred_summaries(
+    summ: &mut ContextSummarizationView<'_>,
+    trigger: DeferredApplyTrigger,
+) {
     let pending = count_deferred_summaries(summ.messages);
     if pending == 0 {
         return;
@@ -329,7 +351,8 @@ pub(crate) fn maybe_apply_deferred_summaries(summ: &mut ContextSummarizationView
             .compaction_tier(*summ.cached_prompt_tokens),
         CompactionTier::Soft | CompactionTier::Hard
     );
-    let count_pressure = pending >= summ.tool_call_cutoff;
+    let count_pressure =
+        trigger == DeferredApplyTrigger::TokenOrCount && pending >= summ.tool_call_cutoff;
     if !token_pressure && !count_pressure {
         return;
     }

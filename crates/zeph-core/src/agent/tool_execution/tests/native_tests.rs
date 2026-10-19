@@ -447,6 +447,85 @@ async fn compress_context_sanitizes_summary_before_storing_knowledge() {
     );
 }
 
+/// #6823: `compress_context` replaces tagged messages with a Knowledge block, which must keep
+/// `context_max_trust_level` at the worst tier of what it replaced.
+#[tokio::test]
+async fn compress_context_keeps_context_trust_level_untrusted() {
+    let mut agent = Agent::new(
+        mock_provider(vec!["a summary".to_string()]),
+        MockChannel::new(vec![]),
+        create_test_registry(),
+        None,
+        5,
+        MockToolExecutor::no_tools(),
+    );
+    agent
+        .msg
+        .messages
+        .push(Message::from_legacy(Role::System, "system"));
+    agent.context_manager.compaction_preserve_tail = 1;
+    for i in 0..6u32 {
+        let role = if i % 2 == 0 {
+            Role::User
+        } else {
+            Role::Assistant
+        };
+        let mut msg = Message::from_legacy(role, format!("message {i}"));
+        if i == 1 {
+            msg.metadata.trust_level =
+                Some(zeph_sanitizer::ContentTrustLevel::ExternalUntrusted as u8);
+        }
+        agent.msg.messages.push(msg);
+    }
+    assert_eq!(
+        agent.context_max_trust_level(),
+        zeph_sanitizer::ContentTrustLevel::ExternalUntrusted
+    );
+
+    let result = agent.handle_compress_context().await;
+    assert!(!result.starts_with("[error]"), "{result}");
+
+    assert!(
+        agent
+            .msg
+            .messages
+            .iter()
+            .all(|m| m.metadata.trust_level.is_none() || m.metadata.focus_pinned),
+        "the tagged original must be gone"
+    );
+    assert_eq!(
+        agent.context_max_trust_level(),
+        zeph_sanitizer::ContentTrustLevel::ExternalUntrusted,
+        "the Knowledge block must inherit the replaced message's trust tier"
+    );
+}
+
+#[test]
+fn start_focus_checkpoint_is_hidden_marker() {
+    let mut agent = make_agent();
+    call_focus_tool(
+        &mut agent,
+        "start_focus",
+        &serde_json::json!({"scope": "test"}),
+    );
+    let checkpoint = agent
+        .msg
+        .messages
+        .iter()
+        .find(|m| m.metadata.focus_marker_id.is_some())
+        .unwrap();
+    assert_eq!(
+        checkpoint.metadata.visibility,
+        zeph_llm::provider::MessageVisibility::Marker
+    );
+    assert!(
+        zeph_llm::provider::AgentVisible::new(&agent.msg.messages)
+            .iter()
+            .all(|m| m.metadata.focus_marker_id.is_none()),
+        "the checkpoint must never reach a provider request"
+    );
+}
+
 // --- utility gate integration ---
 
 #[test]
@@ -636,9 +715,9 @@ async fn record_chat_metrics_calls_observe_llm_latency() {
         .push(Message::from_legacy(Role::System, "system"));
 
     let start = Instant::now();
-    let response = ChatResponse::Text("hello".to_owned());
+    let mut response = ChatResponse::Text("hello".to_owned());
     agent
-        .record_chat_metrics_and_compact(start, &response)
+        .record_chat_metrics_and_compact(start, &mut response)
         .await
         .unwrap();
 
@@ -990,7 +1069,11 @@ async fn commit_speculative_tier_cache_miss_returns_empty() {
 async fn commit_speculative_tier_ok_result_stamps_and_emits_event() {
     let engine = decoding_engine(AlwaysOkSpecExec);
     let pred = test_prediction("echo");
-    engine.try_dispatch(&pred, zeph_common::SkillTrustLevel::Trusted);
+    engine.try_dispatch(
+        &pred,
+        zeph_common::SkillTrustLevel::Trusted,
+        &crate::agent::turn_gate::DispatchGate::open(),
+    );
 
     // Let the speculative task complete.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1050,7 +1133,11 @@ async fn commit_speculative_tier_ok_result_stamps_and_emits_event() {
 async fn commit_speculative_tier_err_result_still_in_map() {
     let engine = decoding_engine(AlwaysErrSpecExec);
     let pred = test_prediction("echo");
-    engine.try_dispatch(&pred, zeph_common::SkillTrustLevel::Trusted);
+    engine.try_dispatch(
+        &pred,
+        zeph_common::SkillTrustLevel::Trusted,
+        &crate::agent::turn_gate::DispatchGate::open(),
+    );
 
     // Let the speculative task complete.
     tokio::time::sleep(Duration::from_millis(50)).await;

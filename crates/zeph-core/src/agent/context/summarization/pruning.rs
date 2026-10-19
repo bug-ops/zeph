@@ -8,18 +8,16 @@ use crate::agent::Agent;
 use crate::channel::Channel;
 
 impl<C: Channel> Agent<C> {
-    /// Inline pruning for tool loops: clear tool output bodies from messages
-    /// older than the last `keep_recent` messages. Called after each tool iteration
-    /// to prevent context growth during long tool loops.
+    /// Clear tool output bodies from messages older than the last `keep_recent` messages.
+    ///
+    /// Runs once per user turn at the turn boundary, never inside the tool loop: rewriting
+    /// old messages mid-loop would invalidate the cached request prefix on every iteration.
     ///
     /// # Invariant
     ///
-    /// This method MUST be called AFTER `maybe_summarize_tool_pair()`. The summarizer
-    /// reads `msg.content` to build the LLM prompt; pruning replaces that content with
-    /// `"[pruned]"`. Calling prune first would cause the summarizer to produce useless
-    /// summaries. After summarization, the processed pair has `deferred_summary` set and
-    /// is skipped by `count_unsummarized_pairs`. The pruning loop may still clear their
-    /// bodies for token savings, but the content has already been captured in the summary.
+    /// Pairs are summarized (`maybe_summarize_tool_pair()`) during the previous turn's tool loop,
+    /// so by the time this runs the summarizer has already captured the bodies it needs;
+    /// pruning replaces that content with `"[pruned]"`.
     pub(crate) fn prune_stale_tool_outputs(&mut self, keep_recent: usize) -> usize {
         if self.msg.messages.len() <= keep_recent + 1 {
             return 0;

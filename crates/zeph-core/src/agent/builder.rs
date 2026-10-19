@@ -148,6 +148,32 @@ pub struct SecurityWiringSnapshot {
     pub scan_user_input: bool,
 }
 
+/// Whether a configured server-compaction trigger sits at or above the tool-loop stop line
+/// (80% of the context budget), where the loop halts before compaction can fire.
+fn compaction_trigger_above_stop_line(
+    trigger: zeph_config::CompactionTrigger,
+    budget_tokens: usize,
+) -> bool {
+    budget_tokens > 0
+        && usize::try_from(trigger.get()).unwrap_or(usize::MAX) >= budget_tokens / 5 * 4
+}
+
+fn warn_if_compaction_trigger_above_stop_line(
+    trigger: Option<zeph_config::CompactionTrigger>,
+    budget_tokens: usize,
+) {
+    if let Some(trigger) = trigger
+        && compaction_trigger_above_stop_line(trigger, budget_tokens)
+    {
+        tracing::warn!(
+            trigger = trigger.get(),
+            budget_tokens,
+            "server_compaction_trigger_tokens is at or above 80% of the context budget; the \
+             tool loop stops before server-side compaction can fire"
+        );
+    }
+}
+
 /// Extracts the fields [`Agent::with_skill_config`] needs from a full `[skills]` config
 /// section — the shape available at `src/runner.rs`'s and `src/daemon.rs`'s call sites, which
 /// hold the whole `Config` rather than pre-extracted scalars.
@@ -1695,15 +1721,16 @@ impl<C: Channel> Agent<C> {
 
     /// Attach a tool dependency graph for sequential tool availability (issue #2024).
     ///
-    /// When set, hard gates (`requires`) are applied after schema filtering, and soft boosts
-    /// (`prefers`) are added to similarity scores. Always-on tool IDs bypass hard gates.
+    /// When set, hard gates (`requires`) are enforced at dispatch time (the tool stays listed),
+    /// and soft boosts (`prefers`) are added to similarity scores. Always-on tool IDs bypass
+    /// hard gates.
     #[must_use]
     pub fn with_tool_dependency_graph(
         mut self,
         graph: zeph_tools::ToolDependencyGraph,
         always_on: std::collections::HashSet<String>,
     ) -> Self {
-        self.services.tool_state.dependency_graph = Some(graph);
+        self.services.tool_state.dependency_graph = Some(std::sync::Arc::new(graph));
         self.services.tool_state.dependency_always_on = always_on;
         self
     }
@@ -2801,6 +2828,7 @@ impl<C: Channel> Agent<C> {
             // it per-session (e.g. `spawn_acp_agent` passes it to `with_debug_config`).
             debug_config: _debug_config,
             server_compaction,
+            server_compaction_trigger,
             budget_hint_enabled,
             time_reminder_enabled,
             time_reminder_interval_requests,
@@ -2850,6 +2878,15 @@ impl<C: Channel> Agent<C> {
             .map(|(k, v)| (k.clone(), crate::vault::Secret::new(v.expose().to_owned())))
             .collect();
         self.runtime.providers.server_compaction_active = server_compaction;
+        if server_compaction {
+            // An unset trigger resolves to 70% of the provider window, which a small explicit
+            // context budget can still push past the stop line.
+            let effective = server_compaction_trigger.or_else(|| {
+                let window = u32::try_from(self.provider.context_window()?).ok()?;
+                Some(zeph_config::CompactionTrigger::default_for_window(window))
+            });
+            warn_if_compaction_trigger_above_stop_line(effective, budget_tokens);
+        }
         self.services.memory.extraction.document_config = document_config;
         self.services
             .memory
@@ -4186,5 +4223,24 @@ mod tests {
             agent.services.security.shadow_sentinel.is_some(),
             "shadow_sentinel must be populated after with_shadow_sentinel()"
         );
+    }
+
+    #[test]
+    fn compaction_trigger_stop_line_check() {
+        use zeph_config::CompactionTrigger;
+        let trigger = |t| CompactionTrigger::new(t).unwrap();
+        assert!(!compaction_trigger_above_stop_line(
+            trigger(140_000),
+            200_000
+        ));
+        assert!(compaction_trigger_above_stop_line(
+            trigger(160_000),
+            200_000
+        ));
+        assert!(compaction_trigger_above_stop_line(
+            trigger(150_000),
+            100_000
+        ));
+        assert!(!compaction_trigger_above_stop_line(trigger(150_000), 0));
     }
 }

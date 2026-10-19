@@ -279,15 +279,16 @@ async fn doom_loop_agent_breaks_on_identical_native_tool_outputs() {
     // but the tool executor always returns Ok(None) → "(no output)" each time.
     // After DOOM_LOOP_WINDOW identical last-message contents, doom-loop fires.
     let tool_responses: Vec<ChatResponse> = (0..=DOOM_LOOP_WINDOW)
-        .map(|i| ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![ToolUseRequest {
-                id: format!("toolu_{i:06}"),
-                name: "stub_tool".to_owned().into(),
-                // Vary the input so args_hash differs each iteration → no repeat-detect
-                input: serde_json::json!({ "iteration": i }),
-            }],
-            thinking_blocks: vec![],
+        .map(|i| {
+            ChatResponse::tool_use(
+                None,
+                vec![ToolUseRequest {
+                    id: format!("toolu_{i:06}"),
+                    name: "stub_tool".to_owned().into(),
+                    // Vary the input so args_hash differs each iteration → no repeat-detect
+                    input: serde_json::json!({ "iteration": i }),
+                }],
+            )
         })
         .collect();
 
@@ -365,19 +366,22 @@ async fn filter_stats_metrics_increment_on_normal_native_tool_path() {
             })))
         }
 
+        fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+            vec![crate::agent::agent_tests::test_tool_def("shell")]
+        }
+
         zeph_tools::tool_executor_no_inner_defaults!();
     }
 
     let (mock, _counter) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![ToolUseRequest {
+        ChatResponse::tool_use(
+            None,
+            vec![ToolUseRequest {
                 id: "call-1".to_owned(),
                 name: "shell".to_owned().into(),
                 input: serde_json::json!({"cmd": "ls"}),
             }],
-            thinking_blocks: vec![],
-        },
+        ),
         ChatResponse::Text("done".to_owned()),
     ]);
     let provider = AnyProvider::Mock(mock);
@@ -468,6 +472,13 @@ impl zeph_tools::executor::ToolExecutor for TwoToolExecutor {
         }
     }
 
+    fn tool_definitions(&self) -> Vec<zeph_tools::registry::ToolDef> {
+        ["tool_a", "tool_b"]
+            .into_iter()
+            .map(crate::agent::agent_tests::test_tool_def)
+            .collect()
+    }
+
     zeph_tools::tool_executor_no_inner_defaults!();
 }
 
@@ -489,9 +500,9 @@ async fn filter_stats_metrics_recorded_in_self_reflection_remaining_tools_loop()
     // Provider: one ToolUse response (two parallel tools), then Text for self-reflection.
     // When chat_with_tools queue is exhausted, fallback to chat() which returns "ok".
     let (mock, _counter) = MockProvider::with_responses(vec!["reflection ok".to_owned()])
-        .with_tool_use(vec![ChatResponse::ToolUse {
-            text: None,
-            tool_calls: vec![
+        .with_tool_use(vec![ChatResponse::tool_use(
+            None,
+            vec![
                 ToolUseRequest {
                     id: "tool_a_id".to_owned(),
                     name: "tool_a".to_owned().into(),
@@ -503,8 +514,7 @@ async fn filter_stats_metrics_recorded_in_self_reflection_remaining_tools_loop()
                     input: serde_json::json!({}),
                 },
             ],
-            thinking_blocks: vec![],
-        }]);
+        )]);
 
     let provider = AnyProvider::Mock(mock);
     let channel = MockChannel::new(vec!["run tools".to_owned()]);

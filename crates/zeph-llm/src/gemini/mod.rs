@@ -613,11 +613,7 @@ fn parse_tool_response(resp: GenerateContentResponse) -> Result<ChatResponse, Ll
         Some(text_parts.join(""))
     };
 
-    Ok(ChatResponse::ToolUse {
-        text,
-        tool_calls,
-        thinking_blocks: vec![],
-    })
+    Ok(ChatResponse::tool_use(text, tool_calls))
 }
 
 // ---------------------------------------------------------------------------

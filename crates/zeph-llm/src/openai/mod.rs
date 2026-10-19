@@ -1258,11 +1258,7 @@ impl OpenAiProvider {
                     }
                 })
                 .collect();
-            return Ok(ChatResponse::ToolUse {
-                text,
-                tool_calls: calls,
-                thinking_blocks: vec![],
-            });
+            return Ok(ChatResponse::tool_use(text, calls));
         }
 
         // Inject truncation marker when finish_reason is "length" so the agent loop

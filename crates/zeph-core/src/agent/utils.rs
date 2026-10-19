@@ -494,8 +494,8 @@ impl<C: Channel> Agent<C> {
         }
         let content = format!("{CODE_CONTEXT_PREFIX}{text}");
         self.msg.track_single_message(Role::System, true);
-        self.msg.messages.insert(
-            1,
+        zeph_llm::provider::insert_at_context_floor(
+            &mut self.msg.messages,
             Message::from_parts(
                 Role::System,
                 vec![MessagePart::CodeContext { text: content }],
@@ -761,6 +761,45 @@ mod tests {
             })
         });
         assert!(found, "code context should be injected into messages");
+    }
+
+    #[test]
+    fn inject_code_context_lands_after_compaction_block() {
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent
+            .msg
+            .messages
+            .push(Message::from_legacy(Role::System, "sys"));
+        agent.msg.messages.push(Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::Compaction {
+                summary: "s".to_string(),
+            }],
+        ));
+        agent
+            .msg
+            .messages
+            .push(Message::from_legacy(Role::User, "question"));
+
+        agent.inject_code_context("some code here");
+
+        let compaction_pos = agent
+            .msg
+            .messages
+            .iter()
+            .position(|m| matches!(m.parts.first(), Some(MessagePart::Compaction { .. })))
+            .unwrap();
+        assert!(matches!(
+            agent.msg.messages[compaction_pos + 1].parts.first(),
+            Some(MessagePart::CodeContext { .. })
+        ));
     }
 
     #[test]
