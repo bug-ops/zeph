@@ -297,7 +297,7 @@ impl TranscriptWriter {
 
     /// Append a single message as a JSON line and flush immediately.
     ///
-    /// `MessagePart::Image` parts are stripped (via [`MessagePart::strip_images`]) from the
+    /// `MessagePart::Image` parts are stripped (via [`MessagePart::strip_for_persistence`], which also drops `RuntimeNote` parts) from the
     /// persisted copy before serialization — they are ephemeral, current-turn-only vision input
     /// (spec-072 §4, C1) and must never reach a transcript file on disk, mirroring the strip point
     /// already enforced for `Agent::persist_message`'s `SQLite`/Qdrant/durable-JSONL writers. The
@@ -316,7 +316,7 @@ impl TranscriptWriter {
     /// Returns `io::Error` on serialization, write failure, lock poison, or thread-pool panic.
     pub async fn append(&self, seq: u32, message: &Message) -> io::Result<()> {
         let mut persisted_message = message.clone();
-        persisted_message.parts = MessagePart::strip_images(&persisted_message.parts);
+        persisted_message.parts = MessagePart::strip_for_persistence(&persisted_message.parts);
         let timestamp = utc_now();
         let state = Arc::clone(&self.state);
         let ring = self.ring.clone();
@@ -1898,5 +1898,33 @@ mod tests {
                 .is_none(),
             "no anchor should be written for an unchained writer"
         );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(subagent_transcript_integrity)]
+    async fn append_strips_runtime_note_parts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.jsonl");
+
+        let mut msg = test_message(Role::User, "tool output");
+        msg.parts = vec![
+            MessagePart::ToolResult {
+                tool_use_id: "t1".to_owned(),
+                content: "tool output".to_owned(),
+                is_error: false,
+            },
+            MessagePart::RuntimeNote {
+                text: "<runtime-note>NOTE-MARKER</runtime-note>".to_owned(),
+            },
+        ];
+
+        let writer = TranscriptWriter::new(&path).unwrap();
+        writer.append(0, &msg).await.unwrap();
+
+        assert_eq!(msg.parts.len(), 2, "the caller's copy keeps its note");
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("NOTE-MARKER"), "note leaked into transcript");
+        let messages = TranscriptReader::load(&path).unwrap();
+        assert_eq!(messages[0].parts.len(), 1);
     }
 }

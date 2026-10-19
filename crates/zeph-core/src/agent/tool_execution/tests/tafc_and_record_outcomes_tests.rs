@@ -882,6 +882,102 @@ async fn self_reflection_early_return_pushes_tool_results_for_all_tool_calls() {
     }
 }
 
+/// Fails every call with `InvalidParams`, a quality failure that triggers self-reflection.
+struct InvalidParamsExecutor;
+
+impl ToolExecutor for InvalidParamsExecutor {
+    fn execute(
+        &self,
+        _response: &str,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Ok(None))
+    }
+
+    fn execute_tool_call(
+        &self,
+        _call: &ToolCall,
+    ) -> impl Future<Output = Result<Option<ToolOutput>, ToolError>> + Send {
+        std::future::ready(Err(ToolError::InvalidParams {
+            message: "bad params".into(),
+        }))
+    }
+    zeph_tools::tool_executor_no_inner_defaults!();
+}
+
+// Nested self-reflection re-enters `process_response`; it must neither reset the turn-scoped
+// runtime-note budget nor drop hints queued before it (critic S1). Drives the real
+// `attempt_self_reflection` path (same setup as R-NTP-7).
+#[tokio::test]
+async fn nested_self_reflection_keeps_the_turn_budget_and_queued_hints() {
+    use crate::agent::agent_tests::{MockChannel, mock_provider};
+    use crate::config::LearningConfig;
+
+    let executor = InvalidParamsExecutor;
+    let provider = mock_provider(vec!["reflection response".into()]);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let skill_dir = temp_dir.path().join("test-skill");
+    std::fs::create_dir(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: test-skill\ndescription: A test skill\n---\nTest skill body",
+    )
+    .unwrap();
+    let registry = zeph_skills::registry::SkillRegistry::load(&[temp_dir.path().to_path_buf()]);
+    let mut agent = crate::agent::Agent::new(
+        provider,
+        MockChannel::new(vec![]),
+        registry,
+        None,
+        5,
+        executor,
+    )
+    .with_learning(LearningConfig {
+        enabled: true,
+        ..LearningConfig::default()
+    });
+    agent
+        .services
+        .skill
+        .active_skill_names
+        .push("test-skill".into());
+
+    for i in 0..3 {
+        agent.attach_runtime_note(i);
+    }
+    agent
+        .services
+        .session
+        .runtime_notes
+        .push_utility_hint("keep me".into());
+    let used_before = agent.services.session.runtime_notes.budget_used();
+
+    agent
+        .handle_native_tool_calls(None, &[make_tool_use_request("id-r1", "bash")])
+        .await
+        .unwrap();
+
+    assert!(
+        agent
+            .msg
+            .messages
+            .iter()
+            .any(|m| m.content.contains("reflection response")),
+        "the nested reflection pass must have run"
+    );
+    assert!(agent.services.session.runtime_notes.budget_used() >= used_before);
+    assert!(
+        agent
+            .services
+            .session
+            .runtime_notes
+            .pending_utility_hints()
+            .iter()
+            .any(|h| h == "keep me"),
+        "a hint queued before the nested reflection must survive it"
+    );
+}
+
 // R-NTP-8: single tool that fails with self-reflection — must produce exactly one ToolResult.
 //
 // Regression test for #1512: N=1 case where early return previously left one orphaned ToolUse.

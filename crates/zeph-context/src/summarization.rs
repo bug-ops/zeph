@@ -810,4 +810,34 @@ mod tests {
             "non-tool messages must be unchanged"
         );
     }
+
+    #[test]
+    fn summarizer_inputs_never_contain_runtime_note_text() {
+        use zeph_llm::provider::MessagePart;
+
+        let req = Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::ToolUse {
+                id: "t1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({}),
+            }],
+        );
+        let mut res = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "tool output".into(),
+                is_error: false,
+            }],
+        );
+        res.append_runtime_note("<runtime-note>NOTE-MARKER</runtime-note>".into());
+
+        assert!(!build_chunk_prompt(&[req.clone(), res.clone()], "").contains("NOTE-MARKER"));
+        assert!(
+            !build_anchored_summary_prompt(&[req.clone(), res.clone()], "").contains("NOTE-MARKER")
+        );
+        assert!(!build_tool_pair_summary_prompt(&req, &res).contains("NOTE-MARKER"));
+        assert!(build_tool_pair_summary_prompt(&req, &res).contains("tool output"));
+    }
 }

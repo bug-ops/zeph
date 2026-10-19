@@ -2,11 +2,50 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use zeph_common::text::estimate_tokens;
-use zeph_llm::provider::{ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart, Role};
-use zeph_sanitizer::{ContentSource, ContentSourceKind};
+use zeph_llm::provider::{
+    ChatResponse, LlmProvider, Message, MessageMetadata, MessageOrigin, MessagePart, Role,
+};
+use zeph_sanitizer::{ContentSource, ContentSourceKind, ContentTrustLevel};
 
 use crate::agent::Agent;
 use crate::channel::Channel;
+
+/// Rebuild history after a server-side compaction block was received.
+///
+/// Keeps every `System` message in order (system prompt, focus Knowledge block, recall, client
+/// summary), replaces all other history with one `Assistant` message carrying the compaction
+/// block, and keeps only the latest [`MessageOrigin::TurnInput`] message so the model still
+/// sees the user's request. Mid-tool-loop the last `User` message is a tool-result carrier, so
+/// cutting at it (the old behavior) orphaned or duplicated tool pairs.
+///
+/// The compaction message is tagged `ExternalUntrusted`: the summary is a sanitized
+/// `McpResponse` and distils content of every dropped message, including tagged tool results,
+/// so `context_max_trust_level` must not fall back to `Trusted` (#6558).
+fn mirror_server_compaction(history: Vec<Message>, summary: String) -> Vec<Message> {
+    let turn_input = history
+        .iter()
+        .rposition(|m| m.metadata.origin == Some(MessageOrigin::TurnInput));
+    let mut out = Vec::with_capacity(history.len().min(8));
+    let mut kept_input = None;
+    for (i, msg) in history.into_iter().enumerate() {
+        if msg.role == Role::System {
+            out.push(msg);
+        } else if Some(i) == turn_input {
+            kept_input = Some(msg);
+        }
+    }
+    out.push(Message {
+        role: Role::Assistant,
+        content: summary.clone(),
+        parts: vec![MessagePart::Compaction { summary }],
+        metadata: MessageMetadata {
+            trust_level: Some(ContentTrustLevel::ExternalUntrusted as u8),
+            ..MessageMetadata::default()
+        },
+    });
+    out.extend(kept_input);
+    out
+}
 
 impl<C: Channel> Agent<C> {
     /// Close the CR-01 LLM trace span after the chat call completes.
@@ -115,37 +154,38 @@ impl<C: Channel> Agent<C> {
                 messages_before = self.msg.messages.len(),
                 "server-side compaction received; pruning old messages"
             );
-            // SEC-COMPACT-01: sanitize (McpResponse = ExternalUntrusted).
-            let source = ContentSource::new(ContentSourceKind::McpResponse);
-            let sanitized = self
-                .services
-                .security
-                .sanitizer
-                .sanitize(&raw_summary, source);
-            let summary = sanitized.body;
-            let last_user = self
-                .msg
-                .messages
-                .iter()
-                .rposition(|m| m.role == Role::User)
-                .unwrap_or(0);
-            let tail: Vec<Message> = self.msg.messages.drain(last_user..).collect();
-            self.msg.messages.clear();
-            self.msg.messages.push(Message {
-                role: Role::Assistant,
-                content: summary.clone(),
-                parts: vec![MessagePart::Compaction {
-                    summary: summary.clone(),
-                }],
-                metadata: MessageMetadata::default(),
-            });
-            self.msg.messages.extend(tail);
-            self.msg.recompute_non_system_count();
+            self.apply_raw_server_compaction(&raw_summary);
             self.update_metrics(|m| m.server_compaction_events += 1);
             self.channel.send_status_best_effort("").await;
         }
 
         Ok(())
+    }
+
+    /// Sanitize a raw server-compaction summary and mirror it into history.
+    ///
+    /// SEC-COMPACT-01: the summary is sanitized as `McpResponse` (`ExternalUntrusted`).
+    pub(in crate::agent) fn apply_raw_server_compaction(&mut self, raw_summary: &str) {
+        let source = ContentSource::new(ContentSourceKind::McpResponse);
+        let sanitized = self
+            .services
+            .security
+            .sanitizer
+            .sanitize(raw_summary, source);
+        self.apply_server_compaction(sanitized.body);
+    }
+
+    /// Replace the in-memory history with its server-compaction mirror and refresh the derived
+    /// counters (non-system count, cached prompt tokens, subgoal registry).
+    pub(in crate::agent) fn apply_server_compaction(&mut self, summary: String) {
+        let history = std::mem::take(&mut self.msg.messages);
+        self.msg.messages = mirror_server_compaction(history, summary);
+        self.services
+            .compression
+            .subgoal_registry
+            .prune(&self.msg.messages);
+        self.msg.recompute_non_system_count();
+        self.recompute_prompt_tokens();
     }
 
     /// Emit `send_usage` with token counts and cumulative cost from the last LLM call.

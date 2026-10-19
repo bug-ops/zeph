@@ -38,6 +38,8 @@ const IMAGE_OVERHEAD: usize = 50;
 const IMAGE_DEFAULT_TOKENS: usize = 1000;
 /// Thinking/redacted block framing
 const THINKING_OVERHEAD: usize = 10;
+/// Text block framing for a runtime note sent after the tool results
+const RUNTIME_NOTE_OVERHEAD: usize = 4;
 
 /// Token counter backed by `tiktoken` `cl100k_base` BPE encoding.
 ///
@@ -135,7 +137,7 @@ impl TokenCounter {
 
     /// Estimate tokens for a single [`MessagePart`] matching the API payload structure.
     #[must_use]
-    fn count_part_tokens(&self, part: &MessagePart) -> usize {
+    pub fn count_part_tokens(&self, part: &MessagePart) -> usize {
         match part {
             MessagePart::Text { text }
             | MessagePart::Recall { text }
@@ -191,6 +193,9 @@ impl TokenCounter {
 
             // Compaction summary is sent back verbatim to the API.
             MessagePart::Compaction { summary } => self.count_tokens(summary),
+
+            // Runtime note rides on the tail tool-result message as an extra text block.
+            MessagePart::RuntimeNote { text } => RUNTIME_NOTE_OVERHEAD + self.count_tokens(text),
 
             // Forward-compatibility: unknown future variants have no known token count.
             _ => 0,
@@ -542,5 +547,31 @@ mod tests {
         // This should evict one entry
         let _ = counter.count_tokens("dddd");
         assert_eq!(counter.cache.len(), 3);
+    }
+
+    #[test]
+    fn runtime_note_part_counts_overhead_plus_text_tokens() {
+        let counter = TokenCounter::new();
+        let text = "remaining tool calls: 3";
+        let part = MessagePart::RuntimeNote { text: text.into() };
+        assert_eq!(
+            counter.count_part_tokens(&part),
+            RUNTIME_NOTE_OVERHEAD + counter.count_tokens(text)
+        );
+
+        let mut msg = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "ok".into(),
+                is_error: false,
+            }],
+        );
+        let before = counter.count_message_tokens(&msg);
+        msg.append_runtime_note(text.into());
+        assert_eq!(
+            counter.count_message_tokens(&msg),
+            before + RUNTIME_NOTE_OVERHEAD + counter.count_tokens(text)
+        );
     }
 }

@@ -402,7 +402,11 @@ impl DebugDumper {
     /// Writes a human-readable text file listing each subgoal with its state and message span.
     /// When `format = Trace`, this is a no-op.
     #[cfg(test)]
-    pub(crate) fn dump_subgoal_registry(&self, registry: &zeph_agent_context::SubgoalRegistry) {
+    pub(crate) fn dump_subgoal_registry(
+        &self,
+        registry: &zeph_agent_context::SubgoalRegistry,
+        messages: &[zeph_llm::provider::Message],
+    ) {
         if self.format == DumpFormat::Trace {
             return;
         }
@@ -417,11 +421,13 @@ impl DebugDumper {
                     zeph_agent_context::SubgoalState::Completed => "Completed",
                     _ => "Unknown  ",
                 };
+                let span = zeph_agent_context::SubgoalRegistry::span_of(messages, sg.id)
+                    .map_or_else(|| "none".to_owned(), |(a, b)| format!("{a}-{b}"));
                 let _ = std::fmt::write(
                     &mut output,
                     format_args!(
-                        "[{}] {state_str}: \"{}\" (msgs {}-{})\n",
-                        sg.id.0, sg.description, sg.start_msg_index, sg.end_msg_index,
+                        "[{}] {state_str}: \"{}\" (msgs {span})\n",
+                        sg.id.0, sg.description,
                     ),
                 );
             }
@@ -1056,6 +1062,9 @@ fn part_to_block(part: &MessagePart, is_assistant: bool) -> Option<serde_json::V
         ),
         MessagePart::RedactedThinkingBlock { data } if is_assistant => {
             Some(serde_json::json!({ "type": "redacted_thinking", "data": data }))
+        }
+        MessagePart::RuntimeNote { text } if !is_assistant => {
+            Some(serde_json::json!({ "type": "text", "text": text, "label": "[runtime note]" }))
         }
         MessagePart::ThinkingBlock { .. }
         | MessagePart::RedactedThinkingBlock { .. }
@@ -2056,5 +2065,37 @@ mod tests {
             value, before,
             "JSON with no secrets/blobs/image data must be unchanged by redaction"
         );
+    }
+
+    #[test]
+    fn api_value_renders_the_runtime_note_with_a_label() {
+        let mut tail = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "output".into(),
+                is_error: false,
+            }],
+        );
+        tail.append_runtime_note("<runtime-note>NOTE</runtime-note>".into());
+        let messages = vec![
+            Message::from_legacy(Role::User, "go"),
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::ToolUse {
+                    id: "t1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({}),
+                }],
+            ),
+            tail,
+        ];
+
+        let value = messages_to_api_value(&messages);
+
+        let blocks = value["messages"][2]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "tool_result");
+        assert_eq!(blocks[1]["label"], "[runtime note]");
+        assert_eq!(blocks[1]["text"], "<runtime-note>NOTE</runtime-note>");
     }
 }

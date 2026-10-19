@@ -103,6 +103,13 @@ Agent<C: Channel> {
 - **Soft threshold (~60%)**: apply deferred tool pair summaries
 - **Hard threshold (~90%)**: run full compaction (summarize old turns, evict by Ebbinghaus policy)
 - Compaction result stored as `MessagePart::Compaction` — never removed from history
+- **Server-compaction mirror** (`metrics_compact.rs::mirror_server_compaction`): when the provider returns a compaction block, history becomes every `Role::System` message in order (system prompt, focus Knowledge block, recall, client summary), one `Assistant{Compaction}` message, and only the latest `MessageOrigin::TurnInput` message. The mid-loop tool pair is dropped with the rest (the summary covers it); the cut no longer keys on the last `User` message, which mid-loop is a `ToolResult` carrier. The compaction message is tagged `ExternalUntrusted` so `context_max_trust_level` keeps the `memory_save` confirmation gate closed (#6558). The subgoal registry is pruned (`SubgoalRegistry::prune`, not reset) and prompt-token/non-system counters are recomputed (#6815)
+- **Runtime-note seam** (`runtime_note.rs`, `Agent::attach_runtime_note`, run once per dispatch in `process_single_native_turn` before `call_llm_durable`): replaces the per-iteration `remove_lsp_messages` + `Role::System` push in `llm_dispatch.rs`. On iteration 1 or later it appends one note to the tail tool-result message (last non-`System` message, agent-visible, `ToolResult` parts, no note yet) so the request prefix stays byte-identical. Sections: `ToolBudget(BudgetHint)` (from a turn-scoped `ToolLoopBudget { used }`, counted per dispatch at any depth, reset once at the real turn entry in `process_user_message_inner` via `begin_runtime_note_turn`, never in the re-entrant `process_response`, so a nested self-reflection pass shares the outer turn's budget and keeps queued hints; emitted only when remaining first crosses `ceil(max/2)`, `ceil(max/4)`, 3, 2, 1 — a deduplicated set below `max`), `Lsp(String)` (drained only when a target exists, deduplicated per turn by content hash), `UtilityHint(String)` (utility-gate hints queue here instead of being pushed as `System` messages). No note at iteration 0, on a reflection tail, or on a non-visible tail; pending sections wait for the next eligible tail, and a loop that stops without another dispatch (utility-window hard break, context nearly full) flushes hints and LSP notes onto the still-unsent tail tool-result message (`flush_runtime_note`); LSP notes no tail ever consumed are dropped at the next turn start. The budget is advisory and conservative: nested reflection loops enforce their own `max_iterations`. The system-prompt `BudgetHint` remains the turn-start snapshot via the shared `budget_hint_snapshot(used)`. Token accounting is incremental (the note's token delta is added to `cached_prompt_tokens`)
+- **Head injections**: `insert_at_context_floor` stamps `MessageOrigin::HeadInjection` on recall, summaries, cross-session and digest messages; together with `TurnInput` they are never subgoal-tagged, fidelity-scored, or selected for compression. A turn input that is superseded by the next turn becomes ordinary history and is tagged like any other message by the next subgoal extraction
+- **Subgoal transitions**: on a transition every message since the last extraction that is still untagged is tagged with the new subgoal (previously left untagged)
+- **Durable replay**: the `llm_call` fingerprint uses `cached_prompt_tokens` minus the tokens of every runtime note in history (notes are not persisted)
+- **Turn query**: classifiers that need the user's request read `zeph_llm::provider::turn_query_message` (the `TurnInput` message, else the last non-tool-result `User` message), never the last `User` message by position
+- **Context floor**: `zeph_llm::provider::context_floor` is the head boundary for every head insert (`insert_at_context_floor`), drain, and selection — `ContextService` recall/summaries/cross-session/digest inserts, `compact_context`, `trim_messages_to_budget`, `memory_first` drain, focus truncate (`truncate(max(checkpoint_pos, floor))`, re-pushing a TurnInput that would be erased), `rebuild_knowledge_block`, `select_messages_for_compression`, and every `zeph-context` fidelity pass (scoring, embedding prepass, placeholder merge). Messages below the floor, and any message carrying an `origin`, are never scored, tagged, merged, or compressed
 
 ## Error Handling
 
@@ -131,12 +138,13 @@ HiAgent-inspired pruning strategies (`subgoal` and `subgoal_mig`) track the agen
 
 ### `SubgoalRegistry`
 
-In-memory data structure with:
-- `subgoals`: list of tracked subgoals, each with `SubgoalState (Active|Completed)` and message span `[start, end)`
-- `extend_active(new_msgs)`: incremental O(new_msgs) update; on first subgoal creation, retroactively tags pre-extraction messages (S4 fix)
-- `rebuild_after_compaction(offset)`: repairs index maps after drain/reinsert — uses offset arithmetic, not fragile index assumptions (S1 fix)
+In-memory data structure holding `{id, description, state}` per subgoal (`SubgoalState (Active|Completed)`). **Membership lives on the message**: `MessageMetadata::subgoal_id: Option<SubgoalId>` (`SubgoalId` is in `zeph-common`; never serialized). The registry keeps no message indices, so drains, reinserts, and deferred-summary insertions cannot desynchronize it (#6816).
+- `push_active(desc)` / `complete_active()`: lifecycle; a new subgoal auto-completes the active one
+- `SubgoalRegistry::tag_untagged(&mut [Message], range, id)` / `extend_active(&mut [Message], range)`: tag messages that carry no `subgoal_id` yet. They skip `System` messages, any message with `origin.is_some()`, and indices below `context_floor`, so injected memory and the compaction head never join a span. On first subgoal creation all earlier untagged messages are tagged retroactively (S4 fix)
+- `subgoal_state(&Message)`: returns the tier for scoring
+- `prune(&[Message])`: drops Completed subgoals with no live tagged message; called after soft compaction, hard compaction, and the server-compaction mirror (replaces `rebuild_after_compaction`)
+- `span_of(&[Message], id)`: derives a subgoal's `first..last` span for the debug dump
 - `active_subgoal()`: returns the current active subgoal for `/status` display
-- `subgoal_state(msg_index)`: returns tier for scoring
 
 ### Subgoal Lifecycle
 
@@ -152,7 +160,7 @@ In-memory data structure with:
 1. Extracts active-subgoal messages before drain
 2. Runs standard compaction (drain + summarize)
 3. Re-inserts active-subgoal messages after pinned messages (S2 fix)
-4. Index repair after `apply_deferred_summaries` insertions (S5 fix)
+4. `apply_deferred_summaries` copies the response message's `subgoal_id` onto the inserted summary; `prune` runs after the drain
 
 ### `subgoal_mig` Variant
 
@@ -174,8 +182,8 @@ Active subgoal messages (tier 1.0) have their MIG reduction capped so they are n
 
 - Subgoal extraction is always fire-and-forget — never block the agent turn on subgoal LLM call
 - Active subgoal messages are extracted before compaction drain and re-inserted after — never lost in compaction
-- `rebuild_after_compaction` uses offset arithmetic (not index scanning) — never recalculate by iterating messages
-- Index repair must run after `apply_deferred_summaries` insertions — deferred summaries can shift indices
+- NEVER store message indices in the registry — membership is `MessageMetadata::subgoal_id`
+- A message inserted by `apply_deferred_summaries` MUST copy the subgoal of the response it summarizes; messages injected at the head (recall, summaries) MUST stay untagged
 - `subgoal` and `SideQuest` strategies must never be active simultaneously — hard error at startup
 - NEVER evict Active-tier messages by scoring — their relevance is 1.0 (protected)
 - NEVER run subgoal extraction synchronously in the tool loop — only between turns
@@ -262,7 +270,7 @@ orphans. Residual orphans (cancelled turns, restore boundaries) are caught by re
 Layer-A downgrade (`zeph_llm::tool_pairing::unmatched_tool_use_ids`/`unmatched_tool_result_ids`)
 in the Claude (`claude/request.rs`) and OpenAI/OpenAI-compatible (`openai/mod.rs`) request
 builders (#6781, see `specs/003-llm-providers/spec.md`'s Tool-Pair Repair section). Native
-Ollama is not applicable (no tool-call ids on the wire); Gemini has no request-time repair.
+Ollama is not applicable (no tool-call ids on the wire); Gemini applies the same Layer A downgrade (#6814).
 
 ### Key Invariants
 
@@ -270,8 +278,9 @@ Ollama is not applicable (no tool-call ids on the wire); Gemini has no request-t
   MUST be placed by `zeph_llm::tool_pairing::pair_safe_cut` before the drain executes — no
   exceptions. Explicit exceptions, which are not prevention cuts: repair-based sites that call
   `repair_window`/`repair_tool_pairs` (subagent history trim, `zeph-agent-persistence`
-  `sanitize_tool_pairs`), and the server-side-compaction mirror cut (`metrics_compact.rs`), which
-  clears history by design and is tracked with follow-up M3 (no code change in this spec)
+  `sanitize_tool_pairs`); the server-side-compaction mirror is no longer an exception — it
+  rebuilds history from System messages, the compaction block, and the last `TurnInput` (no
+  tool pair can be split)
 - Subgoal reinsertion MUST close its preserved set over `ToolUse`/`ToolResult` partners
 - The compaction cut is placed AFTER `apply_deferred_summaries` (deferred insertions can shift
   indices and add new `tool_use`-bearing messages, so placement must see the final message list,

@@ -304,7 +304,7 @@ impl<'m> GatedPlainHistory<'m> {
                 0,
                 ApiMessage {
                     role: "user",
-                    content: LEADING_USER_ANCHOR,
+                    content: LEADING_USER_ANCHOR.into(),
                 },
             );
         }

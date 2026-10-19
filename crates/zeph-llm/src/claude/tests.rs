@@ -174,7 +174,7 @@ fn debug_includes_model_and_max_tokens() {
 fn request_body_serializes_without_system() {
     let history = GatedPlainHistory::new(vec![ApiMessage {
         role: "user",
-        content: "hello",
+        content: "hello".into(),
     }]);
     let body = RequestBody {
         model: "claude-sonnet-4-5-20250929",
@@ -243,7 +243,7 @@ fn request_body_serializes_stream_true() {
 fn api_message_serializes() {
     let msg = ApiMessage {
         role: "user",
-        content: "hello world",
+        content: "hello world".into(),
     };
     let json = serde_json::to_string(&msg).unwrap();
     assert!(json.contains("\"role\":\"user\""));
@@ -2066,6 +2066,7 @@ fn debug_vision_request_caps_total_cache_controls_at_four() {
     let messages = vec![
         Message::from_legacy(Role::System, system),
         Message::from_legacy(Role::User, "describe this screenshot"),
+        Message::from_legacy(Role::Assistant, "send it"),
         Message::from_parts(
             Role::User,
             vec![MessagePart::Image(Box::new(ImageData {
@@ -2505,11 +2506,11 @@ fn strip_trailing_assistant_plain_removes_only_trailing_run() {
     let mut messages = vec![
         ApiMessage {
             role: "user",
-            content: "hi",
+            content: "hi".into(),
         },
         ApiMessage {
             role: "assistant",
-            content: "trailing",
+            content: "trailing".into(),
         },
     ];
     ClaudeProvider::strip_trailing_assistant_plain(true, &mut messages);
@@ -3368,11 +3369,11 @@ fn leading_assistant_gets_user_anchor_plain() {
     let history = GatedPlainHistory::new(vec![
         ApiMessage {
             role: "assistant",
-            content: "hello",
+            content: "hello".into(),
         },
         ApiMessage {
             role: "user",
-            content: "next",
+            content: "next".into(),
         },
     ]);
     let json = serde_json::to_value(&history).unwrap();
@@ -3385,8 +3386,29 @@ fn leading_assistant_gets_user_anchor_plain() {
 fn leading_user_history_is_unchanged() {
     let history = GatedPlainHistory::new(vec![ApiMessage {
         role: "user",
-        content: "hi",
+        content: "hi".into(),
     }]);
     let json = serde_json::to_value(&history).unwrap();
     assert_eq!(json.as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn debug_request_json_omits_user_only_messages() {
+    let provider = ClaudeProvider::new("key".into(), TEST_CLAUDE_MODEL.into(), 256);
+    let messages = vec![
+        Message::from_legacy(Role::System, "sys"),
+        Message::from_legacy(Role::User, "visible question"),
+        Message {
+            metadata: crate::provider::MessageMetadata::user_only(),
+            ..Message::from_legacy(Role::Assistant, "SECRET-HIDDEN-ORIGINAL")
+        },
+    ];
+    for tools_json in [
+        provider.debug_request_json(&messages, &[], false),
+        provider.debug_request_json(&messages, &[], true),
+    ] {
+        let json = tools_json.to_string();
+        assert!(json.contains("visible question"));
+        assert!(!json.contains("SECRET-HIDDEN-ORIGINAL"));
+    }
 }

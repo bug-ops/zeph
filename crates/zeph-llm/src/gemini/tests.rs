@@ -700,10 +700,19 @@ fn test_tool_use_part_to_function_call() {
             }],
             metadata: MessageMetadata::default(),
         },
+        // A matched result keeps the call native (an unanswered call is downgraded to text).
+        Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "call-1".to_owned(),
+                content: "sunny".to_owned(),
+                is_error: false,
+            }],
+        ),
     ];
     let (_, contents) = convert_messages(&messages);
-    // contents: user[0] + model[1]
-    assert_eq!(contents.len(), 2);
+    // contents: user[0] + model[1] + user[2]
+    assert_eq!(contents.len(), 3);
     let part = &contents[1].parts[0];
     assert!(part.function_call.is_some());
     let fc = part.function_call.as_ref().unwrap();
@@ -861,10 +870,18 @@ fn test_mixed_text_and_tool_use() {
             ],
             metadata: MessageMetadata::default(),
         },
+        Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "call-1".to_owned(),
+                content: "cloudy".to_owned(),
+                is_error: false,
+            }],
+        ),
     ];
     let (_, contents) = convert_messages(&messages);
-    // contents: user + model (2 parts)
-    assert_eq!(contents.len(), 2);
+    // contents: user + model (2 parts) + user (tool result)
+    assert_eq!(contents.len(), 3);
     assert_eq!(contents[1].role.as_deref(), Some("model"));
     assert_eq!(contents[1].parts.len(), 2);
     assert!(contents[1].parts[0].text.is_some());
@@ -2001,4 +2018,158 @@ fn set_thinking_level_runtime_mutates_in_place() {
 
     p.set_thinking_level(None);
     assert!(p.current_reasoning_effort().is_none());
+}
+
+#[test]
+fn compaction_part_is_rendered_as_text_part() {
+    let messages = vec![
+        msg(Role::System, "sys"),
+        Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::Compaction {
+                summary: "earlier work".into(),
+            }],
+        ),
+        msg(Role::User, "continue"),
+    ];
+    let (_, contents) = convert_messages(&messages);
+    assert_eq!(contents[1].role.as_deref(), Some("model"));
+    assert_eq!(contents[1].parts[0].text.as_deref(), Some("earlier work"));
+}
+
+// --- #6814: agent-visibility filtering and Layer A ---
+
+fn hidden(role: Role, text: &str) -> Message {
+    Message {
+        metadata: MessageMetadata::user_only(),
+        ..msg(role, text)
+    }
+}
+
+fn tool_use_msg(id: &str) -> Message {
+    Message::from_parts(
+        Role::Assistant,
+        vec![MessagePart::ToolUse {
+            id: id.into(),
+            name: "bash".into(),
+            input: serde_json::json!({"cmd": "ls"}),
+        }],
+    )
+}
+
+fn tool_result_msg(id: &str) -> Message {
+    Message::from_parts(
+        Role::User,
+        vec![MessagePart::ToolResult {
+            tool_use_id: id.into(),
+            content: "out".into(),
+            is_error: false,
+        }],
+    )
+}
+
+fn has_function_call(contents: &[GeminiContent]) -> bool {
+    contents
+        .iter()
+        .flat_map(|c| &c.parts)
+        .any(|p| p.function_call.is_some())
+}
+
+fn has_function_response(contents: &[GeminiContent]) -> bool {
+    contents
+        .iter()
+        .flat_map(|c| &c.parts)
+        .any(|p| p.function_response.is_some())
+}
+
+fn all_text(contents: &[GeminiContent]) -> String {
+    contents
+        .iter()
+        .flat_map(|c| &c.parts)
+        .filter_map(|p| p.text.as_deref())
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+#[test]
+fn debug_request_json_omits_user_only_messages() {
+    let messages = vec![
+        msg(Role::User, "visible question"),
+        hidden(Role::Assistant, "SECRET-HIDDEN-ORIGINAL"),
+    ];
+    let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
+    let json = p.debug_request_json(&messages, &[], false).to_string();
+    assert!(json.contains("visible question"));
+    assert!(!json.contains("SECRET-HIDDEN-ORIGINAL"));
+}
+
+#[test]
+fn hidden_pair_with_visible_summary_is_not_misclassified() {
+    let mut req = tool_use_msg("t1");
+    req.metadata = MessageMetadata::user_only();
+    let mut resp = tool_result_msg("t1");
+    resp.metadata = MessageMetadata::user_only();
+    let summary = Message {
+        metadata: MessageMetadata::agent_only(),
+        ..msg(Role::Assistant, "ran bash")
+    };
+    let (_, contents) = convert_messages(&[msg(Role::User, "go"), req, resp, summary]);
+    assert!(!has_function_call(&contents));
+    assert!(!has_function_response(&contents));
+    assert!(all_text(&contents).contains("ran bash"));
+}
+
+#[test]
+fn layer_a_downgrades_unmatched_tool_use() {
+    let (_, contents) = convert_messages(&[msg(Role::User, "go"), tool_use_msg("t1")]);
+    assert!(!has_function_call(&contents));
+    assert!(all_text(&contents).contains("[tool_use: bash]"));
+}
+
+#[test]
+fn layer_a_downgrades_orphaned_tool_result() {
+    let (_, contents) = convert_messages(&[msg(Role::User, "go"), tool_result_msg("t1")]);
+    assert!(!has_function_response(&contents));
+    assert!(all_text(&contents).contains("[tool result: t1] out"));
+}
+
+#[test]
+fn intact_pair_is_unchanged() {
+    let (_, contents) = convert_messages(&[
+        msg(Role::User, "go"),
+        tool_use_msg("t1"),
+        tool_result_msg("t1"),
+    ]);
+    assert!(has_function_call(&contents));
+    assert!(has_function_response(&contents));
+    assert!(!all_text(&contents).contains("[tool"));
+}
+
+#[test]
+fn visible_pair_straddling_a_hidden_message_stays_intact() {
+    let (_, contents) = convert_messages(&[
+        msg(Role::User, "go"),
+        tool_use_msg("t1"),
+        hidden(Role::User, "hidden in between"),
+        tool_result_msg("t1"),
+    ]);
+    assert!(has_function_call(&contents));
+    assert!(has_function_response(&contents));
+    assert!(!all_text(&contents).contains("hidden in between"));
+}
+
+#[test]
+fn runtime_note_is_a_text_part_after_the_function_response_in_the_same_content() {
+    let mut tail = tool_result_msg("t1");
+    tail.append_runtime_note("<runtime-note>NOTE</runtime-note>".into());
+    let (_, contents) = convert_messages(&[msg(Role::User, "go"), tool_use_msg("t1"), tail]);
+
+    let last = contents.last().unwrap();
+    assert_eq!(last.role.as_deref(), Some("user"));
+    assert_eq!(last.parts.len(), 2);
+    assert!(last.parts[0].function_response.is_some());
+    assert_eq!(
+        last.parts[1].text.as_deref(),
+        Some("<runtime-note>NOTE</runtime-note>")
+    );
 }

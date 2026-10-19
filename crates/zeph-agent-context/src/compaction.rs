@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use zeph_llm::provider::{LlmProvider, Message, MessagePart, Role};
+use zeph_llm::provider::{LlmProvider, Message, MessagePart, Role, context_floor};
 use zeph_memory::TokenCounter;
 
 // ── Scoring ───────────────────────────────────────────────────────────────────
@@ -235,7 +235,7 @@ pub fn score_blocks_subgoal(
             continue;
         }
         let recency = i as f32 / total * 0.05;
-        let relevance = match registry.subgoal_state(i) {
+        let relevance = match registry.subgoal_state(msg) {
             Some(SubgoalState::Active) => 1.0_f32 + recency,
             Some(SubgoalState::Completed) => 0.3_f32 + recency,
             None => 0.1_f32 + recency,
@@ -284,9 +284,7 @@ pub fn score_blocks_subgoal_mig(
 
 // ── SubgoalRegistry ───────────────────────────────────────────────────────────
 
-/// Unique identifier for a subgoal within a session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SubgoalId(pub u32);
+pub use zeph_common::SubgoalId;
 
 /// Lifecycle state of a subgoal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -298,103 +296,54 @@ pub enum SubgoalState {
     Completed,
 }
 
-/// A tracked subgoal with message span.
+/// A tracked subgoal. Membership is carried by `MessageMetadata::subgoal_id`, not by indices.
 #[derive(Debug, Clone)]
 pub struct Subgoal {
+    /// Identifier stored on every message that belongs to this subgoal.
     pub id: SubgoalId,
+    /// Short description produced by the extraction model.
     pub description: String,
+    /// Current lifecycle state.
     pub state: SubgoalState,
-    /// Index of the first message in this subgoal's span.
-    pub start_msg_index: usize,
-    /// Index of the last message known to belong to this subgoal.
-    pub end_msg_index: usize,
 }
 
 /// In-memory registry of all subgoals in the current session.
 ///
-/// Not persisted across restarts — subgoal state is transient session data.
+/// Not persisted across restarts — subgoal state is transient session data. Message membership
+/// lives on the messages themselves (`MessageMetadata::subgoal_id`), so drains, reinserts, and
+/// deferred-summary insertions can never leave the registry pointing at the wrong messages.
 #[derive(Debug, Default)]
 pub struct SubgoalRegistry {
+    /// All subgoals, oldest first.
     pub subgoals: Vec<Subgoal>,
     next_id: u32,
-    /// Maps message index → subgoal ID for fast lookup during compaction.
-    pub msg_to_subgoal: std::collections::HashMap<usize, SubgoalId>,
-    last_tagged_index: usize,
 }
 
 impl SubgoalRegistry {
-    /// Register a new active subgoal starting at the given message index.
+    /// Register a new active subgoal.
     ///
     /// Auto-completes any existing Active subgoal before creating the new one.
-    pub fn push_active(&mut self, description: String, start_msg_index: usize) -> SubgoalId {
-        if let Some(active) = self
-            .subgoals
-            .iter_mut()
-            .find(|s| s.state == SubgoalState::Active)
-        {
-            active.state = SubgoalState::Completed;
-        }
+    pub fn push_active(&mut self, description: String) -> SubgoalId {
+        self.complete_active();
         let id = SubgoalId(self.next_id);
-        self.next_id = self.next_id.wrapping_add(1);
+        self.next_id += 1;
         self.subgoals.push(Subgoal {
             id,
             description,
             state: SubgoalState::Active,
-            start_msg_index,
-            end_msg_index: start_msg_index,
         });
-        self.last_tagged_index = start_msg_index.saturating_sub(1);
         id
     }
 
-    /// Mark the current active subgoal as completed and assign an end boundary.
-    pub fn complete_active(&mut self, end_msg_index: usize) {
+    /// Mark the current active subgoal as completed.
+    pub fn complete_active(&mut self) {
         if let Some(active) = self
             .subgoals
             .iter_mut()
             .find(|s| s.state == SubgoalState::Active)
         {
             active.state = SubgoalState::Completed;
-            active.end_msg_index = end_msg_index;
         }
-    }
-
-    /// Extend the active subgoal to cover new messages up to `new_end`.
-    pub fn extend_active(&mut self, new_end: usize) {
-        if let Some(active) = self
-            .subgoals
-            .iter_mut()
-            .find(|s| s.state == SubgoalState::Active)
-        {
-            active.end_msg_index = new_end;
-            let start = self.last_tagged_index.saturating_add(1);
-            for idx in start..=new_end {
-                self.msg_to_subgoal.insert(idx, active.id);
-            }
-            if new_end >= start {
-                self.last_tagged_index = new_end;
-            }
-        }
-    }
-
-    /// Tag messages in range `[start, end]` with the given subgoal ID.
-    pub fn tag_range(&mut self, start: usize, end: usize, id: SubgoalId) {
-        for idx in start..=end {
-            self.msg_to_subgoal.insert(idx, id);
-        }
-        if end > self.last_tagged_index {
-            self.last_tagged_index = end;
-        }
-    }
-
-    /// Get the subgoal state for a given message index.
-    #[must_use]
-    pub fn subgoal_state(&self, msg_index: usize) -> Option<SubgoalState> {
-        let sg_id = self.msg_to_subgoal.get(&msg_index)?;
-        self.subgoals
-            .iter()
-            .find(|s| &s.id == sg_id)
-            .map(|s| s.state)
     }
 
     /// Get the current active subgoal (for debug output and TUI metrics).
@@ -405,45 +354,73 @@ impl SubgoalRegistry {
             .find(|s| s.state == SubgoalState::Active)
     }
 
-    /// Rebuild the registry after compaction.
+    /// Tag every not-yet-tagged message in `range` with `id`; returns how many were tagged.
     ///
-    /// When `old_compact_end == 0`, repairs shifted indices without dropping subgoals.
-    /// When `old_compact_end > 0`, drops subgoals whose entire span was drained.
-    pub fn rebuild_after_compaction(&mut self, messages: &[Message], old_compact_end: usize) {
-        self.msg_to_subgoal.clear();
-        if self.subgoals.is_empty() {
-            self.last_tagged_index = 0;
-            return;
+    /// Skips `System` messages, messages carrying an `origin` (the turn input), and indices
+    /// below [`context_floor`], so injected context and the compaction head never join a span.
+    pub fn tag_untagged(
+        messages: &mut [Message],
+        range: std::ops::Range<usize>,
+        id: SubgoalId,
+    ) -> usize {
+        let floor = context_floor(messages);
+        let end = range.end.min(messages.len());
+        let mut tagged = 0;
+        for msg in messages
+            .iter_mut()
+            .take(end)
+            .skip(range.start.max(floor))
+            .filter(|m| {
+                m.role != Role::System
+                    && m.metadata.origin.is_none()
+                    && m.metadata.subgoal_id.is_none()
+            })
+        {
+            msg.metadata.subgoal_id = Some(id);
+            tagged += 1;
         }
-        if old_compact_end > 0 {
-            self.subgoals
-                .retain(|s| s.state == SubgoalState::Active || s.end_msg_index >= old_compact_end);
+        tagged
+    }
+
+    /// Tag untagged messages in `range` with the active subgoal; no-op without one.
+    pub fn extend_active(&self, messages: &mut [Message], range: std::ops::Range<usize>) {
+        if let Some(active) = self.active_subgoal() {
+            Self::tag_untagged(messages, range, active.id);
         }
-        if self.subgoals.is_empty() {
-            self.last_tagged_index = 0;
-            return;
-        }
-        let mut last_idx = 0usize;
-        for (i, _msg) in messages.iter().enumerate().skip(1) {
-            let id = self
-                .subgoals
-                .iter()
-                .filter(|s| s.state == SubgoalState::Active)
-                .find(|s| i >= s.start_msg_index && i <= s.end_msg_index)
-                .map(|s| s.id)
-                .or_else(|| {
-                    self.subgoals
-                        .iter()
-                        .filter(|s| s.state == SubgoalState::Completed)
-                        .find(|s| i >= s.start_msg_index && i <= s.end_msg_index)
-                        .map(|s| s.id)
-                });
-            if let Some(id) = id {
-                self.msg_to_subgoal.insert(i, id);
-                last_idx = i;
-            }
-        }
-        self.last_tagged_index = last_idx;
+    }
+
+    /// Get the subgoal state of `msg`, if it belongs to a tracked subgoal.
+    #[must_use]
+    pub fn subgoal_state(&self, msg: &Message) -> Option<SubgoalState> {
+        let sg_id = msg.metadata.subgoal_id?;
+        self.subgoals
+            .iter()
+            .find(|s| s.id == sg_id)
+            .map(|s| s.state)
+    }
+
+    /// Drop completed subgoals that no longer have any message in `messages`.
+    ///
+    /// Call after any pass that removes messages (hard/soft compaction, server compaction).
+    pub fn prune(&mut self, messages: &[Message]) {
+        let live: HashSet<SubgoalId> = messages
+            .iter()
+            .filter_map(|m| m.metadata.subgoal_id)
+            .collect();
+        self.subgoals
+            .retain(|s| s.state == SubgoalState::Active || live.contains(&s.id));
+    }
+
+    /// First and last index in `messages` tagged with `id`, for debug output.
+    #[must_use]
+    pub fn span_of(messages: &[Message], id: SubgoalId) -> Option<(usize, usize)> {
+        let mut tagged = messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.metadata.subgoal_id == Some(id))
+            .map(|(i, _)| i);
+        let first = tagged.next()?;
+        Some((first, tagged.next_back().unwrap_or(first)))
     }
 }
 
@@ -745,10 +722,23 @@ mod tests {
         );
     }
 
+    fn history(n: usize) -> Vec<Message> {
+        let mut msgs = vec![Message::from_legacy(Role::System, "system")];
+        msgs.extend((1..n).map(|i| {
+            let role = if i % 2 == 1 {
+                Role::User
+            } else {
+                Role::Assistant
+            };
+            Message::from_legacy(role, format!("m{i}"))
+        }));
+        msgs
+    }
+
     #[test]
     fn subgoal_registry_push_active_creates_active_subgoal() {
         let mut registry = SubgoalRegistry::default();
-        let id = registry.push_active("Implement login endpoint".into(), 1);
+        let id = registry.push_active("Implement login endpoint".into());
         assert_eq!(registry.subgoals.len(), 1);
         assert_eq!(registry.subgoals[0].id, id);
         assert_eq!(registry.subgoals[0].state, SubgoalState::Active);
@@ -757,8 +747,8 @@ mod tests {
     #[test]
     fn subgoal_registry_complete_active_transitions_state() {
         let mut registry = SubgoalRegistry::default();
-        registry.push_active("initial subgoal".into(), 1);
-        registry.complete_active(5);
+        registry.push_active("initial subgoal".into());
+        registry.complete_active();
         assert_eq!(registry.subgoals[0].state, SubgoalState::Completed);
         assert!(registry.active_subgoal().is_none());
     }
@@ -766,8 +756,8 @@ mod tests {
     #[test]
     fn subgoal_registry_push_active_auto_completes_existing_active() {
         let mut registry = SubgoalRegistry::default();
-        registry.push_active("first subgoal".into(), 1);
-        registry.push_active("second subgoal".into(), 6);
+        registry.push_active("first subgoal".into());
+        registry.push_active("second subgoal".into());
         assert_eq!(registry.subgoals[0].state, SubgoalState::Completed);
         assert_eq!(registry.subgoals[1].state, SubgoalState::Active);
         let active_count = registry
@@ -779,31 +769,74 @@ mod tests {
     }
 
     #[test]
-    fn subgoal_registry_extend_active_tags_incrementally() {
-        let mut registry = SubgoalRegistry::default();
-        let id = registry.push_active("subgoal".into(), 3);
-        registry.extend_active(5);
-        assert_eq!(registry.subgoal_state(3), Some(SubgoalState::Active));
-        assert_eq!(registry.subgoal_state(4), Some(SubgoalState::Active));
-        assert_eq!(registry.subgoal_state(5), Some(SubgoalState::Active));
-        assert_eq!(registry.msg_to_subgoal.get(&3), Some(&id));
-        registry.extend_active(7);
-        assert_eq!(registry.subgoal_state(6), Some(SubgoalState::Active));
-        assert_eq!(registry.subgoal_state(7), Some(SubgoalState::Active));
-        assert_eq!(registry.msg_to_subgoal.len(), 5);
+    fn tag_untagged_skips_system_origin_tagged_and_below_floor() {
+        let mut msgs = history(6);
+        msgs[2].metadata.subgoal_id = Some(SubgoalId(9));
+        msgs[4].metadata.origin = Some(zeph_llm::provider::MessageOrigin::TurnInput);
+        msgs.insert(1, Message::from_legacy(Role::System, "recall"));
+        let id = SubgoalId(1);
+
+        let len = msgs.len();
+        let tagged = SubgoalRegistry::tag_untagged(&mut msgs, 0..len, id);
+
+        assert_eq!(tagged, 3);
+        assert_eq!(msgs[0].metadata.subgoal_id, None);
+        assert_eq!(msgs[1].metadata.subgoal_id, None, "System stays untagged");
+        assert_eq!(msgs[3].metadata.subgoal_id, Some(SubgoalId(9)));
+        assert_eq!(msgs[5].metadata.subgoal_id, None, "origin stays untagged");
+        assert_eq!(msgs[2].metadata.subgoal_id, Some(id));
+
+        let mut with_block = history(4);
+        with_block[1].parts = vec![MessagePart::Compaction {
+            summary: "s".into(),
+        }];
+        SubgoalRegistry::tag_untagged(&mut with_block, 0..4, id);
+        assert_eq!(with_block[1].metadata.subgoal_id, None);
+        assert_eq!(with_block[2].metadata.subgoal_id, Some(id));
     }
 
     #[test]
     fn subgoal_registry_subgoal_state_returns_correct_tier() {
         let mut registry = SubgoalRegistry::default();
-        registry.push_active("completed subgoal".into(), 1);
-        registry.tag_range(1, 5, SubgoalId(0));
-        registry.complete_active(5);
-        registry.push_active("active subgoal".into(), 6);
-        registry.extend_active(9);
-        assert_eq!(registry.subgoal_state(1), Some(SubgoalState::Completed));
-        assert_eq!(registry.subgoal_state(6), Some(SubgoalState::Active));
-        assert_eq!(registry.subgoal_state(0), None);
+        let mut msgs = history(10);
+        let first = registry.push_active("completed subgoal".into());
+        SubgoalRegistry::tag_untagged(&mut msgs, 0..6, first);
+        let second = registry.push_active("active subgoal".into());
+        registry.extend_active(&mut msgs, 0..10);
+        assert_eq!(
+            registry.subgoal_state(&msgs[1]),
+            Some(SubgoalState::Completed)
+        );
+        assert_eq!(registry.subgoal_state(&msgs[6]), Some(SubgoalState::Active));
+        assert_eq!(registry.subgoal_state(&msgs[0]), None);
+        assert_eq!(msgs[9].metadata.subgoal_id, Some(second));
+    }
+
+    #[test]
+    fn prune_drops_completed_subgoals_without_live_messages_but_keeps_active() {
+        let mut registry = SubgoalRegistry::default();
+        let mut msgs = history(6);
+        let done = registry.push_active("done".into());
+        SubgoalRegistry::tag_untagged(&mut msgs, 0..3, done);
+        let live = registry.push_active("live".into());
+        registry.extend_active(&mut msgs, 0..6);
+        let third = registry.push_active("fresh active".into());
+
+        msgs.retain(|m| m.metadata.subgoal_id != Some(done));
+        registry.prune(&msgs);
+
+        let ids: Vec<SubgoalId> = registry.subgoals.iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec![live, third]);
+    }
+
+    #[test]
+    fn span_of_reports_first_and_last_tagged_index() {
+        let mut registry = SubgoalRegistry::default();
+        let mut msgs = history(6);
+        let id = registry.push_active("g".into());
+        SubgoalRegistry::tag_untagged(&mut msgs, 2..5, id);
+        assert_eq!(SubgoalRegistry::span_of(&msgs, id), Some((2, 4)));
+        assert_eq!(SubgoalRegistry::span_of(&msgs, SubgoalId(77)), None);
     }
 
     #[test]

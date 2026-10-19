@@ -262,13 +262,9 @@ impl<C: Channel> Agent<C> {
         // token_budget = 0 signals "unknown" to UtilityContext — cost component is zeroed.
         let token_budget: usize = 0;
         let tool_calls_this_turn = self.tool_orchestrator.recent_tool_calls.len();
-        // Detect explicit tool request from the last user message text only.
+        // Detect explicit tool request from the turn's query message (not the tool-result tail).
         // We only read MessagePart::Text parts so tool outputs/thinking blocks are excluded.
-        let explicit_request = self
-            .msg
-            .messages
-            .iter()
-            .rfind(|m| m.role == zeph_llm::provider::Role::User)
+        let explicit_request = zeph_llm::provider::turn_query_message(&self.msg.messages)
             .is_some_and(|m| {
                 let text = if m.parts.is_empty() {
                     m.content.clone()
@@ -2037,13 +2033,11 @@ impl<C: Channel> Agent<C> {
             self.push_message(checkpoint);
         }
 
-        // Flush deferred utility gate hints (Retrieve/Verify). Pushed after User(tool_results)
-        // so the ordering Assistant→User→System is valid for OpenAI (#2615).
+        // Queue deferred utility gate hints (Retrieve/Verify) for the next runtime note, which
+        // is appended to User(tool_results) just before the next LLM call (#6786). No System
+        // message is pushed, so the cached prefix stays untouched.
         for hint in pending_system_hints {
-            self.push_message(zeph_llm::provider::Message::from_legacy(
-                zeph_llm::provider::Role::System,
-                &hint,
-            ));
+            self.services.session.runtime_notes.push_utility_hint(hint);
         }
 
         // Deferred self-reflection: user_msg is now in history so the reflection dialogue
@@ -2296,6 +2290,9 @@ impl<C: Channel> Agent<C> {
             }
         }
 
+        // max_iterations exhaustion, doom-loop, cancel and shutdown all leave the loop here:
+        // deliver hints and LSP notes that no further dispatch will pick up.
+        self.flush_runtime_note();
         let _ = self.channel.send_stop_hint(StopHint::MaxTurnRequests).await;
         self.channel.flush_chunks().await?;
         Ok(())
@@ -2327,7 +2324,7 @@ impl<C: Channel> Agent<C> {
             iteration,
             execution_id = %ctx.execution_id().as_uuid(),
         );
-        let cached_tokens = self.runtime.providers.cached_prompt_tokens;
+        let cached_tokens = self.durable_fingerprint_tokens();
         let fp_input = format!("llm_call:iter={iteration}:tokens={cached_tokens}").into_bytes();
         let desc = StepDescriptor::exactly_once_guarded(
             "llm_call",
@@ -2391,6 +2388,7 @@ impl<C: Channel> Agent<C> {
                 self.channel
                     .send("Stopping: context window is nearly full.")
                     .await?;
+                self.flush_runtime_note();
                 return Ok(Some(()));
             }
         }
@@ -2403,6 +2401,8 @@ impl<C: Channel> Agent<C> {
         } else {
             self.channel.send_status_best_effort("thinking...").await;
         }
+
+        self.attach_runtime_note(iteration);
 
         let chat_result = self.call_llm_durable(tool_defs, iteration).await?;
 
@@ -2479,6 +2479,7 @@ impl<C: Channel> Agent<C> {
         self.flush_deferred_summaries().await;
 
         if window_exhausted {
+            self.flush_runtime_note();
             return Ok(Some(()));
         }
 

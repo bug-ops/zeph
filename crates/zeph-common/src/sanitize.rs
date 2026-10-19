@@ -51,12 +51,29 @@ pub fn strip_control_chars(s: &str) -> String {
 /// preserves `\t`/`\n`) — callers that need CRLF line endings intact use this function.
 #[must_use]
 pub fn strip_control_chars_preserve_whitespace(s: &str) -> String {
-    s.chars()
-        .filter(|&c| {
-            (!c.is_control() || c == '\t' || c == '\n' || c == '\r')
-                && !crate::patterns::is_bypass_codepoint(c)
-        })
-        .collect()
+    s.chars().filter(|&c| !is_stripped_char(c)).collect()
+}
+
+/// Returns `true` for every character [`strip_control_chars_preserve_whitespace`] removes:
+/// control characters other than `\t`, `\n`, `\r` (including DEL and the C1 range) and the
+/// shared bypass-codepoint denylist.
+///
+/// Escapers that run before stripping use this as their skip set, so text they leave
+/// untouched cannot be reassembled into a protected token by the stripper.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::sanitize::is_stripped_char;
+///
+/// assert!(is_stripped_char('\u{7f}'));
+/// assert!(is_stripped_char('\u{200B}'));
+/// assert!(!is_stripped_char('\n'));
+/// assert!(!is_stripped_char('a'));
+/// ```
+#[must_use]
+pub fn is_stripped_char(c: char) -> bool {
+    (c.is_control() && !matches!(c, '\t' | '\n' | '\r')) || crate::patterns::is_bypass_codepoint(c)
 }
 
 /// Remove null bytes (`\0`) from `s`.

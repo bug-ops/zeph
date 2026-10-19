@@ -15,18 +15,10 @@
 //! - `<agent-memory>` tags in file content are escaped to prevent prompt injection.
 
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
-
-use regex::Regex;
+use zeph_common::delimiter::DelimiterTag;
 
 use super::def::{AGENT_NAME_RE, MemoryScope};
 use super::error::SubAgentError;
-
-/// Case-insensitive regex matching any variant of `<agent-memory>` or `</agent-memory>` tags.
-///
-/// Handles uppercase, mixed-case, and whitespace variants to prevent prompt injection bypass.
-static MEMORY_TAG_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)</?(\s*)agent-memory(\s*)>").unwrap());
 
 /// Maximum allowed size for MEMORY.md (256 KiB — same cap as instruction files).
 const MAX_MEMORY_SIZE: u64 = 256 * 1024;
@@ -231,16 +223,16 @@ pub async fn load_memory_content(dir: &Path) -> Option<String> {
 
 /// Escape `<agent-memory>` and `</agent-memory>` tags from memory content.
 ///
-/// Handles case variations (`</AGENT-MEMORY>`, `</Agent-Memory >`) via case-insensitive
-/// regex. Prevents prompt injection: an agent writing the closing tag to MEMORY.md would
+/// Delegates to [`zeph_common::delimiter::escape_delimiter_tags`], so case, whitespace,
+/// zero-width/control-character, fullwidth and NFKC-expansion variants are neutralized.
+/// Prevents prompt injection: an agent writing the closing tag to MEMORY.md would
 /// otherwise escape the `<agent-memory>` wrapper and inject arbitrary system prompt text.
 ///
 /// Trust model note: MEMORY.md is written by the agent itself, unlike user-written
 /// instruction files. Agent-written content requires stricter escaping.
 #[must_use]
 pub fn escape_memory_content(content: &str) -> String {
-    MEMORY_TAG_RE
-        .replace_all(content, "<\\/$1agent-memory$2>")
+    zeph_common::delimiter::escape_delimiter_tags(content, &[DelimiterTag::AgentMemory])
         .into_owned()
 }
 
@@ -519,5 +511,19 @@ mod tests {
     fn escape_leaves_normal_content_unchanged() {
         let content = "# Notes\nThis is safe content.";
         assert_eq!(escape_memory_content(content), content);
+    }
+
+    #[test]
+    fn escape_replaces_disguised_tags() {
+        for content in [
+            "< /agent-memory>",
+            "</agent\u{200B}-memory>",
+            "<\u{7f}/agent-memory>",
+            "\u{FF1C}/AGENT-MEMORY>",
+            "</agent-memory\u{FB06}>",
+        ] {
+            let escaped = escape_memory_content(content);
+            assert!(escaped.starts_with("&lt;"), "{content:?} -> {escaped:?}");
+        }
     }
 }

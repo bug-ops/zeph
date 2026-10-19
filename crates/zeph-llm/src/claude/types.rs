@@ -474,7 +474,7 @@ pub(super) enum StructuredContent {
 #[derive(Serialize)]
 pub(super) struct ApiMessage<'a> {
     pub role: &'a str,
-    pub content: &'a str,
+    pub content: std::borrow::Cow<'a, str>,
 }
 
 #[derive(Deserialize)]

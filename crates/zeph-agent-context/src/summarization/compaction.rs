@@ -20,7 +20,7 @@ use zeph_context::typed_page::{
     BatchAssertions, CompactedPageRecord, PageOrigin, PageType, TypedPage, TypedPagesState,
     classify_with_role, detect_schema_hint,
 };
-use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role, context_floor};
 
 use crate::compaction::SubgoalState;
 use crate::error::ContextError;
@@ -55,16 +55,17 @@ pub(crate) async fn compact_context(
 
     let preserve_tail = summ.context_manager.compaction_preserve_tail;
 
-    if summ.messages.len() <= preserve_tail + 1 {
+    let floor = context_floor(summ.messages);
+    if summ.messages.len() <= preserve_tail + floor {
         return Ok(CompactionOutcome::NoChange);
     }
 
     let compact_end = {
         let raw = summ.messages.len() - preserve_tail;
-        zeph_llm::tool_pairing::pair_safe_cut(summ.messages, raw, 1)
+        zeph_llm::tool_pairing::pair_safe_cut(summ.messages, raw, floor)
     };
 
-    if compact_end <= 1 {
+    if compact_end <= floor {
         return Ok(CompactionOutcome::NoChange);
     }
 
@@ -256,7 +257,8 @@ fn partition_messages_for_compaction(
     summ: &ContextSummarizationView<'_>,
     compact_end: usize,
 ) -> (Vec<Message>, Vec<Message>, Vec<Message>) {
-    let pinned: Vec<Message> = summ.messages[1..compact_end]
+    let floor = context_floor(summ.messages);
+    let pinned: Vec<Message> = summ.messages[floor..compact_end]
         .iter()
         .filter(|m| m.metadata.focus_pinned)
         .cloned()
@@ -274,7 +276,7 @@ fn partition_messages_for_compaction(
     };
 
     if !is_subgoal {
-        let to_compact = summ.messages[1..compact_end]
+        let to_compact = summ.messages[floor..compact_end]
             .iter()
             .filter(|m| is_compactable(m))
             .cloned()
@@ -287,7 +289,7 @@ fn partition_messages_for_compaction(
         .iter()
         .map(|&i| summ.messages[i].clone())
         .collect();
-    let to_compact = (1..compact_end)
+    let to_compact = (floor..compact_end)
         .filter(|i| !preserved.contains(i))
         .map(|i| &summ.messages[i])
         .filter(|m| is_compactable(m))
@@ -307,11 +309,11 @@ fn subgoal_preserved_indices(
     compact_end: usize,
 ) -> BTreeSet<usize> {
     let messages: &[Message] = summ.messages;
-    let mut preserved: BTreeSet<usize> = (1..compact_end)
+    let mut preserved: BTreeSet<usize> = (context_floor(messages)..compact_end)
         .filter(|&i| {
             !messages[i].metadata.focus_pinned
                 && matches!(
-                    summ.subgoal_registry.subgoal_state(i),
+                    summ.subgoal_registry.subgoal_state(&messages[i]),
                     Some(SubgoalState::Active)
                 )
         })
@@ -372,10 +374,11 @@ fn finalize_compacted_messages(
     summary: &str,
     compacted_trust_level: Option<u8>,
 ) {
-    summ.messages.drain(1..compact_end);
+    let floor = context_floor(summ.messages);
+    summ.messages.drain(floor..compact_end);
 
     summ.messages.insert(
-        1,
+        floor,
         Message {
             role: Role::System,
             content: summary_content,
@@ -392,11 +395,12 @@ fn finalize_compacted_messages(
 
     let pinned_count = pinned.len();
     for (i, pinned_msg) in pinned.into_iter().enumerate() {
-        summ.messages.insert(2 + i, pinned_msg);
+        summ.messages.insert(floor + 1 + i, pinned_msg);
     }
 
     for (i, active_msg) in active_subgoal.into_iter().enumerate() {
-        summ.messages.insert(2 + pinned_count + i, active_msg);
+        summ.messages
+            .insert(floor + 1 + pinned_count + i, active_msg);
     }
 
     // Rebuild subgoal index map after index invalidation from drain + reinsert.
@@ -406,8 +410,7 @@ fn finalize_compacted_messages(
         .pruning_strategy
         .is_subgoal()
     {
-        summ.subgoal_registry
-            .rebuild_after_compaction(summ.messages, compact_end);
+        summ.subgoal_registry.prune(summ.messages);
     }
 
     tracing::info!(
@@ -962,6 +965,45 @@ mod tests {
             );
         }
 
+        fn compaction_block() -> Message {
+            Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::Compaction {
+                    summary: "server summary".to_owned(),
+                }],
+            )
+        }
+
+        #[tokio::test]
+        async fn compact_context_never_drains_or_reorders_the_server_compaction_block() {
+            let preserve_tail = ContextManager::new().compaction_preserve_tail;
+            let mut messages = vec![
+                plain_msg(Role::System, "system"),
+                compaction_block(),
+                plain_msg(Role::User, "turn input"),
+            ];
+            for i in 0..(preserve_tail + 5) {
+                messages.push(plain_msg(Role::User, &format!("filler {i}")));
+            }
+
+            let mut fixture = Fixture::new(messages);
+            let mut view = fixture.view();
+
+            let outcome = compact_context(&mut view, None).await.unwrap();
+            assert!(matches!(outcome, CompactionOutcome::Compacted { .. }));
+
+            assert_eq!(context_floor(view.messages), 2);
+            assert!(matches!(
+                view.messages[1].parts.first(),
+                Some(MessagePart::Compaction { .. })
+            ));
+            assert_eq!(
+                view.messages[2].role,
+                Role::System,
+                "the new summary must land right after the compaction block"
+            );
+        }
+
         fn tool_use_msg(id: &str) -> Message {
             Message::from_parts(
                 Role::Assistant,
@@ -1007,6 +1049,24 @@ mod tests {
             }
         }
 
+        fn tag_span(
+            fixture: &mut Fixture,
+            description: &str,
+            range: std::ops::Range<usize>,
+        ) -> crate::compaction::SubgoalId {
+            let id = fixture.subgoal_registry.push_active(description.to_owned());
+            SubgoalRegistry::tag_untagged(&mut fixture.messages, range, id);
+            id
+        }
+
+        fn carries_tool(m: &Message, id: &str) -> bool {
+            m.parts.iter().any(|p| match p {
+                MessagePart::ToolUse { id: i, .. }
+                | MessagePart::ToolResult { tool_use_id: i, .. } => i == id,
+                _ => false,
+            })
+        }
+
         #[tokio::test]
         async fn subgoal_compaction_keeps_tool_use_for_active_span_starting_on_tool_result() {
             let mut messages = vec![
@@ -1018,10 +1078,8 @@ mod tests {
             filler_tail(&mut messages);
 
             let mut fixture = subgoal_fixture(messages);
-            let completed = fixture.subgoal_registry.push_active("first".to_owned(), 1);
-            fixture.subgoal_registry.tag_range(1, 2, completed);
-            let active = fixture.subgoal_registry.push_active("second".to_owned(), 3);
-            fixture.subgoal_registry.tag_range(3, 3, active);
+            tag_span(&mut fixture, "first", 1..3);
+            tag_span(&mut fixture, "second", 3..4);
 
             let mut view = fixture.view();
             let outcome = compact_context(&mut view, None).await.unwrap();
@@ -1035,6 +1093,78 @@ mod tests {
                 "the ToolUse paired with the preserved ToolResult must survive"
             );
             assert_no_orphans(&view.messages[1..]);
+        }
+
+        /// History with a deferred t0 pair inserted at `position` among `[q, t1, t1r, t2, t2r]`.
+        fn deferred_pair_messages(position: usize) -> Vec<Message> {
+            let mut resp0 = tool_result_msg("t0");
+            resp0.metadata.deferred_summary = Some("ran t0".to_owned());
+            let mut rest = vec![
+                plain_msg(Role::User, "question"),
+                tool_use_msg("t1"),
+                tool_result_msg("t1"),
+                tool_use_msg("t2"),
+                tool_result_msg("t2"),
+            ];
+            let tail = rest.split_off(position.min(rest.len()));
+            let mut messages = vec![plain_msg(Role::System, "system")];
+            messages.append(&mut rest);
+            messages.extend([tool_use_msg("t0"), resp0]);
+            messages.extend(tail);
+            filler_tail(&mut messages);
+            messages
+        }
+
+        /// The deferred pair is inserted before, inside, or after the Active span tagged on the
+        /// t2 pair; span membership must stay exact and the summary must inherit the response's
+        /// subgoal.
+        fn run_deferred_case(position: usize, pair_in_span: bool) {
+            let mut fixture = subgoal_fixture(deferred_pair_messages(position));
+            let start_of =
+                |msgs: &[Message], id: &str| msgs.iter().position(|m| carries_tool(m, id)).unwrap();
+            let t2 = start_of(&fixture.messages, "t2");
+            let id = tag_span(&mut fixture, "g", t2..t2 + 2);
+            if pair_in_span {
+                let t0 = start_of(&fixture.messages, "t0");
+                SubgoalRegistry::tag_untagged(&mut fixture.messages, t0..t0 + 2, id);
+            }
+
+            let mut view = fixture.view();
+            let applied = crate::summarization::deferred::apply_deferred_summaries(&mut view);
+            assert_eq!(applied, 1);
+
+            let t2_tags: Vec<bool> = view
+                .messages
+                .iter()
+                .filter(|m| carries_tool(m, "t2"))
+                .map(|m| m.metadata.subgoal_id == Some(id))
+                .collect();
+            assert_eq!(t2_tags, vec![true, true], "span membership drifted");
+            let summary = view
+                .messages
+                .iter()
+                .find(|m| m.content.starts_with("[tool summary]"))
+                .expect("summary inserted");
+            assert_eq!(
+                summary.metadata.subgoal_id,
+                pair_in_span.then_some(id),
+                "summary must copy the response's subgoal"
+            );
+        }
+
+        #[test]
+        fn deferred_summary_before_active_span_keeps_membership() {
+            run_deferred_case(0, false);
+        }
+
+        #[test]
+        fn deferred_summary_inside_active_span_inherits_subgoal() {
+            run_deferred_case(3, true);
+        }
+
+        #[test]
+        fn deferred_summary_after_active_span_keeps_membership() {
+            run_deferred_case(5, false);
         }
 
         #[tokio::test]
@@ -1051,19 +1181,102 @@ mod tests {
             ];
             filler_tail(&mut messages);
 
-            // Registry indices predate the deferred-summary insertion that
-            // `compact_context` applies first, so they are shifted by one.
+            // The deferred-summary insertion `compact_context` applies first shifts every
+            // later index; membership must not depend on them.
             let mut fixture = subgoal_fixture(messages);
-            let completed = fixture.subgoal_registry.push_active("first".to_owned(), 1);
-            fixture.subgoal_registry.tag_range(1, 4, completed);
-            let active = fixture.subgoal_registry.push_active("second".to_owned(), 5);
-            fixture.subgoal_registry.tag_range(5, 5, active);
+            tag_span(&mut fixture, "first", 1..5);
+            tag_span(&mut fixture, "second", 5..6);
 
             let mut view = fixture.view();
             let outcome = compact_context(&mut view, None).await.unwrap();
             assert!(matches!(outcome, CompactionOutcome::Compacted { .. }));
 
             assert_no_orphans(&view.messages[1..]);
+            assert_eq!(
+                view.messages
+                    .iter()
+                    .filter(|m| carries_tool(m, "t1"))
+                    .count(),
+                2
+            );
+        }
+
+        #[tokio::test]
+        async fn non_monotone_finalize_keeps_membership_and_prunes_dead_subgoals() {
+            let mut messages = vec![
+                plain_msg(Role::System, "system"),
+                plain_msg(Role::User, "old question"),
+                plain_msg(Role::Assistant, "old answer"),
+                tool_use_msg("t1"),
+                tool_result_msg("t1"),
+            ];
+            let mut pinned = plain_msg(Role::System, "[pinned]");
+            pinned.metadata.focus_pinned = true;
+            messages.insert(2, pinned);
+            filler_tail(&mut messages);
+
+            let mut fixture = subgoal_fixture(messages);
+            let done = tag_span(&mut fixture, "done", 1..3);
+            let active = tag_span(&mut fixture, "active", 3..6);
+
+            let mut view = fixture.view();
+            let outcome = compact_context(&mut view, None).await.unwrap();
+            assert!(matches!(outcome, CompactionOutcome::Compacted { .. }));
+
+            assert!(
+                view.messages
+                    .iter()
+                    .filter(|m| m.metadata.subgoal_id == Some(active))
+                    .count()
+                    >= 2,
+                "active span messages survive with their tag"
+            );
+            assert!(
+                view.messages
+                    .iter()
+                    .all(|m| m.metadata.subgoal_id != Some(done))
+            );
+            let ids: Vec<_> = view
+                .subgoal_registry
+                .subgoals
+                .iter()
+                .map(|s| s.id)
+                .collect();
+            assert!(
+                !ids.contains(&done),
+                "completed span without messages is pruned"
+            );
+            assert!(ids.contains(&active));
+            assert_no_orphans(&view.messages[1..]);
+        }
+
+        #[test]
+        fn head_inject_remove_churn_never_changes_membership() {
+            let mut registry = SubgoalRegistry::default();
+            let mut messages = vec![
+                plain_msg(Role::System, "system"),
+                plain_msg(Role::User, "a"),
+                plain_msg(Role::Assistant, "b"),
+            ];
+            let id = registry.push_active("g".to_owned());
+            SubgoalRegistry::tag_untagged(&mut messages, 0..3, id);
+
+            for round in 0..3 {
+                zeph_llm::provider::insert_at_context_floor(
+                    &mut messages,
+                    plain_msg(Role::System, &format!("recall {round}")),
+                );
+                let len = messages.len();
+                registry.extend_active(&mut messages, 0..len);
+                messages.remove(1);
+            }
+
+            assert_eq!(messages[1].metadata.subgoal_id, Some(id));
+            assert_eq!(messages[2].metadata.subgoal_id, Some(id));
+            assert_eq!(
+                registry.subgoal_state(&messages[1]),
+                Some(crate::compaction::SubgoalState::Active)
+            );
         }
     }
 }

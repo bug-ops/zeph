@@ -680,38 +680,61 @@ fn make_agent_with_lsp_note(note: &'static str) -> Agent<MockChannel> {
     agent
 }
 
-/// Regression test for #3595: LSP notes queued in `lsp_hooks.pending_notes` must be
-/// injected as a `Role::System` message into `self.msg.messages` inside
-/// `call_chat_with_tools`, before the LLM provider is called.
-///
-/// The old guard (`last_msg_has_tool_results`) was evaluated at the top of
-/// `process_single_native_turn` on the *next* iteration, when tool results had
-/// already been committed to history, so it always fired and prevented injection.
-/// The fix moves injection unconditionally into `call_chat_with_tools`.
+/// LSP notes queued in `lsp_hooks.pending_notes` ride in a `RuntimeNote` on the tail
+/// tool-result message (#6786) — appended by the runtime-note seam right before the LLM
+/// call — and `call_chat_with_tools` itself never creates a `Role::System` LSP message
+/// (which would have altered the cached request prefix, #6817).
 #[tokio::test]
-async fn lsp_notes_injected_before_llm_call_in_call_chat_with_tools() {
+async fn lsp_notes_ride_in_a_runtime_note_not_a_system_message() {
     let mut agent = make_agent_with_lsp_note("fn foo() -> u32");
+    agent.attach_runtime_note(0);
+    agent
+        .msg
+        .messages
+        .push(Message::from_legacy(Role::User, "go"));
+    agent.msg.messages.push(Message::from_parts(
+        Role::Assistant,
+        vec![MessagePart::ToolUse {
+            id: "t1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({}),
+        }],
+    ));
+    agent.msg.messages.push(Message::from_parts(
+        Role::User,
+        vec![MessagePart::ToolResult {
+            tool_use_id: "t1".into(),
+            content: "output".into(),
+            is_error: false,
+        }],
+    ));
 
+    agent.attach_runtime_note(1);
     let _ = agent.call_chat_with_tools(&[]).await;
 
-    let lsp_msg = agent
+    let note = agent
         .msg
         .messages
         .iter()
-        .find(|m| m.role == Role::System && m.content.starts_with("[lsp "));
+        .flat_map(|m| &m.parts)
+        .find_map(|p| match p {
+            MessagePart::RuntimeNote { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .expect("the queued LSP note must be attached as a runtime note");
+    assert!(note.contains("[lsp hover]"));
+    assert!(note.contains("fn foo() -> u32"));
     assert!(
-        lsp_msg.is_some(),
-        "call_chat_with_tools must inject a [lsp hover] System message before the LLM call"
-    );
-    assert!(
-        lsp_msg.unwrap().content.contains("fn foo() -> u32"),
-        "injected LSP message must contain the queued note content"
+        !agent
+            .msg
+            .messages
+            .iter()
+            .any(|m| m.role == Role::System && m.content.starts_with("[lsp ")),
+        "no System LSP message may be created"
     );
 }
 
-/// On a retry attempt the note queue is already empty (drained on the first call),
-/// so `call_chat_with_tools` must remove the stale LSP message and not re-inject.
-/// This verifies that notes never accumulate across retry iterations.
+/// The retry loop never creates LSP messages, so notes cannot accumulate across retries.
 #[tokio::test]
 async fn lsp_notes_not_duplicated_on_retry() {
     use zeph_llm::LlmError;
@@ -758,11 +781,7 @@ async fn lsp_notes_not_duplicated_on_retry() {
         .iter()
         .filter(|m| m.role == Role::System && m.content.starts_with("[lsp "))
         .count();
-    assert_eq!(
-        lsp_count, 0,
-        "after retry the stale LSP message must be removed and not re-injected \
-        (queue was drained on first attempt)"
-    );
+    assert_eq!(lsp_count, 0, "retry must not create System LSP messages");
 }
 
 // ── commit_speculative_tier unit tests (issues #3652, #3653) ─────────────────────────────

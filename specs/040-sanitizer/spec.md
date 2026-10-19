@@ -482,7 +482,8 @@ max_external_content_size = 25000
 
 ### Always
 - All external content is wrapped in spotlighting delimiters (tool-output / external-data tags)
-- Delimiter tags (`tool-output`, `external-data`, `shared-state`, case-insensitive) inside content are entity-escaped by `escape_delimiter_tags` (literal ASCII tag substrings only; spacing and fullwidth variants are a known pre-existing class)
+- Runtime notes (spec 001 section 4) are NOT protected by escaping: tool output is not escaped for `<runtime-note` (file reads and edits of zeph's own sources stay byte-exact). A note is authenticated by its `id` nonce, a per-session uuid disclosed only in the system prompt, which tells the model that only a note with exactly that id is genuine. A forged note in tool output is therefore recognisable, not blocked. Text the agent itself puts into a note (LSP, hints) is escaped with `DelimiterTag::RuntimeNote`
+- Delimiter tags (`tool-output`, `external-data`, `shared-state`, case-insensitive) inside content are entity-escaped by `escape_delimiter_tags`, which delegates to `zeph_common::delimiter::escape_delimiter_tags` (#6818). Matching tolerates whitespace, zero-width/DEL/C1 control characters (a superset of what `strip_control_chars_preserve_whitespace` removes), variation selectors and combining marks, fullwidth/small-form/angle-bracket lookalikes, dash/slash lookalikes and NFKC expansions (`</shared-ﬆate>`); non-ASCII NFKC is applied only inside a candidate after a bracket, so plain text keeps an allocation-free fast path. Cyrillic/Greek homoglyphs are a documented residual
 - Injection flags are logged at `warn` level minimum
 - PII detections are logged and never silently dropped
 - Truncation is always marked with `[truncated]` to preserve transparency

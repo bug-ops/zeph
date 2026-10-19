@@ -360,9 +360,7 @@ impl<C: Channel> Agent<C> {
             .last_skills_prompt
             .clone_from(&skills_prompt);
         let system_prompt = build_system_prompt(&skills_prompt, None);
-        if let Some(msg) = self.msg.messages.first_mut() {
-            msg.content = system_prompt;
-        }
+        self.msg.set_system_prompt(system_prompt);
         // The mutation above bypasses `push_message`'s incremental token accounting, so the
         // cached prompt-token count must be recomputed explicitly or it goes stale until the
         // next turn's `rebuild_system_prompt` overwrites it (#6413).

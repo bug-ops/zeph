@@ -326,8 +326,22 @@ independently reimplemented pairing, and one (`trim_parent_messages`, issue #677
 against a **global** id set rather than adjacency, cross-pairing an orphan against an unrelated
 call sharing its id under Ollama-style `format!("call_{i}")` id reuse.
 
-Request-time repair coverage per provider: Claude = visible-projection Layer A; OpenAI family =
-raw Layer A; Gemini = none; native Ollama = N/A (no tool-call ids on the wire).
+Request-time repair coverage per provider: Claude, OpenAI family, and Gemini = Layer A over the
+`AgentVisible` projection (#6814); native Ollama = N/A (no tool-call ids on the wire).
+
+### Agent visibility (`zeph_llm::provider::AgentVisible`) (#6814)
+
+Messages with `MessageVisibility::UserOnly` (originals replaced by a deferred tool-pair summary)
+must never reach a provider. `AgentVisible<'a>` is the borrowed, filtered projection; its only
+constructors filter (`AgentVisible::new`, `From<&[Message]>`), and exposes `iter`/`len`/`get`/
+`next_non_system`/`prev_non_system`. Every request builder converts through it: OpenAI
+`convert_messages`/`_vision`/`_structured`/image detection/`debug_request_json`, Gemini
+`convert_messages` + tool-name lookup, native Ollama `chat`/`chat_stream`/`chat_with_tools`/
+`debug_request_json`, Candle `ChatTemplate::format`, and Claude `split_messages*`. Emission and
+Layer A classification share the same view, so a pair straddling a hidden message is classified
+as it is emitted. `tool_pairing::{next,prev}_non_system` are generic over `M: Borrow<Message>`.
+Downgrade wording is shared: `tool_pairing::{downgraded_tool_use_text, downgraded_tool_result_text}`
+(Claude, OpenAI, Gemini). Gemini renders an unmatched `ToolUse`/orphaned `ToolResult` as a text part.
 
 Three layers, plus one prevention primitive:
 
@@ -395,8 +409,20 @@ Three layers, plus one prevention primitive:
   boundary — the safe failure direction is a spurious duplicate tombstone, never a silently
   dropped one.
 
+## Claude Message Coalescing and Compaction Rendering (#6815)
+
+- `split_messages_structured` coalesces consecutive same-role `StructuredApiMessage`s into one multi-block message, deterministically, after Layer A downgrade and before the cache breakpoint/anchor. Dropped/hidden messages and a compaction block followed by assistant output otherwise leave adjacent same-role entries
+- Coalescing must keep thinking blocks first once thinking replay is fixed (`TODO(#6821)` in `claude/request.rs`)
+- After a server-compaction mirror the request carries `system` (the System messages), an `assistant` turn starting with the `compaction` block, then the turn input; recall injected later lands after the compaction block (`context_floor`)
+- Gemini renders a `MessagePart::Compaction` part as a plain text part (previously dropped, leaving an empty turn)
+
+## Runtime Note Rendering (#6786, #6817)
+
+`MessagePart::RuntimeNote` (spec 001 section 4) is rendered per builder: Claude emits a `text` block after the `tool_result` blocks of the tail `user` message; OpenAI-family emits a `user` message directly after the `tool` messages (`push_user_tool_messages`); Gemini adds a text part after the `functionResponse` parts of the same merged `user` content (live-verify acceptance); Ollama `convert_message_structured` returns `Vec<ChatMessage>` (tool message, then `user` note message); Candle and the plain (non-tool) paths use `Message::to_request_text`. Plain-path `ApiMessage.content` is `Cow<str>` for that reason. Caching: notes are appended to the last message only, so the cached prefix (tools, system, earlier messages) is unchanged within a tool loop; the k to k+1 prefix is byte-identical only while tool_filter, pruning, deferred summaries and soft compaction are inactive. Per-turn system rebuild (skills bodies, volatile block) still busts the message cache once per turn (tracked in #6820).
+
 ## Key Invariants
 
+- A request builder MUST go through `AgentVisible` — never iterate a raw `&[Message]` for emission or adjacency
 - Provider methods are always `&self` — immutable, concurrent-safe. This scopes to **request/inference** methods (`chat`, `chat_stream`, `chat_with_tools`, …). In-place `&mut self` config setters applied only at turn boundaries between requests (e.g. `set_reasoning_effort`, and the runtime `set_thinking`/`set_thinking_budget`/`set_thinking_level`/`apply_reasoning_effort` setters from `[[specs/070-runtime-thinking-controls/spec]]`) are exempt — request methods remain `&self`.
 - `debug_request_json()` must return exactly the JSON that would be sent to the API — used for debugging and testing
 - `last_usage()` is updated after every call — must be accurate for cost tracking

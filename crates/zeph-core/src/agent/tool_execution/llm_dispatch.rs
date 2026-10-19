@@ -93,26 +93,6 @@ impl<C: Channel> Agent<C> {
             return Ok(Some(sc));
         }
 
-        // Inject accumulated LSP notes (hover, diagnostics) as a Role::System message
-        // immediately before the LLM call. At this point all tool results from the previous
-        // iteration are committed to history and there is no pending ToolUse/ToolResult pair,
-        // so inserting a System message is safe for all providers (OpenAI, Claude, Ollama).
-        // Stale notes from a prior call_chat_with_tools invocation are removed first so they
-        // never accumulate; Role::System is skipped by tool-pair summarization.
-        if self.services.session.lsp_hooks.is_some() {
-            self.remove_lsp_messages();
-            let tc = std::sync::Arc::clone(&self.runtime.metrics.token_counter);
-            if let Some(ref mut lsp) = self.services.session.lsp_hooks
-                && let Some(note_text) = lsp.drain_notes(&tc)
-            {
-                self.push_message(zeph_llm::provider::Message::from_legacy(
-                    zeph_llm::provider::Role::System,
-                    &note_text,
-                ));
-                self.recompute_prompt_tokens();
-            }
-        }
-
         // CR-01: open LLM span before the call.
         let trace_guard = self.runtime.debug.trace_collector.as_ref().and_then(|tc| {
             self.runtime

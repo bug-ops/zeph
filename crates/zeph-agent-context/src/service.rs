@@ -6,14 +6,14 @@
 use zeph_context::budget::ContextBudget;
 use zeph_context::fidelity::FidelityScorer;
 use zeph_llm::LlmProvider;
-use zeph_llm::provider::{Message, MessagePart, Role};
+use zeph_llm::provider::{Message, MessagePart, Role, context_floor, insert_at_context_floor};
 use zeph_skills::registry::SkillRegistry;
 
 use crate::error::ContextError;
 use crate::helpers::{
     CODE_CONTEXT_PREFIX, CORRECTIONS_PREFIX, CROSS_SESSION_PREFIX, DOCUMENT_RAG_PREFIX,
-    GRAPH_FACTS_PREFIX, LSP_NOTE_PREFIX, PERSONA_PREFIX, REASONING_PREFIX, RECALL_PREFIX,
-    SESSION_DIGEST_PREFIX, SUMMARY_PREFIX, TRAJECTORY_PREFIX, TREE_MEMORY_PREFIX,
+    GRAPH_FACTS_PREFIX, PERSONA_PREFIX, REASONING_PREFIX, RECALL_PREFIX, SESSION_DIGEST_PREFIX,
+    SUMMARY_PREFIX, TRAJECTORY_PREFIX, TREE_MEMORY_PREFIX,
 };
 use crate::state::{
     ContextAssemblyView, ContextDelta, ContextSummarizationView, MessageWindowView,
@@ -129,14 +129,6 @@ impl ContextService {
         remove_by_prefix(window.messages, Role::System, REASONING_PREFIX);
     }
 
-    /// Remove previously injected LSP context notes from the window.
-    ///
-    /// Called before injecting fresh notes each turn so stale diagnostics/hover
-    /// data from the previous tool call do not accumulate across iterations.
-    pub fn remove_lsp_messages(&self, window: &mut MessageWindowView<'_>) {
-        remove_by_prefix(window.messages, Role::System, LSP_NOTE_PREFIX);
-    }
-
     /// Remove code-context (repo-map / file context) messages from the window.
     pub fn remove_code_context_messages(&self, window: &mut MessageWindowView<'_>) {
         remove_by_part_or_prefix(window.messages, CODE_CONTEXT_PREFIX, |p| {
@@ -185,7 +177,8 @@ impl ContextService {
             .messages
             .iter()
             .position(|m| m.role != Role::System)
-            .unwrap_or(window.messages.len());
+            .unwrap_or(window.messages.len())
+            .max(context_floor(window.messages));
 
         if history_start >= window.messages.len() {
             return;
@@ -258,7 +251,7 @@ impl ContextService {
         if let Some(msg) = msg
             && window.messages.len() > 1
         {
-            window.messages.insert(1, msg);
+            insert_at_context_floor(window.messages, msg);
         }
 
         Ok(())
@@ -293,7 +286,7 @@ impl ContextService {
         if let Some(msg) = msg
             && window.messages.len() > 1
         {
-            window.messages.insert(1, msg);
+            insert_at_context_floor(window.messages, msg);
         }
 
         Ok(())
@@ -410,7 +403,7 @@ impl ContextService {
         .await?
             && window.messages.len() > 1
         {
-            window.messages.insert(1, msg);
+            insert_at_context_floor(window.messages, msg);
             tracing::debug!("injected cross-session context");
         }
 
@@ -443,7 +436,7 @@ impl ContextService {
         .await?
             && window.messages.len() > 1
         {
-            window.messages.insert(1, msg);
+            insert_at_context_floor(window.messages, msg);
             tracing::debug!("injected summaries into context");
         }
 
@@ -788,7 +781,7 @@ impl ContextService {
 
         // MemoryFirst: drain conversation history BEFORE inserting memory messages.
         if prepared.memory_first {
-            let history_start = 1usize;
+            let history_start = context_floor(window.messages);
             let len = window.messages.len();
             let keep_tail =
                 zeph_context::assembler::memory_first_keep_tail(window.messages, history_start);
@@ -856,7 +849,7 @@ impl ContextService {
         for (opt_msg, hint, label) in slots.iter().cloned() {
             if let Some(msg) = opt_msg.filter(|_| window.messages.len() > 1) {
                 let sanitized = self.sanitize_memory_message(msg, hint, view).await;
-                window.messages.insert(1, sanitized);
+                insert_at_context_floor(window.messages, sanitized);
                 inserted_count += 1;
                 if let Some(lbl) = label {
                     tracing::debug!("{lbl}");
@@ -921,7 +914,7 @@ impl ContextService {
             let sanitized = self
                 .sanitize_memory_message(digest_msg, MemorySourceHint::LlmSummary, view)
                 .await;
-            window.messages.insert(1, sanitized);
+            insert_at_context_floor(window.messages, sanitized);
             inserted_count += 1;
             tracing::debug!("injected session digest into context");
         }
@@ -1246,8 +1239,7 @@ impl ContextService {
                 .pruning_strategy
                 .is_subgoal()
         {
-            summ.subgoal_registry
-                .rebuild_after_compaction(summ.messages, 0);
+            summ.subgoal_registry.prune(summ.messages);
         }
 
         // Step 2: prune tool outputs down to soft threshold.
@@ -1918,6 +1910,48 @@ mod tests {
         );
     }
 
+    fn compaction_block() -> Message {
+        Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::Compaction {
+                summary: "server summary".into(),
+            }],
+        )
+    }
+
+    #[test]
+    fn trim_messages_to_budget_never_drains_the_compaction_block() {
+        let mut msgs = vec![
+            sys("system"),
+            compaction_block(),
+            user("older"),
+            assistant("older reply"),
+            user("latest"),
+        ];
+        let mut cached = 0u64;
+        let mut completed = HashSet::new();
+        let mut window = make_window(&mut msgs, &mut cached, &mut completed);
+
+        ContextService::new().trim_messages_to_budget(&mut window, 1);
+
+        assert!(matches!(
+            window.messages[1].parts.first(),
+            Some(MessagePart::Compaction { .. })
+        ));
+        assert!(window.messages.len() < 5);
+    }
+
+    #[test]
+    fn head_inserts_land_after_the_compaction_block() {
+        let mut msgs = vec![sys("system"), compaction_block(), user("turn input")];
+        insert_at_context_floor(&mut msgs, sys("recall"));
+        assert_eq!(msgs[2].content, "recall");
+        assert!(matches!(
+            msgs[1].parts.first(),
+            Some(MessagePart::Compaction { .. })
+        ));
+    }
+
     #[test]
     fn trim_messages_to_budget_never_orphans_tool_result() {
         use zeph_llm::provider::MessagePart;
@@ -2044,17 +2078,27 @@ mod tests {
             Cow::Borrowed(s)
         }
 
-        #[tokio::test]
-        async fn inserted_count_incremented_for_all_paths() {
-            // AC-12: each non-None field in PreparedContext increments inserted_count by 1.
-            // 10 memory fields are tested here (session_digest is controlled by digest_enabled).
-            let mut msgs = vec![
-                Message::from_legacy(Role::System, "system"),
-                Message::from_legacy(Role::User, "user turn"),
-            ];
+        /// What a [`run`] call exercises.
+        enum Op {
+            Prepared(Box<PreparedContext>),
+            Summaries(usize),
+        }
+
+        #[derive(Default)]
+        struct Setup {
+            memory: Option<Arc<zeph_memory::semantic::SemanticMemory>>,
+            conversation_id: Option<zeph_memory::ConversationId>,
+            digest: Option<String>,
+        }
+
+        async fn apply(msgs: &mut Vec<Message>, prepared: PreparedContext) -> usize {
+            run(msgs, Setup::default(), Op::Prepared(Box::new(prepared))).await
+        }
+
+        async fn run(msgs: &mut Vec<Message>, setup: Setup, op: Op) -> usize {
             let mut cached = 0u64;
             let mut completed = HashSet::new();
-            let mut window = make_window(&mut msgs, &mut cached, &mut completed);
+            let mut window = make_window(msgs, &mut cached, &mut completed);
 
             let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
             let mut ctx_mgr = ContextManager::new();
@@ -2065,16 +2109,16 @@ mod tests {
             let registry = Arc::new(RwLock::new(SkillRegistry::default()));
 
             let mut view = ContextAssemblyView {
-                memory: None,
-                conversation_id: None,
+                memory: setup.memory,
+                conversation_id: setup.conversation_id,
                 recall_limit: 10,
                 cross_session_score_threshold: 0.5,
                 context_format: ContextFormat::default(),
                 last_recall_confidence: &mut last_confidence,
                 context_strategy: ContextStrategy::default(),
                 crossover_turn_threshold: 0,
-                cached_session_digest: None,
-                digest_enabled: false, // no session digest injection in this test
+                digest_enabled: setup.digest.is_some(),
+                cached_session_digest: setup.digest.map(|d| (d, 10)),
                 graph_config: GraphConfig::default(),
                 document_config: DocumentConfig::default(),
                 persona_config: PersonaConfig::default(),
@@ -2117,6 +2161,115 @@ mod tests {
                 task_supervisor: make_task_supervisor(),
             };
 
+            match op {
+                Op::Prepared(prepared) => {
+                    ContextService::new()
+                        .apply_prepared_context(&mut window, &mut view, *prepared)
+                        .await
+                        .1
+                }
+                Op::Summaries(budget) => {
+                    ContextService::new()
+                        .inject_summaries(budget, &mut window, &view)
+                        .await
+                        .unwrap();
+                    0
+                }
+            }
+        }
+
+        fn with_block() -> Vec<Message> {
+            vec![
+                Message::from_legacy(Role::System, "system"),
+                Message::from_parts(
+                    Role::Assistant,
+                    vec![zeph_llm::provider::MessagePart::Compaction {
+                        summary: "server summary".into(),
+                    }],
+                ),
+                Message::from_legacy(Role::User, "turn input"),
+            ]
+        }
+
+        fn is_block(m: &Message) -> bool {
+            m.parts
+                .iter()
+                .any(|p| matches!(p, zeph_llm::provider::MessagePart::Compaction { .. }))
+        }
+
+        #[tokio::test]
+        async fn session_digest_site_lands_after_the_compaction_block() {
+            let mut msgs = with_block();
+            let setup = Setup {
+                digest: Some("previous session".into()),
+                ..Setup::default()
+            };
+
+            let inserted = run(&mut msgs, setup, Op::Prepared(Box::default())).await;
+
+            assert_eq!(inserted, 1);
+            assert!(is_block(&msgs[1]));
+            assert!(msgs[2].content.contains("previous session"));
+        }
+
+        #[tokio::test]
+        async fn inject_summaries_site_lands_after_the_compaction_block() {
+            let memory = zeph_memory::semantic::SemanticMemory::new(
+                ":memory:",
+                "http://127.0.0.1:1",
+                None,
+                zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+                "test-model",
+            )
+            .await
+            .unwrap();
+            let cid = memory.sqlite().create_conversation().await.unwrap();
+            memory
+                .sqlite()
+                .save_summary(cid, "earlier work", None, None, 5)
+                .await
+                .unwrap();
+            let mut msgs = with_block();
+            let setup = Setup {
+                memory: Some(Arc::new(memory)),
+                conversation_id: Some(cid),
+                ..Setup::default()
+            };
+
+            let _ = run(&mut msgs, setup, Op::Summaries(1000)).await;
+
+            assert!(is_block(&msgs[1]), "{msgs:?}");
+            assert!(msgs[2].content.contains("earlier work"));
+        }
+
+        #[test]
+        fn head_injection_sites_never_insert_at_a_fixed_index() {
+            // recall (x2) and cross-session need a vector store to produce a message, so the
+            // wiring of those sites is guarded structurally: every head insert in this file
+            // goes through `insert_at_context_floor`.
+            let source = include_str!("service.rs");
+            let production = &source[..source.find("#[cfg(test)]").unwrap()];
+            assert!(
+                !production.contains("messages.insert("),
+                "fixed-index head insert"
+            );
+            assert!(
+                production
+                    .matches("insert_at_context_floor(window.messages")
+                    .count()
+                    >= 6
+            );
+        }
+
+        #[tokio::test]
+        async fn inserted_count_incremented_for_all_paths() {
+            // AC-12: each non-None field in PreparedContext increments inserted_count by 1.
+            // 10 memory fields are tested here (session_digest is controlled by digest_enabled).
+            let mut msgs = vec![
+                Message::from_legacy(Role::System, "system"),
+                Message::from_legacy(Role::User, "user turn"),
+            ];
+
             // Populate all 10 message-carrying fields.
             let prepared = PreparedContext {
                 graph_facts: Some(mem_msg("graph_facts")),
@@ -2136,9 +2289,7 @@ mod tests {
                 background_tasks: vec![],
             };
 
-            let (_delta, inserted_count) = ContextService::new()
-                .apply_prepared_context(&mut window, &mut view, prepared)
-                .await;
+            let inserted_count = apply(&mut msgs, prepared).await;
 
             // 10 message fields were Some(msg): graph_facts, doc_rag, corrections, recall,
             // cross_session, summaries, persona_facts, trajectory_hints, tree_memory, reasoning_hints.
@@ -2146,6 +2297,40 @@ mod tests {
                 inserted_count, 10,
                 "all 10 message-carrying PreparedContext fields must increment inserted_count"
             );
+        }
+
+        #[tokio::test]
+        async fn memory_first_drain_and_inserts_respect_the_compaction_floor() {
+            let mut msgs = vec![
+                Message::from_legacy(Role::System, "system"),
+                Message::from_parts(
+                    Role::Assistant,
+                    vec![zeph_llm::provider::MessagePart::Compaction {
+                        summary: "server summary".into(),
+                    }],
+                ),
+                Message::from_legacy(Role::User, "old 1"),
+                Message::from_legacy(Role::Assistant, "old 2"),
+                Message::from_legacy(Role::User, "old 3"),
+                Message::from_legacy(Role::Assistant, "old 4"),
+                Message::from_legacy(Role::User, "turn input"),
+            ];
+            let prepared = PreparedContext {
+                recall: Some(mem_msg("recall")),
+                memory_first: true,
+                recent_history_budget: 100_000,
+                ..PreparedContext::default()
+            };
+
+            let inserted = apply(&mut msgs, prepared).await;
+
+            assert_eq!(inserted, 1);
+            assert!(matches!(
+                msgs[1].parts.first(),
+                Some(zeph_llm::provider::MessagePart::Compaction { .. })
+            ));
+            assert!(msgs[2].content.contains("recall"));
+            assert_eq!(msgs.last().unwrap().content, "turn input");
         }
     }
 
@@ -3411,6 +3596,64 @@ mod tests {
                 "Soft-tier prune-only pass must decrement cached_prompt_tokens by exactly \
                  the freed amount"
             );
+        }
+
+        #[tokio::test]
+        async fn soft_compaction_deferred_summary_keeps_subgoal_membership_exact() {
+            use zeph_llm::provider::MessagePart;
+
+            let mut resp = Message::from_parts(
+                Role::User,
+                vec![MessagePart::ToolResult {
+                    tool_use_id: "t0".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                }],
+            );
+            resp.metadata.deferred_summary = Some("ran t0".to_owned());
+            let req = Message::from_parts(
+                Role::Assistant,
+                vec![MessagePart::ToolUse {
+                    id: "t0".into(),
+                    name: "shell".into(),
+                    input: serde_json::json!({}),
+                }],
+            );
+            let messages = vec![
+                plain_msg(Role::System, "system"),
+                plain_msg(Role::User, "before"),
+                req,
+                resp,
+                plain_msg(Role::Assistant, "after"),
+            ];
+
+            let mut ctx_mgr = ContextManager::new();
+            ctx_mgr.budget = Some(ContextBudget::new(1000, 0.2));
+            ctx_mgr.soft_compaction_threshold = 0.5;
+            ctx_mgr.hard_compaction_threshold = 0.9;
+            ctx_mgr.compression.pruning_strategy = zeph_config::PruningStrategy::Subgoal;
+            let mut fixture = Fixture::new(messages, 700, ctx_mgr);
+            let id = fixture.subgoal_registry.push_active("g".to_owned());
+            SubgoalRegistry::tag_untagged(&mut fixture.messages, 1..5, id);
+            let mut view = fixture.view();
+
+            ContextService::new()
+                .maybe_compact(&mut view, &NoopStatus)
+                .await
+                .unwrap();
+
+            let summary = view
+                .messages
+                .iter()
+                .find(|m| m.content.starts_with("[tool summary]"))
+                .expect("deferred summary applied on the soft path");
+            assert_eq!(summary.metadata.subgoal_id, Some(id));
+            assert!(
+                view.messages[1..]
+                    .iter()
+                    .all(|m| m.metadata.subgoal_id == Some(id))
+            );
+            assert_eq!(view.subgoal_registry.subgoals.len(), 1);
         }
 
         #[tokio::test]

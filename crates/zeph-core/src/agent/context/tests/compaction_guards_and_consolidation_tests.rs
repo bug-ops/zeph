@@ -33,59 +33,6 @@ fn make_tool_pair_with_output(agent: &mut Agent<MockChannel>, tool_name: &str) {
     ));
 }
 
-#[test]
-fn remove_lsp_messages_removes_lsp_system_keeps_others() {
-    use zeph_agent_context::helpers::LSP_NOTE_PREFIX;
-
-    let provider = mock_provider(vec![]);
-    let channel = MockChannel::new(vec![]);
-    let registry = create_test_registry();
-    let executor = MockToolExecutor::no_tools();
-    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-
-    // Push a non-LSP system message that must survive.
-    agent.push_message(Message {
-        role: Role::System,
-        content: "[recall] some recall data".to_owned(),
-        parts: vec![],
-        metadata: MessageMetadata::default(),
-    });
-    // Push an LSP system note that must be removed.
-    agent.push_message(Message {
-        role: Role::System,
-        content: format!("{LSP_NOTE_PREFIX}diagnostics]\nsrc/main.rs:1 error: foo"),
-        parts: vec![],
-        metadata: MessageMetadata::default(),
-    });
-    // Push a user message that must survive.
-    agent.push_message(Message {
-        role: Role::User,
-        content: "hello".to_owned(),
-        parts: vec![],
-        metadata: MessageMetadata::default(),
-    });
-
-    let before = agent.msg.messages.len();
-    agent.remove_lsp_messages();
-    // Only the LSP system note should be gone.
-    assert_eq!(agent.msg.messages.len(), before - 1);
-    assert!(
-        agent
-            .msg
-            .messages
-            .iter()
-            .all(|m| !m.content.starts_with(LSP_NOTE_PREFIX))
-    );
-    // Non-LSP system message preserved.
-    assert!(
-        agent
-            .msg
-            .messages
-            .iter()
-            .any(|m| m.content.starts_with("[recall]"))
-    );
-}
-
 // --- Compaction guard tests (issue #1708) ---
 
 // Cooldown guard: cooling turns_remaining counts down and blocks compaction.

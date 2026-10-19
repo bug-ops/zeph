@@ -427,14 +427,16 @@ now set directly to `max_tool_calls` at the once-per-turn seam. That resolution 
 than undermines this section's point — the once-per-turn seam structurally cannot reflect
 per-iteration state, so it was simplified to stop pretending to.
 
-**Decision**: render at the rolling-tail seam in `llm_dispatch.rs:96-113`, the verified precedent
-for mid-turn `messages[0]`-adjacent mutation: `remove_lsp_messages()` → `push_message(Message::
-from_legacy(Role::System, &note_text))` → `recompute_prompt_tokens()`, gated today on
-`lsp.drain_notes(...)` returning notes, with an in-code provider-safety argument (`:92-95`) that
-this point in the loop has no pending `ToolUse`/`ToolResult` pair, so a `Role::System` insert is
-safe across OpenAI/Claude/Ollama. The `<skill_state>` block is a sibling branch at the same seam:
-remove the previous `<skill_state>` system message → push the freshly rendered one →
-`recompute_prompt_tokens()`.
+**Decision (revised by #6786/#6817)**: render through the runtime-note seam (`runtime_note.rs`,
+`Agent::attach_runtime_note`, spec 002), not by inserting `Role::System` messages. The former
+`llm_dispatch.rs` precedent (`remove_lsp_messages()` → `push_message(System)` →
+`recompute_prompt_tokens()`) was deleted: it inserted before the cached prefix and busted the
+provider message cache every iteration. `<skill_state>` becomes a fourth `RuntimeNoteSection`:
+append-only, attached to the tail tool-result message only when the rendered state changed
+(FR-014's identity-skip still applies, against the last emitted state), never edited or removed
+afterwards, never persisted. The system-prompt/`messages[0]` mutation and the
+`recompute_prompt_tokens()` O(history) recount are not needed; the note's token delta is added
+incrementally.
 
 This is licensed by spec 005's Construction-Time contract
 (`specs/005-skills/spec.md:107-110`, #6413): any code path mutating `messages[0]` outside
@@ -760,8 +762,8 @@ sufficient.
 
 ### T007: Rolling-tail rendering at `llm_dispatch.rs`
 
-- Add the `<skill_state>` sibling branch at the seam described in § 6.5 (remove stale → push →
-  `recompute_prompt_tokens`)
+- Add the `<skill_state>` runtime-note section at the seam described in § 6.5 (append-only, only
+  on change, incremental token delta)
 - Implement the byte-identical skip optimization (FR-014, SC-008)
 - Dependencies: T004
 

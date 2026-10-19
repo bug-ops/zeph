@@ -3535,4 +3535,58 @@ mod image_persistence_strip {
             row.cost_cents
         );
     }
+
+    #[tokio::test]
+    async fn test_persist_message_strips_runtime_note_before_session_log() {
+        use std::sync::Arc;
+        use zeph_agent_persistence::SessionSink;
+        use zeph_session::{SessionEvent, SessionEventLog, SessionStore};
+
+        let dir = tempfile::tempdir().unwrap();
+        let log = Arc::new(SessionEventLog::open(dir.path()).await.unwrap());
+        let db_config = zeph_db::DbConfig {
+            url: ":memory:".to_owned(),
+            ..Default::default()
+        };
+        let pool = db_config.connect().await.unwrap();
+        zeph_db::run_migrations(&pool).await.unwrap();
+        let store = SessionStore::new(pool);
+        store.create("s-6786").await.unwrap();
+        let sink = SessionSink::new(log.clone(), store, zeph_common::SessionId::new("s-6786"));
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_session_sink(Some(Arc::new(sink)));
+
+        let parts = vec![
+            MessagePart::Text {
+                text: "here is the result".to_owned(),
+            },
+            MessagePart::RuntimeNote {
+                text: "<runtime-note>NOTE-MARKER</runtime-note>".to_owned(),
+            },
+        ];
+        agent
+            .persist_message(Role::Assistant, "here is the result", &parts, false)
+            .await;
+
+        let events = log.read_all().await.unwrap();
+        let SessionEvent::AssistantMessage {
+            parts: logged_parts,
+        } = &events[0].kind
+        else {
+            panic!("expected AssistantMessage event");
+        };
+        assert!(
+            logged_parts
+                .iter()
+                .all(|p| !matches!(p, MessagePart::RuntimeNote { .. })),
+            "durable session log must not contain a runtime note"
+        );
+    }
 }

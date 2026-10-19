@@ -1436,4 +1436,23 @@ mod session_event_replay_tests {
             .is_empty()
         );
     }
+
+    #[test]
+    fn runtime_note_part_emits_no_client_visible_update() {
+        let updates = session_event_to_updates(zeph_session::SessionEvent::AssistantMessage {
+            parts: vec![
+                zeph_llm::provider::MessagePart::RuntimeNote {
+                    text: "<runtime-note>budget</runtime-note>".to_owned(),
+                },
+                zeph_llm::provider::MessagePart::Text {
+                    text: "done".to_owned(),
+                },
+            ],
+        });
+        assert_eq!(updates.len(), 1);
+        assert!(matches!(
+            updates[0],
+            acp::schema::v1::SessionUpdate::AgentMessageChunk(_)
+        ));
+    }
 }

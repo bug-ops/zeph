@@ -16,6 +16,7 @@ use crate::types::{
 };
 #[cfg(feature = "classifiers")]
 use crate::types::{InjectionVerdict, InstructionClass};
+use zeph_common::delimiter::DelimiterTag;
 use zeph_config::ContentIsolationConfig;
 
 // ---------------------------------------------------------------------------
@@ -551,9 +552,11 @@ impl ContentSanitizer {
     /// Escape delimiter tag names that would allow content to break out of the spotlighting
     /// wrapper (CRIT-03).
     ///
-    /// Uses case-insensitive regex replacement so mixed-case variants like `<Tool-Output>`,
-    /// `<EXTERNAL-DATA>` or `<Shared-State>` are also neutralized (FIX-03). The `<` is replaced
-    /// with the HTML entity `&lt;` so the tag is rendered as plain text inside the wrapper.
+    /// Delegates to [`zeph_common::delimiter::escape_delimiter_tags`] with
+    /// [`DelimiterTag::UNTRUSTED_CONTENT`]: matching is case-insensitive and tolerant of
+    /// whitespace, zero-width/control characters, fullwidth and other bracket lookalikes and
+    /// NFKC expansions. The `<` is replaced with the HTML entity `&lt;` so the tag is
+    /// rendered as plain text inside the wrapper.
     ///
     /// # Examples
     ///
@@ -567,18 +570,12 @@ impl ContentSanitizer {
     /// let escaped2 = ContentSanitizer::escape_delimiter_tags("</EXTERNAL-DATA> end");
     /// assert!(!escaped2.contains("</EXTERNAL-DATA>"));
     ///
-    /// let escaped3 = ContentSanitizer::escape_delimiter_tags("</SHARED-STATE> end");
-    /// assert!(!escaped3.contains("</SHARED-STATE>"));
+    /// let escaped3 = ContentSanitizer::escape_delimiter_tags("</ shared-state\u{200B}> end");
+    /// assert!(escaped3.starts_with("&lt;"));
     /// ```
+    #[must_use]
     pub fn escape_delimiter_tags(content: &str) -> String {
-        use std::sync::LazyLock;
-        static RE_DELIMITER: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r"(?i)</?(?:tool-output|external-data|shared-state)").expect("static regex")
-        });
-        RE_DELIMITER
-            .replace_all(content, |caps: &regex::Captures<'_>| {
-                format!("&lt;{}", &caps[0][1..])
-            })
+        zeph_common::delimiter::escape_delimiter_tags(content, &DelimiterTag::UNTRUSTED_CONTENT)
             .into_owned()
     }
 
@@ -1008,6 +1005,25 @@ mod tests {
         let output = ContentSanitizer::escape_delimiter_tags(input);
         assert!(!output.contains("</EXTERNAL-DATA>"));
         assert!(output.contains("&lt;/EXTERNAL-DATA"));
+    }
+
+    #[test]
+    fn escape_delimiter_tags_disguised_tags() {
+        for input in [
+            "</ shared-state>",
+            "</shared-\u{FB06}ate>",
+            "<\u{7f}/shared-state>",
+            "<\u{85}/shared-state>",
+            "\u{FF1C}/shared-state>",
+            "</shared\u{200B}-state>",
+            "</SHARED\u{2011}STATE>",
+            "</tool\u{FE0F}-output>",
+        ] {
+            let escaped = ContentSanitizer::escape_delimiter_tags(input);
+            assert!(escaped.starts_with("&lt;"), "{input:?} -> {escaped:?}");
+            let stripped = zeph_common::sanitize::strip_control_chars_preserve_whitespace(&escaped);
+            assert!(!stripped.contains('<'), "{input:?} -> {stripped:?}");
+        }
     }
 
     // --- apply_spotlight ---

@@ -327,6 +327,15 @@ pub enum MessagePart {
     /// Claude server-side compaction block — must be preserved verbatim in multi-turn requests
     /// so the API can correctly prune prior history on the next turn.
     Compaction { summary: String },
+    /// Agent-authored per-iteration state (remaining tool budget, LSP notes, utility hints).
+    ///
+    /// Attached only to the unsent tail `User` message that carries `ToolResult` parts (at most
+    /// one per message) via [`Message::append_runtime_note`], so volatile state is appended to
+    /// the request instead of inserted before the cached prefix. It is never part of
+    /// `Message::content`, never user-visible, and never persisted
+    /// ([`MessagePart::strip_for_persistence`]); provider request builders send it through
+    /// [`MessagePart::as_request_text`] / [`Message::to_request_text`].
+    RuntimeNote { text: String },
 }
 
 impl MessagePart {
@@ -341,6 +350,17 @@ impl MessagePart {
             | Self::Summary { text }
             | Self::CrossSession { text } => Some(text.as_str()),
             _ => None,
+        }
+    }
+
+    /// Like [`as_plain_text`](Self::as_plain_text) but also yields the text of a
+    /// [`MessagePart::RuntimeNote`]. Request builders use this; display and persistence paths
+    /// must keep using `as_plain_text` so notes stay invisible to them.
+    #[must_use]
+    pub fn as_request_text(&self) -> Option<&str> {
+        match self {
+            Self::RuntimeNote { text } => Some(text.as_str()),
+            other => other.as_plain_text(),
         }
     }
 
@@ -388,6 +408,43 @@ impl MessagePart {
             .cloned()
             .collect()
     }
+
+    /// Return a cloned copy of `parts` without anything that must never reach a persistence
+    /// sink: `Image` payloads (see [`strip_images`](Self::strip_images)) and
+    /// [`MessagePart::RuntimeNote`] (per-iteration state that is stale on restore).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::provider::MessagePart;
+    ///
+    /// let parts = vec![
+    ///     MessagePart::Text { text: "hello".to_owned() },
+    ///     MessagePart::RuntimeNote { text: "budget".to_owned() },
+    /// ];
+    /// let stripped = MessagePart::strip_for_persistence(&parts);
+    /// assert_eq!(stripped.len(), 1);
+    /// ```
+    #[must_use]
+    pub fn strip_for_persistence(parts: &[MessagePart]) -> Vec<MessagePart> {
+        parts
+            .iter()
+            .filter(|p| !matches!(p, MessagePart::Image(_) | MessagePart::RuntimeNote { .. }))
+            .cloned()
+            .collect()
+    }
+}
+
+/// Outcome of [`Message::append_runtime_note`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NoteAppend {
+    /// The note was added as the last part.
+    Appended,
+    /// The message already carries a note; nothing changed (at most one per message).
+    AlreadyPresent,
+    /// The message is not a `User` message with `ToolResult` parts; nothing changed.
+    NotAToolResultMessage,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -503,6 +560,22 @@ impl MessageVisibility {
     }
 }
 
+/// Why a message exists in the history, beyond its role.
+///
+/// Lets history-rewriting passes (server compaction, floor computation) identify
+/// messages without relying on positional heuristics such as "last `User` message",
+/// which mid-tool-loop is a tool-result carrier rather than the user's input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum MessageOrigin {
+    /// The user's input that started the current turn (or a queued follow-up injected into it).
+    TurnInput,
+    /// Context injected at the head of history (recall, summaries, cross-session, digest) by
+    /// [`insert_at_context_floor`]. Re-injected every turn, so it is never subgoal-tagged,
+    /// fidelity-scored, or selected for compression.
+    HeadInjection,
+}
+
 /// Per-message visibility and metadata controlling agent context and user display.
 ///
 /// Constructors [`agent_only`](Self::agent_only), [`user_only`](Self::user_only),
@@ -553,6 +626,16 @@ pub struct MessageMetadata {
     /// single turn in which it was fetched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust_level: Option<u8>,
+    /// Provenance marker for messages the agent loop must be able to find again after
+    /// history is rewritten (for example the user turn input kept by server compaction).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<MessageOrigin>,
+    /// Subgoal this message belongs to (`Subgoal`/`SubgoalMig` pruning strategies).
+    ///
+    /// In-memory only — never serialized. Membership lives on the message so it follows the
+    /// message through drains, reinserts, and deferred-summary insertions.
+    #[serde(skip)]
+    pub subgoal_id: Option<zeph_common::SubgoalId>,
 }
 
 impl Default for MessageMetadata {
@@ -567,6 +650,8 @@ impl Default for MessageMetadata {
             fidelity_tag: None,
             embedding: None,
             trust_level: None,
+            origin: None,
+            subgoal_id: None,
         }
     }
 }
@@ -577,14 +662,7 @@ impl MessageMetadata {
     pub fn agent_only() -> Self {
         Self {
             visibility: MessageVisibility::AgentOnly,
-            compacted_at: None,
-            deferred_summary: None,
-            focus_pinned: false,
-            focus_marker_id: None,
-            db_id: None,
-            fidelity_tag: None,
-            embedding: None,
-            trust_level: None,
+            ..Self::default()
         }
     }
 
@@ -593,14 +671,7 @@ impl MessageMetadata {
     pub fn user_only() -> Self {
         Self {
             visibility: MessageVisibility::UserOnly,
-            compacted_at: None,
-            deferred_summary: None,
-            focus_pinned: false,
-            focus_marker_id: None,
-            db_id: None,
-            fidelity_tag: None,
-            embedding: None,
-            trust_level: None,
+            ..Self::default()
         }
     }
 
@@ -609,14 +680,8 @@ impl MessageMetadata {
     pub fn focus_pinned() -> Self {
         Self {
             visibility: MessageVisibility::AgentOnly,
-            compacted_at: None,
-            deferred_summary: None,
             focus_pinned: true,
-            focus_marker_id: None,
-            db_id: None,
-            fidelity_tag: None,
-            embedding: None,
-            trust_level: None,
+            ..Self::default()
         }
     }
 }
@@ -656,6 +721,202 @@ pub struct Message {
     pub parts: Vec<MessagePart>,
     #[serde(default)]
     pub metadata: MessageMetadata,
+}
+
+/// Agent-visible projection of a message slice.
+///
+/// Messages hidden from the agent (`MessageVisibility::UserOnly`, e.g. originals replaced by a
+/// deferred tool-pair summary) must never reach a provider request. Every request builder
+/// converts through this type, whose only constructors filter, so a builder cannot forget the
+/// filter and an adjacency scan (tool-pair repair) never straddles a hidden message.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::{AgentVisible, Message, MessageMetadata, Role};
+///
+/// let mut hidden = Message::from_legacy(Role::User, "hidden original");
+/// hidden.metadata = MessageMetadata::user_only();
+/// let messages = vec![Message::from_legacy(Role::System, "sys"), hidden];
+///
+/// let visible = AgentVisible::new(&messages);
+/// assert_eq!(visible.len(), 1);
+/// assert_eq!(visible.get(0).unwrap().content, "sys");
+/// ```
+#[derive(Debug, Clone)]
+pub struct AgentVisible<'a>(Vec<&'a Message>);
+
+impl<'a> AgentVisible<'a> {
+    /// Keep only the messages whose visibility includes the agent.
+    #[must_use]
+    pub fn new(messages: &'a [Message]) -> Self {
+        Self(
+            messages
+                .iter()
+                .filter(|m| m.metadata.visibility.is_agent_visible())
+                .collect(),
+        )
+    }
+
+    /// Iterate over the visible messages in order.
+    #[allow(clippy::must_use_candidate)]
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &'a Message> + '_ {
+        self.0.iter().copied()
+    }
+
+    /// Number of visible messages.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether no message is visible.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The visible message at `index` (index into the filtered view).
+    #[must_use]
+    pub fn get(&self, index: usize) -> Option<&'a Message> {
+        self.0.get(index).copied()
+    }
+
+    /// Nearest non-`System` visible message after `at`; see
+    /// [`next_non_system`](crate::tool_pairing::next_non_system).
+    #[must_use]
+    pub fn next_non_system(&self, at: usize) -> Option<&'a Message> {
+        crate::tool_pairing::next_non_system(&self.0, at).copied()
+    }
+
+    /// Nearest non-`System` visible message before `at`; see
+    /// [`prev_non_system`](crate::tool_pairing::prev_non_system).
+    #[must_use]
+    pub fn prev_non_system(&self, at: usize) -> Option<&'a Message> {
+        crate::tool_pairing::prev_non_system(&self.0, at).copied()
+    }
+}
+
+impl<'a> From<&'a [Message]> for AgentVisible<'a> {
+    fn from(messages: &'a [Message]) -> Self {
+        Self::new(messages)
+    }
+}
+
+impl<'a> From<&'a Vec<Message>> for AgentVisible<'a> {
+    fn from(messages: &'a Vec<Message>) -> Self {
+        Self::new(messages)
+    }
+}
+
+impl<'a, const N: usize> From<&'a [Message; N]> for AgentVisible<'a> {
+    fn from(messages: &'a [Message; N]) -> Self {
+        Self::new(messages)
+    }
+}
+
+/// The user message that carries the request the current turn is answering.
+///
+/// Prefers the message marked [`MessageOrigin::TurnInput`]; without one (subagents, scheduled
+/// loops, restored history) falls back to the last `User` message that is neither a tool-result
+/// carrier nor a head injection (recall, session digest). Mid-tool-loop the last `User` message is a tool-result carrier whose content is tool
+/// output (and may carry a runtime note), so classifiers that need the user's query must not
+/// read it by position.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::{Message, MessagePart, Role, turn_query_message};
+///
+/// let msgs = vec![
+///     Message::from_legacy(Role::User, "fix the bug"),
+///     Message::from_parts(Role::Assistant, vec![MessagePart::ToolUse {
+///         id: "t1".into(),
+///         name: "bash".into(),
+///         input: serde_json::json!({}),
+///     }]),
+///     Message::from_parts(Role::User, vec![MessagePart::ToolResult {
+///         tool_use_id: "t1".into(),
+///         content: "output".into(),
+///         is_error: false,
+///     }]),
+/// ];
+/// assert_eq!(turn_query_message(&msgs).unwrap().content, "fix the bug");
+/// ```
+#[must_use]
+pub fn turn_query_message(messages: &[Message]) -> Option<&Message> {
+    messages
+        .iter()
+        .rfind(|m| m.metadata.origin == Some(MessageOrigin::TurnInput))
+        .or_else(|| {
+            messages.iter().rfind(|m| {
+                m.role == Role::User
+                    && m.metadata.origin != Some(MessageOrigin::HeadInjection)
+                    && !m
+                        .parts
+                        .iter()
+                        .any(|p| matches!(p, MessagePart::ToolResult { .. }))
+            })
+        })
+}
+
+/// Index of the first message that history-head passes may touch.
+///
+/// Returns `1 +` the index of the last message carrying a [`MessagePart::Compaction`] part, or
+/// `1` when there is none (index 0 is the system prompt). Everything below the floor is the
+/// system prompt plus a server compaction block and must never be drained, reordered, or
+/// have messages inserted in front of it.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::{Message, MessagePart, Role, context_floor};
+///
+/// let msgs = vec![
+///     Message::from_legacy(Role::System, "sys"),
+///     Message::from_parts(Role::Assistant, vec![MessagePart::Compaction { summary: "s".into() }]),
+///     Message::from_legacy(Role::User, "hi"),
+/// ];
+/// assert_eq!(context_floor(&msgs), 2);
+/// assert_eq!(context_floor(&msgs[..1]), 1);
+/// ```
+#[must_use]
+pub fn context_floor(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .rposition(|m| {
+            m.parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::Compaction { .. }))
+        })
+        .map_or(1, |i| i + 1)
+}
+
+/// Insert `msg` at the head of the rewritable history, directly after [`context_floor`].
+///
+/// This is the single entry point for "inject right after the system prompt" operations
+/// (recall, summaries, cross-session context, focus knowledge block) so they never land in
+/// front of a server compaction block. The message is marked
+/// [`MessageOrigin::HeadInjection`] unless it already carries an origin.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::{Message, MessagePart, Role, insert_at_context_floor};
+///
+/// let mut msgs = vec![
+///     Message::from_legacy(Role::System, "sys"),
+///     Message::from_parts(Role::Assistant, vec![MessagePart::Compaction { summary: "s".into() }]),
+/// ];
+/// insert_at_context_floor(&mut msgs, Message::from_legacy(Role::System, "recall"));
+/// assert_eq!(msgs[2].content, "recall");
+/// ```
+pub fn insert_at_context_floor(messages: &mut Vec<Message>, mut msg: Message) {
+    msg.metadata
+        .origin
+        .get_or_insert(MessageOrigin::HeadInjection);
+    let floor = context_floor(messages).min(messages.len());
+    messages.insert(floor, msg);
 }
 
 impl Default for Message {
@@ -706,6 +967,100 @@ impl Message {
         &self.content
     }
 
+    /// Text a content-based request builder sends for this message: `content` followed by the
+    /// text of every [`MessagePart::RuntimeNote`]. Borrows `content` when there is no note.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::provider::{Message, MessagePart, Role};
+    ///
+    /// let mut msg = Message::from_parts(
+    ///     Role::User,
+    ///     vec![MessagePart::ToolResult {
+    ///         tool_use_id: "t1".into(),
+    ///         content: "ok".into(),
+    ///         is_error: false,
+    ///     }],
+    /// );
+    /// let before = msg.content.clone();
+    /// msg.append_runtime_note("<runtime-note>x</runtime-note>".into());
+    /// assert_eq!(msg.content, before);
+    /// assert!(msg.to_request_text().ends_with("<runtime-note>x</runtime-note>"));
+    /// ```
+    #[must_use]
+    pub fn to_request_text(&self) -> std::borrow::Cow<'_, str> {
+        let mut notes = self.parts.iter().filter_map(|p| match p {
+            MessagePart::RuntimeNote { text } => Some(text.as_str()),
+            _ => None,
+        });
+        let Some(first) = notes.next() else {
+            return std::borrow::Cow::Borrowed(self.content.as_str());
+        };
+        let mut out = self.content.clone();
+        for note in std::iter::once(first).chain(notes) {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(note);
+        }
+        std::borrow::Cow::Owned(out)
+    }
+
+    /// Whether the message has parts and every one is a [`MessagePart::RuntimeNote`]. Repair
+    /// treats such a message as empty once its tool results are gone.
+    #[must_use]
+    pub fn has_only_runtime_notes(&self) -> bool {
+        !self.parts.is_empty()
+            && self
+                .parts
+                .iter()
+                .all(|p| matches!(p, MessagePart::RuntimeNote { .. }))
+    }
+
+    /// Append an agent-authored [`MessagePart::RuntimeNote`] to this message.
+    ///
+    /// Only a `User` message carrying at least one `ToolResult` part accepts a note, and only
+    /// one note per message. `content` is untouched, so `content == flatten(parts)` still holds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::provider::{Message, MessagePart, NoteAppend, Role};
+    ///
+    /// let mut msg = Message::from_parts(
+    ///     Role::User,
+    ///     vec![MessagePart::ToolResult {
+    ///         tool_use_id: "t1".into(),
+    ///         content: "ok".into(),
+    ///         is_error: false,
+    ///     }],
+    /// );
+    /// assert_eq!(msg.append_runtime_note("a".into()), NoteAppend::Appended);
+    /// assert_eq!(msg.append_runtime_note("b".into()), NoteAppend::AlreadyPresent);
+    ///
+    /// let mut plain = Message::from_legacy(Role::User, "hi");
+    /// assert_eq!(plain.append_runtime_note("a".into()), NoteAppend::NotAToolResultMessage);
+    /// ```
+    pub fn append_runtime_note(&mut self, text: String) -> NoteAppend {
+        let has_tool_result = self
+            .parts
+            .iter()
+            .any(|p| matches!(p, MessagePart::ToolResult { .. }));
+        if self.role != Role::User || !has_tool_result {
+            return NoteAppend::NotAToolResultMessage;
+        }
+        if self
+            .parts
+            .iter()
+            .any(|p| matches!(p, MessagePart::RuntimeNote { .. }))
+        {
+            return NoteAppend::AlreadyPresent;
+        }
+        self.parts.push(MessagePart::RuntimeNote { text });
+        NoteAppend::Appended
+    }
+
     /// Re-synchronize `content` from `parts` after in-place mutation.
     pub fn rebuild_content(&mut self) {
         if !self.parts.is_empty() {
@@ -752,9 +1107,11 @@ impl Message {
                     let _ = write!(out, "[image: {}, {} bytes]", img.mime_type, img.data.len());
                 }
                 // Thinking and compaction blocks are internal API metadata — not rendered in text.
+                // Runtime notes are request-only and must never leak into `content`.
                 MessagePart::ThinkingBlock { .. }
                 | MessagePart::RedactedThinkingBlock { .. }
-                | MessagePart::Compaction { .. } => {}
+                | MessagePart::Compaction { .. }
+                | MessagePart::RuntimeNote { .. } => {}
             }
         }
         out
@@ -2044,5 +2401,217 @@ mod tests {
             MessageVisibility::Both
         );
         assert_eq!(MessageVisibility::from_db_str(""), MessageVisibility::Both);
+    }
+
+    fn compaction_msg(summary: &str) -> Message {
+        Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::Compaction {
+                summary: summary.to_owned(),
+            }],
+        )
+    }
+
+    #[test]
+    fn context_floor_is_one_without_compaction() {
+        let msgs = vec![
+            Message::from_legacy(Role::System, "sys"),
+            Message::from_legacy(Role::User, "hi"),
+        ];
+        assert_eq!(context_floor(&msgs), 1);
+        assert_eq!(context_floor(&[]), 1);
+    }
+
+    #[test]
+    fn context_floor_follows_last_compaction() {
+        let msgs = vec![
+            Message::from_legacy(Role::System, "sys"),
+            compaction_msg("old"),
+            Message::from_legacy(Role::User, "a"),
+            compaction_msg("new"),
+            Message::from_legacy(Role::User, "b"),
+        ];
+        assert_eq!(context_floor(&msgs), 4);
+    }
+
+    #[test]
+    fn insert_at_context_floor_lands_after_compaction_block() {
+        let mut msgs = vec![
+            Message::from_legacy(Role::System, "sys"),
+            compaction_msg("s"),
+            Message::from_legacy(Role::User, "turn"),
+        ];
+        insert_at_context_floor(&mut msgs, Message::from_legacy(Role::System, "recall"));
+        assert_eq!(msgs[1].parts.len(), 1);
+        assert_eq!(msgs[2].content, "recall");
+        assert_eq!(msgs[3].content, "turn");
+
+        let mut plain = vec![Message::from_legacy(Role::System, "sys")];
+        insert_at_context_floor(&mut plain, Message::from_legacy(Role::User, "x"));
+        assert_eq!(plain[1].content, "x");
+    }
+
+    #[test]
+    fn message_origin_round_trips_and_defaults_to_none() {
+        let mut md = MessageMetadata::default();
+        assert_eq!(md.origin, None);
+        let json = serde_json::to_string(&md).unwrap();
+        assert!(!json.contains("origin"));
+        md.origin = Some(MessageOrigin::TurnInput);
+        let back: MessageMetadata =
+            serde_json::from_str(&serde_json::to_string(&md).unwrap()).unwrap();
+        assert_eq!(back.origin, Some(MessageOrigin::TurnInput));
+    }
+
+    #[test]
+    fn agent_visible_adjacency_skips_hidden_and_system_messages() {
+        let hidden = Message {
+            metadata: MessageMetadata::user_only(),
+            ..Message::from_legacy(Role::User, "hidden")
+        };
+        let messages = vec![
+            Message::from_legacy(Role::Assistant, "a"),
+            hidden,
+            Message::from_legacy(Role::System, "sys"),
+            Message::from_legacy(Role::User, "b"),
+        ];
+        let visible = AgentVisible::new(&messages);
+        assert_eq!(visible.len(), 3);
+        assert_eq!(visible.next_non_system(0).unwrap().content, "b");
+        assert_eq!(visible.prev_non_system(2).unwrap().content, "a");
+        assert!(visible.next_non_system(2).is_none());
+    }
+
+    fn tool_result_message(id: &str) -> Message {
+        Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: id.into(),
+                content: "output".into(),
+                is_error: false,
+            }],
+        )
+    }
+
+    #[test]
+    fn runtime_note_appends_once_and_keeps_content_in_sync() {
+        let mut msg = tool_result_message("t1");
+        let before = msg.content.clone();
+
+        assert_eq!(
+            msg.append_runtime_note("<runtime-note>a</runtime-note>".into()),
+            NoteAppend::Appended
+        );
+        assert_eq!(
+            msg.append_runtime_note("<runtime-note>b</runtime-note>".into()),
+            NoteAppend::AlreadyPresent
+        );
+
+        assert_eq!(msg.content, before);
+        assert_eq!(msg.content, Message::flatten_parts(&msg.parts));
+        assert_eq!(
+            msg.parts
+                .iter()
+                .filter(|p| matches!(p, MessagePart::RuntimeNote { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn runtime_note_requires_a_user_tool_result_message() {
+        let mut plain = Message::from_legacy(Role::User, "hi");
+        let mut assistant = Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t".into(),
+                content: "c".into(),
+                is_error: false,
+            }],
+        );
+        assert_eq!(
+            plain.append_runtime_note("n".into()),
+            NoteAppend::NotAToolResultMessage
+        );
+        assert_eq!(
+            assistant.append_runtime_note("n".into()),
+            NoteAppend::NotAToolResultMessage
+        );
+        assert!(plain.parts.is_empty());
+    }
+
+    #[test]
+    fn runtime_note_is_request_text_only() {
+        let mut msg = tool_result_message("t1");
+        msg.append_runtime_note("NOTE".into());
+
+        assert!(!msg.content.contains("NOTE"));
+        assert!(msg.parts.iter().all(|p| p.as_plain_text().is_none()));
+        assert_eq!(
+            msg.parts.last().and_then(MessagePart::as_request_text),
+            Some("NOTE")
+        );
+        assert!(msg.to_request_text().ends_with("\nNOTE"));
+        assert!(matches!(
+            Message::from_legacy(Role::User, "x").to_request_text(),
+            std::borrow::Cow::Borrowed("x")
+        ));
+    }
+
+    #[test]
+    fn strip_for_persistence_drops_notes_and_images_only() {
+        let parts = vec![
+            MessagePart::Text { text: "t".into() },
+            MessagePart::RuntimeNote { text: "n".into() },
+            MessagePart::Image(Box::new(ImageData {
+                data: vec![1],
+                mime_type: "image/png".into(),
+            })),
+        ];
+        let stripped = MessagePart::strip_for_persistence(&parts);
+        assert_eq!(stripped.len(), 1);
+        assert!(matches!(stripped[0], MessagePart::Text { .. }));
+    }
+
+    #[test]
+    fn has_only_runtime_notes_is_false_for_empty_and_mixed_parts() {
+        let mut msg = tool_result_message("t1");
+        assert!(!msg.has_only_runtime_notes());
+        msg.append_runtime_note("n".into());
+        assert!(!msg.has_only_runtime_notes());
+        msg.parts
+            .retain(|p| matches!(p, MessagePart::RuntimeNote { .. }));
+        assert!(msg.has_only_runtime_notes());
+        assert!(!Message::from_legacy(Role::User, "x").has_only_runtime_notes());
+    }
+
+    #[test]
+    fn turn_query_message_fallback_skips_head_injections() {
+        let mut injected = Message::from_legacy(Role::User, "[recall] stale");
+        injected.metadata.origin = Some(MessageOrigin::HeadInjection);
+        let msgs = vec![Message::from_legacy(Role::User, "real question"), injected];
+        assert_eq!(turn_query_message(&msgs).unwrap().content, "real question");
+    }
+
+    #[test]
+    fn turn_query_message_prefers_turn_input_then_plain_user_message() {
+        let mut query = Message::from_legacy(Role::User, "the query");
+        query.metadata.origin = Some(MessageOrigin::TurnInput);
+        let msgs = vec![
+            Message::from_legacy(Role::User, "older"),
+            query,
+            tool_result_message("t1"),
+        ];
+        assert_eq!(turn_query_message(&msgs).unwrap().content, "the query");
+
+        let no_origin = vec![
+            Message::from_legacy(Role::User, "plain question"),
+            tool_result_message("t1"),
+        ];
+        assert_eq!(
+            turn_query_message(&no_origin).unwrap().content,
+            "plain question"
+        );
+        assert!(turn_query_message(&[tool_result_message("t1")]).is_none());
     }
 }

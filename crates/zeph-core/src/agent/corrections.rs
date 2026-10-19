@@ -652,4 +652,47 @@ mod tests {
             "non-timed-out classifier call with a correction verdict must record one correction"
         );
     }
+
+    #[test]
+    fn previous_user_messages_exclude_the_runtime_note() {
+        use zeph_llm::provider::{Message, MessagePart, Role};
+
+        use crate::agent::Agent;
+        use crate::agent::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        let mut tail = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "output".into(),
+                is_error: false,
+            }],
+        );
+        let collect = |agent: &Agent<MockChannel>| -> Vec<String> {
+            agent
+                .collect_previous_user_messages()
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        };
+        agent.msg.messages.push(tail.clone());
+        let before = collect(&agent);
+        agent.msg.messages.pop();
+        tail.append_runtime_note("<runtime-note>NOTE-MARKER</runtime-note>".into());
+        agent.msg.messages.push(tail);
+        let after = collect(&agent);
+
+        assert_eq!(before, after);
+        assert!(after.iter().all(|m| !m.contains("NOTE-MARKER")));
+    }
 }

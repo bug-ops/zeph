@@ -1287,7 +1287,8 @@ pub(crate) fn estimate_parts_size(m: &zeph_llm::provider::Message) -> usize {
             | MessagePart::Recall { text }
             | MessagePart::CodeContext { text }
             | MessagePart::Summary { text }
-            | MessagePart::CrossSession { text } => text.len(),
+            | MessagePart::CrossSession { text }
+            | MessagePart::RuntimeNote { text } => text.len(),
             MessagePart::ToolOutput { body, .. } => body.len(),
             MessagePart::ToolUse { id, name, input } => {
                 50 + id.len() + name.len() + input.to_string().len()
@@ -1348,8 +1349,15 @@ pub(crate) fn estimate_parts_size(m: &zeph_llm::provider::Message) -> usize {
 /// whose `ToolUse` fell inside the count-based slice" and "tool output whose `ToolUse` fell
 /// outside it".
 pub(crate) fn trim_parent_messages(msgs: &mut Vec<zeph_llm::provider::Message>, max_chars: usize) {
-    use zeph_llm::provider::Role;
+    use zeph_llm::provider::{MessagePart, Role};
     use zeph_llm::tool_pairing::{OrphanAction, repair_window};
+
+    // Runtime notes carry the parent's stale per-iteration state (tool budget); a subagent
+    // must never inherit them.
+    for m in msgs.iter_mut() {
+        m.parts
+            .retain(|p| !matches!(p, MessagePart::RuntimeNote { .. }));
+    }
 
     // Token-budget cap: keep the most recent messages that fit within max_chars.
     // We iterate from the end (newest) and drain from the front once the budget is exceeded,

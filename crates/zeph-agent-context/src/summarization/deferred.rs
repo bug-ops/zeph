@@ -231,6 +231,7 @@ pub(crate) fn apply_deferred_summaries(summ: &mut ContextSummarizationView<'_>) 
             .metadata
             .trust_level
             .max(summ.messages[resp_idx].metadata.trust_level);
+        let subgoal_id = summ.messages[resp_idx].metadata.subgoal_id;
 
         summ.messages[req_idx].metadata.visibility =
             zeph_llm::provider::MessageVisibility::UserOnly;
@@ -252,6 +253,7 @@ pub(crate) fn apply_deferred_summaries(summ: &mut ContextSummarizationView<'_>) 
             parts: vec![MessagePart::Summary { text: summary }],
             metadata: MessageMetadata {
                 trust_level,
+                subgoal_id,
                 ..MessageMetadata::agent_only()
             },
         };

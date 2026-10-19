@@ -129,6 +129,30 @@ async fn reload_skills_rebuilds_catalog_only_prompt_and_recomputes_tokens() {
     );
 }
 
+/// #6815: after a server-compaction mirror the head message is `System`; reload must keep it
+/// `System` and leave the compaction block intact instead of writing into it.
+#[tokio::test]
+async fn reload_skills_after_server_compaction_keeps_system_head() {
+    let harness = QuickTestAgent::minimal("ok");
+    let mut agent = harness.agent;
+    let temp_dir = tempfile::tempdir().unwrap();
+    write_bloated_skills(temp_dir.path(), 2);
+    agent.services.skill.skill_paths = vec![temp_dir.path().to_path_buf()];
+    agent.apply_server_compaction("sum".to_owned());
+
+    agent.reload_skills().await;
+
+    let head = agent.msg.messages.first().unwrap();
+    assert_eq!(head.role, zeph_llm::provider::Role::System);
+    assert!(head.content.contains("bloated-skill-0"));
+    assert!(agent.msg.messages.iter().any(|m| {
+        m.role == zeph_llm::provider::Role::Assistant
+            && m.parts
+                .iter()
+                .any(|p| matches!(p, zeph_llm::provider::MessagePart::Compaction { .. }))
+    }));
+}
+
 /// `last_skills_prompt` (used only for memory-recall budget token accounting, never
 /// injected into the LLM-bound system prompt) must also be catalog-only after
 /// construction — defence-in-depth against a future code path accidentally treating it

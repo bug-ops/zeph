@@ -30,12 +30,12 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
-use std::fmt::Write as _;
 
 use crate::error::LlmError;
 use crate::tool_desc::build_tool_description;
 use crate::tool_pairing::{
-    next_non_system, prev_non_system, unmatched_tool_result_ids, unmatched_tool_use_ids,
+    downgraded_tool_result_text, downgraded_tool_use_text, unmatched_tool_result_ids,
+    unmatched_tool_use_ids,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
@@ -152,8 +152,8 @@ impl fmt::Debug for OpenAiConfig {
 }
 
 use crate::provider::{
-    ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart,
-    Role, StatusTx, ToolDefinition, ToolUseRequest,
+    AgentVisible, ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message,
+    MessagePart, Role, StatusTx, ToolDefinition, ToolUseRequest,
 };
 use crate::retry::send_with_retry;
 use crate::sse::openai_sse_to_stream;
@@ -1361,14 +1361,16 @@ struct VisionChatRequest<'a> {
     presence_penalty: Option<f64>,
 }
 
-fn has_image_parts(messages: &[Message]) -> bool {
+fn has_image_parts<'a>(messages: impl Into<AgentVisible<'a>>) -> bool {
     messages
+        .into()
         .iter()
         .any(|m| m.parts.iter().any(|p| matches!(p, MessagePart::Image(_))))
 }
 
-fn convert_messages_vision(messages: &[Message]) -> Vec<VisionApiMessage> {
+fn convert_messages_vision<'a>(messages: impl Into<AgentVisible<'a>>) -> Vec<VisionApiMessage> {
     messages
+        .into()
         .iter()
         .map(|msg| {
             let role = match msg.role {
@@ -1400,7 +1402,7 @@ fn convert_messages_vision(messages: &[Message]) -> Vec<VisionApiMessage> {
                 }
                 if parts.is_empty() {
                     parts.push(OpenAiContentPart::Text {
-                        text: msg.to_llm_content().to_owned(),
+                        text: msg.to_request_text().into_owned(),
                     });
                 }
                 VisionApiMessage {
@@ -1411,7 +1413,7 @@ fn convert_messages_vision(messages: &[Message]) -> Vec<VisionApiMessage> {
                 VisionApiMessage {
                     role: role.to_owned(),
                     content: vec![OpenAiContentPart::Text {
-                        text: msg.to_llm_content().to_owned(),
+                        text: msg.to_request_text().into_owned(),
                     }],
                 }
             }
@@ -1419,8 +1421,9 @@ fn convert_messages_vision(messages: &[Message]) -> Vec<VisionApiMessage> {
         .collect()
 }
 
-fn convert_messages(messages: &[Message]) -> Vec<ApiMessage<'_>> {
+fn convert_messages<'a>(messages: impl Into<AgentVisible<'a>>) -> Vec<ApiMessage<'a>> {
     messages
+        .into()
         .iter()
         .map(|msg| {
             let role = match msg.role {
@@ -1430,7 +1433,7 @@ fn convert_messages(messages: &[Message]) -> Vec<ApiMessage<'_>> {
             };
             ApiMessage {
                 role,
-                content: msg.to_llm_content(),
+                content: msg.to_request_text(),
             }
         })
         .collect()
@@ -1459,7 +1462,7 @@ struct ChatRequest<'a> {
 #[derive(Serialize)]
 struct ApiMessage<'a> {
     role: &'a str,
-    content: &'a str,
+    content: std::borrow::Cow<'a, str>,
 }
 
 #[derive(Deserialize)]
@@ -1621,7 +1624,7 @@ fn convert_assistant_tool_message(
                     tool_name = %name,
                     "downgrading unmatched tool_use to text in OpenAI request"
                 );
-                let _ = write!(text_content, "[tool_use: {name}] {input}");
+                text_content.push_str(&downgraded_tool_use_text(name, input));
             }
             MessagePart::ToolUse { id, name, input } => {
                 tool_calls.push(OpenAiToolCallOut {
@@ -1681,7 +1684,7 @@ fn push_user_tool_messages(
                 );
                 result.push(StructuredApiMessage {
                     role: "user".to_owned(),
-                    content: Some(format!("[tool result: {tool_use_id}] {content}")),
+                    content: Some(downgraded_tool_result_text(tool_use_id, content)),
                     tool_calls: None,
                     tool_call_id: None,
                 });
@@ -1698,6 +1701,16 @@ fn push_user_tool_messages(
                     tool_call_id: Some(tool_use_id.clone()),
                 });
             }
+            // A runtime note is a `user` message after the `tool` messages: OpenAI-family
+            // endpoints require tool messages to directly follow the assistant tool call.
+            MessagePart::RuntimeNote { text } => {
+                result.push(StructuredApiMessage {
+                    role: "user".to_owned(),
+                    content: Some(text.clone()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
             other => {
                 if let Some(text) = other.as_plain_text().filter(|t| !t.is_empty()) {
                     result.push(StructuredApiMessage {
@@ -1712,10 +1725,13 @@ fn push_user_tool_messages(
     }
 }
 
-fn convert_messages_structured(messages: &[Message]) -> Vec<StructuredApiMessage> {
+fn convert_messages_structured<'a>(
+    messages: impl Into<AgentVisible<'a>>,
+) -> Vec<StructuredApiMessage> {
+    let visible: AgentVisible<'a> = messages.into();
     let mut result = Vec::new();
 
-    for (i, msg) in messages.iter().enumerate() {
+    for (i, msg) in visible.iter().enumerate() {
         let has_tool_parts = msg.parts.iter().any(|p| {
             matches!(
                 p,
@@ -1725,26 +1741,21 @@ fn convert_messages_structured(messages: &[Message]) -> Vec<StructuredApiMessage
 
         if has_tool_parts {
             // Layer A (zeph_llm::tool_pairing), adjacency-scoped against the immediate
-            // neighbour in `messages` — never a global id set (issue #6781, matching the
-            // Claude request builder's #6770 fix). `messages` here is not pre-filtered to
-            // agent-visible non-system messages the way Claude's `visible` slice is, so
-            // adjacency is computed directly over `messages` via the shared
+            // neighbour in the agent-visible projection — never a global id set (issue #6781,
+            // matching the Claude request builder's #6770 fix). Emission and classification
+            // share the same `AgentVisible` view, so a pair straddling a hidden message is
+            // classified exactly as it is emitted. `System` messages are skipped by the shared
             // `next_non_system`/`prev_non_system` helpers rather than a raw `idx + 1`/`idx - 1`.
-            // This also means classification is not filtered by `metadata.visibility` the way
-            // Claude's is — self-consistent only because this builder also emits
-            // agent-invisible messages; a future change that filters emission without also
-            // filtering classification input would misclassify pairs straddling a hidden
-            // message as orphaned.
             if msg.role == Role::Assistant {
                 result.push(convert_assistant_tool_message(
                     msg,
-                    &unmatched_tool_use_ids(msg, next_non_system(messages, i)),
+                    &unmatched_tool_use_ids(msg, visible.next_non_system(i)),
                 ));
             } else {
                 push_user_tool_messages(
                     &mut result,
                     msg,
-                    &unmatched_tool_result_ids(msg, prev_non_system(messages, i)),
+                    &unmatched_tool_result_ids(msg, visible.prev_non_system(i)),
                 );
             }
         } else {

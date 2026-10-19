@@ -225,6 +225,10 @@ AND it returns false for results with meaningful content
 - Changing `CompactionState` transitions (must update the documented transition map)
 - Adding dependencies to `zeph-context`'s `Cargo.toml`
 
+### Context floor (#6815)
+- Fidelity scoring (`score_and_apply`, `embed_prepass`) and `merge_consecutive_placeholders` operate only at or after `zeph_llm::provider::context_floor`; the exempt injected-memory range is `floor..floor+inserted_count`; messages carrying `MessageMetadata::origin` (the turn input) are exempt
+- The `memory_first` history drain in `ContextService::apply_prepared_context` starts at the floor, so a server compaction block is never drained
+
 ### Never
 - Add a dependency on `zeph-core`
 - Perform channel I/O or logging to users inside `ContextAssembler::gather()`

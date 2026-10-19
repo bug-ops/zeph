@@ -151,7 +151,7 @@ bootstrap.
 
 ## 4. Triage Prompt and Response Parsing
 
-The triage prompt is built from the last user message (truncated to 400 chars)
+The triage prompt is built from the turn's user query (`zeph_llm::provider::turn_query_message`: the `MessageOrigin::TurnInput` message, else the last `User` message that is not a tool-result carrier; a context with neither takes the triage-failure path), truncated to 400 chars, so a mid-loop classification never reads tool output or a runtime note,
 plus aggregate context stats (message count, estimated token count). Target
 input size: ~120 tokens to keep classification cost minimal.
 
