@@ -57,7 +57,11 @@ pub(crate) fn prune_tool_outputs(
             .cached_prompt_tokens
             .saturating_sub(u64::try_from(freed).unwrap_or(u64::MAX));
         if let Some(from) = first_prunable {
-            zeph_llm::provider::strip_thinking_from(summ.messages, from);
+            zeph_llm::provider::strip_thinking_after_edit(
+                summ.messages,
+                from,
+                summ.thinking_binding,
+            );
         }
     }
     freed

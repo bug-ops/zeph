@@ -416,6 +416,11 @@ pub struct ContextSummarizationView<'a> {
     /// Empty string when no query is available (`AgeMem` degrades gracefully to
     /// temporal + importance signals only).
     pub current_query: String,
+
+    // ── Thinking replay ───────────────────────────────────────────────────────
+    /// Thinking-signature binding of the conversation provider (not the summarization
+    /// provider). Gates the thinking strip after every history prefix edit.
+    pub thinking_binding: zeph_llm::provider::ThinkingBinding,
 }
 
 impl ContextSummarizationView<'_> {

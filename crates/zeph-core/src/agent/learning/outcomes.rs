@@ -71,6 +71,13 @@ impl<C: Channel> Agent<C> {
         }
         self.channel.send_status_best_effort("").await;
         let retry_succeeded = self.msg.messages.len() > messages_before;
+        if !retry_succeeded && self.msg.messages.len() == messages_before {
+            // No reply was added (refusal, timeout): drop the dangling reflection prompt so the
+            // outer loop's next request does not end on it.
+            self.msg.messages.truncate(messages_before - 1);
+            self.msg.recompute_non_system_count();
+            self.recompute_prompt_tokens();
+        }
 
         // D2Skill: record whether injected corrections led to success.
         if !correction_hints.is_empty() {

@@ -1278,7 +1278,7 @@ impl OpenAiProvider {
         } else {
             choice.message.content
         };
-        Ok(ChatResponse::Text(content))
+        Ok(ChatResponse::text(content))
     }
 
     /// Build a serialized `TypedChatRequest` body for `chat_typed`.

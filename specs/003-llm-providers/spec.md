@@ -122,15 +122,15 @@ prompt_cache_ttl = "1h"   # "ephemeral" (default) or "1h"
 | Value | Description | Beta header required |
 |-------|-------------|---------------------|
 | `"ephemeral"` | Standard Anthropic default cache TTL (~5 minutes). No beta header needed. | No |
-| `"1h"` | Extended 1-hour TTL. Requires `extended-cache-ttl-2025-04-11` beta header. | Yes |
+| `"1h"` | Extended 1-hour TTL. The `extended-cache-ttl-2025-04-25` beta header is sent only for models with the `extended_ttl_beta` capability (Legacy, Haiku45). | Legacy and Haiku45 only |
 
-The `prompt_cache_ttl` field defaults to `None` (interpreted as `ephemeral`). Specifying `"1h"` adds the beta header automatically for the duration of that provider's requests.
+The `prompt_cache_ttl` field defaults to `None` (interpreted as `ephemeral`). Specifying `"1h"` adds the beta header automatically for models that still need it; newer and unknown models accept the TTL without it.
 
 `--migrate-config` preserves `prompt_cache_ttl = "1h"` and suppresses `ephemeral` (it is the default, so no migration write-back).
 
 #### Key Invariants
 
-- `CacheTtl::OneHour` requires the `extended-cache-ttl-2025-04-11` beta header — it MUST be added automatically whenever `prompt_cache_ttl = "1h"` is configured.
+- The `extended-cache-ttl-2025-04-25` beta header MUST be added automatically when `prompt_cache_ttl = "1h"` is configured on a model whose `extended_ttl_beta` capability is set, and MUST NOT be sent to any other model (including `Unknown`).
 - `CacheTtl::Ephemeral` MUST NOT add the beta header — the header is only needed for non-default TTL.
 - `prompt_cache_ttl` is a per-provider field. Different providers in `[[llm.providers]]` may have different TTLs.
 - NEVER apply a `1h` TTL header to non-Claude providers — it is Claude API-specific.
@@ -224,6 +224,8 @@ character.
 | `preserved_thinking` (`block_binding: drop_block`) | Fable51, Opus55, Sonnet55, Haiku55 |
 | `server_compaction` | every 4.6+ model, Fable, Mythos, Haiku55; not Haiku45, Legacy or Unknown |
 | `needs_interleaved_beta` (with `Extended` thinking and tools) | Sonnet46 |
+| `extended_ttl_beta` (`extended-cache-ttl-2025-04-25` with `prompt_cache_ttl = "1h"`) | Legacy, Haiku45 |
+| `structured_outputs` (`chat_typed` uses `output_config.format`) | Opus55, Sonnet55, Fable51, Mythos51 |
 | `needs_1m_beta` (`context-1m-2025-08-07`) | Legacy only |
 | `native_window` | 1M for 4.6+, 5.x, Fable, Mythos, Haiku55; 200k for Haiku45 and Legacy (1M with `needs_1m_beta`); none for Unknown |
 
@@ -238,6 +240,9 @@ character.
 - Request: `context_management: {"edits": [{"type": "compact_20260112", "trigger": {"type": "input_tokens", "value": N}, "pause_after_compaction": false}]}`. `N` is a `CompactionTrigger` (`zeph-config`, private field, `serde(try_from = "u32")`, minimum 50 000), set per provider with `server_compaction_trigger_tokens`. Unset means `max(50 000, 70% of context_window())` (140 000 at 200k), which stays below the tool-loop stop line (80% of the budget); a startup warning fires when an explicit trigger is at or above that line.
 - Response block: `{"type": "compaction", "content": "..."}`. Streaming delivers one `content_block_delta` with `delta.type = "compaction_delta"` and the whole summary in `delta.content`, bounded by `max_compaction_bytes` and cut on a char boundary. A missing, null or empty summary yields no `Compaction` part and no `StreamChunk::Compaction`.
 - `with_server_compaction(true)` is ignored with a warning on models without the `server_compaction` capability.
+- `context_management` is sent only on `chat_with_tools` and the tools stream; plain `chat`, `chat_stream`, typed and vision requests never carry it, because they do not carry the full conversation history.
+- `ChatResponse::Text { text, compaction }` carries the summary of a text-only reply exactly as `ToolUse` does; it is never dropped.
+- `usage.iterations[]` entries of kind `compaction` are billed in addition to the top-level counters and exposed through `LlmProvider::last_auxiliary_usage()` (`AuxiliaryUsage`); the top-level counters stay the context-size value. Unknown iteration kinds are not billed (warning). The tracker resets the value on every recorded response.
 
 ### Beta latches
 
@@ -245,13 +250,17 @@ character.
 
 ### Thinking binding wire
 
-On `preserved_thinking` models (while not latched) the request carries `thinking: {"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "drop_block"}}` (an explicit adaptive type when thinking is not configured, equal to the server default) and the `thinking-binding-controls-2026-08-01` beta. `block_binding` is only valid beside adaptive thinking. The response's `input_transformations` (top level, or `message_start.message` when streaming) is folded into `ThinkingReplay::{Intact, Dropped { first_message_index }}`; the index is in wire `messages[]` space, never greater than the history index, so stripping from it covers at least the dropped blocks. Recovery when thinking and history disagree: `ThinkingReplay::Dropped { first_message_index }` strips thinking from that index of the agent's history once (only for `prefix_binding_mismatch` and unknown reasons; `model_binding_mismatch` and `organization_binding_mismatch` drops leave history alone so a Router/Triage model switch does not wipe reasoning), before the response's own assistant message is pushed; `LlmError::ThinkingBindingMismatch` (beta latched off, unknown model, or a rewrite that escaped the seam) strips all thinking from history and retries the call once. `chat_typed` on `forbids_forced_tool_choice` models sends `tool_choice: auto` plus a must-call system instruction and retries once with a user nudge; a second miss returns `StructuredParse`.
+On `preserved_thinking` models (while not latched) the request carries `thinking: {"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "drop_block"}}` (an explicit adaptive type when thinking is not configured, equal to the server default) and the `thinking-binding-controls-2026-08-01` beta. `block_binding` is only valid beside adaptive thinking. The response's `input_transformations` (top level, or `message_start.message` when streaming) is folded into `ThinkingReplay::{Intact, Dropped { first_message_index }}`; the index is in wire `messages[]` space, never greater than the history index, so stripping from it covers at least the dropped blocks. Recovery when thinking and history disagree: `ThinkingReplay::Dropped { first_message_index }` strips thinking from that index of the agent's history once (only for `prefix_binding_mismatch` and unknown reasons; `model_binding_mismatch` and `organization_binding_mismatch` drops leave history alone so a Router/Triage model switch does not wipe reasoning), before the response's own assistant message is pushed; `LlmError::ThinkingBindingMismatch` (beta latched off, unknown model, or a rewrite that escaped the seam) strips all thinking from history and retries the call once. `chat_typed` on `structured_outputs` models sends `output_config.format = {type: json_schema, schema}` (merged into the existing `output_config`, no tools, no `tool_choice`) and parses the joined text; the schema is normalized for the supported dialect (`additionalProperties: false` on every object, bound keywords and unsupported `format`s stripped), and a recursive `$ref` graph falls back to the tool path. On other `forbids_forced_tool_choice` models it sends `tool_choice: auto` plus a must-call system instruction and retries once with a user nudge; a second miss returns `StructuredParse`. `chat_typed` on the Router is the trait default (the router has no typed entry point), so a typed call through a router uses the system-prompt schema path.
 
 ### Key Invariants
 
 - Capability decisions come only from `ClaudeModel::capabilities()` — NEVER from substring checks on the model id elsewhere
 - NEVER send `budget_tokens`, a prefill turn or `temperature` to a model whose capability forbids it, and NEVER send `block_binding` without adaptive thinking
 - NEVER read a thinking-binding mismatch as a beta-header rejection
+- A `stop_reason: "refusal"` (non-stream, plain chat, typed, text SSE and tool SSE via `message_delta`) MUST surface as `LlmError::Refused { provider, category, explanation }`, never as an empty reply; partial output is discarded.
+- `LlmError::forbids_provider_fallback()` (`InvalidInput` or `Refused`) MUST stop every router fallback loop (default strategies, cascade chat and stream, tools path); a refusal records no availability, reputation or Thompson outcome. Embedding paths keep `is_invalid_input()` because embeddings never refuse.
+- Streamed thinking is bounded by `max_thinking_bytes` counting thinking text, `signature_delta` bytes and `redacted_thinking.data`; an oversized block is dropped whole together with every later thinking block of the response.
+- Adjacent text blocks stay separate blocks on the stream (`ToolSseEvent::TextBlockStart` + `AssistantContentBuilder::begin_text_block`) and non-stream paths, so both produce identical `AssistantContent`.
 - A beta latch flips at most once; the retry it triggers cannot loop
 
 ## Tool-Call ID Uniqueness (OpenAI/Compatible) (#6506, #6501)

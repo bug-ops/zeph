@@ -2348,7 +2348,7 @@ async fn chat_with_tools_strips_image_for_non_vision_provider_in_ordered_dispatc
 
     let messages = vec![image_msg()];
     let result = r.chat_with_tools(&messages, &[]).await.unwrap();
-    assert!(matches!(result, crate::provider::ChatResponse::Text(t) if t == "ok"));
+    assert!(matches!(result, crate::provider::ChatResponse::Text { text: t, .. } if t == "ok"));
 
     let calls = recorded.lock().unwrap();
     assert_eq!(calls.len(), 1);
@@ -2375,7 +2375,7 @@ async fn chat_with_tools_strips_image_for_non_vision_bandit_selected_provider() 
 
     let messages = vec![image_msg()];
     let result = r.chat_with_tools(&messages, &[]).await.unwrap();
-    assert!(matches!(result, crate::provider::ChatResponse::Text(t) if t == "ok"));
+    assert!(matches!(result, crate::provider::ChatResponse::Text { text: t, .. } if t == "ok"));
 
     let calls = recorded.lock().unwrap();
     assert_eq!(calls.len(), 1);
@@ -2405,4 +2405,128 @@ async fn chat_with_tools_preserves_image_for_vision_capable_provider() {
         messages_contain_image(&calls[0]),
         "a vision-capable provider must still receive the Image part"
     );
+}
+
+// ── Refusal short-circuit ─────────────────────────────────────────────────
+
+type SharedCalls = std::sync::Arc<std::sync::Mutex<Vec<Vec<Message>>>>;
+
+fn refusal(provider: &str) -> LlmError {
+    LlmError::Refused {
+        provider: provider.into(),
+        category: Some(crate::error::RefusalCategory::new("cyber")),
+        explanation: None,
+    }
+}
+
+/// A refusing primary and a healthy recording secondary.
+fn refusing_providers() -> (Vec<AnyProvider>, SharedCalls) {
+    use crate::mock::MockProvider;
+
+    let p1 = AnyProvider::Mock(
+        MockProvider::default()
+            .with_errors(vec![refusal("p1")])
+            .with_name("p1"),
+    );
+    let (healthy, calls) = MockProvider::default().with_name("p2").with_recording();
+    (vec![p1, AnyProvider::Mock(healthy)], calls)
+}
+
+fn assert_refusal_short_circuit<T>(
+    result: Result<T, LlmError>,
+    router: &RouterProvider,
+    secondary_calls: &SharedCalls,
+) {
+    let Err(err) = result else {
+        panic!("expected a refusal error");
+    };
+    assert!(
+        matches!(&err, LlmError::Refused { provider, .. } if provider == "p1"),
+        "expected Refused from p1, got {err:?}"
+    );
+    assert!(
+        secondary_calls.lock().unwrap().is_empty(),
+        "secondary provider must never be called after a refusal"
+    );
+    assert!(
+        router.ema.as_ref().unwrap().snapshot().is_empty(),
+        "a refusal must not record an availability outcome"
+    );
+}
+
+#[tokio::test]
+async fn chat_refusal_does_not_fall_back_or_penalize_the_primary() {
+    let (providers, calls) = refusing_providers();
+    let router = RouterProvider::new(providers).with_ema(0.3, 10);
+    let msgs = vec![Message::from_legacy(Role::User, "hi")];
+    let result = router.chat(&msgs).await;
+    assert_refusal_short_circuit(result, &router, &calls);
+}
+
+#[tokio::test]
+async fn chat_stream_refusal_does_not_fall_back_or_penalize_the_primary() {
+    let (providers, calls) = refusing_providers();
+    let router = RouterProvider::new(providers).with_ema(0.3, 10);
+    let msgs = vec![Message::from_legacy(Role::User, "hi")];
+    let result = router.chat_stream(&msgs).await;
+    assert_refusal_short_circuit(result, &router, &calls);
+}
+
+#[tokio::test]
+async fn chat_with_tools_refusal_does_not_fall_back_or_penalize_the_primary() {
+    use crate::provider::ToolDefinition;
+
+    let (providers, calls) = refusing_providers();
+    let router = RouterProvider::new(providers).with_ema(0.3, 10);
+    let result = router.chat_with_tools(&[], &[] as &[ToolDefinition]).await;
+    assert_refusal_short_circuit(result, &router, &calls);
+}
+
+#[tokio::test]
+async fn cascade_chat_refusal_does_not_fall_back() {
+    let (providers, calls) = refusing_providers();
+    let router = RouterProvider::new(providers).with_cascade(CascadeRouterConfig::default());
+    let msgs = vec![Message::from_legacy(Role::User, "hi")];
+    let err = router.chat(&msgs).await.unwrap_err();
+    assert!(err.is_refusal(), "{err:?}");
+    assert!(calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn cascade_chat_stream_refusal_does_not_fall_back() {
+    let (providers, calls) = refusing_providers();
+    let router = RouterProvider::new(providers).with_cascade(CascadeRouterConfig::default());
+    let msgs = vec![Message::from_legacy(Role::User, "hi")];
+    let result = router.chat_stream(&msgs).await;
+    assert!(matches!(result, Err(ref e) if e.is_refusal()));
+    assert!(calls.lock().unwrap().is_empty());
+}
+
+// ── thinking_binding aggregation ──────────────────────────────────────────
+
+fn mock_with_binding(name: &str, binding: crate::provider::ThinkingBinding) -> AnyProvider {
+    use crate::mock::MockProvider;
+
+    AnyProvider::Mock(
+        MockProvider::default()
+            .with_name(name)
+            .with_thinking_binding(binding),
+    )
+}
+
+#[test]
+fn router_thinking_binding_is_prefix_bound_if_any_member_is() {
+    use crate::provider::ThinkingBinding::{PrefixBound, Unbound};
+
+    let mixed = RouterProvider::new(vec![
+        mock_with_binding("a", Unbound),
+        mock_with_binding("b", PrefixBound),
+    ]);
+    assert_eq!(mixed.thinking_binding(), PrefixBound);
+
+    let none = RouterProvider::new(vec![
+        mock_with_binding("a", Unbound),
+        mock_with_binding("b", Unbound),
+    ]);
+    assert_eq!(none.thinking_binding(), Unbound);
 }

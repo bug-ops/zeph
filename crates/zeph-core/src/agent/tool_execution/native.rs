@@ -9,10 +9,9 @@ impl<C: Channel> Agent<C> {
     pub(crate) async fn process_response(&mut self) -> Result<(), crate::agent::error::AgentError> {
         self.services.security.flagged_urls.clear();
         // Self-reflection re-enters this method from inside a tool batch; the outer loop's
-        // frozen set must survive the nested call.
-        let outer_turn_set = self.services.tool_state.turn_tool_set.take();
-        let result = self.process_response_native_tools().await;
-        self.services.tool_state.turn_tool_set = outer_turn_set;
-        result
+        // frozen set must survive the nested call, including when this future is cancelled.
+        let _depth = self.runtime.lifecycle.response_depth.enter();
+        let _outer_turn_set = self.services.tool_state.turn_tool_set.scope();
+        self.process_response_native_tools().await
     }
 }

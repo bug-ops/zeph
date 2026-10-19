@@ -3,6 +3,7 @@
 
 //! Diagnostics-on-save hook: fetches LSP diagnostics via mcpls after `write`.
 
+use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -94,10 +95,35 @@ fn threshold_rank(min: DiagnosticSeverity) -> u8 {
     }
 }
 
+/// 1-based source line as reported by mcpls; zero and negative values are not representable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OneBasedLine(NonZeroU64);
+
+impl std::fmt::Display for OneBasedLine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+fn lenient_line<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<OneBasedLine>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Number(u64),
+        Other(IgnoredAny),
+    }
+    Ok(match Raw::deserialize(deserializer)? {
+        Raw::Number(n) => NonZeroU64::new(n).map(OneBasedLine),
+        Raw::Other(_) => None,
+    })
+}
+
 #[derive(Debug, Deserialize)]
 struct WirePosition {
-    #[serde(default)]
-    line: u64,
+    #[serde(default, deserialize_with = "lenient_line")]
+    line: Option<OneBasedLine>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,11 +148,7 @@ fn default_severity() -> LspSeverity {
 ///
 /// Extracted for unit testing independently of MCP calls.
 pub(super) fn format_diagnostic(file_path: &str, d: &WireDiagnostic) -> String {
-    // LSP lines are 0-indexed; add 1 for display.
-    let line = d
-        .range
-        .as_ref()
-        .map_or(0, |r| r.start.line.saturating_add(1));
+    let line = d.range.as_ref().and_then(|r| r.start.line);
     let severity_str = d.severity.label();
     let message = d.message.as_deref().unwrap_or("(no message)");
     // Truncate message before formatting to avoid unbounded allocations.
@@ -136,7 +158,10 @@ pub(super) fn format_diagnostic(file_path: &str, d: &WireDiagnostic) -> String {
         .chars()
         .filter(|&c| c != '\n' && c != '\r')
         .collect();
-    format!("{safe_path}:{line} {severity_str}: {safe_message}")
+    match line {
+        Some(line) => format!("{safe_path}:{line} {severity_str}: {safe_message}"),
+        None => format!("{safe_path} {severity_str}: {safe_message}"),
+    }
 }
 
 /// Parse a diagnostics JSON response from mcpls.
@@ -323,21 +348,21 @@ mod tests {
 
     #[test]
     fn format_diagnostic_basic() {
-        let d = diag(1, "type mismatch", 4);
+        let d = diag(1, "type mismatch", 5);
         let line = format_diagnostic("src/main.rs", &d);
         assert_eq!(line, "src/main.rs:5 error: type mismatch");
     }
 
     #[test]
     fn format_diagnostic_warning() {
-        let d = diag(2, "unused variable", 0);
+        let d = diag(2, "unused variable", 1);
         let line = format_diagnostic("lib.rs", &d);
         assert_eq!(line, "lib.rs:1 warning: unused variable");
     }
 
     #[test]
     fn format_diagnostic_strips_path_newlines() {
-        let d = diag(1, "err", 0);
+        let d = diag(1, "err", 1);
         let line = format_diagnostic("src/\nfoo.rs", &d);
         assert!(!line.contains('\n'), "newline in path must be stripped");
         assert!(line.contains("src/foo.rs:1 error: err"));
@@ -346,7 +371,7 @@ mod tests {
     #[test]
     fn format_diagnostic_truncates_message() {
         let long_msg = "x".repeat(300);
-        let d = diag(1, &long_msg, 0);
+        let d = diag(1, &long_msg, 1);
         let line = format_diagnostic("f.rs", &d);
         // message portion is truncated to 200 chars
         let msg_part: String = line.chars().skip("f.rs:1 error: ".len()).collect();
@@ -364,8 +389,23 @@ mod tests {
     fn format_diagnostic_missing_range() {
         let d = wire(serde_json::json!({ "severity": 1, "message": "oops" }));
         let line = format_diagnostic("f.rs", &d);
-        // line defaults to 0 when range is absent
-        assert_eq!(line, "f.rs:0 error: oops");
+        assert_eq!(line, "f.rs error: oops");
+    }
+
+    #[test]
+    fn format_diagnostic_line_one_renders_as_one() {
+        let d = diag(1, "m", 1);
+        assert_eq!(format_diagnostic("main.rs", &d), "main.rs:1 error: m");
+    }
+
+    #[test]
+    fn format_diagnostic_zero_or_negative_line_omits_line() {
+        for line in [serde_json::json!(0), serde_json::json!(-4)] {
+            let d = wire(serde_json::json!({
+                "severity": 1, "message": "m", "range": { "start": { "line": line } }
+            }));
+            assert_eq!(format_diagnostic("main.rs", &d), "main.rs error: m");
+        }
     }
 
     // Tests that verify fetch_diagnostics passes the correct argument key ("file_path")
@@ -454,7 +494,7 @@ mod tests {
             "diagnostics": [{
                 "code": "E0308",
                 "message": "mismatched types",
-                "range": { "start": { "line": 9, "character": 4 }, "end": { "line": 9, "character": 8 } },
+                "range": { "start": { "line": 10, "character": 4 }, "end": { "line": 10, "character": 8 } },
                 "severity": severity,
                 "source": "rustc"
             }]
@@ -523,7 +563,7 @@ mod tests {
         ]"#;
         let parsed = parse_diagnostics_json(json).expect("array");
         let messages: Vec<_> = parsed.iter().filter_map(|d| d.message.as_deref()).collect();
-        assert_eq!(messages, ["first", "fourth"]);
+        assert_eq!(messages, ["first", "third", "fourth"]);
     }
 
     #[test]

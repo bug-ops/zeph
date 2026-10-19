@@ -226,6 +226,40 @@ impl<R> BlockingHandle<R> {
         self.abort.abort();
     }
 
+    /// Clone of the underlying task's abort handle.
+    ///
+    /// [`join`][Self::join] consumes the handle, after which [`abort`][Self::abort] is no
+    /// longer callable. Take this handle first when the caller must be able to abort the task
+    /// if a bounded wait on `join` elapses.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::sync::Arc;
+    /// use std::time::Duration;
+    /// use tokio_util::sync::CancellationToken;
+    /// use zeph_common::task_supervisor::TaskSupervisor;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let sup = TaskSupervisor::new(CancellationToken::new());
+    /// let (_keep_open, rx) = tokio::sync::oneshot::channel::<()>();
+    /// let handle = sup.spawn_oneshot(Arc::from("pending"), || async move {
+    ///     let _ = rx.await;
+    /// });
+    /// let abort = handle.abort_handle();
+    /// let waited = tokio::time::timeout(Duration::from_millis(20), handle.join()).await;
+    /// assert!(waited.is_err());
+    /// abort.abort();
+    /// tokio::time::sleep(Duration::from_millis(20)).await;
+    /// assert!(abort.is_finished());
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn abort_handle(&self) -> AbortHandle {
+        self.abort.clone()
+    }
+
     /// Non-blocking, non-consuming check for whether the task has finished.
     ///
     /// Unlike [`try_join`][Self::try_join], this does not consume `self` or retrieve the

@@ -31,7 +31,7 @@ fn tool_use_provider(final_text: &str) -> AnyProvider {
     };
     let (p, _) = MockProvider::default().with_tool_use(vec![
         ChatResponse::tool_use(None, vec![tool_call]),
-        ChatResponse::Text(final_text.to_string()),
+        ChatResponse::text(final_text.to_string()),
     ]);
     AnyProvider::Mock(p)
 }
@@ -39,7 +39,7 @@ fn tool_use_provider(final_text: &str) -> AnyProvider {
 fn multi_message_provider(count: usize) -> AnyProvider {
     let mut responses = Vec::new();
     for _ in 0..count {
-        responses.push(ChatResponse::Text("response".to_string()));
+        responses.push(ChatResponse::text("response".to_string()));
     }
     let (p, _) = MockProvider::default().with_tool_use(responses);
     AnyProvider::Mock(p)

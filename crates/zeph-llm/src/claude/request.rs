@@ -246,7 +246,11 @@ fn into_blocks(content: StructuredContent) -> Vec<AnthropicContentBlock> {
     }
 }
 
-pub(super) fn parse_tool_response(resp: ToolApiResponse) -> (ChatResponse, Option<String>) {
+/// Convert an API response into a [`ChatResponse`], carrying any server compaction summary.
+///
+/// Adjacent text blocks stay separate blocks, exactly as the streaming path produces them.
+/// The caller must have run [`crate::error::check_refusal`] first.
+pub(super) fn parse_tool_response(resp: ToolApiResponse) -> ChatResponse {
     let truncated = resp.stop_reason.as_deref() == Some("max_tokens");
     let replay = resp.thinking_replay();
     let mut text_parts = Vec::new();
@@ -256,6 +260,9 @@ pub(super) fn parse_tool_response(resp: ToolApiResponse) -> (ChatResponse, Optio
     for block in resp.content {
         match block {
             AnthropicContentBlock::Text { text, .. } => {
+                if text.is_empty() {
+                    continue;
+                }
                 text_parts.push(text.clone());
                 blocks.push(AssistantBlock::Text(text));
             }
@@ -303,8 +310,8 @@ pub(super) fn parse_tool_response(resp: ToolApiResponse) -> (ChatResponse, Optio
             "response truncated by max_tokens with pending tool calls; discarding incomplete tool use"
         );
         let combined = text_parts.join("");
-        return (
-            ChatResponse::Text(if combined.is_empty() {
+        return with_compaction(
+            ChatResponse::text(if combined.is_empty() {
                 "[Response truncated: max_tokens limit reached. Please reduce the request scope.]"
                     .to_owned()
             } else {
@@ -327,7 +334,7 @@ pub(super) fn parse_tool_response(resp: ToolApiResponse) -> (ChatResponse, Optio
         } else {
             combined
         };
-        ChatResponse::Text(text)
+        ChatResponse::text(text)
     } else {
         ChatResponse::ToolUse {
             content,
@@ -335,7 +342,14 @@ pub(super) fn parse_tool_response(resp: ToolApiResponse) -> (ChatResponse, Optio
             compaction: None,
         }
     };
-    (response, compaction_summary)
+    with_compaction(response, compaction_summary)
+}
+
+fn with_compaction(mut response: ChatResponse, summary: Option<String>) -> ChatResponse {
+    if let Some(summary) = summary {
+        response.attach_compaction(summary);
+    }
+    response
 }
 
 fn push_tool_use_block(

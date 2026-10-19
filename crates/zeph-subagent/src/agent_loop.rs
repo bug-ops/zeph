@@ -12,7 +12,8 @@ use tokio_util::sync::CancellationToken;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{
     AssistantContentBuilder, ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart,
-    Role, ThinkingBlock, ToolDefinition, ToolUseRequest,
+    Role, ThinkingBinding, ThinkingBlock, ToolDefinition, ToolUseRequest,
+    strip_thinking_after_edit, strip_thinking_from,
 };
 use zeph_llm::sse::{ToolSseEvent, ToolSseStream};
 use zeph_llm::thinking_replay::ThinkingReplay;
@@ -219,6 +220,7 @@ async fn drive_tool_stream(
 
     while let Some(event) = stream.next().await {
         match event {
+            ToolSseEvent::TextBlockStart => content.begin_text_block(),
             ToolSseEvent::ContentChunk(text) => {
                 forward.send_text(&text);
                 content.push_text(&text);
@@ -262,7 +264,7 @@ async fn drive_tool_stream(
             compaction: None,
         })
     } else {
-        Ok(ChatResponse::Text(
+        Ok(ChatResponse::text(
             content.build().text().unwrap_or_default(),
         ))
     }
@@ -305,11 +307,31 @@ async fn call_provider_streaming_or_plain(
         .map(|r| (r, false))
 }
 
+/// Call the provider, and on a thinking-binding mismatch strip all thinking from `messages` and
+/// retry exactly once (when there was thinking to strip).
+async fn call_provider_with_thinking_retry(
+    provider: &AnyProvider,
+    messages: &mut [Message],
+    tool_defs: &[ToolDefinition],
+    forward: Option<&ForwardSender>,
+) -> Result<(ChatResponse, bool), zeph_llm::LlmError> {
+    match call_provider_streaming_or_plain(provider, messages, tool_defs, forward).await {
+        Err(e) if e.is_thinking_binding_mismatch() => {
+            if strip_thinking_from(messages, 0) == 0 {
+                return Err(e);
+            }
+            tracing::warn!("thinking binding mismatch; stripped thinking from history, retrying");
+            call_provider_streaming_or_plain(provider, messages, tool_defs, forward).await
+        }
+        other => other,
+    }
+}
+
 #[tracing::instrument(name = "subagent.agent_loop.call_provider", skip_all, err)]
 #[allow(clippy::too_many_arguments)]
 async fn call_provider_with_status(
     provider: &AnyProvider,
-    messages: &[Message],
+    messages: &mut [Message],
     tool_defs: &[ToolDefinition],
     status_tx: &watch::Sender<SubAgentStatus>,
     turns: u32,
@@ -332,7 +354,7 @@ async fn call_provider_with_status(
 
     let llm_result = tokio::time::timeout(
         llm_timeout,
-        call_provider_streaming_or_plain(provider, messages, tool_defs, forward),
+        call_provider_with_thinking_retry(provider, messages, tool_defs, forward),
     )
     .await
     .map_err(|_| {
@@ -617,6 +639,23 @@ enum TurnOutcome {
     Cancelled,
 }
 
+/// Strip from `messages` the thinking the provider reported dropping from this request.
+fn strip_dropped_thinking(messages: &mut [Message], response: &ChatResponse) {
+    if let ChatResponse::ToolUse {
+        replay: ThinkingReplay::Dropped {
+            first_message_index,
+        },
+        ..
+    } = response
+    {
+        tracing::warn!(
+            first_message_index,
+            "provider dropped thinking blocks; stripping the same range from history"
+        );
+        strip_thinking_from(messages, *first_message_index);
+    }
+}
+
 /// Execute a single LLM turn: call the provider, handle secret requests,
 /// dispatch tool calls, and write transcript entries.
 ///
@@ -665,8 +704,10 @@ async fn run_turn(
     )
     .await?;
 
+    strip_dropped_thinking(messages, &response);
+
     let response_text = match &response {
-        ChatResponse::Text(t) => t.clone(),
+        ChatResponse::Text { text: t, .. } => t.clone(),
         ChatResponse::ToolUse { content, .. } => content.text().unwrap_or_default(),
         _ => String::new(),
     };
@@ -694,7 +735,7 @@ async fn run_turn(
         }
     }
 
-    let is_text_response = matches!(&response, ChatResponse::Text(_));
+    let is_text_response = matches!(&response, ChatResponse::Text { .. });
     match handle_secret_request(
         transcript_writer,
         seq,
@@ -774,27 +815,16 @@ async fn handle_tool_step(
     active_tool_grants_seen: &mut std::collections::HashSet<String>,
 ) -> bool {
     match response {
-        ChatResponse::Text(text) => {
+        ChatResponse::Text { text, .. } => {
             messages.push(make_message(Role::Assistant, text));
             true
         }
         ChatResponse::ToolUse { content, .. } => {
-            let text = content.text();
             let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
-            let mut assistant_parts: Vec<MessagePart> = Vec::new();
-            if let Some(ref t) = text
-                && !t.is_empty()
-            {
-                assistant_parts.push(MessagePart::Text { text: t.clone() });
-            }
-            for tc in &tool_calls {
-                assistant_parts.push(MessagePart::ToolUse {
-                    id: tc.id.clone(),
-                    name: tc.name.to_string(),
-                    input: tc.input.clone(),
-                });
-            }
-            messages.push(Message::from_parts(Role::Assistant, assistant_parts));
+            messages.push(Message::from_parts(
+                Role::Assistant,
+                content.to_message_parts(),
+            ));
 
             let mut result_parts: Vec<MessagePart> = Vec::new();
             for tc in &tool_calls {
@@ -1067,7 +1097,10 @@ async fn handle_tool_step(
 /// actually produces, the boundary nudge plus `repair_window`'s downgrade-not-delete handling of
 /// orphaned `ToolResult`s means the trim almost always succeeds instead of being skipped (issue
 /// #6762 review discussion, R1).
-fn trim_message_history(messages: &mut Vec<Message>, limit: usize) {
+///
+/// A trim rewrites the prefix every later request is signed over, so thinking is stripped from
+/// the retained window via [`strip_thinking_after_edit`] when `binding` is prefix-bound.
+fn trim_message_history(messages: &mut Vec<Message>, limit: usize, binding: ThinkingBinding) {
     if limit == 0 || messages.len() <= limit {
         return;
     }
@@ -1111,6 +1144,7 @@ fn trim_message_history(messages: &mut Vec<Message>, limit: usize) {
         "trimming subagent message history"
     );
     *messages = candidate;
+    strip_thinking_after_edit(messages, start, binding);
 }
 
 #[tracing::instrument(name = "subagent.agent_loop.run", skip_all, fields(task_id = %args.task_id, agent_name = %args.agent_name))]
@@ -1252,7 +1286,11 @@ pub(super) async fn run_agent_loop(
 
         record_progress(progress_at.as_ref());
 
-        trim_message_history(&mut messages, max_history_messages);
+        trim_message_history(
+            &mut messages,
+            max_history_messages,
+            provider.thinking_binding(),
+        );
     }
 
     // Skipped on the error path: `call_provider_with_status` already published `Failed` (and
@@ -1302,6 +1340,102 @@ mod trim_message_history_tests {
         make_message(Role::Assistant, text.to_owned())
     }
 
+    fn has_thinking(msgs: &[Message]) -> bool {
+        msgs.iter().flat_map(|m| &m.parts).any(|p| {
+            matches!(
+                p,
+                MessagePart::ThinkingBlock { .. } | MessagePart::RedactedThinkingBlock { .. }
+            )
+        })
+    }
+
+    fn history_with_thinking(with_thinking: bool) -> Vec<Message> {
+        let mut parts = vec![MessagePart::Text { text: "a".into() }];
+        if with_thinking {
+            parts.insert(0, MessagePart::RedactedThinkingBlock { data: "d".into() });
+        }
+        vec![
+            sys("s"),
+            usr("1"),
+            Message::from_parts(Role::Assistant, parts),
+            usr("2"),
+        ]
+    }
+
+    /// Runs the retry wrapper against a provider failing with `failures` binding mismatches.
+    async fn run_retry(
+        failures: usize,
+        with_thinking: bool,
+    ) -> (Result<(), zeph_llm::LlmError>, u32, Vec<Message>) {
+        use zeph_llm::mock::MockProvider;
+        let (mock, calls) = MockProvider::with_responses(vec!["ok".to_owned()])
+            .with_errors(
+                (0..failures)
+                    .map(|_| zeph_llm::LlmError::ThinkingBindingMismatch)
+                    .collect(),
+            )
+            .with_tool_use(vec![]);
+        let provider = AnyProvider::Mock(mock);
+        let mut messages = history_with_thinking(with_thinking);
+        let result = call_provider_with_thinking_retry(&provider, &mut messages, &[], None)
+            .await
+            .map(|_| ());
+        let count = *calls.lock().unwrap();
+        (result, count, messages)
+    }
+
+    #[tokio::test]
+    async fn binding_mismatch_strips_thinking_and_retries_once() {
+        let (result, calls, messages) = run_retry(1, true).await;
+        assert!(result.is_ok());
+        assert_eq!(calls, 2);
+        assert!(!has_thinking(&messages));
+    }
+
+    #[tokio::test]
+    async fn binding_mismatch_without_thinking_is_not_retried() {
+        let (result, calls, _) = run_retry(1, false).await;
+        assert!(result.is_err_and(|e| e.is_thinking_binding_mismatch()));
+        assert_eq!(calls, 1);
+    }
+
+    #[tokio::test]
+    async fn repeated_binding_mismatch_retries_exactly_once() {
+        let (result, calls, _) = run_retry(2, true).await;
+        assert!(result.is_err_and(|e| e.is_thinking_binding_mismatch()));
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn trim_strips_thinking_only_for_prefix_bound_providers() {
+        let thinking = Message::from_parts(
+            Role::Assistant,
+            vec![
+                MessagePart::RedactedThinkingBlock { data: "d".into() },
+                MessagePart::Text { text: "a".into() },
+            ],
+        );
+        let build = || {
+            vec![
+                sys("s"),
+                usr("1"),
+                asst("a"),
+                usr("2"),
+                thinking.clone(),
+                usr("3"),
+            ]
+        };
+
+        let mut bound = build();
+        trim_message_history(&mut bound, 5, ThinkingBinding::PrefixBound);
+        assert!(bound.len() < 6, "trim must have happened");
+        assert!(!has_thinking(&bound));
+
+        let mut unbound = build();
+        trim_message_history(&mut unbound, 5, ThinkingBinding::Unbound);
+        assert!(has_thinking(&unbound));
+    }
+
     fn tool_use_part(id: &str) -> MessagePart {
         MessagePart::ToolUse {
             id: id.to_owned(),
@@ -1341,14 +1475,14 @@ mod trim_message_history_tests {
     #[test]
     fn noop_when_within_limit() {
         let mut msgs = vec![sys("sys"), usr("u1"), asst("a1")];
-        trim_message_history(&mut msgs, 10);
+        trim_message_history(&mut msgs, 10, ThinkingBinding::Unbound);
         assert_eq!(msgs.len(), 3);
     }
 
     #[test]
     fn noop_when_limit_zero() {
         let mut msgs = vec![sys("sys"), usr("u1"), asst("a1"), usr("u2")];
-        trim_message_history(&mut msgs, 0);
+        trim_message_history(&mut msgs, 0, ThinkingBinding::Unbound);
         assert_eq!(msgs.len(), 4);
     }
 
@@ -1363,7 +1497,7 @@ mod trim_message_history_tests {
             asst("a2"),
             usr("u3"),
         ];
-        trim_message_history(&mut msgs, 4);
+        trim_message_history(&mut msgs, 4, ThinkingBinding::Unbound);
         assert_eq!(msgs.len(), 4, "should have 4 messages after trim");
         assert_eq!(
             msgs[0].role,
@@ -1378,7 +1512,7 @@ mod trim_message_history_tests {
     #[test]
     fn no_system_message_trims_from_front() {
         let mut msgs = vec![usr("u1"), asst("a1"), usr("u2"), asst("a2"), usr("u3")];
-        trim_message_history(&mut msgs, 3);
+        trim_message_history(&mut msgs, 3, ThinkingBinding::Unbound);
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0].content, "u2");
     }
@@ -1386,7 +1520,7 @@ mod trim_message_history_tests {
     #[test]
     fn exactly_at_limit_is_noop() {
         let mut msgs = vec![sys("sys"), usr("u1"), asst("a1")];
-        trim_message_history(&mut msgs, 3);
+        trim_message_history(&mut msgs, 3, ThinkingBinding::Unbound);
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0].role, Role::System);
     }
@@ -1405,7 +1539,7 @@ mod trim_message_history_tests {
             asst("a2"),
             usr("u3"),
         ];
-        trim_message_history(&mut msgs, 5);
+        trim_message_history(&mut msgs, 5, ThinkingBinding::Unbound);
         assert!(
             !msgs.iter().any(|m| has_tool_result(m, "t1")),
             "orphaned ToolResult must be downgraded, not left dangling as a ToolResult"
@@ -1431,7 +1565,7 @@ mod trim_message_history_tests {
             usr_tool_result("t1"),
             usr("u2"),
         ];
-        trim_message_history(&mut msgs, 5);
+        trim_message_history(&mut msgs, 5, ThinkingBinding::Unbound);
         assert_eq!(msgs[0].role, Role::System);
         assert_eq!(msgs[1].content, "u1");
         assert!(msgs.iter().any(|m| has_tool_use(m, "t1")));
@@ -1452,7 +1586,7 @@ mod trim_message_history_tests {
             usr("u2"),
             asst_tool_use("t1"),
         ];
-        trim_message_history(&mut msgs, 4);
+        trim_message_history(&mut msgs, 4, ThinkingBinding::Unbound);
         assert!(
             !msgs.iter().any(|m| has_tool_use(m, "t1")),
             "the trailing ToolUse must now be repaired, not exempted"
@@ -1477,7 +1611,7 @@ mod trim_message_history_tests {
             usr_tool_result("t1"),
             usr("u2"),
         ];
-        trim_message_history(&mut msgs, 4);
+        trim_message_history(&mut msgs, 4, ThinkingBinding::Unbound);
         assert_eq!(
             msgs[0].role,
             Role::System,
@@ -1518,7 +1652,7 @@ mod trim_message_history_tests {
             asst_tool_use("t4"),
             usr_tool_result("t4"),
         ];
-        trim_message_history(&mut msgs, 6);
+        trim_message_history(&mut msgs, 6, ThinkingBinding::Unbound);
         assert_eq!(
             msgs.len(),
             6,
@@ -1550,7 +1684,7 @@ mod trim_message_history_tests {
             asst_tool_use("t4"),
             usr_tool_result("t4"),
         ];
-        trim_message_history(&mut msgs, 7);
+        trim_message_history(&mut msgs, 7, ThinkingBinding::Unbound);
         assert!(
             msgs.len() == 7 || msgs.len() == 6,
             "at most one extra message beyond the limit may be dropped to reach a User anchor, \
@@ -1740,7 +1874,7 @@ mod trim_message_history_tests {
         // hits the exact limit, rather than being skipped (the old M5 behavior) or cascading to
         // just [System] (R1).
         let mut msgs = vec![sys("sys"), asst_tool_use("t1"), usr_tool_result("t1")];
-        trim_message_history(&mut msgs, 2);
+        trim_message_history(&mut msgs, 2, ThinkingBinding::Unbound);
         assert_eq!(msgs.len(), 2, "trim should succeed and hit the exact limit");
         assert_eq!(msgs[0].role, Role::System);
         assert_eq!(msgs[1].role, Role::User);
@@ -1771,7 +1905,7 @@ mod trim_message_history_tests {
             asst_tool_use("t1"),
             Message::from_parts(Role::User, vec![tool_result_part("t1", "")]),
         ];
-        trim_message_history(&mut msgs, 2);
+        trim_message_history(&mut msgs, 2, ThinkingBinding::Unbound);
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].role, Role::System);
         assert_eq!(msgs[1].role, Role::User);
@@ -1801,7 +1935,7 @@ mod trim_message_history_tests {
         // survives at all.
         let mut msgs = vec![sys("sys"), usr("u1"), asst("a1")];
         let before = msgs.clone();
-        trim_message_history(&mut msgs, 1);
+        trim_message_history(&mut msgs, 1, ThinkingBinding::Unbound);
         assert_eq!(
             msgs.len(),
             before.len(),
@@ -1816,7 +1950,7 @@ mod trim_message_history_tests {
         // treated the same as the System-only case above.
         let mut msgs = vec![usr("u1"), asst("a1")];
         let before = msgs.clone();
-        trim_message_history(&mut msgs, 1);
+        trim_message_history(&mut msgs, 1, ThinkingBinding::Unbound);
         assert_eq!(
             msgs.len(),
             before.len(),
@@ -1838,7 +1972,7 @@ mod trim_message_history_tests {
             usr("u2"),
             asst("a2"),
         ];
-        trim_message_history(&mut msgs, 3);
+        trim_message_history(&mut msgs, 3, ThinkingBinding::Unbound);
         assert_eq!(msgs.len(), 3, "trim should apply normally here");
         assert_eq!(msgs[0].role, Role::System);
         assert_eq!(msgs[1].content, "u2");
@@ -2153,6 +2287,52 @@ mod handle_tool_step_granted_secrets_tests {
                 input: serde_json::json!({"command": "echo $SOME_VAULT_KEY"}),
             }],
         )
+    }
+
+    #[tokio::test]
+    async fn assistant_message_replays_thinking_in_response_order() {
+        let executor = FilteredToolExecutor::new(
+            Arc::new(RecordingExecutor::default()) as Arc<dyn ErasedToolExecutor>,
+            ToolPolicy::InheritAll,
+        );
+        let mut content = AssistantContentBuilder::default();
+        content.push_thinking(ThinkingBlock::Thinking {
+            thinking: "plan".into(),
+            signature: "sig".into(),
+        });
+        content.push_text("calling");
+        content.push_tool_use(ToolUseRequest {
+            id: "call-1".into(),
+            name: "shell".into(),
+            input: serde_json::json!({"command": "ls"}),
+        });
+        let response = ChatResponse::ToolUse {
+            content: content.build(),
+            replay: ThinkingReplay::Intact,
+            compaction: None,
+        };
+        let mut messages = Vec::new();
+        let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+
+        handle_tool_step(
+            &executor,
+            response,
+            &mut messages,
+            &SubagentHooks::default(),
+            "task-1",
+            "bot",
+            &sanitizer,
+            &mut HashMap::new(),
+            None,
+            &Arc::new(Mutex::new(PermissionGrants::default())),
+            &mut std::collections::HashSet::new(),
+        )
+        .await;
+
+        let parts = &messages[0].parts;
+        assert!(matches!(parts[0], MessagePart::ThinkingBlock { .. }));
+        assert!(matches!(parts[1], MessagePart::Text { .. }));
+        assert!(matches!(parts[2], MessagePart::ToolUse { .. }));
     }
 
     #[tokio::test]
@@ -2846,7 +3026,7 @@ mod token_streaming_tests {
             .expect("stream must assemble successfully");
 
         match response {
-            ChatResponse::Text(t) => assert_eq!(t, "Hello, world!"),
+            ChatResponse::Text { text: t, .. } => assert_eq!(t, "Hello, world!"),
             other => panic!("expected ChatResponse::Text, got {other:?}"),
         }
 
@@ -2879,7 +3059,9 @@ mod token_streaming_tests {
             .expect("stream must assemble successfully");
 
         match response {
-            ChatResponse::Text(t) => assert!(t.is_empty(), "no content chunks were sent"),
+            ChatResponse::Text { text: t, .. } => {
+                assert!(t.is_empty(), "no content chunks were sent");
+            }
             other => panic!("expected empty ChatResponse::Text, got {other:?}"),
         }
 
@@ -2964,7 +3146,7 @@ mod token_streaming_tests {
             .expect("stream must assemble successfully even under channel backpressure");
 
         match response {
-            ChatResponse::Text(t) => assert_eq!(
+            ChatResponse::Text { text: t, .. } => assert_eq!(
                 t, expected,
                 "accumulated response text must be complete even though most forwarded \
                  deltas were tail-dropped (never drained)"
@@ -2979,7 +3161,7 @@ mod token_streaming_tests {
         // `_ => Err(Unavailable)` arm — so this must fall back to `chat_with_tools`
         // unchanged, exactly like the pre-#6456 behavior (FR-002a).
         let (mock, _counter) =
-            MockProvider::default().with_tool_use(vec![ChatResponse::Text("plain reply".into())]);
+            MockProvider::default().with_tool_use(vec![ChatResponse::text("plain reply")]);
         let provider = AnyProvider::Mock(mock);
         let (sender, mut rx) = new_channel(Arc::from("task-6"), Arc::from("agent-6"));
         let messages = vec![make_message(Role::User, "hi".into())];
@@ -2994,7 +3176,7 @@ mod token_streaming_tests {
             "a non-streaming provider must report streamed = false"
         );
         match response {
-            ChatResponse::Text(t) => assert_eq!(t, "plain reply"),
+            ChatResponse::Text { text: t, .. } => assert_eq!(t, "plain reply"),
             other => panic!("expected ChatResponse::Text, got {other:?}"),
         }
         // No deltas were ever streamed for this provider — the forward channel must stay
@@ -3006,7 +3188,7 @@ mod token_streaming_tests {
     #[tokio::test]
     async fn call_provider_streaming_or_plain_skips_streaming_attempt_when_forward_is_none() {
         let (mock, _counter) =
-            MockProvider::default().with_tool_use(vec![ChatResponse::Text("no forward".into())]);
+            MockProvider::default().with_tool_use(vec![ChatResponse::text("no forward")]);
         let provider = AnyProvider::Mock(mock);
         let messages = vec![make_message(Role::User, "hi".into())];
 
@@ -3017,7 +3199,7 @@ mod token_streaming_tests {
 
         assert!(!streamed);
         match response {
-            ChatResponse::Text(t) => assert_eq!(t, "no forward"),
+            ChatResponse::Text { text: t, .. } => assert_eq!(t, "no forward"),
             other => panic!("expected ChatResponse::Text, got {other:?}"),
         }
     }

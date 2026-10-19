@@ -167,6 +167,10 @@ impl RouterProvider {
             );
             let start = std::time::Instant::now();
             match p.chat(messages).await {
+                Err(e) if e.forbids_provider_fallback() => {
+                    tracing::warn!(provider = p.name(), error = %e, "cascade: error forbids provider fallback");
+                    return Err(e);
+                }
                 Err(e) => {
                     // Network/API error: record availability failure but don't consume escalation budget.
                     let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -319,6 +323,10 @@ impl RouterProvider {
             // Buffer response to classify quality.
             let start = std::time::Instant::now();
             let stream = match p.chat_stream(messages).await {
+                Err(e) if e.forbids_provider_fallback() => {
+                    tracing::warn!(provider = p.name(), error = %e, "cascade stream: error forbids provider fallback");
+                    return Err(e);
+                }
                 Err(e) => {
                     let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                     self.record_availability(p.name(), false, latency);
@@ -336,6 +344,10 @@ impl RouterProvider {
             let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
             match buffered {
+                Err(e) if e.forbids_provider_fallback() => {
+                    tracing::warn!(provider = p.name(), error = %e, "cascade stream: error forbids provider fallback");
+                    return Err(e);
+                }
                 Err(e) => {
                     // Stream failed mid-delivery; treat as availability failure.
                     self.record_availability(p.name(), false, latency);
@@ -437,6 +449,10 @@ impl RouterProvider {
                     u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                 );
                 Ok(stream)
+            }
+            Err(e) if e.forbids_provider_fallback() => {
+                tracing::warn!(provider = last.name(), error = %e, "cascade stream: error forbids provider fallback");
+                Err(e)
             }
             Err(e) => {
                 self.record_availability(

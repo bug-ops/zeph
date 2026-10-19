@@ -220,7 +220,7 @@ The thinking budget and OpenAI/Compatible/Gemini `reasoning_effort` can also be 
 | Variant | TTL | Header |
 |---------|-----|--------|
 | `Ephemeral` (default) | ~5 minutes | standard `cache_control` |
-| `OneHour` | 1 hour | `extended-cache-ttl-2025-04-25` beta |
+| `OneHour` | 1 hour | `extended-cache-ttl-2025-04-25` beta, sent only to legacy models and Haiku 4.5 |
 
 ```toml
 [[llm.providers]]

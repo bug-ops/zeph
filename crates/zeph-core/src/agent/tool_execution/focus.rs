@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use zeph_common::text::estimate_tokens;
-use zeph_llm::provider::{Message, MessagePart, Role};
+use zeph_llm::provider::{LlmProvider as _, Message, MessagePart, Role};
+use zeph_sanitizer::{ContentSource, ContentSourceKind};
 
 use crate::agent::Agent;
 use crate::channel::Channel;
@@ -81,11 +82,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         input: &serde_json::Value,
     ) -> (String, Option<zeph_llm::provider::Message>) {
-        let summary = input
-            .get("summary")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let raw_summary = input.get("summary").and_then(|v| v.as_str()).unwrap_or("");
 
         // S4: verify focus session is active.
         if !self.services.focus.is_active() {
@@ -97,12 +94,12 @@ impl<C: Channel> Agent<C> {
 
         // An empty summary would drop the (possibly untrusted) phase without leaving a
         // tagged Knowledge block behind, so context trust would silently fall back to Trusted.
-        if summary.trim().is_empty() {
+        let Some(summary) = visible_summary(raw_summary) else {
             return (
                 "[error] complete_focus requires a non-empty summary.".to_string(),
                 None,
             );
-        }
+        };
 
         let Some(marker) = self.services.focus.active_marker else {
             return (
@@ -127,19 +124,7 @@ impl<C: Channel> Agent<C> {
             );
         };
 
-        // Sanitize the LLM-supplied summary before storing it to the pinned Knowledge
-        // block. The summary may summarize transitive external content (web scrapes,
-        // MCP responses), so use WebScrape (ExternalUntrusted trust level) for stricter
-        // spotlighting than ToolResult (SEC-CC-03).
-        let sanitized_summary = self
-            .services
-            .security
-            .sanitizer
-            .sanitize(
-                &summary,
-                zeph_sanitizer::ContentSource::new(zeph_sanitizer::ContentSourceKind::WebScrape),
-            )
-            .body;
+        let sanitized_summary = self.sanitize_knowledge_summary(&summary, "focus_knowledge");
 
         // The Knowledge block is what keeps the removed phase tagged untrusted and strips stale
         // thinking, so nothing is removed unless it was stored.
@@ -210,6 +195,22 @@ impl<C: Channel> Agent<C> {
         )
     }
 
+    /// Sanitize an LLM-written summary before it is stored in the pinned Knowledge block.
+    ///
+    /// The summary distils transitive external content (web scrapes, MCP responses), so it is
+    /// sanitized as [`ContentSourceKind::LlmSummary`] (`ExternalUntrusted`) with injection
+    /// detection active (SEC-CC-03).
+    fn sanitize_knowledge_summary(&self, summary: &str, identifier: &str) -> String {
+        self.services
+            .security
+            .sanitizer
+            .sanitize(
+                summary,
+                ContentSource::new(ContentSourceKind::LlmSummary).with_identifier(identifier),
+            )
+            .body
+    }
+
     /// Remove any existing (non-checkpoint) Knowledge block and insert an updated one after the
     /// system prompt. Called after focus completion and context compression.
     ///
@@ -232,7 +233,11 @@ impl<C: Channel> Agent<C> {
         }
         // A deliberate prefix edit: thinking after it is bound to the old prefix.
         if let Some(from) = first_edit {
-            zeph_llm::provider::strip_thinking_from(&mut self.msg.messages, from);
+            zeph_llm::provider::strip_thinking_after_edit(
+                &mut self.msg.messages,
+                from,
+                self.provider.thinking_binding(),
+            );
         }
         self.msg.recompute_non_system_count();
         self.recompute_prompt_tokens();
@@ -248,8 +253,6 @@ impl<C: Channel> Agent<C> {
     /// - Returns error if a compression is already in progress (concurrency guard).
     #[tracing::instrument(name = "core.tool.handle_compress_context", skip_all, level = "debug")]
     pub(crate) async fn handle_compress_context(&mut self) -> String {
-        use zeph_llm::provider::LlmProvider as _;
-
         if self.services.focus.is_active() {
             return "[error] Cannot compress context while a focus session is active. \
                     Call complete_focus first."
@@ -300,29 +303,17 @@ impl<C: Channel> Agent<C> {
             }
         };
 
-        if summary.trim().is_empty() {
+        let Some(summary) = visible_summary(&summary) else {
             self.services.focus.release_compression();
             return "[error] Compression produced an empty summary.".to_string();
-        }
+        };
 
         let tokens_freed = to_compress
             .iter()
             .map(|m| estimate_tokens(&m.content))
             .sum::<usize>();
 
-        // Sanitize the LLM-supplied summary before storing it to the pinned Knowledge
-        // block, mirroring complete_focus_tool (SEC-CC-03). The summary may transitively
-        // carry injected instructions from compressed tool/web content, so use WebScrape
-        // (ExternalUntrusted trust level) for stricter spotlighting than ToolResult.
-        let sanitized_summary = self
-            .services
-            .security
-            .sanitizer
-            .sanitize(
-                summary.trim(),
-                zeph_sanitizer::ContentSource::new(zeph_sanitizer::ContentSourceKind::WebScrape),
-            )
-            .body;
+        let sanitized_summary = self.sanitize_knowledge_summary(&summary, "compress_context");
 
         if !self.services.focus.append_llm_knowledge(sanitized_summary) {
             self.services.focus.release_compression();
@@ -489,7 +480,11 @@ impl<C: Channel> Agent<C> {
         match insert_at {
             Some(index) => {
                 self.insert_message(index, user_msg);
-                zeph_llm::provider::strip_thinking_from(&mut self.msg.messages, index);
+                zeph_llm::provider::strip_thinking_after_edit(
+                    &mut self.msg.messages,
+                    index,
+                    self.provider.thinking_binding(),
+                );
             }
             None => self.push_message(user_msg),
         }
@@ -535,6 +530,17 @@ impl<C: Channel> Agent<C> {
 
         self.handle_compress_context().await
     }
+}
+
+/// Strips control and zero-width characters and returns the trimmed text, or `None` when
+/// nothing visible is left.
+///
+/// The check must run before sanitization: wrapping blank text in a spotlight block would
+/// otherwise make it look like real content.
+fn visible_summary(raw: &str) -> Option<String> {
+    let cleaned = zeph_common::sanitize::strip_control_chars_preserve_whitespace(raw);
+    let trimmed = cleaned.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 /// Build the LLM prompt messages used to summarize a slice of conversation messages.
@@ -696,6 +702,79 @@ mod tests {
                 .iter()
                 .all(|m| m.metadata.focus_marker_id != Some(marker)),
             "the finished checkpoint below the floor must not linger"
+        );
+    }
+
+    fn focus_agent() -> Agent<MockChannel> {
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        let marker = agent.services.focus.start("scope".to_owned());
+        agent.msg.messages = vec![
+            Message::from_legacy(Role::System, "system"),
+            Message {
+                metadata: MessageMetadata {
+                    focus_pinned: true,
+                    focus_marker_id: Some(marker),
+                    ..MessageMetadata::agent_only()
+                },
+                ..Message::from_legacy(Role::System, "[focus checkpoint: scope]")
+            },
+            Message::from_legacy(Role::User, "work inside the focus window"),
+        ];
+        agent
+    }
+
+    #[test]
+    fn complete_focus_rejects_summary_that_is_blank_after_stripping() {
+        let mut agent = focus_agent();
+        let before = agent.msg.messages.len();
+
+        for blank in ["\u{200B}\u{FEFF}", "  \u{0007} \n", ""] {
+            let (reply, _) = agent.complete_focus_tool(&serde_json::json!({ "summary": blank }));
+            assert!(reply.starts_with("[error]"), "{reply}");
+        }
+
+        assert!(agent.services.focus.is_active(), "session must stay open");
+        assert!(agent.services.focus.knowledge_blocks.is_empty());
+        assert_eq!(agent.msg.messages.len(), before);
+    }
+
+    #[test]
+    fn complete_focus_knowledge_block_is_labelled_llm_summary() {
+        let mut agent = focus_agent();
+
+        let (reply, _) = agent.complete_focus_tool(&serde_json::json!({ "summary": "done" }));
+
+        assert!(reply.starts_with("Focus session complete"), "{reply}");
+        let block = agent
+            .services
+            .focus
+            .knowledge_blocks
+            .first()
+            .expect("knowledge block");
+        assert!(
+            block.content.contains("source=\"llm_summary\""),
+            "{}",
+            block.content
+        );
+        assert!(!block.content.contains("web_scrape"));
+    }
+
+    #[test]
+    fn context_management_tool_results_carry_their_own_claim_source() {
+        let out = super::super::focus_compression::context_management_output(
+            "complete_focus".to_owned().into(),
+            "Focus session complete.".to_owned(),
+        );
+        assert_eq!(
+            out.claim_source,
+            Some(zeph_tools::ClaimSource::ContextManagement)
         );
     }
 

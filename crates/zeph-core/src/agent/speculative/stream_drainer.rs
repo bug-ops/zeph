@@ -12,7 +12,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use tokio_stream::StreamExt;
 use tracing::debug;
@@ -54,27 +53,23 @@ impl SpeculativeStreamDrainer {
     /// Create a new drainer.
     ///
     /// `confidence_threshold` gates speculation. Trust level is enforced internally
-    /// by `engine.try_dispatch` — no separate parameter is needed here.
+    /// by `engine.try_dispatch`. `gate` is the snapshot taken for the current request; it is
+    /// required so no caller can speculate without the turn-set, `requires`, tools-enabled and
+    /// quota rules the normal path obeys.
     #[must_use]
     pub fn new(
         stream: ToolSseStream,
         engine: Arc<SpeculationEngine>,
         confidence_threshold: f32,
+        gate: DispatchGate,
     ) -> Self {
         Self {
             stream,
             engine,
             confidence_threshold,
-            gate: DispatchGate::open(),
+            gate,
             parsers: HashMap::new(),
         }
-    }
-
-    /// Gate speculative dispatches with the snapshot taken for the current request.
-    #[must_use]
-    pub fn with_gate(mut self, gate: DispatchGate) -> Self {
-        self.gate = gate;
-        self
     }
 
     /// Drain the stream, firing speculative dispatches and building the final `ChatResponse`.
@@ -165,6 +160,7 @@ impl SpeculativeStreamDrainer {
                 ToolSseEvent::ThinkingReplay(r) => {
                     replay = r;
                 }
+                ToolSseEvent::TextBlockStart => content.begin_text_block(),
                 ToolSseEvent::ContentChunk(text) => {
                     content.push_text(&text);
                 }
@@ -187,27 +183,13 @@ impl SpeculativeStreamDrainer {
                 compaction,
             }
         } else {
-            ChatResponse::Text(content.text().unwrap_or_default())
+            let mut response = ChatResponse::text(content.text().unwrap_or_default());
+            if let Some(summary) = compaction {
+                response.attach_compaction(summary);
+            }
+            response
         };
         Ok(DrainedTurn { response, ttft_ms })
-    }
-}
-
-/// Wraps `engine.try_commit` with a 2-second timeout cap (critic M4).
-///
-/// The TTL deadline (up to 30 s) is too long for the tool dispatch hot path.
-/// This helper caps the wait to avoid blocking normal execution unnecessarily.
-pub async fn try_commit_with_timeout(
-    engine: &SpeculationEngine,
-    call: &zeph_tools::ToolCall,
-) -> Option<Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>> {
-    const COMMIT_TIMEOUT: Duration = Duration::from_secs(2);
-    match tokio::time::timeout(COMMIT_TIMEOUT, engine.try_commit(call)).await {
-        Ok(result) => result,
-        Err(_elapsed) => {
-            debug!(tool_id = %call.tool_id, "speculative try_commit timed out after 2s");
-            None
-        }
     }
 }
 
@@ -265,7 +247,12 @@ mod tests {
             Arc::new(NullExec),
             SpeculativeConfig::default(),
         ));
-        let drainer = SpeculativeStreamDrainer::new(Box::pin(tokio_stream::empty()), engine, 0.8);
+        let drainer = SpeculativeStreamDrainer::new(
+            Box::pin(tokio_stream::empty()),
+            engine,
+            0.8,
+            DispatchGate::open(),
+        );
         assert!(drainer.parsers.is_empty());
     }
 
@@ -357,8 +344,12 @@ mod tests {
             },
         ];
 
-        let drainer =
-            SpeculativeStreamDrainer::new(Box::pin(tokio_stream::iter(events)), engine, 0.0);
+        let drainer = SpeculativeStreamDrainer::new(
+            Box::pin(tokio_stream::iter(events)),
+            engine,
+            0.0,
+            DispatchGate::open(),
+        );
         let DrainedTurn {
             response: result, ..
         } = drainer.drive().await.unwrap();
@@ -420,13 +411,18 @@ mod tests {
             Arc::new(NullExec),
             SpeculativeConfig::default(),
         ));
-        let drainer = SpeculativeStreamDrainer::new(Box::pin(tokio_stream::empty()), engine, 0.8);
+        let drainer = SpeculativeStreamDrainer::new(
+            Box::pin(tokio_stream::empty()),
+            engine,
+            0.8,
+            DispatchGate::open(),
+        );
         let DrainedTurn {
             response: result,
             ttft_ms,
             ..
         } = drainer.drive().await.unwrap();
-        assert_matches!(result, ChatResponse::Text(s) if s.is_empty());
+        assert_matches!(result, ChatResponse::Text { text: s, .. } if s.is_empty());
         assert_eq!(
             ttft_ms, None,
             "issue #6549: a stream that never yields an event has no TTFT"
@@ -483,14 +479,18 @@ mod tests {
             SpeculativeConfig::default(),
         ));
         let events = vec![ToolSseEvent::ContentChunk("Hello world".into())];
-        let drainer =
-            SpeculativeStreamDrainer::new(Box::pin(tokio_stream::iter(events)), engine, 0.8);
+        let drainer = SpeculativeStreamDrainer::new(
+            Box::pin(tokio_stream::iter(events)),
+            engine,
+            0.8,
+            DispatchGate::open(),
+        );
         let DrainedTurn {
             response: result,
             ttft_ms,
             ..
         } = drainer.drive().await.unwrap();
-        assert_matches!(result, ChatResponse::Text(s) if s == "Hello world");
+        assert_matches!(result, ChatResponse::Text { text: s, .. } if s == "Hello world");
         assert!(
             ttft_ms.is_some(),
             "issue #6549: a stream that yields at least one event must report a TTFT"
@@ -565,8 +565,12 @@ mod tests {
                 full_json: r#"{"command":"ls"}"#.into(),
             },
         ];
-        let drainer =
-            SpeculativeStreamDrainer::new(Box::pin(tokio_stream::iter(events)), engine, 0.8);
+        let drainer = SpeculativeStreamDrainer::new(
+            Box::pin(tokio_stream::iter(events)),
+            engine,
+            0.8,
+            DispatchGate::open(),
+        );
         let DrainedTurn {
             response: result, ..
         } = drainer.drive().await.unwrap();
@@ -626,8 +630,8 @@ mod tests {
             Box::pin(tokio_stream::iter(streamed_call_events())),
             Arc::clone(&engine),
             0.0,
-        )
-        .with_gate(gate);
+            gate,
+        );
         drainer.drive().await.unwrap();
         engine
     }
@@ -654,6 +658,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn streamed_call_is_not_dispatched_when_tools_are_disabled_or_quota_is_spent() {
+        use crate::agent::turn_gate::DisabledReason;
+
+        for reason in [
+            DisabledReason::ToolsDisabled,
+            DisabledReason::QuotaExhausted,
+        ] {
+            let engine = drive_with_gate(DispatchGate::disabled(reason)).await;
+            assert!(engine.cache.is_empty(), "{reason:?} must block speculation");
+        }
+    }
+
+    #[tokio::test]
     async fn stream_compaction_rides_on_the_response_and_only_on_that_one() {
         use zeph_config::tools::SpeculativeConfig;
 
@@ -662,11 +679,16 @@ mod tests {
                 Arc::new(super::super::tests::AlwaysOkExecutor),
                 SpeculativeConfig::default(),
             ));
-            SpeculativeStreamDrainer::new(Box::pin(tokio_stream::iter(events)), engine, 0.8)
-                .drive()
-                .await
-                .unwrap()
-                .response
+            SpeculativeStreamDrainer::new(
+                Box::pin(tokio_stream::iter(events)),
+                engine,
+                0.8,
+                DispatchGate::open(),
+            )
+            .drive()
+            .await
+            .unwrap()
+            .response
         };
         let call = || ToolSseEvent::ToolCallComplete {
             index: 0,
@@ -686,6 +708,36 @@ mod tests {
             panic!("expected ToolUse");
         };
         assert_eq!(compaction, None, "a stream without compaction carries none");
+    }
+
+    #[tokio::test]
+    async fn text_response_keeps_the_stream_compaction() {
+        use zeph_config::tools::SpeculativeConfig;
+
+        let engine = Arc::new(super::super::SpeculationEngine::new(
+            Arc::new(super::super::tests::AlwaysOkExecutor),
+            SpeculativeConfig::default(),
+        ));
+        let events = vec![
+            ToolSseEvent::Compaction("summary".into()),
+            ToolSseEvent::ContentChunk("plain answer".into()),
+        ];
+        let response = SpeculativeStreamDrainer::new(
+            Box::pin(tokio_stream::iter(events)),
+            engine,
+            0.8,
+            DispatchGate::open(),
+        )
+        .drive()
+        .await
+        .unwrap()
+        .response;
+
+        let ChatResponse::Text { text, compaction } = response else {
+            panic!("expected Text");
+        };
+        assert_eq!(text, "plain answer");
+        assert_eq!(compaction.as_deref(), Some("summary"));
     }
 
     #[tokio::test]
@@ -740,8 +792,12 @@ mod tests {
         let events = vec![ToolSseEvent::Error(zeph_llm::LlmError::SseParse(
             "boom".into(),
         ))];
-        let drainer =
-            SpeculativeStreamDrainer::new(Box::pin(tokio_stream::iter(events)), engine, 0.8);
+        let drainer = SpeculativeStreamDrainer::new(
+            Box::pin(tokio_stream::iter(events)),
+            engine,
+            0.8,
+            DispatchGate::open(),
+        );
         let result = drainer.drive().await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("boom"));

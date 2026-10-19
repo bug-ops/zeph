@@ -1122,10 +1122,8 @@ async fn tool_call_loop_two_turns() {
             input: serde_json::json!({"command": "echo hi"}),
         }],
     );
-    let (mock, _counter) = MockProvider::default().with_tool_use(vec![
-        tool_response,
-        ChatResponse::Text("final answer".into()),
-    ]);
+    let (mock, _counter) = MockProvider::default()
+        .with_tool_use(vec![tool_response, ChatResponse::text("final answer")]);
     let provider = AnyProvider::Mock(mock);
     let executor = Arc::new(ToolOnceExecutor {
         calls: Mutex::new(0),
@@ -2890,7 +2888,7 @@ async fn run_agent_loop_passes_tools_to_provider() {
 
     // MockProvider with tool_use: records call count for chat_with_tools.
     let (mock, tool_call_count) =
-        MockProvider::default().with_tool_use(vec![ChatResponse::Text("done".into())]);
+        MockProvider::default().with_tool_use(vec![ChatResponse::text("done")]);
     let provider = AnyProvider::Mock(mock);
     let executor = FilteredToolExecutor::new(Arc::new(SingleToolExecutor), ToolPolicy::InheritAll);
 
@@ -3236,7 +3234,7 @@ impl zeph_llm::debug_dump::DebugDumpSink for RecordingDumpSink {
 
     fn dump_response(&self, id: u32, response: &ChatResponse) {
         let text = match response {
-            ChatResponse::Text(t) => t.clone(),
+            ChatResponse::Text { text: t, .. } => t.clone(),
             ChatResponse::ToolUse { content, .. } => content.text().unwrap_or_default(),
             _ => String::new(),
         };
@@ -3408,7 +3406,7 @@ async fn run_agent_loop_executes_native_tool_call() {
                 input: serde_json::json!({"command": "echo hi"}),
             }],
         ),
-        ChatResponse::Text("all done".into()),
+        ChatResponse::text("all done"),
     ]);
 
     let tracker = Arc::new(TrackingExecutor {
@@ -3468,8 +3466,8 @@ async fn text_only_first_turn_sends_nudge_and_retries() {
 
     // First call returns text-only; second call also text (loop should stop after nudge retry).
     let (mock, call_count) = MockProvider::default().with_tool_use(vec![
-        ChatResponse::Text("I will now do the task...".into()),
-        ChatResponse::Text("Done.".into()),
+        ChatResponse::text("I will now do the task..."),
+        ChatResponse::text("Done."),
     ]);
 
     let executor = FilteredToolExecutor::new(noop_executor(), ToolPolicy::InheritAll);
@@ -4162,7 +4160,7 @@ fn build_context_summary_newlines_in_user_message_are_collapsed() {
 async fn mcp_tool_names_appended_to_system_prompt() {
     use zeph_llm::mock::MockProvider;
 
-    let (mock, _) = MockProvider::default().with_tool_use(vec![ChatResponse::Text("done".into())]);
+    let (mock, _) = MockProvider::default().with_tool_use(vec![ChatResponse::text("done")]);
 
     let executor = FilteredToolExecutor::new(noop_executor(), ToolPolicy::InheritAll);
     let mut args = make_agent_loop_args(AnyProvider::Mock(mock), executor, 5);
@@ -4176,7 +4174,7 @@ async fn mcp_tool_names_appended_to_system_prompt() {
 async fn empty_mcp_tool_names_no_annotation() {
     use zeph_llm::mock::MockProvider;
 
-    let (mock, _) = MockProvider::default().with_tool_use(vec![ChatResponse::Text("done".into())]);
+    let (mock, _) = MockProvider::default().with_tool_use(vec![ChatResponse::text("done")]);
 
     let executor = FilteredToolExecutor::new(noop_executor(), ToolPolicy::InheritAll);
     let mut args = make_agent_loop_args(AnyProvider::Mock(mock), executor, 5);

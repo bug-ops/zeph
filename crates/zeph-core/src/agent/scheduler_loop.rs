@@ -1725,7 +1725,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             let response = self.provider.chat_with_tools(&messages, &tool_defs).await?;
 
             match response {
-                ChatResponse::Text(text) => {
+                ChatResponse::Text { text, .. } => {
                     tracing::debug!(iteration, "inline tool loop: text response, returning");
                     return Ok(InlineLoopOutcome { text, tool_trace });
                 }
@@ -3908,7 +3908,7 @@ mod tests {
                     input: serde_json::json!({ "path": "out.txt" }),
                 }],
             ),
-            ChatResponse::Text("done".into()),
+            ChatResponse::text("done"),
         ]);
         let provider = AnyProvider::Mock(mock);
         let channel = MockChannel::new(vec![]);
@@ -4006,7 +4006,7 @@ mod tests {
                     },
                 ],
             ),
-            ChatResponse::Text("done".into()),
+            ChatResponse::text("done"),
         ]);
         let provider = AnyProvider::Mock(mock);
         let channel = MockChannel::new(vec![]);
@@ -4101,7 +4101,7 @@ mod tests {
                     },
                 ],
             ),
-            ChatResponse::Text("done".into()),
+            ChatResponse::text("done"),
         ]);
         let provider = AnyProvider::Mock(mock);
         let channel = MockChannel::new(vec![]);
@@ -4191,7 +4191,7 @@ mod tests {
                     input: serde_json::json!({ "path": "in.txt" }),
                 }],
             ),
-            ChatResponse::Text("done".into()),
+            ChatResponse::text("done"),
         ]);
         let provider = AnyProvider::Mock(mock);
         let channel = MockChannel::new(vec![]);

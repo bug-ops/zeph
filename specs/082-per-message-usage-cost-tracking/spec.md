@@ -59,6 +59,7 @@ SO THAT I can pinpoint the expensive or slow turn instead of only seeing a daily
 - Per-message usage recording MUST NOT block the agent turn loop or hot path — write asynchronously via the existing persistence pipeline (`zeph-agent-persistence`), consistent with the project's non-blocking contract (CLAUDE.md "Async & Background Tasks").
 - MUST NOT duplicate `CostTracker`'s existing daily-budget enforcement logic — per-message tracking is additive telemetry, not a second budget-enforcement path.
 - MUST NOT introduce a new `tokio::spawn()` call site — route any async persistence through the existing awaited persistence path or a `TaskSupervisor`-named service per the project's supervisor mandate.
+- Auxiliary usage (`LlmProvider::last_auxiliary_usage()`, e.g. Claude server-side compaction iterations) is billed at the same call site: `CostTracker::record_auxiliary_usage` adds its tokens and cost to the daily aggregate without counting another request, the metrics totals include it, and the paired `usage_records` row folds its tokens and cost in. It never enters `context_tokens`, which stays the top-level request size.
 - Every production call site that feeds `CostTracker::record_usage` MUST also emit exactly one `usage_records` row computed from the same token/cost values (single pricing source of truth via `CostTracker::price_of`). Adding a new `record_usage` site without a paired ledger row is a reconciliation regression.
 
 ## 4. Evidence

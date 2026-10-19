@@ -5,6 +5,7 @@ use zeph_llm::provider::{LlmProvider, MessagePart};
 use zeph_sanitizer::{ContentSource, ContentSourceKind};
 use zeph_skills::evolution::FailureKind;
 
+use super::sanitize::ToolOutputOrigin;
 use super::{AnomalyOutcome, ToolResultClassification, truncate_utf8};
 use crate::agent::Agent;
 use crate::channel::{Channel, ToolOutputEvent};
@@ -291,6 +292,7 @@ impl<C: Channel> Agent<C> {
     ) -> ToolResultClassification {
         match tool_result {
             Ok(Some(out)) => {
+                let origin = ToolOutputOrigin::from_claim_source(out.claim_source);
                 let anomaly_outcome =
                     if out.summary.contains("[error]") || out.summary.contains("[stderr]") {
                         AnomalyOutcome::Error
@@ -319,6 +321,7 @@ impl<C: Channel> Agent<C> {
                     tool_err_category: None,
                     media: out.media,
                     max_result_size_chars: out.max_result_size_chars,
+                    origin,
                 }
             }
             Ok(None) => ToolResultClassification {
@@ -333,6 +336,7 @@ impl<C: Channel> Agent<C> {
                 tool_err_category: None,
                 media: Vec::new(),
                 max_result_size_chars: None,
+                origin: ToolOutputOrigin::Executed(None),
             },
             Err(ref e) => {
                 let category = e.category();
@@ -380,6 +384,7 @@ impl<C: Channel> Agent<C> {
                     tool_err_category: Some(category),
                     media: Vec::new(),
                     max_result_size_chars: None,
+                    origin: ToolOutputOrigin::from_error(e),
                 }
             }
         }
@@ -420,6 +425,7 @@ impl<C: Channel> Agent<C> {
             mut tool_err_category,
             media,
             max_result_size_chars,
+            origin,
         } = self.classify_tool_result(tc, tool_result);
 
         self.record_tool_execution_telemetry(tc.name.as_str(), started_at, is_error, &output);
@@ -475,7 +481,7 @@ impl<C: Channel> Agent<C> {
                 (sentinel.clone(), false)
             } else {
                 let (body, flags, kind, trust) = self
-                    .sanitize_tool_output(&processed, tc.name.as_str())
+                    .sanitize_tool_output(&processed, tc.name.as_str(), origin)
                     .await;
                 // Batch-level worst-case trust (issue #6490, MemGhost): the whole batch is
                 // persisted as one message, so its provenance tag reflects the least-trusted

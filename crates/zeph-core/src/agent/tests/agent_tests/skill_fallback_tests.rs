@@ -53,8 +53,8 @@ fn extract_system_prompt(recorded: &Arc<Mutex<Vec<Vec<Message>>>>) -> String {
 
 // ---------- Test 1: no matcher → compact fallback ----------
 
-/// When no embedding matcher is configured, `assembly.rs` must inject skills via the
-/// compact `<available_skills mode="compact">` path rather than the full `<instructions>` form.
+/// When no embedding matcher is configured, `assembly.rs` must expose skills through the
+/// stable `<other_skills>` catalog only, with no second catalog and no full `<instructions>` form.
 #[tokio::test]
 async fn skill_fallback_compact_when_no_matcher() {
     let (mock, recorded) = MockProvider::with_responses(vec!["ok".to_string()]).with_recording();
@@ -70,8 +70,8 @@ async fn skill_fallback_compact_when_no_matcher() {
 
     let sys = extract_system_prompt(&recorded);
     assert!(
-        sys.contains("mode=\"compact\""),
-        "expected compact skill prompt when no matcher is configured, got system prompt: {sys}"
+        sys.contains("<other_skills>") && !sys.contains("<available_skills"),
+        "expected a single catalog when no matcher is configured, got system prompt: {sys}"
     );
     assert!(
         !sys.contains("<instructions>"),
@@ -119,8 +119,8 @@ async fn skill_fallback_compact_on_embed_infra_error() {
 
     let sys = extract_system_prompt(&recorded);
     assert!(
-        sys.contains("mode=\"compact\""),
-        "expected compact fallback on embed infra error, got system prompt: {sys}"
+        sys.contains("<other_skills>") && !sys.contains("<available_skills"),
+        "expected a single catalog on embed infra error, got system prompt: {sys}"
     );
 }
 

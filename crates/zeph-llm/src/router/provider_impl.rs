@@ -206,6 +206,14 @@ impl LlmProvider for RouterProvider {
 
                         return Ok(r);
                     }
+                    Err(e) if e.forbids_provider_fallback() => {
+                        tracing::warn!(
+                            provider = p.name(),
+                            error = %e,
+                            "router: error forbids provider fallback; returning it"
+                        );
+                        return Err(e);
+                    }
                     Err(e) => {
                         record_fallback_error(
                             &router,
@@ -283,6 +291,14 @@ impl LlmProvider for RouterProvider {
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                         );
                         return Ok(r);
+                    }
+                    Err(e) if e.forbids_provider_fallback() => {
+                        tracing::warn!(
+                            provider = p.name(),
+                            error = %e,
+                            "router: error forbids provider fallback; returning it"
+                        );
+                        return Err(e);
                     }
                     Err(e) => {
                         record_fallback_error(
@@ -712,6 +728,14 @@ impl LlmProvider for RouterProvider {
                         return Ok(r);
                     }
                     Err(e) => {
+                        if e.is_refusal() {
+                            tracing::warn!(
+                                provider = p.name(),
+                                error = %e,
+                                "chat_with_tools: refusal, not retrying on other providers"
+                            );
+                            return Err(e);
+                        }
                         router.record_availability(
                             p.name(),
                             false,
@@ -783,5 +807,18 @@ impl LlmProvider for RouterProvider {
 
     fn last_cache_usage(&self) -> Option<(u64, u64)> {
         None
+    }
+
+    fn thinking_binding(&self) -> crate::provider::ThinkingBinding {
+        if self
+            .state
+            .providers
+            .iter()
+            .any(|p| p.thinking_binding() == crate::provider::ThinkingBinding::PrefixBound)
+        {
+            crate::provider::ThinkingBinding::PrefixBound
+        } else {
+            crate::provider::ThinkingBinding::Unbound
+        }
     }
 }

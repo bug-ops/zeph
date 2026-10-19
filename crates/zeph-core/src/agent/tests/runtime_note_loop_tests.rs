@@ -77,9 +77,9 @@ async fn real_loop_attaches_budget_notes_and_resets_the_budget_each_turn() {
         vec![
             tool_use("a"),
             tool_use("b"),
-            ChatResponse::Text("turn one done".into()),
+            ChatResponse::text("turn one done"),
             tool_use("c"),
-            ChatResponse::Text("turn two done".into()),
+            ChatResponse::text("turn two done"),
         ],
         3,
         3,
@@ -113,11 +113,7 @@ async fn real_loop_attaches_budget_notes_and_resets_the_budget_each_turn() {
 async fn real_loop_prefix_is_byte_identical_including_the_noted_message() {
     // Valid only with tool_filter, pruning, deferred summaries and soft compaction inactive.
     let (mut agent, recorded) = agent_with(
-        vec![
-            tool_use("a"),
-            tool_use("b"),
-            ChatResponse::Text("done".into()),
-        ],
+        vec![tool_use("a"), tool_use("b"), ChatResponse::text("done")],
         2,
         3,
     );
@@ -143,7 +139,7 @@ async fn real_loop_prefix_is_byte_identical_including_the_noted_message() {
 
 #[tokio::test]
 async fn system_prompt_names_the_genuine_runtime_note_id() {
-    let (mut agent, recorded) = agent_with(vec![ChatResponse::Text("hi".into())], 0, 3);
+    let (mut agent, recorded) = agent_with(vec![ChatResponse::text("hi")], 0, 3);
     let nonce = agent.services.session.runtime_notes.nonce().to_string();
 
     agent
@@ -217,10 +213,7 @@ fn two_calls() -> ChatResponse {
 #[tokio::test]
 async fn turn_input_is_stamped_and_superseded_across_real_turns() {
     let (mut agent, _recorded) = agent_with(
-        vec![
-            ChatResponse::Text("one".into()),
-            ChatResponse::Text("two".into()),
-        ],
+        vec![ChatResponse::text("one"), ChatResponse::text("two")],
         0,
         3,
     );

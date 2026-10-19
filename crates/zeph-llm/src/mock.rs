@@ -33,6 +33,12 @@ pub struct MockProvider {
     /// default); set via [`MockProvider::with_vision`] to test vision-tier routing/escalation
     /// paths (spec-072) without needing a real vision-capable provider.
     pub supports_vision: bool,
+    /// Value returned by `thinking_binding()`. Defaults to `Unbound` (the trait default); set
+    /// via [`MockProvider::with_thinking_binding`] to test the thinking strip seams.
+    pub thinking_binding: crate::provider::ThinkingBinding,
+    /// Value returned by `last_auxiliary_usage()`; set via
+    /// [`MockProvider::with_auxiliary_usage`].
+    pub auxiliary_usage: Option<crate::provider::AuxiliaryUsage>,
     /// Milliseconds to sleep before returning a response.
     pub delay_ms: u64,
     /// Sequence of errors to return before switching to normal responses.
@@ -102,6 +108,8 @@ impl Default for MockProvider {
             supports_tool_use: true,
             context_window: None,
             supports_vision: false,
+            thinking_binding: crate::provider::ThinkingBinding::Unbound,
+            auxiliary_usage: None,
             delay_ms: 0,
             errors: Arc::new(Mutex::new(VecDeque::new())),
             recorded: None,
@@ -424,6 +432,21 @@ impl MockProvider {
         self.supports_vision = true;
         self
     }
+
+    /// Report `usage` from `last_auxiliary_usage()` after every call.
+    #[must_use]
+    pub fn with_auxiliary_usage(mut self, usage: crate::provider::AuxiliaryUsage) -> Self {
+        self.auxiliary_usage = Some(usage);
+        self
+    }
+
+    /// Set the [`ThinkingBinding`](crate::provider::ThinkingBinding) reported by
+    /// `thinking_binding()`.
+    #[must_use]
+    pub fn with_thinking_binding(mut self, binding: crate::provider::ThinkingBinding) -> Self {
+        self.thinking_binding = binding;
+        self
+    }
 }
 
 impl LlmProvider for MockProvider {
@@ -555,6 +578,14 @@ impl LlmProvider for MockProvider {
         self.supports_tool_use
     }
 
+    fn thinking_binding(&self) -> crate::provider::ThinkingBinding {
+        self.thinking_binding
+    }
+
+    fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {
+        self.auxiliary_usage
+    }
+
     fn supports_vision(&self) -> bool {
         self.supports_vision
     }
@@ -590,6 +621,6 @@ impl LlmProvider for MockProvider {
             return Ok(response);
         }
         // Fallback: delegate to chat() and wrap in Text.
-        Ok(ChatResponse::Text(self.chat(messages).await?))
+        Ok(ChatResponse::text(self.chat(messages).await?))
     }
 }

@@ -66,8 +66,7 @@ fn tool_use_batch(n: usize) -> ChatResponse {
 /// one LLM round-trip, not a stale or hardcoded value.
 #[tokio::test]
 async fn text_only_turn_reports_zero_tool_calls_and_one_llm_request() {
-    let (mock, _counter) =
-        MockProvider::default().with_tool_use(vec![ChatResponse::Text("hello".into())]);
+    let (mock, _counter) = MockProvider::default().with_tool_use(vec![ChatResponse::text("hello")]);
     let provider = AnyProvider::Mock(mock);
     let channel = MockChannel::new(vec![]);
     let registry = create_test_registry();
@@ -90,10 +89,8 @@ async fn text_only_turn_reports_zero_tool_calls_and_one_llm_request() {
 /// round-trip plus the final `Text` round-trip.
 #[tokio::test]
 async fn single_turn_with_multiple_tool_calls_counts_full_batch() {
-    let (mock, _counter) = MockProvider::default().with_tool_use(vec![
-        tool_use_batch(3),
-        ChatResponse::Text("all done".into()),
-    ]);
+    let (mock, _counter) = MockProvider::default()
+        .with_tool_use(vec![tool_use_batch(3), ChatResponse::text("all done")]);
     let provider = AnyProvider::Mock(mock);
     let channel = MockChannel::new(vec![]);
     let registry = create_test_registry();
@@ -123,8 +120,8 @@ async fn single_turn_with_multiple_tool_calls_counts_full_batch() {
 async fn tool_call_counter_resets_between_turns_not_accumulated() {
     let (mock, _counter) = MockProvider::default().with_tool_use(vec![
         tool_use_batch(2),
-        ChatResponse::Text("first turn done".into()),
-        ChatResponse::Text("second turn done".into()),
+        ChatResponse::text("first turn done"),
+        ChatResponse::text("second turn done"),
     ]);
     let provider = AnyProvider::Mock(mock);
     let channel = MockChannel::new(vec![]);

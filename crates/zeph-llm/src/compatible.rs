@@ -369,6 +369,14 @@ impl LlmProvider for CompatibleProvider {
         self.inner.last_usage()
     }
 
+    fn thinking_binding(&self) -> crate::provider::ThinkingBinding {
+        self.inner.thinking_binding()
+    }
+
+    fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {
+        self.inner.last_auxiliary_usage()
+    }
+
     fn last_reasoning_tokens(&self) -> Option<u64> {
         self.inner.last_reasoning_tokens()
     }

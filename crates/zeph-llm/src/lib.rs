@@ -120,13 +120,13 @@ pub mod whisper;
 
 pub use classifier::metrics::{ClassifierMetrics, ClassifierMetricsSnapshot, TaskMetricsSnapshot};
 pub use compatible::CompatibleConfig;
-pub use error::LlmError;
+pub use error::{LlmError, RefusalCategory};
 pub use extractor::Extractor;
 pub use masking::{MaskedProvider, OutboundMasker, mask_messages};
 pub use openai::{CompletionTokensParam, OpenAiConfig};
 pub use provider::{
-    AssistantBlock, AssistantContent, AssistantContentBuilder, ChatExtras, ChatStream, ImageData,
-    LlmProvider, StreamChunk, ThinkingBlock,
+    AssistantBlock, AssistantContent, AssistantContentBuilder, AuxiliaryUsage, ChatExtras,
+    ChatStream, ImageData, LlmProvider, StreamChunk, ThinkingBinding, ThinkingBlock,
 };
 pub use provider_dyn::LlmProviderDyn;
 pub use router::aware::RouterAware;

@@ -76,7 +76,8 @@ SemanticMemory (Arc)
 ### Message Storage
 - Every user + assistant turn persisted to SQLite immediately
 - Messages are never deleted — only marked with `compacted_at` or summarized
-- `MessageMetadata`: `agent_visible`, `user_visible`, `focus_pinned` — all respected
+- `MessageMetadata`: `visibility` (`MessageVisibility`), `focus_pinned` — all respected
+- Visibility SQL predicates are derived from `MessageVisibility::ALL` and `is_agent_visible`/`is_user_visible` (`NOT IN (hidden variants)`), never hand-listed: a `Marker` row is hidden from both the agent-visible and user-visible queries (#6838)
 - Conversation identified by `ConversationId`; one per agent session
 
 ### Admission Control

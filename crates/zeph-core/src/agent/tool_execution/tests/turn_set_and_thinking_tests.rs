@@ -119,7 +119,7 @@ async fn tool_array_is_identical_on_every_iteration_of_a_turn() {
     let (mock, _) = mock.with_tool_use(vec![
         ChatResponse::tool_use(None, vec![call("c1", "read")]),
         ChatResponse::tool_use(None, vec![call("c2", "read")]),
-        ChatResponse::Text("done".into()),
+        ChatResponse::text("done"),
     ]);
     let executor = MockToolExecutor::new(vec![
         Ok(Some(output("read", "a"))),
@@ -151,7 +151,7 @@ async fn tool_with_met_requires_is_callable_in_a_later_iteration() {
     let (mock, _) = MockProvider::with_responses(vec![]).with_tool_use(vec![
         ChatResponse::tool_use(None, vec![call("c1", "read")]),
         ChatResponse::tool_use(None, vec![call("c2", "write")]),
-        ChatResponse::Text("done".into()),
+        ChatResponse::text("done"),
     ]);
     let executor = MockToolExecutor::new(vec![
         Ok(Some(output("read", "read ok"))),
@@ -173,7 +173,7 @@ async fn tool_with_met_requires_is_callable_in_a_later_iteration() {
 async fn tool_with_unmet_requires_is_rejected_at_dispatch() {
     let (mock, _) = MockProvider::with_responses(vec![]).with_tool_use(vec![
         ChatResponse::tool_use(None, vec![call("c1", "write")]),
-        ChatResponse::Text("done".into()),
+        ChatResponse::text("done"),
     ]);
     let executor = MockToolExecutor::new(vec![Ok(Some(output("write", "write ok")))])
         .with_definitions(vec![tool_def("read"), tool_def("write"), tool_def("grep")]);
@@ -194,7 +194,7 @@ async fn tool_with_unmet_requires_is_rejected_at_dispatch() {
 async fn tool_outside_the_turn_set_is_rejected_at_dispatch() {
     let (mock, _) = MockProvider::with_responses(vec![]).with_tool_use(vec![
         ChatResponse::tool_use(None, vec![call("c1", "grep")]),
-        ChatResponse::Text("done".into()),
+        ChatResponse::text("done"),
     ]);
     let executor = MockToolExecutor::new(vec![Ok(Some(output("grep", "grep ok")))])
         .with_definitions(vec![tool_def("read"), tool_def("grep")]);
@@ -327,7 +327,7 @@ async fn provider_dropped_thinking_is_stripped_from_history_once() {
         compaction: None,
     };
     let (mock, _) = MockProvider::with_responses(vec![])
-        .with_tool_use(vec![response, ChatResponse::Text("done".into())]);
+        .with_tool_use(vec![response, ChatResponse::text("done")]);
     let executor = MockToolExecutor::new(vec![Ok(Some(output("read", "ok")))])
         .with_definitions(vec![tool_def("read")]);
     let mut agent = agent_with(mock, executor);
@@ -402,7 +402,8 @@ async fn deferred_apply_strips_thinking_from_the_lowest_touched_index() {
     use zeph_agent_context::DeferredApplyTrigger;
 
     let mut agent = agent_with(
-        MockProvider::with_responses(vec![]),
+        MockProvider::with_responses(vec![])
+            .with_thinking_binding(zeph_llm::provider::ThinkingBinding::PrefixBound),
         MockToolExecutor::no_tools(),
     );
     let mut history = history_with_thinking();
@@ -427,7 +428,7 @@ async fn deferred_apply_strips_thinking_from_the_lowest_touched_index() {
 }
 
 #[tokio::test]
-async fn mid_iteration_deferred_apply_ignores_count_pressure() {
+async fn unbound_provider_keeps_thinking_through_deferred_apply() {
     use zeph_agent_context::DeferredApplyTrigger;
 
     let mut agent = agent_with(
@@ -438,16 +439,20 @@ async fn mid_iteration_deferred_apply_ignores_count_pressure() {
     history[3].metadata.deferred_summary = Some("did read".into());
     agent.msg.messages = history;
     agent.services.memory.persistence.tool_call_cutoff = 1;
-    let before = agent.msg.messages.len();
+    let before = thinking_count(&agent.msg.messages);
+    assert!(before > 0, "fixture must carry thinking");
 
-    agent.maybe_apply_deferred_summaries(DeferredApplyTrigger::TokenPressure);
+    agent.maybe_apply_deferred_summaries(DeferredApplyTrigger::TokenOrCount);
 
-    assert_eq!(
-        agent.msg.messages.len(),
-        before,
-        "no token pressure, no edit"
+    assert!(
+        agent
+            .msg
+            .messages
+            .iter()
+            .any(|m| m.content.starts_with("[tool summary]")),
+        "the deferred summary must have been applied"
     );
-    assert_eq!(thinking_count(&agent.msg.messages), 1);
+    assert_eq!(thinking_count(&agent.msg.messages), before);
 }
 
 #[tokio::test]
@@ -462,7 +467,7 @@ async fn server_compaction_mirror_strips_the_responses_stale_thinking() {
         compaction: Some("the earlier conversation".into()),
     };
     let (mock, _) = MockProvider::with_responses(vec![])
-        .with_tool_use(vec![response, ChatResponse::Text("done".into())]);
+        .with_tool_use(vec![response, ChatResponse::text("done")]);
     let executor = MockToolExecutor::new(vec![Ok(Some(output("read", "ok")))])
         .with_definitions(vec![tool_def("read")]);
     let mut agent = agent_with(mock, executor);
@@ -563,11 +568,40 @@ fn append_next_iteration(history: &mut Vec<Message>) {
 
 fn seam_agent(history: Vec<Message>) -> Agent<MockChannel> {
     let mut agent = agent_with(
+        MockProvider::with_responses(vec!["summary".into()])
+            .with_thinking_binding(zeph_llm::provider::ThinkingBinding::PrefixBound),
+        MockToolExecutor::no_tools(),
+    );
+    agent.msg.messages = history;
+    agent
+}
+
+fn unbound_agent(history: Vec<Message>) -> Agent<MockChannel> {
+    let mut agent = agent_with(
         MockProvider::with_responses(vec!["summary".into()]),
         MockToolExecutor::no_tools(),
     );
     agent.msg.messages = history;
     agent
+}
+
+#[tokio::test]
+async fn unbound_provider_keeps_thinking_through_the_knowledge_rebuild() {
+    let mut agent = agent_with(
+        MockProvider::with_responses(vec![]),
+        MockToolExecutor::no_tools(),
+    );
+    agent.msg.messages = seam_history();
+    let before = thinking_count(&agent.msg.messages);
+    assert!(before > 0, "fixture must carry thinking");
+    agent
+        .services
+        .focus
+        .append_llm_knowledge("kept fact".to_owned());
+
+    agent.rebuild_knowledge_block();
+
+    assert_eq!(thinking_count(&agent.msg.messages), before);
 }
 
 #[tokio::test]
@@ -621,8 +655,7 @@ async fn deferred_summary_insertion_strips_from_the_hidden_pair() {
     );
 }
 
-#[tokio::test]
-async fn llm_compaction_strips_thinking_from_the_preserved_tail() {
+fn compaction_history() -> Vec<Message> {
     let mut history = vec![Message::from_legacy(Role::System, "system")];
     for i in 0..10 {
         let role = if i % 2 == 0 {
@@ -642,6 +675,12 @@ async fn llm_compaction_strips_thinking_from_the_preserved_tail() {
         ],
     ));
     history.push(Message::from_legacy(Role::User, "tail question"));
+    history
+}
+
+#[tokio::test]
+async fn llm_compaction_strips_thinking_from_the_preserved_tail() {
+    let history = compaction_history();
     let mut agent = seam_agent(history).with_context_budget(10_000, 0.20, 0.80, 2, 0);
 
     let _ = agent.compact_context().await.unwrap();
@@ -756,8 +795,7 @@ async fn compress_context_strips_thinking_through_the_knowledge_rebuild() {
     assert_eq!(thinking_count(&agent.msg.messages), 0);
 }
 
-#[tokio::test]
-async fn tombstone_insertion_strips_thinking_from_the_insert_index() {
+fn tombstone_history() -> Vec<Message> {
     let mut history = vec![
         Message::from_legacy(Role::System, "system"),
         user_turn("go"),
@@ -781,6 +819,12 @@ async fn tombstone_insertion_strips_thinking_from_the_insert_index() {
             MessagePart::Text { text: "x".into() },
         ],
     ));
+    history
+}
+
+#[tokio::test]
+async fn tombstone_insertion_strips_thinking_from_the_insert_index() {
+    let history = tombstone_history();
     let mut agent = seam_agent(history);
 
     agent
@@ -795,6 +839,59 @@ async fn tombstone_insertion_strips_thinking_from_the_insert_index() {
             .any(|p| matches!(p, MessagePart::ThinkingBlock { .. })),
         "the message behind the inserted tombstone lost its thinking"
     );
+}
+
+#[tokio::test]
+async fn unbound_provider_keeps_thinking_through_the_soft_prune() {
+    let mut agent = unbound_agent(seam_history()).with_context_budget(100_000, 0.20, 0.90, 4, 0);
+    agent.context_manager.soft_compaction_threshold = 0.60;
+    agent.runtime.providers.cached_prompt_tokens = 75_000;
+    let before = thinking_count(&agent.msg.messages);
+
+    agent.maybe_soft_compact_mid_iteration();
+
+    assert!(
+        matches!(
+            &agent.msg.messages[3].parts[0],
+            MessagePart::ToolOutput {
+                compacted_at: Some(_),
+                ..
+            }
+        ),
+        "the soft pass must have pruned the output"
+    );
+    assert_eq!(thinking_count(&agent.msg.messages), before);
+}
+
+#[tokio::test]
+async fn unbound_provider_keeps_thinking_through_llm_compaction() {
+    let mut agent =
+        unbound_agent(compaction_history()).with_context_budget(10_000, 0.20, 0.80, 2, 0);
+    let before = thinking_count(&agent.msg.messages);
+
+    let _ = agent.compact_context().await.unwrap();
+
+    assert!(
+        agent
+            .msg
+            .messages
+            .iter()
+            .any(|m| m.content.contains("summary")),
+        "compaction must have run"
+    );
+    assert_eq!(thinking_count(&agent.msg.messages), before);
+}
+
+#[tokio::test]
+async fn unbound_provider_keeps_thinking_through_tombstone_insertion() {
+    let mut agent = unbound_agent(tombstone_history());
+    let before = thinking_count(&agent.msg.messages);
+
+    agent
+        .persist_cancelled_tool_results(&[call("orphan", "bash")], Some(5))
+        .await;
+
+    assert_eq!(thinking_count(&agent.msg.messages), before);
 }
 
 #[tokio::test]
@@ -826,7 +923,7 @@ async fn nested_process_response_restores_the_outer_turn_set() {
         output_schema: None,
     }];
     let outer = TurnToolSet::resolve(&defs, None, &HashSet::new());
-    agent.services.tool_state.turn_tool_set = Some(outer);
+    agent.services.tool_state.turn_tool_set.set(Some(outer));
     agent.services.tool_state.dependency_graph = Some(graph_write_requires_read());
 
     agent.process_response().await.unwrap();
@@ -843,13 +940,252 @@ async fn nested_process_response_restores_the_outer_turn_set() {
     );
 }
 
+/// Dropping `process_response` mid-call (cancellation) must still restore the outer set (#6835).
+#[tokio::test]
+#[allow(clippy::large_futures)]
+async fn cancelled_process_response_restores_the_outer_turn_set() {
+    use crate::agent::turn_gate::TurnToolSet;
+
+    let (mock, _) = MockProvider::with_responses(vec!["never".into()])
+        .with_delay(10_000)
+        .with_tool_use(vec![]);
+    let mut agent = agent_with(mock, MockToolExecutor::no_tools());
+    let defs = vec![ToolDefinition {
+        name: "read".into(),
+        description: String::new(),
+        parameters: serde_json::json!({}),
+        output_schema: None,
+    }];
+    agent
+        .services
+        .tool_state
+        .turn_tool_set
+        .set(Some(TurnToolSet::resolve(&defs, None, &HashSet::new())));
+
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        agent.process_response(),
+    )
+    .await;
+
+    assert!(outcome.is_err(), "the provider call must still be pending");
+    let restored = agent
+        .services
+        .tool_state
+        .turn_tool_set
+        .get()
+        .expect("outer set restored after cancellation");
+    assert!(restored.contains("read"));
+}
+
+/// A provider refusal is surfaced once to the user and never persisted or retried (#6844).
+#[tokio::test]
+#[allow(clippy::large_futures)]
+async fn refusal_is_surfaced_without_history_or_retry() {
+    let (mock, calls) = MockProvider::with_responses(vec![])
+        .with_errors(vec![LlmError::Refused {
+            provider: "mock".into(),
+            category: Some(zeph_llm::RefusalCategory::new("cyber")),
+            explanation: None,
+        }])
+        .with_tool_use(vec![]);
+    let mut agent = agent_with(mock, MockToolExecutor::no_tools());
+    let _turn = agent.runtime.lifecycle.user_turn_scope.enter();
+
+    agent.process_response().await.unwrap();
+
+    assert_eq!(*calls.lock().unwrap(), 1, "a refusal must not be retried");
+    assert!(
+        agent
+            .msg
+            .messages
+            .iter()
+            .all(|m| !m.content.contains("do the thing")),
+        "the refused turn must not stay in history and be re-sent with the next request"
+    );
+    assert_eq!(
+        agent.msg.messages.len(),
+        1,
+        "only the system prompt remains"
+    );
+    let sent = agent.channel.sent_messages();
+    assert!(
+        sent.iter()
+            .any(|m| m.contains("The model declined this request (category: cyber).")),
+        "user must be told: {sent:?}"
+    );
+}
+
+/// A refusal outside a user turn (scheduler, background call) must not delete older turns.
+#[tokio::test]
+#[allow(clippy::large_futures)]
+async fn refusal_without_a_user_turn_keeps_older_history() {
+    let (mock, _) = MockProvider::with_responses(vec![])
+        .with_errors(vec![LlmError::Refused {
+            provider: "mock".into(),
+            category: None,
+            explanation: None,
+        }])
+        .with_tool_use(vec![]);
+    let mut agent = agent_with(mock, MockToolExecutor::no_tools());
+    let before = agent.msg.messages.len();
+    assert_eq!(agent.runtime.lifecycle.user_turn_scope.depth(), 0);
+
+    agent.process_response().await.unwrap();
+
+    assert_eq!(agent.msg.messages.len(), before, "older turns stay intact");
+    assert!(
+        agent
+            .msg
+            .messages
+            .iter()
+            .any(|m| m.content.contains("do the thing"))
+    );
+}
+
+fn refusing_provider() -> MockProvider {
+    MockProvider::with_responses(vec![])
+        .with_errors(vec![LlmError::Refused {
+            provider: "mock".into(),
+            category: None,
+            explanation: None,
+        }])
+        .with_tool_use(vec![])
+        .0
+}
+
+/// A refused self-reflection (nested `process_response`) must not roll back the user turn the
+/// outer tool loop is still working on.
+#[tokio::test]
+#[allow(clippy::large_futures)]
+async fn refusal_in_a_nested_response_keeps_the_user_turn() {
+    let mut agent = agent_with(refusing_provider(), MockToolExecutor::no_tools());
+    let before = agent.msg.messages.len();
+    let _turn = agent.runtime.lifecycle.user_turn_scope.enter();
+    let _outer = agent.runtime.lifecycle.response_depth.enter();
+
+    agent.process_response().await.unwrap();
+
+    assert_eq!(agent.msg.messages.len(), before);
+    assert!(
+        agent
+            .msg
+            .messages
+            .iter()
+            .any(|m| m.content.contains("do the thing"))
+    );
+}
+
+/// The refused turn's persisted rows are soft-deleted, so it does not come back after a restart,
+/// and the in-memory accounting follows the rollback.
+#[tokio::test]
+#[allow(clippy::large_futures)]
+async fn refusal_soft_deletes_the_persisted_turn_input() {
+    use zeph_memory::semantic::SemanticMemory;
+
+    let memory = SemanticMemory::new(
+        ":memory:",
+        "http://127.0.0.1:1",
+        None,
+        AnyProvider::Mock(MockProvider::default()),
+        "test-model",
+    )
+    .await
+    .unwrap();
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+    let memory = Arc::new(memory);
+    let mut agent = agent_with(refusing_provider(), MockToolExecutor::no_tools()).with_memory(
+        Arc::clone(&memory),
+        cid,
+        50,
+        5,
+        100,
+    );
+    agent
+        .persist_message(Role::User, "do the thing", &[], false)
+        .await;
+    let id = agent.msg.last_persisted_message_id.expect("row persisted");
+    agent.msg.messages.last_mut().unwrap().metadata.db_id = Some(id);
+    let _turn = agent.runtime.lifecycle.user_turn_scope.enter();
+
+    agent.process_response().await.unwrap();
+
+    let history = memory.sqlite().load_history(cid, 50).await.unwrap();
+    assert!(
+        history.iter().all(|m| !m.content.contains("do the thing")),
+        "the refused prompt must not return after a restart: {history:?}"
+    );
+    assert_eq!(agent.msg.messages.len(), 1);
+    assert_eq!(agent.msg.non_system_count, 0);
+}
+
+#[tokio::test]
+#[allow(clippy::large_futures)]
+async fn refused_self_reflection_drops_its_dangling_prompt() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let skill_dir = temp_dir.path().join("test-skill");
+    std::fs::create_dir(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: test-skill\ndescription: A test skill\n---\nTest skill body",
+    )
+    .unwrap();
+    let registry = zeph_skills::registry::SkillRegistry::load(&[temp_dir.path().to_path_buf()]);
+    let mut agent = Agent::new(
+        AnyProvider::Mock(refusing_provider()),
+        MockChannel::new(vec![]),
+        registry,
+        None,
+        6,
+        MockToolExecutor::no_tools(),
+    )
+    .with_learning(crate::config::LearningConfig {
+        enabled: true,
+        ..crate::config::LearningConfig::default()
+    });
+    agent
+        .services
+        .skill
+        .active_skill_names
+        .push("test-skill".into());
+    agent.msg.messages.clear();
+    agent
+        .msg
+        .messages
+        .push(Message::from_legacy(Role::System, "system"));
+    agent.msg.messages.push(user_turn("do the thing"));
+    let before = agent.msg.messages.len();
+    let _turn = agent.runtime.lifecycle.user_turn_scope.enter();
+    let _outer = agent.runtime.lifecycle.response_depth.enter();
+
+    let retried = agent
+        .attempt_self_reflection("error text", "tool output")
+        .await
+        .unwrap();
+
+    assert!(!retried);
+    assert_eq!(
+        agent.msg.messages.len(),
+        before,
+        "reflection prompt dropped"
+    );
+    assert!(
+        agent
+            .msg
+            .messages
+            .last()
+            .is_some_and(|m| m.content == "do the thing"),
+        "the user turn stays the last message"
+    );
+}
+
 #[tokio::test]
 #[allow(clippy::large_futures)]
 async fn skipped_prerequisite_does_not_unlock_its_dependant() {
     let (mock, _) = MockProvider::with_responses(vec![]).with_tool_use(vec![
         ChatResponse::tool_use(None, vec![call("c1", "read")]),
         ChatResponse::tool_use(None, vec![call("c2", "write")]),
-        ChatResponse::Text("done".into()),
+        ChatResponse::text("done"),
     ]);
     let executor = MockToolExecutor::new(vec![
         Ok(Some(zeph_tools::ToolOutput {
@@ -884,7 +1220,7 @@ async fn server_compaction_mirror_fires_through_the_masked_provider() {
         compaction: Some("the earlier conversation".into()),
     };
     let (mock, _) = MockProvider::with_responses(vec![])
-        .with_tool_use(vec![response, ChatResponse::Text("done".into())]);
+        .with_tool_use(vec![response, ChatResponse::text("done")]);
     let executor = MockToolExecutor::new(vec![Ok(Some(output("read", "ok")))])
         .with_definitions(vec![tool_def("read")]);
     let mut agent = agent_with(mock, executor).with_secret_registry(Arc::new(
@@ -927,7 +1263,7 @@ async fn serialized_request_only_appends_between_loop_iterations() {
     let (mock, _) = mock.with_tool_use(vec![
         thinking_call("c1", "a"),
         thinking_call("c2", "b"),
-        ChatResponse::Text("done".into()),
+        ChatResponse::text("done"),
     ]);
     let executor = MockToolExecutor::new(vec![
         Ok(Some(output("read", "one"))),
@@ -979,7 +1315,7 @@ async fn paste_gate_fails_closed_on_unmet_requires_without_a_turn_set() {
         MockToolExecutor::no_tools(),
     );
     agent.services.tool_state.dependency_graph = Some(graph_write_requires_read());
-    assert!(agent.services.tool_state.turn_tool_set.is_none());
+    assert!(agent.services.tool_state.turn_tool_set.get().is_none());
 
     let gate = agent.paste_dispatch_gate();
 
@@ -1002,7 +1338,7 @@ async fn another_caller_compacting_on_the_same_provider_does_not_touch_main_hist
         compaction: Some("a subagent's summary".into()),
     };
     let (mock, _) = MockProvider::with_responses(vec![])
-        .with_tool_use(vec![compacted, ChatResponse::Text("main answer".into())]);
+        .with_tool_use(vec![compacted, ChatResponse::text("main answer")]);
     let mut agent = agent_with(mock, MockToolExecutor::no_tools());
     let before: Vec<String> = agent
         .msg
@@ -1051,7 +1387,7 @@ async fn real_output_that_starts_with_a_skip_marker_still_unlocks_its_dependant(
     let (mock, _) = MockProvider::with_responses(vec![]).with_tool_use(vec![
         ChatResponse::tool_use(None, vec![call("c1", "read")]),
         ChatResponse::tool_use(None, vec![call("c2", "write")]),
-        ChatResponse::Text("done".into()),
+        ChatResponse::text("done"),
     ]);
     let executor = MockToolExecutor::new(vec![
         Ok(Some(output(

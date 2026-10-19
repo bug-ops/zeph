@@ -287,6 +287,12 @@ impl SafetyProbe for LlmSafetyProbe {
 
                 match tokio::time::timeout(timeout, self.provider.chat(&messages)).await {
                     Ok(Ok(response)) => Self::parse_verdict(&response),
+                    Ok(Err(e)) if e.is_refusal() => {
+                        tracing::warn!(error = %e, "ShadowSentinel: probe model refused");
+                        ProbeVerdict::Deny {
+                            reason: "safety probe model refused to evaluate this call".to_owned(),
+                        }
+                    }
                     Ok(Err(e)) => {
                         tracing::warn!(error = %e, "ShadowSentinel: probe LLM error");
                         if self.deny_on_timeout {
@@ -1191,6 +1197,22 @@ mod tests {
                 reason: "suspicious pattern".to_owned()
             }
         );
+    }
+
+    #[tokio::test]
+    async fn refusing_probe_denies_even_when_deny_on_timeout_is_off() {
+        let refusal = zeph_llm::LlmError::Refused {
+            provider: "mock".to_owned(),
+            category: None,
+            explanation: None,
+        };
+        let provider = Arc::new(AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::default().with_errors(vec![refusal]),
+        ));
+        let probe = LlmSafetyProbe::new(provider, 1_000, false);
+        let args = serde_json::json!({});
+        let verdict = probe.evaluate("shell", &args, &[]).await;
+        assert!(matches!(verdict, ProbeVerdict::Deny { .. }), "{verdict:?}");
     }
 
     #[test]

@@ -711,7 +711,7 @@ mod integration {
                     tool_calls[0].name
                 );
             }
-            ChatResponse::Text(text) => {
+            ChatResponse::Text { text, .. } => {
                 eprintln!("tool test received: Text (model did not call tool): {text:?}");
                 assert!(
                     !text.is_empty(),

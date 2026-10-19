@@ -207,7 +207,7 @@ mod tests {
             conversation_id: Some("conv-1"),
             turn_number: 3,
         };
-        let resp = ChatResponse::Text("hello".into());
+        let resp = ChatResponse::text("hello");
 
         let _ = layer.before_chat(&ctx, &[], &[]).await;
         layer.after_chat(&ctx, &resp).await;
@@ -236,8 +236,8 @@ mod tests {
                 _messages: &'a [Message],
                 _tools: &'a [ToolDefinition],
             ) -> Pin<Box<dyn Future<Output = Option<ChatResponse>> + Send + 'a>> {
-                Box::pin(std::future::ready(Some(ChatResponse::Text(
-                    "short-circuited".into(),
+                Box::pin(std::future::ready(Some(ChatResponse::text(
+                    "short-circuited",
                 ))))
             }
         }
@@ -248,7 +248,7 @@ mod tests {
             turn_number: 0,
         };
         let result = layer.before_chat(&ctx, &[], &[]).await;
-        assert_matches!(result, Some(ChatResponse::Text(ref s)) if s == "short-circuited");
+        assert_matches!(result, Some(ChatResponse::Text { text: ref s, .. }) if s == "short-circuited");
     }
 
     // Verify that Role is accessible from zeph_llm imports (ensures crate boundary is correct).
@@ -304,7 +304,7 @@ mod tests {
             conversation_id: None,
             turn_number: 0,
         };
-        let resp = ChatResponse::Text("ok".into());
+        let resp = ChatResponse::text("ok");
 
         layer_a.before_chat(&ctx, &[], &[]).await;
         layer_b.before_chat(&ctx, &[], &[]).await;
@@ -333,7 +333,7 @@ mod tests {
                 _ctx: &'a LayerContext<'_>,
                 response: &'a ChatResponse,
             ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-                if let ChatResponse::Text(t) = response {
+                if let ChatResponse::Text { text: t, .. } = response {
                     *self.captured.lock().unwrap() = Some(t.clone());
                 }
                 Box::pin(std::future::ready(()))
@@ -350,7 +350,7 @@ mod tests {
         };
 
         // Simulate: before_chat short-circuits; caller passes result to after_chat.
-        let sc_response = ChatResponse::Text("short-circuit".into());
+        let sc_response = ChatResponse::text("short-circuit");
         layer.after_chat(&ctx, &sc_response).await;
 
         let got = captured.lock().unwrap().clone();

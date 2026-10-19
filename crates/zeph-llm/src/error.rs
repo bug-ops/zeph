@@ -3,6 +3,82 @@
 
 //! Error type for all LLM provider operations.
 
+/// Refusal category reported by the provider (for example `cyber` or `bio`).
+///
+/// The set is open and chosen by the server, so it is kept as an opaque string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusalCategory(String);
+
+impl RefusalCategory {
+    /// Wrap a category name reported by the provider.
+    ///
+    /// The value is server-controlled and shown to the user, so control characters are dropped
+    /// and the length is capped at [`Self::MAX_CHARS`].
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(sanitize_provider_text(&name.into(), Self::MAX_CHARS))
+    }
+
+    /// Maximum number of characters kept from the provider-supplied category.
+    pub const MAX_CHARS: usize = 64;
+
+    /// Category name as reported by the provider.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for RefusalCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// `stop_details` of a Claude response; populated when `stop_reason` is `refusal`.
+#[derive(serde::Deserialize, Debug, Clone, Default)]
+pub(crate) struct StopDetails {
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub explanation: Option<String>,
+}
+
+/// Wire value of `stop_reason` that marks a refusal.
+const STOP_REASON_REFUSAL: &str = "refusal";
+
+/// Turn a `refusal` stop reason into [`LlmError::Refused`]; `Ok(())` for every other reason.
+///
+/// Used as a guard before consuming response content so a declined request surfaces as a typed
+/// error instead of an empty reply.
+pub(crate) fn check_refusal(
+    provider: &str,
+    stop_reason: Option<&str>,
+    details: Option<&StopDetails>,
+) -> Result<()> {
+    if stop_reason != Some(STOP_REASON_REFUSAL) {
+        return Ok(());
+    }
+    let details = details.cloned().unwrap_or_default();
+    Err(LlmError::Refused {
+        provider: provider.to_owned(),
+        category: details.category.map(RefusalCategory::new),
+        explanation: details.explanation.map(|e| sanitize_provider_text(&e, 500)),
+    })
+}
+
+/// Drop control characters and cap `text` at `max_chars` characters.
+fn sanitize_provider_text(text: &str, max_chars: usize) -> String {
+    text.chars()
+        .filter(|c| !c.is_control())
+        .take(max_chars)
+        .collect()
+}
+
+fn refusal_suffix(category: Option<&RefusalCategory>) -> String {
+    category.map_or_else(String::new, |c| format!(" (category: {c})"))
+}
+
 /// Errors that can occur in any [`crate::provider::LlmProvider`] operation.
 ///
 /// Use the predicate methods ([`is_rate_limited`](Self::is_rate_limited),
@@ -103,6 +179,16 @@ pub enum LlmError {
     #[error("invalid input for {provider}: {message}")]
     InvalidInput { provider: String, message: String },
 
+    /// The model declined to answer (`stop_reason: "refusal"`). The same request will be declined
+    /// by the same policy elsewhere or on retry, so routers must not fall back and callers must
+    /// surface it instead of retrying.
+    #[error("{provider} declined the request{}", refusal_suffix(.category.as_ref()))]
+    Refused {
+        provider: String,
+        category: Option<RefusalCategory>,
+        explanation: Option<String>,
+    },
+
     /// The request is well-formed but rejected due to a model- or config-specific
     /// capability gap (e.g. `reasoning_effort` combined with tool calls on `OpenAI`'s Chat
     /// Completions API). Unlike [`Self::InvalidInput`], the same request may succeed on a
@@ -157,6 +243,33 @@ impl LlmError {
     #[must_use]
     pub fn is_invalid_input(&self) -> bool {
         matches!(self, Self::InvalidInput { .. })
+    }
+
+    /// Returns true if the model declined the request.
+    #[must_use]
+    pub fn is_refusal(&self) -> bool {
+        matches!(self, Self::Refused { .. })
+    }
+
+    /// Returns true if trying another provider cannot help: the input is invalid or the model
+    /// refused it. Routers must stop the fallback loop and record no provider outcome.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::LlmError;
+    ///
+    /// let refused = LlmError::Refused {
+    ///     provider: "claude".into(),
+    ///     category: None,
+    ///     explanation: None,
+    /// };
+    /// assert!(refused.forbids_provider_fallback());
+    /// assert!(!LlmError::Unavailable.forbids_provider_fallback());
+    /// ```
+    #[must_use]
+    pub fn forbids_provider_fallback(&self) -> bool {
+        self.is_invalid_input() || self.is_refusal()
     }
 
     /// Returns true if this error indicates a model- or config-specific capability gap.
@@ -400,5 +513,12 @@ mod tests {
         assert!(!body_is_reasoning_effort_tools_incompatible(
             "reasoning_effort is not supported for this model"
         ));
+    }
+
+    #[test]
+    fn refusal_category_is_sanitized_and_capped() {
+        let c = RefusalCategory::new(format!("cy\u{1b}[31mber\n{}", "x".repeat(200)));
+        assert!(!c.as_str().chars().any(char::is_control));
+        assert_eq!(c.as_str().chars().count(), RefusalCategory::MAX_CHARS);
     }
 }

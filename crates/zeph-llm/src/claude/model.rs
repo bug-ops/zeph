@@ -83,6 +83,11 @@ pub(super) struct ModelCapabilities {
     pub server_compaction: bool,
     /// Needs the `interleaved-thinking-2025-05-14` beta for `Extended` thinking with tools.
     pub needs_interleaved_beta: bool,
+    /// Needs the `extended-cache-ttl-2025-04-25` beta to use the 1-hour cache TTL; newer models
+    /// accept it natively and unknown models are not sent the header.
+    pub extended_ttl_beta: bool,
+    /// Supports `output_config.format` JSON-schema structured outputs (no forced tool choice).
+    pub structured_outputs: bool,
     /// Needs the `context-1m-2025-08-07` beta to reach a 1M window.
     pub needs_1m_beta: bool,
     /// Context window without any beta, `None` when unknown.
@@ -115,7 +120,9 @@ impl ModelCapabilities {
         preserved_thinking: false,
         server_compaction: false,
         needs_interleaved_beta: false,
+        extended_ttl_beta: false,
         needs_1m_beta: false,
+        structured_outputs: false,
         native_window: None,
     };
 
@@ -139,6 +146,7 @@ impl ModelCapabilities {
     const GEN5_BOUND: Self = Self {
         forbids_forced_tool_choice: true,
         preserved_thinking: true,
+        structured_outputs: true,
         ..Self::GEN5
     };
 }
@@ -196,10 +204,12 @@ impl ClaudeModel {
         match self {
             Self::Legacy => ModelCapabilities {
                 needs_1m_beta: true,
+                extended_ttl_beta: true,
                 native_window: Some(WINDOW_200K),
                 ..none
             },
             Self::Haiku45 => ModelCapabilities {
+                extended_ttl_beta: true,
                 native_window: Some(WINDOW_200K),
                 ..none
             },
@@ -225,6 +235,7 @@ impl ClaudeModel {
             },
             Self::Mythos51 => ModelCapabilities {
                 forbids_forced_tool_choice: true,
+                structured_outputs: true,
                 ..ModelCapabilities::GEN5
             },
             Self::Unknown => ModelCapabilities {

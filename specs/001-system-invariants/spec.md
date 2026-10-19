@@ -93,7 +93,7 @@ The `Channel` trait (`crates/zeph-core/src/channel.rs`) is the only I/O boundary
 
 - `MessagePart` uses `#[serde(tag = "kind", rename_all = "snake_case")]` — the `kind` field is the discriminator
 - System message **must be first** in the messages vector (index 0)
-- `ThinkingBlock` and `RedactedThinkingBlock` are forwarded verbatim, in response order, within the current turn (every assistant message after the last `MessageOrigin::TurnInput`). On models with preserved thinking (`preserved_thinking` in `[[003-llm-providers/spec]]`), thinking of earlier turns is dropped as a whole leading run; other models receive all thinking verbatim. At a history rewrite inside a turn (pressure prune, soft/hard compaction, `complete_focus`, `compress_context`, the server-compaction mirror, a deferred-summary insertion) thinking is stripped once as a whole trailing run from the lowest touched index. Thinking is never persisted (`MessagePart::strip_for_persistence`)
+- `ThinkingBlock` and `RedactedThinkingBlock` are forwarded verbatim, in response order, within the current turn (every assistant message after the last `MessageOrigin::TurnInput`). On models with preserved thinking (`preserved_thinking` in `[[003-llm-providers/spec]]`), thinking of earlier turns is dropped as a whole leading run; other models receive all thinking verbatim. At a history rewrite inside a turn (pressure prune, soft/hard compaction, `complete_focus`, `compress_context`, the server-compaction mirror, a deferred-summary insertion) thinking is stripped once as a whole trailing run from the lowest touched index. The strip goes through `strip_thinking_after_edit(.., provider.thinking_binding())` and happens only for `ThinkingBinding::PrefixBound` providers (thinking signed over the preceding prefix); `Unbound` providers keep their thinking. The `ThinkingReplay::Dropped` and binding-mismatch retry strips stay unconditional. Thinking is never persisted (`MessagePart::strip_for_persistence`)
 - `Compaction` variant must be preserved in conversation history for context continuity
 - `MessageMetadata` controls visibility: `agent_visible`, `user_visible`, `focus_pinned` — all three must be checked
 - `ToolOutput` part stores `compacted_at: Option<i64>` — set when summarized, never removed
@@ -118,6 +118,7 @@ The `Channel` trait (`crates/zeph-core/src/channel.rs`) is the only I/O boundary
 - Returns `Option<ToolOutput>` — `None` = this executor doesn't own the tool (pass to next in composite chain)
 - `CompositeExecutor` chains executors; order matters (first `Some(...)` wins)
 - Shell blocklist check runs **unconditionally before** `PermissionPolicy` — cannot be bypassed
+- `ClaimSource::Synthetic` marks harness-authored placeholders for calls that never ran; `ClaimSource::ContextManagement` marks the results of `start_focus`, `complete_focus`, `compress_context` and `request_compaction`, which did run. `ToolError::is_local_policy_denial()` is true only for denials raised by zeph's own policy layer (see `[[040-sanitizer/spec]]`)
 
 **NEVER**: collapse the two trust-gate methods into one; approval logic must remain separate.
 

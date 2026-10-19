@@ -46,7 +46,11 @@ impl zeph_tools::PolicyLlmClient for AdversarialPolicyLlmAdapter {
 
             let result: Result<String, zeph_llm::LlmError> =
                 zeph_llm::provider::LlmProvider::chat(&self.provider, &llm_messages).await;
-            result.map_err(|e| e.to_string())
+            match result {
+                // A refusal is a verdict, not an outage: fail_open must never turn it into Allow.
+                Err(e) if e.is_refusal() => Ok(zeph_tools::POLICY_REFUSAL_RESPONSE.to_owned()),
+                other => other.map_err(|e| e.to_string()),
+            }
         })
     }
 }
@@ -3785,6 +3789,33 @@ mod tests {
             matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
             "expected PolicyGateExecutor to block a denied tool call even when the inner \
              executor is a nested composite (mirrors acp.rs/daemon.rs wiring), got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn refusing_policy_model_denies_even_when_fail_open() {
+        let refusal = zeph_llm::LlmError::Refused {
+            provider: "mock".to_owned(),
+            category: None,
+            explanation: None,
+        };
+        let adapter = AdversarialPolicyLlmAdapter {
+            provider: zeph_llm::any::AnyProvider::Mock(
+                zeph_llm::mock::MockProvider::default().with_errors(vec![refusal]),
+            ),
+        };
+        let validator = zeph_tools::PolicyValidator::new(
+            vec!["test policy".to_owned()],
+            std::time::Duration::from_millis(500),
+            true,
+            Vec::new(),
+        );
+        let decision = validator
+            .validate("shell", &serde_json::Map::new(), &adapter)
+            .await;
+        assert!(
+            matches!(decision, zeph_tools::AdversarialPolicyDecision::Deny { .. }),
+            "{decision:?}"
         );
     }
 

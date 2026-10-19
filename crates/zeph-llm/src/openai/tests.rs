@@ -2132,7 +2132,7 @@ async fn chat_with_tools_handles_null_assistant_content() {
             assert_eq!(tool_calls[0].name, "bash");
             assert_eq!(tool_calls[0].input, serde_json::json!({"command": "ls"}));
         }
-        other @ ChatResponse::Text(_) => panic!("expected ToolUse response, got {other:?}"),
+        other @ ChatResponse::Text { .. } => panic!("expected ToolUse response, got {other:?}"),
     }
 }
 
@@ -2475,7 +2475,7 @@ async fn chat_with_tools_retries_on_429_then_succeeds() {
         "expected chat_with_tools to retry past a transient 429 and succeed, got: {result:?}"
     );
     match result.unwrap() {
-        ChatResponse::Text(text) => assert_eq!(text, "done"),
+        ChatResponse::Text { text, .. } => assert_eq!(text, "done"),
         other => panic!("expected Text response, got {other:?}"),
     }
 }

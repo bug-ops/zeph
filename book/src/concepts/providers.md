@@ -207,6 +207,10 @@ reasoning-effort: set to high (provider: claude)
 
 The `--reasoning-effort <low|medium|high>` CLI flag sets the same effort level at startup for every configured provider that supports it (see [CLI Reference](../reference/cli.md)).
 
+## Model Refusals
+
+When a provider declines a request (for example a Claude safety refusal), Zeph shows "The model declined this request (category: ...)" and does not retry it or send it to a fallback provider; nothing from the refused turn is saved to history.
+
 ## Response Caching
 
 Enable SQLite-backed response caching to avoid redundant LLM calls for identical requests. The cache key is a blake3 hash of the full message history and model name. Streaming responses bypass the cache.

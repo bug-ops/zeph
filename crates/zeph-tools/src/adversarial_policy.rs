@@ -14,6 +14,13 @@ use std::time::Duration;
 
 pub use zeph_common::{PolicyLlmClient, PolicyMessage, PolicyRole};
 
+/// Response an adapter returns when the policy model refuses to evaluate a call.
+///
+/// [`PolicyLlmClient`] carries no typed error, so a refusal travels as this one verdict,
+/// which [`PolicyValidator::validate`] parses to [`PolicyDecision::Deny`] regardless of
+/// `fail_open`. Adapters must use this constant rather than a literal.
+pub const POLICY_REFUSAL_RESPONSE: &str = "DENY: policy model refused to evaluate the call";
+
 #[non_exhaustive]
 /// Decision returned by the adversarial policy validator.
 #[derive(Debug, Clone)]
@@ -258,6 +265,17 @@ mod tests {
             let resp = self.response.clone();
             Box::pin(async move { Ok(resp) })
         }
+    }
+
+    #[tokio::test]
+    async fn refusal_response_denies_even_when_fail_open() {
+        let client = MockLlmClient {
+            response: POLICY_REFUSAL_RESPONSE.to_owned(),
+        };
+        let decision = make_validator(true)
+            .validate("shell", &make_params("command", "ls"), &client)
+            .await;
+        assert_matches!(decision, PolicyDecision::Deny { .. });
     }
 
     struct FailingLlmClient;

@@ -6,9 +6,52 @@ use zeph_sanitizer::{ContentSource, ContentSourceKind, MemorySourceHint};
 use super::super::Agent;
 use crate::channel::Channel;
 
-#[cfg(feature = "classifiers")]
-fn is_policy_blocked_output(body: &str) -> bool {
-    body.contains("[tool_error]") && body.contains("category: policy_blocked")
+/// Who authored a tool result body, decided where the result is classified and never inferred
+/// from the body text.
+///
+/// Text the harness wrote itself (a gate rejection, a utility-policy skip, a local policy
+/// denial) cannot carry an injection payload, so the ML classifier skips it. A tool or server
+/// that merely *prints* `[skipped]` or `category: policy_blocked` stays `Executed` and is
+/// classified like any other external output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ToolOutputOrigin {
+    /// The tool ran and produced the body; carries the executor's claimed provenance.
+    Executed(Option<zeph_tools::ClaimSource>),
+    /// The harness wrote the body for a call that never ran ([`zeph_tools::ClaimSource::Synthetic`]).
+    HarnessAuthored,
+    /// The body is the error of a denial raised by zeph's own policy layer
+    /// ([`zeph_tools::ToolError::is_local_policy_denial`]).
+    LocalPolicyDenial,
+}
+
+impl ToolOutputOrigin {
+    pub(super) fn from_claim_source(claim_source: Option<zeph_tools::ClaimSource>) -> Self {
+        match claim_source {
+            Some(zeph_tools::ClaimSource::Synthetic) => Self::HarnessAuthored,
+            other => Self::Executed(other),
+        }
+    }
+
+    pub(super) fn from_error(error: &zeph_tools::ToolError) -> Self {
+        if error.is_local_policy_denial() {
+            Self::LocalPolicyDenial
+        } else {
+            Self::Executed(None)
+        }
+    }
+
+    pub(super) fn claim_source(self) -> Option<zeph_tools::ClaimSource> {
+        match self {
+            Self::Executed(claim_source) => claim_source,
+            Self::HarnessAuthored => Some(zeph_tools::ClaimSource::Synthetic),
+            Self::LocalPolicyDenial => None,
+        }
+    }
+
+    #[cfg(feature = "classifiers")]
+    fn is_harness_text(self) -> bool {
+        matches!(self, Self::HarnessAuthored | Self::LocalPolicyDenial)
+    }
 }
 
 /// Tools whose outputs are produced exclusively by Zeph's own code paths and cannot
@@ -137,6 +180,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         body: &str,
         tool_name: &str,
+        origin: ToolOutputOrigin,
     ) -> (
         String,
         bool,
@@ -146,6 +190,11 @@ impl<C: Channel> Agent<C> {
         let source = build_tool_output_source(tool_name);
         let kind = source.kind;
         let trust_level = source.trust_level;
+        tracing::debug!(
+            tool = %tool_name,
+            claim_source = ?origin.claim_source(),
+            "sanitizing tool output"
+        );
         // Ratchet the turn-scoped memory-consent trust tracker (issue #6490, MemGhost) so
         // `MemoryToolExecutor::memory_save` can require confirmation when the LLM tries to
         // save content derived from this turn's untrusted tool output. Never lowers the
@@ -193,7 +242,7 @@ impl<C: Channel> Agent<C> {
 
         #[cfg(feature = "classifiers")]
         if let Some((b, f)) = self
-            .apply_classifier_verdict(&body, tool_name, memory_hint)
+            .apply_classifier_verdict(&body, tool_name, memory_hint, origin)
             .await
         {
             return (b, f, kind, trust_level);
@@ -371,27 +420,24 @@ impl<C: Channel> Agent<C> {
     /// Run the ML classifier on `body` and return an early result if the output is blocked
     /// or if the classification verdict warrants it. Returns `None` to continue normal flow.
     ///
-    /// Synthetic outputs from the utility gate are trusted internal content and are never
-    /// classified. Memory-hinted outputs and first-party tool outputs are also exempt.
+    /// Harness-authored bodies (gate rejections, utility-policy skips, local policy denials)
+    /// are never classified; the decision keys on `origin`, not on the body text. Memory-hinted
+    /// outputs and first-party tool outputs are also exempt.
     #[cfg(feature = "classifiers")]
     async fn apply_classifier_verdict(
         &mut self,
         body: &str,
         tool_name: &str,
         memory_hint: Option<zeph_sanitizer::MemorySourceHint>,
+        origin: ToolOutputOrigin,
     ) -> Option<(String, bool)> {
-        // Synthetic outputs from the utility gate are trusted internal content — never
-        // classify them. Only real tool output from external sources needs ML inspection.
-        let is_utility_gate_synthetic =
-            body.starts_with("[skipped]") || body.starts_with("[stopped]");
         let skip_ml = matches!(
             memory_hint,
             Some(
                 zeph_sanitizer::MemorySourceHint::ConversationHistory
                     | zeph_sanitizer::MemorySourceHint::LlmSummary
             )
-        ) || is_policy_blocked_output(body)
-            || is_utility_gate_synthetic
+        ) || origin.is_harness_text()
             || is_internal_tool(tool_name);
         if !skip_ml && self.services.security.sanitizer.has_classifier_backend() {
             let ml_verdict = self

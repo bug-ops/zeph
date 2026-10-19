@@ -190,7 +190,7 @@ impl DebugDumper {
     /// optional `PiiFilter` layer, see #6407) can reuse it.
     pub(crate) fn chat_response_dump_text(response: &ChatResponse) -> String {
         match response {
-            ChatResponse::Text(t) => t.clone(),
+            ChatResponse::Text { text: t, .. } => t.clone(),
             ChatResponse::ToolUse { content, .. } => {
                 let tool_calls: Vec<_> = content.tool_calls().collect();
                 let calls = serde_json::to_string_pretty(&tool_calls).unwrap_or_default();
@@ -1424,7 +1424,7 @@ mod tests {
 
         sink.dump_response(
             0,
-            &ChatResponse::Text("contact me at someone@example.com".to_owned()),
+            &ChatResponse::text("contact me at someone@example.com".to_owned()),
         );
 
         let content = read_dump_file(dir.path(), "0000-response.txt").await;
@@ -1457,7 +1457,7 @@ mod tests {
 
         sink.dump_response(
             0,
-            &ChatResponse::Text("contact me at someone@example.com".to_owned()),
+            &ChatResponse::text("contact me at someone@example.com".to_owned()),
         );
 
         let content = read_dump_file(dir.path(), "0000-response.txt").await;

@@ -73,6 +73,21 @@ pub struct SpeculativeMetrics {
     pub wasted_ms: u64,
 }
 
+/// Upper bound on how long a commit waits for a speculative result before the call falls
+/// through to normal execution.
+pub const COMMIT_LIMIT: Duration = Duration::from_secs(2);
+
+/// Result of [`SpeculationEngine::commit_within`].
+#[derive(Debug)]
+pub enum CommitOutcome {
+    /// A matching handle finished within the limit; its result is the call's result.
+    Committed(Box<Result<Option<ToolOutput>, ToolError>>),
+    /// A matching handle existed but did not finish in time; it has been cancelled.
+    TimedOut,
+    /// No matching handle was in flight.
+    Miss,
+}
+
 /// Speculative execution engine.
 ///
 /// Holds a reference to the underlying executor, the shared cache, and the active
@@ -258,29 +273,79 @@ impl SpeculationEngine {
         true
     }
 
-    /// Attempt to commit a speculative handle for `call`.
+    /// Whether a speculative handle for `call` is in flight, without consuming it.
+    #[must_use]
+    pub fn has_match(&self, call: &ToolCall) -> bool {
+        self.cache.contains_match(
+            &call.tool_id,
+            &hash_args(&call.params),
+            &hash_context(call.context.as_ref()),
+        )
+    }
+
+    /// Commit the speculative handle for `call`, waiting at most `limit` for its result.
     ///
-    /// If a matching handle exists (same `tool_id` + `args_hash`), awaits its result and
-    /// returns it. If no match, returns `None` — caller should fall through to normal dispatch.
-    pub async fn try_commit(
-        &self,
-        call: &ToolCall,
-    ) -> Option<Result<Option<ToolOutput>, ToolError>> {
-        let args_hash = hash_args(&call.params);
-        let context_hash = hash_context(call.context.as_ref());
-        if let Some(handle) = self
-            .cache
-            .take_match(&call.tool_id, &args_hash, &context_hash)
-        {
-            {
-                let mut m = self.metrics.lock();
-                m.committed += 1;
+    /// Call this only after every normal-path gate has passed: committing is the point where a
+    /// speculative result becomes the call's real result. On [`CommitOutcome::TimedOut`] the
+    /// speculative task has been cancelled and aborted and the caller must execute normally.
+    #[tracing::instrument(
+        name = "core.speculative.commit",
+        skip_all,
+        level = "debug",
+        fields(tool_id = %call.tool_id)
+    )]
+    pub async fn commit_within(&self, call: &ToolCall, limit: Duration) -> CommitOutcome {
+        let Some(handle) = self.take_handle(call) else {
+            return CommitOutcome::Miss;
+        };
+        match handle.commit_within(limit).await {
+            Ok(result) => {
+                self.metrics.lock().committed += 1;
+                debug!(tool_id = %call.tool_id, "speculative commit");
+                CommitOutcome::Committed(Box::new(result))
             }
-            debug!(tool_id = %call.tool_id, "speculative commit");
-            Some(handle.commit().await)
-        } else {
-            None
+            Err(timed_out) => {
+                self.record_cancelled(timed_out.wasted);
+                debug!(tool_id = %call.tool_id, ?limit, "speculative commit timed out");
+                CommitOutcome::TimedOut
+            }
         }
+    }
+
+    /// Cancel and abort the handle for `call`, if any, because the normal path resolved the call
+    /// without consuming it (rejected by a gate, served from cache, blocked by a hook).
+    pub fn discard(&self, call: &ToolCall) {
+        if let Some(handle) = self.take_handle(call) {
+            let wasted = handle.started_at.elapsed();
+            handle.cancel();
+            self.record_cancelled(wasted);
+            debug!(tool_id = %call.tool_id, "speculative handle discarded");
+        }
+    }
+
+    /// Cancel and abort every in-flight handle without resetting the turn metrics.
+    ///
+    /// Used when the stream that triggered them failed, so none of their results can be
+    /// committed against a response that will be re-requested.
+    pub fn cancel_pending(&self) {
+        let cancelled = self.cache.cancel_all_counted();
+        self.metrics.lock().cancelled += u32::try_from(cancelled).unwrap_or(u32::MAX);
+    }
+
+    fn take_handle(&self, call: &ToolCall) -> Option<cache::SpeculativeHandle> {
+        self.cache.take_match(
+            &call.tool_id,
+            &hash_args(&call.params),
+            &hash_context(call.context.as_ref()),
+        )
+    }
+
+    fn record_cancelled(&self, wasted: Duration) {
+        let mut m = self.metrics.lock();
+        m.cancelled += 1;
+        m.wasted_ms = m
+            .wasted_ms
+            .saturating_add(u64::try_from(wasted.as_millis()).unwrap_or(u64::MAX));
     }
 
     /// Cancel and remove the in-flight handle for `tool_id`, if any.
@@ -532,6 +597,134 @@ mod tests {
         let snapshot = engine.metrics_snapshot();
         assert_eq!(snapshot.committed, 0, "metrics must reset after end_turn");
         assert_eq!(snapshot.cancelled, 0, "metrics must reset after end_turn");
+    }
+
+    struct CountingSlowExecutor {
+        completed: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ToolExecutor for CountingSlowExecutor {
+        fn execute(
+            &self,
+            _: &str,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            std::future::ready(Ok(None))
+        }
+
+        async fn execute_tool_call(&self, _: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            self.completed
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(None)
+        }
+
+        fn is_tool_speculatable(&self, _: &str) -> bool {
+            true
+        }
+
+        fn execute_tool_call_confirmed(
+            &self,
+            call: &ToolCall,
+        ) -> impl std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send
+        {
+            self.execute_tool_call(call)
+        }
+        fn checkpoint_undo(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+            zeph_tools::CheckpointActionResult::unsupported()
+        }
+        fn checkpoint_redo(&self) -> zeph_tools::CheckpointActionResult {
+            zeph_tools::CheckpointActionResult::unsupported()
+        }
+        fn checkpoint_list(&self) -> zeph_tools::CheckpointListResult {
+            zeph_tools::CheckpointListResult::default()
+        }
+        fn requires_confirmation(&self, _call: &ToolCall) -> bool {
+            false
+        }
+    }
+
+    fn slow_engine(completed: &Arc<std::sync::atomic::AtomicUsize>) -> SpeculationEngine {
+        SpeculationEngine::new(
+            Arc::new(CountingSlowExecutor {
+                completed: Arc::clone(completed),
+            }),
+            SpeculativeConfig {
+                mode: SpeculationMode::Decoding,
+                ..Default::default()
+            },
+        )
+    }
+
+    fn echo_prediction() -> Prediction {
+        Prediction {
+            tool_id: zeph_common::ToolName::new("echo"),
+            args: serde_json::Map::new(),
+            confidence: 0.9,
+            source: prediction::PredictionSource::StreamPartial,
+        }
+    }
+
+    #[tokio::test]
+    async fn commit_within_timeout_aborts_the_speculative_task() {
+        let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let engine = slow_engine(&completed);
+        let pred = echo_prediction();
+        assert!(engine.try_dispatch(&pred, SkillTrustLevel::Trusted, &DispatchGate::open()));
+        let call = pred.to_tool_call("c1");
+
+        let outcome = engine.commit_within(&call, Duration::from_millis(50)).await;
+
+        assert!(matches!(outcome, CommitOutcome::TimedOut));
+        let m = engine.metrics_snapshot();
+        assert_eq!((m.committed, m.cancelled), (0, 1));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(
+            completed.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the aborted speculative task must never complete"
+        );
+        assert!(matches!(
+            engine.commit_within(&call, Duration::from_millis(50)).await,
+            CommitOutcome::Miss
+        ));
+    }
+
+    #[tokio::test]
+    async fn commit_within_returns_result_and_counts_commit() {
+        let exec: Arc<dyn ErasedToolExecutor> = Arc::new(AlwaysOkExecutor);
+        let engine = SpeculationEngine::new(
+            exec,
+            SpeculativeConfig {
+                mode: SpeculationMode::Decoding,
+                ..Default::default()
+            },
+        );
+        let pred = echo_prediction();
+        assert!(engine.try_dispatch(&pred, SkillTrustLevel::Trusted, &DispatchGate::open()));
+        let call = pred.to_tool_call("c1");
+        assert!(engine.has_match(&call));
+
+        let outcome = engine.commit_within(&call, Duration::from_secs(2)).await;
+
+        assert!(matches!(outcome, CommitOutcome::Committed(r) if r.is_ok()));
+        assert_eq!(engine.metrics_snapshot().committed, 1);
+        assert!(!engine.has_match(&call));
+    }
+
+    #[tokio::test]
+    async fn discard_and_cancel_pending_count_cancelled_without_resetting() {
+        let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let engine = slow_engine(&completed);
+        let pred = echo_prediction();
+        assert!(engine.try_dispatch(&pred, SkillTrustLevel::Trusted, &DispatchGate::open()));
+        engine.discard(&pred.to_tool_call("c1"));
+        assert_eq!(engine.metrics_snapshot().cancelled, 1);
+
+        assert!(engine.try_dispatch(&pred, SkillTrustLevel::Trusted, &DispatchGate::open()));
+        engine.cancel_pending();
+        assert_eq!(engine.metrics_snapshot().cancelled, 2);
+        assert!(!engine.has_match(&pred.to_tool_call("c2")));
     }
 
     #[tokio::test]

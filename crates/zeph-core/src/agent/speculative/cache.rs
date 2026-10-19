@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -65,18 +65,59 @@ impl SpeculativeHandle {
     ///
     /// Returns [`ToolError::Execution`] if the task was cancelled or panicked.
     pub async fn commit(self) -> Result<Option<ToolOutput>, ToolError> {
-        match self.join.join().await {
-            Ok(r) => r,
-            Err(BlockingError::Panicked) => Err(ToolError::Execution(std::io::Error::other(
-                "speculative task panicked",
-            ))),
-            Err(BlockingError::SupervisorDropped) => Err(ToolError::Execution(
-                std::io::Error::other("speculative task cancelled"),
-            )),
-            Err(_) => Err(ToolError::Execution(std::io::Error::other(
-                "speculative task failed",
-            ))),
+        join_result(self.join).await
+    }
+
+    /// Await the result for at most `limit`; on elapse the task is cancelled and aborted so it
+    /// cannot outlive the commit attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommitTimedOut`] with the wall-clock time the abandoned task had been running.
+    pub async fn commit_within(
+        self,
+        limit: Duration,
+    ) -> Result<Result<Option<ToolOutput>, ToolError>, CommitTimedOut> {
+        let Self {
+            join,
+            cancel,
+            started_at,
+            ..
+        } = self;
+        let abort = join.abort_handle();
+        if let Ok(result) = tokio::time::timeout(limit, join_result(join)).await {
+            Ok(result)
+        } else {
+            cancel.cancel();
+            abort.abort();
+            Err(CommitTimedOut {
+                wasted: started_at.elapsed(),
+            })
         }
+    }
+}
+
+/// A bounded commit elapsed before the speculative task finished.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommitTimedOut {
+    /// How long the abandoned task had been running.
+    pub wasted: Duration,
+}
+
+async fn join_result(
+    join: BlockingHandle<Result<Option<ToolOutput>, ToolError>>,
+) -> Result<Option<ToolOutput>, ToolError> {
+    match join.join().await {
+        Ok(r) => r,
+        Err(BlockingError::Panicked) => Err(ToolError::Execution(std::io::Error::other(
+            "speculative task panicked",
+        ))),
+        Err(BlockingError::SupervisorDropped) => Err(ToolError::Execution(std::io::Error::other(
+            "speculative task cancelled",
+        ))),
+        Err(_) => Err(ToolError::Execution(std::io::Error::other(
+            "speculative task failed",
+        ))),
     }
 }
 
@@ -174,6 +215,22 @@ impl SpeculativeCache {
         self.inner.lock().handles.remove(&key)
     }
 
+    /// Whether a handle matching `tool_id` + `args_hash` + `context_hash` is in flight.
+    #[must_use]
+    pub fn contains_match(
+        &self,
+        tool_id: &ToolName,
+        args_hash: &blake3::Hash,
+        context_hash: &blake3::Hash,
+    ) -> bool {
+        let key = HandleKey {
+            tool_id: tool_id.clone(),
+            args_hash: *args_hash,
+            context_hash: *context_hash,
+        };
+        self.inner.lock().handles.contains_key(&key)
+    }
+
     /// Remove and cancel the first handle whose `tool_id` matches, if any.
     ///
     /// Used when the args hash is not known (e.g., on tool-id mismatch at dispatch time).
@@ -196,10 +253,19 @@ impl SpeculativeCache {
 
     /// Cancel and remove all remaining handles (called at turn boundary).
     pub fn cancel_all(&self) {
+        let _ = self.cancel_all_counted();
+    }
+
+    /// Cancel and remove all remaining handles, returning how many were cancelled.
+    #[must_use]
+    pub fn cancel_all_counted(&self) -> usize {
         let mut g = self.inner.lock();
+        let mut cancelled = 0;
         for (_, h) in g.handles.drain() {
             h.cancel();
+            cancelled += 1;
         }
+        cancelled
     }
 
     /// Number of in-flight handles.

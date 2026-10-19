@@ -80,7 +80,7 @@ async fn pre_execution_block_writes_audit_entry() {
                 input: serde_json::json!({"file_path": "/etc/passwd"}),
             }],
         ),
-        ChatResponse::Text("done".into()),
+        ChatResponse::text("done"),
     ]);
     let provider = AnyProvider::Mock(mock);
     let channel = MockChannel::new(vec!["run it".to_string()]);

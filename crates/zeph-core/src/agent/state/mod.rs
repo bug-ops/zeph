@@ -599,6 +599,13 @@ pub(crate) struct LifecycleState {
     /// Per-turn tool-call dispatch counter. Incremented by `check_and_update_quota` for every
     /// tool call in a dispatch batch; reset at turn start. Feeds `TurnSummary::tool_calls`.
     pub(crate) turn_tool_calls: u32,
+    /// Open while a user turn's input is in history and its response is being produced. A
+    /// refusal rolls the turn back only then, so calls made outside a user turn (scheduler,
+    /// background work) can never delete older turns.
+    pub(crate) user_turn_scope: crate::agent::turn_gate::ScopeCounter,
+    /// Nesting depth of `process_response`: 1 is the outermost call, deeper levels are
+    /// self-reflection re-entries that must not roll the user turn back.
+    pub(crate) response_depth: crate::agent::turn_gate::ScopeCounter,
     /// Timestamp of the last turn that ended with `LlmError::NoProviders`.
     ///
     /// Used to gate `advance_context_lifecycle`: when all providers are down, context preparation
@@ -925,8 +932,10 @@ pub(crate) struct ToolState {
     /// Tool IDs offered for the current user turn: the schema-filter result plus tools held back
     /// only by unmet `requires` (those stay listed and are rejected at dispatch).
     pub(crate) cached_filtered_tool_ids: Option<HashSet<String>>,
+    /// Per-conversation union of offered tools, keeping the tools array cache-stable (#6840).
+    pub(crate) tool_offer: crate::agent::tool_offer::ToolOfferState,
     /// Frozen tool set of the running tool loop; `None` between turns.
-    pub(crate) turn_tool_set: Option<crate::agent::turn_gate::TurnToolSet>,
+    pub(crate) turn_tool_set: crate::agent::turn_gate::TurnToolSetSlot,
     /// Tool dependency graph for sequential tool availability (#2024).
     pub(crate) dependency_graph: Option<Arc<zeph_tools::ToolDependencyGraph>>,
     /// Always-on tool IDs, mirrored from the tool schema filter for dependency gate bypass.
@@ -958,7 +967,8 @@ impl Default for ToolState {
             tools_enabled: true,
             tool_schema_filter: None,
             cached_filtered_tool_ids: None,
-            turn_tool_set: None,
+            tool_offer: crate::agent::tool_offer::ToolOfferState::default(),
+            turn_tool_set: crate::agent::turn_gate::TurnToolSetSlot::default(),
             dependency_graph: None,
             dependency_always_on: HashSet::new(),
             completed_tool_ids: HashSet::new(),
@@ -1702,6 +1712,8 @@ impl LifecycleState {
             notifier: None,
             turn_llm_requests: 0,
             turn_tool_calls: 0,
+            user_turn_scope: crate::agent::turn_gate::ScopeCounter::default(),
+            response_depth: crate::agent::turn_gate::ScopeCounter::default(),
             last_no_providers_at: None,
             pending_background_completions: VecDeque::new(),
             background_completion_rx: None,

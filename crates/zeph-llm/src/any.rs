@@ -102,7 +102,7 @@ pub enum AnyProvider {
     #[cfg(feature = "gonka")]
     Gonka(GonkaProvider),
     /// Cocoon confidential compute provider — routes requests through the TEE sidecar.
-    Cocoon(CocoonProvider),
+    Cocoon(Box<CocoonProvider>),
     /// A mock provider for use in tests and benchmarks.
     ///
     /// Only available with the `testing` feature or in `#[cfg(test)]` contexts.
@@ -468,7 +468,7 @@ impl AnyProvider {
             }
             #[cfg(feature = "gonka")]
             Self::Gonka(p) => Self::Gonka(p.with_generation_overrides(overrides)),
-            Self::Cocoon(p) => Self::Cocoon(p.with_generation_overrides(overrides)),
+            Self::Cocoon(p) => Self::Cocoon(Box::new(p.with_generation_overrides(overrides))),
             Self::Router(_) | Self::Triage(_) => {
                 tracing::warn!("generation overrides not supported for this provider variant");
                 self
@@ -807,6 +807,14 @@ impl LlmProvider for AnyProvider {
 
     fn last_usage(&self) -> Option<(u64, u64)> {
         delegate_provider!(self, |p| p.last_usage())
+    }
+
+    fn thinking_binding(&self) -> crate::provider::ThinkingBinding {
+        delegate_provider!(self, |p| p.thinking_binding())
+    }
+
+    fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {
+        delegate_provider!(self, |p| p.last_auxiliary_usage())
     }
 
     fn last_reasoning_tokens(&self) -> Option<u64> {
@@ -1314,7 +1322,12 @@ mod tests {
             None,
             std::time::Duration::from_secs(5),
         ));
-        AnyProvider::Cocoon(CocoonProvider::new("Qwen/Qwen3-0.6B", 4096, None, client))
+        AnyProvider::Cocoon(Box::new(CocoonProvider::new(
+            "Qwen/Qwen3-0.6B",
+            4096,
+            None,
+            client,
+        )))
     }
 
     #[test]

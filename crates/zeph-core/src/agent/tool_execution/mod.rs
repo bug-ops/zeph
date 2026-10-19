@@ -111,6 +111,8 @@ struct ToolResultClassification {
     /// (`_meta["zeph/maxResultSizeChars"]`, see [`zeph_tools::ToolOutput::max_result_size_chars`]).
     /// Empty/`Ok(None)`/`Err` arms leave this `None`, matching `media`.
     max_result_size_chars: Option<usize>,
+    /// Who authored `output`, computed here once and consumed by the sanitizer.
+    origin: sanitize::ToolOutputOrigin,
 }
 
 enum AnomalyOutcome {

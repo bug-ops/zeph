@@ -191,6 +191,7 @@ async fn process_one_tool_result_emits_tool_start_then_output_via_loopback() {
             std::slice::from_ref(&tool_call_id),
             &mut started_ats,
             &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
         )
         .await
         .unwrap();

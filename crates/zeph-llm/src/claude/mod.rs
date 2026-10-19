@@ -42,6 +42,7 @@ mod beta;
 mod cache;
 mod model;
 mod request;
+mod structured;
 #[cfg(test)]
 mod tests;
 mod types;
@@ -68,10 +69,11 @@ use self::model::{CLAUDE_DEFAULT_WINDOW_CEILING, ClaudeModel, ModelCapabilities}
 use self::request::parse_tool_response;
 use self::types::{
     AnthropicContentBlock, AnthropicTool, ApiMessage, BlockBinding, CompactTrigger, ContextEdit,
-    ContextManagement, OutputConfig, RequestBody, StructuredApiMessage, SystemContentBlock,
-    ThinkingParam, ThinkingType, ToolApiResponse, ToolChoice, ToolRequestBody,
-    TypedToolRequestBody, VisionRequestBody,
+    ContextManagement, OutputConfig, OutputFormat, RequestBody, StructuredApiMessage,
+    StructuredTextRequestBody, SystemContentBlock, ThinkingParam, ThinkingType, ToolApiResponse,
+    ToolChoice, ToolRequestBody, TypedToolRequestBody, VisionRequestBody,
 };
+use crate::error::check_refusal;
 
 use self::types::budget_to_effort;
 use zeph_config::{CacheTtl, CompactionTrigger, ThinkingConfig, ThinkingEffort};
@@ -81,10 +83,6 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 const ANTHROPIC_BETA_INTERLEAVED_THINKING: &str = "interleaved-thinking-2025-05-14";
 const ANTHROPIC_BETA_EXTENDED_CONTEXT: &str = "context-1m-2025-08-07";
 const ANTHROPIC_BETA_EXTENDED_CACHE_TTL: &str = "extended-cache-ttl-2025-04-25";
-
-/// Models known to support the extended 1-hour cache TTL beta.
-const MODELS_WITH_EXTENDED_CACHE_TTL: &[&str] =
-    &["claude-opus-4", "claude-sonnet-4", "claude-haiku-4"];
 const MAX_RETRIES: u32 = 3;
 
 use self::types::MIN_MAX_TOKENS_WITH_THINKING;
@@ -608,8 +606,9 @@ impl ClaudeProvider {
     /// Set the prompt cache TTL variant for this provider.
     ///
     /// Passing `None` (the default) uses the standard ~5-minute ephemeral TTL at no extra cost.
-    /// Passing `Some(CacheTtl::OneHour)` enables the `extended-cache-ttl-2025-04-25` beta and
-    /// approximately doubles cache write cost in exchange for far fewer re-writes.
+    /// Passing `Some(CacheTtl::OneHour)` approximately doubles cache write cost in exchange for far
+    /// fewer re-writes. The `extended-cache-ttl-2025-04-25` beta header is sent only to models
+    /// that still require it (legacy and Haiku 4.5); newer models accept the TTL natively.
     ///
     /// # Interaction with `with_cache_user_messages`
     ///
@@ -620,21 +619,10 @@ impl ClaudeProvider {
     #[must_use]
     pub fn with_prompt_cache_ttl(mut self, ttl: Option<CacheTtl>) -> Self {
         if let Some(CacheTtl::OneHour) = ttl {
-            let supported = MODELS_WITH_EXTENDED_CACHE_TTL
-                .iter()
-                .any(|prefix| self.model.starts_with(prefix));
-            if !supported {
-                tracing::warn!(
-                    model = %self.model,
-                    "model may not support extended 1h cache TTL beta; \
-                    known-supported prefixes: {}",
-                    MODELS_WITH_EXTENDED_CACHE_TTL.join(", "),
-                );
-            }
             tracing::info!(
                 model = %self.model,
-                "prompt cache TTL set to 1 hour (extended-cache-ttl-2025-04-25 beta); \
-                cache writes cost ~2× ephemeral",
+                beta_header = self.capabilities().extended_ttl_beta,
+                "prompt cache TTL set to 1 hour; cache writes cost ~2× ephemeral",
             );
         }
         self.prompt_cache_ttl = ttl;
@@ -913,7 +901,7 @@ impl ClaudeProvider {
         ThinkingRequest {
             thinking,
             temperature,
-            output_config: effort.map(|e| OutputConfig { effort: e }), // lgtm[rust/cleartext-logging]
+            output_config: effort.map(OutputConfig::effort), // lgtm[rust/cleartext-logging]
         }
     }
 
@@ -935,7 +923,7 @@ impl ClaudeProvider {
 
         headers.extend(self.active_betas().map(BetaFeature::header));
 
-        if self.prompt_cache_ttl.is_some_and(CacheTtl::requires_beta) {
+        if cap.extended_ttl_beta && matches!(self.prompt_cache_ttl, Some(CacheTtl::OneHour)) {
             headers.push(ANTHROPIC_BETA_EXTENDED_CACHE_TTL);
         }
 
@@ -1009,6 +997,7 @@ impl ClaudeProvider {
         );
         self.usage
             .record_usage(usage.input_tokens, usage.output_tokens);
+        self.usage.record_auxiliary(usage.auxiliary());
     }
 
     fn has_image_parts(messages: &[Message]) -> bool {
@@ -1199,7 +1188,7 @@ impl ClaudeProvider {
                 thinking: thinking_param,
                 output_config,
                 temperature,
-                context_management: self.context_management(),
+                context_management: None,
             };
             let mut req = self
                 .client
@@ -1223,7 +1212,7 @@ impl ClaudeProvider {
             thinking: thinking_param,
             output_config,
             temperature,
-            context_management: self.context_management(),
+            context_management: None,
         };
 
         let mut req = self
@@ -1265,6 +1254,11 @@ impl ClaudeProvider {
                     log_cache_usage(usage);
                     self.store_cache_usage(usage);
                 }
+                check_refusal(
+                    &self.provider_name,
+                    resp.stop_reason.as_deref(),
+                    resp.stop_details.as_ref(),
+                )?;
                 let extracted = resp.content.into_iter().find_map(|b| {
                     if let AnthropicContentBlock::Text { text, .. } = b {
                         Some(text)
@@ -1283,6 +1277,11 @@ impl ClaudeProvider {
                 log_cache_usage(usage);
                 self.store_cache_usage(usage);
             }
+            check_refusal(
+                &self.provider_name,
+                resp.stop_reason.as_deref(),
+                resp.stop_details.as_ref(),
+            )?;
 
             return resp
                 .content
@@ -1370,7 +1369,11 @@ impl ClaudeProvider {
                 return Err(claude_error(status, &text));
             }
 
-            return Ok(claude_sse_to_tool_stream(response, &self.stream_limits));
+            return Ok(claude_sse_to_tool_stream(
+                response,
+                &self.stream_limits,
+                &self.provider_name,
+            ));
         }
     }
 
@@ -1429,7 +1432,6 @@ impl ClaudeProvider {
             context_management: None,
         };
         loop {
-            body.context_management = self.context_management();
             let beta = self.beta_header(true);
             let response = send_with_retry(
                 "Claude",
@@ -1465,10 +1467,98 @@ impl ClaudeProvider {
                 log_cache_usage(usage);
                 self.store_cache_usage(usage);
             }
+            check_refusal(
+                &self.provider_name,
+                resp.stop_reason.as_deref(),
+                resp.stop_details.as_ref(),
+            )?;
             return Ok(resp.content.into_iter().find_map(|block| match block {
                 AnthropicContentBlock::ToolUse { input, .. } => Some(input),
                 _ => None,
             }));
+        }
+    }
+
+    /// Send one structured-output request and return the joined text of the response.
+    ///
+    /// The text is constrained by `output_config.format`, so no tool and no `tool_choice` is
+    /// involved and the call works on models that forbid a forced tool choice.
+    #[tracing::instrument(name = "llm.claude.structured_text", skip_all)]
+    async fn call_structured_text(
+        &self,
+        messages: &[Message],
+        schema: serde_json::Value,
+    ) -> Result<String, LlmError> {
+        let ThinkingRequest {
+            thinking: thinking_param,
+            temperature,
+            output_config,
+        } = self.thinking_request();
+        let (system_blocks, chat_messages) =
+            self.structured_history(messages, thinking_param.as_ref(), 0);
+        let mut output_config = output_config.unwrap_or(OutputConfig {
+            effort: None,
+            format: None,
+        });
+        output_config.format = Some(OutputFormat::JsonSchema { schema });
+        let mut body = StructuredTextRequestBody {
+            model: &self.model,
+            max_tokens: self.max_tokens,
+            system: system_blocks,
+            messages: &chat_messages,
+            thinking: thinking_param,
+            output_config,
+            temperature,
+        };
+        loop {
+            let beta = self.beta_header(false);
+            let response = send_with_retry(
+                "Claude",
+                MAX_RETRIES,
+                self.status_tx.as_ref(),
+                Some(&self.usage),
+                || {
+                    let mut req = self
+                        .client
+                        .post(&self.api_url)
+                        .header("x-api-key", &self.api_key)
+                        .header("anthropic-version", ANTHROPIC_VERSION);
+                    if let Some(ref b) = beta {
+                        req = req.header("anthropic-beta", b);
+                    }
+                    req.header("content-type", "application/json")
+                        .json(&body)
+                        .send()
+                },
+            )
+            .await?;
+            let (status, text) = crate::http::read_response_body(response).await?;
+            if !status.is_success() {
+                if self.handle_beta_rejection(status, &text, "structured") {
+                    body.thinking = self.build_thinking_param().0;
+                    continue;
+                }
+                tracing::error!("Claude API error {status}: {text}");
+                return Err(claude_error(status, &text));
+            }
+            let resp: ToolApiResponse = serde_json::from_str(&text)?;
+            if let Some(ref usage) = resp.usage {
+                log_cache_usage(usage);
+                self.store_cache_usage(usage);
+            }
+            check_refusal(
+                &self.provider_name,
+                resp.stop_reason.as_deref(),
+                resp.stop_details.as_ref(),
+            )?;
+            return Ok(resp
+                .content
+                .into_iter()
+                .filter_map(|block| match block {
+                    AnthropicContentBlock::Text { text, .. } => Some(text),
+                    _ => None,
+                })
+                .collect());
         }
     }
 
@@ -1529,7 +1619,11 @@ impl LlmProvider for ClaudeProvider {
     )]
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         let response = self.send_stream_request(messages).await?;
-        Ok(claude_sse_to_stream(response, &self.stream_limits))
+        Ok(claude_sse_to_stream(
+            response,
+            &self.stream_limits,
+            &self.provider_name,
+        ))
     }
 
     fn supports_streaming(&self) -> bool {
@@ -1570,6 +1664,13 @@ impl LlmProvider for ClaudeProvider {
     {
         let (schema_value, _) = crate::provider::cached_schema::<T>()?;
         let type_name = crate::provider::short_type_name::<T>();
+        if self.capabilities().structured_outputs
+            && let Some(schema) = structured::claude_structured_schema(&schema_value)
+        {
+            let text = self.call_structured_text(messages, schema).await?;
+            return serde_json::from_str::<T>(&text)
+                .map_err(|e| LlmError::StructuredParse(e.to_string()));
+        }
         let tool = ToolDefinition {
             name: format!("submit_{type_name}").into(),
             description: format!("Submit the structured {type_name} result"),
@@ -1618,6 +1719,18 @@ impl LlmProvider for ClaudeProvider {
         self.usage.last_ttft_ms()
     }
 
+    fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {
+        self.usage.last_auxiliary()
+    }
+
+    fn thinking_binding(&self) -> crate::provider::ThinkingBinding {
+        if self.capabilities().preserved_thinking {
+            crate::provider::ThinkingBinding::PrefixBound
+        } else {
+            crate::provider::ThinkingBinding::Unbound
+        }
+    }
+
     fn debug_request_json(
         &self,
         messages: &[Message],
@@ -1662,7 +1775,7 @@ impl LlmProvider for ClaudeProvider {
                 thinking: thinking_param,
                 output_config,
                 temperature,
-                context_management: self.context_management(),
+                context_management: None,
             };
             return serde_json::to_value(&body)
                 .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }));
@@ -1678,7 +1791,7 @@ impl LlmProvider for ClaudeProvider {
             thinking: thinking_param,
             output_config,
             temperature,
-            context_management: self.context_management(),
+            context_management: None,
         };
         serde_json::to_value(&body)
             .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }))
@@ -1771,15 +1884,13 @@ impl LlmProvider for ClaudeProvider {
                     "Claude dropped thinking blocks whose prefix changed"
                 );
             }
-            let (mut parsed, compaction_summary) = parse_tool_response(resp);
-            if let Some(summary) = compaction_summary {
-                tracing::info!(
-                    summary_len = summary.len(),
-                    "carrying server compaction summary on the response"
-                );
-                parsed.attach_compaction(summary);
-            }
-            tracing::debug!(?parsed, "parsed ChatResponse");
+            check_refusal(
+                &self.provider_name,
+                resp.stop_reason.as_deref(),
+                resp.stop_details.as_ref(),
+            )?;
+            let parsed = parse_tool_response(resp);
+            tracing::debug!(summary = %parsed.log_summary(), "parsed ChatResponse");
             return Ok(parsed);
         }
     }

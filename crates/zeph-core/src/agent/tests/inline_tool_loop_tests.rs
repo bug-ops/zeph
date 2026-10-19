@@ -83,7 +83,7 @@ fn tool_use_response(tool_id: &str, tool_name: &str) -> ChatResponse {
 #[tokio::test]
 async fn text_only_response_returns_immediately() {
     let (mock, _counter) =
-        MockProvider::default().with_tool_use(vec![ChatResponse::Text("the answer".into())]);
+        MockProvider::default().with_tool_use(vec![ChatResponse::text("the answer")]);
     let provider = AnyProvider::Mock(mock);
     let channel = MockChannel::new(vec![]);
     let registry = create_test_registry();
@@ -99,7 +99,7 @@ async fn text_only_response_returns_immediately() {
 async fn single_tool_iteration_returns_final_text() {
     let (mock, counter) = MockProvider::default().with_tool_use(vec![
         tool_use_response("call-1", "test_tool"),
-        ChatResponse::Text("done".into()),
+        ChatResponse::text("done"),
     ]);
     let provider = AnyProvider::Mock(mock);
     let channel = MockChannel::new(vec![]);
@@ -141,7 +141,7 @@ async fn tool_error_produces_is_error_result_and_loop_continues() {
     // We verify the loop continues (doesn't abort) and returns the final text.
     let (mock, _counter) = MockProvider::default().with_tool_use(vec![
         tool_use_response("call-err", "test_tool"),
-        ChatResponse::Text("recovered".into()),
+        ChatResponse::text("recovered"),
     ]);
     let provider = AnyProvider::Mock(mock);
     let channel = MockChannel::new(vec![]);
@@ -160,7 +160,7 @@ async fn multiple_tool_iterations_before_text() {
     let (mock, counter) = MockProvider::default().with_tool_use(vec![
         tool_use_response("call-1", "test_tool"),
         tool_use_response("call-2", "test_tool"),
-        ChatResponse::Text("all done".into()),
+        ChatResponse::text("all done"),
     ]);
     let provider = AnyProvider::Mock(mock);
     let channel = MockChannel::new(vec![]);
@@ -282,7 +282,7 @@ async fn network_deny_wrapped_executor_blocks_fetch_before_reaching_inner() {
 
     let (mock, _counter) = MockProvider::default().with_tool_use(vec![
         tool_use_response("call-1", "fetch"),
-        ChatResponse::Text("done".into()),
+        ChatResponse::text("done"),
     ]);
     let provider = AnyProvider::Mock(mock);
     let channel = MockChannel::new(vec![]);
@@ -399,7 +399,7 @@ async fn elicitation_event_during_tool_execution_is_handled() {
 
     let (mock, _counter) = MockProvider::default().with_tool_use(vec![
         tool_use_response("call-elic", "elicit_tool"),
-        ChatResponse::Text("done".into()),
+        ChatResponse::text("done"),
     ]);
     let provider = AnyProvider::Mock(mock);
     let channel = MockChannel::new(vec![]);
@@ -481,7 +481,7 @@ mod run_inline_timeout {
     async fn short_override_fires_before_slow_tool_loop_completes() {
         let (mock, _counter) = MockProvider::default().with_tool_use(vec![
             tool_use_response("call-1", "test_tool"),
-            ChatResponse::Text("done".into()),
+            ChatResponse::text("done"),
         ]);
         let provider = AnyProvider::Mock(mock);
         let channel = MockChannel::new(vec![]);
@@ -531,7 +531,7 @@ mod run_inline_timeout {
     async fn no_override_fast_completion_is_unaffected() {
         let (mock, _counter) = MockProvider::default().with_tool_use(vec![
             tool_use_response("call-1", "test_tool"),
-            ChatResponse::Text("done".into()),
+            ChatResponse::text("done"),
         ]);
         let provider = AnyProvider::Mock(mock);
         let channel = MockChannel::new(vec![]);
@@ -570,7 +570,7 @@ mod run_inline_timeout {
     async fn no_override_task_is_capped_by_global_default_previously_unbounded() {
         let (mock, _counter) = MockProvider::default().with_tool_use(vec![
             tool_use_response("call-1", "test_tool"),
-            ChatResponse::Text("unused".into()),
+            ChatResponse::text("unused"),
         ]);
         let provider = AnyProvider::Mock(mock);
         let channel = MockChannel::new(vec![]);
@@ -623,7 +623,7 @@ mod run_inline_timeout {
             // second provider call would ever happen for this task.
             tool_use_response("call-1", "test_tool"),
             // task 1 (the dependent, unblocked by recovery): completes immediately.
-            ChatResponse::Text("dependent done".into()),
+            ChatResponse::text("dependent done"),
         ]);
         let provider = AnyProvider::Mock(mock);
         let channel = MockChannel::new(vec![]);
