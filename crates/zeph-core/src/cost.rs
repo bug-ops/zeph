@@ -730,9 +730,11 @@ mod tests {
                 < f64::EPSILON
         );
         assert!(tracker.price_of("claude-sonnet-5-5-20261001", 1000, 0, 0, 0) > 0.0);
-        assert_eq!(
-            tracker.price_of("claude-unknown-20261001", 1000, 0, 0, 0),
-            0.0
+        assert!(
+            tracker
+                .price_of("claude-unknown-20261001", 1000, 0, 0, 0)
+                .abs()
+                < 1e-9
         );
     }
 
