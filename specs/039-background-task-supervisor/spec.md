@@ -390,6 +390,7 @@ TRACE: background task dropped class=enrichment task=graph-extract limit=4
 - `spawn_restartable` uses exponential backoff for `RestartPolicy::Restart`
 - `list_tasks()` includes blocking tasks and oneshot tasks — fully observable
 - Metrics snapshots are consistent (spawned ≥ dropped + completed at any point in time)
+- `BlockingHandle::abort_handle()` returns a clone of the task's abort handle; callers that bound `join()` with a timeout take it first, because `join(self)` consumes the handle and `abort(&self)` is no longer reachable. Aborting a `spawn_blocking` task does not stop work already running on its thread (speculative commit timeout, spec 053)
 
 ### Ask First
 - Adding new background task spawn sites outside the supervisor

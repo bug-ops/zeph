@@ -229,6 +229,13 @@ AND it returns false for results with meaningful content
 - Fidelity scoring (`score_and_apply`, `embed_prepass`) and `merge_consecutive_placeholders` operate only at or after `zeph_llm::provider::context_floor`; the exempt injected-memory range is `floor..floor+inserted_count`; messages carrying `MessageMetadata::origin` (the turn input) are exempt
 - The `memory_first` history drain in `ContextService::apply_prepared_context` starts at the floor, so a server compaction block is never drained
 
+### System prompt cache layout (#6830 part A)
+- Block 1 (before `<!-- cache:stable -->`): base prompt, environment, instruction files
+- Block 2 (until `<!-- cache:volatile -->`): `<other_skills>` catalog of all channel-allowed non-`Blocked` skills, media-passthrough note, MCP server instructions, project context, repo map, runtime-note nonce sentence
+- Volatile section: active skill bodies and ERL suffix, matched MCP tools prompt, working directory, preferences, goal, hints
+- Blocks 1-2 MUST be byte-identical across turns unless session-scoped inputs change (instruction files, skill registry or trust, MCP server set, project context, repo-map TTL refresh); per-turn query results (matched skills, matched MCP tools) MUST NOT appear in them
+- Deferred (#6830 part B): caching of the message history across turns; until then only tools and blocks 1-2 hit the provider cache
+
 ### Never
 - Add a dependency on `zeph-core`
 - Perform channel I/O or logging to users inside `ContextAssembler::gather()`

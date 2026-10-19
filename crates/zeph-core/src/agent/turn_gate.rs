@@ -36,6 +36,21 @@ pub enum GateRejection {
         /// Prerequisite tool ids that have not completed in this session.
         unmet: Vec<String>,
     },
+    /// Dispatch is switched off for the whole scope.
+    #[error("tool dispatch is unavailable: {0}")]
+    Disabled(DisabledReason),
+}
+
+/// Why a [`GateScope::Disabled`] gate rejects every call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum DisabledReason {
+    /// `[tools] enabled = false`: no tool may run, speculatively or otherwise.
+    #[error("tools are disabled")]
+    ToolsDisabled,
+    /// The per-session tool call quota is spent. Only speculative gates use this reason; the
+    /// normal path enforces the quota per batch before any tier runs.
+    #[error("session tool call quota exhausted")]
+    QuotaExhausted,
 }
 
 /// Names of the tools offered to the model for one user turn.
@@ -181,10 +196,21 @@ impl RequiresGate {
     }
 }
 
-/// Both dispatch layers: turn-set membership (when a set exists) and `requires`.
+/// Which tools a [`DispatchGate`] lets through before the `requires` layer is consulted.
+#[derive(Debug, Clone)]
+pub enum GateScope {
+    /// Every tool (callers that run before the turn set exists).
+    AllTools,
+    /// Only members of the frozen turn set.
+    TurnSet(TurnToolSet),
+    /// No tool at all.
+    Disabled(DisabledReason),
+}
+
+/// Both dispatch layers: the [`GateScope`] and `requires`.
 #[derive(Debug, Clone)]
 pub struct DispatchGate {
-    turn_set: Option<TurnToolSet>,
+    scope: GateScope,
     requires: RequiresGate,
 }
 
@@ -192,7 +218,7 @@ impl DispatchGate {
     /// Gate for the tool loop: membership in `turn_set` plus the `requires` snapshot.
     pub fn new(turn_set: TurnToolSet, requires: RequiresGate) -> Self {
         Self {
-            turn_set: Some(turn_set),
+            scope: GateScope::TurnSet(turn_set),
             requires,
         }
     }
@@ -200,8 +226,16 @@ impl DispatchGate {
     /// Gate for callers that run before the turn set exists: `requires` only.
     pub fn requires_only(requires: RequiresGate) -> Self {
         Self {
-            turn_set: None,
+            scope: GateScope::AllTools,
             requires,
+        }
+    }
+
+    /// Gate that rejects every call for `reason`.
+    pub fn disabled(reason: DisabledReason) -> Self {
+        Self {
+            scope: GateScope::Disabled(reason),
+            requires: RequiresGate::open(),
         }
     }
 
@@ -210,12 +244,89 @@ impl DispatchGate {
         Self::requires_only(RequiresGate::open())
     }
 
-    /// Check `tool` against both layers, membership first.
+    /// Check `tool` against both layers, scope first.
     pub fn check(&self, tool: &str) -> Result<(), GateRejection> {
-        if let Some(set) = &self.turn_set {
-            set.check(tool)?;
+        match &self.scope {
+            GateScope::AllTools => {}
+            GateScope::TurnSet(set) => set.check(tool)?,
+            GateScope::Disabled(reason) => return Err(GateRejection::Disabled(*reason)),
         }
         self.requires.check(tool)
+    }
+}
+
+/// Re-entrant scope counter: [`ScopeCounter::enter`] raises the depth until the returned guard
+/// drops, on every exit path including `?` and cancellation.
+#[derive(Debug, Clone, Default)]
+pub struct ScopeCounter(Arc<std::sync::atomic::AtomicU32>);
+
+impl ScopeCounter {
+    /// Enter the scope; the depth drops again when the guard is dropped.
+    #[must_use = "the scope ends when the guard drops"]
+    pub fn enter(&self) -> ScopeGuard {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        ScopeGuard(Arc::clone(&self.0))
+    }
+
+    /// Number of currently open scopes.
+    #[must_use]
+    pub fn depth(&self) -> u32 {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// Guard returned by [`ScopeCounter::enter`].
+#[derive(Debug)]
+pub struct ScopeGuard(Arc<std::sync::atomic::AtomicU32>);
+
+impl Drop for ScopeGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Shared slot holding the frozen [`TurnToolSet`] of the running tool loop.
+///
+/// Cloning shares the slot. The lock is only held for the duration of a clone or swap, never
+/// across an `.await`.
+#[derive(Debug, Clone, Default)]
+pub struct TurnToolSetSlot(Arc<parking_lot::Mutex<Option<TurnToolSet>>>);
+
+impl TurnToolSetSlot {
+    /// The current set, `None` between turns.
+    #[must_use]
+    pub fn get(&self) -> Option<TurnToolSet> {
+        self.0.lock().clone()
+    }
+
+    /// Replace the current set.
+    pub fn set(&self, set: Option<TurnToolSet>) {
+        *self.0.lock() = set;
+    }
+
+    /// Take the current set out of the slot and restore it when the returned guard drops.
+    ///
+    /// The guard restores on every exit, including cancellation of the owning future, so a
+    /// nested tool loop (self-reflection) can freeze its own set without losing the outer one.
+    #[must_use = "the outer set is restored when the scope drops"]
+    pub fn scope(&self) -> TurnToolSetScope {
+        TurnToolSetScope {
+            slot: self.clone(),
+            outer: self.0.lock().take(),
+        }
+    }
+}
+
+/// Guard returned by [`TurnToolSetSlot::scope`]; restores the outer set on drop.
+#[derive(Debug)]
+pub struct TurnToolSetScope {
+    slot: TurnToolSetSlot,
+    outer: Option<TurnToolSet>,
+}
+
+impl Drop for TurnToolSetScope {
+    fn drop(&mut self) {
+        self.slot.set(self.outer.take());
     }
 }
 
@@ -337,5 +448,27 @@ mod tests {
     #[test]
     fn open_gate_allows_everything() {
         assert!(DispatchGate::open().check("anything").is_ok());
+    }
+
+    #[test]
+    fn disabled_gate_rejects_everything() {
+        let gate = DispatchGate::disabled(DisabledReason::QuotaExhausted);
+        assert_eq!(
+            gate.check("read").unwrap_err(),
+            GateRejection::Disabled(DisabledReason::QuotaExhausted)
+        );
+    }
+
+    #[test]
+    fn slot_scope_restores_outer_set_on_drop() {
+        let slot = TurnToolSetSlot::default();
+        slot.set(Some(set(&["outer"])));
+        {
+            let _scope = slot.scope();
+            assert!(slot.get().is_none());
+            slot.set(Some(set(&["inner"])));
+        }
+        let restored = slot.get().expect("outer set restored");
+        assert!(restored.contains("outer") && !restored.contains("inner"));
     }
 }

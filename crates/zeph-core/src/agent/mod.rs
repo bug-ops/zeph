@@ -66,6 +66,7 @@ pub(crate) mod state;
 mod subagent_commands;
 pub(crate) mod task_injection;
 pub(crate) mod tool_execution;
+pub(crate) mod tool_offer;
 pub(crate) mod tool_orchestrator;
 mod trace_extraction;
 pub mod trajectory;
@@ -1332,7 +1333,9 @@ impl<C: Channel> Agent<C> {
         let t_persist = std::time::Instant::now();
         tracing::debug!("turn timing: persist_message(user) start");
         // Image parts intentionally excluded — base64 payloads too large for message history.
+        self.msg.last_persisted_message_id = None;
         self.persist_message(Role::User, &text, &[], false).await;
+        let turn_input_db_id = self.msg.last_persisted_message_id;
         turn.metrics_mut().timings.persist_message_ms =
             u64::try_from(t_persist.elapsed().as_millis()).unwrap_or(u64::MAX);
         tracing::debug!(
@@ -1341,6 +1344,10 @@ impl<C: Channel> Agent<C> {
         );
         self.msg.supersede_turn_input();
         self.push_message(user_msg);
+        if let Some(last) = self.msg.messages.last_mut() {
+            last.metadata.db_id = turn_input_db_id;
+        }
+        let _user_turn = self.runtime.lifecycle.user_turn_scope.enter();
 
         // Emit pre-LLM context size so the TUI gauge is non-zero before the provider responds.
         let context_estimate = self.runtime.providers.cached_prompt_tokens;

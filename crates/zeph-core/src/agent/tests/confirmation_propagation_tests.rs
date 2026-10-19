@@ -157,10 +157,8 @@ fn independent_tool_use_response() -> ChatResponse {
 
 #[tokio::test]
 async fn confirmation_required_propagates_to_dependent_tier() {
-    let (mock, _counter) = MockProvider::default().with_tool_use(vec![
-        dag_tool_use_response(),
-        ChatResponse::Text("done".into()),
-    ]);
+    let (mock, _counter) = MockProvider::default()
+        .with_tool_use(vec![dag_tool_use_response(), ChatResponse::text("done")]);
     let provider = AnyProvider::Mock(mock);
     let channel = MockChannel::new(vec!["test".to_string()]).with_confirmations(vec![false]);
     let registry = create_test_registry();
@@ -199,7 +197,7 @@ async fn confirmation_required_propagates_to_dependent_tier() {
 async fn independent_tool_not_affected_by_confirmation_required() {
     let (mock, _counter) = MockProvider::default().with_tool_use(vec![
         independent_tool_use_response(),
-        ChatResponse::Text("done".into()),
+        ChatResponse::text("done"),
     ]);
     let provider = AnyProvider::Mock(mock);
     let channel = MockChannel::new(vec!["test".to_string()]).with_confirmations(vec![false]);

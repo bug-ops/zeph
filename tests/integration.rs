@@ -40,7 +40,7 @@ fn tool_use_provider(final_text: &str) -> AnyProvider {
     };
     let (p, _) = MockProvider::default().with_tool_use(vec![
         ChatResponse::tool_use(None, vec![tool_call]),
-        ChatResponse::Text(final_text.to_string()),
+        ChatResponse::text(final_text.to_string()),
     ]);
     AnyProvider::Mock(p)
 }
@@ -57,7 +57,7 @@ fn multi_tool_use_provider(iterations: usize, final_text: &str) -> AnyProvider {
             }],
         ));
     }
-    responses.push(ChatResponse::Text(final_text.to_string()));
+    responses.push(ChatResponse::text(final_text.to_string()));
     let (p, _) = MockProvider::default().with_tool_use(responses);
     AnyProvider::Mock(p)
 }
@@ -954,7 +954,7 @@ async fn agent_process_response_with_tool_output() {
     let (p, _) = MockProvider::default().with_tool_use(vec![
         ChatResponse::tool_use(None, vec![tool_call.clone()]),
         ChatResponse::tool_use(None, vec![tool_call.clone()]),
-        ChatResponse::Text("done".to_string()),
+        ChatResponse::text("done".to_string()),
     ]);
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["do something"], outputs.clone());
@@ -987,7 +987,7 @@ async fn agent_process_response_tool_loop_max_iterations() {
         ChatResponse::tool_use(None, vec![tool_call.clone()]),
         ChatResponse::tool_use(None, vec![tool_call.clone()]),
         ChatResponse::tool_use(None, vec![tool_call]),
-        ChatResponse::Text("done".to_string()),
+        ChatResponse::text("done".to_string()),
     ]);
     let outputs = Arc::new(Mutex::new(Vec::new()));
     let channel = MockChannel::new(vec!["start"], outputs.clone());
@@ -2612,7 +2612,7 @@ mod self_learning {
         };
         let (p, _) = MockProvider::default().with_tool_use(vec![
             ChatResponse::tool_use(None, vec![tool_call]),
-            ChatResponse::Text(final_text.to_string()),
+            ChatResponse::text(final_text.to_string()),
         ]);
         AnyProvider::Mock(p)
     }

@@ -19,7 +19,8 @@ use super::{
     strip_tafc_fields, tool_args_hash,
 };
 use crate::agent::Agent;
-use crate::agent::turn_gate::{DispatchGate, RequiresGate, TurnToolSet};
+use crate::agent::speculative::{COMMIT_LIMIT, CommitOutcome};
+use crate::agent::turn_gate::{DisabledReason, DispatchGate, RequiresGate, TurnToolSet};
 use crate::channel::{Channel, StopHint, ToolStartEvent};
 
 /// Build MAGE hard-block tier results when `is_blocked()` fired at dispatch time.
@@ -802,9 +803,6 @@ impl<C: Channel> Agent<C> {
         let trivial = dag.is_trivial();
         let tiers = dag.tiers();
         let tier_count = tiers.len();
-        // Clone the Arc before the mutable borrow loop so try_commit can be called without
-        // holding a borrow on self across await points.
-        let speculation_engine = self.services.speculation_engine.clone();
         tracing::debug!(
             trivial,
             tier_count,
@@ -849,41 +847,35 @@ impl<C: Channel> Agent<C> {
                     .await;
             }
 
-            // Pre-scan: commit speculative handles and emit speculative ToolStartEvents.
-            let speculative_commits = self
-                .commit_speculative_tier(
-                    &tier.indices,
-                    calls,
-                    tool_calls,
-                    tool_call_ids,
-                    tool_started_ats,
-                    speculation_engine.as_ref(),
-                    mcp_tool_ids,
-                )
-                .await?;
-
-            // Stamp execution start time and send ToolStartEvent for non-committed calls (§3.7).
-            let non_committed_indices: Vec<usize> = tier
-                .indices
-                .iter()
-                .copied()
-                .filter(|idx| !speculative_commits.contains_key(idx))
-                .collect();
+            // Stamp execution start time and send ToolStartEvent for every call in the tier
+            // (§3.7). A speculative handle is only committed later, after every gate passed.
+            let speculative_idx: std::collections::HashSet<usize> = self
+                .services
+                .speculation_engine
+                .as_ref()
+                .map(|engine| {
+                    tier.indices
+                        .iter()
+                        .copied()
+                        .filter(|&idx| engine.has_match(&calls[idx]))
+                        .collect()
+                })
+                .unwrap_or_default();
             self.stamp_and_send_tier_start(
-                &non_committed_indices,
+                &tier.indices,
                 tool_calls,
                 tool_call_ids,
                 tool_started_ats,
                 mcp_tool_ids,
+                &speculative_idx,
             )
             .await?;
 
-            // Build futures for non-committed calls in this tier.
-            let mut tier_futs = self
+            let tier_futs = self
                 .build_tier_call_futures(
                     tool_calls,
                     calls,
-                    &non_committed_indices,
+                    &tier.indices,
                     &dag,
                     &failed_ids,
                     quota_blocked,
@@ -895,11 +887,6 @@ impl<C: Channel> Agent<C> {
                     &mut pending_system_hints,
                 )
                 .await?;
-
-            // Inject committed speculative results as ready futures.
-            for (idx, result) in speculative_commits {
-                tier_futs.push((idx, Box::pin(std::future::ready(result))));
-            }
 
             // Execute futures concurrently with cancellation and MCP elicitation drain.
             let (indices, futs): (Vec<usize>, Vec<ToolExecFut>) = tier_futs.into_iter().unzip();
@@ -966,6 +953,7 @@ impl<C: Channel> Agent<C> {
         tool_call_ids: &[String],
         tool_started_ats: &mut [std::time::Instant],
         mcp_tool_ids: &std::collections::HashSet<String>,
+        speculative: &std::collections::HashSet<usize>,
     ) -> Result<(), crate::agent::error::AgentError> {
         let tier_start = std::time::Instant::now();
         for &idx in tier_indices {
@@ -980,93 +968,13 @@ impl<C: Channel> Agent<C> {
                     params: Some(tc.input.clone()),
                     parent_tool_use_id: self.services.session.parent_tool_use_id.clone(),
                     started_at: std::time::Instant::now(),
-                    speculative: false,
+                    speculative: speculative.contains(&idx),
                     sandbox_profile: None,
                     is_mcp: mcp_tool_ids.contains(tc.name.as_str()),
                 })
                 .await?;
         }
         Ok(())
-    }
-
-    #[tracing::instrument(
-        name = "core.tool.commit_speculative_tier",
-        skip_all,
-        level = "debug",
-        fields(tier_size = tier_indices.len()),
-        err
-    )]
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn commit_speculative_tier(
-        &mut self,
-        tier_indices: &[usize],
-        calls: &[ToolCall],
-        tool_calls: &[zeph_llm::provider::ToolUseRequest],
-        tool_call_ids: &[String],
-        tool_started_ats: &mut [std::time::Instant],
-        engine: Option<&std::sync::Arc<crate::agent::speculative::SpeculationEngine>>,
-        mcp_tool_ids: &std::collections::HashSet<String>,
-    ) -> Result<
-        std::collections::HashMap<
-            usize,
-            Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
-        >,
-        crate::agent::error::AgentError,
-    > {
-        let mut commits: std::collections::HashMap<
-            usize,
-            Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
-        > = std::collections::HashMap::new();
-
-        let Some(engine) = engine else {
-            return Ok(commits);
-        };
-
-        for &idx in tier_indices {
-            let Some(result) = engine.try_commit(&calls[idx]).await else {
-                continue;
-            };
-            if let Err(ref e) = result {
-                tracing::warn!(
-                    tool = %calls[idx].tool_id,
-                    error = %e,
-                    "speculative commit returned Err — result will be used as-is"
-                );
-                // Invariant: ConfirmationRequired must never reach the commit boundary —
-                // try_dispatch guards against it at dispatch time via requires_confirmation_erased.
-                #[cfg(debug_assertions)]
-                if matches!(e, zeph_tools::ToolError::ConfirmationRequired { .. }) {
-                    tracing::error!(
-                        tool = %calls[idx].tool_id,
-                        "invariant violated: committed speculative result is ConfirmationRequired"
-                    );
-                }
-            }
-            // M1: stamp actual dispatch time so build_tool_output_messages computes correct elapsed.
-            tool_started_ats[idx] = std::time::Instant::now();
-            commits.insert(idx, result);
-        }
-
-        // Emit ToolStartEvent with speculative: true for all committed calls.
-        for &idx in tier_indices {
-            if commits.contains_key(&idx) {
-                let tc = &tool_calls[idx];
-                self.channel
-                    .send_tool_start(ToolStartEvent {
-                        tool_name: tc.name.clone(),
-                        tool_call_id: tool_call_ids[idx].clone(),
-                        params: Some(tc.input.clone()),
-                        parent_tool_use_id: self.services.session.parent_tool_use_id.clone(),
-                        started_at: tool_started_ats[idx],
-                        speculative: true,
-                        sandbox_profile: None,
-                        is_mcp: mcp_tool_ids.contains(tc.name.as_str()),
-                    })
-                    .await?;
-            }
-        }
-
-        Ok(commits)
     }
 
     /// Handles `UtilityAction::Retrieve` — either mandates a context-retrieval-then-retry
@@ -1527,6 +1435,7 @@ impl<C: Channel> Agent<C> {
             }
 
             if let Some(msg) = pre_hook_blocked.remove(&idx) {
+                self.discard_speculative(call);
                 tier_futs.push((
                     idx,
                     Box::pin(std::future::ready(Ok(Some(skipped_output(
@@ -1557,6 +1466,7 @@ impl<C: Channel> Agent<C> {
                 )
                 .await?
             {
+                self.discard_speculative(call);
                 self.fire_permission_denied_hooks(tc, &reason).await;
                 tier_futs.push(fut);
                 continue;
@@ -1564,6 +1474,7 @@ impl<C: Channel> Agent<C> {
 
             // Cache hit: return pre-computed result without executing the tool.
             if let Some(cached_output) = cache_hits[idx].clone() {
+                self.discard_speculative(call);
                 tracing::debug!(
                     tool = %tc.name,
                     "[tool-cache] returning cached result, skipping execution"
@@ -1574,6 +1485,7 @@ impl<C: Channel> Agent<C> {
 
             // Rate limiter: check the pre-computed batch result for this call.
             if let Some(ref exceeded) = rate_results[tier_local_idx] {
+                self.discard_speculative(call);
                 tracing::warn!(
                     tool = %tc.name,
                     category = exceeded.category.as_str(),
@@ -1600,19 +1512,15 @@ impl<C: Channel> Agent<C> {
             }
 
             if let Some(fut) = self.run_before_tool_hooks(idx, tc, call).await {
+                self.discard_speculative(call);
                 tier_futs.push(fut);
                 continue;
             }
 
-            // Speculative try_commit (#3641): reuse a pre-executed result when available.
-            // Uses the LLM-assigned `tool_use_id` (tc.id) for result routing (critic H3).
+            // Single commit point (#3641, #6827): every gate above has passed, so a pre-executed
+            // result may now stand in for the real execution.
             // TODO(#3645): add circuit-breaker check when implemented.
-            if let Some(engine) = self.services.speculation_engine.as_ref()
-                && let Some(result) =
-                    crate::agent::speculative::stream_drainer::try_commit_with_timeout(engine, call)
-                        .await
-            {
-                tracing::debug!(tool = %tc.name, llm_id = %tc.id, "speculative try_commit hit");
+            if let Some(result) = self.commit_speculative(tc, call).await {
                 tier_futs.push((idx, Box::pin(std::future::ready(result))));
                 continue;
             }
@@ -1620,6 +1528,43 @@ impl<C: Channel> Agent<C> {
             tier_futs.push(self.make_exec_future(idx, tc, call, semaphore));
         }
         Ok(tier_futs)
+    }
+
+    fn discard_speculative(&self, call: &ToolCall) {
+        if let Some(engine) = &self.services.speculation_engine {
+            engine.discard(call);
+        }
+    }
+
+    async fn commit_speculative(
+        &self,
+        tc: &zeph_llm::provider::ToolUseRequest,
+        call: &ToolCall,
+    ) -> Option<Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>> {
+        let engine = std::sync::Arc::clone(self.services.speculation_engine.as_ref()?);
+        let CommitOutcome::Committed(result) = engine.commit_within(call, COMMIT_LIMIT).await
+        else {
+            return None;
+        };
+        let result = *result;
+        tracing::debug!(tool = %tc.name, llm_id = %tc.id, "speculative commit hit");
+        if let Err(e) = &result {
+            tracing::warn!(
+                tool = %call.tool_id,
+                error = %e,
+                "speculative commit returned Err — result will be used as-is"
+            );
+            // Invariant: ConfirmationRequired must never reach the commit boundary —
+            // try_dispatch guards against it at dispatch time via requires_confirmation_erased.
+            #[cfg(debug_assertions)]
+            if matches!(e, zeph_tools::ToolError::ConfirmationRequired { .. }) {
+                tracing::error!(
+                    tool = %call.tool_id,
+                    "invariant violated: committed speculative result is ConfirmationRequired"
+                );
+            }
+        }
+        Some(result)
     }
 
     fn make_exec_future(
@@ -2268,24 +2213,53 @@ impl<C: Channel> Agent<C> {
 
     /// Snapshot of the dispatch gates for the running tool loop; rebuilt per tier so
     /// prerequisites completed in one tier unlock their dependants in the next.
+    ///
+    /// The session quota is deliberately not consulted: it is enforced per batch through
+    /// `check_and_update_quota` before any tier runs, and a batch that legitimately crosses the
+    /// limit must not be rejected call by call here.
     pub(in crate::agent) fn dispatch_gate(&self) -> DispatchGate {
         let state = &self.services.tool_state;
+        if !state.tools_enabled {
+            return DispatchGate::disabled(DisabledReason::ToolsDisabled);
+        }
+        let turn_set = state.turn_tool_set.get();
         let requires = RequiresGate::snapshot(
             state.dependency_graph.as_ref(),
             &state.completed_tool_ids,
             &state.dependency_always_on,
-            state.turn_tool_set.as_ref(),
+            turn_set.as_ref(),
         );
-        match state.turn_tool_set.clone() {
+        match turn_set {
             Some(set) => DispatchGate::new(set, requires),
             None => DispatchGate::requires_only(requires),
         }
     }
 
+    /// Why speculation must not start at all: tools are off or the session quota is spent.
+    fn speculation_disabled_reason(&self) -> Option<DisabledReason> {
+        if !self.services.tool_state.tools_enabled {
+            Some(DisabledReason::ToolsDisabled)
+        } else if self.tool_orchestrator.check_quota().is_some() {
+            Some(DisabledReason::QuotaExhausted)
+        } else {
+            None
+        }
+    }
+
+    /// Gate for the streaming drainer: the normal-path gates plus the session quota, so a spent
+    /// quota stops speculative execution before it has side effects.
+    pub(in crate::agent) fn speculative_dispatch_gate(&self) -> DispatchGate {
+        self.speculation_disabled_reason()
+            .map_or_else(|| self.dispatch_gate(), DispatchGate::disabled)
+    }
+
     /// Gate for PASTE predictions, which fire before the turn's tool set exists: only
     /// `requires` is enforced (fail closed, no deadlock fallback); turn-set membership of PASTE
-    /// results is the commit path's concern.
+    /// results is the commit path's concern. Disabled when tools are off or the quota is spent.
     pub(in crate::agent) fn paste_dispatch_gate(&self) -> DispatchGate {
+        if let Some(reason) = self.speculation_disabled_reason() {
+            return DispatchGate::disabled(reason);
+        }
         let state = &self.services.tool_state;
         DispatchGate::requires_only(RequiresGate::snapshot(
             state.dependency_graph.as_ref(),
@@ -2317,7 +2291,7 @@ impl<C: Channel> Agent<C> {
             tools = ?turn_defs.iter().map(|t| &t.name).collect::<Vec<_>>(),
             "native tool_use: froze turn tool set"
         );
-        self.services.tool_state.turn_tool_set = Some(turn_set);
+        self.services.tool_state.turn_tool_set.set(Some(turn_set));
 
         let query_embedding = match self.check_response_cache().await? {
             CacheCheckResult::Hit(cached) => {
@@ -2418,6 +2392,32 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    async fn stop_on_context_budget(
+        &mut self,
+        iteration: usize,
+    ) -> Result<bool, crate::agent::error::AgentError> {
+        let Some(ref budget) = self.context_manager.budget else {
+            return Ok(false);
+        };
+        let used =
+            usize::try_from(self.runtime.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
+        let threshold = budget.max_tokens() * 4 / 5;
+        if used < threshold {
+            return Ok(false);
+        }
+        tracing::warn!(
+            iteration,
+            used,
+            threshold,
+            "stopping tool loop: context budget nearing limit"
+        );
+        self.channel
+            .send("Stopping: context window is nearly full.")
+            .await?;
+        self.flush_runtime_note();
+        Ok(true)
+    }
+
     /// Execute one turn of the native tool loop. Returns `Ok(Some(()))` when the LLM produced
     /// a terminal text response (caller should return `Ok(())`), `Ok(None)` to continue the
     /// loop, or `Err` on a hard error.
@@ -2439,23 +2439,8 @@ impl<C: Channel> Agent<C> {
 
         self.channel.send_typing().await?;
 
-        if let Some(ref budget) = self.context_manager.budget {
-            let used =
-                usize::try_from(self.runtime.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
-            let threshold = budget.max_tokens() * 4 / 5;
-            if used >= threshold {
-                tracing::warn!(
-                    iteration,
-                    used,
-                    threshold,
-                    "stopping tool loop: context budget nearing limit"
-                );
-                self.channel
-                    .send("Stopping: context window is nearly full.")
-                    .await?;
-                self.flush_runtime_note();
-                return Ok(Some(()));
-            }
+        if self.stop_on_context_budget(iteration).await? {
+            return Ok(Some(()));
         }
 
         // Show triage status indicator before inference when triage routing is active.
@@ -2478,9 +2463,13 @@ impl<C: Channel> Agent<C> {
             return Ok(Some(()));
         };
 
-        tracing::debug!(iteration, ?chat_result, "native tool loop iteration");
+        tracing::debug!(
+            iteration,
+            response = %chat_result.log_summary(),
+            "native tool loop iteration"
+        );
 
-        if let zeph_llm::provider::ChatResponse::Text(text) = &chat_result {
+        if let zeph_llm::provider::ChatResponse::Text { text, .. } = &chat_result {
             // RV-1: response verification before delivery.
             if self.run_response_verification(text) {
                 let _ = self
@@ -2519,7 +2508,7 @@ impl<C: Channel> Agent<C> {
         } = chat_result
         else {
             tracing::warn!(
-                ?chat_result,
+                response = %chat_result.log_summary(),
                 "unexpected ChatResponse variant in native tool loop"
             );
             return Ok(Some(()));

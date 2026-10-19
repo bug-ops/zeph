@@ -34,7 +34,7 @@ Metadata is always in memory for matching. Bodies are loaded lazily via `OnceLoc
 
 ### Two-Tier Skill Catalog
 
-Non-matched skills are listed in a description-only `<other_skills>` catalog — giving the model awareness of all available capabilities without injecting their full bodies. This means the model can request a specific skill if needed, while consuming only ~20 tokens per unmatched skill instead of thousands.
+All skills are listed in a description-only `<other_skills>` catalog — giving the model awareness of all available capabilities without injecting their full bodies. This means the model can request a specific skill if needed, while consuming only ~20 tokens per unmatched skill instead of thousands.
 
 ### MCP Tool Matching
 

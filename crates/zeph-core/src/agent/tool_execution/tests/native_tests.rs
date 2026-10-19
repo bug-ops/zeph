@@ -715,7 +715,7 @@ async fn record_chat_metrics_calls_observe_llm_latency() {
         .push(Message::from_legacy(Role::System, "system"));
 
     let start = Instant::now();
-    let mut response = ChatResponse::Text("hello".to_owned());
+    let mut response = ChatResponse::text("hello".to_owned());
     agent
         .record_chat_metrics_and_compact(start, &mut response)
         .await
@@ -863,7 +863,7 @@ async fn lsp_notes_not_duplicated_on_retry() {
     assert_eq!(lsp_count, 0, "retry must not create System LSP messages");
 }
 
-// ── commit_speculative_tier unit tests (issues #3652, #3653) ─────────────────────────────
+// ── speculative commit gates (issues #3652, #3653, #6827) ─────────────────────────────
 
 use zeph_common::ToolName;
 use zeph_config::tools::{SpeculationMode, SpeculativeConfig};
@@ -1006,168 +1006,264 @@ fn test_prediction(tool_id: &str) -> Prediction {
     }
 }
 
-/// `engine = None` → returns empty map immediately (zero-cost fast path).
-#[tokio::test]
-async fn commit_speculative_tier_no_engine_returns_empty() {
+fn agent_with_engine(engine: &Arc<SpeculationEngine>) -> Agent<MockChannel> {
     let mut agent = make_agent();
-    let calls = [test_tool_call("echo")];
-    let tool_calls = [test_tool_use_request("echo")];
-    let tool_call_ids = ["id-0".to_string()];
-    let mut tool_started_ats = [Instant::now()];
-    let before = tool_started_ats[0];
-
-    let commits = agent
-        .commit_speculative_tier(
-            &[0],
-            &calls,
-            &tool_calls,
-            &tool_call_ids,
-            &mut tool_started_ats,
-            None,
-            &std::collections::HashSet::new(),
-        )
-        .await
-        .expect("commit_speculative_tier must not fail with no engine");
-
-    assert!(commits.is_empty(), "no engine → empty commit map");
-    assert_eq!(
-        tool_started_ats[0], before,
-        "tool_started_ats must not be modified when engine is None"
-    );
+    agent.services.speculation_engine = Some(Arc::clone(engine));
+    agent
 }
 
-/// `try_commit` returns `None` for all calls (cache miss) → empty commit map.
-#[tokio::test]
-async fn commit_speculative_tier_cache_miss_returns_empty() {
-    let engine = decoding_engine(AlwaysOkSpecExec);
-    let mut agent = make_agent();
-    let calls = [test_tool_call("echo")];
-    let tool_calls = [test_tool_use_request("echo")];
-    let tool_call_ids = ["id-0".to_string()];
-    let mut tool_started_ats = [Instant::now()];
-
-    // Nothing dispatched into the engine — every try_commit will be a miss.
-    let commits = agent
-        .commit_speculative_tier(
-            &[0],
-            &calls,
-            &tool_calls,
-            &tool_call_ids,
-            &mut tool_started_ats,
-            Some(&engine),
-            &std::collections::HashSet::new(),
-        )
-        .await
-        .expect("commit_speculative_tier must not fail on cache miss");
-
-    assert!(commits.is_empty(), "cache miss → empty commit map");
-}
-
-/// `try_commit` returns `Ok(result)` → index in map, `tool_started_ats` stamped,
-/// `ToolStartEvent { speculative: true }` emitted.
-#[tokio::test]
-async fn commit_speculative_tier_ok_result_stamps_and_emits_event() {
-    let engine = decoding_engine(AlwaysOkSpecExec);
-    let pred = test_prediction("echo");
-    engine.try_dispatch(
-        &pred,
+fn dispatch_echo(engine: &SpeculationEngine) {
+    assert!(engine.try_dispatch(
+        &test_prediction("echo"),
         zeph_common::SkillTrustLevel::Trusted,
         &crate::agent::turn_gate::DispatchGate::open(),
-    );
+    ));
+}
 
-    // Let the speculative task complete.
+/// All gates pass: the speculative result is committed and the start event says so.
+#[tokio::test]
+async fn speculative_handle_is_committed_after_all_gates_pass() {
+    let engine = decoding_engine(AlwaysOkSpecExec);
+    dispatch_echo(&engine);
     tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut agent = agent_with_engine(&engine);
 
-    let mut agent = make_agent();
-    let calls = [test_tool_call("echo")];
-    let tool_calls = [test_tool_use_request("echo")];
-    let tool_call_ids = ["id-0".to_string()];
-    let before = Instant::now();
-    let mut tool_started_ats = [before];
-
-    let commits = agent
-        .commit_speculative_tier(
-            &[0],
-            &calls,
-            &tool_calls,
-            &tool_call_ids,
-            &mut tool_started_ats,
-            Some(&engine),
-            &std::collections::HashSet::new(),
-        )
+    agent
+        .handle_native_tool_calls(None, &[test_tool_use_request("echo")])
         .await
-        .expect("commit_speculative_tier must not fail on cache hit");
+        .unwrap();
 
-    assert!(
-        commits.contains_key(&0),
-        "committed index must be in the map"
-    );
-    assert!(
-        commits[&0].is_ok(),
-        "AlwaysOkSpecExec must produce Ok result"
-    );
-    assert!(
-        tool_started_ats[0] >= before,
-        "tool_started_ats[idx] must be stamped at or after before"
-    );
-
+    let m = engine.metrics_snapshot();
+    assert_eq!((m.committed, m.cancelled), (1, 0));
     let starts = agent.channel.tool_starts.lock().unwrap();
-    assert_eq!(
-        starts.len(),
-        1,
-        "exactly one ToolStartEvent must be emitted"
+    assert_eq!(starts.len(), 1);
+    assert!(starts[0].speculative);
+}
+
+/// No handle in flight: normal execution, start event not marked speculative.
+#[tokio::test]
+async fn cache_miss_executes_normally_without_speculative_flag() {
+    let engine = decoding_engine(AlwaysOkSpecExec);
+    let mut agent = agent_with_engine(&engine);
+
+    agent
+        .handle_native_tool_calls(None, &[test_tool_use_request("echo")])
+        .await
+        .unwrap();
+
+    let m = engine.metrics_snapshot();
+    assert_eq!((m.committed, m.cancelled), (0, 0));
+    assert!(!agent.channel.tool_starts.lock().unwrap()[0].speculative);
+}
+
+/// A committed `Err` result is used as-is.
+#[tokio::test]
+async fn committed_err_result_is_used_as_is() {
+    let engine = decoding_engine(AlwaysErrSpecExec);
+    dispatch_echo(&engine);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut agent = agent_with_engine(&engine);
+
+    agent
+        .handle_native_tool_calls(None, &[test_tool_use_request("echo")])
+        .await
+        .unwrap();
+
+    assert_eq!(engine.metrics_snapshot().committed, 1);
+}
+
+/// A call rejected by a normal-path gate never consumes the live handle: it is discarded,
+/// counted as cancelled, and never committed (#6827).
+#[tokio::test]
+async fn gate_rejection_discards_live_speculative_handle() {
+    use crate::agent::turn_gate::TurnToolSet;
+
+    type Setup = fn(&mut Agent<MockChannel>);
+    let cases: [(&str, Setup); 5] = [
+        ("quota", |agent| {
+            agent.tool_orchestrator.max_tool_calls_per_session = Some(1);
+            agent.tool_orchestrator.session_tool_call_count = 1;
+        }),
+        ("not in turn set", |agent| {
+            agent
+                .services
+                .tool_state
+                .turn_tool_set
+                .set(Some(TurnToolSet::default()));
+        }),
+        ("pre-execution block", |agent| {
+            agent.runtime.config.channel_tool_allowlist = Some(Vec::new());
+        }),
+        ("repeat", |agent| {
+            let hash = crate::agent::tool_execution::tool_args_hash(&serde_json::Map::new());
+            for _ in 0..agent.tool_orchestrator.repeat_threshold {
+                agent
+                    .tool_orchestrator
+                    .recent_tool_calls
+                    .push_back(("echo".to_owned(), hash));
+            }
+        }),
+        ("pre-tool hook", |agent| {
+            use zeph_config::{HookAction, HookDef, HookMatcher};
+            agent.services.session.hooks_config.pre_tool_use = vec![HookMatcher {
+                matcher: "echo".to_owned(),
+                hooks: vec![HookDef {
+                    action: HookAction::Command {
+                        command: "exit 1".to_owned(),
+                    },
+                    timeout_secs: 5,
+                    fail_closed: true,
+                    r#if: None,
+                }],
+            }];
+        }),
+    ];
+    for (name, setup) in cases {
+        let engine = decoding_engine(AlwaysOkSpecExec);
+        dispatch_echo(&engine);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut agent = agent_with_engine(&engine);
+        setup(&mut agent);
+
+        agent
+            .handle_native_tool_calls(None, &[test_tool_use_request("echo")])
+            .await
+            .unwrap();
+
+        let m = engine.metrics_snapshot();
+        assert_eq!((m.committed, m.cancelled), (0, 1), "case: {name}");
+        assert!(!engine.has_match(&test_tool_call("echo")), "case: {name}");
+    }
+}
+
+/// Tools disabled or quota spent: neither PASTE nor the stream drainer may start speculation.
+/// The normal gate never sees quota state, so a batch crossing the limit is not rejected.
+#[test]
+fn speculative_gates_respect_tools_enabled_and_quota() {
+    use crate::agent::turn_gate::{DisabledReason, GateRejection};
+
+    let mut agent = make_agent();
+    agent.tool_orchestrator.max_tool_calls_per_session = Some(10);
+    agent.tool_orchestrator.session_tool_call_count = 8;
+    assert!(agent.dispatch_gate().check("echo").is_ok());
+    assert!(agent.speculative_dispatch_gate().check("echo").is_ok());
+    assert!(agent.paste_dispatch_gate().check("echo").is_ok());
+
+    agent.tool_orchestrator.session_tool_call_count = 10;
+    assert!(agent.dispatch_gate().check("echo").is_ok());
+    for gate in [
+        agent.speculative_dispatch_gate(),
+        agent.paste_dispatch_gate(),
+    ] {
+        assert_eq!(
+            gate.check("echo").unwrap_err(),
+            GateRejection::Disabled(DisabledReason::QuotaExhausted)
+        );
+    }
+
+    agent.services.tool_state.tools_enabled = false;
+    for gate in [
+        agent.dispatch_gate(),
+        agent.speculative_dispatch_gate(),
+        agent.paste_dispatch_gate(),
+    ] {
+        assert_eq!(
+            gate.check("echo").unwrap_err(),
+            GateRejection::Disabled(DisabledReason::ToolsDisabled)
+        );
+    }
+}
+
+/// A batch that crosses the session limit still goes through the normal quota path unchanged.
+#[tokio::test]
+async fn batch_crossing_quota_is_not_rejected_by_dispatch_gate() {
+    let ran = |name: &str| {
+        Ok(Some(zeph_tools::ToolOutput {
+            tool_name: ToolName::new(name),
+            summary: format!("ran-{name}"),
+            blocks_executed: 1,
+            ..Default::default()
+        }))
+    };
+    let mut agent = Agent::new(
+        mock_provider(vec![]),
+        MockChannel::new(vec![]),
+        create_test_registry(),
+        None,
+        5,
+        MockToolExecutor::new(vec![ran("a"), ran("b"), ran("c")]),
     );
+    agent.tool_orchestrator.max_tool_calls_per_session = Some(10);
+    agent.tool_orchestrator.session_tool_call_count = 8;
+    let calls = [
+        test_tool_use_request("a"),
+        test_tool_use_request("b"),
+        test_tool_use_request("c"),
+    ];
+
+    agent.handle_native_tool_calls(None, &calls).await.unwrap();
+
+    assert_eq!(agent.tool_orchestrator.session_tool_call_count, 11);
+    let results: Vec<String> = agent
+        .msg
+        .messages
+        .iter()
+        .flat_map(|m| m.parts.iter())
+        .filter_map(|p| match p {
+            MessagePart::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 3);
     assert!(
-        starts[0].speculative,
-        "ToolStartEvent.speculative must be true for committed speculative call"
-    );
-    assert_eq!(
-        starts[0].tool_name.as_str(),
-        "echo",
-        "ToolStartEvent.tool_name must match the tool"
+        results.iter().all(|c| c.contains("ran-")),
+        "all three tools must have executed: {results:?}"
     );
 }
 
-/// `try_commit` returns `Err(_)` → index still in map with `Err`, `tracing::warn` fires.
+/// A failed stream cancels in-flight speculation, tells the user and falls back to exactly one
+/// non-streaming call (#6837.2).
 #[tokio::test]
-async fn commit_speculative_tier_err_result_still_in_map() {
-    let engine = decoding_engine(AlwaysErrSpecExec);
-    let pred = test_prediction("echo");
-    engine.try_dispatch(
-        &pred,
-        zeph_common::SkillTrustLevel::Trusted,
-        &crate::agent::turn_gate::DispatchGate::open(),
+async fn failed_stream_cancels_speculation_and_retries_once_without_streaming() {
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+
+    let (mock, calls) = MockProvider::with_responses(vec![])
+        .with_tool_use(vec![ChatResponse::text("fallback answer")]);
+    let engine = decoding_engine(AlwaysOkSpecExec);
+    dispatch_echo(&engine);
+    let mut agent = Agent::new(
+        AnyProvider::Mock(mock),
+        MockChannel::new(vec![]),
+        create_test_registry(),
+        None,
+        5,
+        MockToolExecutor::no_tools(),
     );
 
-    // Let the speculative task complete.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let mut agent = make_agent();
-    let calls = [test_tool_call("echo")];
-    let tool_calls = [test_tool_use_request("echo")];
-    let tool_call_ids = ["id-0".to_string()];
-    let mut tool_started_ats = [Instant::now()];
-
-    let commits = agent
-        .commit_speculative_tier(
-            &[0],
-            &calls,
-            &tool_calls,
-            &tool_call_ids,
-            &mut tool_started_ats,
-            Some(&engine),
-            &std::collections::HashSet::new(),
+    let response = agent
+        .finish_stream_drain(
+            Ok(Err(zeph_llm::LlmError::Other("stream broke".into()))),
+            &engine,
+            &[],
+            Duration::from_secs(5),
         )
         .await
-        .expect("commit_speculative_tier must not fail when committed result is Err");
+        .unwrap();
 
+    assert!(matches!(response, Some(ChatResponse::Text { .. })));
+    assert_eq!(*calls.lock().unwrap(), 1, "exactly one non-stream call");
+    assert!(!engine.has_match(&test_tool_call("echo")));
+    assert_eq!(engine.metrics_snapshot().cancelled, 1);
     assert!(
-        commits.contains_key(&0),
-        "even an Err result must be in the commit map"
-    );
-    assert!(
-        commits[&0].is_err(),
-        "AlwaysErrSpecExec must produce Err result"
+        agent
+            .channel
+            .statuses
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s.starts_with("stream failed, retrying without streaming")),
+        "the user must see the retry status"
     );
 }
 
@@ -1193,6 +1289,7 @@ async fn stamp_and_send_tier_start_sets_is_mcp_from_mcp_tool_ids() {
             &tool_call_ids,
             &mut tool_started_ats,
             &mcp_tool_ids,
+            &std::collections::HashSet::new(),
         )
         .await
         .expect("stamp_and_send_tier_start must not fail");

@@ -97,8 +97,8 @@ pub mod utility;
 pub mod verifier;
 pub use adversarial_gate::AdversarialPolicyGateExecutor;
 pub use adversarial_policy::{
-    PolicyDecision as AdversarialPolicyDecision, PolicyLlmClient, PolicyMessage, PolicyRole,
-    PolicyValidator, parse_policy_lines,
+    POLICY_REFUSAL_RESPONSE, PolicyDecision as AdversarialPolicyDecision, PolicyLlmClient,
+    PolicyMessage, PolicyRole, PolicyValidator, parse_policy_lines,
 };
 pub use anomaly::{AnomalyDetector, AnomalySeverity, is_reasoning_model};
 pub use audit::{

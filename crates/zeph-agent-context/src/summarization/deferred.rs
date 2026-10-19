@@ -262,7 +262,7 @@ pub(crate) fn apply_deferred_summaries(summ: &mut ContextSummarizationView<'_>) 
     }
 
     if let Some(from) = first_touched {
-        zeph_llm::provider::strip_thinking_from(summ.messages, from);
+        zeph_llm::provider::strip_thinking_after_edit(summ.messages, from, summ.thinking_binding);
     }
 
     // Recompute token count after message list mutation.

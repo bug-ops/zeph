@@ -27,9 +27,23 @@ pub(crate) struct UsageTracker {
     /// value takes priority over this field's TTFB when building a `usage_records` row —
     /// see `Agent::build_usage_record`'s `stream_ttft_ms` parameter.
     last_ttft: std::sync::Mutex<Option<u64>>,
+    /// Usage billed outside the top-level counters (server compaction iterations) in the last
+    /// response. Overwritten on every recorded response so it never leaks into the next call.
+    last_auxiliary: std::sync::Mutex<Option<crate::provider::AuxiliaryUsage>>,
 }
 
 impl UsageTracker {
+    /// Record the auxiliary usage of the most recent response; `None` clears the previous value.
+    pub(crate) fn record_auxiliary(&self, usage: Option<crate::provider::AuxiliaryUsage>) {
+        if let Ok(mut g) = self.last_auxiliary.lock() {
+            *g = usage;
+        }
+    }
+
+    pub(crate) fn last_auxiliary(&self) -> Option<crate::provider::AuxiliaryUsage> {
+        self.last_auxiliary.lock().ok().and_then(|g| *g)
+    }
+
     pub(crate) fn record_usage(&self, input: u64, output: u64) {
         if let Ok(mut g) = self.last_usage.lock() {
             *g = Some((input, output));

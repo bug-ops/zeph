@@ -404,7 +404,7 @@ fn finalize_compacted_messages(
     }
 
     // Everything after the summary now sits behind a rewritten prefix.
-    zeph_llm::provider::strip_thinking_from(summ.messages, floor);
+    zeph_llm::provider::strip_thinking_after_edit(summ.messages, floor, summ.thinking_binding);
 
     // Rebuild subgoal index map after index invalidation from drain + reinsert.
     if summ
@@ -900,6 +900,7 @@ mod tests {
                     fidelity_semantic_provider: None,
                     fidelity_compress_provider: None,
                     current_query: String::new(),
+                    thinking_binding: zeph_llm::provider::ThinkingBinding::Unbound,
                 }
             }
         }

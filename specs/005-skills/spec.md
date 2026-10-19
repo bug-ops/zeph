@@ -78,7 +78,8 @@ Constraints:
 
 ## Skill Injection
 
-Active skills are injected into Block 3 of the system prompt (volatile section):
+Active skills are injected into the volatile section of the system prompt (after `<!-- cache:volatile -->`, #6830):
+- The full catalog of channel-allowed, non-`Blocked` skills (active ones included) is listed in the stable block 2 under the `<other_skills>` label, so block 2 does not change with the per-turn match. In `skill_fallback_mode` this catalog is the only skill listing (the volatile section adds no second one)
 - Full skill body is included (up to `max_skill_body_bytes` limit)
 - Tool definitions from skills are merged into the main tool catalog for the turn
 - Skills can define `env` variables that are passed to the tool executor via `set_skill_env()`

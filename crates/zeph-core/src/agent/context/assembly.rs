@@ -252,6 +252,7 @@ impl<C: Channel> Agent<C> {
                 .fidelity_compress_provider
                 .clone(),
             current_query: String::new(),
+            thinking_binding: zeph_llm::provider::LlmProvider::thinking_binding(&self.provider),
         }
     }
 
@@ -661,6 +662,7 @@ impl<C: Channel> Agent<C> {
         self.msg.deferred_db_summaries.clear();
         self.msg.deferred_db_trust_levels.clear();
         self.services.tool_state.cached_filtered_tool_ids = None;
+        self.services.tool_state.tool_offer.reset();
         self.runtime.providers.cached_prompt_tokens = 0;
 
         discarded
@@ -952,7 +954,7 @@ impl<C: Channel> Agent<C> {
         let (all_skills, active_skills, matched_indices) =
             self.load_and_filter_skills_by_channel(&all_meta, &matched_indices);
 
-        let remaining_skills = self
+        let catalog_skills = self
             .apply_skill_trust_and_gating(
                 &all_skills,
                 &active_skills,
@@ -990,7 +992,7 @@ impl<C: Channel> Agent<C> {
         // #6701 (D1): annotate catalog entries with their trust level so a skill dropped from
         // `active_skill_names` by the activation filter above remains nameable/promotable.
         let catalog_trust_levels = crate::skill_invoker::snapshot_map_to_trust_levels(&trust_map);
-        let catalog_prompt = format_skills_catalog(&remaining_skills, &catalog_trust_levels);
+        let catalog_prompt = format_skills_catalog(&catalog_skills, &catalog_trust_levels);
         self.services
             .skill
             .last_skills_prompt
@@ -1040,16 +1042,18 @@ impl<C: Channel> Agent<C> {
         effective_mode: crate::config::SkillPromptMode,
         skill_fallback_mode: bool,
     ) {
-        // BLOCK 1: stable within a session — base prompt + skills + tool catalog
-        // Instruction blocks are passed separately and injected in the volatile section.
-        #[allow(unused_mut)]
+        // BLOCK 1: stable within a session — base prompt + env + instructions. Nothing that
+        // varies with the per-turn query or the matched skills may enter blocks 1-2 (#6830).
         let mut system_prompt = build_system_prompt_with_instructions(
-            skills_prompt,
+            "",
             Some(&self.services.session.env_context),
             &self.runtime.instructions.blocks,
         );
+        system_prompt.push_str("\n<!-- cache:stable -->");
 
-        // BLOCK 2: semi-stable within a session — skills catalog, MCP, project context, repo map
+        // BLOCK 2: semi-stable — full skills catalog, MCP server instructions, media note,
+        // project context, repo map. Project-context edits and the repo-map TTL refresh still
+        // re-cache this block; messages stay uncached across turns until #6830 part B.
         if !catalog_prompt.is_empty() {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(catalog_prompt);
@@ -1066,9 +1070,7 @@ impl<C: Channel> Agent<C> {
             );
         }
 
-        system_prompt.push_str("\n<!-- cache:stable -->");
-
-        self.append_mcp_prompt(query, &mut system_prompt).await;
+        let mcp_tools_prompt = self.append_mcp_prompt(query, &mut system_prompt).await;
 
         let cwd = match self.services.session.env_context.working_dir.as_str() {
             "" | "unknown" => std::env::current_dir().unwrap_or_default(),
@@ -1130,6 +1132,17 @@ impl<C: Channel> Agent<C> {
 
         // BLOCK 3: volatile — dynamic per-turn content, never cached
         system_prompt.push_str("\n<!-- cache:volatile -->");
+
+        // In fallback mode `skills_prompt` is a description-only list the block-2 catalog
+        // already contains; emitting it again would duplicate the catalog.
+        if !skill_fallback_mode && !skills_prompt.is_empty() {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(skills_prompt);
+        }
+        if !mcp_tools_prompt.is_empty() {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&mcp_tools_prompt);
+        }
 
         // #6032 S1: working_directory changes on every `/cd` — kept out of the stable
         // `<environment>` block (`EnvironmentContext::format_cacheable`) and emitted here so a
@@ -1857,7 +1870,8 @@ impl<C: Channel> Agent<C> {
         skills_to_record.retain(|name| active_name_set.contains(name.as_str()));
     }
 
-    /// Filters `all_skills` down to the non-active catalog skills allowed by trust, gates the
+    /// Filters `all_skills` down to the catalog skills allowed by trust (every non-Blocked skill,
+    /// active or not, so the catalog text does not change with the per-turn match), gates the
     /// tool executor to the most restrictive trust level among skills whose bodies were
     /// actually injected this turn, and fires PASTE speculative activation (#3642).
     ///
@@ -1865,7 +1879,7 @@ impl<C: Channel> Agent<C> {
     /// earlier this turn (before the D1 activation filter ran) — passed in rather than
     /// re-resolved so the trust snapshot isn't written twice per turn.
     ///
-    /// Returns `remaining_skills` for use by the prompt-formatting step.
+    /// Returns `catalog_skills` for use by the prompt-formatting step.
     async fn apply_skill_trust_and_gating(
         &mut self,
         all_skills: &[Skill],
@@ -1873,15 +1887,8 @@ impl<C: Channel> Agent<C> {
         trust_map: &std::collections::HashMap<String, crate::skill_invoker::SkillTrustSnapshot>,
         skill_fallback_mode: bool,
     ) -> Vec<Skill> {
-        let remaining_skills: Vec<Skill> = all_skills
+        let catalog_skills: Vec<Skill> = all_skills
             .iter()
-            .filter(|s| {
-                !self
-                    .services
-                    .skill
-                    .active_skill_names
-                    .contains(&s.name().to_string())
-            })
             .filter(|s| match trust_map.get(s.name()) {
                 Some(snap) if snap.trust_level == zeph_common::SkillTrustLevel::Blocked => {
                     tracing::debug!(skill = s.name(), "excluded from catalog: trust=blocked");
@@ -1921,7 +1928,7 @@ impl<C: Channel> Agent<C> {
         self.run_paste_skill_activation(active_skills, trust_map)
             .await;
 
-        remaining_skills
+        catalog_skills
     }
 
     /// Formats the `<available_skills>` prompt block for `active_skills`: dispatches
@@ -2085,13 +2092,16 @@ impl<C: Channel> Agent<C> {
                                     selected = selected.len(),
                                     "semantic tool discovery applied"
                                 );
-                                self.services.mcp.apply_pruned_tools(selected);
+                                self.apply_sticky_mcp_selection(&selected);
                             }
                             None => {
-                                // strict=true: do not sync — executor retains whatever tools it had
-                                // (either previously synced or empty). The turn will proceed without
-                                // MCP tools rather than silently degrading to the full unfiltered set.
-                                if !params.strict {
+                                // A previous union is reused unchanged. Without one, strict=true
+                                // leaves the executor as it was (the turn proceeds without MCP
+                                // tools rather than degrading to the full set); otherwise all
+                                // tools are offered and nothing is recorded.
+                                if self.services.tool_state.tool_offer.mcp.current().is_some() {
+                                    self.apply_sticky_mcp_selection(&[]);
+                                } else if !params.strict {
                                     self.services.mcp.sync_executor_tools();
                                 }
                             }
@@ -2152,6 +2162,27 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Grows the conversation's MCP union with `selected` and publishes it to the executor in
+    /// the registration order of the full tool list, so the tools array is stable across turns
+    /// (#6840). An empty `selected` republishes the union unchanged.
+    fn apply_sticky_mcp_selection(&mut self, selected: &[zeph_mcp::McpTool]) {
+        let union = self
+            .services
+            .tool_state
+            .tool_offer
+            .mcp
+            .grow(selected.iter().map(zeph_mcp::McpTool::qualified_name));
+        let stable: Vec<zeph_mcp::McpTool> = self
+            .services
+            .mcp
+            .tools
+            .iter()
+            .filter(|t| union.contains(&t.qualified_name()))
+            .cloned()
+            .collect();
+        self.services.mcp.apply_pruned_tools(stable);
+    }
+
     /// Computes the per-turn dynamic tool schema filter (#2020) plus dependency-graph
     /// gating, caching the result into `self.services.tool_state.cached_filtered_tool_ids`.
     /// Always clears the cache first.
@@ -2179,7 +2210,16 @@ impl<C: Channel> Agent<C> {
                 .await;
             match self.query_embedding_cached(query, query_embed_cache).await {
                 None => {
-                    tracing::warn!("tool filter: query embed unavailable, using all tools");
+                    tracing::warn!(
+                        "tool filter: query embed unavailable, reusing the previous offer or all tools"
+                    );
+                    self.services.tool_state.cached_filtered_tool_ids = self
+                        .services
+                        .tool_state
+                        .tool_offer
+                        .native
+                        .current()
+                        .cloned();
                 }
                 Some(query_emb) => {
                     let mut result = filter.filter(&all_ids, &descriptions, query, &query_emb);
@@ -2231,7 +2271,14 @@ impl<C: Channel> Agent<C> {
                             .iter()
                             .map(|e| e.tool_id.to_string()),
                     );
-                    self.services.tool_state.cached_filtered_tool_ids = Some(offered);
+                    let sticky = self
+                        .services
+                        .tool_state
+                        .tool_offer
+                        .native
+                        .grow(offered)
+                        .clone();
+                    self.services.tool_state.cached_filtered_tool_ids = Some(sticky);
                 }
             }
             self.channel.send_status_best_effort("").await;
@@ -4024,6 +4071,177 @@ mod tests {
         );
     }
 
+    // ── #6840: sticky tool offer keeps the tools array stable across turns ──
+
+    fn named_tool_def(id: &str) -> ToolDef {
+        ToolDef {
+            id: id.to_owned().into(),
+            ..embed_dedup_test_tool_def()
+        }
+    }
+
+    fn sticky_filter_agent() -> Agent<MockChannel> {
+        let provider = AnyProvider::Mock(
+            MockProvider::with_responses(vec![]).with_embedding(vec![1.0_f32; 4]),
+        );
+        let mut agent = Agent::new(
+            provider,
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools().with_definitions(vec![
+                named_tool_def("tool_a"),
+                named_tool_def("tool_b"),
+                named_tool_def("tool_c"),
+            ]),
+        );
+        let embedding = |id: &str, axis: usize| {
+            let mut v = vec![0.0_f32; 4];
+            v[axis] = 1.0;
+            ToolEmbedding {
+                tool_id: id.into(),
+                embedding: v,
+            }
+        };
+        agent.services.tool_state.tool_schema_filter = Some(ToolSchemaFilter::new(
+            vec![],
+            1,
+            0,
+            vec![
+                embedding("tool_a", 0),
+                embedding("tool_b", 1),
+                embedding("tool_c", 2),
+            ],
+        ));
+        agent
+    }
+
+    fn query_on_axis(axis: usize) -> QueryEmbedCache {
+        let mut v = vec![0.0_f32; 4];
+        v[axis] = 1.0;
+        QueryEmbedCache::Ready(v)
+    }
+
+    fn sorted_offer(agent: &Agent<MockChannel>) -> Option<Vec<String>> {
+        agent
+            .services
+            .tool_state
+            .cached_filtered_tool_ids
+            .as_ref()
+            .map(|ids| {
+                let mut v: Vec<String> = ids.iter().cloned().collect();
+                v.sort();
+                v
+            })
+    }
+
+    #[tokio::test]
+    async fn sticky_tool_offer_grows_and_survives_embed_failure() {
+        let mut agent = sticky_filter_agent();
+        let ids = |names: &[&str]| Some(names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>());
+
+        agent
+            .filter_tool_schemas_for_turn("q", &mut query_on_axis(0))
+            .await;
+        assert_eq!(sorted_offer(&agent), ids(&["tool_a"]));
+
+        agent
+            .filter_tool_schemas_for_turn("q", &mut QueryEmbedCache::Failed)
+            .await;
+        assert_eq!(
+            sorted_offer(&agent),
+            ids(&["tool_a"]),
+            "embedding failure must reuse the previous union unchanged"
+        );
+
+        agent
+            .filter_tool_schemas_for_turn("q", &mut query_on_axis(1))
+            .await;
+        assert_eq!(sorted_offer(&agent), ids(&["tool_a", "tool_b"]));
+
+        agent
+            .filter_tool_schemas_for_turn("q", &mut query_on_axis(0))
+            .await;
+        assert_eq!(
+            sorted_offer(&agent),
+            ids(&["tool_a", "tool_b"]),
+            "the union never shrinks"
+        );
+    }
+
+    #[tokio::test]
+    async fn sticky_tool_offer_first_turn_failure_offers_all_and_records_nothing() {
+        let mut agent = sticky_filter_agent();
+        let mut failed = QueryEmbedCache::Failed;
+        agent
+            .filter_tool_schemas_for_turn("use tool_a", &mut failed)
+            .await;
+        assert!(agent.services.tool_state.cached_filtered_tool_ids.is_none());
+        assert!(
+            agent
+                .services
+                .tool_state
+                .tool_offer
+                .native
+                .current()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn sticky_mcp_offer_survives_embed_failure() {
+        let embed_dim = 4;
+        let provider = AnyProvider::Mock(
+            MockProvider::with_responses(vec![]).with_embedding(vec![1.0_f32; embed_dim]),
+        );
+        let params = DiscoveryParams {
+            min_tools_to_filter: 1,
+            top_k: 0,
+            always_include: vec!["mcp_tool".to_owned()],
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            provider,
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_mcp_discovery(ToolDiscoveryStrategy::Embedding, params, None);
+        let other = McpTool {
+            name: "other_tool".into(),
+            ..embed_dedup_mcp_tool()
+        };
+        agent.services.mcp.tools = vec![embed_dedup_mcp_tool(), other.clone()];
+        let embed_fn = |_: &str| -> zeph_llm::provider::EmbedFuture {
+            Box::pin(async move { Ok(vec![1.0_f32; 4]) })
+        };
+        agent.services.mcp.semantic_index = Some(
+            SemanticToolIndex::build(&agent.services.mcp.tools, &embed_fn)
+                .await
+                .unwrap(),
+        );
+        let shared = Arc::new(parking_lot::RwLock::new(Vec::new()));
+        agent.services.mcp.shared_tools = Some(Arc::clone(&shared));
+
+        let mut cache = QueryEmbedCache::default();
+        agent.discover_mcp_tools_for_turn("query", &mut cache).await;
+        assert_eq!(shared.read().len(), 1);
+
+        let mut failed = QueryEmbedCache::Failed;
+        agent
+            .discover_mcp_tools_for_turn("query", &mut failed)
+            .await;
+        let names: Vec<String> = shared.read().iter().map(|t| t.name.clone()).collect();
+        assert_eq!(
+            names,
+            ["mcp_tool"],
+            "embedding failure must reuse the previous union, not offer every MCP tool"
+        );
+    }
+
     #[tokio::test]
     async fn match_and_rank_skills_rl_rerank_shares_query_embed_cache_with_mcp_discovery() {
         let embed_dim = 4;
@@ -4191,6 +4409,116 @@ mod tests {
             "caveat line must be assembled identically across turns (AC-12) — otherwise it \
              would invalidate the Anthropic prompt-cache prefix every turn"
         );
+    }
+
+    #[tokio::test]
+    async fn system_prompt_blocks_one_and_two_are_stable_across_turns() {
+        use zeph_llm::provider::LlmProvider as _;
+
+        let (registry, _dir) = create_two_skill_registry();
+        let provider = AnyProvider::Mock(MockProvider::with_responses(vec![]));
+        let mut agent = Agent::new(
+            provider,
+            MockChannel::new(vec![]),
+            registry,
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        let all_meta: Vec<SkillMeta> = {
+            let guard = agent.services.skill.registry.read();
+            guard.all_meta().into_iter().cloned().collect()
+        };
+        // skill-a embeds on axis 0, skill-b on axis 1, so the query embedding picks the skill.
+        let embed_fn = |text: &str| -> zeph_skills::matcher::EmbedFuture {
+            let v = if text.starts_with("First") {
+                vec![1.0_f32, 0.0]
+            } else {
+                vec![0.0_f32, 1.0]
+            };
+            Box::pin(async move { Ok(v) })
+        };
+        agent.services.skill.matcher =
+            SkillMatcher::new(&all_meta.iter().collect::<Vec<_>>(), embed_fn)
+                .await
+                .map(SkillMatcherBackend::InMemory);
+        agent.services.skill.max_active_skills = 1;
+        agent.services.skill.disambiguation_threshold = -1.0;
+        agent.services.skill.min_injection_score = -1.0;
+
+        let first_tool = embed_dedup_mcp_tool();
+        let second_tool = McpTool {
+            name: "other_tool".into(),
+            ..embed_dedup_mcp_tool()
+        };
+        let turns = [
+            (vec![1.0_f32, 0.0], vec![first_tool.clone()]),
+            (vec![0.0_f32, 1.0], vec![first_tool, second_tool]),
+        ];
+
+        let mut stable_parts = Vec::new();
+        let mut volatile_parts = Vec::new();
+        let mut claude_cached_blocks = Vec::new();
+        for (query_embedding, mcp_tools) in turns {
+            agent.embedding_provider = AnyProvider::Mock(
+                MockProvider::with_responses(vec![]).with_embedding(query_embedding),
+            );
+            agent.services.mcp.tools = mcp_tools;
+            agent.rebuild_system_prompt("query").await;
+            let prompt = agent.msg.messages[0].content.clone();
+            let (stable, volatile) = prompt
+                .split_once("<!-- cache:volatile -->")
+                .expect("volatile marker");
+            stable_parts.push(stable.to_owned());
+            volatile_parts.push(volatile.to_owned());
+
+            let claude = zeph_llm::claude::ClaudeProvider::new(
+                "key".into(),
+                "claude-sonnet-5-5".into(),
+                1024,
+            );
+            let request = claude.debug_request_json(
+                &[
+                    Message::from_legacy(zeph_llm::provider::Role::System, prompt.as_str()),
+                    Message::from_legacy(zeph_llm::provider::Role::User, "hi"),
+                ],
+                &[],
+                false,
+            );
+            let mut blocks = request["system"].as_array().expect("system blocks").clone();
+            blocks.pop().expect("volatile block");
+            claude_cached_blocks.push(blocks);
+        }
+
+        assert!(
+            volatile_parts[0].contains("skill-a") && !volatile_parts[0].contains("skill-b"),
+            "turn 1 must activate only skill-a: {}",
+            volatile_parts[0]
+        );
+        assert!(
+            volatile_parts[1].contains("skill-b") && !volatile_parts[1].contains("skill-a"),
+            "turn 2 must activate only skill-b: {}",
+            volatile_parts[1]
+        );
+        assert!(
+            !volatile_parts[0].contains("other_tool") && volatile_parts[1].contains("other_tool")
+        );
+        assert_eq!(
+            stable_parts[0], stable_parts[1],
+            "per-turn skill bodies and MCP matches must not leak into blocks 1-2"
+        );
+        assert!(
+            claude_cached_blocks[0].len() >= 2,
+            "blocks 1 and 2 expected"
+        );
+        assert_eq!(
+            claude_cached_blocks[0], claude_cached_blocks[1],
+            "serialized Claude system blocks 1-2 must be byte-equal across turns"
+        );
+        assert_eq!(stable_parts[0].matches("<other_skills>").count(), 1);
+        assert!(stable_parts[0].contains("skill-a") && stable_parts[0].contains("skill-b"));
+        assert!(!stable_parts[0].contains("<available_skills"));
+        assert!(!stable_parts[0].contains("<available_tools>"));
     }
 
     #[tokio::test]

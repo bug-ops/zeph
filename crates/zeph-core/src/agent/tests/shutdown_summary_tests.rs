@@ -382,7 +382,7 @@ async fn filter_stats_metrics_increment_on_normal_native_tool_path() {
                 input: serde_json::json!({"cmd": "ls"}),
             }],
         ),
-        ChatResponse::Text("done".to_owned()),
+        ChatResponse::text("done".to_owned()),
     ]);
     let provider = AnyProvider::Mock(mock);
     let channel = MockChannel::new(vec!["run a tool".to_owned()]);

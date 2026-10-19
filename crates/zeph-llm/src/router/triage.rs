@@ -845,6 +845,28 @@ impl LlmProvider for TriageRouter {
             .and_then(|(_, p)| p.last_usage())
     }
 
+    fn thinking_binding(&self) -> crate::provider::ThinkingBinding {
+        if self
+            .tier_providers
+            .iter()
+            .any(|(_, p)| p.thinking_binding() == crate::provider::ThinkingBinding::PrefixBound)
+        {
+            crate::provider::ThinkingBinding::PrefixBound
+        } else {
+            crate::provider::ThinkingBinding::Unbound
+        }
+    }
+
+    fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {
+        let idx = self.last_provider_idx.load(Ordering::Relaxed);
+        if idx == NO_LAST_PROVIDER {
+            return None;
+        }
+        self.tier_providers
+            .get(idx)
+            .and_then(|(_, p)| p.last_auxiliary_usage())
+    }
+
     fn last_cache_usage(&self) -> Option<(u64, u64)> {
         let idx = self.last_provider_idx.load(Ordering::Relaxed);
         if idx == NO_LAST_PROVIDER {
@@ -1785,7 +1807,7 @@ mod tests {
         );
         let messages = vec![make_user_msg("hi")];
         let result = router.chat_with_tools(&messages, &[]).await.unwrap();
-        assert!(matches!(result, ChatResponse::Text(t) if t == "expert answer"));
+        assert!(matches!(result, ChatResponse::Text { text: t, .. } if t == "expert answer"));
     }
 
     #[tokio::test]
@@ -1819,7 +1841,7 @@ mod tests {
         // ~100 estimated tokens (400 chars / 4): exceeds Simple's 80-token (80% of 100) threshold.
         let messages = vec![make_user_msg(&"a".repeat(400))];
         let result = router.chat_with_tools(&messages, &[]).await.unwrap();
-        assert!(matches!(result, ChatResponse::Text(t) if t == "complex answer"));
+        assert!(matches!(result, ChatResponse::Text { text: t, .. } if t == "complex answer"));
     }
 
     #[tokio::test]
@@ -1898,7 +1920,7 @@ mod tests {
         );
         let messages = vec![make_user_msg("hi")];
         let result = router.chat_with_tools(&messages, &[]).await.unwrap();
-        assert!(matches!(result, ChatResponse::Text(t) if t == "simple answer"));
+        assert!(matches!(result, ChatResponse::Text { text: t, .. } if t == "simple answer"));
     }
 
     // ── build_triage_prompt has no context size metadata (#2228) ─────────────
@@ -2023,7 +2045,7 @@ mod tests {
         );
         let messages = vec![make_user_msg("describe this screenshot"), image_msg()];
         let result = router.chat_with_tools(&messages, &[]).await.unwrap();
-        assert!(matches!(result, ChatResponse::Text(t) if t == "vision answer"));
+        assert!(matches!(result, ChatResponse::Text { text: t, .. } if t == "vision answer"));
     }
 
     #[tokio::test]
@@ -2044,7 +2066,7 @@ mod tests {
         );
         let messages = vec![make_user_msg("describe this screenshot"), image_msg()];
         let result = router.chat_with_tools(&messages, &[]).await.unwrap();
-        assert!(matches!(result, ChatResponse::Text(t) if t == "text-only answer"));
+        assert!(matches!(result, ChatResponse::Text { text: t, .. } if t == "text-only answer"));
     }
 
     #[test]
@@ -2063,5 +2085,32 @@ mod tests {
         );
         assert_eq!(router.escalate_for_vision_support(0, 0), None);
         assert_eq!(router.escalate_for_vision_support(1, 0), None);
+    }
+
+    #[test]
+    fn thinking_binding_is_prefix_bound_if_any_tier_is() {
+        use crate::mock::MockProvider;
+        use crate::provider::ThinkingBinding::{PrefixBound, Unbound};
+
+        let tier =
+            |binding| AnyProvider::Mock(MockProvider::default().with_thinking_binding(binding));
+        let mixed = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![
+                (ComplexityTier::Simple, tier(Unbound)),
+                (ComplexityTier::Expert, tier(PrefixBound)),
+            ],
+            5,
+            50,
+        );
+        assert_eq!(mixed.thinking_binding(), PrefixBound);
+
+        let none = TriageRouter::new(
+            triage_mock(r#"{"tier":"simple"}"#),
+            vec![(ComplexityTier::Simple, tier(Unbound))],
+            5,
+            50,
+        );
+        assert_eq!(none.thinking_binding(), Unbound);
     }
 }

@@ -340,6 +340,13 @@ impl GuardrailFilter {
             let call = self.provider.chat(&messages);
             let verdict = match tokio::time::timeout(self.timeout, call).await {
                 Ok(Ok(response)) => parse_response(response.trim(), self.action),
+                Ok(Err(e)) if e.is_refusal() => {
+                    tracing::warn!(error = %e, "guardrail model refused to judge the input");
+                    GuardrailVerdict::Flagged {
+                        reason: "guard model refused to evaluate the input".to_owned(),
+                        action: self.action,
+                    }
+                }
                 Ok(Err(e)) => {
                     tracing::warn!(error = %e, "guardrail LLM call failed");
                     GuardrailVerdict::Error {
@@ -551,6 +558,23 @@ mod tests {
         assert_matches!(verdict, GuardrailVerdict::Error { .. });
         // error_should_block() reflects closed strategy.
         assert!(filter.error_should_block());
+    }
+
+    #[tokio::test]
+    async fn refusal_is_flagged_even_with_fail_open_strategy() {
+        let config = GuardrailConfig {
+            fail_strategy: GuardrailFailStrategy::Open,
+            ..default_config()
+        };
+        let refusal = zeph_llm::LlmError::Refused {
+            provider: "mock".to_owned(),
+            category: None,
+            explanation: None,
+        };
+        let provider = AnyProvider::Mock(MockProvider::default().with_errors(vec![refusal]));
+        let filter = GuardrailFilter::new(provider, &config).expect("valid");
+        let verdict = filter.check("test").await;
+        assert_matches!(verdict, GuardrailVerdict::Flagged { .. });
     }
 
     #[tokio::test]

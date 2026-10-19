@@ -244,6 +244,10 @@ pub enum ClaimSource {
     /// utility-policy skip, quota stop). Never a real result: it must not satisfy a
     /// prerequisite or enter the result cache.
     Synthetic,
+    /// Result of a context-management internal tool (`start_focus`, `complete_focus`,
+    /// `compress_context`, `request_compaction`): the call did run, its text is authored by
+    /// the harness, and it is a real result.
+    ContextManagement,
 }
 
 /// Structured result from tool execution.
@@ -569,6 +573,42 @@ impl ToolError {
             Self::OutOfScope { .. }
             | Self::SafetyDenied { .. }
             | Self::TrajectoryRiskExceeded { .. } => ToolErrorCategory::PolicyBlocked,
+        }
+    }
+
+    /// Returns `true` only for denials raised by zeph's own policy layer (blocklist, sandbox,
+    /// scope, safety probe, trajectory risk), whose message is authored by the harness.
+    ///
+    /// Errors that merely classify as `PolicyBlocked` but originate outside the policy layer
+    /// — shell exit 126, HTTP 401/403, an OS `PermissionDenied` — return `false`: their message
+    /// can carry attacker-controlled text and must still be inspected by the injection
+    /// classifier. The match is exhaustive so a new variant must pick a side.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_tools::ToolError;
+    ///
+    /// assert!(ToolError::Blocked { command: "rm -rf /".into() }.is_local_policy_denial());
+    /// assert!(!ToolError::Http { status: 403, message: "forbidden".into() }.is_local_policy_denial());
+    /// ```
+    #[must_use]
+    pub fn is_local_policy_denial(&self) -> bool {
+        match self {
+            Self::Blocked { .. }
+            | Self::BlockedWithFix { .. }
+            | Self::SandboxViolation { .. }
+            | Self::OutOfScope { .. }
+            | Self::SafetyDenied { .. }
+            | Self::TrajectoryRiskExceeded { .. } => true,
+            Self::ConfirmationRequired { .. }
+            | Self::Timeout { .. }
+            | Self::Cancelled
+            | Self::InvalidParams { .. }
+            | Self::Execution(_)
+            | Self::Http { .. }
+            | Self::Shell { .. }
+            | Self::SnapshotFailed { .. } => false,
         }
     }
 
@@ -1132,6 +1172,61 @@ pub fn extract_fenced_blocks<'a>(text: &'a str, lang: &str) -> Vec<&'a str> {
 mod tests {
     use super::*;
     use std::assert_matches;
+
+    #[test]
+    fn is_local_policy_denial_covers_only_the_policy_layer() {
+        use crate::error_taxonomy::ToolErrorCategory;
+        let denials = [
+            ToolError::Blocked {
+                command: "x".into(),
+            },
+            ToolError::BlockedWithFix {
+                command: "x".into(),
+                suggestion: None,
+            },
+            ToolError::SandboxViolation {
+                path: "/etc".into(),
+            },
+            ToolError::OutOfScope {
+                tool_id: "t".into(),
+                task_type: None,
+            },
+            ToolError::SafetyDenied { reason: "r".into() },
+            ToolError::TrajectoryRiskExceeded {
+                score: 0.9,
+                top_signals: vec![],
+            },
+        ];
+        for e in &denials {
+            assert!(e.is_local_policy_denial(), "{e:?}");
+        }
+        let external = [
+            ToolError::Shell {
+                exit_code: 126,
+                category: ToolErrorCategory::PolicyBlocked,
+                message: "m".into(),
+            },
+            ToolError::Http {
+                status: 401,
+                message: "m".into(),
+            },
+            ToolError::Http {
+                status: 403,
+                message: "m".into(),
+            },
+            ToolError::Execution(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            ToolError::ConfirmationRequired {
+                command: "x".into(),
+            },
+            ToolError::Timeout { timeout_secs: 1 },
+            ToolError::InvalidParams {
+                message: "m".into(),
+            },
+        ];
+        for e in &external {
+            assert!(!e.is_local_policy_denial(), "{e:?}");
+        }
+    }
 
     #[test]
     fn tool_output_display() {

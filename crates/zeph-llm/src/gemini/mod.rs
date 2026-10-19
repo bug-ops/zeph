@@ -369,7 +369,7 @@ impl GeminiProvider {
     ) -> Result<ChatResponse, LlmError> {
         // If tools are empty or all filtered, fall back to plain chat.
         if tools.is_empty() {
-            return Ok(ChatResponse::Text(self.send_request(messages).await?));
+            return Ok(ChatResponse::text(self.send_request(messages).await?));
         }
 
         let request = self.build_tool_request(messages, tools);
@@ -380,7 +380,7 @@ impl GeminiProvider {
             .as_ref()
             .is_some_and(|t| !t.is_empty() && !t[0].function_declarations.is_empty());
         if !has_tools {
-            return Ok(ChatResponse::Text(self.send_request(messages).await?));
+            return Ok(ChatResponse::text(self.send_request(messages).await?));
         }
 
         let body_bytes = serde_json::to_vec(&request)?;
@@ -604,7 +604,7 @@ fn parse_tool_response(resp: GenerateContentResponse) -> Result<ChatResponse, Ll
                 provider: "gemini".into(),
             });
         }
-        return Ok(ChatResponse::Text(text));
+        return Ok(ChatResponse::text(text));
     }
 
     let text = if text_parts.is_empty() {

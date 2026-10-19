@@ -2011,7 +2011,7 @@ mod tests {
         // Exercise the sink through the trait, same as `zeph-subagent`'s agent loop would —
         // proves the wiring produces a working `Arc<dyn DebugDumpSink>`, not just `Some(_)`.
         let id = sink.dump_request("mock", &[], &[], serde_json::Value::Null);
-        sink.dump_response(id, &zeph_llm::provider::ChatResponse::Text("ok".into()));
+        sink.dump_response(id, &zeph_llm::provider::ChatResponse::text("ok"));
     }
 
     // ── build_spawn_context: inherited_tool_allowlist wiring (#6527) ────────
@@ -2365,7 +2365,7 @@ mod tests {
                     input: serde_json::json!({"command": "echo hi"}),
                 }],
             ),
-            ChatResponse::Text("final answer".into()),
+            ChatResponse::text("final answer"),
         ]);
 
         let channel = MockChannel::new(vec![]);

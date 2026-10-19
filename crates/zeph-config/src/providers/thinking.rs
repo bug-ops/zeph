@@ -56,22 +56,11 @@ pub enum CacheTtl {
     /// Default ephemeral TTL (~5 minutes). No beta header required.
     #[default]
     Ephemeral,
-    /// Extended 1-hour TTL. Requires the `extended-cache-ttl-2025-04-25` beta header.
+    /// Extended 1-hour TTL. The `extended-cache-ttl-2025-04-25` beta header is sent only to
+    /// models that still require it (legacy models and Haiku 4.5).
     /// Cache writes cost approximately 2× more than `Ephemeral`.
     #[serde(rename = "1h")]
     OneHour,
-}
-
-impl CacheTtl {
-    /// Returns `true` when this TTL variant requires the `extended-cache-ttl-2025-04-25` beta
-    /// header to be sent with each request.
-    #[must_use]
-    pub fn requires_beta(self) -> bool {
-        match self {
-            Self::OneHour => true,
-            Self::Ephemeral => false,
-        }
-    }
 }
 
 /// Thinking level for Gemini models that support extended reasoning.
@@ -90,4 +79,35 @@ pub enum GeminiThinkingLevel {
     Medium,
     /// Full reasoning depth.
     High,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Deserialize)]
+    struct ThinkingExample {
+        thinking: ThinkingConfig,
+    }
+
+    #[test]
+    fn default_toml_thinking_example_deserializes() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/default.toml");
+        let text = std::fs::read_to_string(path).expect("config/default.toml readable");
+        let line = text
+            .lines()
+            .find_map(|l| l.strip_prefix("# thinking = "))
+            .expect("default.toml carries a commented `thinking` example");
+        let example: ThinkingExample = toml::from_str(&format!(
+            "thinking = {}",
+            line.split('#').next().unwrap_or(line)
+        ))
+        .expect("example parses");
+        assert_eq!(
+            example.thinking,
+            ThinkingConfig::Adaptive {
+                effort: Some(ThinkingEffort::Medium)
+            }
+        );
+    }
 }

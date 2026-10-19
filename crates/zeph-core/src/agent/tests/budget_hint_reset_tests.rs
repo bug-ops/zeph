@@ -75,8 +75,8 @@ fn remaining_tool_calls_in_system_prompt(agent: &Agent<MockChannel>) -> usize {
 async fn budget_hint_shows_full_budget_after_prior_turn_consumed_iterations() {
     let (mock, _counter) = MockProvider::default().with_tool_use(vec![
         tool_use_batch(1),
-        ChatResponse::Text("first turn done".into()),
-        ChatResponse::Text("second turn done".into()),
+        ChatResponse::text("first turn done"),
+        ChatResponse::text("second turn done"),
     ]);
     let provider = AnyProvider::Mock(mock);
     let channel = MockChannel::new(vec![]);

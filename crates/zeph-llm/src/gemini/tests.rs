@@ -1023,7 +1023,7 @@ fn test_parse_text_only_response() {
         usage_metadata: None,
     };
     let result = parse_tool_response(resp).unwrap();
-    assert_matches!(result, ChatResponse::Text(s) if s == "Hello, world!");
+    assert_matches!(result, ChatResponse::Text { text: s, .. } if s == "Hello, world!");
 }
 
 #[test]
@@ -1379,7 +1379,7 @@ async fn test_chat_with_tools_empty_tools_falls_back_to_chat() {
 
     // Empty tools — should fall back to chat()
     let result = p.chat_with_tools(&messages, &[]).await.unwrap();
-    assert_matches!(result, ChatResponse::Text(s) if s == "Hello!");
+    assert_matches!(result, ChatResponse::Text { text: s, .. } if s == "Hello!");
 }
 
 // ---------------------------------------------------------------------------

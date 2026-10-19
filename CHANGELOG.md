@@ -8,6 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-core`: speculative tool results commit only after pre-hooks, gates, cache, rate limiter and `before_tool` layers, with a bounded commit that cancels the speculative task on timeout (breaking: `SpeculativeStreamDrainer::new` takes the dispatch gate, `with_gate` removed) (#6827) (#TBD)
+- `zeph-llm`, `zeph-core`: Claude server-compaction usage iterations are billed as auxiliary usage and never counted as context size (breaking: new `LlmProvider::last_auxiliary_usage`) (#6828) (#TBD)
+- `zeph-subagent`: sub-agent tool loop replays thinking blocks in response order and strips them on history trim and binding mismatch (#6829) (#TBD)
+- `zeph-core`: system prompt blocks 1-2 no longer change with the per-turn skill and MCP match; the full skills catalog lives in block 2 (#6830) (#TBD)
+- `zeph-llm`: Claude `chat_typed` uses structured outputs on capable models (breaking: `ModelCapabilities.structured_outputs`) (#6832) (#TBD)
+- `zeph-llm`, `zeph-core`, `zeph-agent-context`: thinking is stripped after history edits only for prefix-bound providers (breaking: new `LlmProvider::thinking_binding`, `ThinkingBinding`, `strip_thinking_after_edit`) (#6833) (#TBD)
+- `zeph-llm`, `zeph-core`: server compaction summaries on text-only replies are no longer lost (breaking: `ChatResponse::Text` is now `Text { text, compaction }`, use `ChatResponse::text(..)`) (#6834) (#TBD)
+- `zeph-core`: the turn tool set is restored when a tool-loop future is dropped mid-call (#6835) (#TBD)
+- `zeph-llm`, `zeph-core`: thinking payloads count against `max_thinking_bytes`, logs no longer print response content, blank focus summaries are rejected (#6836) (#TBD)
+- `zeph-llm`, `zeph-core`: tool stream and non-stream paths produce identical text blocks; extended cache TTL beta is a per-model capability (breaking: `CacheTtl::requires_beta` and `MODELS_WITH_EXTENDED_CACHE_TTL` removed) (#6837) (#TBD)
+- `zeph-memory`: visibility SQL filters are derived from `MessageVisibility`, so `Marker` rows are hidden from agent and user queries (#6838) (#TBD)
+- `zeph-core`, `zeph-sanitizer`, `zeph-tools`: ML injection classification is skipped by output origin instead of body text (#6839) (#TBD)
+- `zeph-core`, `zeph-llm`: the tool array is a per-conversation union that only grows, keeping the prompt cache valid; embedding failures reuse the previous offer (#6840) (#TBD)
+- `zeph-sanitizer`, `zeph-core`: server compaction and focus summaries are tagged `llm_summary` (`ContentSourceKind::LlmSummary`) (#6841) (#TBD)
+- `zeph-core`: LSP diagnostics show the mcpls 1-based line instead of line + 1 (#6842) (#TBD)
+- `zeph-config`: the `thinking` example in `default.toml` parses (#6843) (#TBD)
+- `zeph-llm`, `zeph-core`: model refusals surface as `LlmError::Refused` and are never retried or sent to a fallback provider; pricing covers Claude 5 models (breaking: new `LlmError` variant, new `LlmProviderDyn` methods) (#6844) (#TBD)
 - `zeph-llm`, `zeph-core`: tool-use responses keep thinking in response order; it is stripped once on mid-turn history rewrites and never persisted (breaking: `ChatResponse::ToolUse` shape) (#6845)
 - `zeph-core`: the tool array is frozen per turn and `requires`/turn-set rules are enforced at dispatch; mid-turn history edits need token pressure (#6845)
 - `zeph-llm`: Claude cache breakpoint moves to the conversation tail; server compaction summaries travel on the response (breaking: `take_compaction_summary` removed) (#6845)

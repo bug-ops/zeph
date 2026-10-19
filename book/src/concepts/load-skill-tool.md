@@ -4,7 +4,7 @@ The `load_skill` tool lets the LLM fetch the full body of any registered skill o
 
 ## Problem it solves
 
-Zeph selects the top-K most relevant skills for each message (default: 5) and injects their full bodies into the system prompt. All other registered skills appear in the prompt only as compact metadata — name and description — inside an `<other_skills>` catalog. This keeps the prompt lean regardless of how many skills are installed.
+Zeph selects the top-K most relevant skills for each message (default: 5) and injects their full bodies into the system prompt. All registered skills also appear in the prompt as compact metadata — name and description — inside an `<other_skills>` catalog. This keeps the prompt lean regardless of how many skills are installed.
 
 The drawback is that the LLM sees a skill is available but cannot read its instructions. When the agent determines a non-TOP skill is actually relevant, it had no way to retrieve its content. `load_skill` closes that gap.
 

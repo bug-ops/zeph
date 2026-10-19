@@ -389,7 +389,8 @@ always_on = ["memory_search", "memory_save", "load_skill", "scheduler"]
 - Always-on tools bypass hard dependency gates; a tool name mentioned in the query does NOT (`apply()` only skips `AlwaysOn`)
 - The tool array of one tool loop is frozen at iteration 0 (`TurnToolSet`, `agent/turn_gate.rs`): schema-filter `included` ∪ tools held back only by unmet `requires` ∪ the built-in focus/`compress_context`/`request_compaction` tools ∪ `memory_search` while the utility gate is enabled. It never changes between iterations, so the provider's cached request prefix stays valid. A tool dropped by the filter is unreachable for the whole turn
 - Filtering must not remove tools that the LLM already referenced in the current turn
-- NEVER filter when no query embedding is available — return full tool set
+- NEVER filter when no query embedding is available — return full tool set, except that a conversation which already has a sticky offer reuses it (below)
+- Sticky offer (#6840): the schema-filter result is merged into a per-conversation union that only grows (`agent/tool_offer.rs`), so the tools array precedes a stable prompt-cache prefix. On embedding failure the previous union is reused unchanged; with no union yet, all tools are offered and nothing is recorded. The same rule applies to MCP embedding discovery, whose executor set is published in registration order. The union is reset when the conversation is cleared
 
 ---
 

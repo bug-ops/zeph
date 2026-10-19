@@ -354,6 +354,26 @@ fn server_compaction_keeps_the_untrusted_context_gate_closed() {
 }
 
 #[test]
+fn mirrored_compaction_block_is_labelled_llm_summary() {
+    let mut agent = mid_loop_agent();
+
+    assert!(agent.apply_raw_server_compaction("summary distilled from a fetched page"));
+
+    let block = agent
+        .msg
+        .messages
+        .iter()
+        .find(|m| is_compaction(m))
+        .expect("compaction message");
+    assert!(
+        block.content.contains("source=\"llm_summary\""),
+        "{}",
+        block.content
+    );
+    assert!(!block.content.contains("mcp_response"));
+}
+
+#[test]
 fn head_injected_user_messages_are_never_subgoal_tagged() {
     use zeph_agent_context::SubgoalRegistry;
 

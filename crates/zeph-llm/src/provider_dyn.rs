@@ -149,6 +149,12 @@ pub trait LlmProviderDyn: private::Sealed + std::fmt::Debug + Send + Sync {
     /// Returns `(input_tokens, output_tokens)`.
     fn last_usage(&self) -> Option<(u64, u64)>;
 
+    /// See [`LlmProvider::thinking_binding`].
+    fn thinking_binding(&self) -> crate::provider::ThinkingBinding;
+
+    /// See [`LlmProvider::last_auxiliary_usage`].
+    fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage>;
+
     /// Return reasoning tokens from the last API call, if the provider reports them.
     ///
     /// Reasoning tokens are a **subset** of completion tokens (`OpenAI` o-series only).
@@ -252,6 +258,14 @@ impl<T: LlmProvider + std::fmt::Debug + Send + Sync + 'static> LlmProviderDyn fo
 
     fn last_usage(&self) -> Option<(u64, u64)> {
         LlmProvider::last_usage(self)
+    }
+
+    fn thinking_binding(&self) -> crate::provider::ThinkingBinding {
+        LlmProvider::thinking_binding(self)
+    }
+
+    fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {
+        LlmProvider::last_auxiliary_usage(self)
     }
 
     fn chat_with_extras<'a>(

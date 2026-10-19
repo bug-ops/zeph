@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::StopDetails;
 use crate::thinking_replay::{InputTransformation, ThinkingReplay};
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -407,10 +408,31 @@ pub(super) enum PrefixMismatchBehavior {
 }
 
 /// Serialization-only parameter for Claude's `output_config` request field.
-/// Used to convey the effort level for adaptive thinking.
+///
+/// Carries the effort level for adaptive thinking and, for structured outputs, the response
+/// format. Either may be absent.
 #[derive(Serialize)]
 pub(super) struct OutputConfig {
-    pub effort: ThinkingEffort,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<ThinkingEffort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<OutputFormat>,
+}
+
+impl OutputConfig {
+    pub(super) fn effort(effort: ThinkingEffort) -> Self {
+        Self {
+            effort: Some(effort),
+            format: None,
+        }
+    }
+}
+
+/// `output_config.format`: constrain the text response to a JSON schema.
+#[derive(Serialize, Debug)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(super) enum OutputFormat {
+    JsonSchema { schema: serde_json::Value },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -486,6 +508,10 @@ pub(super) struct ApiMessage<'a> {
 pub(super) struct ApiResponse {
     pub content: Vec<ContentBlock>,
     #[serde(default)]
+    pub stop_reason: Option<String>,
+    #[serde(default)]
+    pub stop_details: Option<StopDetails>,
+    #[serde(default)]
     pub usage: Option<ApiUsage>,
 }
 
@@ -499,6 +525,8 @@ pub(super) struct ToolApiResponse {
     pub content: Vec<AnthropicContentBlock>,
     #[serde(default)]
     pub stop_reason: Option<String>,
+    #[serde(default)]
+    pub stop_details: Option<StopDetails>,
     #[serde(default)]
     pub usage: Option<ApiUsage>,
     /// Present under the `thinking-binding-controls-2026-08-01` beta: what the API changed in
@@ -525,6 +553,64 @@ pub(super) struct ApiUsage {
     pub cache_creation_input_tokens: u64,
     #[serde(default)]
     pub cache_read_input_tokens: u64,
+    /// Per-iteration usage; with server-side compaction the top-level counters cover only the
+    /// final message iteration.
+    #[serde(default)]
+    pub iterations: Vec<UsageIteration>,
+}
+
+/// One entry of `usage.iterations`.
+#[derive(Deserialize, Debug, Clone)]
+pub(super) struct UsageIteration {
+    #[serde(rename = "type", default)]
+    pub kind: IterationKind,
+    #[serde(default, rename = "input_tokens")]
+    pub input: u64,
+    #[serde(default, rename = "output_tokens")]
+    pub output: u64,
+    #[serde(default, rename = "cache_creation_input_tokens")]
+    pub cache_creation: u64,
+    #[serde(default, rename = "cache_read_input_tokens")]
+    pub cache_read: u64,
+}
+
+/// Kind of a usage iteration. Only compaction iterations bill outside the top-level counters.
+#[derive(Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum IterationKind {
+    #[default]
+    Message,
+    Compaction,
+    #[serde(other)]
+    Other,
+}
+
+impl ApiUsage {
+    /// Sum of the compaction iterations, billed in addition to the top-level counters.
+    ///
+    /// Returns `None` when there are none. Unknown iteration kinds are not billed.
+    pub(super) fn auxiliary(&self) -> Option<crate::provider::AuxiliaryUsage> {
+        let mut total: Option<crate::provider::AuxiliaryUsage> = None;
+        for it in &self.iterations {
+            match it.kind {
+                IterationKind::Compaction => {
+                    total.get_or_insert_with(Default::default).add(
+                        crate::provider::AuxiliaryUsage {
+                            input: it.input,
+                            output: it.output,
+                            cache_creation: it.cache_creation,
+                            cache_read: it.cache_read,
+                        },
+                    );
+                }
+                IterationKind::Message => {}
+                IterationKind::Other => {
+                    tracing::warn!("unknown usage iteration kind; not billed");
+                }
+            }
+        }
+        total
+    }
 }
 
 // ── Request body types ────────────────────────────────────────────────────────
@@ -611,6 +697,21 @@ pub(super) struct TypedToolRequestBody<'a> {
     pub temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_management: Option<ContextManagement>,
+}
+
+/// Structured-output request: the response text is constrained by `output_config.format`.
+#[derive(Serialize)]
+pub(super) struct StructuredTextRequestBody<'a> {
+    pub model: &'a str,
+    pub max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system: Option<Vec<SystemContentBlock>>,
+    pub messages: &'a super::GatedStructuredHistory,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingParam>,
+    pub output_config: OutputConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
 }
 
 /// Wire `tool_choice`: force one named tool, or let the model decide.

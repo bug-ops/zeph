@@ -676,6 +676,34 @@ async fn load_history_filtered_by_user_visible() {
 }
 
 #[tokio::test]
+async fn load_history_filtered_excludes_marker_rows_from_both_views() {
+    let store = test_store().await;
+    let cid = store.create_conversation().await.unwrap();
+
+    store
+        .save_message_with_metadata(cid, "user", "real", "[]", MessageVisibility::Both)
+        .await
+        .unwrap();
+    store
+        .save_message_with_metadata(cid, "system", "marker", "[]", MessageVisibility::Marker)
+        .await
+        .unwrap();
+
+    for (agent, user) in [(Some(true), None), (None, Some(true))] {
+        let msgs = store
+            .load_history_filtered(cid, 50, agent, user)
+            .await
+            .unwrap();
+        assert_eq!(
+            msgs.len(),
+            1,
+            "marker leaked for agent={agent:?} user={user:?}"
+        );
+        assert_eq!(msgs[0].content, "real");
+    }
+}
+
+#[tokio::test]
 async fn load_history_filtered_no_filter_returns_all() {
     let store = test_store().await;
     let cid = store.create_conversation().await.unwrap();

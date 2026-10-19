@@ -327,6 +327,14 @@ impl LlmProvider for MaskedProvider {
         LlmProvider::last_usage(self.inner.as_ref())
     }
 
+    fn thinking_binding(&self) -> crate::provider::ThinkingBinding {
+        LlmProvider::thinking_binding(self.inner.as_ref())
+    }
+
+    fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {
+        LlmProvider::last_auxiliary_usage(self.inner.as_ref())
+    }
+
     fn last_reasoning_tokens(&self) -> Option<u64> {
         LlmProvider::last_reasoning_tokens(self.inner.as_ref())
     }

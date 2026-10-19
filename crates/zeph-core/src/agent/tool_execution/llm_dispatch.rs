@@ -67,6 +67,9 @@ impl<C: Channel> Agent<C> {
                         .await;
                     self.channel.send_status_best_effort("").await;
                 }
+                Err(crate::agent::error::AgentError::Llm(e)) if e.is_refusal() => {
+                    return self.surface_refusal(&e).await;
+                }
                 Err(e) => return Err(e),
             }
         }
@@ -169,65 +172,111 @@ impl<C: Channel> Agent<C> {
         llm_timeout: std::time::Duration,
         llm_span: tracing::Span,
     ) -> Result<Option<ChatResponse>, crate::agent::error::AgentError> {
-        let use_speculative_stream = self.services.speculation_engine.as_ref().is_some_and(|e| {
-            matches!(
-                e.mode(),
-                zeph_config::tools::SpeculationMode::Decoding
-                    | zeph_config::tools::SpeculationMode::Both
-            )
-        });
+        let streaming_engine = self
+            .services
+            .speculation_engine
+            .as_ref()
+            .filter(|e| {
+                matches!(
+                    e.mode(),
+                    zeph_config::tools::SpeculationMode::Decoding
+                        | zeph_config::tools::SpeculationMode::Both
+                )
+            })
+            .map(std::sync::Arc::clone);
 
-        if use_speculative_stream
-            && let Ok(stream) = self
+        let opened_stream = if streaming_engine.is_some() {
+            match self
                 .provider
                 .chat_with_tools_stream(&self.msg.messages, tool_defs)
                 .await
-        {
-            let engine =
-                std::sync::Arc::clone(self.services.speculation_engine.as_ref().expect(
-                    "invariant: speculation_engine is Some (checked via is_some_and on L961)",
-                ));
+            {
+                Ok(stream) => Some(stream),
+                Err(e) => {
+                    tracing::warn!(error = %e, "speculative SSE stream failed to open, falling back");
+                    self.channel
+                        .send_status_best_effort(
+                            "stream failed, retrying without streaming\u{2026}",
+                        )
+                        .await;
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        if let (Some(stream), Some(engine)) = (opened_stream, streaming_engine) {
             let threshold = engine.confidence_threshold();
             let drainer = crate::agent::speculative::stream_drainer::SpeculativeStreamDrainer::new(
-                stream, engine, threshold,
-            )
-            .with_gate(self.dispatch_gate());
+                stream,
+                std::sync::Arc::clone(&engine),
+                threshold,
+                self.speculative_dispatch_gate(),
+            );
             let drain_fut = tokio::time::timeout(llm_timeout, drainer.drive().instrument(llm_span));
             let timeout_result = tokio::select! {
                 r = drain_fut => r,
                 () = self.runtime.lifecycle.cancel_token.cancelled() => {
                     tracing::info!("chat_with_tools (streaming) cancelled by user");
+                    engine.cancel_pending();
                     self.update_metrics(|m| m.cancellations += 1);
                     self.channel.send("[Cancelled]").await?;
                     return Ok(None);
                 }
             };
-            return match timeout_result {
-                Ok(Ok(DrainedTurn {
-                    response: resp,
-                    ttft_ms,
-                })) => {
-                    // Issue #6549: true TTFT from the speculative stream, consumed by the
-                    // next build_usage_record call in record_chat_metrics_and_compact.
-                    self.runtime.metrics.stream_ttft_ms = ttft_ms;
-                    Ok(Some(resp))
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!(error = %e, "speculative SSE stream failed, falling back");
-                    self.call_non_streaming(tool_defs, llm_timeout, tracing::Span::none())
-                        .await
-                }
-                Err(_) => {
-                    self.channel
-                        .send("LLM request timed out. Please try again.")
-                        .await?;
-                    Ok(None)
-                }
-            };
+            return self
+                .finish_stream_drain(timeout_result, &engine, tool_defs, llm_timeout)
+                .await;
         }
         // Provider does not support tool streaming or speculative mode is off — normal path.
         self.call_non_streaming(tool_defs, llm_timeout, llm_span)
             .await
+    }
+
+    /// Turn the outcome of a speculative stream drain into the chat result, cancelling in-flight
+    /// speculation and falling back to exactly one non-streaming call when the stream failed.
+    pub(super) async fn finish_stream_drain(
+        &mut self,
+        timeout_result: Result<
+            Result<DrainedTurn, zeph_llm::LlmError>,
+            tokio::time::error::Elapsed,
+        >,
+        engine: &crate::agent::speculative::SpeculationEngine,
+        tool_defs: &[ToolDefinition],
+        llm_timeout: std::time::Duration,
+    ) -> Result<Option<ChatResponse>, crate::agent::error::AgentError> {
+        match timeout_result {
+            Ok(Ok(DrainedTurn {
+                response: resp,
+                ttft_ms,
+            })) => {
+                // Issue #6549: true TTFT from the speculative stream, consumed by the
+                // next build_usage_record call in record_chat_metrics_and_compact.
+                self.runtime.metrics.stream_ttft_ms = ttft_ms;
+                Ok(Some(resp))
+            }
+            Ok(Err(e)) if e.is_refusal() => {
+                engine.cancel_pending();
+                self.surface_refusal(&e).await
+            }
+            Ok(Err(e)) => {
+                engine.cancel_pending();
+                tracing::warn!(error = %e, "speculative SSE stream failed, falling back");
+                self.channel
+                    .send_status_best_effort("stream failed, retrying without streaming\u{2026}")
+                    .await;
+                self.call_non_streaming(tool_defs, llm_timeout, tracing::Span::none())
+                    .await
+            }
+            Err(_) => {
+                engine.cancel_pending();
+                self.channel
+                    .send("LLM request timed out. Please try again.")
+                    .await?;
+                Ok(None)
+            }
+        }
     }
 
     /// Dispatch a single non-streaming `chat_with_tools` call under a timeout, racing
@@ -257,6 +306,7 @@ impl<C: Channel> Agent<C> {
         };
         match timeout_result {
             Ok(Ok(r)) => Ok(Some(r)),
+            Ok(Err(e)) if e.is_refusal() => self.surface_refusal(&e).await,
             Ok(Err(e)) => Err(e.into()),
             Err(_) => {
                 self.channel
@@ -264,6 +314,60 @@ impl<C: Channel> Agent<C> {
                     .await?;
                 Ok(None)
             }
+        }
+    }
+
+    /// Tell the user the model declined and end the turn without persisting anything.
+    ///
+    /// A refusal is a policy decision of the provider: it is never retried and never reaches
+    /// history.
+    async fn surface_refusal(
+        &mut self,
+        error: &zeph_llm::LlmError,
+    ) -> Result<Option<ChatResponse>, crate::agent::error::AgentError> {
+        tracing::warn!(error = %error, "model refused the request");
+        let message = match error {
+            zeph_llm::LlmError::Refused {
+                category: Some(category),
+                ..
+            } => format!("The model declined this request (category: {category})."),
+            _ => "The model declined this request.".to_owned(),
+        };
+        self.discard_refused_turn().await;
+        self.channel.send(&message).await?;
+        Ok(None)
+    }
+
+    /// Drop the current user turn (its input and everything after) from memory and soft-delete the
+    /// persisted rows, so the refused prompt is not re-sent on every later request or after a
+    /// restart. Skipped outside a user turn and in nested calls (self-reflection) so older turns stay intact.
+    async fn discard_refused_turn(&mut self) {
+        let lifecycle = &self.runtime.lifecycle;
+        if lifecycle.user_turn_scope.depth() == 0 || lifecycle.response_depth.depth() != 1 {
+            return;
+        }
+        let Some(start) =
+            self.msg.messages.iter().rposition(|m| {
+                m.metadata.origin == Some(zeph_llm::provider::MessageOrigin::TurnInput)
+            })
+        else {
+            return;
+        };
+        let ids: Vec<zeph_memory::types::MessageId> = self
+            .msg
+            .messages
+            .split_off(start)
+            .iter()
+            .filter_map(|m| m.metadata.db_id)
+            .map(zeph_memory::types::MessageId)
+            .collect();
+        self.msg.recompute_non_system_count();
+        self.recompute_prompt_tokens();
+        let Some(memory) = self.services.memory.persistence.memory.clone() else {
+            return;
+        };
+        if let Err(e) = memory.sqlite().soft_delete_messages(&ids).await {
+            tracing::warn!(error = %e, "failed to soft-delete refused turn from the database");
         }
     }
 

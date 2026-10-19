@@ -1010,7 +1010,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     m.completion_tokens += aggr_completion;
                     m.total_tokens = m.prompt_tokens + m.completion_tokens;
                 });
-                self.record_cost_and_cache(aggr_prompt, aggr_completion);
+                self.record_background_cost(aggr_prompt, aggr_completion);
                 self.record_successful_task();
                 // Issue #6549: background call, no persisted conversational message —
                 // message_id stays None. Written immediately (no pending-snapshot roundtrip
@@ -1184,7 +1184,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             m.orchestration.tasks_total += task_count;
             m.orchestration_graph = Some(snapshot);
         });
-        self.record_cost_and_cache(planner_prompt, planner_completion);
+        self.record_background_cost(planner_prompt, planner_completion);
         self.record_successful_task();
 
         // Issue #6549: `usage` is `None` on a plan-cache hit — no LLM call was made, so no

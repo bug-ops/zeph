@@ -20,7 +20,7 @@ use crate::channel::Channel;
 /// cutting at it (the old behavior) orphaned or duplicated tool pairs.
 ///
 /// The compaction message is tagged `ExternalUntrusted`: the summary is a sanitized
-/// `McpResponse` and distils content of every dropped message, including tagged tool results,
+/// `LlmSummary` and distils content of every dropped message, including tagged tool results,
 /// so `context_max_trust_level` must not fall back to `Trusted` (#6558).
 fn mirror_server_compaction(history: Vec<Message>, summary: String) -> Vec<Message> {
     let turn_input = history
@@ -84,7 +84,7 @@ impl<C: Channel> Agent<C> {
         let latency = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
         let prompt_estimate = self.runtime.providers.cached_prompt_tokens;
         let completion_heuristic = match result {
-            ChatResponse::Text(t) => estimate_tokens(t) as u64,
+            ChatResponse::Text { text: t, .. } => estimate_tokens(t) as u64,
             ChatResponse::ToolUse { content, .. } => {
                 let text_tokens: usize = content
                     .blocks()
@@ -176,7 +176,7 @@ impl<C: Channel> Agent<C> {
 
     /// Sanitize a raw server-compaction summary and mirror it into history.
     ///
-    /// SEC-COMPACT-01: the summary is sanitized as `McpResponse` (`ExternalUntrusted`).
+    /// SEC-COMPACT-01: the summary is sanitized as `LlmSummary` (`ExternalUntrusted`).
     ///
     /// Returns `false` and leaves history untouched when the summary is blank:
     /// mirroring it would replace the whole conversation with nothing.
@@ -185,7 +185,8 @@ impl<C: Channel> Agent<C> {
             tracing::warn!("server compaction summary is empty; keeping history");
             return false;
         }
-        let source = ContentSource::new(ContentSourceKind::McpResponse);
+        let source =
+            ContentSource::new(ContentSourceKind::LlmSummary).with_identifier("server_compaction");
         let sanitized = self
             .services
             .security

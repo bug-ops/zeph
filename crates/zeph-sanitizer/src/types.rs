@@ -173,6 +173,13 @@ pub enum ContentSourceKind {
     /// message body, so it is classified the same as [`A2aMessage`](Self::A2aMessage) —
     /// `ExternalUntrusted` — even though the sender runs in the same process.
     SubagentPeerMessage,
+    /// Text the model itself wrote while condensing earlier context: a server-side compaction
+    /// block, a focus Knowledge block or a `compress_context` summary.
+    ///
+    /// The summary distils tool results and fetched pages, so it stays `ExternalUntrusted` and,
+    /// unlike [`MemorySourceHint::LlmSummary`], is never given a hint that skips injection
+    /// detection.
+    LlmSummary,
 }
 
 impl ContentSourceKind {
@@ -198,7 +205,8 @@ impl ContentSourceKind {
             | Self::A2aMessage
             | Self::MemoryRetrieval
             | Self::ChannelMessage
-            | Self::SubagentPeerMessage => ContentTrustLevel::ExternalUntrusted,
+            | Self::SubagentPeerMessage
+            | Self::LlmSummary => ContentTrustLevel::ExternalUntrusted,
         }
     }
 
@@ -224,6 +232,7 @@ impl ContentSourceKind {
             Self::InstructionFile => "instruction_file",
             Self::ChannelMessage => "channel_message",
             Self::SubagentPeerMessage => "subagent_peer_message",
+            Self::LlmSummary => "llm_summary",
         }
     }
 
@@ -255,6 +264,7 @@ impl ContentSourceKind {
             "instruction_file" => Some(Self::InstructionFile),
             "channel_message" => Some(Self::ChannelMessage),
             "subagent_peer_message" => Some(Self::SubagentPeerMessage),
+            "llm_summary" => Some(Self::LlmSummary),
             _ => None,
         }
     }
@@ -554,6 +564,7 @@ mod tests {
                 ContentSourceKind::SubagentPeerMessage,
                 "subagent_peer_message",
             ),
+            (ContentSourceKind::LlmSummary, "llm_summary"),
         ];
         for (kind, s) in &variants {
             assert_eq!(ContentSourceKind::from_str_opt(s), Some(*kind));

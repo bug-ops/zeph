@@ -102,8 +102,8 @@ embedding_model = "qwen3-embedding"
 # server_compaction = false             # Claude compact-2026-01-12 beta
 # server_compaction_trigger_tokens = 140000  # input tokens that trigger it (min 50000); default 70% of the context window
 # enable_extended_context = false       # lift the 200k window ceiling to the model's native 1M window
-# prompt_cache_ttl = "1h"              # "1h" = extended TTL beta (writes ~2× cost); omit for default ~5 min
-# thinking = { type = "enabled", budget_tokens = 10000 }
+# prompt_cache_ttl = "1h"              # "1h" = extended TTL (writes ~2× cost; beta header only on legacy models and Haiku 4.5); omit for default ~5 min
+# thinking = { mode = "adaptive", effort = "medium" }
 
 # OpenAI / Azure
 # [[llm.providers]]

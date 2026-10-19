@@ -11,9 +11,21 @@
 
 use zeph_llm::provider::MessagePart;
 
-use super::tier_loop::skipped_output;
 use crate::agent::Agent;
 use crate::channel::Channel;
+
+pub(super) fn context_management_output(
+    tool_name: zeph_common::ToolName,
+    summary: String,
+) -> zeph_tools::ToolOutput {
+    zeph_tools::ToolOutput {
+        tool_name,
+        summary,
+        blocks_executed: 1,
+        claim_source: Some(zeph_tools::ClaimSource::ContextManagement),
+        ..Default::default()
+    }
+}
 
 impl<C: Channel> Agent<C> {
     #[tracing::instrument(
@@ -51,7 +63,7 @@ impl<C: Channel> Agent<C> {
                     }
                     text
                 };
-                tool_results[idx] = Ok(Some(skipped_output(tc.name.clone(), result)));
+                tool_results[idx] = Ok(Some(context_management_output(tc.name.clone(), result)));
             }
         }
         pending_focus_checkpoint

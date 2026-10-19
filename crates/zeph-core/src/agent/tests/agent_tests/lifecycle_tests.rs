@@ -400,7 +400,7 @@ async fn agent_handles_tool_execution_success() {
     };
     let (mock, _) = MockProvider::default().with_tool_use(vec![
         ChatResponse::tool_use(None, vec![tool_call]),
-        ChatResponse::Text("done".into()),
+        ChatResponse::text("done"),
     ]);
     let registry = create_test_registry();
     let executor = MockToolExecutor::new(vec![Ok(Some(ToolOutput {
@@ -452,7 +452,7 @@ async fn agent_handles_tool_blocked_error() {
     };
     let (mock, _) = MockProvider::default().with_tool_use(vec![
         ChatResponse::tool_use(None, vec![tool_call]),
-        ChatResponse::Text("done".into()),
+        ChatResponse::text("done"),
     ]);
     let registry = create_test_registry();
     let executor = MockToolExecutor::new(vec![Err(ToolError::Blocked {
@@ -494,7 +494,7 @@ async fn agent_handles_tool_sandbox_violation() {
     };
     let (mock, _) = MockProvider::default().with_tool_use(vec![
         ChatResponse::tool_use(None, vec![tool_call]),
-        ChatResponse::Text("done".into()),
+        ChatResponse::text("done"),
     ]);
     let registry = create_test_registry();
     let executor = MockToolExecutor::new(vec![Err(ToolError::SandboxViolation {
@@ -539,7 +539,7 @@ async fn agent_handles_tool_confirmation_approved() {
     };
     let (mock, _) = MockProvider::default().with_tool_use(vec![
         ChatResponse::tool_use(None, vec![tool_call]),
-        ChatResponse::Text("done".into()),
+        ChatResponse::text("done"),
     ]);
     let registry = create_test_registry();
     let executor = MockToolExecutor::new(vec![Err(ToolError::ConfirmationRequired {
@@ -575,7 +575,7 @@ async fn agent_handles_tool_confirmation_denied() {
     };
     let (mock, _) = MockProvider::default().with_tool_use(vec![
         ChatResponse::tool_use(None, vec![tool_call]),
-        ChatResponse::Text("done".into()),
+        ChatResponse::text("done"),
     ]);
     let registry = create_test_registry();
     let executor = MockToolExecutor::new(vec![Err(ToolError::ConfirmationRequired {
@@ -608,7 +608,7 @@ async fn agent_handles_tool_confirmation_denied() {
 #[tokio::test]
 async fn agent_handles_streaming_response() {
     let (mock, _) =
-        MockProvider::default().with_tool_use(vec![zeph_llm::provider::ChatResponse::Text(
+        MockProvider::default().with_tool_use(vec![zeph_llm::provider::ChatResponse::text(
             "streaming response".to_string(),
         )]);
     let registry = create_test_registry();
@@ -803,7 +803,7 @@ async fn agent_handles_tool_execution_error() {
     };
     let (mock, _) = MockProvider::default().with_tool_use(vec![
         ChatResponse::tool_use(None, vec![tool_call]),
-        ChatResponse::Text("done".into()),
+        ChatResponse::text("done"),
     ]);
     let registry = create_test_registry();
     let executor = MockToolExecutor::new(vec![Err(ToolError::Timeout { timeout_secs: 30 })]);
@@ -846,7 +846,7 @@ async fn agent_processes_multi_turn_tool_execution() {
     // Native path: LLM returns ToolUse first, then a final Text after tool results.
     let (mock, _) = MockProvider::default().with_tool_use(vec![
         ChatResponse::tool_use(None, vec![tool_call]),
-        ChatResponse::Text("step complete".into()),
+        ChatResponse::text("step complete"),
     ]);
     let channel = MockChannel::new(vec!["start task".to_string()]);
     let registry = create_test_registry();

@@ -47,7 +47,7 @@ When `context_budget_tokens > 0`, the context window is structured as:
 │ <repo_map> structural overview (if index on)    │  0-1024 tokens
 ├─────────────────────────────────────────────────┤
 │ <available_skills> matched skills (full body)   │  200-2000 tokens
-│ <other_skills> remaining (description-only)     │  50-200 tokens
+│ <other_skills> all skills (description-only)    │  50-200 tokens
 ├─────────────────────────────────────────────────┤
 │ [knowledge graph] entity facts (if graph on)    │  3% of available
 ├─────────────────────────────────────────────────┤
@@ -746,7 +746,7 @@ prompt_mode = "auto"  # "full", "compact", or "auto"
 
 ## Progressive Skill Loading
 
-Skills matched by embedding similarity (top-K) are injected with their full body (or compact summary, depending on `prompt_mode`). Remaining skills are listed in a description-only `<other_skills>` catalog — giving the model awareness of all capabilities while consuming minimal tokens.
+Skills matched by embedding similarity (top-K) are injected with their full body (or compact summary, depending on `prompt_mode`). All skills are listed in a description-only `<other_skills>` catalog in the cached part of the system prompt, which stays identical between turns so the provider prompt cache keeps hitting; only the matched skill bodies change per turn.
 
 ## ZEPH.md Project Config
 

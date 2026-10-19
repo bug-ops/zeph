@@ -6,7 +6,7 @@ use serde::Deserialize;
 use tokio_stream::StreamExt;
 use zeph_config::StreamLimits;
 
-use crate::error::LlmError;
+use crate::error::{LlmError, StopDetails, check_refusal};
 use crate::provider::{ChatStream, StreamChunk, ThinkingBlock, ToolUseRequest};
 use crate::thinking_replay::{InputTransformation, ThinkingReplay};
 
@@ -40,6 +40,9 @@ pub enum ToolSseEvent {
     ThinkingChunk(String),
     /// Completed thinking block (thinking text + signature) ready for `ChatResponse`.
     ThinkingBlockDone(ThinkingBlock),
+    /// A new text content block opened; the following chunks belong to it, not to the previous
+    /// text block.
+    TextBlockStart,
     /// Regular assistant text chunk.
     ContentChunk(String),
     /// Server-side compaction summary.
@@ -56,6 +59,8 @@ pub type ToolSseStream = std::pin::Pin<Box<dyn tokio_stream::Stream<Item = ToolS
 /// State machine for accumulating multi-event Claude SSE blocks.
 #[derive(Default)]
 struct ClaudeSseState {
+    /// Provider name reported in [`LlmError::Refused`].
+    provider: String,
     /// When `Some`, we are accumulating a compaction block. Holds the summary text so far.
     compaction_buf: Option<String>,
     /// Tracks the current in-flight tool-use block: `(index, id, name, accumulated_json)`.
@@ -78,11 +83,13 @@ struct ClaudeSseState {
 pub(crate) fn claude_sse_to_stream(
     response: reqwest::Response,
     limits: &StreamLimits,
+    provider: &str,
 ) -> ChatStream {
     let limits = limits.clone();
+    let provider = provider.to_owned();
     let event_stream = response.bytes_stream().eventsource();
     let s = async_stream::stream! {
-        let mut state = ClaudeSseState::default();
+        let mut state = ClaudeSseState { provider, ..Default::default() };
         let mut pinned = std::pin::pin!(event_stream);
         while let Some(event) = pinned.next().await {
             match event {
@@ -106,11 +113,13 @@ pub(crate) fn claude_sse_to_stream(
 pub(crate) fn claude_sse_to_tool_stream(
     response: reqwest::Response,
     limits: &StreamLimits,
+    provider: &str,
 ) -> ToolSseStream {
     let limits = limits.clone();
+    let provider = provider.to_owned();
     let event_stream = response.bytes_stream().eventsource();
     let s = async_stream::stream! {
-        let mut state = ClaudeSseState::default();
+        let mut state = ClaudeSseState { provider, ..Default::default() };
         let mut pinned = std::pin::pin!(event_stream);
         while let Some(event) = pinned.next().await {
             match event {
@@ -181,6 +190,10 @@ fn parse_claude_sse_events(
             }
             vec![]
         }
+        "message_delta" => refusal_from_message_delta(&state.provider, data)
+            .map(Err)
+            .into_iter()
+            .collect(),
         "content_block_delta" => match serde_json::from_str::<ClaudeStreamEvent>(data) {
             Ok(event) => {
                 if let Some(delta) = event.delta {
@@ -251,8 +264,17 @@ fn parse_claude_tool_sse_events(
             state.current_block_index = ev.index;
             state.in_thinking_block = false;
             match ev.content_block.block_type.as_str() {
+                "text" => vec![ToolSseEvent::TextBlockStart],
                 "redacted_thinking" => {
-                    state.redacted_thinking = ev.content_block.data;
+                    if let Some(data) = ev.content_block.data
+                        && !state.thinking_dropped
+                    {
+                        if data.len() > limits.max_thinking_bytes {
+                            drop_thinking(state, limits.max_thinking_bytes);
+                        } else {
+                            state.redacted_thinking = Some(data);
+                        }
+                    }
                     vec![]
                 }
                 "compaction" => {
@@ -318,6 +340,10 @@ fn parse_claude_tool_sse_events(
             events
         }
         "content_block_delta" => parse_tool_delta_event(state, data, limits),
+        "message_delta" => refusal_from_message_delta(&state.provider, data)
+            .map(ToolSseEvent::Error)
+            .into_iter()
+            .collect(),
         "error" => parse_sse_error_event(data),
         _ => vec![],
     }
@@ -364,32 +390,56 @@ fn parse_tool_delta_event(
             }]
         }
         "thinking_delta" if !delta.thinking.is_empty() => {
-            if let Some((ref mut t, _)) = state.thinking_block
+            if let Some((ref t, ref s)) = state.thinking_block
                 && !state.thinking_dropped
             {
-                if t.len() + delta.thinking.len() > limits.max_thinking_bytes {
-                    tracing::warn!(
-                        cap = limits.max_thinking_bytes,
-                        "thinking block exceeded cap; dropping it and all later thinking in this response"
-                    );
-                    state.thinking_dropped = true;
-                    t.clear();
-                } else {
+                if t.len() + s.len() + delta.thinking.len() > limits.max_thinking_bytes {
+                    drop_thinking(state, limits.max_thinking_bytes);
+                } else if let Some((ref mut t, _)) = state.thinking_block {
                     t.push_str(&delta.thinking);
                 }
             }
             vec![ToolSseEvent::ThinkingChunk(delta.thinking)]
         }
         "signature_delta" if !delta.signature.is_empty() => {
-            if let Some((_, ref mut s)) = state.thinking_block
+            if let Some((ref t, ref s)) = state.thinking_block
                 && !state.thinking_dropped
             {
-                s.push_str(&delta.signature);
+                if t.len() + s.len() + delta.signature.len() > limits.max_thinking_bytes {
+                    drop_thinking(state, limits.max_thinking_bytes);
+                } else if let Some((_, ref mut s)) = state.thinking_block {
+                    s.push_str(&delta.signature);
+                }
             }
             vec![]
         }
         _ => vec![],
     }
+}
+
+/// Drop the in-flight thinking block and every later one in this response.
+///
+/// A truncated block fails its signature check and later blocks are bound to it, so the whole
+/// remaining thinking is discarded rather than cut.
+fn drop_thinking(state: &mut ClaudeSseState, cap: usize) {
+    tracing::warn!(
+        cap,
+        "thinking block exceeded cap; dropping it and all later thinking in this response"
+    );
+    state.thinking_dropped = true;
+    state.thinking_block = None;
+    state.redacted_thinking = None;
+}
+
+/// Parse a `message_delta` event and return [`LlmError::Refused`] when it reports a refusal.
+fn refusal_from_message_delta(provider: &str, data: &str) -> Option<LlmError> {
+    let ev = serde_json::from_str::<ClaudeMessageDelta>(data).ok()?;
+    check_refusal(
+        provider,
+        ev.delta.stop_reason.as_deref(),
+        ev.delta.stop_details.as_ref(),
+    )
+    .err()
 }
 
 /// Append `add` to `buf` without letting `buf` exceed `cap` bytes, cutting on a char boundary.
@@ -481,6 +531,20 @@ struct ClaudeMessageStart {
 struct ClaudeMessageStartBody {
     #[serde(default)]
     input_transformations: Vec<InputTransformation>,
+}
+
+/// `message_delta` event: only the stop reason and its details are consumed.
+#[derive(Deserialize)]
+struct ClaudeMessageDelta {
+    delta: ClaudeMessageDeltaBody,
+}
+
+#[derive(Deserialize)]
+struct ClaudeMessageDeltaBody {
+    #[serde(default)]
+    stop_reason: Option<String>,
+    #[serde(default)]
+    stop_details: Option<StopDetails>,
 }
 
 /// Used for `content_block_start` events in the text-streaming path (type only).
@@ -1370,5 +1434,185 @@ mod tests {
         let data = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"step one"}}"#;
         parse_tool_delta_event(&mut state, data, &StreamLimits::default());
         assert_eq!(state.thinking_block.as_ref().unwrap().0, "step one");
+    }
+
+    fn tool_events_with(
+        state: &mut ClaudeSseState,
+        limits: &StreamLimits,
+        event_type: &str,
+        data: &str,
+    ) -> Vec<ToolSseEvent> {
+        parse_claude_tool_sse_events(state, data, event_type, limits)
+    }
+
+    fn small_thinking_cap() -> StreamLimits {
+        StreamLimits {
+            max_thinking_bytes: 10,
+            ..StreamLimits::default()
+        }
+    }
+
+    #[test]
+    fn signature_bytes_count_against_the_thinking_cap() {
+        let limits = small_thinking_cap();
+        let mut state = ClaudeSseState::default();
+        let start =
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}"#;
+        tool_events_with(&mut state, &limits, "content_block_start", start);
+        let text = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"abcd"}}"#;
+        tool_events_with(&mut state, &limits, "content_block_delta", text);
+        let sig = r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"0123456789ABCDEF"}}"#;
+        tool_events_with(&mut state, &limits, "content_block_delta", sig);
+        assert!(
+            state.thinking_dropped,
+            "oversized signature drops the block"
+        );
+        let stop = tool_events_with(&mut state, &limits, "content_block_stop", "{}");
+        assert!(done_blocks(&stop).is_empty());
+    }
+
+    #[test]
+    fn oversized_redacted_thinking_is_dropped_with_later_thinking() {
+        let limits = small_thinking_cap();
+        let mut state = ClaudeSseState::default();
+        let big = r#"{"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"0123456789ABCDEF"}}"#;
+        tool_events_with(&mut state, &limits, "content_block_start", big);
+        assert!(state.thinking_dropped);
+        let stop = tool_events_with(&mut state, &limits, "content_block_stop", "{}");
+        assert!(done_blocks(&stop).is_empty());
+
+        let small = r#"{"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"ok"}}"#;
+        tool_events_with(&mut state, &limits, "content_block_start", small);
+        let stop2 = tool_events_with(&mut state, &limits, "content_block_stop", "{}");
+        assert!(
+            done_blocks(&stop2).is_empty(),
+            "later thinking is bound to the dropped block"
+        );
+    }
+
+    #[test]
+    fn text_block_start_is_emitted_for_each_text_block() {
+        let mut state = ClaudeSseState::default();
+        let start =
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#;
+        let events = tool_events(&mut state, "content_block_start", start);
+        assert_matches!(events.as_slice(), [ToolSseEvent::TextBlockStart]);
+    }
+
+    #[test]
+    fn adjacent_text_blocks_stay_separate_in_the_streamed_content() {
+        use crate::provider::{AssistantBlock, AssistantContentBuilder};
+
+        let mut state = ClaudeSseState::default();
+        let mut builder = AssistantContentBuilder::default();
+        let feed = [
+            (
+                "content_block_start",
+                r#"{"index":0,"content_block":{"type":"text","text":""}}"#,
+            ),
+            (
+                "content_block_delta",
+                r#"{"index":0,"delta":{"type":"text_delta","text":"first"}}"#,
+            ),
+            ("content_block_stop", "{}"),
+            (
+                "content_block_start",
+                r#"{"index":1,"content_block":{"type":"text","text":""}}"#,
+            ),
+            (
+                "content_block_delta",
+                r#"{"index":1,"delta":{"type":"text_delta","text":"second"}}"#,
+            ),
+            ("content_block_stop", "{}"),
+            (
+                "content_block_start",
+                r#"{"index":2,"content_block":{"type":"tool_use","id":"t1","name":"bash"}}"#,
+            ),
+            (
+                "content_block_delta",
+                r#"{"index":2,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#,
+            ),
+            ("content_block_stop", "{}"),
+        ];
+        for (event, data) in feed {
+            for ev in tool_events(&mut state, event, data) {
+                match ev {
+                    ToolSseEvent::TextBlockStart => builder.begin_text_block(),
+                    ToolSseEvent::ContentChunk(t) => builder.push_text(&t),
+                    ToolSseEvent::ToolCallComplete {
+                        id,
+                        name,
+                        full_json,
+                        ..
+                    } => builder.push_tool_use(ToolUseRequest {
+                        id,
+                        name: name.into(),
+                        input: serde_json::from_str(&full_json).unwrap(),
+                    }),
+                    _ => {}
+                }
+            }
+        }
+        assert_matches!(
+            builder.build().blocks(),
+            [
+                AssistantBlock::Text(a),
+                AssistantBlock::Text(b),
+                AssistantBlock::ToolUse(_)
+            ] if a == "first" && b == "second"
+        );
+    }
+
+    const REFUSAL_DELTA: &str = r#"{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber","explanation":"declined"}}}"#;
+
+    #[test]
+    fn text_stream_message_delta_refusal_yields_refused() {
+        let mut state = ClaudeSseState::default();
+        let mut out = parse_claude_sse_events(
+            &mut state,
+            REFUSAL_DELTA,
+            "message_delta",
+            &StreamLimits::default(),
+        );
+        assert_eq!(out.len(), 1);
+        assert_matches!(
+            out.remove(0),
+            Err(LlmError::Refused { category: Some(c), explanation: Some(e), .. })
+                if c.as_str() == "cyber" && e == "declined"
+        );
+    }
+
+    #[test]
+    fn tool_stream_message_delta_refusal_yields_refused() {
+        let mut state = ClaudeSseState::default();
+        let events = tool_events(&mut state, "message_delta", REFUSAL_DELTA);
+        assert_matches!(
+            events.as_slice(),
+            [ToolSseEvent::Error(LlmError::Refused { .. })]
+        );
+    }
+
+    #[test]
+    fn message_delta_with_other_stop_reason_is_silent() {
+        let mut state = ClaudeSseState::default();
+        let data = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}"#;
+        assert!(tool_events(&mut state, "message_delta", data).is_empty());
+        assert!(
+            parse_claude_sse_events(&mut state, data, "message_delta", &StreamLimits::default())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn refusal_carries_the_configured_provider_name() {
+        let mut state = ClaudeSseState {
+            provider: "my-claude".into(),
+            ..Default::default()
+        };
+        let events = tool_events(&mut state, "message_delta", REFUSAL_DELTA);
+        assert_matches!(
+            events.as_slice(),
+            [ToolSseEvent::Error(LlmError::Refused { provider, .. })] if provider == "my-claude"
+        );
     }
 }

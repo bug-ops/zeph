@@ -61,6 +61,10 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<reqwest::Response, reqwest::Error>>,
 {
+    if let Some(tracker) = usage {
+        // A new request must never inherit the previous response's auxiliary usage.
+        tracker.record_auxiliary(None);
+    }
     for attempt in 0..=max_retries {
         let send_start = Instant::now();
         let response = f().await.map_err(LlmError::Http)?;

@@ -543,10 +543,12 @@ fn parse_tool_response_text_only() {
         }],
         stop_reason: None,
         usage: None,
+        stop_details: None,
         input_transformations: Vec::new(),
     };
-    let (result, compaction) = parse_tool_response(resp);
-    assert_matches!(result, ChatResponse::Text(s) if s == "Hello");
+    let mut result = parse_tool_response(resp);
+    let compaction = result.take_compaction();
+    assert_matches!(result, ChatResponse::Text { text: s, .. } if s == "Hello");
     assert!(compaction.is_none());
 }
 
@@ -566,9 +568,11 @@ fn parse_tool_response_with_tool_use() {
         ],
         stop_reason: None,
         usage: None,
+        stop_details: None,
         input_transformations: Vec::new(),
     };
-    let (result, compaction) = parse_tool_response(resp);
+    let mut result = parse_tool_response(resp);
+    let compaction = result.take_compaction();
     if let ChatResponse::ToolUse { content, .. } = result {
         let text = content.text();
         let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
@@ -592,9 +596,11 @@ fn parse_tool_response_tool_use_only() {
         }],
         stop_reason: None,
         usage: None,
+        stop_details: None,
         input_transformations: Vec::new(),
     };
-    let (result, compaction) = parse_tool_response(resp);
+    let mut result = parse_tool_response(resp);
+    let compaction = result.take_compaction();
     if let ChatResponse::ToolUse { content, .. } = result {
         let text = content.text();
         let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
@@ -610,7 +616,7 @@ fn parse_tool_response_tool_use_only() {
 fn parse_tool_response_json_deserialization() {
     let json = r#"{"content":[{"type":"text","text":"Let me check"},{"type":"tool_use","id":"toolu_abc","name":"bash","input":{"command":"ls"}}]}"#;
     let resp: ToolApiResponse = serde_json::from_str(json).unwrap();
-    let (result, _) = parse_tool_response(resp);
+    let result = parse_tool_response(resp);
     assert_matches!(result, ChatResponse::ToolUse { .. });
 }
 
@@ -622,10 +628,12 @@ fn parse_tool_response_with_compaction() {
         }],
         stop_reason: None,
         usage: None,
+        stop_details: None,
         input_transformations: Vec::new(),
     };
-    let (result, compaction) = parse_tool_response(resp);
-    assert_matches!(result, ChatResponse::Text(ref s) if s.is_empty());
+    let mut result = parse_tool_response(resp);
+    let compaction = result.take_compaction();
+    assert_matches!(result, ChatResponse::Text { text: ref s, .. } if s.is_empty());
     assert_eq!(
         compaction.as_deref(),
         Some("Context was summarized for efficiency.")
@@ -1645,14 +1653,14 @@ fn extended_context_enabled_includes_beta_header() {
 #[test]
 fn extended_context_with_interleaved_thinking_combines_headers() {
     let provider = ClaudeProvider::new("k".into(), "claude-sonnet-4-6".into(), 16_000)
-        .with_prompt_cache_ttl(Some(CacheTtl::OneHour))
+        .with_server_compaction(true)
         .with_thinking(ThinkingConfig::Extended {
             budget_tokens: 5000,
         })
         .unwrap();
     let beta = provider.beta_header(true);
     let beta_str = beta.expect("beta header should be present");
-    assert!(beta_str.contains(ANTHROPIC_BETA_EXTENDED_CACHE_TTL));
+    assert!(beta_str.contains(BetaFeature::Compact.header()));
     assert!(beta_str.contains(ANTHROPIC_BETA_INTERLEAVED_THINKING));
     // Both betas must be comma-separated in a single header value
     assert!(beta_str.contains(','));
@@ -1695,9 +1703,10 @@ fn parse_tool_response_with_thinking_blocks() {
         ],
         stop_reason: None,
         usage: None,
+        stop_details: None,
         input_transformations: Vec::new(),
     };
-    let (result, _) = parse_tool_response(resp);
+    let result = parse_tool_response(resp);
     if let ChatResponse::ToolUse { content, .. } = result {
         let tool_calls: Vec<_> = content.tool_calls().cloned().collect();
         let thinking_blocks: Vec<_> = content.thinking_blocks().cloned().collect();
@@ -1732,11 +1741,12 @@ fn parse_tool_response_with_redacted_thinking() {
         ],
         stop_reason: None,
         usage: None,
+        stop_details: None,
         input_transformations: Vec::new(),
     };
-    let (result, _) = parse_tool_response(resp);
+    let result = parse_tool_response(resp);
     // No tool calls, so returns Text; thinking is dropped for text-only responses
-    assert_matches!(result, ChatResponse::Text(_));
+    assert_matches!(result, ChatResponse::Text { .. });
 }
 
 #[test]
@@ -2183,6 +2193,7 @@ fn store_cache_usage_updates_last_usage() {
         output_tokens: 17,
         cache_creation_input_tokens: 0,
         cache_read_input_tokens: 0,
+        iterations: Vec::new(),
     };
     provider.store_cache_usage(&usage);
 
@@ -2799,7 +2810,7 @@ fn compaction_content_block_deserialized() {
 fn compaction_content_block_null_content_yields_no_summary() {
     let json = r#"{"content":[{"type":"compaction","content":null}],"stop_reason":"end_turn"}"#;
     let resp: ToolApiResponse = serde_json::from_str(json).unwrap();
-    let (_, compaction) = parse_tool_response(resp);
+    let compaction = parse_tool_response(resp).take_compaction();
     assert!(compaction.is_none());
 }
 
@@ -3260,7 +3271,7 @@ async fn chat_typed_uses_auto_and_retries_once_when_forced_choice_is_forbidden()
         .mount(&server)
         .await;
 
-    let provider = ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 1024)
+    let provider = ClaudeProvider::new("key".into(), "claude-future-9".into(), 1024)
         .with_api_url(format!("{}/v1/messages", server.uri()));
     let out: TypedOut = provider
         .chat_typed(&[Message::from_legacy(Role::User, "go")])
@@ -3301,7 +3312,7 @@ async fn chat_typed_second_miss_returns_structured_parse() {
         .mount(&server)
         .await;
 
-    let provider = ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 1024)
+    let provider = ClaudeProvider::new("key".into(), "claude-future-9".into(), 1024)
         .with_api_url(format!("{}/v1/messages", server.uri()));
     let result: Result<TypedOut, _> = provider
         .chat_typed(&[Message::from_legacy(Role::User, "go")])
@@ -3466,16 +3477,6 @@ fn test_claude_stub_used_when_schema_exceeds_1024_bytes() {
 // ─── CacheTtl tests ──────────────────────────────────────────────────────────
 
 #[test]
-fn cache_ttl_ephemeral_requires_no_beta() {
-    assert!(!CacheTtl::Ephemeral.requires_beta());
-}
-
-#[test]
-fn cache_ttl_one_hour_requires_beta() {
-    assert!(CacheTtl::OneHour.requires_beta());
-}
-
-#[test]
 fn cache_ttl_ephemeral_serializes_without_ttl_field() {
     use super::cache::build_cache_control;
     let cc = build_cache_control(None);
@@ -3517,14 +3518,29 @@ fn cache_ttl_ephemeral_toml_round_trip() {
 }
 
 #[test]
-fn beta_header_includes_extended_cache_ttl_for_one_hour() {
-    let p = ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 1024)
-        .with_prompt_cache_ttl(Some(CacheTtl::OneHour));
-    let header = p.beta_header(false).unwrap_or_default();
-    assert!(
-        header.contains("extended-cache-ttl-2025-04-25"),
-        "beta header must include extended-cache-ttl-2025-04-25 for OneHour TTL"
-    );
+fn beta_header_includes_extended_cache_ttl_for_one_hour_on_legacy_models() {
+    for model in ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"] {
+        let p = ClaudeProvider::new("k".into(), model.into(), 1024)
+            .with_prompt_cache_ttl(Some(CacheTtl::OneHour));
+        let header = p.beta_header(false).unwrap_or_default();
+        assert!(
+            header.contains("extended-cache-ttl-2025-04-25"),
+            "{model}: beta header must include extended-cache-ttl-2025-04-25 for OneHour TTL"
+        );
+    }
+}
+
+#[test]
+fn beta_header_omits_extended_cache_ttl_for_current_and_unknown_models() {
+    for model in ["claude-opus-5-5", "claude-sonnet-5-5", "claude-unknown-9"] {
+        let p = ClaudeProvider::new("k".into(), model.into(), 1024)
+            .with_prompt_cache_ttl(Some(CacheTtl::OneHour));
+        let header = p.beta_header(false).unwrap_or_default();
+        assert!(
+            !header.contains("extended-cache-ttl-2025-04-25"),
+            "{model}: no extended-cache-ttl beta header expected"
+        );
+    }
 }
 
 #[test]
@@ -3922,7 +3938,7 @@ fn tool_response_keeps_blocks_in_response_order() {
         {"type":"thinking_dropped","path":"messages.2.content.0","reason":"prefix_binding_mismatch"}
     ]}"#;
     let resp: ToolApiResponse = serde_json::from_str(json).unwrap();
-    let (parsed, _) = parse_tool_response(resp);
+    let parsed = parse_tool_response(resp);
     let ChatResponse::ToolUse {
         content, replay, ..
     } = parsed
@@ -3970,4 +3986,347 @@ fn marker_checkpoint_never_reaches_the_claude_request() {
         assert!(!json.contains("MARKER-ONLY-TEXT"), "{json}");
         assert!(json.contains("hello"));
     }
+}
+
+// ─── Audit follow-ups: usage iterations, structured outputs, refusals, compaction ─────────────
+
+fn refusal_body() -> serde_json::Value {
+    serde_json::json!({
+        "id": "msg_refusal",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-5-5",
+        "content": [],
+        "stop_reason": "refusal",
+        "stop_details": {"type": "refusal", "category": "cyber", "explanation": "no"},
+        "usage": {"input_tokens": 3, "output_tokens": 0}
+    })
+}
+
+async fn mock_messages(body: serde_json::Value) -> wiremock::MockServer {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+    server
+}
+
+fn refused_with_cyber(err: &LlmError) -> bool {
+    matches!(
+        err,
+        LlmError::Refused { category: Some(c), .. } if c.as_str() == "cyber"
+    ) && err.forbids_provider_fallback()
+}
+
+#[test]
+fn usage_iterations_sum_only_compaction_and_leave_top_level_alone() {
+    let json = r#"{
+        "input_tokens": 10, "output_tokens": 5,
+        "cache_creation_input_tokens": 1, "cache_read_input_tokens": 2,
+        "iterations": [
+            {"type": "compaction", "input_tokens": 100, "output_tokens": 40,
+             "cache_creation_input_tokens": 7, "cache_read_input_tokens": 9},
+            {"type": "message", "input_tokens": 10, "output_tokens": 5},
+            {"type": "future_kind", "input_tokens": 999, "output_tokens": 999}
+        ]
+    }"#;
+    let usage: ApiUsage = serde_json::from_str(json).unwrap();
+    let aux = usage.auxiliary().expect("compaction iteration is billed");
+    assert_eq!(
+        (aux.input, aux.output, aux.cache_creation, aux.cache_read),
+        (100, 40, 7, 9)
+    );
+
+    let provider = ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 256);
+    provider.store_cache_usage(&usage);
+    assert_eq!(provider.last_usage(), Some((10, 5)));
+    assert_eq!(provider.last_auxiliary_usage(), Some(aux));
+
+    let plain: ApiUsage =
+        serde_json::from_str(r#"{"input_tokens": 1, "output_tokens": 1}"#).unwrap();
+    provider.store_cache_usage(&plain);
+    assert_eq!(
+        provider.last_auxiliary_usage(),
+        None,
+        "reset on the next response"
+    );
+}
+
+#[tokio::test]
+async fn compaction_on_a_text_only_response_is_returned() {
+    let server = mock_messages(serde_json::json!({
+        "id": "m", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
+        "content": [
+            {"type": "compaction", "content": "summary of history"},
+            {"type": "text", "text": "answer"}
+        ],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    }))
+    .await;
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 1024)
+        .with_api_url(format!("{}/v1/messages", server.uri()));
+    let mut resp = provider
+        .chat_with_tools(&[Message::from_legacy(Role::User, "hi")], &[])
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.take_compaction().as_deref(),
+        Some("summary of history")
+    );
+    assert_matches!(resp, ChatResponse::Text { text, .. } if text == "answer");
+}
+
+#[test]
+fn adjacent_text_blocks_stay_separate_in_non_stream_parse() {
+    let resp = ToolApiResponse {
+        content: vec![
+            AnthropicContentBlock::Text {
+                text: "first".into(),
+                cache_control: None,
+            },
+            AnthropicContentBlock::Text {
+                text: "second".into(),
+                cache_control: None,
+            },
+            AnthropicContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({}),
+            },
+        ],
+        stop_reason: None,
+        stop_details: None,
+        usage: None,
+        input_transformations: Vec::new(),
+    };
+    let ChatResponse::ToolUse { content, .. } = parse_tool_response(resp) else {
+        panic!("expected ToolUse");
+    };
+    assert_matches!(
+        content.blocks(),
+        [
+            crate::AssistantBlock::Text(a),
+            crate::AssistantBlock::Text(b),
+            crate::AssistantBlock::ToolUse(_)
+        ] if a == "first" && b == "second"
+    );
+}
+
+#[tokio::test]
+async fn chat_typed_uses_structured_outputs_on_models_that_forbid_forced_choice() {
+    let server = mock_messages(serde_json::json!({
+        "id": "m", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
+        "content": [{"type": "text", "text": "{\"value\":\"ok\"}"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    }))
+    .await;
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 1024)
+        .with_api_url(format!("{}/v1/messages", server.uri()));
+    let out: TypedOut = provider
+        .chat_typed(&[Message::from_legacy(Role::User, "go")])
+        .await
+        .unwrap();
+    assert_eq!(out.value, "ok");
+
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 1, "no retry needed");
+    let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_eq!(body["output_config"]["format"]["type"], "json_schema");
+    assert_eq!(
+        body["output_config"]["format"]["schema"]["additionalProperties"],
+        false
+    );
+    assert!(body.get("tool_choice").is_none());
+    assert!(body.get("tools").is_none());
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct RecursiveNode {
+    #[allow(dead_code)]
+    next: Option<Box<RecursiveNode>>,
+}
+
+#[tokio::test]
+async fn chat_typed_recursive_schema_falls_back_to_the_tool_path() {
+    use crate::testing::claude_tool_use_response;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(claude_tool_use_response(
+            "submit_RecursiveNode",
+            "toolu_1",
+            &serde_json::json!({"next": null}),
+        ))
+        .mount(&server)
+        .await;
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 1024)
+        .with_api_url(format!("{}/v1/messages", server.uri()));
+    let _: RecursiveNode = provider
+        .chat_typed(&[Message::from_legacy(Role::User, "go")])
+        .await
+        .unwrap();
+    let reqs = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert!(
+        body["tools"].is_array(),
+        "tool fallback sends the submit tool"
+    );
+    assert!(body["output_config"].get("format").is_none());
+}
+
+#[tokio::test]
+async fn refusal_surfaces_on_chat_with_tools() {
+    let server = mock_messages(refusal_body()).await;
+    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-5-5".into(), 1024)
+        .with_api_url(format!("{}/v1/messages", server.uri()));
+    let err = provider
+        .chat_with_tools(&[Message::from_legacy(Role::User, "hi")], &[])
+        .await
+        .unwrap_err();
+    assert!(refused_with_cyber(&err), "{err:?}");
+}
+
+#[tokio::test]
+async fn refusal_surfaces_on_plain_chat() {
+    let server = mock_messages(refusal_body()).await;
+    let provider = ClaudeProvider::new("key".into(), "claude-sonnet-5-5".into(), 1024)
+        .with_api_url(format!("{}/v1/messages", server.uri()));
+    let err = provider
+        .chat(&[Message::from_legacy(Role::User, "hi")])
+        .await
+        .unwrap_err();
+    assert!(refused_with_cyber(&err), "{err:?}");
+}
+
+#[tokio::test]
+async fn refusal_surfaces_on_chat_typed_both_paths() {
+    for model in ["claude-opus-5-5", "claude-opus-5"] {
+        let server = mock_messages(refusal_body()).await;
+        let provider = ClaudeProvider::new("key".into(), model.into(), 1024)
+            .with_api_url(format!("{}/v1/messages", server.uri()));
+        let result: Result<TypedOut, _> = provider
+            .chat_typed(&[Message::from_legacy(Role::User, "go")])
+            .await;
+        let err = result.unwrap_err();
+        assert!(refused_with_cyber(&err), "{model}: {err:?}");
+    }
+}
+
+#[tokio::test]
+async fn plain_chat_and_typed_requests_carry_no_context_management() {
+    let server = mock_messages(serde_json::json!({
+        "id": "m", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
+        "content": [{"type": "text", "text": "{\"value\":\"ok\"}"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    }))
+    .await;
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 1024)
+        .with_server_compaction(true)
+        .with_api_url(format!("{}/v1/messages", server.uri()));
+    let msgs = [Message::from_legacy(Role::User, "go")];
+    provider.chat(&msgs).await.unwrap();
+    let _: TypedOut = provider.chat_typed(&msgs).await.unwrap();
+    provider.chat_with_tools(&msgs, &[]).await.unwrap();
+
+    let reqs = server.received_requests().await.unwrap();
+    let has_cm = |i: usize| {
+        let body: serde_json::Value = serde_json::from_slice(&reqs[i].body).unwrap();
+        body.get("context_management").is_some()
+    };
+    assert!(!has_cm(0), "plain chat");
+    assert!(!has_cm(1), "typed");
+    assert!(has_cm(2), "chat_with_tools");
+}
+
+#[test]
+fn thinking_binding_follows_the_preserved_thinking_capability() {
+    use crate::provider::ThinkingBinding;
+
+    let bound = [
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-fable-5-1",
+        "claude-haiku-5-5",
+    ];
+    let unbound = [
+        "claude-sonnet-4-5-20250929",
+        "claude-haiku-4-5-20251001",
+        "claude-sonnet-4-6",
+        "claude-opus-4-6",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-fable-5",
+        "claude-mythos-5",
+        "claude-mythos-5-1",
+        "claude-unknown-9",
+    ];
+    for model in bound {
+        let p = ClaudeProvider::new("k".into(), model.into(), 1024);
+        assert_eq!(
+            p.thinking_binding(),
+            ThinkingBinding::PrefixBound,
+            "{model}"
+        );
+    }
+    for model in unbound {
+        let p = ClaudeProvider::new("k".into(), model.into(), 1024);
+        assert_eq!(p.thinking_binding(), ThinkingBinding::Unbound, "{model}");
+    }
+}
+
+#[tokio::test]
+async fn auxiliary_usage_is_not_rebilled_on_later_requests() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "m", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 10, "output_tokens": 5,
+                "iterations": [{"type": "compaction", "input_tokens": 100, "output_tokens": 40}]
+            }
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("{}"))
+        .mount(&server)
+        .await;
+
+    let provider = ClaudeProvider::new("key".into(), "claude-opus-5-5".into(), 1024)
+        .with_api_url(format!("{}/v1/messages", server.uri()));
+    let msgs = [Message::from_legacy(Role::User, "hi")];
+
+    provider.chat_with_tools(&msgs, &[]).await.unwrap();
+    let aux = provider
+        .last_auxiliary_usage()
+        .expect("compaction billed once");
+    assert_eq!((aux.input, aux.output), (100, 40));
+
+    assert!(provider.chat_with_tools_stream(&msgs, &[]).await.is_err());
+    assert_eq!(
+        provider.last_auxiliary_usage(),
+        None,
+        "a later (failed) stream request must not expose the previous compaction"
+    );
 }

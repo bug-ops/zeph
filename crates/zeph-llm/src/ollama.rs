@@ -717,7 +717,7 @@ impl LlmProvider for OllamaProvider {
         }
 
         if response.message.tool_calls.is_empty() {
-            return Ok(ChatResponse::Text(response.message.content));
+            return Ok(ChatResponse::text(response.message.content));
         }
 
         let tool_calls: Vec<ToolUseRequest> = response
@@ -1510,8 +1510,8 @@ mod tests {
             .chat_with_tools(&chat_test_messages(), &tools)
             .await
         {
-            Ok(ChatResponse::Text(text)) => assert_eq!(text, "pong"),
-            Ok(other) => panic!("expected ChatResponse::Text(\"pong\"), got: {other:?}"),
+            Ok(ChatResponse::Text { text, .. }) => assert_eq!(text, "pong"),
+            Ok(other) => panic!("expected ChatResponse::text(\"pong\"), got: {other:?}"),
             Err(e) => panic!("expected success after one 429 retry, got error: {e}"),
         }
     }
@@ -1732,7 +1732,7 @@ mod tests {
                 assert!(!tool_calls.is_empty());
                 assert_eq!(tool_calls[0].name.as_str(), "get_weather");
             }
-            ChatResponse::Text(text) => {
+            ChatResponse::Text { text, .. } => {
                 panic!("expected a tool call, model replied with text instead: {text}");
             }
         }

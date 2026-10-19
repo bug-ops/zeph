@@ -32,6 +32,29 @@ fn compacted_at_bind_expr() -> String {
     <ActiveDialect as zeph_db::dialect::Dialect>::timestamptz_from_epoch("?")
 }
 
+/// `column NOT IN (...)` predicate excluding every [`MessageVisibility`] variant for which
+/// `visible` is false, so new variants are classified by the type, not by a hand-written list.
+fn visibility_filter_sql(column: &str, visible: impl Fn(MessageVisibility) -> bool) -> String {
+    let hidden: Vec<String> = MessageVisibility::ALL
+        .into_iter()
+        .filter(|v| !visible(*v))
+        .map(|v| format!("'{}'", v.as_db_str()))
+        .collect();
+    if hidden.is_empty() {
+        "1 = 1".to_owned()
+    } else {
+        format!("{column} NOT IN ({})", hidden.join(", "))
+    }
+}
+
+fn agent_visible_sql(column: &str) -> String {
+    visibility_filter_sql(column, MessageVisibility::is_agent_visible)
+}
+
+fn user_visible_sql(column: &str) -> String {
+    visibility_filter_sql(column, MessageVisibility::is_user_visible)
+}
+
 fn parse_role(s: &str) -> Role {
     match s {
         "assistant" => Role::Assistant,
@@ -462,13 +485,16 @@ impl SqliteStore {
         agent_visible: Option<bool>,
         user_visible: Option<bool>,
     ) -> Result<Vec<Message>, MemoryError> {
-        // Map boolean filters to SQL predicates on the visibility column.
-        // agent_visible=true  → exclude 'user_only'  rows
-        // user_visible=true   → exclude 'agent_only' rows
-        // The two filters are independent; when both are Some(true) the
-        // combined effect is to keep only 'both' rows.
-        let exclude_user_only = agent_visible == Some(true);
-        let exclude_agent_only = user_visible == Some(true);
+        let agent_filter = if agent_visible == Some(true) {
+            agent_visible_sql("visibility")
+        } else {
+            "1 = 1".to_owned()
+        };
+        let user_filter = if user_visible == Some(true) {
+            user_visible_sql("visibility")
+        } else {
+            "1 = 1".to_owned()
+        };
 
         let parts_select = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("parts");
         let raw = format!(
@@ -477,8 +503,8 @@ impl SqliteStore {
                 FROM messages \
                 WHERE conversation_id = ? \
                   AND deleted_at IS NULL \
-                  AND (NOT ? OR visibility != 'user_only') \
-                  AND (NOT ? OR visibility != 'agent_only') \
+                  AND {agent_filter} \
+                  AND {user_filter} \
                 ORDER BY id DESC \
                 LIMIT ?\
              ) SELECT role, content, {parts_select} AS parts, visibility, id, \
@@ -488,8 +514,6 @@ impl SqliteStore {
         let sql = zeph_db::rewrite_placeholders(&raw);
         let rows: Vec<HistoryRow> = zeph_db::query_as(sqlx::AssertSqlSafe(sql))
             .bind(conversation_id)
-            .bind(exclude_user_only)
-            .bind(exclude_agent_only)
             .bind(i64::from(limit))
             .fetch_all(&self.pool)
             .await?;
@@ -828,9 +852,10 @@ impl SqliteStore {
         let placeholders = zeph_db::placeholder_list(1, ids.len());
         let parts_select = <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("parts");
 
+        let agent_filter = agent_visible_sql("visibility");
         let query = format!(
             "SELECT id, role, content, {parts_select} AS parts FROM messages \
-             WHERE id IN ({placeholders}) AND visibility != 'user_only' AND deleted_at IS NULL"
+             WHERE id IN ({placeholders}) AND {agent_filter} AND deleted_at IS NULL"
         );
         let mut q =
             zeph_db::query_as::<_, (MessageId, String, String, String)>(sqlx::AssertSqlSafe(query));
@@ -989,33 +1014,36 @@ impl SqliteStore {
             return Ok(Vec::new());
         }
 
+        let agent_filter = agent_visible_sql("m.visibility");
         let rows: Vec<(MessageId, f64)> = if let Some(cid) = conversation_id {
-            zeph_db::query_as(
-                sql!("SELECT m.id, -rank AS score \
-                 FROM messages_fts f \
-                 JOIN messages m ON m.id = f.rowid \
-                 WHERE messages_fts MATCH ? AND m.conversation_id = ? AND m.visibility != 'user_only' AND m.deleted_at IS NULL \
-                 ORDER BY rank \
-                 LIMIT ?"),
-            )
-            .bind(&safe_query)
-            .bind(cid)
-            .bind(effective_limit)
-            .fetch_all(&self.pool)
-            .await?
-        } else {
-            zeph_db::query_as(sql!(
+            let sql = zeph_db::rewrite_placeholders(&format!(
                 "SELECT m.id, -rank AS score \
                  FROM messages_fts f \
                  JOIN messages m ON m.id = f.rowid \
-                 WHERE messages_fts MATCH ? AND m.visibility != 'user_only' AND m.deleted_at IS NULL \
+                 WHERE messages_fts MATCH ? AND m.conversation_id = ? AND {agent_filter} AND m.deleted_at IS NULL \
                  ORDER BY rank \
                  LIMIT ?"
-            ))
-            .bind(&safe_query)
-            .bind(effective_limit)
-            .fetch_all(&self.pool)
-            .await?
+            ));
+            zeph_db::query_as(sqlx::AssertSqlSafe(sql))
+                .bind(&safe_query)
+                .bind(cid)
+                .bind(effective_limit)
+                .fetch_all(&self.pool)
+                .await?
+        } else {
+            let sql = zeph_db::rewrite_placeholders(&format!(
+                "SELECT m.id, -rank AS score \
+                 FROM messages_fts f \
+                 JOIN messages m ON m.id = f.rowid \
+                 WHERE messages_fts MATCH ? AND {agent_filter} AND m.deleted_at IS NULL \
+                 ORDER BY rank \
+                 LIMIT ?"
+            ));
+            zeph_db::query_as(sqlx::AssertSqlSafe(sql))
+                .bind(&safe_query)
+                .bind(effective_limit)
+                .fetch_all(&self.pool)
+                .await?
         };
 
         Ok(rows)
@@ -1064,11 +1092,12 @@ impl SqliteStore {
             ""
         };
 
+        let agent_filter = agent_visible_sql("m.visibility");
         let sql = zeph_db::rewrite_placeholders(&format!(
             "SELECT m.id, -rank AS score \
              FROM messages_fts f \
              JOIN messages m ON m.id = f.rowid \
-             WHERE messages_fts MATCH ? AND m.visibility != 'user_only' AND m.deleted_at IS NULL\
+             WHERE messages_fts MATCH ? AND {agent_filter} AND m.deleted_at IS NULL\
              {after_clause}{before_clause}{conv_clause} \
              ORDER BY rank \
              LIMIT ?"

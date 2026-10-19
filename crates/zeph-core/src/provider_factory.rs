@@ -636,7 +636,7 @@ fn build_cocoon_provider(
     let provider = CocoonProvider::new(model, max_tokens, entry.embedding_model.clone(), client)
         .with_provider_name(entry.effective_name());
 
-    Ok(AnyProvider::Cocoon(provider))
+    Ok(AnyProvider::Cocoon(Box::new(provider)))
 }
 
 /// Spawn an advisory health-check for all Cocoon providers that have `cocoon_health_check = true`.

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use zeph_llm::provider::{LlmProvider, Message, MessagePart, Role};
+use zeph_llm::provider::{AuxiliaryUsage, LlmProvider, Message, MessagePart, Role};
 
 use super::{Agent, CODE_CONTEXT_PREFIX};
 use crate::channel::Channel;
@@ -328,7 +328,24 @@ impl<C: Channel> Agent<C> {
         self.detect_magic_docs_in_messages();
     }
 
+    /// Folds the last call's usage into the cost tracker and billing totals.
+    ///
+    /// Auxiliary usage (server-side compaction iterations) is billed too, but it is never part
+    /// of `input_tokens`, so it cannot inflate the context size derived from them.
     pub(crate) fn record_cost_and_cache(&self, input_tokens: u64, output_tokens: u64) {
+        let auxiliary = self.provider.last_auxiliary_usage().unwrap_or_default();
+        self.record_cost(input_tokens, output_tokens, auxiliary);
+    }
+
+    /// Like [`Self::record_cost_and_cache`] for background calls (planner, aggregator) made on
+    /// another provider: the main provider's last auxiliary usage belongs to its own earlier
+    /// call and must not be billed a second time.
+    #[cfg(feature = "scheduler")]
+    pub(crate) fn record_background_cost(&self, input_tokens: u64, output_tokens: u64) {
+        self.record_cost(input_tokens, output_tokens, AuxiliaryUsage::default());
+    }
+
+    fn record_cost(&self, input_tokens: u64, output_tokens: u64, auxiliary: AuxiliaryUsage) {
         let (cache_write, cache_read) = self.provider.last_cache_usage().unwrap_or((0, 0));
 
         if let Some(ref tracker) = self.runtime.metrics.cost_tracker {
@@ -346,11 +363,22 @@ impl<C: Channel> Agent<C> {
                 cache_write,
                 output_tokens,
             );
+            if auxiliary != AuxiliaryUsage::default() {
+                tracker.record_auxiliary_usage(
+                    provider_name,
+                    self.provider.provider_kind_str(),
+                    &self.runtime.config.model_name,
+                    auxiliary,
+                );
+            }
             let breakdown = tracker.provider_breakdown();
             self.update_metrics(|m| {
                 m.cost_spent_cents = tracker.current_spend();
-                m.cache_creation_tokens += cache_write;
-                m.cache_read_tokens += cache_read;
+                m.cache_creation_tokens += cache_write + auxiliary.cache_creation;
+                m.cache_read_tokens += cache_read + auxiliary.cache_read;
+                m.prompt_tokens += auxiliary.input;
+                m.completion_tokens += auxiliary.output;
+                m.total_tokens = m.prompt_tokens + m.completion_tokens;
                 m.provider_cost_breakdown = breakdown;
             });
         } else if cache_write > 0 || cache_read > 0 {
@@ -395,6 +423,7 @@ impl<C: Channel> Agent<C> {
     ) -> Option<zeph_memory::UsageRecord> {
         let tracker = self.runtime.metrics.cost_tracker.as_ref()?;
         let (cache_write, cache_read) = provider.last_cache_usage().unwrap_or((0, 0));
+        let auxiliary = provider.last_auxiliary_usage().unwrap_or_default();
         let reasoning_tokens = provider.last_reasoning_tokens();
         // Issue #6549 S1: prefer the true first-content-token time captured at the SSE stream
         // consumption point (speculative-decoding path) over the provider-level TTFB proxy —
@@ -411,7 +440,7 @@ impl<C: Channel> Agent<C> {
             cache_read,
             cache_write,
             output_tokens,
-        );
+        ) + tracker.price_of_auxiliary(&self.runtime.config.model_name, auxiliary);
         // Generation-window throughput: only derivable once TTFT/TTFB is known and the
         // remaining window (latency - ttft) is positive.
         let tokens_per_sec = ttft_ms.and_then(|ttft| {
@@ -429,10 +458,10 @@ impl<C: Channel> Agent<C> {
             source,
             provider_name: provider_name.to_owned(),
             model_name: self.runtime.config.model_name.clone(),
-            input_tokens,
-            output_tokens,
-            cache_read_tokens: cache_read,
-            cache_write_tokens: cache_write,
+            input_tokens: input_tokens.saturating_add(auxiliary.input),
+            output_tokens: output_tokens.saturating_add(auxiliary.output),
+            cache_read_tokens: cache_read.saturating_add(auxiliary.cache_read),
+            cache_write_tokens: cache_write.saturating_add(auxiliary.cache_creation),
             reasoning_tokens,
             cost_cents,
             latency_ms,
@@ -1153,5 +1182,88 @@ mod tests {
             0,
             "llm_chat_ms must not leak turn 1's bridge value into turn 2 (#6275)"
         );
+    }
+    fn billing_agent(
+        aux: Option<zeph_llm::provider::AuxiliaryUsage>,
+    ) -> (
+        Agent<MockChannel>,
+        tokio::sync::watch::Receiver<crate::metrics::MetricsSnapshot>,
+    ) {
+        let mut provider = zeph_llm::mock::MockProvider::with_responses(vec![]);
+        if let Some(aux) = aux {
+            provider = provider.with_auxiliary_usage(aux);
+        }
+        let mut agent = Agent::new(
+            zeph_llm::any::AnyProvider::Mock(provider),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_cost_tracker(crate::cost::CostTracker::new(true, 1000.0));
+        "claude-sonnet-5-5".clone_into(&mut agent.runtime.config.model_name);
+        let (tx, rx) = tokio::sync::watch::channel(crate::metrics::MetricsSnapshot::default());
+        agent.runtime.metrics.metrics_tx = Some(tx);
+        (agent, rx)
+    }
+
+    #[test]
+    fn auxiliary_usage_is_billed_but_never_enters_context_tokens() {
+        let aux = zeph_llm::provider::AuxiliaryUsage {
+            input: 4000,
+            output: 600,
+            cache_creation: 0,
+            cache_read: 0,
+        };
+        let (plain, plain_rx) = billing_agent(None);
+        let (billed, billed_rx) = billing_agent(Some(aux));
+        plain.update_metrics(|m| m.context_tokens = 1000);
+        billed.update_metrics(|m| m.context_tokens = 1000);
+
+        plain.record_cost_and_cache(1000, 200);
+        billed.record_cost_and_cache(1000, 200);
+
+        let (plain_snap, billed_snap) = (plain_rx.borrow(), billed_rx.borrow());
+        assert!(billed_snap.cost_spent_cents > plain_snap.cost_spent_cents);
+        assert_eq!(billed_snap.prompt_tokens, plain_snap.prompt_tokens + 4000);
+        assert_eq!(
+            billed_snap.completion_tokens,
+            plain_snap.completion_tokens + 600
+        );
+        assert_eq!(billed_snap.context_tokens, 1000);
+    }
+
+    #[test]
+    fn usage_record_cost_includes_auxiliary_usage() {
+        let aux = zeph_llm::provider::AuxiliaryUsage {
+            input: 4000,
+            output: 600,
+            cache_creation: 0,
+            cache_read: 0,
+        };
+        let (plain, _) = billing_agent(None);
+        let (billed, _) = billing_agent(Some(aux));
+        let record = |agent: &Agent<MockChannel>| {
+            let provider = agent.provider.clone();
+            agent
+                .build_usage_record(
+                    &provider,
+                    zeph_memory::UsageSource::Conversation,
+                    None,
+                    None,
+                    1000,
+                    200,
+                    50,
+                    None,
+                )
+                .expect("cost tracker enabled")
+        };
+
+        let (base, with_aux) = (record(&plain), record(&billed));
+
+        assert!(with_aux.cost_cents > base.cost_cents);
+        assert_eq!(with_aux.input_tokens, base.input_tokens + 4000);
+        assert_eq!(with_aux.output_tokens, base.output_tokens + 600);
     }
 }

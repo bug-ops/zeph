@@ -3458,6 +3458,7 @@ mod tests {
                     fidelity_semantic_provider: None,
                     fidelity_compress_provider: None,
                     current_query: String::new(),
+                    thinking_binding: zeph_llm::provider::ThinkingBinding::Unbound,
                 }
             }
         }
