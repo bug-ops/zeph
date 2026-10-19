@@ -16,18 +16,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `zeph-llm`, `zeph-core`: `chat_typed` returns `impl Future + Send` and `chat_typed_erased` is removed (breaking) (#6850)
 - `zeph-llm`: streamed Claude responses record merged usage (#6850)
-- `zeph-llm`, `zeph-core`: the "Cache expired" warning is keyed on the provider cache TTL (5 minutes by default) instead of `gap_threshold_minutes`; `gap_threshold_minutes` remains the fallback when the provider reports no TTL (breaking: `PrefixCache::Prefix { ttl }`) (#PR)
+- `zeph-llm`, `zeph-core`: the "Cache expired" warning is keyed on the provider cache TTL (5 minutes by default) instead of `gap_threshold_minutes`; `gap_threshold_minutes` remains the fallback when the provider reports no TTL (breaking: `PrefixCache::Prefix { ttl }`) (#6866)
 
 ### Fixed
 
-- `zeph-common`, `zeph-sanitizer`, `zeph-memory`: secret redaction recognizes prefixes after JSON/repr escapes (`\n`, `\xXX`, `\uXXXX`, `%XX`); a prefix glued to an alphanumeric (ANSI, quoted-printable, double-encoded) is redacted only when its body is key-shaped, and ordinary words like `disk-usage` are left intact (#6857) (#PR)
-- `zeph-core`: `<active_skills>` is a state directive keyed on the sorted skill names, sent on change and cleared once (#6856) (#PR)
-- `zeph-agent-context`: in `append` a trim turn trims history before a single fetch, a fetch or tiered-recall failure keeps the trim and degrades the retrieved block (#6860) (#PR)
-- `zeph-agent-context`: tiered recall is deduplicated per item against history in `append` (#6853) (#PR)
-- `zeph-llm`, `zeph-core`, `zeph-agent-context`: in `append` an expired provider cache TTL opens the soft-band sweeps early (before the first request only) and the soft compaction tier waits while the cache is warm (breaking: `ChatResponse::Text` gains `replay`, `PrefixCache::Prefix` gains `ttl`) (#6852) (#PR)
-- `zeph-llm`, `zeph-core`, `zeph-subagent`: thinking dropped by the provider is stripped from history after text-only replies too (#6851) (#PR)
-- `zeph-core`: local Chrome trace regression tests and docs for late span fields; no code change, the report was not a bug (#6859) (#PR)
-- `zeph-config`: migration step 111 writes only the explanation comment, so `--migrate-config` no longer duplicates the three `context_layout` keys; configs already duplicated are not cleaned (#6858) (#PR)
+- `zeph-common`, `zeph-sanitizer`, `zeph-memory`: secret redaction recognizes prefixes after JSON/repr escapes (`\n`, `\xXX`, `\uXXXX`, `%XX`); a prefix glued to an alphanumeric (ANSI, quoted-printable, double-encoded) is redacted only when its body is key-shaped, and ordinary words like `disk-usage` are left intact (#6857) (#6866)
+- `zeph-core`: `<active_skills>` is a state directive keyed on the sorted skill names, sent on change and cleared once (#6856) (#6866)
+- `zeph-agent-context`: in `append` a trim turn trims history before a single fetch, a fetch or tiered-recall failure keeps the trim and degrades the retrieved block (#6860) (#6866)
+- `zeph-agent-context`: tiered recall is deduplicated per item against history in `append` (#6853) (#6866)
+- `zeph-llm`, `zeph-core`, `zeph-agent-context`: in `append` an expired provider cache TTL opens the soft-band sweeps early (before the first request only) and the soft compaction tier waits while the cache is warm (breaking: `ChatResponse::Text` gains `replay`, `PrefixCache::Prefix` gains `ttl`) (#6852) (#6866)
+- `zeph-llm`, `zeph-core`, `zeph-subagent`: thinking dropped by the provider is stripped from history after text-only replies too (#6851) (#6866)
+- `zeph-core`: local Chrome trace regression tests and docs for late span fields; no code change, the report was not a bug (#6859) (#6866)
+- `zeph-config`: migration step 111 writes only the explanation comment, so `--migrate-config` no longer duplicates the three `context_layout` keys; configs already duplicated are not cleaned (#6858) (#6866)
 - `zeph-core`: speculative tool results commit only after pre-hooks, gates, cache, rate limiter and `before_tool` layers, with a bounded commit that cancels the speculative task on timeout (breaking: `SpeculativeStreamDrainer::new` takes the dispatch gate, `with_gate` removed) (#6827) (#6849)
 - `zeph-llm`, `zeph-core`: Claude server-compaction usage iterations are billed as auxiliary usage and never counted as context size (breaking: new `LlmProvider::last_auxiliary_usage`) (#6828) (#6849)
 - `zeph-subagent`: sub-agent tool loop replays thinking blocks in response order and strips them on history trim and binding mismatch (#6829) (#6849)
@@ -58,11 +58,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-agent-context`, `zeph-llm`, `zeph-common`: subgoal membership lives on `MessageMetadata::subgoal_id` instead of index spans; removed `SubgoalRegistry::{tag_range,rebuild_after_compaction,msg_to_subgoal}` (breaking) (#6816) (#6826)
 - `zeph-llm`, `zeph-core`, `zeph-agent-context`, `zeph-context`: server-side compaction keeps the system prompt, Knowledge block, latest turn input and the untrusted tag, with a new `context_floor` for head passes (#6815) (#6826)
 - `zeph-common`, `zeph-sanitizer`, `zeph-subagent`: delimiter-tag escaping covers whitespace, zero-width, fullwidth and NFKC variants via `zeph_common::delimiter` (#6818) (#6826)
-- `zeph-skills`: literal block scalar de-indent no longer panics on multibyte or non-ASCII whitespace indentation in SKILL.md frontmatter (#6805) (#PR)
-- `zeph-llm`: Claude request history now always leads with a `user` turn (anchor message inserted instead of sending a leading assistant turn) (#6784) (#PR)
-- `zeph-llm`, `zeph-agent-context`, `zeph-context`: history cuts (compaction, budget trim, memory-first drain) and subgoal reinsertion no longer split `ToolUse`/`ToolResult` pairs, via the new `tool_pairing::pair_safe_cut` (#6782) (#PR)
-- `zeph-context`: removed the `assembler::MAX_KEEP_TAIL_SCAN` constant (breaking; the memory-first tail cut is now placed by `pair_safe_cut`) (#6782) (#PR)
-- `zeph-sanitizer`, `zeph-core`: shared-state rows can no longer forge the `<shared-state>` delimiter, with content isolation on or off (#6778) (#PR)
+- `zeph-skills`: literal block scalar de-indent no longer panics on multibyte or non-ASCII whitespace indentation in SKILL.md frontmatter (#6805) (#6866)
+- `zeph-llm`: Claude request history now always leads with a `user` turn (anchor message inserted instead of sending a leading assistant turn) (#6784) (#6866)
+- `zeph-llm`, `zeph-agent-context`, `zeph-context`: history cuts (compaction, budget trim, memory-first drain) and subgoal reinsertion no longer split `ToolUse`/`ToolResult` pairs, via the new `tool_pairing::pair_safe_cut` (#6782) (#6866)
+- `zeph-context`: removed the `assembler::MAX_KEEP_TAIL_SCAN` constant (breaking; the memory-first tail cut is now placed by `pair_safe_cut`) (#6782) (#6866)
+- `zeph-sanitizer`, `zeph-core`: shared-state rows can no longer forge the `<shared-state>` delimiter, with content isolation on or off (#6778) (#6866)
 - `zeph-subagent`: added `#![recursion_limit = "256"]` to fix a CI build failure where the
   compiler's `Send` auto-trait check on the nested `spawn_agent_task -> run_agent_loop ->
   run_turn` async chain exceeded the default recursion limit, producing a `future_incompatible`
