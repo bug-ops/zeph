@@ -8,14 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `zeph-config`, `zeph-core`: `[memory] context_layout` keeps the Claude prompt cache valid across turns (breaking: new `MessagePart` variant) (#6846)
-- `zeph-llm`: `LlmProvider::prefix_cache` and per-request `RequestPolicy` (#6846)
-- `zeph-llm`: `llm.claude.prefix_guard` span for prefix invalidation (#6563)
+- `zeph-config`, `zeph-core`: `[memory] context_layout` keeps the Claude prompt cache valid across turns (breaking: new `MessagePart` variant) (#6850)
+- `zeph-llm`: `LlmProvider::prefix_cache` and per-request `RequestPolicy` (#6850)
+- `zeph-llm`: `llm.claude.prefix_guard` span for prefix invalidation (#6850)
 
 ### Changed
 
-- `zeph-llm`, `zeph-core`: `chat_typed` returns `impl Future + Send` and `chat_typed_erased` is removed (breaking) (#6848)
-- `zeph-llm`: streamed Claude responses record merged usage (#6847)
+- `zeph-llm`, `zeph-core`: `chat_typed` returns `impl Future + Send` and `chat_typed_erased` is removed (breaking) (#6850)
+- `zeph-llm`: streamed Claude responses record merged usage (#6850)
 
 ### Fixed
 
