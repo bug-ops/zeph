@@ -274,8 +274,9 @@ Each entry includes timestamp, tool name, command, result (success/blocked/error
 
 LLM responses are scanned for secret patterns using compiled regexes before display:
 
-- Detected prefixes: `sk-`, `AKIA`, `ghp_`, `gho_`, `xoxb-`, `xoxp-`, `sk_live_`, `sk_test_`, `-----BEGIN`, `AIza` (Google API), `glpat-` (GitLab), `hf_` (HuggingFace), `npm_` (npm), `dckr_pat_` (Docker)
+- Detected prefixes: `sk-`, `AKIA`, `ghp_`, `gho_`, `xoxb-`, `xoxp-`, `sk_live_`, `sk_test_`, `-----BEGIN`, `AIza` (Google API), `glpat-` (GitLab), `hf_` (HuggingFace), `npm_` (npm), `dckr_pat_` (Docker), `ya29.` (Google OAuth), `github_pat_` (GitHub fine-grained token, matched by its full shape)
 - Regex-based matching replaces detected secrets with `[REDACTED]`, preserving original whitespace formatting
+- A prefix glued to a letter or digit (after ANSI, quoted-printable or double-encoded text) is redacted only when the text after it is key-shaped, so identifiers such as `disk-usage` or `task-runner-for-k8s-clusters` are left intact
 - Enabled by default (`security.redact_secrets = true`), applied to both streaming and non-streaming responses
 
 ## Credential Scrubbing in Context

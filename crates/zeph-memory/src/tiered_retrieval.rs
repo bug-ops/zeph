@@ -146,9 +146,14 @@ pub struct TieredRetrievalResult {
 ///
 /// `conversation_id` scopes the search to a single conversation. Pass `None` to search globally.
 ///
+/// `is_known` reports candidates whose content the caller already holds (for example items still
+/// present in history). They are dropped before the token budget is applied, so the budget is
+/// spent on new content only. Pass `&|_| false` to keep every candidate.
+///
 /// # Errors
 ///
 /// Returns an error if any underlying search or database operation fails.
+#[allow(clippy::too_many_arguments)] // flat pipeline inputs; a params struct would only rename them
 #[tracing::instrument(name = "memory.tiered.retrieve", skip_all, fields(intent = tracing::field::Empty))]
 pub async fn recall_tiered(
     memory: &SemanticMemory,
@@ -158,6 +163,7 @@ pub async fn recall_tiered(
     validator: Option<&Arc<AnyProvider>>,
     config: &TieredRetrievalConfig,
     remaining_budget: Option<usize>,
+    is_known: &(dyn Fn(&str) -> bool + Sync),
 ) -> Result<TieredRetrievalResult, MemoryError> {
     let effective_budget =
         remaining_budget.map_or(config.token_budget, |rb| rb.min(config.token_budget));
@@ -196,6 +202,7 @@ pub async fn recall_tiered(
         validator,
         config,
         effective_budget,
+        is_known,
     )
     .await
 }
@@ -205,6 +212,7 @@ pub async fn recall_tiered(
 /// Iterates through tiers starting at `initial_intent`, retrieving candidates and
 /// validating evidence quality. Escalates to heavier tiers when validation indicates
 /// insufficient evidence.
+#[allow(clippy::too_many_arguments)] // same inputs as `recall_tiered`
 #[tracing::instrument(name = "memory.tiered.escalation_loop", skip_all, fields(initial_intent = %initial_intent, max_escalations = config.max_escalations))]
 async fn escalation_loop(
     memory: &SemanticMemory,
@@ -214,6 +222,7 @@ async fn escalation_loop(
     validator: Option<&Arc<AnyProvider>>,
     config: &TieredRetrievalConfig,
     effective_budget: usize,
+    is_known: &(dyn Fn(&str) -> bool + Sync),
 ) -> Result<TieredRetrievalResult, MemoryError> {
     let mut intent = initial_intent;
     let mut escalations: u8 = 0;
@@ -224,18 +233,18 @@ async fn escalation_loop(
 
         let candidates = score_candidates(memory, query, raw_candidates, config).await?;
 
-        let (messages, tokens_used) = assemble_within_budget(candidates, effective_budget);
-
-        // Validate evidence quality if enabled and a validator is available.
+        // The validator judges the relevance of the retrieved tier, so it sees the ranked
+        // candidates before the known-filter; only assembly skips known items.
         if config.validation_enabled
             && escalations < config.max_escalations
             && let Some(validator_provider) = validator
             && let Some(next_tier) = intent.escalate()
         {
+            let (evidence_len, _) = budget_prefix(&candidates, effective_budget);
             let sufficient = validate_evidence(
                 validator_provider,
                 query,
-                &messages,
+                &candidates[..evidence_len],
                 config.validation_threshold,
                 config.validator_timeout_secs,
             )
@@ -253,6 +262,9 @@ async fn escalation_loop(
                 continue;
             }
         }
+
+        let (messages, tokens_used) =
+            assemble_within_budget(drop_known(candidates, is_known), effective_budget);
 
         return Ok(TieredRetrievalResult {
             messages,
@@ -568,22 +580,46 @@ fn compute_tfidf_scores(query: &str, candidates: &[RecalledMessage]) -> Vec<f64>
 /// Uses the same 4 chars-per-token approximation as the rest of the codebase.
 /// Returns the retained messages and the total token count consumed.
 fn assemble_within_budget(
-    candidates: Vec<RecalledMessage>,
+    mut candidates: Vec<RecalledMessage>,
     budget: usize,
 ) -> (Vec<RecalledMessage>, usize) {
-    let mut retained = Vec::with_capacity(candidates.len());
-    let mut total_tokens: usize = 0;
+    let (len, total_tokens) = budget_prefix(&candidates, budget);
+    candidates.truncate(len);
+    (candidates, total_tokens)
+}
 
+/// Length of the longest prefix of `candidates` that fits `budget`, and its token count.
+fn budget_prefix(candidates: &[RecalledMessage], budget: usize) -> (usize, usize) {
+    let mut total_tokens: usize = 0;
+    let mut len = 0;
     for msg in candidates {
         let msg_tokens = zeph_common::text::estimate_tokens(&msg.message.content);
         if total_tokens.saturating_add(msg_tokens) > budget {
             break;
         }
         total_tokens += msg_tokens;
-        retained.push(msg);
+        len += 1;
     }
+    (len, total_tokens)
+}
 
-    (retained, total_tokens)
+/// Remove candidates the caller already holds and repeated contents, preserving rank order.
+///
+/// A repeat would be dropped by the caller after the budget is spent, so it must not consume
+/// budget here either.
+fn drop_known(
+    candidates: Vec<RecalledMessage>,
+    is_known: &(dyn Fn(&str) -> bool + Sync),
+) -> Vec<RecalledMessage> {
+    let mut seen = std::collections::HashSet::new();
+    let mut keep = candidates
+        .iter()
+        .map(|c| !is_known(&c.message.content) && seen.insert(c.message.content.as_str()))
+        .collect::<Vec<_>>()
+        .into_iter();
+    let mut candidates = candidates;
+    candidates.retain(|_| keep.next().unwrap_or(false));
+    candidates
 }
 
 /// Ask the validator LLM whether the gathered evidence is sufficient for the query.
@@ -970,6 +1006,50 @@ mod tests {
     }
 
     #[test]
+    fn drop_known_frees_the_budget_for_new_items() {
+        let (a, b, c) = ("a ".repeat(400), "b ".repeat(400), "c ".repeat(400));
+        let candidates = || vec![make_message(&a), make_message(&b), make_message(&c)];
+        // Budget 250 fits one 200-token item; without the filter the known first item takes it.
+        let (kept, _) = assemble_within_budget(drop_known(candidates(), &|_| false), 250);
+        assert_eq!(kept[0].message.content, a);
+
+        let (kept, tokens) =
+            assemble_within_budget(drop_known(candidates(), &|content| content == a), 250);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].message.content, b);
+        assert_eq!(tokens, 200);
+    }
+
+    #[test]
+    fn drop_known_keeps_rank_order_and_empties_when_all_known() {
+        let candidates = || vec![make_message("a"), make_message("b"), make_message("c")];
+        let kept = drop_known(candidates(), &|content| content == "b");
+        assert_eq!(
+            kept.iter()
+                .map(|m| m.message.content.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "c"]
+        );
+        assert!(drop_known(candidates(), &|_| true).is_empty());
+        let (retained, tokens) = assemble_within_budget(drop_known(candidates(), &|_| true), 4096);
+        assert!(retained.is_empty());
+        assert_eq!(tokens, 0);
+    }
+
+    #[test]
+    fn drop_known_dedupes_repeated_contents_before_the_budget() {
+        let a = "a ".repeat(400);
+        let candidates = vec![
+            make_message(&a),
+            make_message(&a),
+            make_message("b ".repeat(400).as_str()),
+        ];
+        let (kept, tokens) = assemble_within_budget(drop_known(candidates, &|_| false), 450);
+        assert_eq!(kept.len(), 2, "the repeat must not consume budget");
+        assert_eq!(tokens, 400);
+    }
+
+    #[test]
     fn assemble_within_budget_truncates_at_limit() {
         // estimate_tokens = chars / 4. Each message: "a " * 400 = 800 chars = 200 tokens.
         // Budget 250 fits exactly one (200 <= 250) but not two (200 + 200 = 400 > 250).
@@ -1075,9 +1155,18 @@ mod tests {
             ..TieredRetrievalConfig::default()
         };
 
-        let result = recall_tiered(&memory, "what is my name", None, None, None, &config, None)
-            .await
-            .expect("recall_tiered must not fail");
+        let result = recall_tiered(
+            &memory,
+            "what is my name",
+            None,
+            None,
+            None,
+            &config,
+            None,
+            &|_| false,
+        )
+        .await
+        .expect("recall_tiered must not fail");
 
         // HeuristicRouter classifies "what is my name" via keyword/semantic heuristic.
         // The exact tier depends on the heuristic, but the pipeline must complete.
@@ -1121,6 +1210,7 @@ mod tests {
             None,
             &config,
             None,
+            &|_| false,
         )
         .await
         .expect("recall_tiered with classifier must not fail");
@@ -1165,6 +1255,7 @@ mod tests {
             Some(&validator),
             &config,
             None,
+            &|_| false,
         )
         .await
         .expect("escalation path must not fail");
@@ -1226,6 +1317,7 @@ mod tests {
             Some(&validator),
             &config,
             None,
+            &|_| false,
         )
         .await
         .expect("timeout path must not propagate as error");
@@ -1278,6 +1370,7 @@ mod tests {
             Some(&validator),
             &config,
             None,
+            &|_| false,
         )
         .await
         .expect("LLM error path must not propagate as retrieval error");
@@ -1285,6 +1378,120 @@ mod tests {
         assert!(
             !result.tier_escalated,
             "validator LLM error must be treated as sufficient (fail-open)"
+        );
+    }
+
+    /// Stores three equally sized messages and returns the memory.
+    async fn memory_with_three_equal_messages() -> Arc<SemanticMemory> {
+        let memory = crate::testing::mock_semantic_memory()
+            .await
+            .expect("mock_semantic_memory");
+        let conv_id = memory
+            .sqlite()
+            .create_conversation()
+            .await
+            .expect("create_conversation");
+        for word in ["alpha", "bravo", "charlie"] {
+            memory
+                .remember(
+                    conv_id,
+                    "user",
+                    &format!("shared {word:<9}").repeat(50),
+                    None,
+                )
+                .await
+                .expect("remember");
+        }
+        memory
+    }
+
+    /// Recall with room for exactly one 200-token item.
+    async fn recall_one_slot(
+        memory: &SemanticMemory,
+        config: &TieredRetrievalConfig,
+        is_known: &(dyn Fn(&str) -> bool + Sync),
+    ) -> TieredRetrievalResult {
+        recall_tiered(
+            memory,
+            "shared",
+            None,
+            None,
+            None,
+            config,
+            Some(250),
+            is_known,
+        )
+        .await
+        .expect("recall_tiered")
+    }
+
+    /// The known-filter runs before the budget: with room for one 200-token item, a known
+    /// top-ranked item must not take the slot of a new one.
+    #[tokio::test]
+    async fn recall_tiered_spends_the_budget_on_items_not_known() {
+        let memory = memory_with_three_equal_messages().await;
+        let config = TieredRetrievalConfig {
+            enabled: true,
+            validation_enabled: false,
+            ..TieredRetrievalConfig::default()
+        };
+        let first = recall_one_slot(&memory, &config, &|_| false).await;
+        assert_eq!(first.messages.len(), 1, "budget fits exactly one item");
+        let top = first.messages[0].message.content.clone();
+
+        let second = recall_one_slot(&memory, &config, &|c| c == top).await;
+        assert_eq!(
+            second.messages.len(),
+            1,
+            "a known item must not use the slot"
+        );
+        assert_ne!(
+            second.messages[0].message.content,
+            first.messages[0].message.content
+        );
+        assert_eq!(second.tokens_used, 200);
+
+        let none_new = recall_one_slot(&memory, &config, &|_| true).await;
+        assert!(none_new.messages.is_empty());
+        assert_eq!(none_new.tokens_used, 0);
+    }
+
+    /// The validator judges the retrieved tier before the known-filter, so an all-known result
+    /// is neither an LLM-less "insufficient" nor an escalation.
+    #[tokio::test]
+    async fn recall_tiered_validates_candidates_before_the_known_filter() {
+        use zeph_llm::mock::MockProvider;
+
+        let memory = memory_with_three_equal_messages().await;
+        let sufficient = r#"{"sufficient": true, "confidence": 0.95}"#.to_owned();
+        let validator = Arc::new(AnyProvider::Mock(MockProvider::with_responses(vec![
+            sufficient,
+        ])));
+        let config = TieredRetrievalConfig {
+            enabled: true,
+            validation_enabled: true,
+            validation_threshold: 0.6,
+            max_escalations: 1,
+            ..TieredRetrievalConfig::default()
+        };
+
+        let result = recall_tiered(
+            &memory,
+            "shared",
+            None,
+            None,
+            Some(&validator),
+            &config,
+            None,
+            &|_| true,
+        )
+        .await
+        .expect("recall_tiered");
+
+        assert!(result.messages.is_empty());
+        assert!(
+            !result.tier_escalated,
+            "known items are still evidence for the validator"
         );
     }
 
@@ -1313,6 +1520,7 @@ mod tests {
             None,
             &config,
             None,
+            &|_| false,
         )
         .await
         .expect("conversation-scoped recall must not fail");

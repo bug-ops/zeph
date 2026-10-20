@@ -217,9 +217,11 @@ async fn drive_tool_stream(
 ) -> Result<ChatResponse, zeph_llm::LlmError> {
     let mut content = AssistantContentBuilder::default();
     let mut has_tool_calls = false;
+    let mut replay = ThinkingReplay::Intact;
 
     while let Some(event) = stream.next().await {
         match event {
+            ToolSseEvent::ThinkingReplay(r) => replay = replay.merge(r),
             ToolSseEvent::TextBlockStart => content.begin_text_block(),
             ToolSseEvent::ContentChunk(text) => {
                 forward.send_text(&text);
@@ -253,8 +255,6 @@ async fn drive_tool_stream(
             // drive`'s same limitation — not yet surfaced to the caller). Any future
             // `#[non_exhaustive]` variant is likewise a no-op here rather than a compile
             // error on an upstream addition.
-            // TODO(#6862): `ThinkingReplay` is dropped here, so a streamed subagent turn
-            // never learns which thinking the provider discarded.
             _ => {}
         }
     }
@@ -262,13 +262,13 @@ async fn drive_tool_stream(
     if has_tool_calls {
         Ok(ChatResponse::ToolUse {
             content: content.build(),
-            replay: ThinkingReplay::Intact,
+            replay,
             compaction: None,
         })
     } else {
-        Ok(ChatResponse::text(
-            content.build().text().unwrap_or_default(),
-        ))
+        let mut response = ChatResponse::text(content.build().text().unwrap_or_default());
+        response.set_replay(replay);
+        Ok(response)
     }
 }
 
@@ -3130,6 +3130,95 @@ mod token_streaming_tests {
                 assert_eq!(tool_calls[0].input["cmd"], "ls");
             }
             other => panic!("expected ChatResponse::ToolUse, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn drive_tool_stream_carries_thinking_replay_on_text_and_tool_use() {
+        let dropped = ThinkingReplay::Dropped {
+            first_message_index: 3,
+        };
+        let (sender, _rx) = new_channel(Arc::from("task-r"), Arc::from("agent-r"));
+
+        let text = drive_tool_stream(
+            tool_stream_from(vec![
+                ToolSseEvent::ThinkingReplay(dropped),
+                ToolSseEvent::ContentChunk("done".into()),
+            ]),
+            &sender,
+        )
+        .await
+        .expect("text stream");
+        assert_eq!(text.replay(), dropped);
+
+        let tool_use = drive_tool_stream(
+            tool_stream_from(vec![
+                ToolSseEvent::ThinkingReplay(dropped),
+                ToolSseEvent::ToolCallComplete {
+                    index: 0,
+                    id: "c".into(),
+                    name: "shell".into(),
+                    full_json: "{}".into(),
+                },
+            ]),
+            &sender,
+        )
+        .await
+        .expect("tool stream");
+        assert_eq!(tool_use.replay(), dropped);
+
+        let intact = drive_tool_stream(
+            tool_stream_from(vec![ToolSseEvent::ContentChunk("x".into())]),
+            &sender,
+        )
+        .await
+        .expect("intact stream");
+        assert_eq!(intact.replay(), ThinkingReplay::Intact);
+    }
+
+    #[tokio::test]
+    async fn drive_tool_stream_merges_replay_events_to_the_lowest_index_in_any_order() {
+        let dropped = |first_message_index| ThinkingReplay::Dropped {
+            first_message_index,
+        };
+        let tool_call = || ToolSseEvent::ToolCallComplete {
+            index: 0,
+            id: "c".into(),
+            name: "shell".into(),
+            full_json: "{}".into(),
+        };
+        let (sender, _rx) = new_channel(Arc::from("task-m"), Arc::from("agent-m"));
+
+        let cases = [
+            (
+                "two drops keep the lowest index",
+                vec![
+                    ToolSseEvent::ThinkingReplay(dropped(3)),
+                    ToolSseEvent::ThinkingReplay(dropped(1)),
+                    ToolSseEvent::ContentChunk("x".into()),
+                ],
+                dropped(1),
+            ),
+            (
+                "an intact event after a drop keeps the drop",
+                vec![
+                    ToolSseEvent::ThinkingReplay(dropped(2)),
+                    ToolSseEvent::ThinkingReplay(ThinkingReplay::Intact),
+                    ToolSseEvent::ContentChunk("x".into()),
+                ],
+                dropped(2),
+            ),
+            (
+                "an event after the tool call still counts",
+                vec![tool_call(), ToolSseEvent::ThinkingReplay(dropped(4))],
+                dropped(4),
+            ),
+        ];
+        for (name, events, expected) in cases {
+            let response = drive_tool_stream(tool_stream_from(events), &sender)
+                .await
+                .expect(name);
+            assert_eq!(response.replay(), expected, "{name}");
         }
     }
 

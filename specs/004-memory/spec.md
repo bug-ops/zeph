@@ -238,6 +238,12 @@ combined with an Episodic Memory Graph (EM-Graph) for causal-temporal event link
 `ContextAssembler::gather()` as the default semantic recall path when MemFlow is enabled.
 When disabled, the prior `recall_semantic` path is used unchanged.
 
+`recall_tiered` takes a trailing `is_known: &(dyn Fn(&str) -> bool + Sync)` predicate: candidates
+for which it returns `true` (items already in history) and repeated contents are dropped before
+the token budget is applied, so the budget is spent on new content only. The validator still
+judges the ranked candidates before this filter. Pass `&|_| false` to keep every candidate (the
+`replace` layout).
+
 ---
 
 ## Sub-Specifications

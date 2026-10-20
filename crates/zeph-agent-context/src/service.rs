@@ -352,7 +352,7 @@ impl ContextService {
         memory: Option<&zeph_memory::semantic::SemanticMemory>,
     ) -> Result<Option<Message>, ContextError> {
         if params.tiered_config.enabled {
-            let items = self.load_tiered_recall_items(params, memory).await?;
+            let items = self.load_tiered_recall_items(params, memory, None).await?;
             Ok(format_tiered_recall(&items))
         } else {
             let (msg, _score) = crate::helpers::fetch_semantic_recall_raw(
@@ -376,10 +376,14 @@ impl ContextService {
     ///
     /// Returns an empty list when there is no memory backend. Kept separate from formatting so
     /// the `append` layout can deduplicate per item before the block is built.
+    ///
+    /// Items whose key is excluded by `keys` are dropped before the recall token budget is
+    /// applied, so the budget is spent on content not yet in history.
     async fn load_tiered_recall_items(
         &self,
         params: &SemanticRecallParams<'_>,
         memory: Option<&zeph_memory::semantic::SemanticMemory>,
+        keys: Option<&ItemKeys>,
     ) -> Result<Vec<String>, ContextError> {
         use tracing::Instrument as _;
         let Some(mem) = memory else {
@@ -395,6 +399,9 @@ impl ContextService {
                 params.tiered_validator,
                 params.tiered_config,
                 Some(params.token_budget),
+                &|content| {
+                    keys.is_some_and(|k| k.is_excluded(ItemKeys::key(TIERED_SOURCE, content)))
+                },
             )
             .instrument(tracing::info_span!("agent_context.tiered_retrieval.recall")),
         )
@@ -1072,8 +1079,7 @@ impl ContextService {
         keys: &ItemKeys,
         view: &mut ContextAssemblyView<'_>,
     ) -> Option<String> {
-        // TODO(#6864): exclude items already in history before the recall budget is spent.
-        let fresh = admit_new_items(keys, "tiered_recall", items);
+        let fresh = admit_new_items(keys, TIERED_SOURCE, items);
         let msg = format_tiered_recall(&fresh)?;
         let sanitized = self
             .sanitize_memory_message(
@@ -1083,7 +1089,7 @@ impl ContextService {
             )
             .await;
         if sanitized.content.is_empty() {
-            keys.discard("tiered_recall");
+            keys.discard(TIERED_SOURCE);
             None
         } else {
             Some(sanitized.content)
@@ -1199,7 +1205,7 @@ impl ContextService {
                 tiered_config: &view.tiered_retrieval_config,
             };
             let loaded = self
-                .load_tiered_recall_items(&params, view.memory.as_deref())
+                .load_tiered_recall_items(&params, view.memory.as_deref(), Some(keys))
                 .await;
             sections.extend(
                 self.tiered_section(tiered_items_or_empty(loaded), keys, view)
@@ -1455,12 +1461,13 @@ impl ContextService {
         }
 
         // T-07: AgeMem proactive regrade — fires before tier dispatch (INV-06, INV-11).
-        // TODO(#6863): the regrade rewrites sent history in the `append` layout and is
-        // neither sweep- nor cache-gated.
+        // Rewrites sent history, so it follows the soft-tier gate: a warm provider cache in
+        // the `append` layout defers it (#6863).
         // Skip when MemoryFirst is active; ContextSummarizationView does not carry
         // context_strategy, so we check the budget ratio directly via should_proactively_regrade.
         if let Some(ref fidelity_cfg) = summ.fidelity_config.clone()
             && fidelity_cfg.enabled
+            && summ.soft_tier_gate == crate::state::SoftTierGate::Open
             && summ.context_manager.should_proactively_regrade(
                 *summ.cached_prompt_tokens,
                 fidelity_cfg.regrade_threshold,
@@ -1939,6 +1946,9 @@ pub fn present_turn_context_keys(
         .flatten()
         .collect()
 }
+
+/// Source label under which tiered recall items are keyed for per-item dedup.
+const TIERED_SOURCE: &str = "tiered_recall";
 
 /// Keys of every retrieved item already present in live history.
 #[must_use]
@@ -4077,6 +4087,53 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn tiered_load_skips_items_in_history_before_the_budget() {
+            let memory = zeph_memory::testing::mock_semantic_memory().await.unwrap();
+            let conversation = memory.sqlite().create_conversation().await.unwrap();
+            for word in ["alpha", "bravo", "charlie"] {
+                let content = format!("shared {word:<9}").repeat(50);
+                memory
+                    .remember(conversation, "user", &content, None)
+                    .await
+                    .unwrap();
+            }
+
+            let mut env = Env::new();
+            let mut view = env.view();
+            view.memory = Some(memory);
+            view.tiered_retrieval_config.enabled = true;
+            let svc = ContextService::new();
+            let params = SemanticRecallParams {
+                query: "shared",
+                token_budget: 250,
+                recall_limit: view.recall_limit,
+                context_format: view.context_format,
+                conversation_id: None,
+                tiered_classifier: None,
+                tiered_validator: None,
+                tiered_config: &view.tiered_retrieval_config,
+            };
+
+            let first = svc
+                .load_tiered_recall_items(&params, view.memory.as_deref(), None)
+                .await
+                .unwrap();
+            assert_eq!(first.len(), 1, "the budget has room for one item");
+
+            let keys = ItemKeys::new(
+                [ItemKeys::key(TIERED_SOURCE, &first[0])]
+                    .into_iter()
+                    .collect(),
+            );
+            let second = svc
+                .load_tiered_recall_items(&params, view.memory.as_deref(), Some(&keys))
+                .await
+                .unwrap();
+            assert_eq!(second.len(), 1, "the known item must not take the slot");
+            assert_ne!(second[0], first[0]);
+        }
+
+        #[tokio::test]
         async fn tiered_load_failure_drops_only_the_tiered_section() {
             let provider = zeph_llm::any::AnyProvider::Mock(MockProvider::with_responses(vec![]));
             let memory = zeph_memory::semantic::SemanticMemory::new(
@@ -4106,7 +4163,7 @@ mod tests {
                 tiered_config: &view.tiered_retrieval_config,
             };
             assert!(
-                svc.load_tiered_recall_items(&params, view.memory.as_deref())
+                svc.load_tiered_recall_items(&params, view.memory.as_deref(), None)
                     .await
                     .is_err(),
                 "precondition: the tiered load must fail"
@@ -4437,6 +4494,59 @@ mod tests {
                 .await
                 .unwrap();
             (initial_tokens, *view.cached_prompt_tokens)
+        }
+
+        async fn regraded_after_pass(gate: crate::SoftTierGate) -> (bool, Vec<Message>) {
+            let body = "large tool output ".repeat(200);
+            let mut ctx_mgr = ContextManager::new();
+            ctx_mgr.budget = Some(ContextBudget::new(1000, 0.2));
+            ctx_mgr.soft_compaction_threshold = 0.95;
+            ctx_mgr.hard_compaction_threshold = 0.99;
+
+            let cfg = zeph_config::FidelityConfig {
+                enabled: true,
+                regrade_threshold: 0.1,
+                full_threshold: 2.0,
+                compressed_threshold: 2.0,
+                ..Default::default()
+            };
+            let mut fixture = Fixture::new(messages_with_one_tool_output(&body), 700, ctx_mgr);
+            let mut view = fixture.view();
+            view.fidelity_config = Some(cfg.clone());
+            view.soft_tier_gate = gate;
+
+            ContextService::new()
+                .maybe_compact(&mut view, &NoopStatus)
+                .await
+                .unwrap();
+            let regraded =
+                !view
+                    .context_manager
+                    .should_proactively_regrade(700, cfg.regrade_threshold, false);
+            (regraded, view.messages.clone())
+        }
+
+        #[tokio::test]
+        async fn deferred_gate_skips_the_proactive_regrade() {
+            let before = messages_with_one_tool_output(&"large tool output ".repeat(200));
+            let (regraded, after) = regraded_after_pass(crate::SoftTierGate::Deferred).await;
+            assert!(!regraded, "a deferred gate must not run the regrade");
+            assert_eq!(
+                after.iter().map(|m| &m.content).collect::<Vec<_>>(),
+                before.iter().map(|m| &m.content).collect::<Vec<_>>()
+            );
+
+            let (regraded, regraded_messages) =
+                regraded_after_pass(crate::SoftTierGate::Open).await;
+            assert!(regraded, "an open gate runs the regrade");
+            assert_ne!(
+                regraded_messages
+                    .iter()
+                    .map(|m| &m.content)
+                    .collect::<Vec<_>>(),
+                before.iter().map(|m| &m.content).collect::<Vec<_>>(),
+                "an open gate rewrites message content"
+            );
         }
 
         #[tokio::test]

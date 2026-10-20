@@ -326,7 +326,8 @@ pub struct ContextDelta {
     pub trimmed_messages: usize,
 }
 
-/// Whether the soft compaction tier may rewrite history on this call.
+/// Whether the soft compaction tier and the proactive fidelity regrade may rewrite history on
+/// this call.
 ///
 /// The caller closes the gate while the provider prefix cache is still warm, so a soft rewrite
 /// would only invalidate a cache that has not yet expired.
@@ -475,8 +476,8 @@ pub struct ContextSummarizationView<'a> {
     pub thinking_binding: zeph_llm::provider::ThinkingBinding,
 
     // ── Soft tier gate ────────────────────────────────────────────────────────
-    /// Whether `maybe_compact` may run the soft tier. Does not affect mid-iteration soft
-    /// compaction or the hard tier.
+    /// Whether `maybe_compact` may run the soft tier and the proactive regrade. Does not affect
+    /// mid-iteration soft compaction or the hard tier.
     pub soft_tier_gate: SoftTierGate,
 }
 

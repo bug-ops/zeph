@@ -17,32 +17,11 @@ use std::borrow::Cow;
 use std::sync::LazyLock;
 
 use regex::Regex;
+use zeph_common::secret_redact::redact_prefixed_secrets;
 use zeph_common::secrets::{
     AWS_SECRET_KEY_PATTERN, BEARER_TOKEN_PATTERN, JWT_PATTERN, PEM_PRIVATE_KEY_PATTERN,
-    PEM_PRIVATE_KEY_UNTERMINATED_PATTERN, SECRET_PREFIXES, SECRET_TOKEN_GLUED_PATTERN,
-    SECRET_TOKEN_PATTERN, redact_glued_matches,
+    PEM_PRIVATE_KEY_UNTERMINATED_PATTERN,
 };
-
-static SECRET_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(SECRET_TOKEN_PATTERN).expect("secret shape regex is valid"));
-
-static SECRET_GLUED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(SECRET_TOKEN_GLUED_PATTERN).expect("glued secret shape regex is valid")
-});
-
-/// Second tier: a prefix glued to an alphanumeric is redacted only when its body is key-shaped.
-fn redact_glued_tokens(text: &str) -> Cow<'_, str> {
-    redact_glued_matches(
-        text,
-        SECRET_GLUED_REGEX.captures_iter(text).filter_map(|caps| {
-            Some((
-                caps.get(0)?.range(),
-                caps.get(1)?.range(),
-                caps.get(2)?.range(),
-            ))
-        }),
-    )
-}
 
 static BEARER_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(BEARER_TOKEN_PATTERN).expect("bearer shape regex is valid"));
@@ -75,8 +54,9 @@ static AWS_SECRET_REGEX: LazyLock<Regex> =
 /// fast path).
 ///
 /// No existing pattern spanned a PEM key's multi-line body before this fix (see #6592) — the
-/// `-----BEGIN` entry in [`SECRET_PREFIXES`] only ever matches a literal token on a single
-/// line, regardless of scrub ordering. Two PEM passes run first, before the prefix pass: the
+/// `-----BEGIN` entry in [`zeph_common::secrets::SECRET_PREFIXES`] only ever matches a literal
+/// token on a single line, regardless of scrub ordering. Two PEM passes run first, before the
+/// prefix pass: the
 /// properly-closed-block pattern, then a footerless-header fallback (truncated/adversarial
 /// input, or a footer chunk dropped by a bounded ingress channel). Running them first also
 /// matters operationally — the prefix pass would otherwise consume just the `-----BEGIN`
@@ -101,21 +81,9 @@ pub fn scrub_secret_shapes(text: &str) -> Cow<'_, str> {
             Cow::Owned(s) => Cow::Owned(s),
         };
 
-    let has_prefix_match = SECRET_PREFIXES
-        .iter()
-        .any(|p| after_pem_fallback.contains(*p));
-    let after_prefixes: Cow<'_, str> = if has_prefix_match {
-        let tier1: Cow<'_, str> =
-            match SECRET_REGEX.replace_all(after_pem_fallback.as_ref(), "${1}[REDACTED]") {
-                Cow::Borrowed(_) => after_pem_fallback,
-                Cow::Owned(s) => Cow::Owned(s),
-            };
-        match redact_glued_tokens(tier1.as_ref()) {
-            Cow::Borrowed(_) => tier1,
-            Cow::Owned(s) => Cow::Owned(s),
-        }
-    } else {
-        after_pem_fallback
+    let after_prefixes: Cow<'_, str> = match redact_prefixed_secrets(after_pem_fallback.as_ref()) {
+        Cow::Borrowed(_) => after_pem_fallback,
+        Cow::Owned(s) => Cow::Owned(s),
     };
 
     let after_bearer: Cow<'_, str> =
@@ -176,7 +144,7 @@ mod tests {
 
     #[test]
     fn all_secret_prefixes_detected() {
-        for prefix in SECRET_PREFIXES {
+        for prefix in zeph_common::secrets::SECRET_PREFIXES {
             let text = format!("token: {prefix}abc123");
             let result = scrub_secret_shapes(&text);
             assert!(result.contains("[REDACTED]"), "failed for prefix: {prefix}");
@@ -323,6 +291,143 @@ mod tests {
         ] {
             assert_eq!(scrub_secret_shapes(text), text);
         }
+    }
+
+    struct XorShift(u64);
+
+    impl XorShift {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn body(&mut self, alphabet: &[u8], len: usize) -> String {
+            (0..len)
+                .map(|_| {
+                    alphabet[usize::try_from(
+                        self.next() % u64::try_from(alphabet.len()).unwrap_or(1),
+                    )
+                    .unwrap_or(0)] as char
+                })
+                .collect()
+        }
+    }
+
+    const ALNUM: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    const ALNUM_SEP: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+    const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    const BASE32: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+    #[test]
+    fn generated_keys_of_listed_formats_are_redacted_after_every_glue() {
+        let glue = ["\\x1b[32m", "=3D", "%253D", "\\075", "\\ask", "a"];
+        let mut rng = XorShift(0x9E37_79B9_7F4A_7C15);
+        let formats: [(&str, &[u8], usize); 9] = [
+            ("hf_", LETTERS, 34),
+            ("glpat-", ALNUM_SEP, 20),
+            ("dckr_pat_", ALNUM_SEP, 27),
+            ("AIza", ALNUM_SEP, 35),
+            ("AKIA", BASE32, 16),
+            ("npm_", ALNUM, 36),
+            ("ghp_", ALNUM, 36),
+            ("gho_", ALNUM, 36),
+            ("sk_live_", ALNUM, 24),
+        ];
+        for (prefix, alphabet, len) in formats {
+            for i in 0..2000 {
+                let body = rng.body(alphabet, len);
+                let text = format!("{}{prefix}{body}", glue[i % glue.len()]);
+                let result = scrub_secret_shapes(&text);
+                assert!(!result.contains(&body), "{prefix}: {text} -> {result}");
+            }
+        }
+    }
+
+    #[test]
+    fn generated_github_fine_grained_tokens_are_redacted_for_any_version_and_glue() {
+        let glue = ["", "token: ", "\\x1b[32m", "=3D", "%253D", "a"];
+        let mut rng = XorShift(0x0F1E_2D3C_4B5A_6978);
+        for i in 0..2000 {
+            let (head, tail) = (rng.body(ALNUM, 22), rng.body(ALNUM, 59));
+            let text = format!("{}github_pat_{head}_{tail}", glue[i % glue.len()]);
+            let result = scrub_secret_shapes(&text);
+            assert!(
+                !result.contains(&head) && !result.contains(&tail),
+                "{text} -> {result}"
+            );
+        }
+    }
+
+    #[test]
+    fn glued_ordinary_hyphenated_identifiers_stay_intact() {
+        for text in [
+            "task-runner-for-k8s-clusters",
+            "ask-rotate-credentials-2024-quarterly",
+            "mask-rcnn-resnet50-fpn-v2-coco-weights",
+            "flask-session-management-and-cookies",
+            "pnpm_store_v3_linux_x64_node20",
+            "chf_report_generation_pipeline_stage",
+            "xAKIAshort",
+            "xglpat-short",
+        ] {
+            assert_eq!(scrub_secret_shapes(text), text);
+        }
+    }
+
+    #[test]
+    fn lowercase_snake_identifiers_with_a_distinctive_prefix_stay_intact() {
+        for text in [
+            "disk_test_results_summary_report",
+            "run_task_test_with_retries_enabled",
+            "risk_live_dashboard_refresh_interval",
+            "mygithub_pat_rotation_schedule_doc",
+            "aya29.something_long_identifier_name",
+            "load_github_pat_from_env()",
+            "the github_pat_ prefix",
+            "/docs/flask-sqlalchemyintegrationguideforbeginners",
+            "chf_conversionratesfromswissnationalbankfeed",
+        ] {
+            assert_eq!(scrub_secret_shapes(text), text);
+        }
+    }
+
+    #[test]
+    fn glued_distinctive_key_nested_in_a_rejected_ambiguous_run_is_redacted() {
+        let mut rng = XorShift(0x1234_5678_9ABC_DEF1);
+        for i in 0..2000 {
+            let glpat = rng.body(ALNUM_SEP, 20);
+            let dckr = rng.body(ALNUM_SEP, 27);
+            for (text, body) in [
+                (format!("ask-ab_cglpat-{glpat}"), glpat),
+                (format!("9hf_xdckr_pat_{dckr}"), dckr),
+            ] {
+                let result = scrub_secret_shapes(&text);
+                assert!(!result.contains(&body), "{i}: {text} -> {result}");
+            }
+        }
+    }
+
+    #[test]
+    fn glued_key_length_boundaries() {
+        let distinctive = |len: usize| format!("xglpat-aB{}", "d".repeat(len - 2));
+        assert_eq!(
+            scrub_secret_shapes(&distinctive(15)),
+            distinctive(15),
+            "15 chars"
+        );
+        assert!(scrub_secret_shapes(&distinctive(16)).contains("[REDACTED]"));
+
+        let digit = |len: usize| format!("xsk-a1{}", "d".repeat(len - 2));
+        assert_eq!(scrub_secret_shapes(&digit(15)), digit(15), "15 chars");
+        assert!(scrub_secret_shapes(&digit(16)).contains("[REDACTED]"));
+
+        let mixed = |len: usize| format!("xhf_A{}", "b".repeat(len - 1));
+        assert_eq!(scrub_secret_shapes(&mixed(29)), mixed(29), "29 chars");
+        assert!(scrub_secret_shapes(&mixed(30)).contains("[REDACTED]"));
+        let lower_30 = format!("xhf_{}", "b".repeat(30));
+        assert_eq!(scrub_secret_shapes(&lower_30), lower_30);
     }
 
     #[test]
