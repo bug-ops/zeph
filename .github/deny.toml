@@ -27,6 +27,7 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # zip 8.x extract() advisories (RUSTSEC-2026-0367, -0368, -0369; fixed in zip 9.0.0) via candle-core,
 # which pins zip ^8. candle only reads npz/pickle entries (by_index/by_name), never calls extract();
 # remove once candle-core moves to zip >=9
+# basic-toml unmaintained (RUSTSEC-2026-0374) via age -> i18n-embed-fl -> i18n-config; remove once age drops it
 ignore = [
     "RUSTSEC-2024-0436",
     "RUSTSEC-2026-0173",
@@ -34,6 +35,7 @@ ignore = [
     "RUSTSEC-2026-0367",
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",
+    "RUSTSEC-2026-0374",
 ]
 
 [licenses]

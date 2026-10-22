@@ -1009,6 +1009,7 @@ async fn close_session_removes_session_from_memory() {
 /// configured, permanently removes the persisted row too — a deleted session must never
 /// resurrect via `session/load`/`session/resume` (#6271).
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn delete_session_removes_session_from_list() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1087,6 +1088,7 @@ async fn delete_session_removes_session_from_list() {
 /// task left running past the close can never keep emitting events/notifications under a
 /// `SessionId` that may be reused by a later `session/load`/`session/resume` (#6674).
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn close_session_aborts_agent_loop_task() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1142,6 +1144,7 @@ async fn close_session_aborts_agent_loop_task() {
 
 /// Same guarantee as `close_session_aborts_agent_loop_task`, for `session/delete` (#6674).
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn delete_session_aborts_agent_loop_task() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1427,6 +1430,7 @@ async fn resume_session_reconnects_to_existing_session() {
 /// `resume_session_reconnects_to_existing_session`. A follow-up `session/prompt` on the
 /// resumed session proves the reconstructed entry is actually wired up and functional.
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn resume_session_reconstructs_from_store_after_restart() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1530,6 +1534,7 @@ async fn resume_session_reconstructs_from_store_after_restart() {
 /// nothing there while this test's event still proves the store-backed reconstruction branch
 /// (fresh connection, empty in-memory `sessions` map) can load the session at all.
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn load_session_succeeds_from_event_log_with_no_legacy_rows() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1725,6 +1730,7 @@ async fn fork_session_inherits_config_from_in_memory_source() {
 /// snapshot (temperature preset applied to the effective provider) rather than resetting to
 /// the configured default (#5373).
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn resume_session_inherits_temperature_preset_after_close() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1991,6 +1997,7 @@ async fn set_session_config_option_temperature_preset_changes() {
 /// one capture slot across every provider it builds, so it observes whatever
 /// `GenerationOverrides` production code applied internally during `new_session`.
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn default_temperature_preset_is_primed_at_session_creation() {
     let local = tokio::task::LocalSet::new();
     local
@@ -2216,6 +2223,7 @@ async fn create_owned_session(
 /// created by one connection's owner must not appear in a different owner's list, even when
 /// both connections share the same `sqlite_path`.
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn list_sessions_isolated_by_owner_across_stdio_connections() {
     let local = tokio::task::LocalSet::new();
     local
@@ -2274,6 +2282,7 @@ async fn list_sessions_isolated_by_owner_across_stdio_connections() {
 /// `session/resume` on a session owned by a different connection must fail — a foreign
 /// `owner_key` is indistinguishable from a nonexistent session id.
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn resume_session_cross_owner_fails() {
     let local = tokio::task::LocalSet::new();
     local
@@ -2350,6 +2359,7 @@ async fn resume_session_cross_owner_fails() {
 /// `session/load` on a session owned by a different connection must fail (mirrors
 /// `resume_session_cross_owner_fails` for the `load_session` handler).
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn load_session_cross_owner_fails() {
     let local = tokio::task::LocalSet::new();
     local
@@ -2430,6 +2440,7 @@ async fn load_session_cross_owner_fails() {
 /// `delete_session_cross_owner_returns_404_and_does_not_delete` — this is the missing
 /// coverage for the `do_delete_session` ACP handler itself) (#6271).
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn delete_session_cross_owner_fails() {
     let local = tokio::task::LocalSet::new();
     local
