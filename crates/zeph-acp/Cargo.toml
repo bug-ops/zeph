@@ -23,9 +23,9 @@ acp-http = ["dep:axum", "dep:blake3", "dep:dashmap", "dep:async-stream", "dep:to
 unstable-session-fork = ["agent-client-protocol/unstable_session_fork"]
 # renamed from unstable_session_usage in acp 0.14.0; Usage struct + PromptResponse.usage remain gated
 unstable-session-usage = ["agent-client-protocol/unstable_end_turn_token_usage"]
-unstable-elicitation = ["dep:agent-client-protocol-schema", "agent-client-protocol-schema/unstable_elicitation", "agent-client-protocol/unstable_elicitation"]
+unstable-elicitation = ["dep:agent-client-protocol-schema"]
 unstable-llm-providers = ["dep:agent-client-protocol-schema", "agent-client-protocol-schema/unstable_llm_providers"]
-unstable-auth-methods = ["agent-client-protocol/unstable_auth_methods"]
+unstable-auth-methods = []
 # Wires the real $/cancel_request protocol notification onto the existing internal cancel_signal.
 # Cancellation itself was stabilized upstream in acp 1.1.0 (no feature gate needed there anymore);
 # this stays a local opt-in gate for the zeph-acp integration. Not in `default` — see #5362.
