@@ -252,6 +252,7 @@ async fn initialize_handshake() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn new_session_returns_session_id() {
     let local = tokio::task::LocalSet::new();
     local
@@ -294,6 +295,7 @@ async fn new_session_returns_session_id() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn cancel_notification_does_not_panic() {
     let local = tokio::task::LocalSet::new();
     local
@@ -429,6 +431,7 @@ async fn providers_list_reflects_configured_provider_names() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn load_session_unknown_id_returns_error() {
     let local = tokio::task::LocalSet::new();
     local
@@ -474,6 +477,7 @@ async fn load_session_unknown_id_returns_error() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn session_list_contains_created_sessions() {
     let local = tokio::task::LocalSet::new();
     local
@@ -528,6 +532,7 @@ async fn session_list_contains_created_sessions() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn prompt_round_trip_returns_end_turn() {
     let local = tokio::task::LocalSet::new();
     local
@@ -583,6 +588,7 @@ async fn prompt_round_trip_returns_end_turn() {
 
 /// AC #5: `drain_until_stop` collects concatenated text from multiple `AgentMessageChunk` updates.
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn drain_until_stop_collects_text_chunks() {
     let local = tokio::task::LocalSet::new();
     local
@@ -644,6 +650,7 @@ async fn drain_until_stop_collects_text_chunks() {
 /// `session/update` notification handler (mirroring the ACP client examples' pattern) so it can
 /// assert on content actually delivered over the wire, not just on `PromptResponse.stop_reason`.
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn review_command_output_is_delivered_to_client() {
     let local = tokio::task::LocalSet::new();
     local
@@ -733,6 +740,7 @@ async fn review_command_output_is_delivered_to_client() {
 /// asserts the upcoming prompt completes normally — i.e. the early cancel notification is
 /// dropped, not retroactively applied.
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn cancel_before_prompt_is_a_no_op() {
     let local = tokio::task::LocalSet::new();
     local
@@ -799,6 +807,7 @@ async fn cancel_before_prompt_is_a_no_op() {
 /// notifies the very same `cancel_signal` `do_cancel` and the `$/cancel_request` bridge both
 /// use) sent strictly *after* the first prompt's response has already been received.
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn late_cancel_after_prompt_completion_does_not_affect_next_prompt() {
     let local = tokio::task::LocalSet::new();
     local
@@ -950,6 +959,7 @@ async fn logout_returns_default_response() {
 /// `session/close` flushes and removes the session: a subsequent `session/load` for the same
 /// id must fail since no store is configured and the in-memory entry is gone (#5367).
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn close_session_removes_session_from_memory() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1198,6 +1208,7 @@ async fn delete_session_aborts_agent_loop_task() {
 /// `session/fork` creates a new session with a distinct id from the source (#5367).
 #[cfg(feature = "unstable-session-fork")]
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn fork_session_creates_distinct_session_id() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1259,6 +1270,7 @@ async fn fork_session_creates_distinct_session_id() {
 /// `ForkEngine::fork` wiring under test without needing the full agent-loop integration.
 #[cfg(feature = "unstable-session-fork")]
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn fork_session_copies_event_log_when_persistence_enabled() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1374,6 +1386,7 @@ async fn fork_session_copies_event_log_when_persistence_enabled() {
 
 /// `session/resume` reconnects to an in-memory session by id (#5367).
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn resume_session_reconnects_to_existing_session() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1635,6 +1648,7 @@ async fn load_session_succeeds_from_event_log_with_no_legacy_rows() {
 /// defaults (#5373).
 #[cfg(feature = "unstable-session-fork")]
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn fork_session_inherits_config_from_in_memory_source() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1814,6 +1828,7 @@ async fn resume_session_inherits_temperature_preset_after_close() {
 
 /// `session/set_mode` switches the active mode and is reflected in subsequent requests (#5367).
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn set_session_mode_switches_mode() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1861,6 +1876,7 @@ async fn set_session_mode_switches_mode() {
 /// `session/set_config_option` with `config_id="model"` switches the active model and echoes
 /// it back in `config_options` (#5367 coverage; pre-existing handler, previously untested).
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn set_session_config_option_model_switches_active_model() {
     let local = tokio::task::LocalSet::new();
     local
@@ -1921,6 +1937,7 @@ async fn set_session_config_option_model_switches_active_model() {
 /// `session/set_config_option` with `config_id="temperature"` (`model_config` category, #5361)
 /// switches the sampling-temperature preset and echoes it back in `config_options`.
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn set_session_config_option_temperature_preset_changes() {
     let local = tokio::task::LocalSet::new();
     local
@@ -2062,6 +2079,7 @@ async fn default_temperature_preset_is_primed_at_session_creation() {
 /// `session/set_config_option` with an unrecognized `config_id` must error, not silently
 /// succeed (#5367 coverage).
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn set_session_config_option_unknown_config_id_errors() {
     let local = tokio::task::LocalSet::new();
     local
@@ -2529,6 +2547,7 @@ async fn delete_session_cross_owner_fails() {
 /// `session/fork` sourced from a session owned by a different connection must fail.
 #[cfg(feature = "unstable-session-fork")]
 #[tokio::test(flavor = "current_thread")]
+#[allow(clippy::large_futures)]
 async fn fork_session_cross_owner_fails() {
     let local = tokio::task::LocalSet::new();
     local
