@@ -18,11 +18,11 @@ publish = true
 
 [workspace.dependencies]
 age = { version = "0.12.1", default-features = false }
-agent-client-protocol = "2.0.0"
-agent-client-protocol-schema = "=1.5.0"
+agent-client-protocol = "3.5.0"
+agent-client-protocol-schema = "=1.12.0"
 anyhow = "1.0.104"
-arboard = "3.6.1"
-arc-swap = "1.9.2"
+arboard = "3.7.0"
+arc-swap = "1.9.3"
 async-stream = "0.3.6"
 async-trait = "0.1.92"
 audioadapter-buffers = "5.2.0"
@@ -61,12 +61,12 @@ ignore = "0.4.33"
 image = { version = "0.25.10", default-features = false }
 include_dir = "0.7.4"
 indexmap = "2.14.2"
-indoc = "2.0.7"
-insta = "1.48.0"
+indoc = "2.0.8"
+insta = "1.49.0"
 k256 = { version = "0.14.0", default-features = false }
 landlock = "0.4.7"
 libsqlite3-sys = "0.38.2"
-lru = "0.18.5"
+lru = "0.19.0"
 metrics = "0.24.6"
 metrics-util = "0.20.4"
 nix = { version = "0.31.3", default-features = false }
@@ -74,41 +74,41 @@ notify = "8.2.0"
 notify-debouncer-mini = "0.7"
 nucleo-matcher = "0.3.1"
 ollama-rs = { version = "0.3.6", default-features = false }
-open = "5.4.4"
-opentelemetry = "0.33.0"
-opentelemetry-otlp = { version = "0.33.0", default-features = false }
-opentelemetry_sdk = { version = "0.33.0", default-features = false }
+open = "5.4.5"
+opentelemetry = "0.33.1"
+opentelemetry-otlp = { version = "0.33.1", default-features = false }
+opentelemetry_sdk = { version = "0.33.1", default-features = false }
 ordered-float = "5.5.0"
 p256 = "0.14.0"
-parking_lot = "0.12.5"
+parking_lot = "0.13.0"
 pdf-extract = "0.12.1"
 petgraph = "0.8.3"
 pprof = { version = "0.15.0", default-features = false }
 prometheus-client = "0.25.1"
-proptest = "1.11"
-pulldown-cmark = "0.13.4"
-qdrant-client = { version = "1.19", default-features = false }
+proptest = "1.12.0"
+pulldown-cmark = "0.13.5"
+qdrant-client = { version = "1.20.0", default-features = false }
 rand = "0.10.3"
 rand_distr = "0.6"
 ratatui = "0.30.2"
 regex = "1.13.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["query"] }
 ripemd = "0.2"
-rmcp = "3.5.0"
+rmcp = "3.6.0"
 rubato = "5.0.1"
 rustix = { version = "1.1.5", default-features = false }
-schemars = "1.2.2"
-scrape-core = "0.2.13"
+schemars = "1.2.3"
+scrape-core = "0.2.14"
 seccompiler = "0.5.0"
 semver = "1.0.28"
 serde = "1.0.229"
-serde_json = "1.0.151"
-serde_json_canonicalizer = "0.3.2"
+serde_json = "1.0.154"
+serde_json_canonicalizer = "0.4.1"
 serde_norway = "0.9.42"
 serial_test = "4.0.1"
 sha2 = "0.11"
 shell-words = "1.1.1"
-signal-hook = "0.4.4"
+signal-hook = "0.4.5"
 similar = "3.2.0"
 sqlx = { version = "0.9.0", default-features = false }
 subtle = "2.6"
@@ -123,12 +123,12 @@ thiserror = "2.0.21"
 throbber-widgets-tui = "0.11.1"
 tiktoken-rs = "0.12.1"
 tokenizers = { version = "0.23.2", default-features = false }
-tokio = "1.53.1"
+tokio = "1.54.1"
 tokio-stream = "0.1.19"
 tokio-tungstenite = { version = "0.30.0", default-features = false }
-tokio-util = "0.7.19"
-toml = "1.1.6"
-toml_edit = "0.25.15"
+tokio-util = "0.7.20"
+toml = "1.1.8"
+toml_edit = "0.25.17"
 tower = "0.5.3"
 tower-http = { version = "0.7.1", default-features = false }
 tracing = "0.1.44"
@@ -137,10 +137,10 @@ tracing-chrome = "0.7.2"
 tracing-opentelemetry = "0.34.0"
 tracing-subscriber = { version = "0.3.23", default-features = false }
 tracing-test = "0.2.6"
-tree-sitter = "0.27.0"
+tree-sitter = "0.27.1"
 tree-sitter-bash = "0.25.1"
 tree-sitter-go = "0.25"
-tree-sitter-highlight = "0.27.0"
+tree-sitter-highlight = "0.27.1"
 tree-sitter-javascript = "0.25"
 tree-sitter-json = "0.24.8"
 tree-sitter-md = "0.5.3"
@@ -150,10 +150,10 @@ tree-sitter-toml-ng = "0.7"
 tree-sitter-typescript = "0.23.2"
 tree-sitter-yaml = "0.7.2"
 tree-sitter-sequel = "0.3.11"
-unicode-normalization = "0.1.25"
+unicode-normalization = "0.1.26"
 unicode-width = "0.2.2"
 url = "2.5.8"
-uuid = "1.26.1"
+uuid = "1.28.0"
 walkdir = "2.5"
 wiremock = "0.6.5"
 zeph-a2a = { path = "crates/zeph-a2a", version = "0.22.5" }
@@ -188,7 +188,7 @@ zeph-tools = { path = "crates/zeph-tools", default-features = false, version = "
 zeph-tui = { path = "crates/zeph-tui", default-features = false, version = "0.22.5" }
 zeph-worktree = { path = "crates/zeph-worktree", version = "0.22.5" }
 zeph-vault = { path = "crates/zeph-vault", version = "0.22.5" }
-zeroize = { version = "1.9.0", default-features = false }
+zeroize = { version = "1.9.1", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
