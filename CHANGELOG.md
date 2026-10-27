@@ -14,7 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `deps`: bump `crypto-bigint` 0.7 and `ctutils` to patched versions and ignore RUSTSEC-2026-0387 for `crypto-bigint` 0.5 pinned by `age` (PR_NUM)
+- `deps`: bump `crypto-bigint` 0.7 and `ctutils` to patched versions and ignore RUSTSEC-2026-0387 for `crypto-bigint` 0.5 pinned by `age` (#6870)
 - `zeph-acp`: bump `agent-client-protocol` to 3.5 and refresh workspace dependencies; `unstable-elicitation` and `unstable-auth-methods` no longer forward to upstream features (breaking) (#6868)
 - `zeph-llm`, `zeph-core`: `chat_typed` returns `impl Future + Send` and `chat_typed_erased` is removed (breaking) (#6850)
 - `zeph-llm`: streamed Claude responses record merged usage (#6850)
