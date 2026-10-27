@@ -28,6 +28,8 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # which pins zip ^8. candle only reads npz/pickle entries (by_index/by_name), never calls extract();
 # remove once candle-core moves to zip >=9
 # basic-toml unmaintained (RUSTSEC-2026-0374) via age -> i18n-embed-fl -> i18n-config; remove once age drops it
+# crypto-bigint 0.5.5 timing issues (RUSTSEC-2026-0387; fixed only in >=0.7.6) via age -> p256 0.13 -> elliptic-curve 0.13,
+# which pins crypto-bigint ^0.5; remove once age moves to elliptic-curve 0.14
 ignore = [
     "RUSTSEC-2024-0436",
     "RUSTSEC-2026-0173",
@@ -36,6 +38,7 @@ ignore = [
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",
     "RUSTSEC-2026-0374",
+    "RUSTSEC-2026-0387",
 ]
 
 [licenses]
