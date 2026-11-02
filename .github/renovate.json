@@ -26,7 +26,6 @@
   "dependencyDashboardOSVVulnerabilitySummary": "all",
   "osvVulnerabilityAlerts": true,
   "constraintsFiltering": "strict",
-  "postUpdateOptions": ["cargoUpdateLockfile"],
   "ignorePaths": [
     "**/node_modules/**",
     "**/target/**",
