@@ -36,6 +36,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296 # nightly
+        with:
+          toolchain: nightly-2026-08-07
 
       - uses: taiki-e/install-action@82fc405565b9cf90abfe700ba43b4751ce2fe422 # cargo-fuzz
         with:
@@ -49,7 +51,7 @@ jobs:
       - name: Fuzz ${{ matrix.target }}
         id: fuzz
         working-directory: fuzz
-        run: cargo +nightly fuzz run --features ${{ matrix.target }} --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=${{ matrix.budget }}
+        run: cargo +nightly-2026-08-07 fuzz run --features ${{ matrix.target }} --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=${{ matrix.budget }}
 
       - name: Minimize crash and file issue
         if: failure() && steps.fuzz.outcome == 'failure'
@@ -63,7 +65,7 @@ jobs:
             echo "no crash artifact found under artifacts/${FUZZ_TARGET}/, skipping issue filing"
             exit 0
           fi
-          cargo +nightly fuzz tmin --features "$FUZZ_TARGET" --target x86_64-unknown-linux-gnu "$FUZZ_TARGET" "$crash" || true
+          cargo +nightly-2026-08-07 fuzz tmin --features "$FUZZ_TARGET" --target x86_64-unknown-linux-gnu "$FUZZ_TARGET" "$crash" || true
 
           title="fuzz: crash in ${FUZZ_TARGET}"
           existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
@@ -129,6 +131,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296 # nightly
         with:
+          toolchain: nightly-2026-08-07
           components: llvm-tools-preview
 
       - uses: taiki-e/install-action@afc483d62172accfff644fa56e82b4dab50727fc # cargo-fuzz, cargo-binutils
@@ -148,7 +151,7 @@ jobs:
         id: coverage
         continue-on-error: true
         working-directory: fuzz
-        run: cargo +nightly fuzz coverage --features ${{ matrix.target }} --target x86_64-unknown-linux-gnu ${{ matrix.target }}
+        run: cargo +nightly-2026-08-07 fuzz coverage --features ${{ matrix.target }} --target x86_64-unknown-linux-gnu ${{ matrix.target }}
 
       # Uses `rust-cov` (the cargo-binutils-installed llvm-cov wrapper) directly rather than
       # the `cargo cov --` subcommand: cargo-binutils 0.4.0's `cargo cov`/`cargo profdata`
