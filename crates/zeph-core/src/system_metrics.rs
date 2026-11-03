@@ -65,7 +65,13 @@ pub fn spawn_system_metrics_task(
     let handle = supervisor.spawn_oneshot(
         std::sync::Arc::from("core.system_metrics"),
         move || async move {
-            let mut sys = System::new();
+            let mut sys = match System::new() {
+                Ok(sys) => sys,
+                Err(e) => {
+                    tracing::warn!(error = %e, "system metrics unavailable, task not started");
+                    return;
+                }
+            };
             let pid = sysinfo::get_current_pid().ok();
             let mut shutdown = shutdown_rx;
             let mut ticker = tokio::time::interval(interval);
