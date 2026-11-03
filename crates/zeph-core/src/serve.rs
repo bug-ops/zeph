@@ -985,7 +985,7 @@ mod tests {
         let supervisor = TaskSupervisor::new(CancellationToken::new());
         let registry = Arc::new(LiveSessionRegistry::new());
         let pid = sysinfo::get_current_pid().expect("current pid must be resolvable");
-        let mut sys = sysinfo::System::new();
+        let mut sys = sysinfo::System::new().expect("sysinfo System must initialize");
 
         // Shared across every spawned Agent, mirroring production (`src/serve/agent_factory.rs`'s
         // `build_agent_factory`, which passes one `Clone`-shared `deps.registry` to
