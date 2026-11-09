@@ -30,6 +30,10 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # basic-toml unmaintained (RUSTSEC-2026-0374) via age -> i18n-embed-fl -> i18n-config; remove once age drops it
 # crypto-bigint 0.5.5 timing issues (RUSTSEC-2026-0387; fixed only in >=0.7.6) via age -> p256 0.13 -> elliptic-curve 0.13,
 # which pins crypto-bigint ^0.5; remove once age moves to elliptic-curve 0.14
+# pin-utils unmaintained (RUSTSEC-2026-0441) via nix 0.26 -> expectrl (dev-dependency of zeph-tui, tests only);
+# expectrl 0.9.0 is the latest release; remove once expectrl moves to a nix without pin-utils
+# astral-tokio-tar unmaintained (RUSTSEC-2026-0440) via testcontainers 0.27 (dev-dependency of zeph-mcp, tests only);
+# remove once testcontainers drops it
 ignore = [
     "RUSTSEC-2024-0436",
     "RUSTSEC-2026-0173",
@@ -39,6 +43,8 @@ ignore = [
     "RUSTSEC-2026-0369",
     "RUSTSEC-2026-0374",
     "RUSTSEC-2026-0387",
+    "RUSTSEC-2026-0440",
+    "RUSTSEC-2026-0441",
 ]
 
 [licenses]
