@@ -122,6 +122,19 @@
       "enabled": false
     },
     {
+      "description": "reqwest012 is a deliberate alias to reqwest 0.12 (ollama-rs needs the 0.12 Client; 0.13 has no rustls-tls feature). Allow only 0.12.x patches; remove once ollama-rs moves to reqwest 0.13.",
+      "matchManagers": ["cargo"],
+      "matchDepNames": ["reqwest012"],
+      "allowedVersions": "<0.13"
+    },
+    {
+      "description": "ACP SDK and its exact-pinned schema must move together (SDK requires an exact schema version) - one manual-review group; drop once the direct schema dependency is removed (spec 086).",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["agent-client-protocol", "agent-client-protocol-schema"],
+      "groupName": "agent-client-protocol",
+      "automerge": false
+    },
+    {
       "description": "Docker base images — manual review",
       "matchManagers": ["dockerfile", "docker-compose"],
       "automerge": false,

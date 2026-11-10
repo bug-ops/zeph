@@ -169,7 +169,7 @@ impl<C: Channel> Agent<C> {
             async move {
                 let job = GoalCheckJob {
                     trigger: GoalCheckTrigger::TurnEnd,
-                    explicit: String::new(),
+                    explicit: None,
                     last_user: None,
                     summary,
                     recent_actions,

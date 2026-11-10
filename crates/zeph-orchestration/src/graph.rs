@@ -561,7 +561,7 @@ pub struct TaskNode {
     /// in the spawn-time tool universe are dropped with a `tracing::warn!` rather than
     /// producing a zero-tool allowlist (a hallucinated/typo'd name degrades to a no-op,
     /// not a task failure).
-    // TODO(critic): config/template producer for TaskNode.tool_allowlist deferred; planner
+    // TODO(#6935): config/template producer for TaskNode.tool_allowlist deferred; planner
     // path is the only producer for now (#6526).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_allowlist: Option<Vec<String>>,

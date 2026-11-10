@@ -50,6 +50,7 @@ use ollama_rs::models::ModelOptions;
 use std::future::Future;
 use tokio_stream::StreamExt;
 
+use crate::provider::ResponseUsage;
 use crate::provider::{
     AgentVisible, ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message,
     MessagePart, Role, ToolDefinition, ToolUseRequest,
@@ -558,7 +559,11 @@ impl LlmProvider for OllamaProvider {
             .await?;
 
         if let Some(ref fd) = response.final_data {
-            self.usage.record_usage(fd.prompt_eval_count, fd.eval_count);
+            self.usage.record(Some(ResponseUsage {
+                input: fd.prompt_eval_count,
+                output: fd.eval_count,
+                ..ResponseUsage::default()
+            }));
         }
 
         Ok(response.message.content)
@@ -713,7 +718,11 @@ impl LlmProvider for OllamaProvider {
             .await?;
 
         if let Some(ref fd) = response.final_data {
-            self.usage.record_usage(fd.prompt_eval_count, fd.eval_count);
+            self.usage.record(Some(ResponseUsage {
+                input: fd.prompt_eval_count,
+                output: fd.eval_count,
+                ..ResponseUsage::default()
+            }));
         }
 
         if response.message.tool_calls.is_empty() {
@@ -821,8 +830,8 @@ impl LlmProvider for OllamaProvider {
         &self.model
     }
 
-    fn last_usage(&self) -> Option<(u64, u64)> {
-        self.usage.last_usage()
+    fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+        self.usage.last()
     }
 
     fn last_ttft_ms(&self) -> Option<u64> {
@@ -1083,17 +1092,36 @@ mod tests {
     fn last_usage_initially_none() {
         let provider =
             OllamaProvider::new("http://localhost:11434", "test".into(), "test-embed".into());
-        assert!(provider.last_usage().is_none());
+        assert!(
+            provider
+                .last_response_usage()
+                .map(|u| (u.input, u.output))
+                .is_none()
+        );
     }
 
     #[test]
     fn clone_resets_last_usage() {
         let provider =
             OllamaProvider::new("http://localhost:11434", "test".into(), "test-embed".into());
-        provider.usage.record_usage(100, 50);
-        assert!(provider.last_usage().is_some());
+        provider.usage.record(Some(ResponseUsage {
+            input: 100,
+            output: 50,
+            ..ResponseUsage::default()
+        }));
+        assert!(
+            provider
+                .last_response_usage()
+                .map(|u| (u.input, u.output))
+                .is_some()
+        );
         let cloned = provider.clone();
-        assert!(cloned.last_usage().is_none());
+        assert!(
+            cloned
+                .last_response_usage()
+                .map(|u| (u.input, u.output))
+                .is_none()
+        );
     }
 
     #[test]

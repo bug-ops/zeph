@@ -602,7 +602,7 @@ async fn adapt_plan(
         .map_err(|_| OrchestrationError::PlanningFailed("plan cache adaptation timed out".into()))?
         .map_err(|e| OrchestrationError::PlanningFailed(e.to_string()))?;
 
-    let usage = provider.last_usage();
+    let usage = provider.last_response_usage().map(|u| (u.input, u.output));
 
     let graph = convert_response_pub(
         response,

@@ -298,6 +298,10 @@ impl CandleProvider {
 }
 
 impl LlmProvider for CandleProvider {
+    fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+        None
+    }
+
     #[tracing::instrument(
         name = "llm.candle.chat",
         skip_all,

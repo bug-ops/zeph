@@ -19,6 +19,7 @@
 //! - [`turn_context`] — [`turn_context::TurnId`], [`turn_context::TurnContext`] per-turn carrier
 //! - [`compression_feedback`] — context-loss detection and failure classification
 //! - [`microcompact`] — low-value tool detection helpers for time-based microcompact
+//! - [`scrub`] — part-aware credential scrub of a message, shared by both context layouts
 //! - [`fidelity`] — heuristic fidelity scorer for Context-Adaptive Memory (CAM)
 //! - [`tool_result_compress`] — per-result and batch-level token budget enforcement for tool outputs
 //! - [`typed_page`] — typed page classification and minimum-fidelity invariants for compaction
@@ -32,6 +33,7 @@ pub mod fidelity;
 pub mod input;
 pub mod manager;
 pub mod microcompact;
+pub mod scrub;
 pub mod slot;
 pub mod summarization;
 pub mod tool_result_compress;

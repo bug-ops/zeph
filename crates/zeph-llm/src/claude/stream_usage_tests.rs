@@ -61,10 +61,19 @@ fn user_turn() -> Vec<Message> {
 }
 
 fn assert_final_usage(provider: &ClaudeProvider) {
-    assert_eq!(provider.last_usage(), Some((100, 30)));
-    assert_eq!(provider.last_cache_usage(), Some((10, 50)));
     assert_eq!(
-        provider.last_auxiliary_usage(),
+        provider.last_response_usage().map(|u| (u.input, u.output)),
+        Some((100, 30))
+    );
+    assert_eq!(
+        provider
+            .last_response_usage()
+            .and_then(|u| u.cache)
+            .map(|c| (c.creation, c.read)),
+        Some((10, 50))
+    );
+    assert_eq!(
+        provider.last_response_usage().and_then(|u| u.auxiliary),
         Some(AuxiliaryUsage {
             input: 7000,
             output: 400,
@@ -109,9 +118,21 @@ async fn usage_is_recorded_after_message_start_before_the_delta_arrives() {
     let provider = provider_with(&server, sse(&[("message_start", MESSAGE_START)])).await;
     let mut stream = provider.chat_stream(&user_turn()).await.unwrap();
     while stream.next().await.is_some() {}
-    assert_eq!(provider.last_usage(), Some((100, 1)));
-    assert_eq!(provider.last_cache_usage(), Some((10, 50)));
-    assert_eq!(provider.last_auxiliary_usage(), None);
+    assert_eq!(
+        provider.last_response_usage().map(|u| (u.input, u.output)),
+        Some((100, 1))
+    );
+    assert_eq!(
+        provider
+            .last_response_usage()
+            .and_then(|u| u.cache)
+            .map(|c| (c.creation, c.read)),
+        Some((10, 50))
+    );
+    assert_eq!(
+        provider.last_response_usage().and_then(|u| u.auxiliary),
+        None
+    );
 }
 
 #[tokio::test]
@@ -128,11 +149,14 @@ async fn delta_without_iterations_leaves_no_auxiliary_usage() {
     let mut stream = provider.chat_stream(&user_turn()).await.unwrap();
     while stream.next().await.is_some() {}
     assert_eq!(
-        provider.last_usage(),
+        provider.last_response_usage().map(|u| (u.input, u.output)),
         Some((100, 9)),
         "input from message_start"
     );
-    assert_eq!(provider.last_auxiliary_usage(), None);
+    assert_eq!(
+        provider.last_response_usage().and_then(|u| u.auxiliary),
+        None
+    );
 }
 
 #[tokio::test]
@@ -150,9 +174,21 @@ async fn failed_stream_open_leaves_no_stale_usage_but_keeps_ttft() {
         .mount(&server)
         .await;
     assert!(provider.chat_stream(&user_turn()).await.is_err());
-    assert_eq!(provider.last_usage(), None);
-    assert_eq!(provider.last_cache_usage(), None);
-    assert_eq!(provider.last_auxiliary_usage(), None);
+    assert_eq!(
+        provider.last_response_usage().map(|u| (u.input, u.output)),
+        None
+    );
+    assert_eq!(
+        provider
+            .last_response_usage()
+            .and_then(|u| u.cache)
+            .map(|c| (c.creation, c.read)),
+        None
+    );
+    assert_eq!(
+        provider.last_response_usage().and_then(|u| u.auxiliary),
+        None
+    );
     assert!(
         provider.last_ttft_ms().is_some(),
         "ttft of the failed attempt is kept"

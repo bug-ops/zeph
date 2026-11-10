@@ -12,7 +12,7 @@
 //!
 //! `jku`/JWKS auto-fetch is not implemented.
 //!
-//! // TODO(critic): jku/JWKS fetch deferred — SSRF risk on attacker-controlled URL;
+//! // TODO(#6931): jku/JWKS fetch deferred — SSRF risk on attacker-controlled URL;
 //! // out-of-band key store is the trust anchor (#5928 follow-up).
 //!
 //! An attacker who can forge an entire card can also point a `jku` at a JWKS they
@@ -318,7 +318,7 @@ fn canonical_payload(raw_card: &Value) -> Result<Vec<u8>, String> {
 /// `true` when `value` is a proto3 default: empty string, `false`, `0` (integer or
 /// float), an empty array, or an empty object. `null` is not a proto3 JSON-mapping
 /// default value and is left untouched.
-// TODO(critic): the `{}` (empty object) and `0` (number) cases are the highest-risk,
+// TODO(#6931): the `{}` (empty object) and `0` (number) cases are the highest-risk,
 // unvalidated part of this heuristic (S2, #6201 follow-up). Proto3 JSON mapping has
 // *message presence*: a message field explicitly **set** to an empty message serializes
 // to `{}` and is distinct from a field left **unset** (which is omitted entirely) — a

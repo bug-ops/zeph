@@ -19,7 +19,7 @@
 //! architecture audit). Until that sprint lands, the fake-builder pattern is the deliberate
 //! choice and callers must use `build()` to validate configuration at the point of construction.
 //!
-//! # TODO (A2 — deferred: typestate builder)
+//! # TODO(#6935) (A2 — deferred: typestate builder)
 //!
 //! Replace the fake builder with `AgentBuilder<C, ProviderSet, MemorySet>` using phantom
 //! typestate so that omitting `with_provider_pool` or `with_memory` becomes a compile error
@@ -2377,7 +2377,7 @@ impl<C: Channel> Agent<C> {
         let all_skill_names: Vec<String> = registry_guard
             .all_meta()
             .iter()
-            .map(|m| m.name.clone())
+            .map(|m| m.name.to_string())
             .collect();
         drop(registry_guard);
         let qdrant_available = false;
@@ -2704,8 +2704,9 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_learning(mut self, config: LearningConfig) -> Self {
         if config.correction_detection {
-            self.services.feedback.detector =
-                zeph_agent_feedback::FeedbackDetector::new(config.correction_confidence_threshold);
+            self.services.feedback.detector = zeph_agent_feedback::FeedbackDetector::new(
+                config.correction_confidence_threshold.get(),
+            );
             if config.detector_mode == crate::config::DetectorMode::Judge {
                 self.services.feedback.judge = Some(zeph_agent_feedback::JudgeDetector::new(
                     config.judge_adaptive_low,

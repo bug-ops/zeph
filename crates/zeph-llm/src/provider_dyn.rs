@@ -143,30 +143,14 @@ pub trait LlmProviderDyn: private::Sealed + std::fmt::Debug + Send + Sync {
         tools: &'a [ToolDefinition],
     ) -> BoxFuture<'a, Result<ChatResponse, LlmError>>;
 
-    /// Return the cache usage from the last API call, if available.
-    /// Returns `(cache_creation_tokens, cache_read_tokens)`.
-    fn last_cache_usage(&self) -> Option<(u64, u64)>;
-
-    /// Return token counts from the last API call, if available.
-    /// Returns `(input_tokens, output_tokens)`.
-    fn last_usage(&self) -> Option<(u64, u64)>;
+    /// See [`LlmProvider::last_response_usage`].
+    fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage>;
 
     /// See [`LlmProvider::thinking_binding`].
     fn thinking_binding(&self) -> crate::provider::ThinkingBinding;
 
     /// See [`LlmProvider::prefix_cache`].
     fn prefix_cache(&self) -> crate::provider::PrefixCache;
-
-    /// See [`LlmProvider::last_auxiliary_usage`].
-    fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage>;
-
-    /// Return reasoning tokens from the last API call, if the provider reports them.
-    ///
-    /// Reasoning tokens are a **subset** of completion tokens (`OpenAI` o-series only).
-    /// Returns `None` for providers that do not expose reasoning token counts.
-    fn last_reasoning_tokens(&self) -> Option<u64> {
-        None
-    }
 
     /// Send messages and return the assistant response together with per-call extras.
     ///
@@ -275,12 +259,8 @@ impl<T: LlmProvider + std::fmt::Debug + Send + Sync + 'static> LlmProviderDyn fo
         Box::pin(LlmProvider::chat_with_tools(self, messages, tools))
     }
 
-    fn last_cache_usage(&self) -> Option<(u64, u64)> {
-        LlmProvider::last_cache_usage(self)
-    }
-
-    fn last_usage(&self) -> Option<(u64, u64)> {
-        LlmProvider::last_usage(self)
+    fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+        LlmProvider::last_response_usage(self)
     }
 
     fn thinking_binding(&self) -> crate::provider::ThinkingBinding {
@@ -289,10 +269,6 @@ impl<T: LlmProvider + std::fmt::Debug + Send + Sync + 'static> LlmProviderDyn fo
 
     fn prefix_cache(&self) -> crate::provider::PrefixCache {
         LlmProvider::prefix_cache(self)
-    }
-
-    fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {
-        LlmProvider::last_auxiliary_usage(self)
     }
 
     fn chat_with_extras<'a>(
@@ -435,6 +411,10 @@ mod tests {
     }
 
     impl LlmProvider for StubProvider {
+        fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+            None
+        }
+
         fn chat(
             &self,
             _messages: &[Message],
@@ -497,8 +477,19 @@ mod tests {
         assert!(!provider.supports_streaming());
         assert!(!provider.supports_embeddings());
         assert!(provider.context_window().is_none());
-        assert!(provider.last_cache_usage().is_none());
-        assert!(provider.last_usage().is_none());
+        assert!(
+            provider
+                .last_response_usage()
+                .and_then(|u| u.cache)
+                .map(|c| (c.creation, c.read))
+                .is_none()
+        );
+        assert!(
+            provider
+                .last_response_usage()
+                .map(|u| (u.input, u.output))
+                .is_none()
+        );
     }
 
     #[derive(Debug, serde::Deserialize, schemars::JsonSchema, PartialEq)]

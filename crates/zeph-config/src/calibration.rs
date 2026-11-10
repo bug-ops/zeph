@@ -28,6 +28,71 @@ pub enum CalibrationError {
     CalibratedDecreasing(usize),
 }
 
+/// Reason a correction-confidence threshold was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+#[error("confidence threshold {0} must be finite and within 0.0..=1.0")]
+pub struct ConfidenceThresholdError(f32);
+
+/// Minimum calibrated confidence for an LLM-reported correction to be accepted.
+///
+/// The value is checked at construction and at deserialization, so a `nan` or out-of-range
+/// `correction_confidence_threshold` fails config loading instead of silently disabling
+/// (`nan`) or suppressing (`> 1.0`) correction detection.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_config::ConfidenceThreshold;
+///
+/// assert_eq!(ConfidenceThreshold::new(0.6).unwrap().get(), 0.6);
+/// assert!(ConfidenceThreshold::new(f32::NAN).is_err());
+/// assert!(ConfidenceThreshold::new(1.5).is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "f32", into = "f32")]
+pub struct ConfidenceThreshold(f32);
+
+impl ConfidenceThreshold {
+    /// Build a threshold from a value in `0.0..=1.0`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfidenceThresholdError`] for NaN, infinite, or out-of-range input.
+    pub fn new(value: f32) -> Result<Self, ConfidenceThresholdError> {
+        if (0.0..=1.0).contains(&value) {
+            Ok(Self(value))
+        } else {
+            Err(ConfidenceThresholdError(value))
+        }
+    }
+
+    /// The raw threshold in `0.0..=1.0`.
+    #[must_use]
+    pub const fn get(self) -> f32 {
+        self.0
+    }
+}
+
+impl Default for ConfidenceThreshold {
+    fn default() -> Self {
+        Self(0.6)
+    }
+}
+
+impl TryFrom<f32> for ConfidenceThreshold {
+    type Error = ConfidenceThresholdError;
+
+    fn try_from(value: f32) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<ConfidenceThreshold> for f32 {
+    fn from(t: ConfidenceThreshold) -> Self {
+        t.0
+    }
+}
+
 /// Monotone piecewise-linear map from a model's self-reported confidence to a calibrated one.
 ///
 /// The curve is a list of `[raw, calibrated]` knots. An empty curve is the identity. Invariants
@@ -281,5 +346,30 @@ mod tests {
         assert!("  ".parse::<ConfidenceCalibration>().unwrap().is_identity());
         assert!("[[0.0, 0.0]]".parse::<ConfidenceCalibration>().is_err());
         assert!("nonsense".parse::<ConfidenceCalibration>().is_err());
+    }
+
+    #[test]
+    fn threshold_accepts_bounds() {
+        assert_eq!(ConfidenceThreshold::new(0.0).unwrap().get(), 0.0);
+        assert_eq!(ConfidenceThreshold::new(1.0).unwrap().get(), 1.0);
+    }
+
+    #[test]
+    fn threshold_rejects_invalid() {
+        for v in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.1, 1.5] {
+            assert!(ConfidenceThreshold::new(v).is_err(), "{v}");
+        }
+    }
+
+    #[test]
+    fn threshold_deserialize_rejects_nan_and_out_of_range() {
+        #[derive(Deserialize)]
+        struct W {
+            #[allow(dead_code)]
+            t: ConfidenceThreshold,
+        }
+        assert!(toml::from_str::<W>("t = nan").is_err());
+        assert!(toml::from_str::<W>("t = 1.5").is_err());
+        assert!(toml::from_str::<W>("t = 0.7").is_ok());
     }
 }

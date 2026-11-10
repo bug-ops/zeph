@@ -82,7 +82,7 @@ impl<P: LlmProvider> LlmAggregator<P> {
 
     /// Return the underlying provider.
     ///
-    /// Lets callers read call-specific transient state (e.g. `last_cache_usage`,
+    /// Lets callers read call-specific transient state (e.g. `last_response_usage`,
     /// `last_ttft_ms`) left on the provider's usage tracker after [`Self::aggregate`]
     /// returns — used by the per-message usage ledger (issue #6549) to attribute a durable
     /// `usage_records` row to this call.
@@ -171,7 +171,10 @@ impl<P: LlmProvider + Send + Sync> Aggregator for LlmAggregator<P> {
         match tokio::time::timeout(self.timeout, self.provider.chat(&messages)).await {
             Ok(Ok(synthesis)) => {
                 // Capture usage right after the successful API call.
-                let usage = self.provider.last_usage();
+                let usage = self
+                    .provider
+                    .last_response_usage()
+                    .map(|u| (u.input, u.output));
                 Ok((synthesis, usage))
             }
             Ok(Err(e)) => {
@@ -396,6 +399,10 @@ mod tests {
 
             struct SlowProvider;
             impl zeph_llm::provider::LlmProvider for SlowProvider {
+                fn last_response_usage(&self) -> Option<zeph_llm::provider::ResponseUsage> {
+                    None
+                }
+
                 async fn chat(&self, _: &[Message]) -> Result<String, LlmError> {
                     tokio::time::sleep(Duration::from_mins(1)).await;
                     Ok("should not reach".to_string())

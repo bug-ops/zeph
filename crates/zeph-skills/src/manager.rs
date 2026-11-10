@@ -139,7 +139,7 @@ impl SkillManager {
             let _ = std::fs::remove_dir_all(&tmp_dir);
         })?;
 
-        let name = meta.name.clone();
+        let name = meta.name.to_string();
         let dest_dir = self.managed_dir.join(&name);
 
         if dest_dir.exists() {
@@ -183,7 +183,7 @@ impl SkillManager {
 
         let skill_md = source.join("SKILL.md");
         let meta = load_skill_meta(&skill_md)?;
-        let name = meta.name.clone();
+        let name = meta.name.to_string();
 
         // REV-002: validate the name contains no path separators or ".." before any writes.
         // load_skill_meta already enforces lowercase+hyphen only names, so this is
@@ -267,7 +267,7 @@ impl SkillManager {
             }
             match load_skill_meta(&skill_md) {
                 Ok(meta) => result.push(InstalledSkill {
-                    name: meta.name,
+                    name: meta.name.to_string(),
                     description: meta.description,
                     skill_dir,
                     requires_secrets: meta.requires_secrets,
@@ -378,7 +378,11 @@ fn strip_bundled_markers_recursive(dir: &Path) -> std::io::Result<u64> {
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
             removed += strip_bundled_markers_recursive(&path)?;
-        } else if file_type.is_file() && entry.file_name() == ".bundled" {
+        } else if file_type.is_file()
+            && crate::bundled::PROVENANCE_FILES
+                .iter()
+                .any(|f| entry.file_name() == *f)
+        {
             tracing::warn!(
                 path = %path.display(),
                 "stripped forged .bundled marker from installed skill package"
@@ -842,6 +846,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let count = strip_bundled_markers(dir.path()).unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn strip_bundled_markers_also_removes_hash_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".bundled"), "0.1.0").unwrap();
+        std::fs::write(dir.path().join(".bundled-hash"), "abc").unwrap();
+
+        let count = strip_bundled_markers(dir.path()).unwrap();
+
+        assert_eq!(count, 2);
+        assert!(!dir.path().join(".bundled-hash").exists());
     }
 
     #[test]

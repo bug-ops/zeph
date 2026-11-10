@@ -707,7 +707,7 @@ pub fn deserialize_params<T: serde::de::DeserializeOwned>(
 ///     zeph_tools::tool_executor_no_inner_defaults!();
 /// }
 /// ```
-/// # TODO (G3 — deferred: Tower-style tool middleware stack)
+/// # TODO(#6935) (G3 — deferred: Tower-style tool middleware stack)
 ///
 /// Currently, cross-cutting concerns (audit logging, rate limiting, sandboxing, guardrails)
 /// are scattered across individual executor implementations. The planned approach is a
@@ -721,7 +721,7 @@ pub fn deserialize_params<T: serde::de::DeserializeOwned>(
 /// object-safe trait). See critic review §S3 for the tradeoff between RPIT fast-path and
 /// dynamic dispatch overhead before collapsing D2.
 ///
-/// # TODO (D2 — deferred: consolidate `ToolExecutor` and `ErasedToolExecutor`)
+/// # TODO(#6935) (D2 — deferred: consolidate `ToolExecutor` and `ErasedToolExecutor`)
 ///
 /// Having two parallel traits creates duplication and confusion. The blanket impl
 /// `impl<T: ToolExecutor> ErasedToolExecutor for T` works but every new method must be

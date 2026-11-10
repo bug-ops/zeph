@@ -436,7 +436,7 @@ fn extract_skill_md(raw: &str) -> String {
 fn parse_and_validate(content: &str) -> Result<GeneratedSkill, SkillError> {
     let (meta, body) = load_skill_meta_from_str(content)?;
 
-    validate_generated_name(&meta.name)?;
+    validate_generated_name(meta.name.as_str())?;
 
     let mut warnings: Vec<String> = Vec::new();
 
@@ -486,7 +486,7 @@ fn parse_and_validate(content: &str) -> Result<GeneratedSkill, SkillError> {
 
     let has_injection_patterns = fm_scan.has_matches() || body_scan.has_matches();
     Ok(GeneratedSkill {
-        name: meta.name.clone(),
+        name: meta.name.to_string(),
         content: content.to_string(),
         meta,
         warnings,

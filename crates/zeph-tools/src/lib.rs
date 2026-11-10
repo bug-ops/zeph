@@ -55,7 +55,7 @@
 //! # }
 //! ```
 
-// TODO(critic): post-v1.0 — re-evaluate splitting executor / web / shell into sub-crates if compile times degrade.
+// TODO(#6935): post-v1.0 — re-evaluate splitting executor / web / shell into sub-crates if compile times degrade.
 
 pub mod adversarial_gate;
 pub mod adversarial_policy;

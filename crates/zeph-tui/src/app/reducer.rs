@@ -621,6 +621,16 @@ fn reduce_inner(app: &mut App, action: Action) -> Vec<Effect> {
             vec![]
         }
         Action::SlashAutocompleteAcceptAndSubmit => {
+            // Free-form arguments (`/goal check a`) that do not extend the selected entry
+            // must reach the agent verbatim, not be rewritten to the fuzzy top match (#6909).
+            let submit_raw = app
+                .slash_autocomplete
+                .as_ref()
+                .is_some_and(SlashAutocompleteState::should_submit_raw);
+            if submit_raw {
+                app.slash_autocomplete = None;
+                return reduce(app, Action::SubmitInput);
+            }
             // Dispatch already executes the command (or prompts for further
             // input via `prefill_input`), so no separate submit step is needed.
             reduce(app, Action::SlashAutocompleteAccept)
@@ -2157,6 +2167,110 @@ mod tests {
                 .iter()
                 .all(|m| m.role != MessageRole::User),
             "incomplete prefilled command must not be sent as a chat message"
+        );
+    }
+
+    // ── Enter in slash autocomplete submits free-form arguments verbatim (#6909) ─
+
+    fn type_slash_query(app: &mut App, query: &str) {
+        let mut state = SlashAutocompleteState::new();
+        for c in query.chars() {
+            state.push_char(c);
+        }
+        app.slash_autocomplete = Some(state);
+        app.sessions.current_mut().input = format!("/{query}");
+    }
+
+    #[test]
+    fn slash_enter_with_unmatched_argument_submits_raw_text() {
+        let (mut app, _rx) = make_app();
+        type_slash_query(&mut app, "goal check a");
+
+        let effects = reduce(&mut app, Action::SlashAutocompleteAcceptAndSubmit);
+
+        assert!(app.slash_autocomplete.is_none());
+        assert_eq!(
+            effects,
+            vec![Effect::SendUserInput("/goal check a".to_owned())]
+        );
+        assert_eq!(app.sessions.current().input.len(), 0);
+    }
+
+    #[test]
+    fn slash_enter_with_spaced_prefix_of_entry_dispatches_it() {
+        let (mut app, _rx) = make_app();
+        type_slash_query(&mut app, "skill li");
+        assert_eq!(
+            app.slash_autocomplete
+                .as_ref()
+                .and_then(SlashAutocompleteState::selected_entry)
+                .map(|e| e.id),
+            Some("skill:list")
+        );
+
+        let effects = reduce(&mut app, Action::SlashAutocompleteAcceptAndSubmit);
+
+        assert_eq!(effects.len(), 0);
+        assert!(
+            app.sessions
+                .current()
+                .messages
+                .iter()
+                .all(|m| m.role != MessageRole::User)
+        );
+    }
+
+    #[test]
+    fn slash_enter_without_whitespace_keeps_prefix_accept() {
+        let (mut app, _rx) = make_app();
+        type_slash_query(&mut app, "tasks");
+
+        let effects = reduce(&mut app, Action::SlashAutocompleteAcceptAndSubmit);
+
+        assert_eq!(effects.len(), 0);
+        assert!(app.show_task_panel);
+    }
+
+    #[test]
+    fn slash_enter_knowledge_rollback_prefix_dispatches_prompt() {
+        let (mut app, _rx) = make_app();
+        type_slash_query(&mut app, "knowledge roll");
+
+        let effects = reduce(&mut app, Action::SlashAutocompleteAcceptAndSubmit);
+
+        assert_eq!(effects.len(), 0);
+        assert_eq!(app.sessions.current().input, "/knowledge rollback ");
+    }
+
+    #[test]
+    fn slash_enter_after_explicit_selection_dispatches_selected_entry() {
+        let (mut app, _rx) = make_app();
+        type_slash_query(&mut app, "sk li");
+        let _ = reduce(&mut app, Action::SlashAutocompleteMove(VertDir::Down));
+
+        let effects = reduce(&mut app, Action::SlashAutocompleteAcceptAndSubmit);
+
+        assert!(
+            effects
+                .iter()
+                .all(|e| !matches!(e, Effect::SendUserInput(_)))
+        );
+        assert!(app.slash_autocomplete.is_none());
+    }
+
+    #[test]
+    fn slash_enter_move_flag_resets_when_query_changes() {
+        let (mut app, _rx) = make_app();
+        type_slash_query(&mut app, "goal check");
+        let _ = reduce(&mut app, Action::SlashAutocompleteMove(VertDir::Down));
+        let _ = reduce(&mut app, Action::SlashAutocompletePushChar(' '));
+        let _ = reduce(&mut app, Action::SlashAutocompletePushChar('a'));
+
+        let effects = reduce(&mut app, Action::SlashAutocompleteAcceptAndSubmit);
+
+        assert_eq!(
+            effects,
+            vec![Effect::SendUserInput("/goal check a".to_owned())]
         );
     }
 

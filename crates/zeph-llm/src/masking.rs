@@ -335,12 +335,8 @@ impl LlmProvider for MaskedProvider {
         .await
     }
 
-    fn last_cache_usage(&self) -> Option<(u64, u64)> {
-        LlmProvider::last_cache_usage(self.inner.as_ref())
-    }
-
-    fn last_usage(&self) -> Option<(u64, u64)> {
-        LlmProvider::last_usage(self.inner.as_ref())
+    fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+        LlmProvider::last_response_usage(self.inner.as_ref())
     }
 
     fn thinking_binding(&self) -> crate::provider::ThinkingBinding {
@@ -349,14 +345,6 @@ impl LlmProvider for MaskedProvider {
 
     fn prefix_cache(&self) -> crate::provider::PrefixCache {
         LlmProvider::prefix_cache(self.inner.as_ref())
-    }
-
-    fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {
-        LlmProvider::last_auxiliary_usage(self.inner.as_ref())
-    }
-
-    fn last_reasoning_tokens(&self) -> Option<u64> {
-        LlmProvider::last_reasoning_tokens(self.inner.as_ref())
     }
 
     fn last_ttft_ms(&self) -> Option<u64> {

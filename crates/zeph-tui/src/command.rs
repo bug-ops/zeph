@@ -1062,6 +1062,13 @@ fn normalize_separators(s: &str) -> String {
         .collect()
 }
 
+/// `true` when `query` is a case-insensitive prefix of `id` after stripping a leading `/` and
+/// treating `:`/`-` as spaces.
+pub(crate) fn query_prefixes_id(query: &str, id: &str) -> bool {
+    let norm = |s: &str| normalize_separators(s.trim_start_matches('/')).to_lowercase();
+    norm(id).starts_with(&norm(query))
+}
+
 /// Filter and rank all registered commands by fuzzy match against `query`.
 ///
 /// Merges the core, daemon, and extra registries, scores each entry against

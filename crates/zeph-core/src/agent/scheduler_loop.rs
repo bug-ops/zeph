@@ -1401,7 +1401,8 @@ impl<C: crate::channel::Channel> Agent<C> {
                                                     .map_or((None, None), |(_, p)| {
                                                         (
                                                             p.last_ttft_ms(),
-                                                            p.last_reasoning_tokens(),
+                                                            p.last_response_usage()
+                                                                .and_then(|u| u.reasoning),
                                                         )
                                                     });
                                                 let record = zeph_memory::UsageRecord {

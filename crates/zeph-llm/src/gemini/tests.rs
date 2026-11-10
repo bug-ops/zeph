@@ -214,9 +214,19 @@ fn gemini_clone_resets_usage() {
     // Clone must not carry over any accumulated state — verified by checking
     // that a freshly-cloned provider reports no usage.
     let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
-    assert!(p.last_usage().is_none());
+    assert!(
+        p.last_response_usage()
+            .map(|u| (u.input, u.output))
+            .is_none()
+    );
     let cloned = p.clone();
-    assert!(cloned.last_usage().is_none(), "clone must reset last_usage");
+    assert!(
+        cloned
+            .last_response_usage()
+            .map(|u| (u.input, u.output))
+            .is_none(),
+        "clone must reset last_usage"
+    );
 }
 
 #[tokio::test]
@@ -1212,7 +1222,8 @@ async fn gap3_successful_response_populates_last_usage() {
     assert_eq!(result.unwrap(), "Hello!");
 
     let usage = p
-        .last_usage()
+        .last_response_usage()
+        .map(|u| (u.input, u.output))
         .expect("last_usage must be populated after successful call");
     assert_eq!(usage.0, 10, "prompt_token_count");
     assert_eq!(usage.1, 5, "candidates_token_count");

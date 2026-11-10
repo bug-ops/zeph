@@ -49,7 +49,7 @@ const BUDGET_STEP_FP: &[u8] = b"orch:replan_budget:v1";
 /// `error_class: String`.  If a second `LineageKind` variant is added post-v1 the
 /// exhaustive match in `From<&LineageEntry>` becomes a compile error — the intended tripwire.
 ///
-/// # TODO(post-v1)
+/// # TODO(#6935)
 ///
 /// When `LineageKind` gains additional variants, replace `error_class` with a serde-tagged
 /// enum so no information is silently lost during round-trips.

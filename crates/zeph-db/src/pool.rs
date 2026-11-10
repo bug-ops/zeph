@@ -56,7 +56,7 @@ impl DbConfig {
             let db_path = std::path::PathBuf::from(path);
 
             if let Some(parent) = db_path.parent()
-                && !parent.as_os_str().is_empty()
+                && !parent.is_empty()
             {
                 tokio::fs::create_dir_all(parent).await?;
             }

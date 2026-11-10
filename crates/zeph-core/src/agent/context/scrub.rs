@@ -8,7 +8,6 @@
 //! message; if that message is no longer at the index (trim, compaction, pop) the whole window is
 //! scrubbed again, which is idempotent.
 
-use std::borrow::Cow;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use zeph_llm::provider::{Message, MessagePart, Role};
@@ -40,47 +39,6 @@ fn fingerprint(msg: &Message) -> u64 {
     hasher.finish()
 }
 
-/// Replace `text` with the scrubbed form when `scrub` changed it.
-fn scrub_in_place(text: &mut String, scrub: for<'a> fn(&'a str) -> Cow<'a, str>) -> bool {
-    let owned = match scrub(text) {
-        Cow::Owned(s) => Some(s),
-        Cow::Borrowed(_) => None,
-    };
-    owned.is_some_and(|s| {
-        *text = s;
-        true
-    })
-}
-
-/// Scrub one message in place and report whether anything changed.
-///
-/// Wire builders render from `parts` when present, so the part texts are scrubbed and `content`
-/// is rebuilt from them. User text gets the full scrub (secrets, URL credentials, paths) like the
-/// `replace` layout; tool results only lose secrets, because a path in a tool result is data the
-/// model needs.
-fn scrub_message(msg: &mut Message) -> bool {
-    if msg.parts.is_empty() {
-        return scrub_in_place(&mut msg.content, crate::redact::scrub_content);
-    }
-    let mut changed = false;
-    for part in &mut msg.parts {
-        changed |= match part {
-            MessagePart::Text { text } => scrub_in_place(text, crate::redact::scrub_content),
-            MessagePart::ToolResult { content, .. } => {
-                scrub_in_place(content, crate::redact::redact_secrets)
-            }
-            MessagePart::ToolOutput { body, .. } => {
-                scrub_in_place(body, crate::redact::redact_secrets)
-            }
-            _ => false,
-        };
-    }
-    if changed {
-        msg.rebuild_content();
-    }
-    changed
-}
-
 impl<C: Channel> Agent<C> {
     /// Credential-scrub the messages added since the last request, in place.
     #[tracing::instrument(
@@ -107,7 +65,7 @@ impl<C: Channel> Agent<C> {
                 continue;
             }
             scanned += 1;
-            scrub_message(msg);
+            zeph_context::scrub::scrub_message(msg);
         }
         let span = tracing::Span::current();
         span.record("start", start);

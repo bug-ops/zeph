@@ -381,7 +381,7 @@ fn format_structured_recall_entry(item: &zeph_memory::RecalledMessage) -> String
     };
     // Use compacted_at as a proxy for message age when available; otherwise "unknown".
     // A full timestamp lookup from SQLite would require an async DB call in the assembler
-    // and is deferred to a future enhancement (TODO: enhance when message timestamps are
+    // and is deferred to a future enhancement (TODO(#6935): enhance when message timestamps are
     // propagated into RecalledMessage).
     let date = item
         .message

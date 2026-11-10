@@ -204,7 +204,7 @@ impl TopologyAdvisor {
     ) -> Self {
         let path: PathBuf = {
             let p = state_path.into();
-            if p.as_os_str().is_empty() {
+            if p.is_empty() {
                 Self::default_path()
             } else {
                 p

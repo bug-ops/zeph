@@ -805,7 +805,7 @@ impl LlmProvider for RouterProvider {
         )
     }
 
-    fn last_cache_usage(&self) -> Option<(u64, u64)> {
+    fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
         None
     }
 

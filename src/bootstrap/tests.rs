@@ -768,10 +768,11 @@ async fn seed_skill_trust_db_applies_configured_local_level() {
     .unwrap();
 
     let meta = SkillMeta {
-        name: "my-skill".to_owned(),
-        description: "test skill".to_owned(),
         skill_dir: skill_dir.clone(),
-        ..Default::default()
+        ..SkillMeta::new(
+            zeph_common::SkillName::parse("my-skill").unwrap(),
+            "test skill",
+        )
     };
 
     builder

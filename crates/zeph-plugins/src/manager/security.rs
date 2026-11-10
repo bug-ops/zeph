@@ -268,7 +268,7 @@ impl PluginManager {
             managed_registry
                 .all_meta()
                 .iter()
-                .map(|m| (m.name.clone(), MatchedSource::Managed)),
+                .map(|m| (m.name.to_string(), MatchedSource::Managed)),
         );
 
         let installed = self.list_installed().unwrap_or_default();

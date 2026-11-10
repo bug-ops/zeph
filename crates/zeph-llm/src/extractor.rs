@@ -94,6 +94,10 @@ mod tests {
     }
 
     impl LlmProvider for StubProvider {
+        fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+            None
+        }
+
         fn chat(
             &self,
             _messages: &[Message],
@@ -170,6 +174,10 @@ mod tests {
         struct FailProvider;
 
         impl LlmProvider for FailProvider {
+            fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+                None
+            }
+
             fn chat(
                 &self,
                 _messages: &[Message],

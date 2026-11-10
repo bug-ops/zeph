@@ -1,19 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-/// Tracks token usage and cache hit statistics.
+use crate::provider::ResponseUsage;
+
+/// Holds the usage snapshot and time-to-first-byte of a provider's last response.
 ///
-/// Note: `last_cache` is only populated by Claude and `OpenAI` providers.
-/// Ollama and Gemini only use `last_usage`.
+/// The snapshot is one value behind one lock, so a reader never observes counters of two
+/// different responses. Providers build the whole [`ResponseUsage`] locally and publish it
+/// with [`record`](Self::record); a field a response did not report is `None` rather than
+/// carried over from an earlier response.
 ///
-/// `last_reasoning` stores reasoning tokens, which are a **subset** of completion tokens
-/// (`OpenAI` o-series only). Never add reasoning tokens to cost separately.
+/// Usage belongs to the instance that made the call: [`Clone`] yields a fresh, empty tracker
+/// instead of crediting the clone with a call it never made.
 #[derive(Debug, Default)]
-#[allow(clippy::struct_field_names)] // all fields are `last_*` by design — they track the last seen value
 pub(crate) struct UsageTracker {
-    last_usage: std::sync::Mutex<Option<(u64, u64)>>,
-    last_cache: std::sync::Mutex<Option<(u64, u64)>>,
-    last_reasoning: std::sync::Mutex<Option<u64>>,
+    last: parking_lot::Mutex<Option<ResponseUsage>>,
     /// Time-to-first-byte of the last HTTP round-trip, in milliseconds (issue #6549).
     ///
     /// Recorded by `retry::send_with_retry` (or the equivalent per-attempt retry loop for
@@ -26,92 +27,42 @@ pub(crate) struct UsageTracker {
     /// (`agent::speculative::stream_drainer::SpeculativeStreamDrainer::drive`), and that
     /// value takes priority over this field's TTFB when building a `usage_records` row —
     /// see `Agent::build_usage_record`'s `stream_ttft_ms` parameter.
-    last_ttft: std::sync::Mutex<Option<u64>>,
-    /// Usage billed outside the top-level counters (server compaction iterations) in the last
-    /// response. Overwritten on every recorded response so it never leaks into the next call.
-    last_auxiliary: std::sync::Mutex<Option<crate::provider::AuxiliaryUsage>>,
+    last_ttft: parking_lot::Mutex<Option<u64>>,
 }
 
 impl UsageTracker {
     /// Forget the usage of the previous response, keeping only the time-to-first-byte.
     ///
-    /// Called when a streamed call opens, so a stream that fails before reporting any usage
-    /// leaves no values from an earlier call behind. The TTFB survives because the HTTP layer
-    /// records it for the request that is about to be sent.
+    /// Called when a request opens, so a call that fails before reporting any usage leaves no
+    /// values from an earlier call behind. The TTFB survives because the HTTP layer records it
+    /// for the request that is about to be sent.
     pub(crate) fn clear_response(&self) {
-        if let Ok(mut g) = self.last_usage.lock() {
-            *g = None;
-        }
-        if let Ok(mut g) = self.last_cache.lock() {
-            *g = None;
-        }
-        if let Ok(mut g) = self.last_reasoning.lock() {
-            *g = None;
-        }
-        self.record_auxiliary(None);
+        self.record(None);
     }
 
-    /// Record the auxiliary usage of the most recent response; `None` clears the previous value.
-    pub(crate) fn record_auxiliary(&self, usage: Option<crate::provider::AuxiliaryUsage>) {
-        if let Ok(mut g) = self.last_auxiliary.lock() {
-            *g = usage;
-        }
+    /// Publish the usage of the most recent response; `None` clears the previous snapshot.
+    pub(crate) fn record(&self, usage: Option<ResponseUsage>) {
+        *self.last.lock() = usage;
     }
 
-    pub(crate) fn last_auxiliary(&self) -> Option<crate::provider::AuxiliaryUsage> {
-        self.last_auxiliary.lock().ok().and_then(|g| *g)
-    }
-
-    pub(crate) fn record_usage(&self, input: u64, output: u64) {
-        if let Ok(mut g) = self.last_usage.lock() {
-            *g = Some((input, output));
-        }
+    /// Return the snapshot published for the most recent response.
+    pub(crate) fn last(&self) -> Option<ResponseUsage> {
+        *self.last.lock()
     }
 
     /// Record the time-to-first-token/byte (milliseconds) of the most recent HTTP attempt.
     pub(crate) fn record_ttft(&self, ms: u64) {
-        if let Ok(mut g) = self.last_ttft.lock() {
-            *g = Some(ms);
-        }
-    }
-
-    pub(crate) fn record_cache(&self, creation: u64, read: u64) {
-        if let Ok(mut g) = self.last_cache.lock() {
-            *g = Some((creation, read));
-        }
-    }
-
-    /// Record reasoning tokens from the last response.
-    ///
-    /// Reasoning tokens are a **subset** of completion tokens; callers must not add them
-    /// to cost calculations.
-    pub(crate) fn record_reasoning(&self, tokens: u64) {
-        if let Ok(mut g) = self.last_reasoning.lock() {
-            *g = Some(tokens);
-        }
-    }
-
-    pub(crate) fn last_usage(&self) -> Option<(u64, u64)> {
-        self.last_usage.lock().ok().and_then(|g| *g)
-    }
-
-    pub(crate) fn last_cache_usage(&self) -> Option<(u64, u64)> {
-        self.last_cache.lock().ok().and_then(|g| *g)
-    }
-
-    /// Returns reasoning tokens from the last response, or `None` if the provider
-    /// does not report them.
-    pub(crate) fn last_reasoning(&self) -> Option<u64> {
-        self.last_reasoning.lock().ok().and_then(|g| *g)
+        *self.last_ttft.lock() = Some(ms);
     }
 
     /// Returns the time-to-first-token/byte (milliseconds) of the last HTTP round-trip.
     pub(crate) fn last_ttft_ms(&self) -> Option<u64> {
-        self.last_ttft.lock().ok().and_then(|g| *g)
+        *self.last_ttft.lock()
     }
 }
 
 impl Clone for UsageTracker {
+    /// Returns a fresh, empty tracker: usage belongs to the instance that made the call.
     fn clone(&self) -> Self {
         Self::default()
     }
@@ -120,6 +71,7 @@ impl Clone for UsageTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::{AuxiliaryUsage, CacheUsage};
 
     #[test]
     fn last_ttft_ms_initially_none() {
@@ -147,26 +99,47 @@ mod tests {
     }
 
     #[test]
+    fn record_replaces_whole_snapshot() {
+        let tracker = UsageTracker::default();
+        tracker.record(Some(ResponseUsage {
+            input: 1,
+            output: 2,
+            cache: Some(CacheUsage {
+                creation: 3,
+                read: 4,
+            }),
+            reasoning: Some(5),
+            auxiliary: Some(AuxiliaryUsage::default()),
+        }));
+        tracker.record(Some(ResponseUsage {
+            input: 10,
+            output: 20,
+            ..ResponseUsage::default()
+        }));
+        let last = tracker.last().expect("snapshot recorded");
+        assert_eq!((last.input, last.output), (10, 20));
+        assert_eq!(last.cache, None, "cache must not carry over");
+        assert_eq!(last.reasoning, None, "reasoning must not carry over");
+        assert_eq!(last.auxiliary, None);
+    }
+
+    #[test]
     fn clear_response_keeps_only_ttft() {
         let tracker = UsageTracker::default();
-        tracker.record_usage(1, 2);
-        tracker.record_cache(3, 4);
-        tracker.record_reasoning(5);
-        tracker.record_auxiliary(Some(crate::provider::AuxiliaryUsage::default()));
+        tracker.record(Some(ResponseUsage::default()));
         tracker.record_ttft(9);
         tracker.clear_response();
-        assert_eq!(tracker.last_usage(), None);
-        assert_eq!(tracker.last_cache_usage(), None);
-        assert_eq!(tracker.last_reasoning(), None);
-        assert_eq!(tracker.last_auxiliary(), None);
+        assert_eq!(tracker.last(), None);
         assert_eq!(tracker.last_ttft_ms(), Some(9));
     }
 
     #[test]
-    fn clone_resets_last_ttft_ms() {
+    fn clone_resets_snapshot_and_ttft() {
         let tracker = UsageTracker::default();
+        tracker.record(Some(ResponseUsage::default()));
         tracker.record_ttft(42);
         let cloned = tracker.clone();
+        assert_eq!(cloned.last(), None);
         assert_eq!(
             cloned.last_ttft_ms(),
             None,

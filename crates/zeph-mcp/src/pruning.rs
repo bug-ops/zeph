@@ -115,15 +115,18 @@ impl PruningCache {
     }
 }
 
+/// First 8 bytes of a blake3 digest as a little-endian `u64` (the digest is always 32 bytes).
+fn first_u64_le(hash: &blake3::Hash) -> u64 {
+    let [b0, b1, b2, b3, b4, b5, b6, b7, ..] = *hash.as_bytes();
+    u64::from_le_bytes([b0, b1, b2, b3, b4, b5, b6, b7])
+}
+
 /// Compute a `u64` hash of a string using blake3 (first 8 bytes, little-endian).
 ///
-/// # Panics
-///
-/// Never panics in practice: blake3 always produces at least 8 bytes of output.
 #[must_use]
 pub fn content_hash(s: &str) -> u64 {
     let hash = blake3::hash(s.as_bytes());
-    u64::from_le_bytes(hash.as_bytes()[..8].try_into().expect("blake3 >= 8 bytes"))
+    first_u64_le(&hash)
 }
 
 /// Compute a `u64` hash of the full tool list metadata using blake3.
@@ -138,10 +141,6 @@ pub fn content_hash(s: &str) -> u64 {
 /// (switching `Map` to `IndexMap`), key order becomes insertion-order and
 /// hashing becomes non-deterministic.  Should `preserve_order` be needed,
 /// sort `Map` keys before serialising here.
-///
-/// # Panics
-///
-/// Never panics in practice: blake3 always produces at least 8 bytes of output.
 #[must_use]
 pub fn tool_list_hash(tools: &[McpTool]) -> u64 {
     let mut hasher = blake3::Hasher::new();
@@ -166,7 +165,7 @@ pub fn tool_list_hash(tools: &[McpTool]) -> u64 {
         hasher.update(b"\x01");
     }
     let hash = hasher.finalize();
-    u64::from_le_bytes(hash.as_bytes()[..8].try_into().expect("blake3 >= 8 bytes"))
+    first_u64_le(&hash)
 }
 
 /// Cache-aware wrapper around [`prune_tools`].

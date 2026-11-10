@@ -829,7 +829,7 @@ fn resolve_via_ancestors(path: &Path) -> PathBuf {
     while !existing.exists() {
         if let Some(parent) = existing.parent() {
             if let Some(name) = existing.file_name() {
-                if suffix.as_os_str().is_empty() {
+                if suffix.is_empty() {
                     suffix = PathBuf::from(name);
                 } else {
                     suffix = PathBuf::from(name).join(&suffix);
@@ -841,7 +841,7 @@ fn resolve_via_ancestors(path: &Path) -> PathBuf {
         }
     }
     let base = existing.canonicalize().unwrap_or(existing.to_path_buf());
-    if suffix.as_os_str().is_empty() {
+    if suffix.is_empty() {
         base
     } else {
         base.join(&suffix)

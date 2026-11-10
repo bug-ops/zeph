@@ -18,6 +18,8 @@ pub struct SlashAutocompleteState {
     pub selected: usize,
     pub filtered: Vec<&'static CommandEntry>,
     pub scroll_offset: usize,
+    /// `true` once the user navigated the list since the query last changed.
+    pub moved: bool,
 }
 
 impl SlashAutocompleteState {
@@ -28,6 +30,7 @@ impl SlashAutocompleteState {
             selected: 0,
             filtered: Vec::new(),
             scroll_offset: 0,
+            moved: false,
         };
         s.refilter();
         s
@@ -35,6 +38,7 @@ impl SlashAutocompleteState {
 
     pub fn push_char(&mut self, c: char) {
         self.query.push(c);
+        self.moved = false;
         self.refilter();
     }
 
@@ -44,6 +48,7 @@ impl SlashAutocompleteState {
             return true;
         }
         self.query.pop();
+        self.moved = false;
         self.refilter();
         self.query.is_empty()
     }
@@ -52,6 +57,7 @@ impl SlashAutocompleteState {
         if self.filtered.is_empty() {
             return;
         }
+        self.moved = true;
         if self.selected == 0 {
             self.selected = self.filtered.len() - 1;
         } else {
@@ -64,6 +70,7 @@ impl SlashAutocompleteState {
         if self.filtered.is_empty() {
             return;
         }
+        self.moved = true;
         if self.selected == self.filtered.len() - 1 {
             self.selected = 0;
         } else {
@@ -75,6 +82,19 @@ impl SlashAutocompleteState {
     #[must_use]
     pub fn selected_entry(&self) -> Option<&'static CommandEntry> {
         self.filtered.get(self.selected).copied()
+    }
+
+    /// Whether Enter should submit the typed text verbatim instead of accepting the selection.
+    ///
+    /// True when the query has arguments (contains whitespace), the user has not moved the
+    /// selection, and the query does not merely prefix the selected entry's id.
+    #[must_use]
+    pub fn should_submit_raw(&self) -> bool {
+        !self.moved
+            && self.query.contains(char::is_whitespace)
+            && self
+                .selected_entry()
+                .is_some_and(|e| !crate::command::query_prefixes_id(&self.query, e.id))
     }
 
     fn refilter(&mut self) {
@@ -181,6 +201,16 @@ pub fn render(state: &SlashAutocompleteState, frame: &mut Frame, input_area: Rec
 mod tests {
     use super::*;
     use crate::test_utils::render_to_string;
+
+    #[test]
+    fn should_submit_raw_is_false_when_spaced_query_matches_nothing() {
+        let mut state = SlashAutocompleteState::new();
+        for c in "zzzq xqzz".chars() {
+            state.push_char(c);
+        }
+        assert!(state.selected_entry().is_none());
+        assert!(!state.should_submit_raw());
+    }
 
     #[test]
     fn new_opens_with_all_commands() {

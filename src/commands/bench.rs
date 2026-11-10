@@ -314,7 +314,7 @@ fn download_tau2_bench() -> anyhow::Result<()> {
     let repo = cache.join("repo");
 
     if !repo.exists() {
-        // TODO(critic): clone to `repo.tmp` and rename atomically; current logic skips re-clone
+        // TODO(#6935): clone to `repo.tmp` and rename atomically; current logic skips re-clone
         // on partial state. See critic-tau-bench-v2.md S4.
         let repo_str = repo
             .to_str()

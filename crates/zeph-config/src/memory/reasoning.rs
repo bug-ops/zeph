@@ -274,7 +274,7 @@ pub struct MemCotConfig {
     /// - `zoom_in`: adds source-message provenance to each returned fact.
     /// - `zoom_out`: expands 1-hop neighbors per returned fact.
     ///
-    /// TODO(F3): add a per-call override parameter on `recall_graph_view`.
+    /// TODO(#6935): F3 add a per-call override parameter on `recall_graph_view`.
     pub recall_view: RecallViewConfig,
     /// Maximum 1-hop neighbor facts per head fact in `zoom_out` view. Default: `3`.
     pub zoom_out_neighbor_cap: usize,

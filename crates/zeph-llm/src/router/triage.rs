@@ -835,16 +835,6 @@ impl LlmProvider for TriageRouter {
         })
     }
 
-    fn last_usage(&self) -> Option<(u64, u64)> {
-        let idx = self.last_provider_idx.load(Ordering::Relaxed);
-        if idx == NO_LAST_PROVIDER {
-            return None;
-        }
-        self.tier_providers
-            .get(idx)
-            .and_then(|(_, p)| p.last_usage())
-    }
-
     fn thinking_binding(&self) -> crate::provider::ThinkingBinding {
         if self
             .tier_providers
@@ -865,34 +855,14 @@ impl LlmProvider for TriageRouter {
             })
     }
 
-    fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {
+    fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
         let idx = self.last_provider_idx.load(Ordering::Relaxed);
         if idx == NO_LAST_PROVIDER {
             return None;
         }
         self.tier_providers
             .get(idx)
-            .and_then(|(_, p)| p.last_auxiliary_usage())
-    }
-
-    fn last_cache_usage(&self) -> Option<(u64, u64)> {
-        let idx = self.last_provider_idx.load(Ordering::Relaxed);
-        if idx == NO_LAST_PROVIDER {
-            return None;
-        }
-        self.tier_providers
-            .get(idx)
-            .and_then(|(_, p)| p.last_cache_usage())
-    }
-
-    fn last_reasoning_tokens(&self) -> Option<u64> {
-        let idx = self.last_provider_idx.load(Ordering::Relaxed);
-        if idx == NO_LAST_PROVIDER {
-            return None;
-        }
-        self.tier_providers
-            .get(idx)
-            .and_then(|(_, p)| p.last_reasoning_tokens())
+            .and_then(|(_, p)| p.last_response_usage())
     }
 
     fn last_ttft_ms(&self) -> Option<u64> {
@@ -1465,8 +1435,17 @@ mod tests {
             5,
             50,
         );
-        assert_eq!(router.last_usage(), None);
-        assert_eq!(router.last_cache_usage(), None);
+        assert_eq!(
+            router.last_response_usage().map(|u| (u.input, u.output)),
+            None
+        );
+        assert_eq!(
+            router
+                .last_response_usage()
+                .and_then(|u| u.cache)
+                .map(|c| (c.creation, c.read)),
+            None
+        );
     }
 
     // ── embed delegation through tier providers ───────────────────────────────

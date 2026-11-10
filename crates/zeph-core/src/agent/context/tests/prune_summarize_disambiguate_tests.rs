@@ -890,7 +890,7 @@ fn compaction_tier_none_does_not_trigger_below_soft_threshold() {
 
 #[tokio::test]
 async fn disambiguate_skills_reorders_on_match() {
-    let json = r#"{"skill_name":"beta_skill","confidence":0.9,"params":{}}"#;
+    let json = r#"{"skill_name":"beta-skill","confidence":0.9,"params":{}}"#;
     let provider = mock_provider(vec![json.to_string()]);
     let channel = MockChannel::new(vec![]);
     let registry = create_test_registry();
@@ -899,16 +899,14 @@ async fn disambiguate_skills_reorders_on_match() {
     let agent = Agent::new(provider, channel, registry, None, 5, executor);
 
     let metas = [
-        SkillMeta {
-            name: "alpha_skill".into(),
-            description: "does alpha".into(),
-            ..Default::default()
-        },
-        SkillMeta {
-            name: "beta_skill".into(),
-            description: "does beta".into(),
-            ..Default::default()
-        },
+        SkillMeta::new(
+            zeph_common::SkillName::parse("alpha-skill").unwrap(),
+            "does alpha",
+        ),
+        SkillMeta::new(
+            zeph_common::SkillName::parse("beta-skill").unwrap(),
+            "does beta",
+        ),
     ];
     let refs: Vec<&SkillMeta> = metas.iter().collect();
     let scored = vec![
@@ -927,7 +925,7 @@ async fn disambiguate_skills_reorders_on_match() {
         .await;
     assert!(result.is_some());
     let indices = result.unwrap();
-    assert_eq!(indices[0], 1); // beta_skill moved to front
+    assert_eq!(indices[0], 1); // beta-skill moved to front
 }
 
 #[tokio::test]
@@ -939,11 +937,10 @@ async fn disambiguate_skills_returns_none_on_error() {
 
     let agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    let metas = [SkillMeta {
-        name: "test".into(),
-        description: "test".into(),
-        ..Default::default()
-    }];
+    let metas = [SkillMeta::new(
+        zeph_common::SkillName::parse("test").unwrap(),
+        "test",
+    )];
     let refs: Vec<&SkillMeta> = metas.iter().collect();
     let scored = vec![ScoredMatch {
         index: 0,
@@ -984,16 +981,14 @@ async fn disambiguate_skills_unknown_skill_preserves_order() {
     let agent = Agent::new(provider, channel, registry, None, 5, executor);
 
     let metas = [
-        SkillMeta {
-            name: "first".into(),
-            description: "first skill".into(),
-            ..Default::default()
-        },
-        SkillMeta {
-            name: "second".into(),
-            description: "second skill".into(),
-            ..Default::default()
-        },
+        SkillMeta::new(
+            zeph_common::SkillName::parse("first").unwrap(),
+            "first skill",
+        ),
+        SkillMeta::new(
+            zeph_common::SkillName::parse("second").unwrap(),
+            "second skill",
+        ),
     ];
     let refs: Vec<&SkillMeta> = metas.iter().collect();
     let scored = vec![
@@ -1018,7 +1013,7 @@ async fn disambiguate_skills_unknown_skill_preserves_order() {
 
 #[tokio::test]
 async fn disambiguate_single_candidate_no_swap() {
-    let json = r#"{"skill_name":"only_skill","confidence":0.95,"params":{}}"#;
+    let json = r#"{"skill_name":"only-skill","confidence":0.95,"params":{}}"#;
     let provider = mock_provider(vec![json.to_string()]);
     let channel = MockChannel::new(vec![]);
     let registry = create_test_registry();
@@ -1026,11 +1021,10 @@ async fn disambiguate_single_candidate_no_swap() {
 
     let agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-    let metas = [SkillMeta {
-        name: "only_skill".into(),
-        description: "the only one".into(),
-        ..Default::default()
-    }];
+    let metas = [SkillMeta::new(
+        zeph_common::SkillName::parse("only-skill").unwrap(),
+        "the only one",
+    )];
     let refs: Vec<&SkillMeta> = metas.iter().collect();
     let scored = vec![ScoredMatch {
         index: 0,
@@ -1060,10 +1054,11 @@ async fn rebuild_system_prompt_excludes_skill_when_secret_missing() {
 
     // Skill requires a secret that is NOT available
     let meta_with_secret = SkillMeta {
-        name: "secure-skill".into(),
-        description: "needs a secret".into(),
         requires_secrets: vec!["my_api_key".into()],
-        ..Default::default()
+        ..SkillMeta::new(
+            zeph_common::SkillName::parse("secure-skill").unwrap(),
+            "needs a secret",
+        )
     };
 
     // available_custom_secrets is empty — skill must be excluded
@@ -1107,10 +1102,11 @@ async fn rebuild_system_prompt_includes_skill_when_secret_present() {
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
     let meta_with_secret = SkillMeta {
-        name: "secure-skill".into(),
-        description: "needs a secret".into(),
         requires_secrets: vec!["my_api_key".into()],
-        ..Default::default()
+        ..SkillMeta::new(
+            zeph_common::SkillName::parse("secure-skill").unwrap(),
+            "needs a secret",
+        )
     };
 
     // Secret IS available
@@ -1159,10 +1155,11 @@ async fn rebuild_system_prompt_excludes_skill_when_only_partial_secrets_present(
     let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
     let meta = SkillMeta {
-        name: "multi-secret-skill".into(),
-        description: "needs two secrets".into(),
         requires_secrets: vec!["secret_a".into(), "secret_b".into()],
-        ..Default::default()
+        ..SkillMeta::new(
+            zeph_common::SkillName::parse("multi-secret-skill").unwrap(),
+            "needs two secrets",
+        )
     };
 
     // Only "secret_a" present, "secret_b" missing — skill must be excluded.

@@ -1095,7 +1095,7 @@ impl AppBuilder {
             let trust_levels: Vec<(String, zeph_common::SkillTrustLevel)> = registry
                 .all_meta()
                 .iter()
-                .map(|meta| (meta.name.clone(), default_level))
+                .map(|meta| (meta.name.to_string(), default_level))
                 .collect();
 
             let violations = registry.check_escalations(&trust_levels);
@@ -1196,7 +1196,7 @@ impl AppBuilder {
             // Check if there's an existing record to handle hash mismatch.
             let existing = memory
                 .sqlite()
-                .load_skill_trust(&meta.name)
+                .load_skill_trust(meta.name.as_str())
                 .await
                 .ok()
                 .flatten();
@@ -1223,7 +1223,7 @@ impl AppBuilder {
             if let Err(e) = memory
                 .sqlite()
                 .upsert_skill_trust(
-                    &meta.name,
+                    meta.name.as_str(),
                     trust_level,
                     source_kind,
                     None,

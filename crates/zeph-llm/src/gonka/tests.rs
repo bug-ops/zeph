@@ -559,8 +559,14 @@ fn gonka_provider_clone_independence() {
     assert!(provider.supports_embeddings());
     assert!(cloned.supports_embeddings());
     // Usage trackers are independent after clone.
-    assert_eq!(provider.last_usage(), None);
-    assert_eq!(cloned.last_usage(), None);
+    assert_eq!(
+        provider.last_response_usage().map(|u| (u.input, u.output)),
+        None
+    );
+    assert_eq!(
+        cloned.last_response_usage().map(|u| (u.input, u.output)),
+        None
+    );
 }
 
 #[test]

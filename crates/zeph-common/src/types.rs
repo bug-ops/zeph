@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Generates an `Arc<str>`-backed newtype with the shared trait surface used by
-/// `ToolName`, `ProviderName`, and `SkillName`: `Default`, `Display`, `AsRef<str>`,
+/// `ToolName` and `ProviderName`: `Default`, `Display`, `AsRef<str>`,
 /// `Borrow<str>`, `From<&str>`, `From<String>`, `FromStr`, and both directions of
 /// `PartialEq` against `str`/`&str`/`String`, plus `new`/`as_str` constructors.
 ///
@@ -305,50 +305,83 @@ impl ProviderName {
 
 // ── SkillName ────────────────────────────────────────────────────────────────
 
-arc_str_newtype!(
-    /// Strongly-typed skill name identifier.
+/// Reason a string was rejected as a [`SkillName`].
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum SkillNameError {
+    /// Length is not within 1..=64 bytes.
+    #[error("skill name must be 1-64 characters, got {0}")]
+    Length(usize),
+    /// Contains a character outside `[a-z0-9-]`.
+    #[error("skill name must contain only lowercase letters, digits, and hyphens: {0}")]
+    Charset(String),
+    /// Starts or ends with a hyphen.
+    #[error("skill name must not start or end with hyphen: {0}")]
+    EdgeHyphen(String),
+    /// Contains two consecutive hyphens.
+    #[error("skill name must not contain consecutive hyphens: {0}")]
+    DoubleHyphen(String),
+}
+
+/// Validated skill name identifier.
+///
+/// A `SkillName` is 1-64 bytes of `[a-z0-9-]`, with no leading, trailing or doubled
+/// hyphen. Names come from `SKILL.md` frontmatter `name:` fields and are used at match
+/// time, invocation routing, and telemetry. Invalid names are unrepresentable: the only
+/// constructors are validating ([`SkillName::parse`], `TryFrom`, `FromStr`, serde).
+///
+/// The inner type is `Arc<str>` so clones are O(1). There is no `Deref<Target=str>`,
+/// `Default` or infallible `From`; use [`SkillName::as_str`] for the string view.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::SkillName;
+///
+/// let name = SkillName::parse("rust-agents").unwrap();
+/// assert_eq!(name.as_str(), "rust-agents");
+/// assert_eq!(name, "rust-agents");
+/// assert!(SkillName::parse("Bad Name").is_err());
+/// assert!(SkillName::parse("").is_err());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct SkillName(Arc<str>);
+
+impl SkillName {
+    /// Validate `s` and build a `SkillName`.
     ///
-    /// `SkillName` identifies a skill by its canonical name (e.g., `"rust-agents"`,
-    /// `"readme-generator"`). Names come from `SKILL.md` frontmatter `name:` fields and
-    /// are used at match time, invocation routing, and telemetry.
+    /// # Errors
     ///
-    /// # Inner type: `Arc<str>`
-    ///
-    /// The inner type is `Arc<str>`. Skill names are referenced from multiple subsystems
-    /// (registry, matcher, invoker, TUI) during a single agent turn. `Arc<str>` makes all
-    /// clones O(1).
-    ///
-    /// # No `Deref<Target=str>`
-    ///
-    /// `SkillName` does **not** implement `Deref<Target=str>`. Use `.as_str()` for explicit
-    /// string conversion and `.clone()` to duplicate.
+    /// Returns [`SkillNameError`] when `s` is empty, longer than 64 bytes, contains
+    /// characters outside `[a-z0-9-]`, or has a leading, trailing or doubled hyphen.
     ///
     /// # Examples
     ///
     /// ```
-    /// use zeph_common::SkillName;
+    /// use zeph_common::{SkillName, SkillNameError};
     ///
-    /// let name = SkillName::new("rust-agents");
-    /// assert_eq!(name.as_str(), "rust-agents");
-    /// assert_eq!(name, "rust-agents");
-    ///
-    /// // Clone is O(1) — Arc reference count increment only.
-    /// let name2 = name.clone();
-    /// assert_eq!(name, name2);
+    /// assert!(SkillName::parse("readme-generator").is_ok());
+    /// assert_eq!(SkillName::parse("a--b"), Err(SkillNameError::DoubleHyphen("a--b".into())));
     /// ```
-    struct SkillName;
-    new_doc:
-    /// Construct a `SkillName` from any value convertible to `Arc<str>`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zeph_common::SkillName;
-    ///
-    /// let name = SkillName::new("readme-generator");
-    /// assert_eq!(name.as_str(), "readme-generator");
-    /// ```
-    as_str_doc:
+    pub fn parse(s: &str) -> Result<Self, SkillNameError> {
+        if s.is_empty() || s.len() > 64 {
+            return Err(SkillNameError::Length(s.len()));
+        }
+        if !s
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            return Err(SkillNameError::Charset(s.to_owned()));
+        }
+        if s.starts_with('-') || s.ends_with('-') {
+            return Err(SkillNameError::EdgeHyphen(s.to_owned()));
+        }
+        if s.contains("--") {
+            return Err(SkillNameError::DoubleHyphen(s.to_owned()));
+        }
+        Ok(Self(Arc::from(s)))
+    }
+
     /// Return the inner string slice.
     ///
     /// # Examples
@@ -356,15 +389,91 @@ arc_str_newtype!(
     /// ```
     /// use zeph_common::SkillName;
     ///
-    /// let name = SkillName::new("rust-agents");
-    /// assert_eq!(name.as_str(), "rust-agents");
+    /// assert_eq!(SkillName::parse("rust-agents").unwrap().as_str(), "rust-agents");
     /// ```
-    default_doc:
-    /// Returns an empty `SkillName`.
-    ///
-    /// Exists solely for `#[serde(default)]` on optional fields. Do not use in
-    /// application code — an empty name will fail skill lookup.
-);
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for SkillName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for SkillName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Borrow<str> for SkillName {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for SkillName {
+    type Error = SkillNameError;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        Self::parse(s)
+    }
+}
+
+impl TryFrom<String> for SkillName {
+    type Error = SkillNameError;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::parse(&s)
+    }
+}
+
+impl From<SkillName> for String {
+    fn from(n: SkillName) -> Self {
+        n.0.as_ref().to_owned()
+    }
+}
+
+impl FromStr for SkillName {
+    type Err = SkillNameError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
+impl PartialEq<str> for SkillName {
+    fn eq(&self, other: &str) -> bool {
+        self.0.as_ref() == other
+    }
+}
+
+impl PartialEq<&str> for SkillName {
+    fn eq(&self, other: &&str) -> bool {
+        self.0.as_ref() == *other
+    }
+}
+
+impl PartialEq<String> for SkillName {
+    fn eq(&self, other: &String) -> bool {
+        self.0.as_ref() == other.as_str()
+    }
+}
+
+impl PartialEq<SkillName> for str {
+    fn eq(&self, other: &SkillName) -> bool {
+        self == other.0.as_ref()
+    }
+}
+
+impl PartialEq<SkillName> for String {
+    fn eq(&self, other: &SkillName) -> bool {
+        self.as_str() == other.0.as_ref()
+    }
+}
 
 // ── SessionId ────────────────────────────────────────────────────────────────
 
@@ -908,58 +1017,83 @@ mod tests {
 
     #[test]
     fn skill_name_construction_and_equality() {
-        let name = SkillName::new("rust-agents");
+        let name = SkillName::parse("rust-agents").unwrap();
         assert_eq!(name.as_str(), "rust-agents");
         assert_eq!(name, "rust-agents");
         assert_eq!(name, "rust-agents".to_owned());
-        // Reverse direction: PartialEq<SkillName> for str/String
         assert_eq!(*"rust-agents", name);
         assert_eq!("rust-agents".to_owned(), name);
     }
 
     #[test]
-    fn skill_name_default_is_empty() {
-        let name = SkillName::default();
-        assert_eq!(name.as_str(), "");
+    fn skill_name_rejects_invalid() {
+        assert_eq!(SkillName::parse(""), Err(SkillNameError::Length(0)));
+        assert!(matches!(
+            SkillName::parse(&"a".repeat(65)),
+            Err(SkillNameError::Length(65))
+        ));
+        assert!(SkillName::parse(&"a".repeat(64)).is_ok());
+        for bad in ["Alpha", "a_b", "a b", "é", "a/b", "../x"] {
+            assert!(
+                matches!(SkillName::parse(bad), Err(SkillNameError::Charset(_))),
+                "{bad}"
+            );
+        }
+        assert!(matches!(
+            SkillName::parse("-a"),
+            Err(SkillNameError::EdgeHyphen(_))
+        ));
+        assert!(matches!(
+            SkillName::parse("a-"),
+            Err(SkillNameError::EdgeHyphen(_))
+        ));
+        assert!(matches!(
+            SkillName::parse("a--b"),
+            Err(SkillNameError::DoubleHyphen(_))
+        ));
     }
 
     #[test]
     fn skill_name_clone_is_cheap() {
-        let name = SkillName::new("readme-generator");
+        let name = SkillName::parse("readme-generator").unwrap();
         let name2 = name.clone();
         assert_eq!(name, name2);
         assert!(Arc::ptr_eq(&name.0, &name2.0));
     }
 
     #[test]
-    fn skill_name_from_impls() {
-        let from_str: SkillName = SkillName::from("rust-agents");
-        let from_string: SkillName = SkillName::from("rust-agents".to_owned());
-        let parsed: SkillName = "rust-agents".parse().unwrap();
-        assert_eq!(from_str, from_string);
-        assert_eq!(from_str, parsed);
+    fn skill_name_try_from_and_parse() {
+        let a = SkillName::try_from("rust-agents").unwrap();
+        let b = SkillName::try_from("rust-agents".to_owned()).unwrap();
+        let c: SkillName = "rust-agents".parse().unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a, c);
+        assert!(SkillName::try_from("Bad").is_err());
+        assert!("Bad".parse::<SkillName>().is_err());
     }
 
     #[test]
     fn skill_name_as_hashmap_key() {
         use std::collections::HashMap;
         let mut map: HashMap<SkillName, u32> = HashMap::new();
-        map.insert(SkillName::new("rust-agents"), 1);
+        map.insert(SkillName::parse("rust-agents").unwrap(), 1);
         assert_eq!(map.get("rust-agents"), Some(&1));
     }
 
     #[test]
     fn skill_name_display() {
-        let name = SkillName::new("readme-generator");
+        let name = SkillName::parse("readme-generator").unwrap();
         assert_eq!(format!("{name}"), "readme-generator");
     }
 
     #[test]
-    fn skill_name_serde_transparent() {
-        let name = SkillName::new("rust-agents");
+    fn skill_name_serde_roundtrip_and_rejects_invalid() {
+        let name = SkillName::parse("rust-agents").unwrap();
         let json = serde_json::to_string(&name).unwrap();
         assert_eq!(json, r#""rust-agents""#);
         let back: SkillName = serde_json::from_str(&json).unwrap();
         assert_eq!(back, name);
+        assert!(serde_json::from_str::<SkillName>(r#""Not Valid""#).is_err());
+        assert!(serde_json::from_str::<SkillName>(r#""""#).is_err());
     }
 }

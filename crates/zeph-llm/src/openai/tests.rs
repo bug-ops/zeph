@@ -1737,13 +1737,22 @@ fn parse_chat_response_without_usage() {
 #[test]
 fn last_cache_usage_initially_none() {
     let p = test_provider();
-    assert!(p.last_cache_usage().is_none());
+    assert!(
+        p.last_response_usage()
+            .and_then(|u| u.cache)
+            .map(|c| (c.creation, c.read))
+            .is_none()
+    );
 }
 
 #[test]
 fn last_usage_initially_none() {
     let p = test_provider();
-    assert!(p.last_usage().is_none());
+    assert!(
+        p.last_response_usage()
+            .map(|u| (u.input, u.output))
+            .is_none()
+    );
 }
 
 #[test]
@@ -1756,7 +1765,10 @@ fn store_cache_usage_stores_token_counts() {
         completion_tokens_details: None,
     };
     p.store_cache_usage(&usage);
-    let (prompt, completion) = p.last_usage().unwrap();
+    let (prompt, completion) = p
+        .last_response_usage()
+        .map(|u| (u.input, u.output))
+        .unwrap();
     assert_eq!(prompt, 1000);
     assert_eq!(completion, 200);
 }
@@ -1771,9 +1783,18 @@ fn clone_resets_last_usage() {
         completion_tokens_details: None,
     };
     p.store_cache_usage(&usage);
-    assert!(p.last_usage().is_some());
+    assert!(
+        p.last_response_usage()
+            .map(|u| (u.input, u.output))
+            .is_some()
+    );
     let cloned = p.clone();
-    assert!(cloned.last_usage().is_none());
+    assert!(
+        cloned
+            .last_response_usage()
+            .map(|u| (u.input, u.output))
+            .is_none()
+    );
 }
 
 #[test]
@@ -1786,7 +1807,11 @@ fn store_and_retrieve_cache_usage() {
         completion_tokens_details: None,
     };
     p.store_cache_usage(&usage);
-    let (creation, read) = p.last_cache_usage().unwrap();
+    let (creation, read) = p
+        .last_response_usage()
+        .and_then(|u| u.cache)
+        .map(|c| (c.creation, c.read))
+        .unwrap();
     assert_eq!(creation, 0);
     assert_eq!(read, 800);
 }
@@ -1801,7 +1826,12 @@ fn store_cache_usage_zero_cached_tokens_not_stored() {
         completion_tokens_details: None,
     };
     p.store_cache_usage(&usage);
-    assert!(p.last_cache_usage().is_none());
+    assert!(
+        p.last_response_usage()
+            .and_then(|u| u.cache)
+            .map(|c| (c.creation, c.read))
+            .is_none()
+    );
 }
 
 #[test]
@@ -1814,9 +1844,20 @@ fn clone_resets_last_cache() {
         completion_tokens_details: None,
     };
     p.store_cache_usage(&usage);
-    assert!(p.last_cache_usage().is_some());
+    assert!(
+        p.last_response_usage()
+            .and_then(|u| u.cache)
+            .map(|c| (c.creation, c.read))
+            .is_some()
+    );
     let cloned = p.clone();
-    assert!(cloned.last_cache_usage().is_none());
+    assert!(
+        cloned
+            .last_response_usage()
+            .and_then(|u| u.cache)
+            .map(|c| (c.creation, c.read))
+            .is_none()
+    );
 }
 
 #[test]

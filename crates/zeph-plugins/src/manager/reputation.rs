@@ -12,7 +12,7 @@
 
 /// Where a name in the known-names corpus came from. Carried on [`ReputationWarning`] so
 /// callers can format an accurate message (e.g. "closely resembles bundled skill ...").
-// TODO(critic): a future external ReputationSource (FR-004/US-003) has no variant here to
+// TODO(#6935): a future external ReputationSource (FR-004/US-003) has no variant here to
 // express its own match provenance and would have to misuse `Plugin(name)` — add a dedicated
 // variant (e.g. `External(String)`) when/if an external source lands.
 #[derive(Debug, Clone, PartialEq, Eq)]

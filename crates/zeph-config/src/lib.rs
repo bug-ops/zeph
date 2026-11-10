@@ -7,7 +7,7 @@
 //! environment variable overrides, validation, and migration helpers.
 //! Vault secret resolution is handled in `zeph-core` through the `SecretResolver` trait.
 //!
-//! # TODO (D4 — deferred: typed config presets)
+//! # TODO(#6935) (D4 — deferred: typed config presets)
 //!
 //! This crate currently has 131 config structs across 30 files (~19K LOC). Many subsystem
 //! configs duplicate the same optional/default patterns and there is no compile-time guarantee
@@ -67,7 +67,7 @@
 //! std::fs::write("config.toml", &result.output).unwrap();
 //! ```
 
-// TODO(critic): post-v1.0 — re-evaluate ConfigSection derive macro for the 131 config structs.
+// TODO(#6935): post-v1.0 — re-evaluate ConfigSection derive macro for the 131 config structs.
 
 pub mod agent;
 pub mod autonomous;
@@ -119,7 +119,9 @@ pub use agent::{
     ParentContextPolicy, PeerMessagingConfig, SubAgentConfig, SubAgentLifecycleHooks,
     TaskSupervisorConfig, ToolFilterConfig,
 };
-pub use calibration::{CalibrationError, ConfidenceCalibration};
+pub use calibration::{
+    CalibrationError, ConfidenceCalibration, ConfidenceThreshold, ConfidenceThresholdError,
+};
 pub use channels::{
     A2aClientConfig, A2aServerConfig, CardTrustPolicy, ChannelSkillsConfig, DiscordConfig,
     IbctKeyConfig, McpConfig, McpMediaConfig, McpOAuthConfig, McpPolicy, McpServerConfig,

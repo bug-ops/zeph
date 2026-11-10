@@ -125,8 +125,9 @@ pub use extractor::Extractor;
 pub use masking::{MaskedProvider, OutboundMasker, mask_messages};
 pub use openai::{CompletionTokensParam, OpenAiConfig};
 pub use provider::{
-    AssistantBlock, AssistantContent, AssistantContentBuilder, AuxiliaryUsage, ChatExtras,
-    ChatStream, ImageData, LlmProvider, StreamChunk, ThinkingBinding, ThinkingBlock,
+    AssistantBlock, AssistantContent, AssistantContentBuilder, AuxiliaryUsage, CacheUsage,
+    ChatExtras, ChatStream, ImageData, LlmProvider, ResponseUsage, StreamChunk, ThinkingBinding,
+    ThinkingBlock,
 };
 pub use provider_dyn::LlmProviderDyn;
 pub use router::aware::RouterAware;

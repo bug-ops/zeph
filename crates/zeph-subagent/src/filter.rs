@@ -527,7 +527,7 @@ pub fn filter_skills(
         .all_meta()
         .into_iter()
         .filter(|meta| {
-            let name = &meta.name;
+            let name = meta.name.as_str();
             let included =
                 compiled_include.is_empty() || compiled_include.iter().any(|p| glob_match(p, name));
             let excluded = compiled_exclude.iter().any(|p| glob_match(p, name));
@@ -535,7 +535,7 @@ pub fn filter_skills(
         })
         .filter(|meta| {
             let level = trust_levels
-                .get(&meta.name)
+                .get(meta.name.as_str())
                 .copied()
                 .unwrap_or(zeph_common::SkillTrustLevel::MISSING_ENTRY_FALLBACK);
             if level.is_hidden_from_catalog() {
@@ -552,7 +552,7 @@ pub fn filter_skills(
                 true
             }
         })
-        .filter_map(|meta| registry.skill(&meta.name).ok())
+        .filter_map(|meta| registry.skill(meta.name.as_str()).ok())
         .collect();
 
     Ok(all)

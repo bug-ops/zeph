@@ -239,7 +239,7 @@ async fn reload_skills_handles_zero_skill_registry_without_panic() {
         .read()
         .all_meta()
         .iter()
-        .map(|m| m.name.clone())
+        .map(|m| m.name.to_string())
         .collect();
     assert!(
         names.is_empty(),

@@ -170,6 +170,10 @@ pub(crate) struct SkillState {
     pub(crate) state_enabled: bool,
     /// Live execution state of this turn's primary state-declaring skill, if any (spec 086).
     pub(crate) execution: crate::agent::skill_state::SkillExecution,
+    /// Taint accumulated from non-`Trusted` content that entered history since the last accepted
+    /// `skill_state_patch`; ratcheted at every ingestion site, so history rewrites and
+    /// compaction cannot lose it (#6894).
+    pub(crate) input_trust_since_patch: zeph_skills::state::InputTrust,
     /// One-shot flags so a gated-off skill-state mode logs once per session, not every turn.
     pub(crate) state_inert_logged: crate::agent::skill_state::InertLogged,
 }
@@ -1712,6 +1716,7 @@ impl SkillState {
             semantic_scan_provider: String::new(),
             state_enabled: false,
             execution: crate::agent::skill_state::SkillExecution::Inactive,
+            input_trust_since_patch: zeph_skills::state::InputTrust::Trusted,
             state_inert_logged: crate::agent::skill_state::InertLogged::default(),
         }
     }

@@ -50,10 +50,7 @@ const PREVIOUS_KEY_VAULT_NAME: &str = "ZEPH_DURABLE_KEY_PREVIOUS";
 /// a fresh one starts; this is a one-time, low-impact effect at the upgrade boundary only.
 pub(crate) fn resolve_durable_db_url(config: &Config) -> String {
     let main = config.memory.sqlite_path.as_str();
-    let Some(dir) = Path::new(main)
-        .parent()
-        .filter(|d| !d.as_os_str().is_empty())
-    else {
+    let Some(dir) = Path::new(main).parent().filter(|d| !d.is_empty()) else {
         return "durable.db".to_owned();
     };
 

@@ -174,7 +174,7 @@ impl<C: Channel> Agent<C> {
         }
         self.msg.messages.extend(removed_turn_input);
         if let Some(assistant_msg) = current_turn_assistant {
-            // TODO(critic): focus checkpoint re-pushes a ToolUse-only assistant message;
+            // TODO(#6935): focus checkpoint re-pushes a ToolUse-only assistant message;
             // no pairable ToolResult present, so magic-doc detection is intentionally
             // skipped here.
             self.msg.messages.push(assistant_msg);
@@ -226,6 +226,7 @@ impl<C: Channel> Agent<C> {
         let mut first_edit = self.msg.messages.iter().position(is_knowledge_block);
         self.msg.messages.retain(|m| !is_knowledge_block(m));
         if let Some(kb_msg) = self.services.focus.build_knowledge_message() {
+            self.ratchet_skill_input_trust(zeph_sanitizer::ContentTrustLevel::ExternalUntrusted);
             // Insert the Knowledge block right after the system prompt / compaction block.
             let floor = zeph_llm::provider::context_floor(&self.msg.messages);
             first_edit = Some(first_edit.map_or(floor, |i| i.min(floor)));

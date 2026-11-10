@@ -509,17 +509,13 @@ impl<C: Channel> Agent<C> {
                         continue;
                     }
                     Some(LoopEvent::UpdateNotification(msg)) => {
-                        if let Err(e) = self.channel.send(&msg).await {
-                            tracing::warn!("failed to send update notification: {e}");
-                        }
+                        self.send_between_turns(&msg, "update notification").await;
                         continue;
                     }
                     Some(LoopEvent::ExperimentCompleted(msg)) => {
                         self.services.experiments.cancel = None;
                         self.services.experiments.handle = None;
-                        if let Err(e) = self.channel.send(&msg).await {
-                            tracing::warn!("failed to send experiment completion: {e}");
-                        }
+                        self.send_between_turns(&msg, "experiment completion").await;
                         continue;
                     }
                     Some(LoopEvent::ScheduledTask(prompt)) => {
@@ -633,6 +629,7 @@ impl<C: Channel> Agent<C> {
             let mut messages_impl = command_context_impls::MessageAccessImpl {
                 msg: &mut self.msg,
                 tool_state: &mut self.services.tool_state,
+                skill: &mut self.services.skill,
                 providers: &mut self.runtime.providers,
                 metrics: &self.runtime.metrics,
                 security: &mut self.services.security,
@@ -764,7 +761,7 @@ impl<C: Channel> Agent<C> {
         command: &str,
         with_learning: bool,
     ) -> DispatchFlow {
-        match result {
+        let flow = match result {
             Some(Ok(zeph_commands::CommandOutput::Exit)) => {
                 let _ = self.channel.flush_chunks().await;
                 DispatchFlow::Break
@@ -788,7 +785,13 @@ impl<C: Channel> Agent<C> {
                 DispatchFlow::Continue
             }
             None => DispatchFlow::Fallthrough,
+        };
+        // A handled slash command starts no LLM turn, so the channel never gets the turn-start
+        // queue signal; report the real depth so a front-end's pending badge cannot stay stale (#6909).
+        if matches!(flow, DispatchFlow::Continue) {
+            self.notify_queue_count().await;
         }
+        flow
     }
 
     /// Apply any pending LLM provider override from ACP `set_session_config_option`.
@@ -1233,6 +1236,7 @@ impl<C: Channel> Agent<C> {
 
         let mut t = self.begin_turn(input);
         self.services.goal_auto_check.begin_turn();
+        self.abort_enrichment_if_configured();
 
         let turn_idx = usize::try_from(t.id().0).unwrap_or(usize::MAX);
         tracing::Span::current().record("turn_id", t.id().0);
@@ -1483,7 +1487,8 @@ impl<C: Channel> Agent<C> {
 
     /// Reap completed background tasks, apply summarization signal, and update supervisor metrics.
     ///
-    /// Called at the top of each turn, before any user message processing, and — since #6279 —
+    /// Only reaps and refreshes metrics; it never aborts running tasks (see
+    /// [`Self::abort_enrichment_if_configured`]). Called at the top of each turn, before any user message processing, and — since #6279 —
     /// also on every `LoopEvent::BgMetricsTick` (a periodic idle-time tick), so the TUI's
     /// background-work status segment reflects real in-flight enrichment/telemetry tasks
     /// continuously, not only at turn boundaries.
@@ -1522,9 +1527,27 @@ impl<C: Channel> Agent<C> {
                 m.shell_background_runs = shell_rows;
             });
         }
+    }
 
-        // Intentional ordering: reap() runs before abort_class() so completed tasks are
-        // accounted in the snapshot above.
+    /// Send agent-initiated output outside a turn, skipping channels that cannot deliver it.
+    ///
+    /// Request-paired channels (ACP, A2A, `--json`) would discard the message or take it as the
+    /// answer to the next request (#6923).
+    async fn send_between_turns(&mut self, msg: &str, what: &'static str) {
+        if !self.channel.delivers_between_turns() {
+            tracing::debug!(what, "between-turn message skipped: channel cannot deliver");
+            return;
+        }
+        if let Err(e) = self.channel.send(msg).await {
+            tracing::warn!(what, "failed to send between-turn message: {e}");
+        }
+    }
+
+    /// Abort inflight enrichment tasks when `abort_enrichment_on_turn` is set.
+    ///
+    /// Called once per turn right after `begin_turn`, never from the idle metrics tick, so
+    /// enrichment started at the end of a turn survives idle time until the next turn begins.
+    fn abort_enrichment_if_configured(&mut self) {
         if self
             .runtime
             .config

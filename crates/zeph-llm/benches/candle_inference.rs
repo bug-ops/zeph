@@ -12,7 +12,7 @@
 //! cargo bench --features candle -p zeph-llm --bench candle_inference
 //! ```
 //!
-//! # TODO
+//! # TODO(#6935)
 //!
 //! Replace the no-op worker body with a real `generate_tokens` call once a
 //! lightweight model fixture is available for CI (e.g. a 1-layer GGUF stub).

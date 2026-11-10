@@ -121,7 +121,12 @@ fn clone_preserves_providers() {
 #[test]
 fn last_cache_usage_returns_none() {
     let r = RouterProvider::new(vec![]);
-    assert!(r.last_cache_usage().is_none());
+    assert!(
+        r.last_response_usage()
+            .and_then(|u| u.cache)
+            .map(|c| (c.creation, c.read))
+            .is_none()
+    );
 }
 
 #[test]

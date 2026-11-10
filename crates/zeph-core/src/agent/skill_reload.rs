@@ -50,11 +50,11 @@ impl<C: Channel> Agent<C> {
             .into_iter()
             .filter(|m| {
                 !trust_map
-                    .get(&m.name)
+                    .get(m.name.as_str())
                     .is_some_and(|snap| snap.trust_level.is_hidden_from_catalog())
             })
             .map(|m| crate::channel::SkillCatalogItem {
-                name: m.name,
+                name: m.name.to_string(),
                 description: m.description,
             })
             .collect()
@@ -79,7 +79,7 @@ impl<C: Channel> Agent<C> {
             .map(|t| t.id.to_string())
             .collect();
         for meta in all_meta {
-            let normalized = meta.name.replace('-', "_");
+            let normalized = meta.name.as_str().replace('-', "_");
             if native_tool_ids.contains(&normalized) {
                 tracing::warn!(
                     skill = %meta.name,
@@ -136,7 +136,7 @@ impl<C: Channel> Agent<C> {
             };
             let existing = memory
                 .sqlite()
-                .load_skill_trust(&meta.name)
+                .load_skill_trust(meta.name.as_str())
                 .await
                 .ok()
                 .flatten();
@@ -167,7 +167,7 @@ impl<C: Channel> Agent<C> {
             if let Err(e) = memory
                 .sqlite()
                 .upsert_skill_trust(
-                    &meta.name,
+                    meta.name.as_str(),
                     trust_level,
                     source_kind,
                     None,
@@ -342,7 +342,7 @@ impl<C: Channel> Agent<C> {
             .iter()
             .filter(|m| {
                 !matches!(
-                    trust_map.get(&m.name),
+                    trust_map.get(m.name.as_str()),
                     Some(snap) if snap.trust_level == zeph_common::SkillTrustLevel::Blocked
                 )
             })
@@ -511,12 +511,13 @@ mod tests {
         agent.services.skill.managed_dir = Some(managed.path().to_path_buf());
 
         let meta = zeph_skills::loader::SkillMeta {
-            name: "my-skill".into(),
-            description: "A test skill.".into(),
             version: 0,
             source: "trace_extraction".into(),
             skill_dir: skill_dir.clone(),
-            ..Default::default()
+            ..zeph_skills::loader::SkillMeta::new(
+                zeph_common::SkillName::parse("my-skill").unwrap(),
+                "A test skill.",
+            )
         };
         agent.update_trust_for_reloaded_skills(&[meta]).await;
 
@@ -571,13 +572,14 @@ mod tests {
         agent.services.skill.managed_dir = Some(managed.path().to_path_buf());
 
         let meta = zeph_skills::loader::SkillMeta {
-            name: "my-skill".into(),
-            description: "A test skill.".into(),
             version: 0,
             source: "trace_extraction".into(),
             // Relocated outside managed_dir -> classify_source_kind now returns `Local`.
             skill_dir: skill_dir.clone(),
-            ..Default::default()
+            ..zeph_skills::loader::SkillMeta::new(
+                zeph_common::SkillName::parse("my-skill").unwrap(),
+                "A test skill.",
+            )
         };
         agent.update_trust_for_reloaded_skills(&[meta]).await;
 
@@ -641,12 +643,13 @@ mod tests {
         agent.services.skill.managed_dir = Some(managed.path().to_path_buf());
 
         let meta = zeph_skills::loader::SkillMeta {
-            name: "my-skill".into(),
-            description: "A test skill.".into(),
             version: 0,
             source: "trace_extraction".into(),
             skill_dir: skill_dir.clone(),
-            ..Default::default()
+            ..zeph_skills::loader::SkillMeta::new(
+                zeph_common::SkillName::parse("my-skill").unwrap(),
+                "A test skill.",
+            )
         };
         agent.update_trust_for_reloaded_skills(&[meta]).await;
 
@@ -706,14 +709,15 @@ mod tests {
         agent.services.skill.managed_dir = Some(managed.path().to_path_buf());
 
         let meta = zeph_skills::loader::SkillMeta {
-            name: "my-skill".into(),
-            description: "A test skill.".into(),
             version: 0,
             source: "trace_extraction".into(),
             // Still inside managed_dir but with no `.bundled` marker -> classify_source_kind
             // returns Hub (a genuine source_kind change from the stored Local).
             skill_dir: skill_dir.clone(),
-            ..Default::default()
+            ..zeph_skills::loader::SkillMeta::new(
+                zeph_common::SkillName::parse("my-skill").unwrap(),
+                "A test skill.",
+            )
         };
         agent.update_trust_for_reloaded_skills(&[meta]).await;
 
@@ -779,13 +783,14 @@ mod tests {
             .unwrap();
 
         let meta = zeph_skills::loader::SkillMeta {
-            name: "my-skill".into(),
-            description: "A test skill.".into(),
             version: 0,
             source: "trace_extraction".into(),
             // Relocated inside managed_dir -> classify_source_kind now returns `Hub`.
             skill_dir: relocated_dir,
-            ..Default::default()
+            ..zeph_skills::loader::SkillMeta::new(
+                zeph_common::SkillName::parse("my-skill").unwrap(),
+                "A test skill.",
+            )
         };
         agent.update_trust_for_reloaded_skills(&[meta]).await;
 
@@ -841,12 +846,13 @@ mod tests {
 
     fn colliding_skill_meta() -> zeph_skills::loader::SkillMeta {
         zeph_skills::loader::SkillMeta {
-            name: "list-directory".into(),
-            description: "A colliding skill.".into(),
             version: 0,
             source: "trace_extraction".into(),
             skill_dir: std::path::PathBuf::from("/nonexistent/list-directory"),
-            ..Default::default()
+            ..zeph_skills::loader::SkillMeta::new(
+                zeph_common::SkillName::parse("list-directory").unwrap(),
+                "A colliding skill.",
+            )
         }
     }
 

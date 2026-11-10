@@ -1349,11 +1349,10 @@ mod tests {
         let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
         let (condenser, token_counter) = make_test_condenser();
 
-        let skill_meta = zeph_skills::loader::SkillMeta {
-            name: "solo-skill".to_owned(),
-            description: "a lone skill with no confusable sibling".to_owned(),
-            ..Default::default()
-        };
+        let skill_meta = zeph_skills::loader::SkillMeta::new(
+            zeph_common::SkillName::parse("solo-skill").unwrap(),
+            "a lone skill with no confusable sibling",
+        );
         let inner_matcher =
             zeph_skills::matcher::SkillMatcher::new(&[&skill_meta], embed_fn_constant)
                 .await
@@ -1471,11 +1470,10 @@ mod tests {
         let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
         let (condenser, token_counter) = make_test_condenser();
 
-        let skill_meta = zeph_skills::loader::SkillMeta {
-            name: "solo-skill".to_owned(),
-            description: "a lone skill with no confusable sibling".to_owned(),
-            ..Default::default()
-        };
+        let skill_meta = zeph_skills::loader::SkillMeta::new(
+            zeph_common::SkillName::parse("solo-skill").unwrap(),
+            "a lone skill with no confusable sibling",
+        );
         let inner_matcher =
             zeph_skills::matcher::SkillMatcher::new(&[&skill_meta], embed_fn_constant)
                 .await

@@ -490,7 +490,7 @@ impl Evaluator {
                     return Err(EvalError::BudgetExceeded { used: prev, budget });
                 }
 
-                // Clone the provider so each task has its own last_usage() state.
+                // Clone the provider so each task has its own last_response_usage() state.
                 let judge_clone = (*judge).clone();
                 score_case_with_provider(
                     &judge_clone,
@@ -588,10 +588,10 @@ async fn score_case_with_provider(
     let latency_ms = start.elapsed().as_millis() as u64;
 
     // Read usage from the cloned provider — no race since this clone is task-local.
-    // Note: only ClaudeProvider and OpenAiProvider implement last_usage(); Ollama and
+    // Note: only ClaudeProvider and OpenAiProvider report last_response_usage(); Ollama and
     // Compatible providers always return None, making budget enforcement a no-op for them.
-    let call_tokens = if let Some((input, output)) = judge.last_usage() {
-        input + output
+    let call_tokens = if let Some(usage) = judge.last_response_usage() {
+        usage.input + usage.output
     } else {
         tracing::warn!(
             case_index,

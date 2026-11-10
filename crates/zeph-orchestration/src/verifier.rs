@@ -1127,6 +1127,10 @@ mod tests {
     }
 
     impl LlmProvider for MockProvider {
+        fn last_response_usage(&self) -> Option<zeph_llm::provider::ResponseUsage> {
+            None
+        }
+
         fn chat(
             &self,
             _messages: &[Message],
@@ -1537,6 +1541,10 @@ mod tests {
 
     struct SlowMockProvider;
     impl LlmProvider for SlowMockProvider {
+        fn last_response_usage(&self) -> Option<zeph_llm::provider::ResponseUsage> {
+            None
+        }
+
         async fn chat(&self, _: &[Message]) -> Result<String, zeph_llm::LlmError> {
             tokio::time::sleep(Duration::from_mins(1)).await;
             Ok("never".to_string())

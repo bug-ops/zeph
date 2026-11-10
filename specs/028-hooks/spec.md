@@ -299,7 +299,9 @@ inline. The `[hooks]` section is optional; absent section = empty hook lists = z
 - `HookRunner` uses `ArcSwap<HooksConfig>` — live reload is atomic, no lock contention on hook dispatch
 - `pre_tool_use` fires for ALL LLM-requested tool calls including those intercepted by the utility gate (Retrieve/Verify/Stop) — dispatch is ordered **before** `check_call_gates` in `build_tier_call_futures` (#3738); internal tools (`compress_context`, `start_focus`, `complete_focus`) are excluded via the early-continue guard
 - `post_tool_use` fires after every tool invocation via `apply_tier_results`, matching `pre_tool_use` symmetry
-- `pre_tool_use` hook failures are fail-open: a non-zero exit aborts the hook chain but does NOT block the tool call
+- Main agent: a failing `pre_tool_use` hook with `fail_closed = true` blocks the tool call (the model receives a `[blocked]` result); a failing hook with `fail_closed = false` is logged and the tool runs. Each block increments `hook_block_count`; reaching `hooks.hook_block_cap` (default 8, `0` = unlimited, reset per turn) ends the turn (#6920)
+- Subagents: `pre_tool_use` hook failures are only logged, even with `fail_closed = true`; the tool still runs (#6920)
+- `post_tool_use` failures never block anything
 - NEVER inject hook stdout into the agent's conversation context
 - NEVER run hooks with elevated privileges — they inherit the agent process permissions only
 - If `[hooks]` section is absent from config, all hook lists are empty and no hooks fire — zero-cost when unused

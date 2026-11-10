@@ -1004,7 +1004,7 @@ async fn build_doctor_report(
     // 5. filesystem.sqlite_parent
     {
         let parent = sqlite_parent_path(&config);
-        if !parent.as_os_str().is_empty() && parent.exists() {
+        if !parent.is_empty() && parent.exists() {
             results.push(check_fs_writable("filesystem.sqlite_parent", &parent));
         } else {
             let start = Instant::now();
@@ -1023,10 +1023,10 @@ async fn build_doctor_report(
     if !config.logging.file.is_empty() {
         let log_path = Path::new(&config.logging.file);
         if let Some(parent) = log_path.parent() {
-            if parent.as_os_str().is_empty() || parent.exists() {
+            if parent.is_empty() || parent.exists() {
                 results.push(check_fs_writable(
                     "filesystem.logging",
-                    if parent.as_os_str().is_empty() {
+                    if parent.is_empty() {
                         Path::new(".")
                     } else {
                         parent
@@ -1050,7 +1050,7 @@ async fn build_doctor_report(
     {
         let audit_path = audit_file_path.as_path();
         if let Some(parent) = audit_path.parent() {
-            let check_dir = if parent.as_os_str().is_empty() {
+            let check_dir = if parent.is_empty() {
                 Path::new(".")
             } else {
                 parent
@@ -1215,7 +1215,12 @@ fn offer_fixes(report: &mut DoctorReport) -> io::Result<()> {
         return Ok(());
     }
     let mut out = io::stdout().lock();
-    if !io::stdin().is_terminal() || !out.is_terminal() {
+    // dialoguer renders its prompt on stderr, so it must be a terminal too.
+    if !fix_prompt_available(
+        io::stdin().is_terminal(),
+        out.is_terminal(),
+        io::stderr().is_terminal(),
+    ) {
         return writeln!(
             out,
             "\n--fix needs an interactive terminal; no changes made."
@@ -1227,8 +1232,15 @@ fn offer_fixes(report: &mut DoctorReport) -> io::Result<()> {
             .with_prompt(prompt)
             .default(false)
             .interact()
-            .unwrap_or(false)
+            .map_err(io::Error::from)
     })
+}
+
+/// `dialoguer` reads stdin and renders its prompt on stderr, so all three must be terminals
+/// (stdout carries the report).
+#[cfg(unix)]
+const fn fix_prompt_available(stdin_tty: bool, stdout_tty: bool, stderr_tty: bool) -> bool {
+    stdin_tty && stdout_tty && stderr_tty
 }
 
 #[cfg(not(unix))]
@@ -1244,7 +1256,7 @@ fn offer_fixes(_report: &mut DoctorReport) -> io::Result<()> {
 fn run_fixes(
     report: &mut DoctorReport,
     w: &mut impl Write,
-    mut confirm: impl FnMut(&str) -> bool,
+    mut confirm: impl FnMut(&str) -> io::Result<bool>,
 ) -> io::Result<()> {
     for result in &mut report.results {
         let Some(fix) = result.fix.clone() else {
@@ -1259,9 +1271,16 @@ fn run_fixes(
             "{}: restrict {shown} to owner-only (clears group/other permission bits)?",
             result.name
         );
-        if !confirm(&prompt) {
-            writeln!(w, "[SKIP] {}: left unchanged", result.name)?;
-            continue;
+        match confirm(&prompt) {
+            Ok(true) => {}
+            Ok(false) => {
+                writeln!(w, "[SKIP] {}: left unchanged", result.name)?;
+                continue;
+            }
+            Err(e) => {
+                writeln!(w, "prompt failed: {e}; remaining fixes skipped")?;
+                break;
+            }
         }
         match apply_fix(&fix) {
             Ok(()) => {
@@ -1911,7 +1930,7 @@ mod tests {
             let mut prompts = Vec::new();
             run_fixes(&mut report, &mut out, |prompt| {
                 prompts.push(prompt.to_owned());
-                true
+                Ok(true)
             })
             .unwrap();
 
@@ -1931,11 +1950,36 @@ mod tests {
                 "vault.file_mode",
             ));
             let mut out = Vec::new();
-            run_fixes(&mut report, &mut out, |_| false).unwrap();
+            run_fixes(&mut report, &mut out, |_| Ok(false)).unwrap();
 
             assert_eq!(mode_of(&p), 0o644);
             assert!(report.has_failures());
             assert!(String::from_utf8(out).unwrap().contains("[SKIP]"));
+        }
+
+        #[test]
+        fn fix_prompt_requires_all_three_terminals() {
+            assert!(fix_prompt_available(true, true, true));
+            assert!(!fix_prompt_available(false, true, true));
+            assert!(!fix_prompt_available(true, false, true));
+            assert!(!fix_prompt_available(true, true, false));
+        }
+
+        #[test]
+        fn prompt_error_stops_remaining_fixes_with_message() {
+            let dir = tempfile::tempdir().unwrap();
+            let p = key_file(dir.path(), 0o644);
+            let mut report = report_for(check_vault_key_mode(p.to_str().unwrap()));
+            let mut out = Vec::new();
+            run_fixes(&mut report, &mut out, |_| {
+                Err(io::Error::other("not a terminal"))
+            })
+            .unwrap();
+
+            assert_eq!(mode_of(&p), 0o644);
+            let text = String::from_utf8(out).unwrap();
+            assert!(text.contains("prompt failed: not a terminal; remaining fixes skipped"));
+            assert!(!text.contains("[SKIP]"));
         }
 
         #[test]
@@ -1946,7 +1990,7 @@ mod tests {
             std::os::unix::fs::symlink(&target, &link).unwrap();
             let mut report = report_for(check_vault_key_mode(link.to_str().unwrap()));
             let mut out = Vec::new();
-            run_fixes(&mut report, &mut out, |_| true).unwrap();
+            run_fixes(&mut report, &mut out, |_| Ok(true)).unwrap();
 
             assert_eq!(mode_of(&target), 0o644);
             assert!(report.has_failures());

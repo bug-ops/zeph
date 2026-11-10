@@ -121,7 +121,7 @@ impl<P: LlmProvider> LlmPlanner<P> {
 
     /// Return the underlying provider.
     ///
-    /// Lets callers read call-specific transient state (e.g. `last_cache_usage`,
+    /// Lets callers read call-specific transient state (e.g. `last_response_usage`,
     /// `last_ttft_ms`) left on the provider's usage tracker after a planning call
     /// returns — used by the per-message usage ledger (issue #6549) to attribute a durable
     /// `usage_records` row to this call.
@@ -209,7 +209,10 @@ impl<P: LlmProvider + Send + Sync> Planner for LlmPlanner<P> {
                 .await
                 .map_err(|_| OrchestrationError::PlanningFailed("planner timed out".into()))?
                 .map_err(|e| OrchestrationError::PlanningFailed(e.to_string()))?;
-        let usage = self.provider.last_usage();
+        let usage = self
+            .provider
+            .last_response_usage()
+            .map(|u| (u.input, u.output));
         let mut graph = convert_response(
             response,
             goal,
@@ -1086,6 +1089,10 @@ mod tests {
 
             struct SlowProvider;
             impl zeph_llm::provider::LlmProvider for SlowProvider {
+                fn last_response_usage(&self) -> Option<zeph_llm::provider::ResponseUsage> {
+                    None
+                }
+
                 async fn chat(&self, _: &[Message]) -> Result<String, LlmError> {
                     tokio::time::sleep(Duration::from_mins(1)).await;
                     Ok("never".to_string())

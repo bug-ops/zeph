@@ -415,6 +415,10 @@ mod tests {
         }
 
         impl zeph_llm::provider::LlmProvider for OkProvider {
+            fn last_response_usage(&self) -> Option<zeph_llm::provider::ResponseUsage> {
+                None
+            }
+
             fn chat(
                 &self,
                 _messages: &[Message],
@@ -459,6 +463,10 @@ mod tests {
         struct ErrProvider;
 
         impl zeph_llm::provider::LlmProvider for ErrProvider {
+            fn last_response_usage(&self) -> Option<zeph_llm::provider::ResponseUsage> {
+                None
+            }
+
             fn chat(
                 &self,
                 _messages: &[Message],
@@ -499,6 +507,10 @@ mod tests {
         struct SlowProvider;
 
         impl zeph_llm::provider::LlmProvider for SlowProvider {
+            fn last_response_usage(&self) -> Option<zeph_llm::provider::ResponseUsage> {
+                None
+            }
+
             async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
                 tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                 Ok("Label: entailment\nScore: 0.99".to_owned())

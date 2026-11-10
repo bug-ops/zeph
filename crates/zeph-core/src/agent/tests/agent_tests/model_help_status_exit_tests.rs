@@ -628,3 +628,22 @@ async fn feedback_neutral_records_user_approval() {
         "neutral/ambiguous feedback must be recorded as user_approval"
     );
 }
+
+/// A slash command received through `recv` (empty agent queue) starts no turn, so the agent
+/// must report the real queue depth itself or a front-end's pending badge stays stale (#6909).
+#[tokio::test]
+async fn handled_slash_command_reports_authoritative_queue_count() {
+    let channel = MockChannel::new(vec!["/help".to_string()]).blocking_when_empty();
+    let counts = channel.queue_counts.clone();
+    let mut agent = Agent::new(
+        mock_provider(vec![]),
+        channel,
+        create_test_registry(),
+        None,
+        5,
+        MockToolExecutor::no_tools(),
+    );
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), agent.run()).await;
+
+    assert_eq!(*counts.lock().unwrap(), vec![0]);
+}

@@ -25,7 +25,7 @@
 //! The registry is not locked against concurrent `plugin add`/`remove`. If two
 //! processes install plugins simultaneously, the last writer's entry wins; the
 //! other plugin will show as "integrity mismatch" on next startup until reinstalled.
-//! TODO: file-level locking for M5 follow-up.
+//! TODO(#6930): file-level locking for M5 follow-up.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

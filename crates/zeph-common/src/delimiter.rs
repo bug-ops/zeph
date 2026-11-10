@@ -84,6 +84,51 @@ impl DelimiterTag {
             Self::SkillState => "skill_state",
         }
     }
+
+    /// Opening-tag text up to and including the space before the first attribute,
+    /// e.g. `<runtime-note `.
+    ///
+    /// Renderers and strippers use it so they cannot drift from [`Self::name`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::delimiter::DelimiterTag;
+    ///
+    /// assert_eq!(DelimiterTag::SkillState.open_prefix(), "<skill_state ");
+    /// ```
+    #[must_use]
+    pub const fn open_prefix(self) -> &'static str {
+        match self {
+            Self::ToolOutput => "<tool-output ",
+            Self::ExternalData => "<external-data ",
+            Self::SharedState => "<shared-state ",
+            Self::AgentMemory => "<agent-memory ",
+            Self::RuntimeNote => "<runtime-note ",
+            Self::SkillState => "<skill_state ",
+        }
+    }
+
+    /// Closing-tag text, e.g. `</runtime-note>`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::delimiter::DelimiterTag;
+    ///
+    /// assert_eq!(DelimiterTag::RuntimeNote.close_tag(), "</runtime-note>");
+    /// ```
+    #[must_use]
+    pub const fn close_tag(self) -> &'static str {
+        match self {
+            Self::ToolOutput => "</tool-output>",
+            Self::ExternalData => "</external-data>",
+            Self::SharedState => "</shared-state>",
+            Self::AgentMemory => "</agent-memory>",
+            Self::RuntimeNote => "</runtime-note>",
+            Self::SkillState => "</skill_state>",
+        }
+    }
 }
 
 /// Longest [`DelimiterTag::name`], derived so a new tag can never outgrow the matcher window.
@@ -290,6 +335,14 @@ mod tests {
 
     use super::*;
     use crate::sanitize::strip_control_chars_preserve_whitespace;
+
+    #[test]
+    fn open_prefix_and_close_tag_match_name_for_every_tag() {
+        for tag in DelimiterTag::ALL {
+            assert_eq!(tag.open_prefix(), format!("<{} ", tag.name()));
+            assert_eq!(tag.close_tag(), format!("</{}>", tag.name()));
+        }
+    }
 
     fn esc(s: &str) -> String {
         escape_delimiter_tags(s, &DelimiterTag::ALL).into_owned()

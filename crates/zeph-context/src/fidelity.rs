@@ -909,6 +909,10 @@ mod tests {
     struct EmbedMockProvider;
 
     impl zeph_llm::provider::LlmProvider for EmbedMockProvider {
+        fn last_response_usage(&self) -> Option<zeph_llm::provider::ResponseUsage> {
+            None
+        }
+
         fn chat(
             &self,
             _: &[Message],
@@ -1888,6 +1892,10 @@ mod tests {
         struct MockProvider;
 
         impl zeph_llm::provider::LlmProvider for MockProvider {
+            fn last_response_usage(&self) -> Option<zeph_llm::provider::ResponseUsage> {
+                None
+            }
+
             fn chat(
                 &self,
                 _messages: &[Message],

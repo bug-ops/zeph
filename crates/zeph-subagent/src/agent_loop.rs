@@ -251,7 +251,7 @@ async fn drive_tool_stream(
             ToolSseEvent::Error(e) => return Err(e),
             // `ToolBlockStart`/`InputJsonDelta` only matter for the speculative-dispatch
             // drainer (tool metadata ahead of the final JSON, used for early dispatch);
-            // `Compaction` summaries are a known TODO (matches `SpeculativeStreamDrainer::
+            // `Compaction` summaries are a known TODO(#6935) (matches `SpeculativeStreamDrainer::
             // drive`'s same limitation — not yet surfaced to the caller). Any future
             // `#[non_exhaustive]` variant is likewise a no-op here rather than a compile
             // error on an upstream addition.

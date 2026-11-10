@@ -80,7 +80,7 @@ pub fn is_loopback_host(host: &str) -> bool {
     if host.eq_ignore_ascii_case("localhost") {
         return true;
     }
-    let unbracketed = host.strip_prefix('[').and_then(|h| h.strip_suffix(']'));
+    let unbracketed = host.strip_circumfix('[', ']');
     unbracketed
         .unwrap_or(host)
         .parse::<IpAddr>()

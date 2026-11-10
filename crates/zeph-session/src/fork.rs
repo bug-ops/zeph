@@ -233,7 +233,7 @@ async fn copy_referenced_blobs(
                 // since `fs::copy` onto an existing hard-link truncates the shared inode to 0
                 // bytes, corrupting every link to it (including the parent's original blob).
                 //
-                // TODO(critic): the copy fallback below writes directly to `child_blob` rather
+                // TODO(#6935): the copy fallback below writes directly to `child_blob` rather
                 // than a `.tmp` path + rename, so it is not atomic. If a prior run's fallback
                 // (triggered by genuine EXDEV) was interrupted mid-write, it can leave a
                 // truncated file at this path; this no-op would then silently accept that

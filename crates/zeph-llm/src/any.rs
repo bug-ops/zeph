@@ -14,7 +14,7 @@
 //! The object-safe shadow [`crate::provider_dyn::LlmProviderDyn`] is the current
 //! solution; use `Arc<dyn LlmProviderDyn>` wherever dynamic dispatch is required.
 //!
-//! # TODO (D1 — deferred: migrate call sites from `AnyProvider` to `Arc<dyn LlmProviderDyn>`)
+//! # TODO(#6935) (D1 — deferred: migrate call sites from `AnyProvider` to `Arc<dyn LlmProviderDyn>`)
 //!
 //! `LlmProviderDyn` already exists and works. The remaining work is call-site migration
 //! (~880 sites) across feature areas (epic/m49+/anyprovider-deprecation).
@@ -790,12 +790,8 @@ impl LlmProvider for AnyProvider {
         delegate_provider!(self, |p| p.chat_with_tools(messages, tools).await)
     }
 
-    fn last_cache_usage(&self) -> Option<(u64, u64)> {
-        delegate_provider!(self, |p| p.last_cache_usage())
-    }
-
-    fn last_usage(&self) -> Option<(u64, u64)> {
-        delegate_provider!(self, |p| p.last_usage())
+    fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+        delegate_provider!(self, |p| p.last_response_usage())
     }
 
     #[tracing::instrument(name = "llm.any.chat_typed", skip_all)]
@@ -813,14 +809,6 @@ impl LlmProvider for AnyProvider {
 
     fn prefix_cache(&self) -> crate::provider::PrefixCache {
         delegate_provider!(self, |p| p.prefix_cache())
-    }
-
-    fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {
-        delegate_provider!(self, |p| p.last_auxiliary_usage())
-    }
-
-    fn last_reasoning_tokens(&self) -> Option<u64> {
-        delegate_provider!(self, |p| p.last_reasoning_tokens())
     }
 
     fn last_ttft_ms(&self) -> Option<u64> {

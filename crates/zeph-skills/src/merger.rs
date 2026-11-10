@@ -18,30 +18,10 @@
 //!
 //! ```rust
 //! use zeph_skills::merger::{MergeDecision, decide};
+//! use zeph_common::SkillName;
 //! use zeph_skills::loader::SkillMeta;
-//! use std::path::PathBuf;
 //!
-//! let meta = SkillMeta {
-//!     name: "rewrite-text".into(),
-//!     description: "Rewrite text professionally.".into(),
-//!     version: 2,
-//!     source: "trace_extraction".into(),
-//!     session_id: None,
-//!     compatibility: None,
-//!     license: None,
-//!     metadata: vec![],
-//!     allowed_tools: vec![],
-//!     requires_secrets: vec![],
-//!     skill_dir: PathBuf::new(),
-//!     source_url: None,
-//!     git_hash: None,
-//!     category: None,
-//!     triggers: vec![],
-//!     parent_skill: None,
-//!     proactive_domain: None,
-//!     extensions: None,
-//!     state: None,
-//! };
+//! let meta = SkillMeta::new(SkillName::parse("rewrite-text").unwrap(), "Rewrite text professionally.");
 //!
 //! let decision = decide(0.80, 0.75, 0.90, true, &meta);
 //! assert!(matches!(decision, MergeDecision::Merge { .. }));
@@ -89,26 +69,10 @@ pub enum MergeDecision {
 ///
 /// ```rust,ignore
 /// use zeph_skills::merger::{MergeDecision, decide};
+/// use zeph_common::SkillName;
 /// use zeph_skills::loader::SkillMeta;
-/// use std::path::PathBuf;
 ///
-/// let meta = SkillMeta {
-///     name: "deploy-ci".into(),
-///     description: "Deploy CI.".into(),
-///     version: 1,
-///     source: String::new(),
-///     session_id: None,
-///     compatibility: None,
-///     license: None,
-///     metadata: vec![],
-///     allowed_tools: vec![],
-///     requires_secrets: vec![],
-///     skill_dir: PathBuf::new(),
-///     source_url: None,
-///     git_hash: None,
-///     category: None,
-///     parent_skill: None,
-/// };
+/// let meta = SkillMeta::new(SkillName::parse("deploy-ci").unwrap(), "Deploy CI.");
 ///
 /// // Near-duplicate → Discard
 /// assert_eq!(decide(0.95, 0.75, 0.90, true, &meta), MergeDecision::Discard);
@@ -133,7 +97,7 @@ pub fn decide(
     if similarity >= merge_threshold {
         if merge_enabled {
             return MergeDecision::Merge {
-                nearest_name: nearest.name.clone(),
+                nearest_name: nearest.name.to_string(),
                 nearest_version: nearest.version,
             };
         }
@@ -152,26 +116,10 @@ pub fn decide(
 /// ```rust,ignore
 /// use zeph_skills::merger::find_nearest;
 /// use zeph_skills::embedding::SkillEmbedding;
+/// use zeph_common::SkillName;
 /// use zeph_skills::loader::SkillMeta;
-/// use std::path::PathBuf;
 ///
-/// let meta = SkillMeta {
-///     name: "existing".into(),
-///     description: "desc".into(),
-///     version: 0,
-///     source: String::new(),
-///     session_id: None,
-///     compatibility: None,
-///     license: None,
-///     metadata: vec![],
-///     allowed_tools: vec![],
-///     requires_secrets: vec![],
-///     skill_dir: PathBuf::new(),
-///     source_url: None,
-///     git_hash: None,
-///     category: None,
-///     parent_skill: None,
-/// };
+/// let meta = SkillMeta::new(SkillName::parse("existing").unwrap(), "desc");
 /// let emb = SkillEmbedding::from_raw(vec![1.0, 0.0, 0.0]);
 /// let candidate = SkillEmbedding::from_raw(vec![1.0, 0.0, 0.0]);
 /// let existing = vec![(meta, emb)];
@@ -196,6 +144,8 @@ pub fn find_nearest<'a>(
 
 #[cfg(test)]
 mod tests {
+    use zeph_common::SkillName;
+
     use std::path::PathBuf;
 
     use super::*;
@@ -203,7 +153,7 @@ mod tests {
 
     fn make_meta(name: &str, version: u32) -> SkillMeta {
         SkillMeta {
-            name: name.to_string(),
+            name: SkillName::parse(name).unwrap(),
             description: "desc".into(),
             version,
             source: String::new(),
