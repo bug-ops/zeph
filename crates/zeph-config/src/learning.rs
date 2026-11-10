@@ -556,12 +556,14 @@ mod tests {
         assert!(toml::from_str::<LearningConfig>("correction_confidence_threshold = nan").is_err());
         assert!(toml::from_str::<LearningConfig>("correction_confidence_threshold = 1.5").is_err());
         let cfg: LearningConfig = toml::from_str("correction_confidence_threshold = 0.8").unwrap();
-        assert_eq!(cfg.correction_confidence_threshold.get(), 0.8);
-        assert_eq!(
-            LearningConfig::default()
+        assert!((cfg.correction_confidence_threshold.get() - 0.8).abs() < f32::EPSILON);
+        assert!(
+            (LearningConfig::default()
                 .correction_confidence_threshold
-                .get(),
-            0.6
+                .get()
+                - 0.6)
+                .abs()
+                < f32::EPSILON
         );
     }
 

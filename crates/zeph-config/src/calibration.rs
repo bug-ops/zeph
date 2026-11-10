@@ -350,8 +350,8 @@ mod tests {
 
     #[test]
     fn threshold_accepts_bounds() {
-        assert_eq!(ConfidenceThreshold::new(0.0).unwrap().get(), 0.0);
-        assert_eq!(ConfidenceThreshold::new(1.0).unwrap().get(), 1.0);
+        assert!(ConfidenceThreshold::new(0.0).unwrap().get().abs() < f32::EPSILON);
+        assert!((ConfidenceThreshold::new(1.0).unwrap().get() - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
