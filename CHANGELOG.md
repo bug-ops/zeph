@@ -8,8 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `zeph-config`, `zeph-core`, `zeph`: opt-in `[goals] auto_check` background goal check after tool-using turns; loads the active goal at startup so cross-session goals reach the system prompt; `Channel::delivers_between_turns` (breaking: `TurnInput` gains a non-public field) (#6881)
-- `zeph-config`, `zeph-llm`, `zeph-agent-feedback`: `[skills.learning] correction_confidence_calibration` curve applied by a shared `FeedbackGate` (breaking: `classify_feedback`/`JudgeDetector::evaluate` take `&FeedbackGate`) (#6880)
+- `zeph-config`, `zeph-core`, `zeph`: opt-in `[goals] auto_check` background goal check after tool-using turns; loads the active goal at startup so cross-session goals reach the system prompt; `Channel::delivers_between_turns` (breaking: `TurnInput` gains a non-public field) (#6926)
+- `zeph-config`, `zeph-llm`, `zeph-agent-feedback`: `[skills.learning] correction_confidence_calibration` curve applied by a shared `FeedbackGate` (breaking: `classify_feedback`/`JudgeDetector::evaluate` take `&FeedbackGate`) (#6926)
 - `zeph-skills`, `zeph-core`: opt-in skill execution state (`state:` frontmatter, `skill_state_patch`, `<skill_state>` section) for the replace context layout, with `zeph skill state schema` and `/skill state` (breaking: `SkillMeta.state`, `SkillConfigParams.skill_state_enabled`) (#6885)
 - `zeph-core`, `zeph-commands`: `/goal check [condition]` per-turn goal self-check (#6885)
 - `zeph`, `zeph-common`: `zeph doctor --fix` confirm-then-fix for key and vault file permissions (#6885)
@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `workspace`: clean clippy on rustc 1.99 (assert_is_empty, approx_constant, doc_markdown) while staying clean on the pinned 1.98 (#6926)
 - `deps`: bump `rmcp` to 3.9.0 (RUSTSEC-2026-0462) and ignore RUSTSEC-2026-0459 for `libsqlite3-sys` pinned below 0.38 by `sqlx-sqlite` (#6885)
 - `deps`: bump `crypto-bigint` 0.7 and `ctutils` to patched versions and ignore RUSTSEC-2026-0387 for `crypto-bigint` 0.5 pinned by `age` (#6870)
 - `zeph-acp`: bump `agent-client-protocol` to 3.5 and refresh workspace dependencies; `unstable-elicitation` and `unstable-auth-methods` no longer forward to upstream features (breaking) (#6868)
