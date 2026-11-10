@@ -2687,6 +2687,33 @@ mod tests {
     }
 
     #[test]
+    fn build_config_goal_auto_check_enables_goals_and_calibration_follows_detector() {
+        let curve: zeph_config::ConfidenceCalibration =
+            "[[0.0, 0.0], [0.5, 0.4], [1.0, 1.0]]".parse().unwrap();
+        let state = WizardState {
+            goals_auto_check: true,
+            detector_mode: Some("judge".into()),
+            correction_confidence_calibration: curve.clone(),
+            ..single_provider_state()
+        };
+        let config = build_config(&state);
+        assert!(config.goals.enabled && config.goals.auto_check);
+        assert_eq!(
+            config.skills.learning.correction_confidence_calibration,
+            curve
+        );
+
+        let off = build_config(&single_provider_state());
+        assert!(!off.goals.enabled && !off.goals.auto_check);
+        assert!(
+            off.skills
+                .learning
+                .correction_confidence_calibration
+                .is_identity()
+        );
+    }
+
+    #[test]
     fn build_config_wires_server_compaction_trigger_only_when_enabled() {
         let mut state = WizardState {
             server_compaction_trigger: zeph_config::CompactionTrigger::new(120_000).ok(),

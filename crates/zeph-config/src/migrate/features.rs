@@ -9,7 +9,9 @@
 
 use regex::Regex;
 
-use super::{MigrateError, MigrationResult, insert_after_section, section_header_present};
+use super::{
+    MigrateError, MigrationResult, insert_after_section, section_body, section_header_present,
+};
 
 /// Regex matching the `[tui]` section header line (used by step 67).
 static TUI_HEADER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
@@ -1287,7 +1289,7 @@ pub fn migrate_correction_confidence_calibration(
     toml_src: &str,
 ) -> Result<MigrationResult, MigrateError> {
     if !section_header_present(toml_src, "skills.learning")
-        || toml_src.contains("correction_confidence_calibration")
+        || section_body(toml_src, "skills.learning").contains("correction_confidence_calibration")
     {
         return Ok(MigrationResult {
             output: toml_src.to_owned(),
@@ -1309,14 +1311,15 @@ pub fn migrate_correction_confidence_calibration(
 /// Add an advisory `auto_check` line to an existing active `[goals]` table
 /// (spec `089-goal-self-check`, issue #6881).
 ///
-/// The key defaults to `false`, so the comment only aids discoverability. No-op when `[goals]`
+/// The key defaults to `false` and only has an effect with `enabled = true`, so the comment
+/// only aids discoverability. No-op when `[goals]`
 /// is absent or `auto_check` is already present (active or commented).
 ///
 /// # Errors
 ///
 /// Never returns `Err`; the `Result` matches the `Migration` trait signature.
 pub fn migrate_goals_auto_check(toml_src: &str) -> Result<MigrationResult, MigrateError> {
-    let present = toml_src.lines().any(|l| {
+    let present = section_body(toml_src, "goals").lines().any(|l| {
         l.trim()
             .trim_start_matches('#')
             .trim()

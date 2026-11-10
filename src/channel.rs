@@ -83,6 +83,13 @@ impl Channel for AppChannel {
         }
     }
 
+    fn delivers_between_turns(&self) -> bool {
+        match self {
+            Self::Standard(c) => c.delivers_between_turns(),
+            Self::Tui(c) => c.delivers_between_turns(),
+        }
+    }
+
     fn requires_input_sanitization(&self) -> bool {
         match self {
             Self::Standard(c) => c.requires_input_sanitization(),
@@ -326,6 +333,11 @@ mod tests {
     async fn app_channel_sends_usage() {
         let mut ch = make_app_channel();
         assert!(ch.send_usage(100, 50, 200_000, 0, 0, 0.0).await.is_ok());
+    }
+
+    #[test]
+    fn app_channel_delivers_between_turns_for_cli() {
+        assert!(make_app_channel().delivers_between_turns());
     }
 
     #[tokio::test]

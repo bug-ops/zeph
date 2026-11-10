@@ -209,12 +209,6 @@ impl FeedbackGate {
         Self::new(threshold, ConfidenceCalibration::identity())
     }
 
-    /// The confidence threshold.
-    #[must_use]
-    pub const fn threshold(&self) -> f32 {
-        self.threshold
-    }
-
     /// Calibrate `raw_confidence`, decide, and emit the calibration trace event.
     #[must_use]
     pub fn apply(
@@ -606,6 +600,26 @@ mod tests {
             };
             assert_eq!(out.decision, expected, "raw {raw}");
         }
+    }
+
+    #[test]
+    fn calibration_moves_a_boundary_decision_to_passed() {
+        let curve = ConfidenceCalibration::new(vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]]).unwrap();
+        let raw = 0.5;
+        let plain = FeedbackGate::uncalibrated(0.6).apply(
+            FeedbackVerdictSource::Judge,
+            true,
+            "repetition",
+            raw,
+        );
+        let calibrated = FeedbackGate::new(0.6, curve).apply(
+            FeedbackVerdictSource::Judge,
+            true,
+            "repetition",
+            raw,
+        );
+        assert_eq!(plain.decision, FeedbackGateDecision::Suppressed);
+        assert_eq!(calibrated.decision, FeedbackGateDecision::Passed);
     }
 
     #[test]

@@ -509,8 +509,7 @@ pub struct GoalConfig {
     pub max_supervisor_fail_count: u32,
     /// After a user turn that used tools while a goal is active, run one advisory background
     /// supervisor check and show the report. Requires `enabled`; costs one supervisor LLM call
-    /// per such turn. Skipped on channels that cannot deliver between turns (ACP, gateway,
-    /// daemon). Default: `false`.
+    /// per such turn. Skipped on channels that cannot deliver between turns (ACP, daemon/gateway loopback, `--json`). Default: `false`.
     pub auto_check: bool,
 }
 

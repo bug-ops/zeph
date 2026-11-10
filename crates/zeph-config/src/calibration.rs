@@ -211,6 +211,19 @@ mod tests {
     }
 
     #[test]
+    fn errors_display_the_violated_rule() {
+        assert_eq!(
+            CalibrationError::RawNotIncreasing(2).to_string(),
+            "calibration point 2: raw values must be strictly increasing"
+        );
+        assert!(
+            CalibrationError::MissingStart
+                .to_string()
+                .contains("raw = 0.0")
+        );
+    }
+
+    #[test]
     fn interpolates_and_hits_knots() {
         let c = curve();
         assert_close(c.calibrate(0.0), 0.0);

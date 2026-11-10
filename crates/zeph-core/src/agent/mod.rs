@@ -570,6 +570,9 @@ impl<C: Channel> Agent<C> {
                         continue;
                     }
                     Some(LoopEvent::Message(msg)) => {
+                        if msg.is_from_bot {
+                            origin = turn::TurnOrigin::Injected;
+                        }
                         self.services.session.is_guest_context = msg.is_guest_context;
                         self.services.session.owner_key = msg
                             .owner_key

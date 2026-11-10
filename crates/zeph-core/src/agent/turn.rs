@@ -31,13 +31,13 @@ pub struct TurnInput {
     pub(crate) origin: TurnOrigin,
 }
 
-/// Who initiated a turn: a person at the channel, or the agent's own scheduler / `/loop`.
+/// Who initiated a turn: a person at the channel, or the scheduler, `/loop` or another bot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum TurnOrigin {
     /// A message received from the channel.
     #[default]
     User,
-    /// A prompt injected by the scheduler or `/loop`.
+    /// A prompt injected by the scheduler or `/loop`, or a message sent by another bot.
     Injected,
 }
 

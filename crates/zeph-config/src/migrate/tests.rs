@@ -5660,3 +5660,35 @@ fn migrate_goals_auto_check_noop_without_goals_table() {
     assert_eq!(r.changed_count, 0);
     assert_eq!(r.output, src);
 }
+
+#[test]
+fn migrate_correction_confidence_calibration_respects_existing_key_in_section_only() {
+    let active =
+        "[skills.learning]\ncorrection_confidence_calibration = [[0.0, 0.0], [1.0, 1.0]]\n";
+    assert_eq!(
+        migrate_correction_confidence_calibration(active)
+            .unwrap()
+            .changed_count,
+        0
+    );
+    let elsewhere =
+        "[skills.learning]\nenabled = true\n\n[other]\ncorrection_confidence_calibration = 1\n";
+    assert_eq!(
+        migrate_correction_confidence_calibration(elsewhere)
+            .unwrap()
+            .changed_count,
+        1
+    );
+}
+
+#[test]
+fn migrate_goals_auto_check_respects_existing_key_in_section_only() {
+    let active = "[goals]\nenabled = true\nauto_check = true\n";
+    let r = migrate_goals_auto_check(active).unwrap();
+    assert_eq!((r.changed_count, r.output.as_str()), (0, active));
+    let elsewhere = "[goals]\nenabled = true\n\n[other]\nauto_check = true\n";
+    assert_eq!(
+        migrate_goals_auto_check(elsewhere).unwrap().changed_count,
+        1
+    );
+}

@@ -308,7 +308,7 @@ pub trait Channel: Send {
     /// Whether output sent between turns reaches the user.
     ///
     /// Returns `false` for channels that pair each outbound message with an inbound request
-    /// (ACP, the daemon's A2A processor, gateway): there, a message sent while no request is
+    /// (ACP, the daemon's A2A processor and loopback-backed gateway, `--json`): there, a message sent while no request is
     /// being served is discarded or taken as the answer to the next request. Agent-initiated
     /// between-turn output, such as the goal auto-check report, is skipped on those channels.
     fn delivers_between_turns(&self) -> bool {

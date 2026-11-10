@@ -109,6 +109,9 @@ impl<C: Channel> Agent<C> {
         if origin != TurnOrigin::User {
             return Err("injected turn");
         }
+        if self.services.session.is_guest_context {
+            return Err("guest context");
+        }
         if turn_had_error {
             return Err("turn failed");
         }
@@ -211,13 +214,14 @@ mod tests {
     use crate::agent::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
+    use crate::agent::loop_event::LoopEvent;
     use crate::goal::GoalAccounting;
 
     const VERDICT: &str = r#"{"achieved":false,"reasoning":"half done","confidence":0.6,"suggestions":["run tests"]}"#;
 
     type TestAgent = Agent<MockChannel>;
 
-    async fn armed_agent(channel: MockChannel) -> (TestAgent, GoalAccounting) {
+    async fn armed_agent<C: Channel>(channel: C) -> (Agent<C>, GoalAccounting) {
         let store = crate::goal::store::in_memory_store().await;
         store.create("ship the parser", None, 2000).await.unwrap();
         let accounting = GoalAccounting::new(Arc::new(store));
@@ -233,7 +237,7 @@ mod tests {
         (agent, accounting)
     }
 
-    async fn qualifying_agent(channel: MockChannel) -> TestAgent {
+    async fn qualifying_agent<C: Channel>(channel: C) -> Agent<C> {
         let (mut agent, accounting) = armed_agent(channel).await;
         agent.runtime.config.goals.enabled = true;
         agent.runtime.config.goals.auto_check = true;
@@ -421,11 +425,138 @@ mod tests {
         assert!(pending.is_err());
     }
 
-    #[test]
-    fn turn_gen_only_grows() {
-        let mut state = GoalAutoCheckState::default();
-        state.begin_turn();
-        state.begin_turn();
-        assert_eq!(state.turn_gen, 2);
+    #[tokio::test]
+    async fn skips_on_loopback_channel_as_used_by_acp_sessions() {
+        let (channel, _handle) = crate::channel::LoopbackChannel::pair(4);
+        let mut agent = qualifying_agent(channel).await;
+        agent.maybe_spawn_goal_auto_check(TurnOrigin::User, false);
+        assert!(!agent.services.goal_auto_check.is_inflight());
+    }
+
+    #[tokio::test]
+    async fn skips_guest_context_turns() {
+        assert_skips(
+            |a| a.services.session.is_guest_context = true,
+            TurnOrigin::User,
+            false,
+        )
+        .await;
+    }
+
+    fn tool_turn_provider() -> zeph_llm::any::AnyProvider {
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::{ChatResponse, ToolUseRequest};
+        let (mock, _) = MockProvider::with_responses(vec![VERDICT.into(), VERDICT.into()])
+            .with_tool_use(vec![
+                ChatResponse::tool_use(
+                    None,
+                    vec![ToolUseRequest {
+                        id: "call-0".into(),
+                        name: "tool_0".into(),
+                        input: serde_json::json!({}),
+                    }],
+                ),
+                ChatResponse::text("done"),
+                ChatResponse::text("done again"),
+            ]);
+        zeph_llm::any::AnyProvider::Mock(mock)
+    }
+
+    /// Agent wired like production: goals, `auto_check` and an active goal, one scripted tool turn.
+    async fn wired_agent(channel: MockChannel) -> TestAgent {
+        use zeph_tools::executor::ToolOutput;
+        let (mut agent, accounting) = armed_agent(channel).await;
+        agent.provider = tool_turn_provider();
+        agent.runtime.config.goals.enabled = true;
+        agent.runtime.config.goals.auto_check = true;
+        agent.services.goal_accounting = Some(Arc::new(accounting));
+        let output = ToolOutput {
+            tool_name: "tool_0".into(),
+            summary: "result".to_owned(),
+            blocks_executed: 1,
+            ..Default::default()
+        };
+        agent.tool_executor = Arc::new(MockToolExecutor::new(vec![Ok(Some(output))]));
+        agent
+    }
+
+    /// Run the loop until it idles on a blocked channel, then return what was sent.
+    async fn run_until_idle(
+        agent: &mut TestAgent,
+        sent: &Arc<std::sync::Mutex<Vec<String>>>,
+    ) -> Vec<String> {
+        let _ = tokio::time::timeout(Duration::from_secs(3), agent.run()).await;
+        sent.lock().unwrap().clone()
+    }
+
+    fn has_auto_report(sent: &[String]) -> bool {
+        sent.iter()
+            .any(|m| m.contains("Goal check (auto, advisory)"))
+    }
+
+    #[tokio::test]
+    async fn run_loop_delivers_auto_report_after_user_tool_turn() {
+        let channel = MockChannel::new(vec!["run the tool".into()]).blocking_when_empty();
+        let sent = Arc::clone(&channel.sent);
+        let mut agent = wired_agent(channel).await;
+        let sent = run_until_idle(&mut agent, &sent).await;
+        assert!(has_auto_report(&sent), "{sent:?}");
+    }
+
+    #[tokio::test]
+    async fn run_loop_does_not_check_bot_messages() {
+        let channel = MockChannel::new(vec!["run the tool".into()])
+            .blocking_when_empty()
+            .with_bot_messages();
+        let sent = Arc::clone(&channel.sent);
+        let mut agent = wired_agent(channel).await;
+        let sent = run_until_idle(&mut agent, &sent).await;
+        assert!(!has_auto_report(&sent), "{sent:?}");
+    }
+
+    #[tokio::test]
+    async fn run_loop_does_not_check_scheduled_turns() {
+        let channel = MockChannel::new(vec![]).blocking_when_empty();
+        let sent = Arc::clone(&channel.sent);
+        let mut agent = wired_agent(channel).await;
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        agent.runtime.lifecycle.custom_task_rx = Some(rx);
+        tx.send("scheduled prompt".to_owned()).await.unwrap();
+        let sent = run_until_idle(&mut agent, &sent).await;
+        assert_eq!(
+            agent.runtime.lifecycle.turn_tool_calls, 1,
+            "turn must have run"
+        );
+        assert!(!has_auto_report(&sent), "{sent:?}");
+    }
+
+    #[tokio::test]
+    async fn run_loop_does_not_check_loop_injected_turns() {
+        let channel = MockChannel::new(vec![]).blocking_when_empty();
+        let sent = Arc::clone(&channel.sent);
+        let mut agent = wired_agent(channel).await;
+        agent.runtime.lifecycle.user_loop = Some(crate::agent::state::LoopState {
+            prompt: "loop prompt".to_owned(),
+            iteration: 0,
+            interval: tokio::time::interval(Duration::from_secs(3600)),
+            cancel_tx: tokio_util::sync::CancellationToken::new(),
+        });
+        let sent = run_until_idle(&mut agent, &sent).await;
+        assert_eq!(
+            agent.runtime.lifecycle.turn_tool_calls, 1,
+            "turn must have run"
+        );
+        assert!(!has_auto_report(&sent), "{sent:?}");
+    }
+
+    #[tokio::test]
+    async fn next_event_yields_goal_auto_check_done() {
+        let mut agent = qualifying_agent(MockChannel::new(vec![]).blocking_when_empty()).await;
+        agent.maybe_spawn_goal_auto_check(TurnOrigin::User, false);
+        let event = tokio::time::timeout(Duration::from_secs(3), agent.next_event())
+            .await
+            .expect("next_event must resolve")
+            .unwrap();
+        assert!(matches!(event, Some(LoopEvent::GoalAutoCheckDone(_))));
     }
 }
