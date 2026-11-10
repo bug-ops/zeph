@@ -19,7 +19,7 @@ related:
 # Spec: Per-Turn Goal Self-Evaluation (`/goal check`)
 
 > [!info]
-> One advisory `GoalSupervisor::verify` call, runnable from any ordinary chat session, that judges a goal condition against the recent conversation. Promoted from the research draft 058 (Goose `/goal` parity gap). GitHub #6009. The opt-in turn-end auto-trigger of the draft is deferred (see section 9).
+> One advisory `GoalSupervisor::verify` call, runnable from any ordinary chat session, that judges a goal condition against the recent conversation. Promoted from the research draft 058 (Goose `/goal` parity gap). GitHub #6009. The opt-in turn-end auto-trigger (`[goals] auto_check`, #6881) is specified in section 3a.
 
 ## 1. Problem
 
@@ -52,10 +52,24 @@ With no source the reply asks the user to state a condition and no LLM call is m
 | FR-007 | THE SYSTEM SHALL scrub secrets (`scrub_content`) from the conversation summary and from tool arguments before they reach the supervisor provider. `recent_actions` are the last 10 `ToolUse` parts as `name(args)`, args truncated to 100 chars after scrubbing. |
 | FR-008 | THE SYSTEM SHALL show a `Verifying goal…` status while the call runs (spinner in the TUI) and clear it afterwards. |
 
+## 3a. Turn-End Auto-Check (`[goals] auto_check`, #6881)
+
+| ID | Requirement |
+|----|-------------|
+| FR-009 | WHEN `[goals] enabled = true` AND `auto_check = true` AND a user turn finished without error or cancellation, used at least one tool, an active goal exists, no autonomous session runs and no check is in flight, THE SYSTEM SHALL run one advisory `GoalSupervisor::verify` for the active goal. `auto_check` has no effect while `enabled = false`. |
+| FR-010 | THE SYSTEM SHALL use the active goal as the only condition source in auto mode (no last-message fallback) and SHALL read it from the in-memory `GoalAccounting` snapshot, loaded once at startup. |
+| FR-011 | THE SYSTEM SHALL skip turns injected by the scheduler or `/loop` (`TurnOrigin::Injected`). |
+| FR-012 | THE SYSTEM SHALL run the check as a supervised `TaskClass::Enrichment` task named `goal_auto_check`, never awaited on the turn path; the supervisor provider is built inside that task from an owned `GoalSupervisorSpec`. |
+| FR-013 | THE SYSTEM SHALL return the result over a oneshot channel so abort, panic and drop-on-overflow all end in a closed channel; the `Verifying goal…` status is cleared on every resolution. A finished but unconsumed check is dropped (status cleared) before the next trigger evaluation. |
+| FR-014 | THE SYSTEM SHALL deliver the report between turns (`LoopEvent::GoalAutoCheckDone`) only if no turn began since the check was spawned (a never-reset turn counter); otherwise it is dropped. The report is labelled `Goal check (auto, advisory)`, is not added to history or persistence, and span `core.goal.turn_selfcheck` carries `trigger = turn_end`. |
+| FR-015 | THE SYSTEM SHALL skip the check on channels whose `Channel::delivers_between_turns()` is `false` (`LoopbackChannel`: ACP, gateway, daemon A2A), because there a between-turn message is discarded or taken as the next request's answer. Known limitation: no auto-check under ACP. |
+
+Cost: one supervisor call (plus one parse retry) per qualifying turn. Known limitation: with `[agent] abort_enrichment_on_turn = true` the idle tick aborts the check within about 2 s (#6279 behaviour). The report is not in history, so a follow-up such as "apply those suggestions" needs the user to quote them.
+
 ## 4. Non-Functional Requirements
 
 - The verdict is advisory only: it never gates, blocks or retries tool execution or turn completion. `GoalSupervisor` stays "a heuristic verifier, not a security boundary".
-- Observability: span `core.goal.turn_selfcheck` (field `source`) around the verify call; the existing `goal.supervisor.verify` span nests inside.
+- Observability: span `core.goal.turn_selfcheck` (fields `source`, `trigger`) around the verify call; the existing `goal.supervisor.verify` span nests inside.
 - Cost: at most two LLM calls (initial plus one parse retry inside `chat_json`), only on explicit user request.
 - Cross-mode: the handler lives in `zeph-core`/`zeph-commands`, so syntax and output are identical in CLI, TUI and every other slash-command channel.
 
@@ -89,7 +103,6 @@ With no source the reply asks the user to state a condition and no LLM call is m
 
 ## 9. Deferred
 
-- Opt-in turn-end auto self-check (draft US-003/FR-005): needs a concrete "turn concludes a task" heuristic and a config flag; deferred to a follow-up.
 - Re-confirming the parity gap against Cline/RooCode, OpenHands and Aider.
 
 ## 10. See Also

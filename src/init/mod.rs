@@ -126,6 +126,10 @@ pub(crate) struct WizardState {
     /// "regex", "judge", or "model" — defaults to "regex" (no LLM calls).
     pub(crate) detector_mode: Option<String>,
     pub(crate) judge_model: Option<String>,
+    /// Run the advisory end-of-turn goal check; implies `[goals] enabled` (#6881).
+    pub(crate) goals_auto_check: bool,
+    /// Calibration curve for LLM-reported correction confidence; identity unless fitted (#6880).
+    pub(crate) correction_confidence_calibration: zeph_config::ConfidenceCalibration,
     /// Provider name from `[[llm.providers]]` for `DetectorMode::Model`. Empty = primary.
     pub(crate) feedback_provider: Option<String>,
     /// Router strategy: None = no router, "ema", "thompson", or "cascade".
@@ -465,6 +469,8 @@ impl Default for WizardState {
             agents_peer_messaging_enabled: true,
             detector_mode: None,
             judge_model: None,
+            goals_auto_check: false,
+            correction_confidence_calibration: zeph_config::ConfidenceCalibration::identity(),
             feedback_provider: None,
             router_strategy: None,
             router_thompson_state_path: None,
@@ -1288,14 +1294,29 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             if let Some(ref model) = state.judge_model {
                 config.skills.learning.judge_model.clone_from(model);
             }
+            config
+                .skills
+                .learning
+                .correction_confidence_calibration
+                .clone_from(&state.correction_confidence_calibration);
         }
         Some("model") => {
             config.skills.learning.detector_mode = zeph_core::config::DetectorMode::Model;
             if let Some(ref provider) = state.feedback_provider {
                 config.skills.learning.feedback_provider = ProviderName::new(provider.as_str());
             }
+            config
+                .skills
+                .learning
+                .correction_confidence_calibration
+                .clone_from(&state.correction_confidence_calibration);
         }
         _ => {}
+    }
+
+    if state.goals_auto_check {
+        config.goals.enabled = true;
+        config.goals.auto_check = true;
     }
 
     config.orchestration = OrchestrationConfig {

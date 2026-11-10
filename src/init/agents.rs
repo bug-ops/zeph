@@ -360,6 +360,20 @@ pub(super) fn step_router(state: &mut WizardState) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn prompt_confidence_calibration() -> anyhow::Result<zeph_config::ConfidenceCalibration> {
+    let raw: String = Input::new()
+        .with_prompt(
+            "Confidence calibration curve as [[raw, calibrated], ...] from 0.0 to 1.0 \
+             (leave empty unless fitted from labelled data)",
+        )
+        .allow_empty(true)
+        .validate_with(|s: &String| -> Result<(), String> {
+            s.parse::<zeph_config::ConfidenceCalibration>().map(|_| ())
+        })
+        .interact_text()?;
+    raw.parse().map_err(|e: String| anyhow::anyhow!(e))
+}
+
 pub(super) fn step_learning(state: &mut WizardState) -> anyhow::Result<()> {
     println!("== Step 11/12: Feedback Detector ==\n");
 
@@ -386,6 +400,7 @@ pub(super) fn step_learning(state: &mut WizardState) -> anyhow::Result<()> {
             if !judge_model.is_empty() {
                 state.judge_model = Some(judge_model);
             }
+            state.correction_confidence_calibration = prompt_confidence_calibration()?;
         }
         2 => {
             state.detector_mode = Some("model".into());
@@ -398,6 +413,7 @@ pub(super) fn step_learning(state: &mut WizardState) -> anyhow::Result<()> {
             if !feedback_provider.is_empty() {
                 state.feedback_provider = Some(feedback_provider);
             }
+            state.correction_confidence_calibration = prompt_confidence_calibration()?;
         }
         _ => {
             state.detector_mode = Some("regex".into());
@@ -416,6 +432,15 @@ pub(super) fn step_learning(state: &mut WizardState) -> anyhow::Result<()> {
             .default(2u32)
             .interact_text()?;
     }
+
+    println!("\n-- Goal self-check --\n");
+    state.goals_auto_check = Confirm::new()
+        .with_prompt(
+            "Enable goal auto-check? (turns on [goals]; after a tool-using turn with an active goal, \
+             runs one advisory supervisor LLM call in the background and shows the report)",
+        )
+        .default(false)
+        .interact()?;
 
     println!("\n-- Skill Evolution (ARISE / STEM / ERL) --\n");
     state.arise_enabled = Confirm::new()

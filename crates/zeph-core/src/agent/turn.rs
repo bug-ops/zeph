@@ -28,13 +28,34 @@ pub struct TurnInput {
     pub text: String,
     /// Decoded image parts extracted from attachments or inline data.
     pub image_parts: Vec<MessagePart>,
+    pub(crate) origin: TurnOrigin,
+}
+
+/// Who initiated a turn: a person at the channel, or the agent's own scheduler / `/loop`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum TurnOrigin {
+    /// A message received from the channel.
+    #[default]
+    User,
+    /// A prompt injected by the scheduler or `/loop`.
+    Injected,
 }
 
 impl TurnInput {
     /// Create input from text and image parts.
     #[must_use]
     pub fn new(text: String, image_parts: Vec<MessagePart>) -> Self {
-        Self { text, image_parts }
+        Self {
+            text,
+            image_parts,
+            origin: TurnOrigin::User,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn with_origin(mut self, origin: TurnOrigin) -> Self {
+        self.origin = origin;
+        self
     }
 }
 

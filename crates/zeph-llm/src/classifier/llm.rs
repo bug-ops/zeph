@@ -15,6 +15,7 @@ use std::sync::Arc;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use zeph_common::text::truncate_chars;
+use zeph_config::ConfidenceCalibration;
 
 use crate::any::AnyProvider;
 use crate::error::LlmError;
@@ -121,9 +122,9 @@ fn normalized_feedback_kind(kind: &str) -> &'static str {
 
 /// Emit one `feedback_calibration` event describing a feedback verdict and its gate decision.
 ///
-/// Records raw (unclamped) and clamped confidence next to the threshold so that offline
-/// review can calibrate the self-reported confidence gate. No message text, reasoning or raw
-/// model kind string is logged.
+/// Records the raw (unclamped) confidence, the calibrated confidence the gate compared against
+/// the threshold, and the threshold, so offline review can fit the calibration curve. No message
+/// text, reasoning or raw model kind string is logged.
 ///
 /// # Examples
 ///
@@ -136,6 +137,7 @@ fn normalized_feedback_kind(kind: &str) -> &'static str {
 ///     FeedbackVerdictSource::Judge,
 ///     "explicit_rejection",
 ///     0.4,
+///     0.4,
 ///     0.6,
 ///     FeedbackGateDecision::Suppressed,
 /// );
@@ -144,6 +146,7 @@ pub fn trace_feedback_verdict(
     source: FeedbackVerdictSource,
     kind: &str,
     raw_confidence: f32,
+    calibrated_confidence: f32,
     threshold: f32,
     decision: FeedbackGateDecision,
 ) {
@@ -152,11 +155,94 @@ pub fn trace_feedback_verdict(
         source = source.as_str(),
         kind = normalized_feedback_kind(kind),
         raw_confidence,
+        calibrated_confidence,
         confidence = raw_confidence.clamp(0.0, 1.0),
         threshold,
         decision = decision.as_str(),
         "feedback verdict gate"
     );
+}
+
+/// Result of [`FeedbackGate::apply`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GateOutcome {
+    /// Whether the verdict passed, was suppressed, or was never a correction.
+    pub decision: FeedbackGateDecision,
+    /// Calibrated confidence in `0.0..=1.0` that the gate compared against the threshold.
+    pub confidence: f32,
+}
+
+/// Confidence-threshold gate shared by every LLM-backed feedback detector.
+///
+/// Calibrates the model's self-reported confidence through a [`ConfidenceCalibration`], suppresses
+/// corrections whose calibrated confidence is below the threshold, and emits the single
+/// `feedback_calibration` event, so the judge and the classifier cannot drift apart.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::classifier::llm::{FeedbackGate, FeedbackGateDecision, FeedbackVerdictSource};
+///
+/// let gate = FeedbackGate::uncalibrated(0.6);
+/// let out = gate.apply(FeedbackVerdictSource::Judge, true, "repetition", 0.4);
+/// assert_eq!(out.decision, FeedbackGateDecision::Suppressed);
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct FeedbackGate {
+    threshold: f32,
+    calibration: ConfidenceCalibration,
+}
+
+impl FeedbackGate {
+    /// Build a gate from a threshold and a calibration curve.
+    #[must_use]
+    pub const fn new(threshold: f32, calibration: ConfidenceCalibration) -> Self {
+        Self {
+            threshold,
+            calibration,
+        }
+    }
+
+    /// Build a gate with the identity calibration.
+    #[must_use]
+    pub const fn uncalibrated(threshold: f32) -> Self {
+        Self::new(threshold, ConfidenceCalibration::identity())
+    }
+
+    /// The confidence threshold.
+    #[must_use]
+    pub const fn threshold(&self) -> f32 {
+        self.threshold
+    }
+
+    /// Calibrate `raw_confidence`, decide, and emit the calibration trace event.
+    #[must_use]
+    pub fn apply(
+        &self,
+        source: FeedbackVerdictSource,
+        is_correction: bool,
+        kind: &str,
+        raw_confidence: f32,
+    ) -> GateOutcome {
+        let confidence = self.calibration.calibrate(raw_confidence);
+        let decision = if is_correction && confidence < self.threshold {
+            FeedbackGateDecision::Suppressed
+        } else {
+            FeedbackGateDecision::unsuppressed(is_correction)
+        };
+        trace_feedback_verdict(
+            source,
+            kind,
+            raw_confidence,
+            confidence,
+            self.threshold,
+            decision,
+        );
+        GateOutcome {
+            decision,
+            confidence,
+        }
+    }
 }
 
 /// Zero-shot LLM-backed feedback/correction classifier.
@@ -199,8 +285,8 @@ impl LlmClassifier {
     /// Classify a user message for feedback/correction signals.
     ///
     /// Builds the judge prompt and calls the provider with structured output.
-    /// The `confidence_threshold` is applied to clamp low-confidence corrections
-    /// (matches `JudgeDetector::evaluate` behaviour).
+    /// The `gate` calibrates the reported confidence and suppresses low-confidence corrections
+    /// (same gate as `JudgeDetector::evaluate`); the returned confidence is the calibrated one.
     ///
     /// # Errors
     ///
@@ -210,7 +296,7 @@ impl LlmClassifier {
         &self,
         user_message: &str,
         assistant_response: &str,
-        confidence_threshold: f32,
+        gate: &FeedbackGate,
     ) -> Result<FeedbackVerdict, LlmError> {
         let t0 = std::time::Instant::now();
         let messages = build_judge_messages(user_message, assistant_response);
@@ -232,33 +318,22 @@ impl LlmClassifier {
             "llm-classifier verdict"
         );
 
-        // Clamp and apply confidence threshold — same logic as JudgeDetector::evaluate.
-        let confidence = verdict.confidence.clamp(0.0, 1.0);
-        if verdict.is_correction && confidence < confidence_threshold {
-            trace_feedback_verdict(
-                FeedbackVerdictSource::LlmClassifier,
-                &verdict.kind,
-                verdict.confidence,
-                confidence_threshold,
-                FeedbackGateDecision::Suppressed,
-            );
+        let outcome = gate.apply(
+            FeedbackVerdictSource::LlmClassifier,
+            verdict.is_correction,
+            &verdict.kind,
+            verdict.confidence,
+        );
+        if outcome.decision == FeedbackGateDecision::Suppressed {
             return Ok(FeedbackVerdict {
                 is_correction: false,
                 kind: "neutral".into(),
-                confidence,
+                confidence: outcome.confidence,
                 ..verdict
             });
         }
-
-        trace_feedback_verdict(
-            FeedbackVerdictSource::LlmClassifier,
-            &verdict.kind,
-            verdict.confidence,
-            confidence_threshold,
-            FeedbackGateDecision::unsuppressed(verdict.is_correction),
-        );
         Ok(FeedbackVerdict {
-            confidence,
+            confidence: outcome.confidence,
             ..verdict
         })
     }
@@ -379,7 +454,11 @@ mod tests {
 
         let classifier = LlmClassifier::new(mock_provider(&verdict_json));
         let result = classifier
-            .classify_feedback("no that's wrong", "previous response", 0.6)
+            .classify_feedback(
+                "no that's wrong",
+                "previous response",
+                &FeedbackGate::uncalibrated(0.6),
+            )
             .await
             .unwrap();
 
@@ -403,7 +482,11 @@ mod tests {
         let classifier = LlmClassifier::new(mock_provider(&verdict_json));
         // confidence_threshold = 0.6; verdict.confidence = 0.4 → should become neutral
         let result = classifier
-            .classify_feedback("maybe try differently", "response", 0.6)
+            .classify_feedback(
+                "maybe try differently",
+                "response",
+                &FeedbackGate::uncalibrated(0.6),
+            )
             .await
             .unwrap();
 
@@ -432,6 +515,10 @@ mod tests {
     }
 
     async fn calibration_log(verdict_json: &str, threshold: f32) -> String {
+        calibration_log_with_gate(verdict_json, &FeedbackGate::uncalibrated(threshold)).await
+    }
+
+    async fn calibration_log_with_gate(verdict_json: &str, gate: &FeedbackGate) -> String {
         let buf = LogBuf::default();
         let subscriber = tracing_subscriber::fmt()
             .with_writer(buf.clone())
@@ -441,7 +528,7 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
         let classifier = LlmClassifier::new(mock_provider(verdict_json));
         classifier
-            .classify_feedback("secret user text", "assistant text", threshold)
+            .classify_feedback("secret user text", "assistant text", gate)
             .await
             .unwrap();
         String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
@@ -486,6 +573,50 @@ mod tests {
         .await;
         assert_eq!(log.matches("feedback_calibration").count(), 1, "{log}");
         assert!(log.contains("decision=\"not_correction\""), "{log}");
+    }
+
+    fn curved_gate() -> FeedbackGate {
+        let curve = ConfidenceCalibration::new(vec![[0.0, 0.0], [0.8, 0.4], [1.0, 1.0]]).unwrap();
+        FeedbackGate::new(0.6, curve)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn calibrated_gate_suppresses_and_traces_calibrated_confidence() {
+        let log = calibration_log_with_gate(
+            r#"{"is_correction":true,"kind":"repetition","confidence":0.7}"#,
+            &curved_gate(),
+        )
+        .await;
+        assert!(log.contains("decision=\"suppressed\""), "{log}");
+        assert!(log.contains("raw_confidence=0.6999"), "{log}");
+        assert!(log.contains("calibrated_confidence=0.3499"), "{log}");
+        assert!(!log.contains("secret user text"));
+    }
+
+    #[test]
+    fn identity_gate_matches_plain_threshold_for_finite_inputs() {
+        let gate = FeedbackGate::uncalibrated(0.6);
+        for i in -10..=20_i16 {
+            let raw = f32::from(i) / 10.0;
+            let out = gate.apply(FeedbackVerdictSource::Judge, true, "repetition", raw);
+            let expected = if raw.clamp(0.0, 1.0) < 0.6 {
+                FeedbackGateDecision::Suppressed
+            } else {
+                FeedbackGateDecision::Passed
+            };
+            assert_eq!(out.decision, expected, "raw {raw}");
+        }
+    }
+
+    #[test]
+    fn nan_confidence_is_suppressed() {
+        let out = FeedbackGate::uncalibrated(0.6).apply(
+            FeedbackVerdictSource::Judge,
+            true,
+            "repetition",
+            f32::NAN,
+        );
+        assert_eq!(out.decision, FeedbackGateDecision::Suppressed);
     }
 
     #[test]

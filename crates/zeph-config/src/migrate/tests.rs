@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        112,
-        "MIGRATIONS registry must contain all 112 sequential steps"
+        114,
+        "MIGRATIONS registry must contain all 114 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -2210,7 +2210,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 112);
+    assert_eq!(MIGRATIONS.len(), 114);
 }
 
 /// Mirrors the SC-003 wire-X-into-registry check below for `MigrateTuiPanelSizing` (#6675):
@@ -2418,6 +2418,8 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_claude_compaction_trigger",
         "migrate_memory_context_layout",
         "migrate_skill_state_config",
+        "migrate_correction_confidence_calibration",
+        "migrate_goals_auto_check",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -5614,4 +5616,47 @@ fn migrate_skill_state_config_noop_without_skills_or_with_section() {
     let r = migrate_skill_state_config(active).unwrap();
     assert_eq!(r.changed_count, 0);
     assert_eq!(r.output, active);
+}
+
+#[test]
+fn migrate_correction_confidence_calibration_adds_advisory_once() {
+    let src = "[skills.learning]\nenabled = true\n\n[memory]\nx = 1\n";
+    let first = migrate_correction_confidence_calibration(src).unwrap();
+    assert_eq!(first.changed_count, 1);
+    let comment = first
+        .output
+        .find("# correction_confidence_calibration")
+        .unwrap();
+    assert!(comment < first.output.find("[memory]").unwrap());
+    let second = migrate_correction_confidence_calibration(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0);
+    assert_eq!(second.output, first.output);
+}
+
+#[test]
+fn migrate_correction_confidence_calibration_noop_without_learning_table() {
+    let src = "[skills]\nmax_active_skills = 5\n";
+    let r = migrate_correction_confidence_calibration(src).unwrap();
+    assert_eq!(r.changed_count, 0);
+    assert_eq!(r.output, src);
+}
+
+#[test]
+fn migrate_goals_auto_check_adds_advisory_once() {
+    let src = "[goals]\nenabled = true\n\n[memory]\nx = 1\n";
+    let first = migrate_goals_auto_check(src).unwrap();
+    assert_eq!(first.changed_count, 1);
+    let comment = first.output.find("# auto_check = false").unwrap();
+    assert!(comment < first.output.find("[memory]").unwrap());
+    let second = migrate_goals_auto_check(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0);
+    assert_eq!(second.output, first.output);
+}
+
+#[test]
+fn migrate_goals_auto_check_noop_without_goals_table() {
+    let src = "# [goals]\n# enabled = false\n";
+    let r = migrate_goals_auto_check(src).unwrap();
+    assert_eq!(r.changed_count, 0);
+    assert_eq!(r.output, src);
 }

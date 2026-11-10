@@ -31,6 +31,38 @@ const STUCK_KEYWORDS: &[&str] = &[
     "no progress",
 ];
 
+/// Owned, `Send` inputs for building a [`GoalSupervisor`].
+///
+/// Has no `Debug` impl on purpose: the provider config snapshot carries plaintext API keys.
+pub(super) struct GoalSupervisorSpec {
+    named: Option<(
+        zeph_config::ProviderEntry,
+        super::state::ProviderConfigSnapshot,
+    )>,
+    secret_registry: Option<std::sync::Arc<zeph_sanitizer::secret_mask::SecretMaskRegistry>>,
+    fallback: zeph_llm::any::AnyProvider,
+    timeout: Duration,
+}
+
+impl GoalSupervisorSpec {
+    /// Build the supervisor: the named `[goals] supervisor_provider` when it can be constructed,
+    /// otherwise the main provider.
+    pub(super) fn resolve(self) -> GoalSupervisor {
+        let provider = self
+            .named
+            .and_then(|(entry, snapshot)| {
+                crate::provider_factory::build_provider_for_switch(
+                    &entry,
+                    &snapshot,
+                    self.secret_registry.as_ref(),
+                )
+                .ok()
+            })
+            .unwrap_or(self.fallback);
+        GoalSupervisor::new(provider, self.timeout)
+    }
+}
+
 impl<C: Channel> Agent<C> {
     /// Execute one autonomous turn: run the LLM turn with a synthetic goal message, then
     /// check for stuck state and trigger supervisor verification at the configured interval.
@@ -228,45 +260,41 @@ impl<C: Channel> Agent<C> {
 
     /// Resolve the configured supervisor provider and build a [`GoalSupervisor`].
     pub(super) fn build_supervisor(&self) -> GoalSupervisor {
-        let provider = {
-            let name = self
+        self.supervisor_spec().resolve()
+    }
+
+    /// Snapshot everything needed to build a [`GoalSupervisor`] without touching `self` again,
+    /// so the (possibly slow) provider construction can run off the turn path.
+    pub(super) fn supervisor_spec(&self) -> GoalSupervisorSpec {
+        let name = self
+            .runtime
+            .config
+            .goals
+            .supervisor_provider
+            .as_ref()
+            .map(zeph_config::ProviderName::as_str);
+        let named = name.zip(self.runtime.providers.provider_config_snapshot.as_ref());
+        let named = named.and_then(|(n, snapshot)| {
+            let entry = self
                 .runtime
-                .config
-                .goals
-                .supervisor_provider
-                .as_ref()
-                .map(zeph_config::ProviderName::as_str);
-            let snapshot = self.runtime.providers.provider_config_snapshot.as_ref();
-            match (name, snapshot) {
-                (Some(n), Some(snap)) => {
-                    let entry = self
-                        .runtime
-                        .providers
-                        .provider_pool
-                        .iter()
-                        .find(|e| e.name.as_deref() == Some(n));
-                    if entry.is_none() {
-                        tracing::debug!(
-                            provider = n,
-                            "goal supervisor provider not found, using the main provider"
-                        );
-                    }
-                    entry
-                        .and_then(|entry| {
-                            crate::provider_factory::build_provider_for_switch(
-                                entry,
-                                snap,
-                                self.services.security.secret_registry.as_ref(),
-                            )
-                            .ok()
-                        })
-                        .unwrap_or_else(|| self.provider.clone())
-                }
-                _ => self.provider.clone(),
+                .providers
+                .provider_pool
+                .iter()
+                .find(|e| e.name.as_deref() == Some(n));
+            if entry.is_none() {
+                tracing::debug!(
+                    provider = n,
+                    "goal supervisor provider not found, using the main provider"
+                );
             }
-        };
-        let timeout = Duration::from_secs(self.runtime.config.goals.supervisor_timeout_secs);
-        GoalSupervisor::new(provider, timeout)
+            entry.map(|entry| (entry.clone(), snapshot.clone()))
+        });
+        GoalSupervisorSpec {
+            named,
+            secret_registry: self.services.security.secret_registry.clone(),
+            fallback: self.provider.clone(),
+            timeout: Duration::from_secs(self.runtime.config.goals.supervisor_timeout_secs),
+        }
     }
 
     /// Build a bounded summary of recent conversation messages for the supervisor prompt.
@@ -496,6 +524,69 @@ fn sanitize_goal_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn spec_agent(
+        name: Option<&str>,
+        pool: &[&str],
+        snapshot: bool,
+    ) -> Agent<crate::agent::agent_tests::MockChannel> {
+        use crate::agent::agent_tests::{
+            MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+        };
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.runtime.config.goals.supervisor_provider = name.map(zeph_config::ProviderName::new);
+        agent.runtime.providers.provider_pool = pool
+            .iter()
+            .map(|n| zeph_config::ProviderEntry {
+                name: Some((*n).to_owned()),
+                ..Default::default()
+            })
+            .collect();
+        agent.runtime.providers.provider_config_snapshot =
+            snapshot.then(super::super::state::ProviderConfigSnapshot::default);
+        agent
+    }
+
+    #[test]
+    fn supervisor_spec_selects_named_entry_only_when_resolvable() {
+        let named = spec_agent(Some("fast"), &["fast"], true).supervisor_spec();
+        assert_eq!(
+            named.named.as_ref().and_then(|(e, _)| e.name.as_deref()),
+            Some("fast")
+        );
+        assert!(
+            spec_agent(Some("missing"), &["fast"], true)
+                .supervisor_spec()
+                .named
+                .is_none()
+        );
+        assert!(
+            spec_agent(Some("fast"), &["fast"], false)
+                .supervisor_spec()
+                .named
+                .is_none()
+        );
+        assert!(
+            spec_agent(None, &["fast"], true)
+                .supervisor_spec()
+                .named
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn supervisor_spec_carries_configured_timeout() {
+        let mut agent = spec_agent(None, &[], false);
+        agent.runtime.config.goals.supervisor_timeout_secs = 7;
+        assert_eq!(agent.supervisor_spec().timeout, Duration::from_secs(7));
+    }
 
     #[test]
     fn stuck_detection_matches_keywords() {

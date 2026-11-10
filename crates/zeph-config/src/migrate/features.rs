@@ -1274,6 +1274,72 @@ pub fn migrate_skill_state_config(toml_src: &str) -> Result<MigrationResult, Mig
     })
 }
 
+/// Add an advisory `correction_confidence_calibration` line to an existing active
+/// `[skills.learning]` table (spec `054-agent-feedback`, issue #6880).
+///
+/// An absent key is the identity curve, so the comment only aids discoverability. No-op when
+/// `[skills.learning]` is absent or the key is already present (active or commented).
+///
+/// # Errors
+///
+/// Never returns `Err`; the `Result` matches the `Migration` trait signature.
+pub fn migrate_correction_confidence_calibration(
+    toml_src: &str,
+) -> Result<MigrationResult, MigrateError> {
+    if !section_header_present(toml_src, "skills.learning")
+        || toml_src.contains("correction_confidence_calibration")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "# Piecewise-linear [raw, calibrated] curve for LLM-reported correction confidence \
+         (judge/model modes). Empty = identity; leave unset unless fitted from labelled data (#6880).\n\
+         # correction_confidence_calibration = [[0.0, 0.0], [1.0, 1.0]]\n";
+    Ok(MigrationResult {
+        output: insert_after_section(toml_src, "skills.learning", comment),
+        changed_count: 1,
+        sections_changed: vec!["skills.learning".to_owned()],
+    })
+}
+
+/// Add an advisory `auto_check` line to an existing active `[goals]` table
+/// (spec `089-goal-self-check`, issue #6881).
+///
+/// The key defaults to `false`, so the comment only aids discoverability. No-op when `[goals]`
+/// is absent or `auto_check` is already present (active or commented).
+///
+/// # Errors
+///
+/// Never returns `Err`; the `Result` matches the `Migration` trait signature.
+pub fn migrate_goals_auto_check(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let present = toml_src.lines().any(|l| {
+        l.trim()
+            .trim_start_matches('#')
+            .trim()
+            .starts_with("auto_check")
+    });
+    if !section_header_present(toml_src, "goals") || present {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "# Advisory goal check in the background after a user turn that used tools while a goal \
+         is active; costs one supervisor LLM call per such turn (#6881).\n\
+         # auto_check = false\n";
+    Ok(MigrationResult {
+        output: insert_after_section(toml_src, "goals", comment),
+        changed_count: 1,
+        sections_changed: vec!["goals".to_owned()],
+    })
+}
+
 #[cfg(test)]
 mod rate_limit_advisory_tests {
     use super::*;

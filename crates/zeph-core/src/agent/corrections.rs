@@ -136,12 +136,15 @@ impl<C: crate::channel::Channel> Agent<C> {
             .cloned()
             .unwrap_or_default();
         let conv_id_bg = conv_id;
-        let confidence_threshold = self
-            .services
-            .learning_engine
-            .config
-            .as_ref()
-            .map_or(0.6_f32, |c| c.correction_confidence_threshold);
+        let gate = self.services.learning_engine.config.as_ref().map_or_else(
+            || zeph_llm::classifier::llm::FeedbackGate::uncalibrated(0.6),
+            |c| {
+                zeph_llm::classifier::llm::FeedbackGate::new(
+                    c.correction_confidence_threshold,
+                    c.correction_confidence_calibration.clone(),
+                )
+            },
+        );
         let judge_timeout = std::time::Duration::from_secs(
             self.services
                 .learning_engine
@@ -160,7 +163,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     llm_classifier,
                     user_msg_owned,
                     assistant_snippet,
-                    confidence_threshold,
+                    gate,
                     judge_timeout,
                     classifier_metrics_bg,
                     metrics_tx_bg,
@@ -188,7 +191,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                     judge_provider,
                     user_msg_owned,
                     assistant_snippet,
-                    confidence_threshold,
+                    gate,
                     judge_timeout,
                     memory_arc,
                     conv_id_bg,
@@ -487,7 +490,7 @@ async fn evaluate_with_llm_classifier(
     llm_classifier: zeph_llm::classifier::llm::LlmClassifier,
     user_msg: String,
     assistant: String,
-    confidence_threshold: f32,
+    gate: zeph_llm::classifier::llm::FeedbackGate,
     timeout: std::time::Duration,
     classifier_metrics_bg: Option<std::sync::Arc<zeph_llm::ClassifierMetrics>>,
     metrics_tx_bg: Option<tokio::sync::watch::Sender<crate::metrics::MetricsSnapshot>>,
@@ -497,7 +500,7 @@ async fn evaluate_with_llm_classifier(
 ) {
     let result = tokio::time::timeout(
         timeout,
-        llm_classifier.classify_feedback(&user_msg, &assistant, confidence_threshold),
+        llm_classifier.classify_feedback(&user_msg, &assistant, &gate),
     )
     .await;
 
@@ -534,7 +537,7 @@ async fn evaluate_with_judge(
     judge_provider: zeph_llm::any::AnyProvider,
     user_msg: String,
     assistant: String,
-    confidence_threshold: f32,
+    gate: zeph_llm::classifier::llm::FeedbackGate,
     timeout: std::time::Duration,
     memory_arc: Option<std::sync::Arc<zeph_memory::semantic::SemanticMemory>>,
     conv_id: Option<zeph_memory::ConversationId>,
@@ -544,7 +547,7 @@ async fn evaluate_with_judge(
         &judge_provider,
         &user_msg,
         &assistant,
-        confidence_threshold,
+        &gate,
         timeout,
     )
     .await
@@ -569,7 +572,7 @@ mod tests {
     use std::time::Duration;
 
     use zeph_llm::any::AnyProvider;
-    use zeph_llm::classifier::llm::LlmClassifier;
+    use zeph_llm::classifier::llm::{FeedbackGate, LlmClassifier};
     use zeph_llm::mock::MockProvider;
     use zeph_memory::semantic::SemanticMemory;
 
@@ -615,7 +618,7 @@ mod tests {
             classifier,
             "no that's wrong".to_owned(),
             "previous response".to_owned(),
-            0.6,
+            FeedbackGate::uncalibrated(0.6),
             Duration::from_millis(20),
             None,
             None,
@@ -646,7 +649,7 @@ mod tests {
             classifier,
             "no that's wrong".to_owned(),
             "previous response".to_owned(),
-            0.6,
+            FeedbackGate::uncalibrated(0.6),
             Duration::from_millis(200),
             None,
             None,

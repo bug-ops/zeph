@@ -113,6 +113,9 @@ max_size_bytes = 262144  # Per-file size cap in bytes (default: 256 KiB)
 # enabled = true                 # Inject reference list before rename_symbol (default: true)
 # max_refs = 50                  # Max references to show per symbol (default: 50)
 
+[goals]
+auto_check = false                    # Advisory background goal check after tool-using turns with an active goal; needs enabled = true (default: false)
+
 [agent.learning]
 correction_detection = true           # Enable implicit correction detection (default: true)
 correction_confidence_threshold = 0.7 # Jaccard token overlap threshold for correction candidates (default: 0.7)

@@ -92,6 +92,7 @@ pub(crate) fn mock_provider_with_models(
     AnyProvider::Mock(MockProvider::with_responses(responses).with_models(models))
 }
 
+#[allow(clippy::struct_excessive_bools)] // test double: independent behaviour toggles
 pub(crate) struct MockChannel {
     pub(crate) messages: Arc<Mutex<Vec<String>>>,
     pub(crate) sent: Arc<Mutex<Vec<String>>>,
@@ -112,6 +113,7 @@ pub(crate) struct MockChannel {
     /// them (#6570).
     pub(crate) notify_background_completed_calls: Arc<Mutex<Vec<(String, String, bool)>>>,
     pub(crate) exit_supported: bool,
+    pub(crate) between_turn_delivery: bool,
     pub(crate) input_sanitization_required: bool,
     /// When `true`, `send()` fails with `ChannelError::ChannelClosed` instead of recording the
     /// message — simulates a disconnected adapter (closed mpsc receiver, dropped
@@ -133,6 +135,7 @@ impl MockChannel {
             notify_completed_calls: Arc::new(Mutex::new(Vec::new())),
             notify_background_completed_calls: Arc::new(Mutex::new(Vec::new())),
             exit_supported: true,
+            between_turn_delivery: true,
             input_sanitization_required: false,
             fail_send: false,
         }
@@ -146,6 +149,11 @@ impl MockChannel {
 
     pub(crate) fn without_exit_support(mut self) -> Self {
         self.exit_supported = false;
+        self
+    }
+
+    pub(crate) fn without_between_turn_delivery(mut self) -> Self {
+        self.between_turn_delivery = false;
         self
     }
 
@@ -265,6 +273,10 @@ impl Channel for MockChannel {
 
     fn supports_exit(&self) -> bool {
         self.exit_supported
+    }
+
+    fn delivers_between_turns(&self) -> bool {
+        self.between_turn_delivery
     }
 
     fn requires_input_sanitization(&self) -> bool {

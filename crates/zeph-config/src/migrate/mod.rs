@@ -25,7 +25,8 @@ mod tools;
 
 pub use features::{
     migrate_autodream_config, migrate_caveman_config, migrate_compression_predictor_config,
-    migrate_deep_link_config, migrate_five_signal_config, migrate_goals_config,
+    migrate_correction_confidence_calibration, migrate_deep_link_config,
+    migrate_five_signal_config, migrate_goals_auto_check, migrate_goals_config,
     migrate_knowledge_config, migrate_magic_docs_config, migrate_microcompact_config,
     migrate_orchestration_asset_sensitivity, migrate_orchestration_command_config,
     migrate_orchestration_ensemble, migrate_orchestration_idle_timeout,
@@ -771,22 +772,22 @@ use steps::{
     MigrateAgentTimeReminder, MigrateAgentsDelegationMode, MigrateAgentsMaxSpawnsPerSession,
     MigrateAgentsPeerMessagingConfig, MigrateAutodreamConfig, MigrateCavemanConfig,
     MigrateClaudeCompactionTrigger, MigrateCocoonProviderNotice, MigrateCocoonShowBalance,
-    MigrateCompressionPredictorConfig, MigrateDatabaseUrl, MigrateDeepLinkConfig,
-    MigrateDurableConfig, MigrateDurableHwmAdvisory, MigrateDurableKeyRotation,
-    MigrateDurableSharedDb, MigrateDurableStaleRunningAfterSecs, MigrateEgressConfig,
-    MigrateEmbedProviderRename, MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults,
-    MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
-    MigrateGoalsConfig, MigrateGonkagateToGonka, MigrateHooksPermissionDeniedConfig,
-    MigrateHooksTurnComplete, MigrateIntegrityConfig, MigrateKnowledgeConfig,
-    MigrateLlmStreamLimits, MigrateMagicDocsConfig, MigrateMcpElicitationConfig,
-    MigrateMcpMaxConnectAttempts, MigrateMcpMediaConfig, MigrateMcpRetryAndToolTimeout,
-    MigrateMcpTrustLevels, MigrateMemoryConsentGateConfig, MigrateMemoryContextLayout,
-    MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported, MigrateMemoryHebbian,
-    MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread, MigrateMemoryPersonaConfig,
-    MigrateMemoryReasoning, MigrateMemoryReasoningJudge, MigrateMemoryRetrieval,
-    MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig, MigrateMemoryStoreMaxNamespaceRows,
-    MigrateMemoryTypeAwareCompose, MigrateMicrocompactConfig, MigrateNliConfig,
-    MigrateOrchestrationAssetSensitivity, MigrateOrchestrationCommandConfig,
+    MigrateCompressionPredictorConfig, MigrateCorrectionConfidenceCalibration, MigrateDatabaseUrl,
+    MigrateDeepLinkConfig, MigrateDurableConfig, MigrateDurableHwmAdvisory,
+    MigrateDurableKeyRotation, MigrateDurableSharedDb, MigrateDurableStaleRunningAfterSecs,
+    MigrateEgressConfig, MigrateEmbedProviderRename, MigrateEvalModelToProvider,
+    MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow,
+    MigrateForgettingConfig, MigrateGoalsAutoCheck, MigrateGoalsConfig, MigrateGonkagateToGonka,
+    MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateIntegrityConfig,
+    MigrateKnowledgeConfig, MigrateLlmStreamLimits, MigrateMagicDocsConfig,
+    MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpMediaConfig,
+    MigrateMcpRetryAndToolTimeout, MigrateMcpTrustLevels, MigrateMemoryConsentGateConfig,
+    MigrateMemoryContextLayout, MigrateMemoryGraph, MigrateMemoryGraphRecallIncludeImported,
+    MigrateMemoryHebbian, MigrateMemoryHebbianConsolidation, MigrateMemoryHebbianSpread,
+    MigrateMemoryPersonaConfig, MigrateMemoryReasoning, MigrateMemoryReasoningJudge,
+    MigrateMemoryRetrieval, MigrateMemoryRetrievalQueryBias, MigrateMemoryStoreConfig,
+    MigrateMemoryStoreMaxNamespaceRows, MigrateMemoryTypeAwareCompose, MigrateMicrocompactConfig,
+    MigrateNliConfig, MigrateOrchestrationAssetSensitivity, MigrateOrchestrationCommandConfig,
     MigrateOrchestrationEnsemble, MigrateOrchestrationIdleTimeout, MigrateOrchestrationPersistence,
     MigrateOrchestrationWholePlanVerifierTimeout, MigrateOrchestratorProvider, MigrateOtelFilter,
     MigrateOverflowMaxPerCallOverride, MigratePiiFilterNames, MigratePlannerModelToProvider,
@@ -1043,6 +1044,11 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateMemoryContextLayout),
             // Step 112 — add an advisory [skills.state] block (spec 086, #6766)
             Box::new(MigrateSkillStateConfig),
+            // Step 113 — add an advisory correction_confidence_calibration line under
+            // [skills.learning] (spec 054, #6880)
+            Box::new(MigrateCorrectionConfidenceCalibration),
+            // Step 114 — add an advisory auto_check line under [goals] (spec 089, #6881)
+            Box::new(MigrateGoalsAutoCheck),
         ]
     });
 

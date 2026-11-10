@@ -229,6 +229,9 @@ max_versions = 10
 cooldown_minutes = 60
 # Correction detector strategy: "regex" (default), "judge" (LLM-based), or "model" (ML classifier)
 # detector_mode = "regex"
+# Piecewise-linear [raw, calibrated] curve applied to LLM-reported correction confidence before
+# the threshold gate (judge/model modes). Empty = identity; leave unset unless fitted from labelled data.
+# correction_confidence_calibration = [[0.0, 0.0], [1.0, 1.0]]
 # Named provider from [[llm.providers]] for the judge detector. Takes precedence over judge_model.
 # Empty = fall back to judge_model, then to primary provider.
 # judge_provider = ""
@@ -1709,6 +1712,10 @@ max_text_chars = 2000
 max_history = 50
 # Default token budget for new goals (null = unlimited).
 # default_token_budget = 100000
+# Advisory goal check in the background after a user turn that used tools while a goal is
+# active (requires enabled = true). Costs one supervisor LLM call per such turn; skipped on
+# ACP, gateway and daemon channels.
+auto_check = false
 
 # ── Autonomous mode ───────────────────────────────────────────────────────────
 # Enable /goal create ... --auto for multi-turn autonomous execution.

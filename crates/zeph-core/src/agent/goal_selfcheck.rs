@@ -27,7 +27,7 @@ use crate::redact::scrub_content;
 const CONDITION_MAX_CHARS: usize = 500;
 const RECENT_ACTIONS_MAX: usize = 10;
 const ACTION_ARGS_MAX_CHARS: usize = 100;
-const STATUS_VERIFYING: &str = "Verifying goal\u{2026}";
+pub(super) const STATUS_VERIFYING: &str = "Verifying goal\u{2026}";
 const ACTIVE_GOAL_LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Where the condition evaluated by `/goal check` came from, in priority order.
@@ -49,6 +49,50 @@ impl GoalConditionSource {
             Self::LastUserMessage => "last user message",
         }
     }
+}
+
+/// What started a goal check; labels the report and the span.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GoalCheckTrigger {
+    /// The `/goal check` command.
+    Command,
+    /// The end-of-turn auto-check (`[goals] auto_check`).
+    TurnEnd,
+}
+
+impl GoalCheckTrigger {
+    const fn header(self) -> &'static str {
+        match self {
+            Self::Command => "Goal check (advisory)",
+            Self::TurnEnd => "Goal check (auto, advisory)",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Command => "command",
+            Self::TurnEnd => "turn_end",
+        }
+    }
+}
+
+/// Result of [`GoalCheckJob::run`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum GoalCheckOutcome {
+    /// No condition could be resolved, so no supervisor call was made.
+    NoCondition,
+    /// A formatted advisory report.
+    Report(String),
+}
+
+/// How a job obtains the active goal when no explicit condition is given.
+pub(super) enum ActiveGoalLookup {
+    /// Do not look one up.
+    Skip,
+    /// The goal text is already known (auto-check reads the cached snapshot synchronously).
+    Known(String),
+    /// Refresh the accounting cache first, then read it (`/goal check`).
+    Refresh(Arc<GoalAccounting>),
 }
 
 /// Return the condition argument when `args` is a `/goal check` invocation.
@@ -96,7 +140,7 @@ fn last_user_text(messages: &[Message]) -> Option<String> {
 }
 
 /// Last tool invocations as `name(args)`, oldest first, with secrets scrubbed from the args.
-fn recent_tool_actions(messages: &[Message]) -> Vec<String> {
+pub(super) fn recent_tool_actions(messages: &[Message]) -> Vec<String> {
     let mut actions: Vec<String> = messages
         .iter()
         .rev()
@@ -140,13 +184,15 @@ fn resolve_condition(
 }
 
 fn format_report(
+    trigger: GoalCheckTrigger,
     source: GoalConditionSource,
     condition: &str,
     result: &Result<SupervisorVerdict, SupervisorError>,
     timeout_secs: u64,
 ) -> String {
     let header = format!(
-        "Goal check (advisory)\nCondition [{}]: {condition}\n",
+        "{}\nCondition [{}]: {condition}\n",
+        trigger.header(),
         source.label()
     );
     match result {
@@ -182,21 +228,24 @@ fn format_report(
     }
 }
 
-struct GoalCheckJob {
-    explicit: String,
-    last_user: Option<String>,
-    summary: String,
-    recent_actions: Vec<String>,
-    supervisor: GoalSupervisor,
-    timeout_secs: u64,
-    accounting: Option<Arc<GoalAccounting>>,
-    status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+pub(super) struct GoalCheckJob {
+    pub(super) trigger: GoalCheckTrigger,
+    pub(super) explicit: String,
+    pub(super) last_user: Option<String>,
+    pub(super) summary: String,
+    pub(super) recent_actions: Vec<String>,
+    pub(super) supervisor: GoalSupervisor,
+    pub(super) timeout_secs: u64,
+    pub(super) active_goal: ActiveGoalLookup,
+    pub(super) status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 impl GoalCheckJob {
-    async fn run(self) -> String {
-        let active_goal = match (&self.explicit.is_empty(), &self.accounting) {
-            (true, Some(accounting)) => {
+    async fn resolve_active_goal(&self) -> Option<String> {
+        match &self.active_goal {
+            ActiveGoalLookup::Skip => None,
+            ActiveGoalLookup::Known(text) => Some(text.clone()),
+            ActiveGoalLookup::Refresh(accounting) => {
                 let lookup = tokio::time::timeout(ACTIVE_GOAL_LOOKUP_TIMEOUT, accounting.refresh())
                     .instrument(tracing::info_span!("core.goal.active_lookup"))
                     .await;
@@ -209,12 +258,19 @@ impl GoalCheckJob {
                 }
                 accounting.snapshot().map(|s| s.text)
             }
-            _ => None,
+        }
+    }
+
+    pub(super) async fn run(self) -> GoalCheckOutcome {
+        let active_goal = if self.explicit.is_empty() {
+            self.resolve_active_goal().await
+        } else {
+            None
         };
         let Some((source, condition)) =
             resolve_condition(&self.explicit, active_goal, self.last_user)
         else {
-            return "No goal condition to check. State one: /goal check <condition>".to_owned();
+            return GoalCheckOutcome::NoCondition;
         };
 
         if let Some(tx) = &self.status_tx {
@@ -225,13 +281,20 @@ impl GoalCheckJob {
             .verify(&condition, &self.summary, &self.recent_actions)
             .instrument(tracing::info_span!(
                 "core.goal.turn_selfcheck",
-                source = source.label()
+                source = source.label(),
+                trigger = self.trigger.label()
             ))
             .await;
         if let Some(tx) = &self.status_tx {
             let _ = tx.send(String::new());
         }
-        format_report(source, &condition, &result, self.timeout_secs)
+        GoalCheckOutcome::Report(format_report(
+            self.trigger,
+            source,
+            &condition,
+            &result,
+            self.timeout_secs,
+        ))
     }
 }
 
@@ -250,23 +313,32 @@ impl<C: Channel + Send + 'static> Agent<C> {
             });
         }
         let explicit = condition.to_owned();
-        let accounting = if explicit.is_empty() {
-            self.ensure_goal_accounting().ok()
+        let active_goal = if explicit.is_empty() {
+            self.ensure_goal_accounting()
+                .map_or(ActiveGoalLookup::Skip, ActiveGoalLookup::Refresh)
         } else {
-            None
+            ActiveGoalLookup::Skip
         };
         let summary = self.build_conversation_summary();
         let job = GoalCheckJob {
+            trigger: GoalCheckTrigger::Command,
             explicit,
             last_user: last_user_text(&self.msg.messages),
             summary,
             recent_actions: recent_tool_actions(&self.msg.messages),
             supervisor: self.build_supervisor(),
             timeout_secs: self.runtime.config.goals.supervisor_timeout_secs,
-            accounting,
+            active_goal,
             status_tx: self.services.session.status_tx.clone(),
         };
-        Box::pin(async move { Ok(job.run().await) })
+        Box::pin(async move {
+            Ok(match job.run().await {
+                GoalCheckOutcome::Report(report) => report,
+                GoalCheckOutcome::NoCondition => {
+                    "No goal condition to check. State one: /goal check <condition>".to_owned()
+                }
+            })
+        })
     }
 }
 
@@ -397,16 +469,29 @@ mod tests {
 
     #[test]
     fn report_shows_all_fields_and_suggestions_only_when_not_achieved() {
-        let r = format_report(GoalConditionSource::Explicit, "c", &Ok(verdict(false)), 30);
+        let r = format_report(
+            GoalCheckTrigger::Command,
+            GoalConditionSource::Explicit,
+            "c",
+            &Ok(verdict(false)),
+            30,
+        );
         assert!(r.contains("NOT ACHIEVED") && r.contains("0.80") && r.contains("because"));
         assert!(r.contains("- run tests") && r.contains("[explicit]"));
-        let r = format_report(GoalConditionSource::Explicit, "c", &Ok(verdict(true)), 30);
+        let r = format_report(
+            GoalCheckTrigger::Command,
+            GoalConditionSource::Explicit,
+            "c",
+            &Ok(verdict(true)),
+            30,
+        );
         assert!(r.contains("ACHIEVED") && !r.contains("Suggestions"));
     }
 
     #[test]
     fn report_timeout_shows_configured_value() {
         let r = format_report(
+            GoalCheckTrigger::Command,
             GoalConditionSource::ActiveGoal,
             "c",
             &Err(SupervisorError::Timeout(1)),
@@ -417,21 +502,29 @@ mod tests {
 
     fn job(explicit: &str, last_user: Option<&str>, provider: MockProvider) -> GoalCheckJob {
         GoalCheckJob {
+            trigger: GoalCheckTrigger::Command,
             explicit: explicit.into(),
             last_user: last_user.map(Into::into),
             summary: "summary".into(),
             recent_actions: vec![],
             supervisor: GoalSupervisor::new(AnyProvider::Mock(provider), Duration::from_secs(5)),
             timeout_secs: 5,
-            accounting: None,
+            active_goal: ActiveGoalLookup::Skip,
             status_tx: None,
+        }
+    }
+
+    async fn run_report(j: GoalCheckJob) -> String {
+        match j.run().await {
+            GoalCheckOutcome::Report(r) => r,
+            GoalCheckOutcome::NoCondition => panic!("expected a report"),
         }
     }
 
     #[tokio::test]
     async fn run_without_any_condition_makes_no_llm_call() {
         let out = job("", None, MockProvider::failing()).run().await;
-        assert!(out.contains("No goal condition"), "{out}");
+        assert_eq!(out, GoalCheckOutcome::NoCondition);
     }
 
     #[tokio::test]
@@ -439,7 +532,7 @@ mod tests {
         let provider = MockProvider::with_responses(vec![
             r#"{"achieved":true,"reasoning":"done","confidence":0.9,"suggestions":[]}"#.into(),
         ]);
-        let out = job("", Some("fix it"), provider).run().await;
+        let out = run_report(job("", Some("fix it"), provider)).await;
         assert!(
             out.contains("[last user message]") && out.contains("ACHIEVED"),
             "{out}"
@@ -448,7 +541,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_provider_failure_is_non_fatal_message() {
-        let out = job("cond", None, MockProvider::failing()).run().await;
+        let out = run_report(job("cond", None, MockProvider::failing())).await;
         assert!(out.contains("Verification failed"), "{out}");
     }
 

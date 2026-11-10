@@ -1418,36 +1418,12 @@ use crate::agent::context::chunk_messages;
 // ── G3: active_goal appears after <!-- cache:volatile --> ──────────────────────
 
 #[cfg(feature = "sqlite")]
-async fn goal_test_store() -> crate::goal::GoalStore {
-    let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
-    sqlx::query(
-        "CREATE TABLE zeph_goals (\
-         id TEXT PRIMARY KEY, text TEXT NOT NULL, \
-         status TEXT NOT NULL DEFAULT 'active' \
-         CHECK (status IN ('active','paused','completed','cleared')), \
-         token_budget INTEGER, turns_used INTEGER NOT NULL DEFAULT 0, \
-         tokens_used INTEGER NOT NULL DEFAULT 0, \
-         created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT)",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "CREATE UNIQUE INDEX idx_goal_single_active ON zeph_goals(status) WHERE status = 'active'",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    crate::goal::GoalStore::new(std::sync::Arc::new(pool))
-}
-
-#[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn g3_active_goal_appears_after_volatile_marker() {
     use crate::goal::GoalAccounting;
     use std::sync::Arc;
 
-    let store = goal_test_store().await;
+    let store = crate::goal::store::in_memory_store().await;
     store
         .create("Implement /goal lifecycle", None, 2000)
         .await

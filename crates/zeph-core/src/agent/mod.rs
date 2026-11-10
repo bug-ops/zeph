@@ -22,6 +22,7 @@ pub use durable_bootstrap::DurableKeyMaterial;
 pub mod error;
 mod experiment_cmd;
 pub(crate) mod focus;
+mod goal_auto_check;
 mod goal_selfcheck;
 mod graph_commands;
 mod heuristic_promotion;
@@ -345,6 +346,7 @@ impl<C: Channel> Agent<C> {
             sidequest: sidequest::SidequestState::default(),
             tool_state: ToolState::default(),
             goal_accounting: None,
+            goal_auto_check: goal_auto_check::GoalAutoCheckState::default(),
             quality: None,
             proactive_explorer: None,
             promotion_engine: None,
@@ -476,6 +478,7 @@ impl<C: Channel> Agent<C> {
             self.notify_peer_messages().await;
             self.drain_channel();
 
+            let mut origin = turn::TurnOrigin::User;
             let (text, image_parts) = if let Some(queued) = self.msg.message_queue.pop_front() {
                 self.notify_queue_count().await;
                 if queued.raw_attachments.is_empty() {
@@ -520,6 +523,7 @@ impl<C: Channel> Agent<C> {
                         continue;
                     }
                     Some(LoopEvent::ScheduledTask(prompt)) => {
+                        origin = turn::TurnOrigin::Injected;
                         let text = format!("{SCHEDULED_TASK_PREFIX}{prompt}");
                         let msg = crate::channel::ChannelMessage {
                             text,
@@ -532,6 +536,7 @@ impl<C: Channel> Agent<C> {
                         self.resolve_message(msg).await
                     }
                     Some(LoopEvent::TaskInjected(injection)) => {
+                        origin = turn::TurnOrigin::Injected;
                         if let Some(ref mut ls) = self.runtime.lifecycle.user_loop {
                             ls.iteration += 1;
                             tracing::info!(iteration = ls.iteration, "loop: tick");
@@ -558,6 +563,10 @@ impl<C: Channel> Agent<C> {
                     }
                     Some(LoopEvent::BgMetricsTick) => {
                         self.reap_background_tasks_and_update_metrics();
+                        continue;
+                    }
+                    Some(LoopEvent::GoalAutoCheckDone(resolution)) => {
+                        self.handle_goal_auto_check_done(resolution).await;
                         continue;
                     }
                     Some(LoopEvent::Message(msg)) => {
@@ -715,7 +724,8 @@ impl<C: Channel> Agent<C> {
                 None => {}
             }
 
-            self.process_user_message(text, image_parts).await?;
+            self.process_turn(turn::TurnInput::new(text, image_parts).with_origin(origin))
+                .await?;
         }
 
         // autoDream: run background memory consolidation if conditions are met (#2697).
@@ -919,6 +929,9 @@ impl<C: Channel> Agent<C> {
                 })
                 .tick() => {
                 LoopEvent::BgMetricsTick
+            }
+            resolution = self.services.goal_auto_check.resolved() => {
+                LoopEvent::GoalAutoCheckDone(resolution)
             }
         };
         Ok(Some(event))
@@ -1192,6 +1205,15 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    async fn process_user_message(
+        &mut self,
+        text: String,
+        image_parts: Vec<zeph_llm::provider::MessagePart>,
+    ) -> Result<(), error::AgentError> {
+        self.process_turn(turn::TurnInput::new(text, image_parts))
+            .await
+    }
+
     #[tracing::instrument(
         name = "core.agent.process_user_message",
         skip_all,
@@ -1199,19 +1221,15 @@ impl<C: Channel> Agent<C> {
         fields(turn_id),
         err
     )]
-    async fn process_user_message(
-        &mut self,
-        text: String,
-        image_parts: Vec<zeph_llm::provider::MessagePart>,
-    ) -> Result<(), error::AgentError> {
+    async fn process_turn(&mut self, input: turn::TurnInput) -> Result<(), error::AgentError> {
         // Re-check for a pending provider override (#5548): the loop-top check in `run()`
         // happens before the potentially long block on `next_event()`, so an ACP
         // `session/set_config_option` model switch written while this iteration was
         // parked would otherwise miss this turn and only apply on the next one.
         self.apply_provider_override();
 
-        let input = turn::TurnInput::new(text, image_parts);
         let mut t = self.begin_turn(input);
+        self.services.goal_auto_check.begin_turn();
 
         let turn_idx = usize::try_from(t.id().0).unwrap_or(usize::MAX);
         tracing::Span::current().record("turn_id", t.id().0);
@@ -1425,6 +1443,7 @@ impl<C: Channel> Agent<C> {
         self.maybe_fire_completion_notification(turn, turn_had_error);
 
         self.flush_goal_accounting(tokens_before_turn);
+        self.maybe_spawn_goal_auto_check(turn.input.origin, turn_had_error);
 
         // Collect llm_chat_ms and tool_exec_ms from MetricsState.pending_timings (accumulated
         // by the tool execution chain) into turn.metrics so end_turn can flush them.

@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `zeph-config`, `zeph-core`, `zeph`: opt-in `[goals] auto_check` background goal check after tool-using turns; loads the active goal at startup so cross-session goals reach the system prompt; `Channel::delivers_between_turns` (#6881)
+- `zeph-config`, `zeph-llm`, `zeph-agent-feedback`: `[skills.learning] correction_confidence_calibration` curve applied by a shared `FeedbackGate` (breaking: `classify_feedback`/`JudgeDetector::evaluate` take `&FeedbackGate`) (#6880)
 - `zeph-skills`, `zeph-core`: opt-in skill execution state (`state:` frontmatter, `skill_state_patch`, `<skill_state>` section) for the replace context layout, with `zeph skill state schema` and `/skill state` (breaking: `SkillMeta.state`, `SkillConfigParams.skill_state_enabled`) (#6885)
 - `zeph-core`, `zeph-commands`: `/goal check [condition]` per-turn goal self-check (#6885)
 - `zeph`, `zeph-common`: `zeph doctor --fix` confirm-then-fix for key and vault file permissions (#6885)
