@@ -10823,6 +10823,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "zeph-common",
  "zeph-llm",
 ]
@@ -11225,6 +11226,7 @@ dependencies = [
  "tokio-stream",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
+ "tracing-subscriber",
  "url",
  "uuid",
  "wiremock",

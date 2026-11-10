@@ -15,6 +15,7 @@ zeph [OPTIONS] [COMMAND]
 | `init`  | Interactive configuration wizard (see [Configuration Wizard](../getting-started/wizard.md)) |
 | `agents` | Manage sub-agent definitions — list, show, create, edit, delete (see [Sub-Agent Orchestration](../advanced/sub-agents.md#managing-definitions)) |
 | `skill` | Manage external skills — install, remove, verify, trust (see [Skill Trust Levels](../advanced/skill-trust.md)) |
+| `doctor` | Preflight connectivity and configuration checks; `--fix` tightens vault file permissions (see below) |
 | `memory` | Export and import conversation history snapshots |
 | `project` | Project-level management — purge all local state (see below) |
 | `vault` | Manage the age-encrypted secrets vault (see [Secrets Management](security.md#age-vault)) |
@@ -102,6 +103,7 @@ Manage external skills. Installed skills are stored in `~/.config/zeph/skills/`.
 | `skill promote-heuristics [--skill <name>]` | Dry-run: show skills eligible for A6 heuristic → full promotion (requires `[skills.learning.heuristic_promotion_enabled = true]`) |
 | `skill search <query>` | Search the configured external registry by keyword (requires `[skills.registry] enabled = true`) |
 | `skill get <registry-id>` | Install a skill by registry ID returned by `skill search` (requires `[skills.registry] enabled = true`) |
+| `skill state schema <name>` | Print the `skill_state_patch` input schema derived from the skill's `state:` block (see [Skill Execution State](../guides/custom-skills.md#skill-execution-state)) |
 
 ```bash
 # Install from git
@@ -138,6 +140,25 @@ zeph skill get skills-sh/json-formatter
 # View registry configuration
 zeph init                              # or use --migrate-config to add the [skills.registry] section
 ```
+
+### `zeph doctor`
+
+Runs preflight checks for configuration, providers, memory backends, MCP servers, vault files and skills.
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Emit results as JSON (`schema_version` = 1) |
+| `--llm-timeout-secs <N>` | Timeout for LLM provider, SQLite and Qdrant probes (default: 10) |
+| `--mcp-timeout-secs <N>` | Timeout for MCP server probes (default: 5) |
+| `--fix` | Offer to fix vault file permissions; cannot be combined with `--json` |
+
+`--fix` runs after the report is printed. For each `vault.key_mode` or `vault.file_mode` failure (key or vault file readable by group or others) it asks for confirmation, then clears the group and other permission bits and re-runs that check. File contents are never changed, and nothing happens without a per-fix `y`. It requires an interactive terminal; otherwise it prints a notice and makes no changes. Unix only.
+
+```bash
+zeph doctor --fix
+```
+
+The exit code is 1 when any check still fails after fixes.
 
 ### `zeph plugin`
 

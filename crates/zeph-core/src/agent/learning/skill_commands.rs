@@ -21,6 +21,7 @@ impl<C: Channel> Agent<C> {
         let parts: Vec<&str> = args.split_whitespace().collect();
         match parts.first().copied() {
             Some("stats") => self.handle_skill_stats_as_string().await,
+            Some("state") => Ok(self.skill_state_report(parts.get(1).copied())),
             Some("versions") => self.handle_skill_versions_as_string(parts.get(1).copied()).await,
             Some("activate") => {
                 self.handle_skill_activate_as_string(

@@ -300,6 +300,32 @@ fn parse_auto_flags(args: &str) -> (String, bool, Option<u32>) {
     (text_words.join(" "), is_auto, turns)
 }
 
+impl<C: Channel + Send + 'static> Agent<C> {
+    /// Return the goal accounting handle, creating it on first use.
+    ///
+    /// # Errors
+    ///
+    /// Returns a user-facing message when goals are disabled or no database backend exists.
+    pub(super) fn ensure_goal_accounting(
+        &mut self,
+    ) -> Result<std::sync::Arc<crate::goal::GoalAccounting>, &'static str> {
+        if let Some(accounting) = &self.services.goal_accounting {
+            return Ok(std::sync::Arc::clone(accounting));
+        }
+        if !self.runtime.config.goals.enabled {
+            return Err("Goals are disabled. Set `[goals] enabled = true` in config.");
+        }
+        let pool = match self.services.memory.persistence.memory.as_ref() {
+            Some(m) => std::sync::Arc::new(m.sqlite().pool().clone()),
+            None => return Err("Goals require a database backend (memory not configured)."),
+        };
+        let store = std::sync::Arc::new(crate::goal::GoalStore::new(pool));
+        let accounting = std::sync::Arc::new(crate::goal::GoalAccounting::new(store));
+        self.services.goal_accounting = Some(std::sync::Arc::clone(&accounting));
+        Ok(accounting)
+    }
+}
+
 impl<C: Channel + Send + 'static> TrackingAccess for Agent<C> {
     // ----- /trajectory -----
 
@@ -319,30 +345,15 @@ impl<C: Channel + Send + 'static> TrackingAccess for Agent<C> {
         &'a mut self,
         args: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CommandError>> + Send + 'a>> {
-        // Extract all non-Send data synchronously before entering the async block.
-        if self.services.goal_accounting.is_none() {
-            if !self.runtime.config.goals.enabled {
-                return Box::pin(async {
-                    Ok("Goals are disabled. Set `[goals] enabled = true` in config.".to_owned())
-                });
-            }
-            let pool = match self.services.memory.persistence.memory.as_ref() {
-                Some(m) => std::sync::Arc::new(m.sqlite().pool().clone()),
-                None => {
-                    return Box::pin(async {
-                        Ok("Goals require a database backend (memory not configured).".to_owned())
-                    });
-                }
-            };
-            let store = std::sync::Arc::new(crate::goal::GoalStore::new(pool));
-            let accounting = std::sync::Arc::new(crate::goal::GoalAccounting::new(store));
-            self.services.goal_accounting = Some(accounting);
+        if let Some(condition) = super::goal_selfcheck::goal_check_args(args) {
+            return self.goal_check(condition);
         }
 
-        let accounting =
-            self.services.goal_accounting.clone().expect(
-                "invariant: goal_accounting is always Some at this point (initialized above)",
-            );
+        // Extract all non-Send data synchronously before entering the async block.
+        let accounting = match self.ensure_goal_accounting() {
+            Ok(accounting) => accounting,
+            Err(msg) => return Box::pin(async move { Ok(msg.to_owned()) }),
+        };
         let max_chars = self.runtime.config.goals.max_text_chars;
         let default_budget = self.runtime.config.goals.default_token_budget;
         let autonomous_enabled = self.runtime.config.goals.autonomous_enabled;
@@ -384,7 +395,7 @@ impl<C: Channel + Send + 'static> TrackingAccess for Agent<C> {
                     Ok(msg)
                 }
                 _ => Ok(
-                    "Unknown /goal subcommand. Try: create, pause, resume, complete, clear, status, list."
+                    "Unknown /goal subcommand. Try: create, pause, resume, complete, clear, status, list, check."
                         .to_owned(),
                 ),
             }

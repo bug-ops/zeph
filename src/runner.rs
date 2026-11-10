@@ -1136,6 +1136,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             json,
             llm_timeout_secs,
             mcp_timeout_secs,
+            fix,
         }) => {
             let config_path = resolve_config_path(cli.config.as_deref());
             let exit_code = crate::commands::doctor::run_doctor(
@@ -1146,6 +1147,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 cli.vault.as_deref(),
                 cli.vault_key.as_deref(),
                 cli.vault_path.as_deref(),
+                fix,
             )
             .await?;
             crate::tracing_init::exit_with_flush(tracing_guards, exit_code);

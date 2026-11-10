@@ -22,6 +22,7 @@ pub use durable_bootstrap::DurableKeyMaterial;
 pub mod error;
 mod experiment_cmd;
 pub(crate) mod focus;
+mod goal_selfcheck;
 mod graph_commands;
 mod heuristic_promotion;
 mod hooks_dispatch;
@@ -60,6 +61,7 @@ pub(crate) mod sidequest;
 mod skill_commands;
 mod skill_management;
 mod skill_reload;
+mod skill_state;
 pub mod slash_commands;
 pub mod speculative;
 pub(crate) mod state;
@@ -1367,6 +1369,7 @@ impl<C: Channel> Agent<C> {
         // The only turn entry: nested self-reflection re-enters `process_response` and must not
         // reset the turn-scoped runtime-note budget.
         self.begin_runtime_note_turn();
+        self.begin_skill_state_turn();
         let turn_had_error = if let Err(e) = self.process_response().await {
             // Detach any in-flight learning tasks before mutating message state.
             self.services.learning_engine.learning_tasks.detach_all();

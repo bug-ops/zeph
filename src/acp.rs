@@ -347,6 +347,8 @@ pub(crate) struct SharedAgentDeps {
     /// (#5827: previously left on hardcoded builder defaults for ACP sessions).
     semantic_scan: bool,
     semantic_scan_provider: String,
+    /// `config.skills.state.enabled`, wired into `SkillConfigParams` per session (spec 086).
+    skill_state_enabled: bool,
     /// `config.skills.trust`, wired into `Agent::with_trust_config` per session — mirrors
     /// `src/runner.rs` and `src/daemon.rs` (#5920: previously left on `TrustConfig::default()`
     /// for ACP sessions, silently ignoring the operator's configured trust levels).
@@ -1196,6 +1198,7 @@ async fn build_acp_deps(
         skill_disambiguate_provider: config.skills.disambiguate_provider.as_str().to_owned(),
         semantic_scan: config.skills.semantic_scan,
         semantic_scan_provider: config.skills.semantic_scan_provider.as_str().to_owned(),
+        skill_state_enabled: config.skills.state.enabled,
         trust_config: config.skills.trust.clone(),
         rl_routing_enabled: config.skills.rl_routing_enabled,
         rl_learning_rate: config.skills.rl_learning_rate,
@@ -1481,6 +1484,7 @@ where
     skill_disambiguate_provider: String,
     semantic_scan: bool,
     semantic_scan_provider: String,
+    skill_state_enabled: bool,
     trust_config: zeph_core::config::TrustConfig,
     trust_snapshot:
         std::sync::Arc<RwLock<std::collections::HashMap<String, zeph_core::SkillTrustSnapshot>>>,
@@ -1560,6 +1564,7 @@ where
         disambiguate_provider_name: deps.skill_disambiguate_provider,
         semantic_scan: deps.semantic_scan,
         semantic_scan_provider_name: deps.semantic_scan_provider,
+        skill_state_enabled: deps.skill_state_enabled,
     })
     .with_trust_config(deps.trust_config)
     .with_trust_snapshot(deps.trust_snapshot)
@@ -1647,6 +1652,7 @@ async fn spawn_acp_agent(
     let skill_disambiguate_provider = d.skill_disambiguate_provider.clone();
     let semantic_scan = d.semantic_scan;
     let semantic_scan_provider = d.semantic_scan_provider.clone();
+    let skill_state_enabled = d.skill_state_enabled;
     let tool_executor = Arc::clone(&d.tool_executor);
     let clock = Arc::clone(&d.clock);
     let permission_policy = d.permission_policy.clone();
@@ -2143,6 +2149,7 @@ async fn spawn_acp_agent(
         skill_disambiguate_provider,
         semantic_scan,
         semantic_scan_provider,
+        skill_state_enabled,
         trust_config: d.trust_config.clone(),
         trust_snapshot: Arc::clone(&trust_snapshot),
         turn_trust_floor: turn_trust_floor.clone(),
@@ -5540,6 +5547,7 @@ mod tests {
             skill_disambiguate_provider: config.skills.disambiguate_provider.as_str().to_owned(),
             semantic_scan: config.skills.semantic_scan,
             semantic_scan_provider: config.skills.semantic_scan_provider.as_str().to_owned(),
+            skill_state_enabled: config.skills.state.enabled,
             trust_config: config.skills.trust.clone(),
             trust_snapshot: Arc::new(RwLock::new(std::collections::HashMap::new())),
             turn_trust_floor: zeph_common::TurnTrustFloor::default(),

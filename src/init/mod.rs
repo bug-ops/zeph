@@ -77,6 +77,7 @@ pub(crate) struct WizardState {
     pub(crate) scheduler_tick_interval_secs: u64,
     pub(crate) scheduler_max_tasks: usize,
     pub(crate) skills_registry_enabled: bool,
+    pub(crate) skill_state_enabled: bool,
     pub(crate) search_enabled: bool,
     pub(crate) daemon_enabled: bool,
     pub(crate) daemon_host: String,
@@ -435,6 +436,7 @@ impl Default for WizardState {
             scheduler_tick_interval_secs: 0,
             scheduler_max_tasks: 0,
             skills_registry_enabled: false,
+            skill_state_enabled: false,
             search_enabled: false,
             daemon_enabled: false,
             daemon_host: String::new(),
@@ -1239,6 +1241,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         security: SchedulerSecurityConfig::default(),
     };
 
+    config.skills.state.enabled = state.skill_state_enabled;
     config.skills.registry = zeph_core::config::RegistryConfig {
         enabled: state.skills_registry_enabled,
         ..zeph_core::config::RegistryConfig::default()
@@ -1689,6 +1692,14 @@ fn step_skills_registry(state: &mut WizardState) -> anyhow::Result<()> {
              config.toml. This wizard never prompts for the raw token."
         );
     }
+
+    state.skill_state_enabled = Confirm::new()
+        .with_prompt(
+            "Enable skill execution state (bounded, opt-in per skill via a `state:` block in \
+             SKILL.md; inert under durable turns and the append context layout)?",
+        )
+        .default(false)
+        .interact()?;
 
     println!();
     Ok(())

@@ -34,6 +34,7 @@ into the LLM context when the skill is matched.
 | `compatibility` | No | Runtime requirements (e.g., "requires curl") |
 | `allowed-tools` | No | Space-separated tool names this skill can use |
 | `x-requires-secrets` | No | Comma-separated secret names the skill needs (see below) |
+| `state` | No | Typed, bounded execution state schema (see [Skill Execution State](#skill-execution-state)) |
 
 ### Secret-Gated Skills
 
@@ -108,6 +109,45 @@ The `extensions` field is optional and ignored if not recognized. Valid extensio
 - `label` — display name
 
 If the `extensions` block fails to parse (malformed YAML/TOML), the skill loads normally but extensions are silently skipped — skill functionality is never blocked by extension metadata errors.
+
+### Skill Execution State
+
+Long-running skills that read many files or command outputs can declare a small, fixed `state:` schema in the frontmatter. While the skill is active, the model records progress through the built-in `skill_state_patch` tool instead of re-reading earlier tool output, and tool results already absorbed into the state are cleared from context. A skill without a `state:` block is unaffected.
+
+```markdown
+---
+name: my-audit
+description: Audit every item in a directory and report.
+state:
+  phase:
+    type: enum
+    values: [listing, reporting]
+    default: listing
+  done:
+    type: list
+    items: { type: string, max_len: 200 }
+    max_items: 50
+---
+```
+
+Supported field types are `string` (`max_len`), `integer` (`min`, `max`), `enum` (`values`), `list` (`items`, `max_items`) and `object` (`fields`). Fields without a bound get defaults (1024 characters, 64 items); field names match `[a-z_][a-z0-9_]{0,63}`, nesting is limited to 4 levels, and the rendered state is capped at 16 KiB. An invalid patch is rejected with an error and the previous state stays unchanged.
+
+The current state is shown to the model in a `<skill_state>` section of the per-turn runtime note. The bundled `skill-audit` skill is a working example.
+
+The feature is opt-in and off by default:
+
+```toml
+[skills.state]
+enabled = true
+```
+
+It works only with the `replace` context layout (see [Context Layout](../advanced/context.md#context-layout-and-prompt-caching)); under `append` layout and during durable agent turns it is inert. Inspect it with:
+
+```bash
+zeph skill state schema skill-audit   # print the skill_state_patch input schema
+```
+
+or `/skill state [name]` in a session to print the live state values.
 
 ### Channel Allowlist
 

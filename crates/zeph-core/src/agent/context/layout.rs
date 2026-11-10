@@ -164,6 +164,11 @@ impl LayoutState {
         self.pinned
     }
 
+    /// `true` when the conversation is pinned to the `replace` layout.
+    pub(crate) fn is_replace(&self) -> bool {
+        matches!(self.pinned, Some(PinnedLayout::Replace))
+    }
+
     /// `true` when the conversation is pinned to the `append` layout.
     pub(crate) fn is_append(&self) -> bool {
         self.pinned.is_some_and(PinnedLayout::is_append)

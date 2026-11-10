@@ -179,6 +179,11 @@ subagent_skill_token_budget = 12000
 # Minimum absolute score a skill must reach to be injected into context (0.0-1.0)
 # min_injection_score = 0.20
 
+# Typed skill execution state (spec 086, #6766). A skill must also declare a `state:` block
+# in its SKILL.md. Inert under durable agent turns and the append context layout.
+[skills.state]
+enabled = false
+
 [skills.learning]
 # Enable self-learning skill improvement (feature enabled by default, runtime toggle)
 enabled = false

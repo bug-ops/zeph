@@ -16,7 +16,7 @@ use crate::{CommandError, CommandHandler, CommandOutput, SlashCategory};
 /// Load, manage, and create skills.
 ///
 /// Subcommands: `stats`, `versions`, `activate`, `approve`, `reset`, `trust`,
-/// `block`, `unblock`, `install`, `remove`, `create`, `scan`, `reject`.
+/// `block`, `unblock`, `install`, `remove`, `create`, `scan`, `reject`, `state`.
 pub struct SkillCommand;
 
 impl CommandHandler<CommandContext<'_>> for SkillCommand {

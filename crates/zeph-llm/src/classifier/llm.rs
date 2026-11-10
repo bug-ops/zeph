@@ -45,6 +45,120 @@ pub struct FeedbackVerdict {
     pub reasoning: String,
 }
 
+/// Origin of a feedback verdict recorded by [`trace_feedback_verdict`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedbackVerdictSource {
+    /// `JudgeDetector` in `zeph-agent-feedback`.
+    Judge,
+    /// [`LlmClassifier`].
+    LlmClassifier,
+}
+
+impl FeedbackVerdictSource {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Judge => "judge",
+            Self::LlmClassifier => "llm_classifier",
+        }
+    }
+}
+
+/// Outcome of the confidence-threshold gate for one feedback verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedbackGateDecision {
+    /// The model did not flag a correction.
+    NotCorrection,
+    /// A correction at or above the threshold.
+    Passed,
+    /// A correction below the threshold, downgraded to neutral.
+    Suppressed,
+}
+
+impl FeedbackGateDecision {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotCorrection => "not_correction",
+            Self::Passed => "passed",
+            Self::Suppressed => "suppressed",
+        }
+    }
+
+    /// Decision for a verdict that passed through the gate without being suppressed.
+    ///
+    /// Returns [`Self::Passed`] for a correction and [`Self::NotCorrection`] otherwise, so the
+    /// gate sites never re-derive that predicate themselves.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::classifier::llm::FeedbackGateDecision;
+    ///
+    /// assert_eq!(FeedbackGateDecision::unsuppressed(true), FeedbackGateDecision::Passed);
+    /// assert_eq!(FeedbackGateDecision::unsuppressed(false), FeedbackGateDecision::NotCorrection);
+    /// ```
+    #[must_use]
+    pub const fn unsuppressed(is_correction: bool) -> Self {
+        if is_correction {
+            Self::Passed
+        } else {
+            Self::NotCorrection
+        }
+    }
+}
+
+// Map a model-reported kind to the closed telemetry label set; unknown kinds become "other"
+// so raw model text is never logged.
+fn normalized_feedback_kind(kind: &str) -> &'static str {
+    match kind.trim().to_lowercase().replace(' ', "_").as_str() {
+        "explicit_rejection" => "explicit_rejection",
+        "alternative_request" => "alternative_request",
+        "repetition" => "repetition",
+        "self_correction" => "self_correction",
+        "neutral" => "neutral",
+        _ => "other",
+    }
+}
+
+/// Emit one `feedback_calibration` event describing a feedback verdict and its gate decision.
+///
+/// Records raw (unclamped) and clamped confidence next to the threshold so that offline
+/// review can calibrate the self-reported confidence gate. No message text, reasoning or raw
+/// model kind string is logged.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::classifier::llm::{
+///     FeedbackGateDecision, FeedbackVerdictSource, trace_feedback_verdict,
+/// };
+///
+/// trace_feedback_verdict(
+///     FeedbackVerdictSource::Judge,
+///     "explicit_rejection",
+///     0.4,
+///     0.6,
+///     FeedbackGateDecision::Suppressed,
+/// );
+/// ```
+pub fn trace_feedback_verdict(
+    source: FeedbackVerdictSource,
+    kind: &str,
+    raw_confidence: f32,
+    threshold: f32,
+    decision: FeedbackGateDecision,
+) {
+    tracing::info!(
+        target: "feedback_calibration",
+        source = source.as_str(),
+        kind = normalized_feedback_kind(kind),
+        raw_confidence,
+        confidence = raw_confidence.clamp(0.0, 1.0),
+        threshold,
+        decision = decision.as_str(),
+        "feedback verdict gate"
+    );
+}
+
 /// Zero-shot LLM-backed feedback/correction classifier.
 ///
 /// Wraps an `AnyProvider` and calls the judge prompt to classify whether a user
@@ -121,6 +235,13 @@ impl LlmClassifier {
         // Clamp and apply confidence threshold — same logic as JudgeDetector::evaluate.
         let confidence = verdict.confidence.clamp(0.0, 1.0);
         if verdict.is_correction && confidence < confidence_threshold {
+            trace_feedback_verdict(
+                FeedbackVerdictSource::LlmClassifier,
+                &verdict.kind,
+                verdict.confidence,
+                confidence_threshold,
+                FeedbackGateDecision::Suppressed,
+            );
             return Ok(FeedbackVerdict {
                 is_correction: false,
                 kind: "neutral".into(),
@@ -129,6 +250,13 @@ impl LlmClassifier {
             });
         }
 
+        trace_feedback_verdict(
+            FeedbackVerdictSource::LlmClassifier,
+            &verdict.kind,
+            verdict.confidence,
+            confidence_threshold,
+            FeedbackGateDecision::unsuppressed(verdict.is_correction),
+        );
         Ok(FeedbackVerdict {
             confidence,
             ..verdict
@@ -281,5 +409,92 @@ mod tests {
 
         assert!(!result.is_correction);
         assert_eq!(result.kind, "neutral");
+    }
+
+    #[derive(Clone, Default)]
+    struct LogBuf(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuf {
+        type Writer = LogBuf;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    async fn calibration_log(verdict_json: &str, threshold: f32) -> String {
+        let buf = LogBuf::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let classifier = LlmClassifier::new(mock_provider(verdict_json));
+        classifier
+            .classify_feedback("secret user text", "assistant text", threshold)
+            .await
+            .unwrap();
+        String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn calibration_event_passed() {
+        let log = calibration_log(
+            r#"{"is_correction":true,"kind":"explicit_rejection","confidence":0.9,"reasoning":"private reasoning"}"#,
+            0.6,
+        )
+        .await;
+        assert_eq!(log.matches("feedback_calibration").count(), 1, "{log}");
+        assert!(log.contains("decision=\"passed\""), "{log}");
+        assert!(log.contains("source=\"llm_classifier\""), "{log}");
+        assert!(log.contains("kind=\"explicit_rejection\""), "{log}");
+        assert!(!log.contains("secret user text"));
+        assert!(!log.contains("private reasoning"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn calibration_event_suppressed_logs_raw_and_clamped() {
+        let log = calibration_log(
+            r#"{"is_correction":true,"kind":"Weird Kind","confidence":-0.5}"#,
+            0.6,
+        )
+        .await;
+        assert_eq!(log.matches("feedback_calibration").count(), 1, "{log}");
+        assert!(log.contains("decision=\"suppressed\""), "{log}");
+        assert!(log.contains("kind=\"other\""), "{log}");
+        assert!(log.contains("raw_confidence=-0.5"), "{log}");
+        assert!(log.contains("confidence=0.0"), "{log}");
+        assert!(!log.contains("Weird"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn calibration_event_not_correction() {
+        let log = calibration_log(
+            r#"{"is_correction":false,"kind":"neutral","confidence":0.1}"#,
+            0.6,
+        )
+        .await;
+        assert_eq!(log.matches("feedback_calibration").count(), 1, "{log}");
+        assert!(log.contains("decision=\"not_correction\""), "{log}");
+    }
+
+    #[test]
+    fn normalized_feedback_kind_is_closed_set() {
+        assert_eq!(
+            normalized_feedback_kind(" Explicit Rejection "),
+            "explicit_rejection"
+        );
+        assert_eq!(normalized_feedback_kind("neutral"), "neutral");
+        assert_eq!(normalized_feedback_kind("anything else"), "other");
     }
 }

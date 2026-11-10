@@ -30,9 +30,10 @@ pub use features::{
     migrate_orchestration_asset_sensitivity, migrate_orchestration_command_config,
     migrate_orchestration_ensemble, migrate_orchestration_idle_timeout,
     migrate_orchestration_persistence, migrate_orchestration_whole_plan_verifier_timeout,
-    migrate_rate_limit_advisory, migrate_skill_trust_require_check, migrate_skills_registry,
-    migrate_telegram_expandable_blockquote_config, migrate_tui_delights, migrate_tui_mouse,
-    migrate_tui_panel_sizing, migrate_tui_theme_config, migrate_tui_theme_defaults,
+    migrate_rate_limit_advisory, migrate_skill_state_config, migrate_skill_trust_require_check,
+    migrate_skills_registry, migrate_telegram_expandable_blockquote_config, migrate_tui_delights,
+    migrate_tui_mouse, migrate_tui_panel_sizing, migrate_tui_theme_config,
+    migrate_tui_theme_defaults,
 };
 /// Crate-internal: re-exported only so `migrate/tests.rs` can reach it via `super::*`.
 #[cfg(test)]
@@ -796,9 +797,9 @@ use steps::{
     MigrateSecretMaskingConfig, MigrateServeConfig, MigrateSessionPersistProviderOverrides,
     MigrateSessionPersistenceConfig, MigrateSessionProviderPersistence, MigrateSessionRecapConfig,
     MigrateSessionResumeConfig, MigrateShadowSentinelConfig, MigrateShellCheckpointsConfig,
-    MigrateShellRiskChainWindowTurns, MigrateShellTransactional, MigrateSkillTrustRequireCheck,
-    MigrateSkillsRegistry, MigrateSttToProvider, MigrateSupervisorConfig,
-    MigrateTelegramExpandableBlockquoteConfig, MigrateTelemetryConfig,
+    MigrateShellRiskChainWindowTurns, MigrateShellTransactional, MigrateSkillStateConfig,
+    MigrateSkillTrustRequireCheck, MigrateSkillsRegistry, MigrateSttToProvider,
+    MigrateSupervisorConfig, MigrateTelegramExpandableBlockquoteConfig, MigrateTelemetryConfig,
     MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse,
     MigrateTuiPanelSizing, MigrateTuiThemeConfig, MigrateTuiThemeDefaults,
     MigrateUtilityHighGainTools, MigrateVigilConfig, MigrateWorktreeConfig,
@@ -1040,6 +1041,8 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateClaudeCompactionTrigger),
             // Step 111 — add a [memory] context_layout advisory block (spec 088, #6846)
             Box::new(MigrateMemoryContextLayout),
+            // Step 112 — add an advisory [skills.state] block (spec 086, #6766)
+            Box::new(MigrateSkillStateConfig),
         ]
     });
 

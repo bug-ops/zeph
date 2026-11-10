@@ -157,8 +157,8 @@ pub struct SkillExtensions {
 /// This function never panics and never propagates errors — failures are always `None`.
 #[must_use]
 pub fn parse_extensions(yaml_str: &str) -> Option<SkillExtensions> {
-    let block = extract_extensions_block(yaml_str)?;
-    if block.len() > 8 * 1024 {
+    let block = extract_block(yaml_str, "extensions")?;
+    if block.len() > MAX_FRONTMATTER_BLOCK_BYTES {
         tracing::warn!("'extensions:' block exceeds 8 KiB, skipping");
         return None;
     }
@@ -171,11 +171,14 @@ pub fn parse_extensions(yaml_str: &str) -> Option<SkillExtensions> {
     }
 }
 
-/// Pull the indented content under `extensions:` from a raw YAML frontmatter string.
+/// Byte cap on an optional frontmatter sub-block (`extensions:`, `state:`) before it is parsed.
+pub(crate) const MAX_FRONTMATTER_BLOCK_BYTES: usize = 8 * 1024;
+
+/// Pull the indented content under the top-level `key:` from a raw YAML frontmatter string.
 ///
-/// Returns a YAML string suitable for deserializing into [`SkillExtensions`], or `None`
-/// if the `extensions:` key is not present.
-fn extract_extensions_block(yaml_str: &str) -> Option<String> {
+/// Returns the de-indented block, or `None` if the key is absent or has no children.
+pub(crate) fn extract_block(yaml_str: &str, key: &str) -> Option<String> {
+    let header = format!("{key}:");
     let mut in_block = false;
     let mut lines = Vec::new();
 
@@ -189,7 +192,7 @@ fn extract_extensions_block(yaml_str: &str) -> Option<String> {
                 // A non-indented line means we've exited the block.
                 break;
             }
-        } else if line.trim_start() == "extensions:" || line.starts_with("extensions:") {
+        } else if line.trim_start() == header || line.starts_with(&header) {
             in_block = true;
         }
     }

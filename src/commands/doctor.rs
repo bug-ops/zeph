@@ -52,16 +52,39 @@ pub(crate) struct CheckResult {
     pub detail: String,
     /// Wall-clock time for this check in milliseconds.
     pub elapsed_ms: u64,
+    /// Remediation offered by `--fix`; set only on a mode-violation failure.
+    #[serde(skip)]
+    pub fix: Option<PermissionFix>,
+}
+
+/// The only remediation `zeph doctor --fix` can perform: restrict a file to owner-only access.
+///
+/// It carries a path and nothing else, so a fix can never express a content or vault change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+// Only read by the Unix-only `--fix` flow.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) struct PermissionFix {
+    pub path: PathBuf,
 }
 
 impl CheckResult {
-    pub(crate) fn ok(name: impl Into<String>, detail: impl Into<String>, elapsed_ms: u64) -> Self {
+    fn new(
+        status: CheckStatus,
+        name: impl Into<String>,
+        detail: impl Into<String>,
+        elapsed_ms: u64,
+    ) -> Self {
         Self {
             name: name.into(),
-            status: CheckStatus::Ok,
+            status,
             detail: scrub_content(&detail.into()).into_owned(),
             elapsed_ms,
+            fix: None,
         }
+    }
+
+    pub(crate) fn ok(name: impl Into<String>, detail: impl Into<String>, elapsed_ms: u64) -> Self {
+        Self::new(CheckStatus::Ok, name, detail, elapsed_ms)
     }
 
     pub(crate) fn warn(
@@ -69,12 +92,7 @@ impl CheckResult {
         detail: impl Into<String>,
         elapsed_ms: u64,
     ) -> Self {
-        Self {
-            name: name.into(),
-            status: CheckStatus::Warn,
-            detail: scrub_content(&detail.into()).into_owned(),
-            elapsed_ms,
-        }
+        Self::new(CheckStatus::Warn, name, detail, elapsed_ms)
     }
 
     pub(crate) fn fail(
@@ -82,12 +100,15 @@ impl CheckResult {
         detail: impl Into<String>,
         elapsed_ms: u64,
     ) -> Self {
-        Self {
-            name: name.into(),
-            status: CheckStatus::Fail,
-            detail: scrub_content(&detail.into()).into_owned(),
-            elapsed_ms,
-        }
+        Self::new(CheckStatus::Fail, name, detail, elapsed_ms)
+    }
+
+    #[cfg(unix)]
+    fn with_fix(mut self, path: &str) -> Self {
+        self.fix = Some(PermissionFix {
+            path: PathBuf::from(path),
+        });
+        self
     }
 }
 
@@ -424,6 +445,7 @@ fn check_vault_key_mode(key_path: &str) -> CheckResult {
                     ),
                     elapsed_ms(start),
                 )
+                .with_fix(key_path)
             } else {
                 CheckResult::ok(
                     "vault.key_mode",
@@ -456,6 +478,7 @@ fn check_vault_file_mode(vault_path: &str, check_name: &str) -> CheckResult {
                     ),
                     elapsed_ms(start),
                 )
+                .with_fix(vault_path)
             } else {
                 CheckResult::ok(
                     check_name,
@@ -922,7 +945,7 @@ fn check_url_scheme() -> CheckResult {
 /// Split out from [`run_doctor`] so the full check pipeline — including the `--vault-path`/
 /// `--vault-key` override resolution shared by checks 2-4 and 17 (#6479) — can be exercised
 /// end-to-end in tests against an in-memory [`DoctorReport`], without needing to capture the
-/// process's real stdout (`run_doctor`'s [`finish`] writes there directly).
+/// process's real stdout (`run_doctor`'s [`render`] writes there directly).
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 async fn build_doctor_report(
     config_path: &Path,
@@ -1093,6 +1116,7 @@ async fn build_doctor_report(
             status,
             detail: format!("{total} total SKILL.md file(s)"),
             elapsed_ms: elapsed_ms(start),
+            fix: None,
         });
     }
 
@@ -1154,8 +1178,9 @@ pub(crate) async fn run_doctor(
     vault_override: Option<&str>,
     vault_key_override: Option<&Path>,
     vault_path_override: Option<&Path>,
+    fix: bool,
 ) -> anyhow::Result<i32> {
-    let report = Box::pin(build_doctor_report(
+    let mut report = Box::pin(build_doctor_report(
         config_path,
         llm_timeout_secs,
         mcp_timeout_secs,
@@ -1164,10 +1189,14 @@ pub(crate) async fn run_doctor(
         vault_path_override,
     ))
     .await;
-    finish(&report, json)
+    render(&report, json)?;
+    if fix {
+        offer_fixes(&mut report)?;
+    }
+    Ok(i32::from(report.has_failures()))
 }
 
-fn finish(report: &DoctorReport, json: bool) -> anyhow::Result<i32> {
+fn render(report: &DoctorReport, json: bool) -> anyhow::Result<()> {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
     if json {
@@ -1175,7 +1204,99 @@ fn finish(report: &DoctorReport, json: bool) -> anyhow::Result<i32> {
     } else {
         report.render_plain(&mut handle)?;
     }
-    Ok(i32::from(report.has_failures()))
+    Ok(())
+}
+
+#[cfg(unix)]
+fn offer_fixes(report: &mut DoctorReport) -> io::Result<()> {
+    use std::io::IsTerminal as _;
+
+    if !report.results.iter().any(|r| r.fix.is_some()) {
+        return Ok(());
+    }
+    let mut out = io::stdout().lock();
+    if !io::stdin().is_terminal() || !out.is_terminal() {
+        return writeln!(
+            out,
+            "\n--fix needs an interactive terminal; no changes made."
+        );
+    }
+    writeln!(out)?;
+    run_fixes(report, &mut out, |prompt| {
+        dialoguer::Confirm::new()
+            .with_prompt(prompt)
+            .default(false)
+            .interact()
+            .unwrap_or(false)
+    })
+}
+
+#[cfg(not(unix))]
+fn offer_fixes(_report: &mut DoctorReport) -> io::Result<()> {
+    writeln!(
+        io::stdout(),
+        "\n--fix is only supported on Unix; no changes made."
+    )
+}
+
+/// Asks `confirm` once per offered fix, applies the confirmed ones and re-runs the check.
+#[cfg(unix)]
+fn run_fixes(
+    report: &mut DoctorReport,
+    w: &mut impl Write,
+    mut confirm: impl FnMut(&str) -> bool,
+) -> io::Result<()> {
+    for result in &mut report.results {
+        let Some(fix) = result.fix.clone() else {
+            continue;
+        };
+        let Some(path) = fix.path.to_str() else {
+            continue;
+        };
+        // The real path is shown on purpose: the user confirms a change to this exact file.
+        let shown = fix.path.display();
+        let prompt = format!(
+            "{}: restrict {shown} to owner-only (clears group/other permission bits)?",
+            result.name
+        );
+        if !confirm(&prompt) {
+            writeln!(w, "[SKIP] {}: left unchanged", result.name)?;
+            continue;
+        }
+        match apply_fix(&fix) {
+            Ok(()) => {
+                *result = recheck_permission(&result.name, path);
+                writeln!(
+                    w,
+                    "[{}] {}: {}",
+                    result.status.label(),
+                    result.name,
+                    result.detail
+                )?;
+            }
+            Err(reason) => writeln!(w, "[FAIL] {}: {reason}", result.name)?,
+        }
+    }
+    writeln!(w, "{} check(s) still failing.", report.failure_count())
+}
+
+#[cfg(unix)]
+fn apply_fix(fix: &PermissionFix) -> Result<(), String> {
+    zeph_common::fs_secure::restrict_to_owner(&fix.path)
+        .map(|_| ())
+        .map_err(|e| match e.kind() {
+            io::ErrorKind::InvalidInput => "not a regular file; fix manually".to_owned(),
+            _ => e.to_string(),
+        })
+}
+
+#[cfg(unix)]
+fn recheck_permission(name: &str, path: &str) -> CheckResult {
+    if name == "vault.key_mode" {
+        check_vault_key_mode(path)
+    } else {
+        check_vault_file_mode(path, name)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1196,6 +1317,7 @@ mod tests {
                     status: *status,
                     detail: detail.to_string(),
                     elapsed_ms: 1,
+                    fix: None,
                 })
                 .collect(),
         }
@@ -1720,5 +1842,124 @@ mod tests {
         std::fs::write(sub.join("SKILL.md"), "").unwrap();
         std::fs::write(dir.path().join("SKILL.md"), "").unwrap();
         assert_eq!(count_skill_files(dir.path()), 2);
+    }
+
+    #[test]
+    fn doctor_fix_flag_parses_and_conflicts_with_json() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["zeph", "doctor", "--fix"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Doctor { fix: true, .. })
+        ));
+        assert!(Cli::try_parse_from(["zeph", "doctor", "--fix", "--json"]).is_err());
+    }
+
+    #[cfg(unix)]
+    mod fix {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use super::*;
+
+        fn key_file(dir: &Path, mode: u32) -> PathBuf {
+            let p = dir.join("key.txt");
+            std::fs::write(&p, "key-content").unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+            p
+        }
+
+        fn mode_of(p: &Path) -> u32 {
+            std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+        }
+
+        fn report_for(result: CheckResult) -> DoctorReport {
+            DoctorReport {
+                results: vec![result],
+                elapsed_ms: 0,
+            }
+        }
+
+        #[test]
+        fn fix_is_attached_only_on_mode_violation() {
+            let dir = tempfile::tempdir().unwrap();
+            let p = key_file(dir.path(), 0o640);
+            let bad = check_vault_key_mode(p.to_str().unwrap());
+            assert_eq!(bad.fix, Some(PermissionFix { path: p.clone() }));
+
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(check_vault_key_mode(p.to_str().unwrap()).fix.is_none());
+
+            let missing = dir.path().join("absent");
+            let err = check_vault_key_mode(missing.to_str().unwrap());
+            assert_eq!(err.status, CheckStatus::Fail);
+            assert!(err.fix.is_none());
+            let err = check_vault_file_mode(
+                dir.path().join("absent2").to_str().unwrap(),
+                "vault.file_mode",
+            );
+            assert!(err.fix.is_none());
+        }
+
+        #[test]
+        fn confirmed_fix_restricts_mode_keeps_content_and_rechecks() {
+            let dir = tempfile::tempdir().unwrap();
+            let p = key_file(dir.path(), 0o644);
+            let mut report = report_for(check_vault_key_mode(p.to_str().unwrap()));
+            let mut out = Vec::new();
+            let mut prompts = Vec::new();
+            run_fixes(&mut report, &mut out, |prompt| {
+                prompts.push(prompt.to_owned());
+                true
+            })
+            .unwrap();
+
+            assert!(prompts[0].contains(p.to_str().unwrap()), "{}", prompts[0]);
+            assert_eq!(mode_of(&p), 0o600);
+            assert_eq!(std::fs::read_to_string(&p).unwrap(), "key-content");
+            assert_eq!(report.results[0].status, CheckStatus::Ok);
+            assert!(!report.has_failures());
+        }
+
+        #[test]
+        fn declined_fix_changes_nothing() {
+            let dir = tempfile::tempdir().unwrap();
+            let p = key_file(dir.path(), 0o644);
+            let mut report = report_for(check_vault_file_mode(
+                p.to_str().unwrap(),
+                "vault.file_mode",
+            ));
+            let mut out = Vec::new();
+            run_fixes(&mut report, &mut out, |_| false).unwrap();
+
+            assert_eq!(mode_of(&p), 0o644);
+            assert!(report.has_failures());
+            assert!(String::from_utf8(out).unwrap().contains("[SKIP]"));
+        }
+
+        #[test]
+        fn symlink_is_refused_and_target_untouched() {
+            let dir = tempfile::tempdir().unwrap();
+            let target = key_file(dir.path(), 0o644);
+            let link = dir.path().join("link.txt");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            let mut report = report_for(check_vault_key_mode(link.to_str().unwrap()));
+            let mut out = Vec::new();
+            run_fixes(&mut report, &mut out, |_| true).unwrap();
+
+            assert_eq!(mode_of(&target), 0o644);
+            assert!(report.has_failures());
+            assert!(String::from_utf8(out).unwrap().contains("fix manually"));
+        }
+
+        #[test]
+        fn serialized_check_never_carries_the_fix() {
+            let dir = tempfile::tempdir().unwrap();
+            let p = key_file(dir.path(), 0o644);
+            let report = report_for(check_vault_key_mode(p.to_str().unwrap()));
+            let value = serde_json::to_value(&report.results[0]).unwrap();
+            assert!(value.get("fix").is_none());
+        }
     }
 }

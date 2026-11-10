@@ -74,6 +74,7 @@ impl<C: Channel> Agent<C> {
             .clone_into(&mut self.services.skill.disambiguate_provider_name);
         self.services.skill.generation_timeout_ms = config.skills.generation_timeout_ms;
         self.services.skill.semantic_scan = config.skills.semantic_scan;
+        self.services.skill.state_enabled = config.skills.state.enabled;
         config
             .skills
             .semantic_scan_provider

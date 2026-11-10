@@ -10,6 +10,31 @@ compatibility: Requires access to skills directory
 metadata:
   author: zeph
   version: "1.0"
+state:
+  phase:
+    type: enum
+    values: [listing, auditing, reporting]
+    default: listing
+  pending:
+    type: list
+    items: { type: string }
+    default: []
+  audited:
+    type: list
+    items:
+      type: object
+      fields:
+        skill:    { type: string }
+        spec:     { type: enum, values: [pass, warn, fail] }
+        security: { type: enum, values: [safe, warn, fail] }
+        rating:   { type: integer, min: 1, max: 10 }
+        reason:   { type: string, max_len: 200 }
+    default: []
+  fixes:
+    type: list
+    items: { type: string }
+    max_items: 50
+    default: []
 ---
 # Skill Audit
 
@@ -43,6 +68,8 @@ cat .zeph/skills/SKILLNAME/SKILL.md
 ```
 
 Check these rules for each skill:
+
+If the `skill_state_patch` tool is available, record each verdict with it after reading a batch of skills: set `phase`, `pending`, append to `audited` (send the full updated list) and `fixes`. Calling it declares your previous tool batch fully recorded, so its raw output is dropped from context. Build the report from the recorded state.
 
 ### Spec compliance
 

@@ -126,8 +126,8 @@ use super::{
     migrate_session_persistence_config, migrate_session_provider_persistence,
     migrate_session_recap_config, migrate_session_resume_config, migrate_shadow_sentinel_config,
     migrate_shell_checkpoints_config, migrate_shell_risk_chain_window_turns,
-    migrate_shell_transactional, migrate_skill_trust_require_check, migrate_skills_registry,
-    migrate_stt_to_provider, migrate_supervisor_config,
+    migrate_shell_transactional, migrate_skill_state_config, migrate_skill_trust_require_check,
+    migrate_skills_registry, migrate_stt_to_provider, migrate_supervisor_config,
     migrate_telegram_expandable_blockquote_config, migrate_telemetry_config,
     migrate_tools_compression_config, migrate_trace_metadata, migrate_tui_delights,
     migrate_tui_mouse, migrate_tui_panel_sizing, migrate_tui_theme_config,
@@ -1433,5 +1433,17 @@ impl Migration for MigrateMemoryContextLayout {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_memory_context_layout(toml_src)
+    }
+}
+
+/// Step 112 — add an advisory `[skills.state]` block (spec 086, issue #6766).
+pub(super) struct MigrateSkillStateConfig;
+impl Migration for MigrateSkillStateConfig {
+    fn name(&self) -> &'static str {
+        "migrate_skill_state_config"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_skill_state_config(toml_src)
     }
 }

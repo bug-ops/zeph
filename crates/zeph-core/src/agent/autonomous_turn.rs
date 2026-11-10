@@ -227,7 +227,7 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Resolve the configured supervisor provider and build a [`GoalSupervisor`].
-    fn build_supervisor(&self) -> GoalSupervisor {
+    pub(super) fn build_supervisor(&self) -> GoalSupervisor {
         let provider = {
             let name = self
                 .runtime
@@ -238,21 +238,30 @@ impl<C: Channel> Agent<C> {
                 .map(zeph_config::ProviderName::as_str);
             let snapshot = self.runtime.providers.provider_config_snapshot.as_ref();
             match (name, snapshot) {
-                (Some(n), Some(snap)) => self
-                    .runtime
-                    .providers
-                    .provider_pool
-                    .iter()
-                    .find(|e| e.name.as_deref() == Some(n))
-                    .and_then(|entry| {
-                        crate::provider_factory::build_provider_for_switch(
-                            entry,
-                            snap,
-                            self.services.security.secret_registry.as_ref(),
-                        )
-                        .ok()
-                    })
-                    .unwrap_or_else(|| self.provider.clone()),
+                (Some(n), Some(snap)) => {
+                    let entry = self
+                        .runtime
+                        .providers
+                        .provider_pool
+                        .iter()
+                        .find(|e| e.name.as_deref() == Some(n));
+                    if entry.is_none() {
+                        tracing::debug!(
+                            provider = n,
+                            "goal supervisor provider not found, using the main provider"
+                        );
+                    }
+                    entry
+                        .and_then(|entry| {
+                            crate::provider_factory::build_provider_for_switch(
+                                entry,
+                                snap,
+                                self.services.security.secret_registry.as_ref(),
+                            )
+                            .ok()
+                        })
+                        .unwrap_or_else(|| self.provider.clone())
+                }
                 _ => self.provider.clone(),
             }
         };
@@ -261,7 +270,7 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Build a bounded summary of recent conversation messages for the supervisor prompt.
-    fn build_conversation_summary(&self) -> String {
+    pub(super) fn build_conversation_summary(&self) -> String {
         let mut lines: Vec<String> = self
             .msg
             .messages
@@ -269,10 +278,12 @@ impl<C: Channel> Agent<C> {
             .rev()
             .take(20)
             .map(|m| {
+                // Scrub before truncating so a credential cut mid-token cannot escape the scrub.
+                let content = crate::redact::scrub_content(&m.content);
                 format!(
                     "{:?}: {}",
                     m.role,
-                    m.content.chars().take(200).collect::<String>()
+                    content.chars().take(200).collect::<String>()
                 )
             })
             .collect();

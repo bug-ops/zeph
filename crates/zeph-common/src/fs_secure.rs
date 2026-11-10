@@ -210,6 +210,58 @@ fn open_private_exclusive(path: &Path) -> io::Result<File> {
     }
 }
 
+/// Clear the group and other permission bits of an existing regular file, without touching
+/// its content.
+///
+/// The file is opened with `O_NOFOLLOW | O_NONBLOCK | O_NOCTTY`, checked with `fstat` to be a
+/// regular file, and then `fchmod`ed through the same descriptor, so a symlink or a FIFO/device
+/// swapped in at `path` is refused instead of followed or opened blocking. Only the flagged bits
+/// are cleared (`0o640` becomes `0o600`, `0o444` becomes `0o400`); owner and special bits stay.
+///
+/// Returns the new permission bits (without the file-type bits).
+///
+/// # Errors
+///
+/// Returns the underlying [`io::Error`] if the file cannot be opened, or an
+/// [`io::ErrorKind::InvalidInput`] error if `path` is not a regular file (symlinks included).
+///
+/// # Examples
+///
+/// ```no_run
+/// use zeph_common::fs_secure;
+///
+/// let mode = fs_secure::restrict_to_owner(std::path::Path::new("/tmp/key.txt"))?;
+/// assert_eq!(mode & 0o077, 0);
+/// # Ok::<(), std::io::Error>(())
+/// ```
+#[cfg(unix)]
+pub fn restrict_to_owner(path: &Path) -> io::Result<u32> {
+    use rustix::fs::{FileType, Mode, OFlags};
+
+    let fd = rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|e| {
+        if e == rustix::io::Errno::LOOP {
+            io::Error::new(io::ErrorKind::InvalidInput, "not a regular file (symlink)")
+        } else {
+            io::Error::from(e)
+        }
+    })?;
+    let stat = rustix::fs::fstat(&fd).map_err(io::Error::from)?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    let new_mode = Mode::from_raw_mode(stat.st_mode).difference(Mode::RWXG | Mode::RWXO);
+    rustix::fs::fchmod(&fd, new_mode).map_err(io::Error::from)?;
+    Ok(u32::from(new_mode.as_raw_mode()))
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(all(test, unix))]
@@ -337,5 +389,76 @@ mod tests {
         assert_eq!(mode(&p), 0o600);
         let content = std::fs::read_to_string(&p).unwrap();
         assert!(content.contains("line1") && content.contains("line2"));
+    }
+
+    fn file_with_mode(dir: &Path, name: &str, mode: u32) -> std::path::PathBuf {
+        let p = dir.join(name);
+        let _ = std::fs::remove_file(&p);
+        std::fs::write(&p, b"content").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+        p
+    }
+
+    #[test]
+    fn restrict_to_owner_clears_only_group_and_other_bits() {
+        let dir = tempfile::tempdir().unwrap();
+        for (before, after) in [
+            (0o640, 0o600),
+            (0o644, 0o600),
+            (0o444, 0o400),
+            (0o755, 0o700),
+        ] {
+            let p = file_with_mode(dir.path(), "f", before);
+            assert_eq!(restrict_to_owner(&p).unwrap(), after);
+            assert_eq!(mode(&p), after);
+        }
+    }
+
+    #[test]
+    fn restrict_to_owner_keeps_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = file_with_mode(dir.path(), "f", 0o644);
+        restrict_to_owner(&p).unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"content");
+    }
+
+    #[test]
+    fn restrict_to_owner_refuses_symlink_and_leaves_target_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = file_with_mode(dir.path(), "target", 0o644);
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let err = restrict_to_owner(&link).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(mode(&target), 0o644);
+    }
+
+    #[test]
+    fn restrict_to_owner_refuses_directory_and_fifo() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let err = restrict_to_owner(&sub).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(mode(&sub), 0o755);
+
+        let fifo = dir.path().join("fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::set_permissions(&fifo, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let err = restrict_to_owner(&fifo).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(mode(&fifo), 0o644);
+    }
+
+    #[test]
+    fn restrict_to_owner_missing_file_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = restrict_to_owner(&dir.path().join("absent")).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
     }
 }

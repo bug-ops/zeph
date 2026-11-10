@@ -27,7 +27,39 @@ pub(super) fn context_management_output(
     }
 }
 
+/// Synthetic tools the agent loop answers itself, never reaching hooks, gates or executors.
+///
+/// Invariant: a name that maps to `Some` always gets a result written into its slot by
+/// [`Agent::preprocess_focus_compress_calls`], so the dispatch sites may skip it safely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::agent) enum BuiltinTool {
+    CompressContext,
+    RequestCompaction,
+    /// `start_focus` / `complete_focus`; only a built-in while focus is enabled.
+    Focus,
+    SkillStatePatch,
+}
+
 impl<C: Channel> Agent<C> {
+    /// Classify `name` as an agent built-in, or `None` for an executor-backed tool.
+    pub(in crate::agent) fn builtin_tool(&self, name: &str) -> Option<BuiltinTool> {
+        match name {
+            "compress_context" => Some(BuiltinTool::CompressContext),
+            "request_compaction" => Some(BuiltinTool::RequestCompaction),
+            "start_focus" | "complete_focus" if self.services.focus.config.enabled => {
+                Some(BuiltinTool::Focus)
+            }
+            crate::agent::skill_state::SKILL_STATE_PATCH_TOOL => Some(BuiltinTool::SkillStatePatch),
+            _ => None,
+        }
+    }
+
+    /// Whether `name` bypasses the security and utility gates: only `skill_state_patch`, a pure
+    /// in-memory merge whose gating would break the mechanism. The tool-call quota still counts it.
+    pub(in crate::agent) fn is_gate_exempt(&self, name: &str) -> bool {
+        matches!(self.builtin_tool(name), Some(BuiltinTool::SkillStatePatch))
+    }
+
     #[tracing::instrument(
         name = "core.tool.preprocess_focus_compress",
         skip_all,
@@ -40,31 +72,33 @@ impl<C: Channel> Agent<C> {
     ) -> Option<zeph_llm::provider::Message> {
         let mut pending_focus_checkpoint: Option<zeph_llm::provider::Message> = None;
         for (idx, tc) in tool_calls.iter().enumerate() {
-            let is_focus_tool = self.services.focus.config.enabled
-                && (tc.name == "start_focus" || tc.name == "complete_focus");
-            let is_compress = tc.name == "compress_context";
-            let is_request_compaction = tc.name == "request_compaction"
-                && self
-                    .services
-                    .memory
-                    .subsystems
-                    .arc_config
-                    .allow_agent_compaction;
-            if is_focus_tool || is_compress || is_request_compaction {
-                let result = if is_compress {
-                    self.handle_compress_context().await
-                } else if is_request_compaction {
-                    self.handle_request_compaction(&tc.input).await
-                } else {
+            let Some(builtin) = self.builtin_tool(tc.name.as_str()) else {
+                continue;
+            };
+            let result = match builtin {
+                BuiltinTool::CompressContext => self.handle_compress_context().await,
+                BuiltinTool::RequestCompaction
+                    if !self
+                        .services
+                        .memory
+                        .subsystems
+                        .arc_config
+                        .allow_agent_compaction =>
+                {
+                    "Error: request_compaction is disabled".to_owned()
+                }
+                BuiltinTool::RequestCompaction => self.handle_request_compaction(&tc.input).await,
+                BuiltinTool::SkillStatePatch => self.handle_skill_state_patch(&tc.input).await,
+                BuiltinTool::Focus => {
                     let (text, maybe_checkpoint) =
                         self.handle_focus_tool(tc.name.as_str(), &tc.input);
                     if let Some(cp) = maybe_checkpoint {
                         pending_focus_checkpoint = Some(cp);
                     }
                     text
-                };
-                tool_results[idx] = Ok(Some(context_management_output(tc.name.clone(), result)));
-            }
+                }
+            };
+            tool_results[idx] = Ok(Some(context_management_output(tc.name.clone(), result)));
         }
         pending_focus_checkpoint
     }
@@ -182,6 +216,76 @@ mod tests {
             name: name.into(),
             input: serde_json::Value::Null,
         }
+    }
+
+    fn plain_agent() -> Agent<crate::testing::MockChannel> {
+        use crate::testing::{MockChannel, MockToolExecutor, mock_provider};
+        use zeph_skills::registry::SkillRegistry;
+        Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![] as Vec<String>),
+            SkillRegistry::empty(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+    }
+
+    #[test]
+    fn builtin_tool_classification_follows_focus_config() {
+        let mut agent = plain_agent();
+        agent.services.focus.config.enabled = false;
+        assert_eq!(agent.builtin_tool("start_focus"), None);
+        assert_eq!(agent.builtin_tool("complete_focus"), None);
+        agent.services.focus.config.enabled = true;
+        assert_eq!(agent.builtin_tool("start_focus"), Some(BuiltinTool::Focus));
+        assert_eq!(
+            agent.builtin_tool("compress_context"),
+            Some(BuiltinTool::CompressContext)
+        );
+        assert_eq!(
+            agent.builtin_tool("request_compaction"),
+            Some(BuiltinTool::RequestCompaction)
+        );
+        assert_eq!(
+            agent.builtin_tool("skill_state_patch"),
+            Some(BuiltinTool::SkillStatePatch)
+        );
+        assert_eq!(agent.builtin_tool("shell"), None);
+    }
+
+    #[tokio::test]
+    async fn disabled_request_compaction_gets_an_error_result_not_an_empty_slot() {
+        let mut agent = plain_agent();
+        agent
+            .services
+            .memory
+            .subsystems
+            .arc_config
+            .allow_agent_compaction = false;
+        let calls = vec![make_tool_req("request_compaction")];
+        let mut results = vec![Ok(None)];
+        agent
+            .preprocess_focus_compress_calls(&calls, &mut results)
+            .await;
+        let Ok(Some(out)) = &results[0] else {
+            panic!("slot must hold a result, got {:?}", results[0]);
+        };
+        assert!(out.summary.contains("disabled"), "got {:?}", out.summary);
+    }
+
+    #[tokio::test]
+    async fn skill_state_patch_without_active_state_gets_an_error_result() {
+        let mut agent = plain_agent();
+        let calls = vec![make_tool_req("skill_state_patch")];
+        let mut results = vec![Ok(None)];
+        agent
+            .preprocess_focus_compress_calls(&calls, &mut results)
+            .await;
+        let Ok(Some(out)) = &results[0] else {
+            panic!("slot must hold a result, got {:?}", results[0]);
+        };
+        assert!(out.summary.contains("not active"), "got {:?}", out.summary);
     }
 
     // Gap 5: apply_acon_compression must be a no-op when acon_config.enabled = false.

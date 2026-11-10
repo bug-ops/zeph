@@ -49,6 +49,9 @@ impl fmt::Display for RuntimeNoteNonce {
     }
 }
 
+/// Tags third-party text inside a note must not be able to forge.
+const SECTION_TAGS: [DelimiterTag; 2] = [DelimiterTag::RuntimeNote, DelimiterTag::SkillState];
+
 /// One block of agent-authored state rendered inside a runtime note.
 pub(crate) enum RuntimeNoteSection {
     /// Remaining tool-call budget (and cost budget) snapshot.
@@ -57,6 +60,9 @@ pub(crate) enum RuntimeNoteSection {
     Lsp(String),
     /// Utility-gate retrieve/verify hint.
     UtilityHint(String),
+    /// Live `<skill_state>` section (spec 086). Pre-rendered with its JSON unicode-escaped, so
+    /// model-recorded values cannot forge a delimiter and the text is emitted as is.
+    SkillState(String),
 }
 
 impl RuntimeNoteSection {
@@ -67,11 +73,12 @@ impl RuntimeNoteSection {
             // zero-width characters (newlines and tabs kept for layout) before escaping.
             Self::Lsp(text) => {
                 let clean = strip_control_chars_preserve_whitespace(text);
-                Some(escape_delimiter_tags(&clean, &[DelimiterTag::RuntimeNote]).into_owned())
+                Some(escape_delimiter_tags(&clean, &SECTION_TAGS).into_owned())
             }
             Self::UtilityHint(text) => {
-                Some(escape_delimiter_tags(text, &[DelimiterTag::RuntimeNote]).into_owned())
+                Some(escape_delimiter_tags(text, &SECTION_TAGS).into_owned())
             }
+            Self::SkillState(xml) => Some(xml.clone()),
         }
     }
 }
@@ -270,6 +277,7 @@ impl<C: Channel> Agent<C> {
                 .into_iter()
                 .map(RuntimeNoteSection::UtilityHint),
         );
+        sections.extend(self.skill_state_note_section());
         sections
     }
 
@@ -282,6 +290,12 @@ impl<C: Channel> Agent<C> {
         let Some(text) = self.services.session.runtime_notes.render(&sections) else {
             return;
         };
+        if sections
+            .iter()
+            .any(|s| matches!(s, RuntimeNoteSection::SkillState(_)))
+        {
+            self.drop_stale_skill_state_sections();
+        }
 
         let part = MessagePart::RuntimeNote { text: text.clone() };
         let delta = self.runtime.metrics.token_counter.count_part_tokens(&part) as u64;

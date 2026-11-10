@@ -541,6 +541,31 @@ pub struct SkillsConfig {
     /// ```
     #[serde(default = "default_subagent_skill_token_budget")]
     pub subagent_skill_token_budget: NonZeroUsize,
+
+    /// Typed skill execution state (spec 086), nested under `[skills.state]`.
+    #[serde(default)]
+    pub state: SkillStateConfig,
+}
+
+/// Skill execution state configuration, nested under `[skills.state]` in TOML (spec 086).
+///
+/// A skill still needs a `state:` block in its SKILL.md frontmatter to take part; this is only
+/// the master switch. The mechanism is inert under durable agent turns and in the `append`
+/// context layout.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_config::Config;
+///
+/// assert!(!Config::default().skills.state.enabled);
+/// ```
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct SkillStateConfig {
+    /// Enable the `skill_state_patch` tool and `<skill_state>` rendering for state-declaring
+    /// skills. Default: `false`.
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 fn default_generation_timeout_ms() -> u64 {

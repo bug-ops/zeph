@@ -78,6 +78,7 @@ pub mod resource;
 pub mod rl_head;
 pub mod scanner;
 pub mod semantic_scanner;
+pub mod state;
 pub mod stem;
 pub mod trace_extractor;
 pub mod trust;

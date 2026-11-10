@@ -262,6 +262,7 @@ impl<C: Channel> Agent<C> {
         let svc = zeph_agent_context::ContextService::new();
         svc.clear_history(&mut self.message_window_view());
         self.msg.layout.reset();
+        self.reset_skill_state();
         // `ContextService` mutates `messages` through a borrowed view, so the non-system
         // counter (#6427) can't be updated inline at the mutation site — recompute it here,
         // mirroring `cached_prompt_tokens`, which the view already updates in place.
@@ -971,6 +972,7 @@ impl<C: Channel> Agent<C> {
                 skill_fallback_mode,
             )
             .await;
+        self.resolve_skill_state(&active_skills);
 
         // Build health_map: skill_name -> (posterior_mean, total_uses) for XML attributes.
         // Reuses the single `skill_outcome_stats` fetch from above (#6266) instead of
