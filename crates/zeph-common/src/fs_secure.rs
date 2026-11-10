@@ -259,7 +259,10 @@ pub fn restrict_to_owner(path: &Path) -> io::Result<u32> {
     }
     let new_mode = Mode::from_raw_mode(stat.st_mode).difference(Mode::RWXG | Mode::RWXO);
     rustix::fs::fchmod(&fd, new_mode).map_err(io::Error::from)?;
-    Ok(u32::from(new_mode.as_raw_mode()))
+    // mode_t is u16 on macOS and u32 on Linux, so the widening is a no-op on Linux only.
+    #[allow(clippy::useless_conversion)]
+    let raw = u32::from(new_mode.as_raw_mode());
+    Ok(raw)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
