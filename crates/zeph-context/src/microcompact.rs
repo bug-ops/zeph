@@ -46,6 +46,21 @@ pub fn find_preceding_tool_use_name(parts: &[MessagePart], result_idx: usize) ->
     None
 }
 
+/// Returns the `id` of the closest preceding `ToolUse` part, if any.
+///
+/// Sibling of [`find_preceding_tool_use_name`] for `ToolOutput` parts, which carry no
+/// `tool_use_id` of their own.
+#[must_use]
+pub fn find_preceding_tool_use_id(parts: &[MessagePart], result_idx: usize) -> Option<&str> {
+    parts[..result_idx]
+        .iter()
+        .rev()
+        .find_map(|part| match part {
+            MessagePart::ToolUse { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+}
+
 /// Returns `true` if `tool_name` (case-insensitive) is in the low-value set.
 #[must_use]
 pub fn is_low_value_tool(tool_name: &str) -> bool {
@@ -142,6 +157,63 @@ pub fn sweep_stale_tool_outputs(
     }
 
     clear_count
+}
+
+/// Clear exactly the tool results of one message whose `tool_use_id` is in `tool_use_ids`.
+///
+/// The caller names the single message that holds the absorbed batch: ids are not unique across
+/// history (Ollama reuses `call_{i}` per response), so matching is deliberately scoped to one
+/// message. Content is replaced with `sentinel` and `ToolOutput.compacted_at` is set to
+/// `now_ts`; no part is ever removed, so `ToolUse` / `ToolResult` pairing stays intact. Parts
+/// already cleared are skipped, which makes the call idempotent.
+///
+/// Returns the number of parts cleared.
+pub fn clear_absorbed_tool_results(
+    message: &mut Message,
+    tool_use_ids: &[String],
+    sentinel: &str,
+    now_ts: i64,
+) -> usize {
+    if tool_use_ids.is_empty() {
+        return 0;
+    }
+    let targeted = |id: &str| tool_use_ids.iter().any(|t| t == id);
+    let output_ids: Vec<Option<String>> = message
+        .parts
+        .iter()
+        .enumerate()
+        .map(|(i, p)| match p {
+            MessagePart::ToolOutput { .. } => {
+                find_preceding_tool_use_id(&message.parts, i).map(str::to_owned)
+            }
+            _ => None,
+        })
+        .collect();
+    let mut cleared = 0;
+    for (part, output_id) in message.parts.iter_mut().zip(output_ids) {
+        match part {
+            MessagePart::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } if targeted(tool_use_id) && !content.starts_with(CLEARED_SENTINEL_PREFIX) => {
+                sentinel.clone_into(content);
+                cleared += 1;
+            }
+            MessagePart::ToolOutput {
+                body, compacted_at, ..
+            } if output_id.as_deref().is_some_and(targeted)
+                && compacted_at.is_none()
+                && !body.starts_with(CLEARED_SENTINEL_PREFIX) =>
+            {
+                sentinel.clone_into(body);
+                *compacted_at = Some(now_ts);
+                cleared += 1;
+            }
+            _ => {}
+        }
+    }
+    cleared
 }
 
 #[cfg(test)]
@@ -317,5 +389,93 @@ mod tests {
                 assert_eq!(content, "[cleared]");
             }
         }
+    }
+
+    fn mixed_msg() -> Message {
+        use zeph_llm::provider::{MessageMetadata, Role};
+        Message {
+            role: Role::User,
+            content: String::new(),
+            parts: vec![
+                MessagePart::ToolUse {
+                    id: "a".into(),
+                    name: "bash".into(),
+                    input: serde_json::Value::Null,
+                },
+                MessagePart::ToolOutput {
+                    tool_name: "bash".into(),
+                    body: "out-a".into(),
+                    compacted_at: None,
+                },
+                MessagePart::ToolResult {
+                    tool_use_id: "b".into(),
+                    content: "res-b".into(),
+                    is_error: false,
+                },
+                MessagePart::ToolResult {
+                    tool_use_id: "c".into(),
+                    content: "res-c".into(),
+                    is_error: false,
+                },
+            ],
+            metadata: MessageMetadata::default(),
+        }
+    }
+
+    #[test]
+    fn find_preceding_tool_use_id_returns_closest() {
+        let msg = mixed_msg();
+        assert_eq!(find_preceding_tool_use_id(&msg.parts, 1), Some("a"));
+        assert_eq!(find_preceding_tool_use_id(&msg.parts, 0), None);
+    }
+
+    #[test]
+    fn clear_absorbed_clears_only_targeted_ids() {
+        let mut msg = mixed_msg();
+        let ids = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(
+            clear_absorbed_tool_results(&mut msg, &ids, "[cleared]", 7),
+            2
+        );
+        let parts = &msg.parts;
+        assert!(
+            matches!(&parts[1], MessagePart::ToolOutput { body, compacted_at: Some(7), .. } if body == "[cleared]")
+        );
+        assert!(
+            matches!(&parts[2], MessagePart::ToolResult { content, .. } if content == "[cleared]")
+        );
+        assert!(matches!(&parts[3], MessagePart::ToolResult { content, .. } if content == "res-c"));
+    }
+
+    #[test]
+    fn clear_absorbed_is_idempotent_and_keeps_all_parts() {
+        let mut msg = mixed_msg();
+        let ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        assert_eq!(
+            clear_absorbed_tool_results(&mut msg, &ids, "[cleared]", 7),
+            3
+        );
+        assert_eq!(
+            clear_absorbed_tool_results(&mut msg, &ids, "[cleared]", 9),
+            0
+        );
+        assert_eq!(msg.parts.len(), 4);
+        assert!(matches!(&msg.parts[0], MessagePart::ToolUse { .. }));
+        assert!(matches!(
+            &msg.parts[1],
+            MessagePart::ToolOutput {
+                compacted_at: Some(7),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn clear_absorbed_with_no_ids_is_noop() {
+        let mut msg = mixed_msg();
+        assert_eq!(
+            clear_absorbed_tool_results(&mut msg, &[], "[cleared]", 7),
+            0
+        );
     }
 }

@@ -718,6 +718,7 @@ mod tests {
             parent_skill: None,
             proactive_domain: None,
             extensions: None,
+            state: None,
         };
         let emb = SkillEmbedding::from_raw(vec![1.0, 0.0]);
         let existing = vec![(meta, emb)];
@@ -981,6 +982,7 @@ mod tests {
             parent_skill: None,
             proactive_domain: None,
             extensions: None,
+            state: None,
         };
         let existing_embeddings = vec![(existing_meta, SkillEmbedding::from_raw(vec![0.8, 0.6]))];
         let messages = [UserMessage {
@@ -1046,6 +1048,7 @@ mod tests {
             parent_skill: None,
             proactive_domain: None,
             extensions: None,
+            state: None,
         };
         let existing_embeddings = vec![(existing_meta, SkillEmbedding::from_raw(vec![0.8, 0.6]))];
         let messages = [UserMessage {

@@ -61,7 +61,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     // --- Goals ---
     CommandInfo {
         name: "/goal",
-        args: "create <text> [--budget N] | pause | resume | complete | clear | status | list",
+        args: "create <text> [--budget N] | pause | resume | complete | clear | status | list | check [condition]",
         description: "Manage long-horizon goals that persist across conversation turns",
         category: SlashCategory::Session,
         feature_gate: None,
@@ -236,6 +236,13 @@ pub const COMMANDS: &[CommandInfo] = &[
         name: "/skill",
         args: "<name>",
         description: "Load and display a skill body",
+        category: SlashCategory::Skills,
+        feature_gate: None,
+    },
+    CommandInfo {
+        name: "/skill state",
+        args: "[name]",
+        description: "Show the typed execution state of the active skill",
         category: SlashCategory::Skills,
         feature_gate: None,
     },

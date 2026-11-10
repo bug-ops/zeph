@@ -76,10 +76,21 @@ See [Instruction Files](../concepts/instruction-files.md) for provider-specific 
 | Command | Description |
 |---------|-------------|
 | `/skills` | Show active skills and usage statistics |
+| `/goal check [condition]` | Ask the model to judge whether a condition is met, based on the conversation so far (advisory, see below) |
+| `/skill state [name]` | Show live [skill execution state](../guides/custom-skills.md#skill-execution-state) |
 | `/mcp` | List connected MCP tool servers |
 | `/new` | Start a fresh conversation without restarting |
 | `/image <path>` | Attach an image for visual analysis |
 | `/debug-dump` | Enable debug dump for the current session |
+
+### Checking a goal with `/goal check`
+
+`/goal check` runs one advisory self-evaluation and prints `achieved`, `reasoning`, `confidence` and, when not achieved, suggestions. The condition is, in order: the text you pass (`/goal check the tests pass`), the active goal if one exists, or your last message. It never blocks or retries work.
+
+- It uses the `[goals] supervisor_provider` and `supervisor_timeout_secs` settings (empty provider means the main provider).
+- It works even with `[goals] enabled = false`; only the active-goal source is unavailable.
+- It is rejected while an autonomous goal session is running; use `/goal status` instead.
+- Secrets are scrubbed from the conversation excerpt before it is sent.
 
 Type `exit`, `quit`, or press Ctrl-D to stop the agent.
 

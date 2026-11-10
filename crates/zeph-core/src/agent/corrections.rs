@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use tracing::Instrument as _;
 use zeph_llm::provider::Role;
 
 use super::Agent;
@@ -166,7 +167,12 @@ impl<C: crate::channel::Channel> Agent<C> {
                     memory_arc,
                     conv_id_bg,
                     skill_name,
-                ),
+                )
+                .instrument(tracing::info_span!(
+                    "core.feedback.classify",
+                    source = "llm_classifier",
+                    conversation_id = ?conv_id_bg.map(|c| c.0),
+                )),
             );
         } else {
             let judge_provider = self
@@ -187,7 +193,12 @@ impl<C: crate::channel::Channel> Agent<C> {
                     memory_arc,
                     conv_id_bg,
                     skill_name,
-                ),
+                )
+                .instrument(tracing::info_span!(
+                    "core.feedback.classify",
+                    source = "judge",
+                    conversation_id = ?conv_id_bg.map(|c| c.0),
+                )),
             );
         }
     }

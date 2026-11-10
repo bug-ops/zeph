@@ -61,6 +61,7 @@ use zeph_common::SessionId;
 
 use crate::error::SkillError;
 use crate::extensions::{SkillExtensions, parse_extensions};
+use crate::state::{SkillStateSchema, parse_state};
 
 /// Parsed frontmatter metadata for a single skill.
 ///
@@ -131,6 +132,10 @@ pub struct SkillMeta {
     /// `None` when the block is absent or fails to parse (a warning is logged on parse failure).
     /// Existing SKILL.md files without `extensions:` always load with `extensions: None`.
     pub extensions: Option<SkillExtensions>,
+    /// Typed execution-state schema declared in the `state:` frontmatter block (spec 086).
+    ///
+    /// `None` when the block is absent or fails to parse.
+    pub state: Option<SkillStateSchema>,
 }
 
 /// A fully loaded skill: metadata plus the raw Markdown body.
@@ -183,6 +188,7 @@ impl Default for SkillMeta {
             parent_skill: None,
             proactive_domain: None,
             extensions: None,
+            state: None,
         }
     }
 }
@@ -503,6 +509,15 @@ fn apply_field(raw: &mut RawFrontmatter, key: &str, value: String) {
     }
 }
 
+/// How `parse_frontmatter` treats indented children of an empty-valued top-level key.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NestedMode {
+    /// `metadata:` children become key-value pairs.
+    Collect,
+    /// Any other block (`extensions:`, `state:`) is owned by a separate pass; children are dropped.
+    Skip,
+}
+
 fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
     let mut raw = RawFrontmatter {
         name: None,
@@ -523,15 +538,17 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
         parent_skill: None,
         proactive_domain: None,
     };
-    let mut in_metadata = false;
+    let mut nested: Option<NestedMode> = None;
 
     let mut lines = yaml_str.lines().peekable();
 
     while let Some(line) = lines.next() {
-        if in_metadata {
-            if line.starts_with("  ") || line.starts_with('\t') {
-                let trimmed = line.trim();
-                if let Some((k, v)) = trimmed.split_once(':') {
+        if let Some(mode) = nested {
+            let indented = line.starts_with("  ") || line.starts_with('\t');
+            if indented || (mode == NestedMode::Skip && line.trim().is_empty()) {
+                if mode == NestedMode::Collect
+                    && let Some((k, v)) = line.trim().split_once(':')
+                {
                     let v = v.trim();
                     if !v.is_empty() {
                         raw.metadata.push((k.trim().to_string(), v.to_string()));
@@ -539,7 +556,7 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
                 }
                 continue;
             }
-            in_metadata = false;
+            nested = None;
         }
 
         let line = line.trim();
@@ -590,8 +607,15 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
             }
 
             let value = value.to_string();
-            if key == "metadata" && value.is_empty() {
-                in_metadata = true;
+            if value.is_empty() {
+                nested = Some(if key == "metadata" {
+                    NestedMode::Collect
+                } else {
+                    NestedMode::Skip
+                });
+                if key != "metadata" {
+                    apply_field(&mut raw, key, value);
+                }
             } else {
                 apply_field(&mut raw, key, value);
             }
@@ -696,6 +720,7 @@ pub fn load_skill_meta_from_str(content: &str) -> Result<(SkillMeta, String), Sk
     }
 
     let extensions = parse_extensions(yaml_str);
+    let state = parse_state(yaml_str);
 
     let meta = SkillMeta {
         name,
@@ -716,9 +741,25 @@ pub fn load_skill_meta_from_str(content: &str) -> Result<(SkillMeta, String), Sk
         parent_skill: raw.parent_skill,
         proactive_domain: raw.proactive_domain,
         extensions,
+        state,
     };
 
     Ok((meta, body.to_string()))
+}
+
+/// Validate the `state:` block of a SKILL.md file, reporting why an invalid block is rejected.
+///
+/// Loading skips an invalid block with a warning; this is for tooling that must say why.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read, has no frontmatter, or the block is invalid.
+pub fn load_skill_state_strict(path: &Path) -> Result<Option<SkillStateSchema>, SkillError> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| SkillError::Other(format!("failed to read {}: {e}", path.display())))?;
+    let (yaml_str, _body) = split_frontmatter(&content)?;
+    crate::state::parse_state_strict(yaml_str)
+        .map_err(|e| SkillError::Invalid(format!("invalid state block: {e}")))
 }
 
 /// Load only frontmatter metadata from a SKILL.md file.
@@ -781,6 +822,7 @@ pub fn load_skill_meta(path: &Path) -> Result<SkillMeta, SkillError> {
     }
 
     let extensions = parse_extensions(yaml_str);
+    let state = parse_state(yaml_str);
 
     Ok(SkillMeta {
         name,
@@ -801,6 +843,7 @@ pub fn load_skill_meta(path: &Path) -> Result<SkillMeta, SkillError> {
         parent_skill: raw.parent_skill,
         proactive_domain: raw.proactive_domain,
         extensions,
+        state,
     })
 }
 
@@ -1861,5 +1904,52 @@ body
         let meta = load_skill_meta(&path).unwrap();
         assert!(meta.extensions.is_none());
         assert_eq!(meta.category.as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn state_block_populates_schema_without_leaking_into_metadata() {
+        let content = "---\nname: s\ndescription: d.\nmetadata:\n  author: me\nstate:\n  phase:\n    type: enum\n    values: [a, b]\n\n  n:\n    type: integer\nextensions:\n  ui:\n    - type: menu_item\n      label: L\n      action: act\nversion: 3\n---\nbody";
+        let (meta, _) = load_skill_meta_from_str(content).unwrap();
+        assert!(meta.state.is_some());
+        assert!(meta.extensions.is_some());
+        assert_eq!(
+            meta.metadata,
+            vec![("author".to_string(), "me".to_string())]
+        );
+        assert_eq!(meta.version, 3);
+    }
+
+    #[test]
+    fn absent_or_invalid_state_block_is_none() {
+        let (meta, _) = load_skill_meta_from_str("---\nname: s\ndescription: d.\n---\nb").unwrap();
+        assert!(meta.state.is_none());
+        let bad = "---\nname: s\ndescription: d.\nstate:\n  Bad:\n    type: string\n---\nb";
+        let (meta, _) = load_skill_meta_from_str(bad).unwrap();
+        assert!(meta.state.is_none());
+    }
+
+    #[test]
+    fn shipped_skills_parse_with_only_declared_metadata() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills");
+        let mut with_state = Vec::new();
+        for entry in std::fs::read_dir(&root).unwrap() {
+            let dir = entry.unwrap().path();
+            let file = dir.join("SKILL.md");
+            if !file.is_file() {
+                continue;
+            }
+            let meta = load_skill_meta(&file).unwrap();
+            for (k, _) in &meta.metadata {
+                assert!(
+                    !matches!(k.as_str(), "type" | "fields" | "values" | "items" | "phase"),
+                    "{}: nested block leaked key `{k}`",
+                    meta.name
+                );
+            }
+            if meta.state.is_some() {
+                with_state.push(meta.name);
+            }
+        }
+        assert_eq!(with_state, vec!["skill-audit".to_string()]);
     }
 }

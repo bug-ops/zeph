@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        111,
-        "MIGRATIONS registry must contain all 111 sequential steps"
+        112,
+        "MIGRATIONS registry must contain all 112 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -2210,7 +2210,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 111);
+    assert_eq!(MIGRATIONS.len(), 112);
 }
 
 /// Mirrors the SC-003 wire-X-into-registry check below for `MigrateTuiPanelSizing` (#6675):
@@ -2417,6 +2417,7 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_memory_store_max_namespace_rows",
         "migrate_claude_compaction_trigger",
         "migrate_memory_context_layout",
+        "migrate_skill_state_config",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -5589,4 +5590,28 @@ fn section_helpers_recognise_a_header_with_a_hash_inside_a_quoted_key() {
         out.find("# note").unwrap() < out.find("[a.").unwrap(),
         "{out}"
     );
+}
+
+#[test]
+fn migrate_skill_state_config_adds_advisory_once() {
+    let src = "[skills]\nmax_active_skills = 5\n";
+    let first = migrate_skill_state_config(src).unwrap();
+    assert_eq!(first.changed_count, 1);
+    assert!(first.output.contains("# [skills.state]"));
+    let second = migrate_skill_state_config(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0);
+    assert_eq!(second.output, first.output);
+}
+
+#[test]
+fn migrate_skill_state_config_noop_without_skills_or_with_section() {
+    let no_skills = "[agent]\nname = \"z\"\n";
+    assert_eq!(
+        migrate_skill_state_config(no_skills).unwrap().changed_count,
+        0
+    );
+    let active = "[skills]\n\n[skills.state]\nenabled = true\n";
+    let r = migrate_skill_state_config(active).unwrap();
+    assert_eq!(r.changed_count, 0);
+    assert_eq!(r.output, active);
 }

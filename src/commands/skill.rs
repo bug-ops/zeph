@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::cli::SkillCommand;
+use crate::cli::{SkillCommand, SkillStateCommand};
 
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn handle_skill_command(
@@ -446,6 +446,24 @@ pub(crate) async fn handle_skill_command(
                 println!(
                     "  → Use `zeph run` with heuristic_promotion_enabled=true to trigger live LLM evaluation."
                 );
+            }
+        }
+
+        SkillCommand::State {
+            command: SkillStateCommand::Schema { name },
+        } => {
+            let registry = zeph_skills::registry::SkillRegistry::load(&[managed_dir]);
+            let meta = registry
+                .all_meta()
+                .into_iter()
+                .find(|m| m.name == name)
+                .ok_or_else(|| anyhow::anyhow!("skill '{name}' not found"))?;
+            let skill_file = meta.skill_dir.join("SKILL.md");
+            match zeph_skills::loader::load_skill_state_strict(&skill_file)? {
+                Some(schema) => {
+                    println!("{}", serde_json::to_string_pretty(&schema.input_schema())?);
+                }
+                None => println!("skill '{name}' declares no state block"),
             }
         }
 

@@ -102,6 +102,7 @@ Before this spec every turn rewrote the head of the request: the system prompt w
 - Assembly-time CAM fidelity scoring is skipped (it rewrites sent history); the proactive regrade follows the soft-tier gate; GoSkills grouping falls back to flat per-skill bodies
 - Content-addressed directives (caveman, `memory_save` hint) are sent when first needed; turning one off later does not retract the earlier text. State sections do track changes and clears
 - Subagent loops build their system prompt once and never rebuild it per iteration, so they need no boundary handling
+- Skill execution state (spec 086) edits already-sent history and is therefore inert in `append`: no tool definition, no `<skill_state>` section, no clearing
 
 ## 8. Integration points
 

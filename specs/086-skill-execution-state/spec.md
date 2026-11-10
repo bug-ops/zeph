@@ -12,7 +12,7 @@ tags:
   - context
   - contract
 created: 2026-09-05
-status: draft
+status: approved
 related:
   - "[[MOC-specs]]"
   - "[[constitution]]"
@@ -37,6 +37,12 @@ related:
 > `.local/handoff/2026-09-05T23-40-18-critic.md`,
 > `.local/handoff/2026-09-05T23-46-11-architect.md`,
 > `.local/handoff/2026-09-05T23-50-46-critic.md`), the last pass returning verdict `minor`.
+
+> [!info] Amendments D7'-D14 (implementation of #6766, 2026-11)
+> The clearing pass edits history that was already sent, which spec 088 forbids in the `append`
+> layout, and the `llm_dispatch.rs` rolling-tail seam this spec was written against no longer
+> exists. Section 15a records the resulting decisions; where it conflicts with an older section,
+> section 15a wins and the older text below has been rewritten to match.
 
 ## Sources
 
@@ -233,19 +239,19 @@ THEN no `<skill_state>` block is rendered, no clearing pass runs, and a `tracing
 | FR-001 | WHEN a SKILL.md has no `state:` frontmatter block THE SYSTEM SHALL set `SkillMeta.state = None` and introduce no behavior change at any layer | must |
 | FR-002 | WHEN a SKILL.md declares a `state:` block THE SYSTEM SHALL parse it into a `SkillStateSchema` using the same textual sub-block extraction + `serde_norway` + byte-cap pattern as `SkillExtensions`, warn-not-fail on parse error | must |
 | FR-003 | WHEN `parse_frontmatter` encounters any empty-valued top-level key THE SYSTEM SHALL enter a `nested` mode (`Collect` for `metadata`, `Skip` for every other key including `state` and `extensions`) so indented children never leak into `SkillMeta.metadata` | must |
-| FR-004 | WHEN a state-declaring skill is the turn's active skill THE SYSTEM SHALL register the `skill_state_patch` built-in tool with an input schema derived from the declared fields, and SHALL NOT register it otherwise | must |
+| FR-004 | WHEN a state-declaring skill is the turn's primary state skill AND skill state is active (section 15a, D7') THE SYSTEM SHALL offer the `skill_state_patch` built-in tool with an input schema derived from the declared fields, and SHALL NOT offer it otherwise | must |
 | FR-005 | WHEN `skill_state_patch` is called THE SYSTEM SHALL validate every supplied field against the declared schema (type, enum membership, numeric bounds, string length) before any merge | must |
 | FR-006 | WHEN a patch fails validation THE SYSTEM SHALL reject the whole patch, leave prior state unchanged, and return the validation error as the tool call's observation — no partial merge, no rollback semantics needed, no extra LLM call | must |
 | FR-007 | WHEN a patch passes validation THE SYSTEM SHALL merge it into `SkillExecutionState` as a shallow per-top-level-key dictionary merge, where a `null` value resets that key to its schema-declared default (or an empty collection if no default is declared) | must |
-| FR-008 | WHEN a `skill_state_patch` call validates and merges in tool-loop iteration N THE SYSTEM SHALL record the `tool_use_id`s of the immediately preceding tool batch (iteration N's own inputs, already resident in `self.msg.messages`) in `ToolState.last_batch_tool_call_ids` | must |
+| FR-008 | WHEN a `skill_state_patch` call validates THE SYSTEM SHALL move the `tool_use_id`s of the latest batch that ran real tools out of `ToolState.last_batch_tool_call_ids` into `ToolState.pending_absorbed` (D12); after each batch's results are pushed, `last_batch_tool_call_ids` is overwritten with that batch's non-built-in call ids only when it has at least one (N1) | must |
 | FR-009 | WHEN `ToolState.last_batch_tool_call_ids` would be read at tool-loop iteration 0 of a new turn THE SYSTEM SHALL have cleared it at turn start (or gated the clearing pass on `iteration > 0`), so a first-iteration patch in a new turn never clears a batch it never absorbed | must |
-| FR-010 | WHEN a patch validates and merges THE SYSTEM SHALL run a post-validation pass, inserted between `handle_native_tool_calls` and `maybe_summarize_tool_pair` in `process_single_native_turn`, that calls `zeph_context::microcompact::clear_absorbed_tool_results` targeting exactly the ids in `last_batch_tool_call_ids` | must |
+| FR-010 | WHEN `pending_absorbed` is set THE SYSTEM SHALL run a post-batch pass, inserted between `handle_native_content` and `maybe_summarize_tool_pair` in `process_single_native_turn`, that takes it and calls `zeph_context::microcompact::clear_absorbed_tool_results` with exactly those ids | must |
 | FR-011 | `clear_absorbed_tool_results(messages: &mut [Message], tool_use_ids: &[String], sentinel: &str, now_ts: i64) -> usize` SHALL replace `ToolResult` content and set `ToolOutput.compacted_at` for matching parts, SHALL skip parts already sentinel-prefixed or already `compacted_at.is_some()`, and SHALL NEVER remove a `ToolUse` part or orphan a `ToolResult`/`ToolOutput` pairing | must |
 | FR-012 | WHEN a `ToolOutput` part (no `tool_use_id`) needs id-matching THE SYSTEM SHALL provide `find_preceding_tool_use_id`, a sibling of `find_preceding_tool_use_name`, that walks back to the nearest preceding `ToolUse` in the same message | must |
-| FR-013 | WHEN a state-declaring skill is active THE SYSTEM SHALL render a `<skill_state>` XML block at the rolling-tail seam in `llm_dispatch.rs` (remove stale `<skill_state>` system message → push freshly rendered one → `recompute_prompt_tokens()`), not at the once-per-turn system-prompt seam | must |
-| FR-014 | WHEN the freshly rendered `<skill_state>` block is byte-identical to the currently installed one THE SYSTEM SHALL skip the remove/push/recompute step entirely | must |
+| FR-013 | WHEN skill state is active THE SYSTEM SHALL render one live `<skill_state source="model" skill="NAME">` section as a `RuntimeNoteSection::SkillState` on the next eligible tail tool-result message, first removing earlier sections from history and adjusting `cached_prompt_tokens` by the exact delta (D14) | must |
+| FR-014 | WHEN the freshly rendered section is byte-identical to the last `<skill_state>` section found in history THE SYSTEM SHALL not emit a new one; no baseline is kept outside history, so a section dropped by compaction or trim is re-emitted on the next eligible tail | must |
 | FR-015 | WHEN `durable_agent_turns_config.is_some()` for the session THE SYSTEM SHALL treat skill-state mode as inert for the whole session — no tool registration, no rendering, no clearing — and SHALL emit one `tracing::warn!` per session the first time a state-declaring skill would otherwise activate | must |
-| FR-016 | WHEN more than one active skill in the same turn declares a `state:` block THE SYSTEM SHALL select exactly one as the turn's primary schema (highest matcher score, or the GoSkills entry-point skill when `group_structured = true`) and SHALL log a warning naming the excluded skill(s) — at most one `SkillExecutionState` object exists per turn | must |
+| FR-016 | WHEN more than one active skill in the same turn declares a `state:` block THE SYSTEM SHALL select exactly one as the turn's primary schema (the highest-ranked active skill that declares state, in every mode) and SHALL log a warning naming the excluded skill(s) — at most one `SkillExecutionState` is `Active` per turn | must |
 | FR-017 | `SkillStateSchema`, `SkillExecutionState`, and `StatePatch` SHALL be defined in `zeph-skills` with zero dependency on `zeph-core`, so a future `zeph-subagent` adoption requires no redesign of these types | must |
 | FR-018 | New config keys under `[skills.state]` SHALL be `#[serde(default)]`, and a `--migrate-config` step SHALL add the section with defaults to existing configs | must |
 | FR-019 | WHEN a `state:` block is added to an existing skill THE SYSTEM SHALL trip `requires_trust_check` re-attestation for that skill via the existing whole-file `compute_skill_hash`, with no special-casing to exempt the new block from the hash | should |
@@ -363,9 +369,9 @@ its cross-spec note names `zeph-session` (spec 068) as the sanctioned persistenc
 defers persistence entirely rather than pick the wrong layer.
 
 When more than one active skill declares a `state:` block in the same turn (FR-016), the primary
-is chosen deterministically (highest matcher score, or the GoSkills entry-point when
-`group_structured = true` — see `specs/005-skills/spec.md` § GoSkills) and the rest are logged
-and ignored for state purposes; at most one `SkillExecutionState` exists per turn.
+is chosen deterministically (the highest-ranked active skill that declares state, in every
+mode) and the rest are logged and ignored for state purposes; at most one `SkillExecutionState`
+is `Active` per turn.
 
 ### 6.3 Patch Tool and Validation
 
@@ -446,7 +452,11 @@ live precedent already exists at `skill_reload.rs:363-369`. Neither spec 002 nor
 `BudgetAllocation` slot / `CompactionState` transitions / new `zeph-context` Cargo dependency),
 none of which this seam touches.
 
-**Cost, accepted as-is (NFR-002)**: `recompute_prompt_tokens` (`utils.rs:287-294`) re-tokenizes
+**Cost (superseded by D14)**: the section is rendered through the runtime-note seam, so only
+the clearing pass recomputes prompt tokens (`O(history)`, once per validated patch); emitting a
+section adjusts the cached count by an exact delta. The original analysis follows for context.
+
+**Original cost analysis**: `recompute_prompt_tokens` (`utils.rs:287-294`) re-tokenizes
 every message, so this is `O(history)` per tool-loop iteration. Unlike the LSP-notes precedent,
 which only pays this cost when notes actually exist, `<skill_state>` would otherwise fire on
 **every** iteration once a state-declaring skill is active. FR-014's identity-skip (render, then
@@ -495,7 +505,9 @@ block and no clearing pass runs under a `DurableContext`.
 | Malformed/oversized `state:` YAML (> 8 KiB or invalid syntax) | Parse returns `None` (warn-not-fail), matching `SkillExtensions` behavior — skill still loads |
 | Patch supplies a value failing type/enum/bound validation | Whole patch rejected; prior state unchanged; validation error returned as the tool's observation; deterministic retry, no rollback, no extra LLM call |
 | Patch supplies `null` for a key with no declared `default` | Key resets to an empty collection (`[]`/`{}`) rather than an error |
-| Two or more active skills declare `state:` in the same turn | One primary is selected deterministically (highest matcher score, or GoSkills entry point); others are logged and excluded from state activation — at most one `SkillExecutionState` per turn |
+| Two or more active skills declare `state:` in the same turn | One primary is selected deterministically (highest-ranked active state skill); others are logged and excluded from state activation — at most one `SkillExecutionState` is `Active` per turn |
+| An empty patch `{}` | Rejected (`PatchError::Empty`) with the error as the observation: prior state and the pending absorb set are unchanged |
+| The state's skill is not matched this turn | The `Active` state becomes `Dormant` (one slot): no tool, no render, patches answer "not active this turn"; restored when the same skill with an identical schema reactivates, replaced when another state skill activates, lost on `/clear`, session end or history reload |
 | A state-declaring skill deactivates (hot-reload removes the `state:` block, or the skill drops out of `active_skill_names`) | Takes effect at the next turn start only, same as all skill activation changes — never mid-turn |
 | `durable_agent_turns_config.is_some()` | Feature inert for the whole session; one `tracing::warn!` on first would-be activation |
 | First iteration of a new turn, `last_batch_tool_call_ids` still holds the previous turn's ids | Must be pre-empted by FR-009 (clear at turn start, or gate on `iteration > 0`) — otherwise a first-iteration patch could clear a batch it never absorbed |
@@ -514,14 +526,15 @@ Per CLAUDE.md Development Rules, all of the following are mandatory before this 
 1. **`config.toml` section**:
    ```toml
    [skills.state]
-   enabled = true            # master switch; a per-skill `state:` block is still required to activate
-   max_schema_bytes = 8192   # cap on the `state:` frontmatter block before serde_norway parse
+   enabled = false           # master switch (D9); a per-skill `state:` block is still required
    ```
+   The 8 KiB frontmatter cap is the constant `MAX_FRONTMATTER_BLOCK_BYTES` shared with
+   `extensions:` (D10); there is no `max_schema_bytes` key.
 2. **CLI**: `zeph skill state schema <name>` — parses and prints the static `SkillStateSchema`
    for a named skill (validates the `state:` block independent of any running session). The
    *live* `SkillExecutionState` is in-memory/session-scoped only and has no CLI surface — it is
    inspected via the TUI/slash command below.
-3. **TUI**: `/state` (or `/skill-state`) command prints the active skill's live
+3. **TUI**: `/skill state [name]` (D11; the alternative naming this section allowed) prints the active skill's live
    `SkillExecutionState` as pretty-printed JSON; a spinner status indicator ("Validating skill
    state patch…") is shown while a `skill_state_patch` call is being validated, per the TUI Rules
    requirement that every implicit background operation surface a visible indicator.
@@ -606,7 +619,7 @@ sufficient.
 | SC-007 | Turn-boundary test | `last_batch_tool_call_ids` empty at iteration 0 of a new turn; a patch there cannot clear a prior turn's batch |
 | SC-008 | Render identity-skip test | No `push_message`/`recompute_prompt_tokens` call when the rendered block is unchanged from the installed one |
 | SC-009 | Multi-active-skill test | Exactly one `SkillExecutionState` exists when 2+ state-declaring skills are active; excluded skills are logged |
-| SC-010 | `zeph-bench` A/B gate | `skill-audit` in state mode vs. history mode: cumulative tokens and task success measured within a single continuous session (not across a reload); **includes at least one local-model (Ollama) run**, not cloud-only; rollout gated on this showing improvement |
+| SC-010 | `zeph-bench` A/B gate (**deferred**, D9/T010) | `skill-audit` in state mode vs. history mode: cumulative tokens and task success measured within a single continuous session (not across a reload); **includes at least one local-model (Ollama) run**, replace layout only; ships with `[skills.state] enabled = false`, so the gate stays open until this runs |
 
 ---
 
@@ -620,8 +633,8 @@ sufficient.
   behind `CLEARED_SENTINEL_PREFIX` or sets `compacted_at`
 - `ToolState.last_batch_tool_call_ids` is reset at turn start (or the clearing pass is gated on
   `iteration > 0`) before any patch can reference it
-- `<skill_state>` renders only in the volatile, never-cached system-message region — never in
-  the cache-stable prefix sealed for prompt-caching
+- `<skill_state>` renders only as a runtime-note section on the tail tool-result message —
+  never in the cache-stable prefix sealed for prompt-caching
 - New `[skills.state]` config keys are `#[serde(default)]`; a `--migrate-config` step exists
 - `SkillStateSchema`, `SkillExecutionState`, `StatePatch` compile with zero dependency on
   `zeph-core`
@@ -681,6 +694,14 @@ sufficient.
   (`specs/002-agent-loop/spec.md:93`) and this spec clears only `ToolOutput`/`ToolResult`
   content — much of arXiv:2608.26263's reported 16.2× reduction comes from discarding
   chain-of-thought, which Zeph does not do. Do not expect or advertise a comparable ratio.
+- **The whole previous batch is absorbed.** A validated patch clears every result of the latest
+  batch that ran real tools, not a subset the model names. Acceptable for `skill-audit`, whose
+  batches are its own reads; the tool description states the contract so it is the model's
+  choice (Q3).
+- **No entry-point preference for grouped skills.** With `group_structured = true` the primary is
+  still the highest-ranked active state skill, not the GoSkills entry point (R1).
+- **Replace layout only.** Under `append` and under durable agent turns the feature is inert,
+  so the token benefit applies to replace-layout providers (Ollama, OpenAI-compatible).
 - **Single primary schema per turn.** When multiple active skills declare `state:` blocks, only
   one backs the `skill_state_patch` tool this turn (§ 7); this is a scope boundary, not a defect,
   and revisiting it (e.g., namespaced multi-schema tools) is future work if a real use case
@@ -783,11 +804,73 @@ sufficient.
 - Add the coverage-status row (status `Untested`)
 - Dependencies: T001, T005, T006, T007
 
-### T010: `zeph-bench` A/B harness (gating)
+### T010: `zeph-bench` A/B harness (gating) — deferred (D9, user decision)
 
 - Implement the state-mode-vs-history-mode A/B for `skill-audit` (cumulative tokens, task
   success), single continuous session per run, at least one local-model (Ollama) run (SC-010)
 - Dependencies: T009
+
+---
+
+## 15a. Amendments (#6766 implementation)
+
+- **D7'** Activation gate, in order: `[skills.state] enabled`; `durable_agent_turns_config` is
+  `None` (one `warn!` per session otherwise); the conversation is pinned to the `replace` layout
+  (one `info!` per session otherwise). The layout is pinned before the system prompt is rebuilt
+  and only changes after `/clear`, so the gate is session-stable. When it fails there is no tool
+  definition, no render and no clearing: the `append` tools array and `StickyToolOffer` are
+  never touched. Cross-referenced from spec 088 section 7a.
+- **D8** `skill_state_patch` is a synthetic agent built-in (a pure in-memory merge). One
+  predicate, `Agent::builtin_tool` (`CompressContext`, `RequestCompaction`, `Focus` while focus
+  is enabled, `SkillStatePatch`), serves the pre-tool hook filter, the dispatch skip and the
+  preprocess pass. A second predicate, `is_gate_exempt`, is true only for `SkillStatePatch`:
+  hooks, pre-execution verifiers, the channel allowlist, utility scoring (no `record_call` or
+  `note_action`) and repeat detection (not checked, not recorded) are all skipped for it; the
+  tool-call quota still counts it, so a runaway patch loop stays bounded. Invariant: a name
+  that maps to `Some` always has a result written into its slot. Consequences: with no active
+  state the patch call returns "skill_state_patch is not active this turn"; a `request_compaction`
+  call while `allow_agent_compaction = false` returns a "disabled" error result instead of an
+  empty slot (L11, user approved). The name is in `INTERNAL_TOOLS`.
+- **D9** `[skills.state] enabled = false` by default; `skill-audit` ships its `state:` block,
+  inert until enabled.
+- **D10** The 8 KiB cap is the shared constant `MAX_FRONTMATTER_BLOCK_BYTES`.
+- **D11** The slash surface is `/skill state [name]`; the CLI is `zeph skill state schema <name>`.
+- **D12** The absorbed set is captured at validation: a validated patch extends
+  `pending_absorbed` with `last_batch_tool_call_ids` (taken), so two valid patches in one batch
+  absorb once and an invalid patch takes nothing. After a batch's results are pushed,
+  `last_batch_tool_call_ids` is overwritten only when the batch contained a non-built-in call
+  (N1), so `[cat A, cat B]` then an invalid patch then a valid patch still absorbs A and B. A
+  mixed batch `[patch, other]` clears only the previous batch, never `other`'s fresh result.
+  Both fields are cleared at turn start (FR-009). Ids are not unique across history (Ollama
+  reuses `call_{i}` per response), so a recorded batch also stores the history index of its
+  results message and clearing targets that single message, after checking it still holds the ids.
+  The pending set is committed only when the patch's own batch completed: a cancelled batch
+  (tombstoned patch) clears nothing.
+- **D13** Model-recorded state is untrusted data. Rendered as
+  `<skill_state source="model" skill="NAME">` plus compact JSON in which `<`, `>` and `&` are
+  written as `\u003c`, `\u003e`, `\u0026` (still valid JSON, so a value can never contain the
+  close tag), and the text is stripped of control characters. Bounds: default `max_len` 1024 and
+  `max_items` 64 when the schema omits them, merged state at most 16 KiB in its rendered,
+  escaped form (`PatchError::StateTooLarge`), field names `[a-z_][a-z0-9_]{0,63}` (nested included), nesting
+  at most 4; an invalid schema parses to `None` (warn-not-fail); schema `default` values may not
+  carry free text, since defaults would render as model-recorded. `null` resets a field to its
+  default, an empty list for `list`, else unsets it. Object values require every
+  declared field. `DelimiterTag::SkillState` makes the LSP and utility-hint sections escape the
+  tag, and is part of `UNTRUSTED_CONTENT`, so tool output cannot forge a section. Tag-opening
+  lookalike brackets are written as `\uXXXX` too. The tool description states the values are data, and the absorb contract.
+- **D14** One live section: emitting a new section first removes earlier
+  `<skill_state ...>...</skill_state>` spans from runtime notes in history (dropping a note whose
+  body becomes empty) with an exact token delta; the identity skip compares with the last
+  section in history. This bounds note growth to one section.
+- **R5** The session slot is `SkillExecution { Inactive, Active, Dormant }`. At turn start: the
+  same skill with an identical schema becomes `Active` (state restored); another state skill
+  gets a new `Active` from defaults; no primary turns `Active` into `Dormant`; a failed gate,
+  `/clear` or a session reset makes it `Inactive`. Only `Active` offers the tool, renders and
+  accepts patches; `/skill state` shows `Active` or `Dormant`.
+- **R6** An empty patch is rejected with `PatchError::Empty`.
+- **M2** The tool definition and the validator use the same `Arc<SkillStateSchema>`; at
+  activation the state is kept only when the skill and its schema are unchanged.
+- **Spans** `skills.state.{parse,validate,merge}`, `core.skillstate.{activate,dispatch,clear,render}`.
 
 ---
 

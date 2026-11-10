@@ -166,6 +166,12 @@ pub(crate) struct SkillState {
     pub(crate) semantic_scan: bool,
     /// Provider name for the semantic scan LLM. Empty = use primary provider.
     pub(crate) semantic_scan_provider: String,
+    /// `[skills.state] enabled`, mirrored here for the per-turn activation gate (spec 086).
+    pub(crate) state_enabled: bool,
+    /// Live execution state of this turn's primary state-declaring skill, if any (spec 086).
+    pub(crate) execution: crate::agent::skill_state::SkillExecution,
+    /// One-shot flags so a gated-off skill-state mode logs once per session, not every turn.
+    pub(crate) state_inert_logged: crate::agent::skill_state::InertLogged,
 }
 
 pub(crate) struct McpState {
@@ -959,6 +965,11 @@ pub(crate) struct ToolState {
     /// callers treat empty the same way `FileExecutor::new` does (default to `[cwd]`), not as
     /// "allow every path".
     pub(crate) allowed_paths: Vec<std::path::PathBuf>,
+    /// The latest tool batch that ran real tools (spec 086, D12/N1): what a validated
+    /// `skill_state_patch` may declare absorbed. Cleared at turn start.
+    pub(crate) last_batch: Option<crate::agent::skill_state::AbsorbableBatch>,
+    /// Results a validated patch absorbed, waiting for the clearing pass after the batch.
+    pub(crate) pending_absorbed: Option<crate::agent::skill_state::AbsorbedBatch>,
 }
 
 impl Default for ToolState {
@@ -976,6 +987,8 @@ impl Default for ToolState {
             tool_to_skill: HashMap::new(),
             last_tool_per_skill: HashMap::new(),
             allowed_paths: Vec::new(),
+            last_batch: None,
+            pending_absorbed: None,
         }
     }
 }
@@ -1693,6 +1706,9 @@ impl SkillState {
             support_similarity_threshold: 0.50,
             semantic_scan: false,
             semantic_scan_provider: String::new(),
+            state_enabled: false,
+            execution: crate::agent::skill_state::SkillExecution::Inactive,
+            state_inert_logged: crate::agent::skill_state::InertLogged::default(),
         }
     }
 }

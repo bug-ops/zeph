@@ -39,6 +39,9 @@ use tokio::time::Instant;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use zeph_llm::any::AnyProvider;
+use zeph_llm::classifier::llm::{
+    FeedbackGateDecision, FeedbackVerdictSource, trace_feedback_verdict,
+};
 use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
 
 use regex::Regex;
@@ -736,6 +739,13 @@ impl JudgeDetector {
         // Clamp and apply confidence threshold.
         let confidence = verdict.confidence.clamp(0.0, 1.0);
         if verdict.is_correction && confidence < confidence_threshold {
+            trace_feedback_verdict(
+                FeedbackVerdictSource::Judge,
+                &verdict.kind,
+                verdict.confidence,
+                confidence_threshold,
+                FeedbackGateDecision::Suppressed,
+            );
             return Ok(JudgeVerdict {
                 is_correction: false,
                 kind: "neutral".into(),
@@ -744,6 +754,13 @@ impl JudgeDetector {
             });
         }
 
+        trace_feedback_verdict(
+            FeedbackVerdictSource::Judge,
+            &verdict.kind,
+            verdict.confidence,
+            confidence_threshold,
+            FeedbackGateDecision::unsuppressed(verdict.is_correction),
+        );
         Ok(JudgeVerdict {
             confidence,
             ..verdict
@@ -2029,5 +2046,88 @@ mod tests {
             signal.is_none(),
             "long neutral message must not be classified as correction"
         );
+    }
+
+    #[derive(Clone, Default)]
+    struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuf {
+        type Writer = LogBuf;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    async fn judge_calibration_log(verdict_json: &str, threshold: f32) -> String {
+        let buf = LogBuf::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let provider = AnyProvider::Mock(zeph_llm::mock::MockProvider::with_responses(vec![
+            verdict_json.to_owned(),
+        ]));
+        JudgeDetector::evaluate(
+            &provider,
+            "secret user text",
+            "assistant text",
+            threshold,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn judge_emits_one_calibration_event_per_decision() {
+        let passed = judge_calibration_log(
+            r#"{"is_correction":true,"kind":"explicit_rejection","confidence":0.9,"reasoning":"private"}"#,
+            0.6,
+        )
+        .await;
+        assert_eq!(
+            passed.matches("feedback_calibration").count(),
+            1,
+            "{passed}"
+        );
+        assert!(passed.contains("decision=\"passed\"") && passed.contains("source=\"judge\""));
+        assert!(!passed.contains("secret user text") && !passed.contains("private"));
+
+        let suppressed = judge_calibration_log(
+            r#"{"is_correction":true,"kind":"repetition","confidence":0.3,"reasoning":""}"#,
+            0.6,
+        )
+        .await;
+        assert_eq!(
+            suppressed.matches("feedback_calibration").count(),
+            1,
+            "{suppressed}"
+        );
+        assert!(suppressed.contains("decision=\"suppressed\""));
+
+        let neutral = judge_calibration_log(
+            r#"{"is_correction":false,"kind":"neutral","confidence":0.1,"reasoning":""}"#,
+            0.6,
+        )
+        .await;
+        assert_eq!(
+            neutral.matches("feedback_calibration").count(),
+            1,
+            "{neutral}"
+        );
+        assert!(neutral.contains("decision=\"not_correction\""));
     }
 }

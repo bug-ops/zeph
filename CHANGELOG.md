@@ -8,12 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `zeph-skills`, `zeph-core`: opt-in skill execution state (`state:` frontmatter, `skill_state_patch`, `<skill_state>` section) for the replace context layout, with `zeph skill state schema` and `/skill state` (breaking: `SkillMeta.state`, `SkillConfigParams.skill_state_enabled`) (#6885)
+- `zeph-core`, `zeph-commands`: `/goal check [condition]` per-turn goal self-check (#6885)
+- `zeph`, `zeph-common`: `zeph doctor --fix` confirm-then-fix for key and vault file permissions (#6885)
+- `zeph-llm`, `zeph-agent-feedback`: `feedback_calibration` tracing event at the correction-confidence gate (#6885)
 - `zeph-config`, `zeph-core`: `[memory] context_layout` keeps the Claude prompt cache valid across turns (breaking: new `MessagePart` variant) (#6850)
 - `zeph-llm`: `LlmProvider::prefix_cache` and per-request `RequestPolicy` (#6850)
 - `zeph-llm`: `llm.claude.prefix_guard` span for prefix invalidation (#6850)
 
 ### Changed
 
+- `deps`: bump `rmcp` to 3.9.0 (RUSTSEC-2026-0462) and ignore RUSTSEC-2026-0459 for `libsqlite3-sys` pinned below 0.38 by `sqlx-sqlite` (#6885)
 - `deps`: bump `crypto-bigint` 0.7 and `ctutils` to patched versions and ignore RUSTSEC-2026-0387 for `crypto-bigint` 0.5 pinned by `age` (#6870)
 - `zeph-acp`: bump `agent-client-protocol` to 3.5 and refresh workspace dependencies; `unstable-elicitation` and `unstable-auth-methods` no longer forward to upstream features (breaking) (#6868)
 - `zeph-llm`, `zeph-core`: `chat_typed` returns `impl Future + Send` and `chat_typed_erased` is removed (breaking) (#6850)
@@ -22,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-core`: `request_compaction` with `allow_agent_compaction = false` returns a "disabled" error instead of an empty result (#6885)
 - `zeph-agent-context`: in `append` the proactive fidelity regrade follows the soft-tier gate and no longer rewrites sent history while the provider cache is warm (#6863) (#6867)
 - `zeph-memory`, `zeph-agent-context`: tiered recall drops items already in history before the token budget is applied (#6864) (#6867)
 - `zeph-subagent`: the streamed subagent turn keeps `ThinkingReplay` so dropped thinking is stripped from its history (#6862) (#6867)

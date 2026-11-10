@@ -34,6 +34,9 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # expectrl 0.9.0 is the latest release; remove once expectrl moves to a nix without pin-utils
 # astral-tokio-tar unmaintained (RUSTSEC-2026-0440) via testcontainers 0.27 (dev-dependency of zeph-mcp, tests only);
 # remove once testcontainers drops it
+# libsqlite3-sys 0.37.0 bundles SQLite < 3.54.0 (RUSTSEC-2026-0459, #6884): a crafted db + mismatched-page-size -wal file
+# can leak uninitialized memory; local attack vector, needs opening untrusted db files. sqlx-sqlite 0.9.0 (latest)
+# caps libsqlite3-sys <0.38, so the fixed >=0.39.0 cannot be resolved; remove once sqlx-sqlite allows libsqlite3-sys >=0.39
 ignore = [
     "RUSTSEC-2024-0436",
     "RUSTSEC-2026-0173",
@@ -45,6 +48,7 @@ ignore = [
     "RUSTSEC-2026-0387",
     "RUSTSEC-2026-0440",
     "RUSTSEC-2026-0441",
+    "RUSTSEC-2026-0459",
 ]
 
 [licenses]

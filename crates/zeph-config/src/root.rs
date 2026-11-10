@@ -287,6 +287,7 @@ impl Default for Config {
                 group_structured: false,
                 support_similarity_threshold: 0.50,
                 subagent_skill_token_budget: NonZeroUsize::new(12_000).expect("12000 is non-zero"),
+                state: crate::features::SkillStateConfig::default(),
             },
             memory: MemoryConfig {
                 sqlite_path: default_sqlite_path_field(),

@@ -152,6 +152,7 @@ Configure the self-learning feedback detector:
   - **regex** — pattern matching only, zero extra LLM calls
   - **judge** — LLM-backed classifier for borderline cases; you can specify a dedicated model
 - **Correction confidence threshold** — Jaccard overlap threshold (default: 0.7)
+- **Skill execution state** — enable `[skills.state]` (default: no); see [Skill Execution State](../guides/custom-skills.md#skill-execution-state)
 
 ## Step 16: Compaction Probe
 

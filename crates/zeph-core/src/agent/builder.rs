@@ -89,6 +89,7 @@ pub enum BuildError {
 /// across `src/runner.rs`, `src/daemon.rs`, `src/serve/agent_factory.rs`, and `src/acp.rs` — each
 /// site had shipped a swapped- or missing-argument regression at some point (#5819, #5867,
 /// #5827) because the mapping had to be kept in sync by hand in four places.
+#[allow(clippy::struct_excessive_bools)] // independent config flags mirrored from `[skills]`
 #[derive(Debug, Clone)]
 pub struct SkillConfigParams {
     /// See [`Agent::with_skill_matching_config`]'s `disambiguation_threshold` parameter.
@@ -111,6 +112,8 @@ pub struct SkillConfigParams {
     pub semantic_scan: bool,
     /// See [`Agent::with_semantic_scan`]'s `provider_name` parameter.
     pub semantic_scan_provider_name: String,
+    /// `[skills.state] enabled` (spec 086): the master switch for skill execution state.
+    pub skill_state_enabled: bool,
 }
 
 /// Bool snapshot of which security-relevant `AgentBuilder` setters have been applied.
@@ -190,6 +193,7 @@ impl From<&SkillsConfig> for SkillConfigParams {
             disambiguate_provider_name: skills.disambiguate_provider.as_str().to_owned(),
             semantic_scan: skills.semantic_scan,
             semantic_scan_provider_name: skills.semantic_scan_provider.as_str().to_owned(),
+            skill_state_enabled: skills.state.enabled,
         }
     }
 }
@@ -637,7 +641,8 @@ impl<C: Channel> Agent<C> {
     ///     .build()?;
     /// ```
     #[must_use]
-    pub fn with_skill_config(self, params: SkillConfigParams) -> Self {
+    pub fn with_skill_config(mut self, params: SkillConfigParams) -> Self {
+        self.services.skill.state_enabled = params.skill_state_enabled;
         self.with_skill_matching_config(
             params.disambiguation_threshold,
             params.two_stage_matching,
@@ -3864,6 +3869,7 @@ mod tests {
             disambiguate_provider_name: "dis".to_owned(),
             semantic_scan: true,
             semantic_scan_provider_name: "scan".to_owned(),
+            skill_state_enabled: true,
         });
 
         let skill = &agent.services.skill;
@@ -3877,6 +3883,7 @@ mod tests {
         assert_eq!(skill.disambiguate_provider_name, "dis");
         assert!(skill.semantic_scan);
         assert_eq!(skill.semantic_scan_provider, "scan");
+        assert!(skill.state_enabled);
     }
 
     /// `SkillConfigParams::from(&SkillsConfig)` must map every field to the same-named field on
@@ -3895,6 +3902,7 @@ mod tests {
         skills.disambiguate_provider = "dis".into();
         skills.semantic_scan = true;
         skills.semantic_scan_provider = "scan".into();
+        skills.state.enabled = true;
 
         let params = SkillConfigParams::from(&skills);
         assert!((params.disambiguation_threshold - 0.11).abs() < f32::EPSILON);
@@ -3907,6 +3915,7 @@ mod tests {
         assert_eq!(params.disambiguate_provider_name, "dis");
         assert!(params.semantic_scan);
         assert_eq!(params.semantic_scan_provider_name, "scan");
+        assert!(params.skill_state_enabled);
     }
 
     #[test]

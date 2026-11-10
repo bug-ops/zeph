@@ -144,6 +144,9 @@ impl<C: Channel> Agent<C> {
             return pre_exec_blocked;
         }
         for (idx, call) in calls.iter().enumerate() {
+            if self.is_gate_exempt(call.tool_id.as_str()) {
+                continue;
+            }
             let args_value = serde_json::Value::Object(call.params.clone());
             for verifier in &self.tool_orchestrator.pre_execution_verifiers {
                 match verifier.verify(call.tool_id.as_str(), &args_value) {
@@ -237,7 +240,7 @@ impl<C: Channel> Agent<C> {
             return;
         };
         for (idx, call) in calls.iter().enumerate() {
-            if pre_exec_blocked[idx] {
+            if pre_exec_blocked[idx] || self.is_gate_exempt(call.tool_id.as_str()) {
                 continue;
             }
             if !allowlist.iter().any(|t| t == call.tool_id.as_str()) {
@@ -297,7 +300,7 @@ impl<C: Channel> Agent<C> {
                 actions.push(zeph_tools::UtilityAction::Stop);
                 continue;
             }
-            if pre_exec_blocked[idx] {
+            if pre_exec_blocked[idx] || self.is_gate_exempt(call.tool_id.as_str()) {
                 actions.push(zeph_tools::UtilityAction::ToolCall);
                 continue;
             }
@@ -682,13 +685,19 @@ impl<C: Channel> Agent<C> {
 
         // Build args hashes and check for repeats. Blocked calls get a pre-built error result.
         let args_hashes: Vec<u64> = calls.iter().map(|c| tool_args_hash(&c.params)).collect();
+        let exempt: Vec<bool> = calls
+            .iter()
+            .map(|c| self.is_gate_exempt(c.tool_id.as_str()))
+            .collect();
         let repeat_blocked: Vec<bool> = calls
             .iter()
             .zip(args_hashes.iter())
-            .map(|(call, &hash)| {
-                let blocked = self
-                    .tool_orchestrator
-                    .is_repeat(call.tool_id.as_str(), hash);
+            .zip(exempt.iter())
+            .map(|((call, &hash), &exempt)| {
+                let blocked = !exempt
+                    && self
+                        .tool_orchestrator
+                        .is_repeat(call.tool_id.as_str(), hash);
                 if blocked {
                     tracing::warn!(
                         tool = %call.tool_id,
@@ -699,9 +708,11 @@ impl<C: Channel> Agent<C> {
             })
             .collect();
         // CRIT-3: push calls before execution; cache hits included (P1 invariant).
-        for (call, &hash) in calls.iter().zip(args_hashes.iter()) {
-            self.tool_orchestrator
-                .push_tool_call(call.tool_id.as_str(), hash);
+        for ((call, &hash), &exempt) in calls.iter().zip(args_hashes.iter()).zip(exempt.iter()) {
+            if !exempt {
+                self.tool_orchestrator
+                    .push_tool_call(call.tool_id.as_str(), hash);
+            }
         }
 
         // Resolved once per dispatch batch and threaded through `ToolDispatchContext` so both
@@ -1356,11 +1367,7 @@ impl<C: Channel> Agent<C> {
 
             let futs = tier_indices.iter().filter_map(|&idx| {
                 let tc = &tool_calls[idx];
-                if tc.name == "compress_context"
-                    || tc.name == "request_compaction"
-                    || (self.services.focus.config.enabled
-                        && (tc.name == "start_focus" || tc.name == "complete_focus"))
-                {
+                if self.builtin_tool(tc.name.as_str()).is_some() {
                     return None;
                 }
                 let matched: Vec<&zeph_config::HookDef> =
@@ -1425,12 +1432,9 @@ impl<C: Channel> Agent<C> {
             let tc = &tool_calls[idx];
             let call = &calls[idx];
 
-            // Skip focus tools, compress_context, and request_compaction — pre-handled before the tier loop.
-            if tc.name == "compress_context"
-                || tc.name == "request_compaction"
-                || (self.services.focus.config.enabled
-                    && (tc.name == "start_focus" || tc.name == "complete_focus"))
-            {
+            // Built-ins (focus, compress_context, request_compaction, skill_state_patch) were
+            // answered before the tier loop.
+            if self.builtin_tool(tc.name.as_str()).is_some() {
                 continue;
             }
 
@@ -1997,6 +2001,7 @@ impl<C: Channel> Agent<C> {
         }
         tracing::debug!("tool_batch: persist_message done, pushing message");
         self.push_message(user_msg);
+        self.record_batch_for_absorption(tool_calls);
         tracing::debug!("tool_batch: message pushed, starting LSP hooks");
         if let (Some(id), Some(last)) = (
             self.msg.last_persisted_message_id,
@@ -2190,6 +2195,7 @@ impl<C: Channel> Agent<C> {
         {
             builtins.push(crate::agent::focus::request_compaction_tool_definition());
         }
+        builtins.extend(self.skill_state_tool_definition());
         always_present.extend(builtins.iter().map(|d| d.name.clone()));
         tool_defs.extend(builtins);
 
@@ -2201,7 +2207,7 @@ impl<C: Channel> Agent<C> {
 
     /// Test entry point taking text and calls as separate arguments.
     #[cfg(test)]
-    pub(super) async fn handle_native_tool_calls(
+    pub(in crate::agent) async fn handle_native_tool_calls(
         &mut self,
         text: Option<&str>,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
@@ -2513,6 +2519,7 @@ impl<C: Channel> Agent<C> {
             return Ok(Some(()));
         };
         let window_exhausted = self.handle_native_content(content).await?;
+        self.clear_absorbed_results();
 
         // Mid-iteration history edits invalidate the cached prefix, so only real token pressure
         // applies them here; stale-output pruning runs once at the turn boundary instead.
@@ -2683,6 +2690,7 @@ mod tests {
         // hook matchers in the first place (extra guard).
         assert!(matching_hooks(&matchers, "compress_context").is_empty());
         assert!(matching_hooks(&matchers, "request_compaction").is_empty());
+        assert!(matching_hooks(&matchers, "skill_state_patch").is_empty());
         assert!(matching_hooks(&matchers, "start_focus").is_empty());
         assert!(matching_hooks(&matchers, "complete_focus").is_empty());
     }

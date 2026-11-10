@@ -11,6 +11,7 @@
 //! - `clear` — dismiss the active or paused goal
 //! - `status` — show the active goal and recent history
 //! - `list` — list all goals (active, paused, completed, cleared)
+//! - `check [condition]` — one advisory self-check of a goal condition against the conversation
 
 use std::future::Future;
 use std::pin::Pin;
@@ -35,7 +36,7 @@ impl CommandHandler<CommandContext<'_>> for GoalCommand {
     }
 
     fn args_hint(&self) -> &'static str {
-        "create <text> [--budget N] | pause | resume | complete | clear | status | list"
+        "create <text> [--budget N] | pause | resume | complete | clear | status | list | check [condition]"
     }
 
     fn category(&self) -> SlashCategory {

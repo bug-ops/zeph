@@ -574,6 +574,7 @@ mod tests {
             skill_disambiguate_provider: String::new(),
             semantic_scan: false,
             semantic_scan_provider: String::new(),
+            skill_state_enabled: false,
             trust_config: zeph_core::config::TrustConfig::default(),
             rl_routing_enabled: false,
             rl_learning_rate: 0.0,

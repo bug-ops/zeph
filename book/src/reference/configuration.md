@@ -277,6 +277,10 @@ heuristic_promotion_provider = ""       # Provider name for promotion LLM calls;
 heuristic_promotion_threshold = 5       # Minimum heuristics collected before promotion eligibility (default: 5)
 heuristic_promotion_interval_hours = 24 # Background job interval in hours (default: 24)
 
+[skills.state]
+enabled = false                    # Typed skill execution state: skill_state_patch tool + <skill_state> section (default: false)
+                                   # Needs a `state:` block in SKILL.md; inert under context_layout = "append" and durable turns
+
 # External skill/plugin registry discovery (opt-in).
 # Provides `zeph skill search` / `zeph skill get` and `zeph plugin search` / `zeph plugin get`.
 # Always off by default — zero network calls until explicitly enabled.

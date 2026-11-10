@@ -1240,6 +1240,40 @@ pub fn migrate_rate_limit_advisory(toml_src: &str) -> Result<MigrationResult, Mi
     })
 }
 
+/// Add an advisory `[skills.state]` block to an existing active `[skills]` table
+/// (spec `086-skill-execution-state`, issue #6766).
+///
+/// `#[serde(default)]` makes the section's absence safe on load, so the block only aids
+/// discoverability. No-op when `[skills]` is absent or inactive, or `[skills.state]` is already
+/// present (active or as a prior advisory comment).
+///
+/// # Errors
+///
+/// Returns `MigrateError::Parse` if the TOML cannot be parsed.
+pub fn migrate_skill_state_config(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    if section_header_present(toml_src, "skills.state")
+        || toml_src.contains("# [skills.state]")
+        || !section_header_present(toml_src, "skills")
+    {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    let comment = "\n# Typed skill execution state (spec 086, #6766). A skill must also declare a\n\
+         # `state:` block in its SKILL.md. Inert under durable turns and the append layout.\n\
+         # [skills.state]\n\
+         # enabled = false\n";
+    Ok(MigrationResult {
+        output: format!("{doc}{comment}"),
+        changed_count: 1,
+        sections_changed: vec!["skills.state".to_owned()],
+    })
+}
+
 #[cfg(test)]
 mod rate_limit_advisory_tests {
     use super::*;

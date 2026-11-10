@@ -77,7 +77,7 @@ ls -la ~/.zeph/vault.age   # Should show: -rw------- (mode 0600)
 ls -la ~/.zeph/key.txt     # Should show: -rw------- (mode 0600)
 ```
 
-Run `zeph doctor` to verify file modes are correct across all sensitive Zeph files.
+Run `zeph doctor` to verify file modes are correct across all sensitive Zeph files. If a key or vault file is group- or world-accessible, `zeph doctor --fix` offers to restrict it to owner-only after confirmation (see [`zeph doctor`](cli.md#zeph-doctor)).
 
 ## Plugin Manifest Integrity
 

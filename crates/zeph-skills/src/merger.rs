@@ -40,6 +40,7 @@
 //!     parent_skill: None,
 //!     proactive_domain: None,
 //!     extensions: None,
+//!     state: None,
 //! };
 //!
 //! let decision = decide(0.80, 0.75, 0.90, true, &meta);
@@ -220,6 +221,7 @@ mod tests {
             parent_skill: None,
             proactive_domain: None,
             extensions: None,
+            state: None,
         }
     }
 

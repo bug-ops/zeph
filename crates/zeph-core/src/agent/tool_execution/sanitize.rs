@@ -80,6 +80,7 @@ const INTERNAL_TOOLS: &[&str] = &[
     "memory_search",
     "compress_context",
     "request_compaction",
+    "skill_state_patch",
     "complete_focus",
     "start_focus",
     "schedule_periodic",

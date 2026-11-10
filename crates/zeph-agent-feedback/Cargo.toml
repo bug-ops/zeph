@@ -26,6 +26,7 @@ zeph-llm.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "sync", "time", "test-util", "macros"] }
+tracing-subscriber = { workspace = true, features = ["fmt"] }
 zeph-llm = { workspace = true, features = ["testing"] }
 
 [lints]

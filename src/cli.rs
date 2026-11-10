@@ -558,6 +558,9 @@ pub(crate) enum Command {
         /// Timeout in seconds for MCP server connection probes
         #[arg(long, default_value = "5")]
         mcp_timeout_secs: u64,
+        /// Offer to restrict group/world-accessible vault files to owner-only (asks per fix)
+        #[arg(long, conflicts_with = "json")]
+        fix: bool,
     },
     /// Gonka network diagnostics and credential checks
     #[cfg(feature = "gonka")]
@@ -1077,6 +1080,20 @@ pub(crate) enum SkillCommand {
     Get {
         /// Registry-assigned skill ID (as printed by `skill search`)
         registry_id: String,
+    },
+    /// Inspect a skill's typed execution state declaration (spec 086)
+    State {
+        #[command(subcommand)]
+        command: SkillStateCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum SkillStateCommand {
+    /// Print the `skill_state_patch` input schema derived from a skill's `state:` block
+    Schema {
+        /// Skill name
+        name: String,
     },
 }
 

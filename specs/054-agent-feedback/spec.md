@@ -331,6 +331,10 @@ let detector = FeedbackDetector::new(0.6);
 // Pattern matches with confidence 0.5 → suppressed
 ```
 
+### Calibration Telemetry
+
+The LLM paths (`JudgeDetector::evaluate`, `LlmClassifier::classify_feedback`) gate on the model's self-reported confidence. Each verdict emits one `info` event with target `feedback_calibration` (`trace_feedback_verdict` in `zeph-llm`): `source` (`judge`/`llm_classifier`), `kind` normalized to a closed set (`explicit_rejection`, `alternative_request`, `repetition`, `self_correction`, `neutral`, `other`), `raw_confidence`, clamped `confidence`, `threshold` and `decision` (`not_correction`/`passed`/`suppressed`). Message text, reasoning and the raw kind string are never logged. The background tasks run inside span `core.feedback.classify` (`source`, `conversation_id`) so events can be joined to transcripts for offline labeling. The gate itself is unchanged; calibration is a follow-up (#6800).
+
 ---
 
 ## 5. Language Support Matrix

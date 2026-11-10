@@ -25,6 +25,21 @@ endpoint = "http://localhost:4317"       # OTLP gRPC endpoint
 
 Traces flush gracefully on shutdown. Point `endpoint` at any OTLP-compatible collector (Jaeger, Grafana Tempo, etc.).
 
+## Feedback Calibration Events
+
+The correction detector emits one `tracing` event with target `feedback_calibration` (level `info`) for every LLM-backed feedback verdict that reaches the confidence gate. It is instrumentation only; detection behavior is unchanged. Use it to tune the confidence threshold offline.
+
+| Field | Values |
+|-------|--------|
+| `source` | `judge` or `llm_classifier` |
+| `kind` | `explicit_rejection`, `alternative_request`, `repetition`, `self_correction`, `neutral`, or `other` |
+| `raw_confidence` | confidence as reported by the model |
+| `confidence` | `raw_confidence` clamped to 0.0-1.0 |
+| `threshold` | gate threshold in effect |
+| `decision` | `not_correction`, `passed` or `suppressed` (a correction below the threshold, downgraded to neutral) |
+
+Message text and model reasoning are never logged. Show only these events with `RUST_LOG=feedback_calibration=info`.
+
 ## Local Chrome Traces
 
 With `[telemetry] enabled = true` and `backend = "local"` (feature `profiling`), Zeph writes Chrome JSON traces to `trace_dir`. Spans are recorded in async style: every span is a `b` (begin) event paired with an `e` (end) event that share an `id`, never a complete `X` event.

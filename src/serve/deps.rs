@@ -77,6 +77,8 @@ pub(crate) struct ServeAgentDeps {
     /// (#5827: previously left on hardcoded builder defaults for `/sessions`).
     pub(crate) semantic_scan: bool,
     pub(crate) semantic_scan_provider: String,
+    /// `config.skills.state.enabled`, wired into `SkillConfigParams` per session (spec 086).
+    pub(crate) skill_state_enabled: bool,
     /// `config.skills.trust`, wired into `Agent::with_trust_config` per session — mirrors
     /// `src/runner.rs` and `src/daemon.rs` (#5920: previously left on `TrustConfig::default()`
     /// for `/sessions` agents, silently ignoring the operator's configured trust levels).
@@ -600,6 +602,7 @@ pub(crate) async fn assemble_serve_deps(
         skill_disambiguate_provider: config.skills.disambiguate_provider.as_str().to_owned(),
         semantic_scan: config.skills.semantic_scan,
         semantic_scan_provider: config.skills.semantic_scan_provider.as_str().to_owned(),
+        skill_state_enabled: config.skills.state.enabled,
         trust_config: config.skills.trust.clone(),
         rl_routing_enabled: config.skills.rl_routing_enabled,
         rl_learning_rate: config.skills.rl_learning_rate,
