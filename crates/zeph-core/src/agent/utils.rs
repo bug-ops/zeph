@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use zeph_llm::provider::{AuxiliaryUsage, LlmProvider, Message, MessagePart, Role};
+use zeph_llm::provider::{
+    AuxiliaryUsage, CacheUsage, LlmProvider, Message, MessagePart, ResponseUsage, Role,
+};
 
 use super::{Agent, CODE_CONTEXT_PREFIX};
 use crate::channel::Channel;
@@ -333,8 +335,8 @@ impl<C: Channel> Agent<C> {
     /// Auxiliary usage (server-side compaction iterations) is billed too, but it is never part
     /// of `input_tokens`, so it cannot inflate the context size derived from them.
     pub(crate) fn record_cost_and_cache(&self, input_tokens: u64, output_tokens: u64) {
-        let auxiliary = self.provider.last_auxiliary_usage().unwrap_or_default();
-        self.record_cost(input_tokens, output_tokens, auxiliary);
+        let usage = self.provider.last_response_usage();
+        self.record_cost(input_tokens, output_tokens, usage);
     }
 
     /// Like [`Self::record_cost_and_cache`] for background calls (planner, aggregator) made on
@@ -342,11 +344,19 @@ impl<C: Channel> Agent<C> {
     /// call and must not be billed a second time.
     #[cfg(feature = "scheduler")]
     pub(crate) fn record_background_cost(&self, input_tokens: u64, output_tokens: u64) {
-        self.record_cost(input_tokens, output_tokens, AuxiliaryUsage::default());
+        let usage = self.provider.last_response_usage().map(|u| ResponseUsage {
+            auxiliary: None,
+            ..u
+        });
+        self.record_cost(input_tokens, output_tokens, usage);
     }
 
-    fn record_cost(&self, input_tokens: u64, output_tokens: u64, auxiliary: AuxiliaryUsage) {
-        let (cache_write, cache_read) = self.provider.last_cache_usage().unwrap_or((0, 0));
+    fn record_cost(&self, input_tokens: u64, output_tokens: u64, usage: Option<ResponseUsage>) {
+        let CacheUsage {
+            creation: cache_write,
+            read: cache_read,
+        } = usage.and_then(|u| u.cache).unwrap_or_default();
+        let auxiliary = usage.and_then(|u| u.auxiliary).unwrap_or_default();
 
         if let Some(ref tracker) = self.runtime.metrics.cost_tracker {
             let provider_name = if self.runtime.config.active_provider_name.is_empty() {
@@ -393,8 +403,8 @@ impl<C: Channel> Agent<C> {
     /// tracking is disabled (mirrors [`Self::record_cost_and_cache`]'s no-op gating, issue
     /// #6549 — usage-row writes follow the existing `[cost] enabled` switch).
     ///
-    /// `provider` supplies the call-specific transient state (`last_cache_usage`,
-    /// `last_ttft_ms`, `last_reasoning_tokens`) — pass the exact [`zeph_llm::any::AnyProvider`]
+    /// `provider` supplies the call-specific transient state (`last_response_usage`,
+    /// `last_ttft_ms`) — pass the exact [`zeph_llm::any::AnyProvider`]
     /// instance that served this call (e.g. `orchestrator_provider` for `plan.rs`'s
     /// planner/aggregator sites), since each provider clone owns an independent usage tracker.
     /// Naming and pricing intentionally always resolve from `self.runtime.config`
@@ -422,9 +432,13 @@ impl<C: Channel> Agent<C> {
         stream_ttft_ms: Option<u64>,
     ) -> Option<zeph_memory::UsageRecord> {
         let tracker = self.runtime.metrics.cost_tracker.as_ref()?;
-        let (cache_write, cache_read) = provider.last_cache_usage().unwrap_or((0, 0));
-        let auxiliary = provider.last_auxiliary_usage().unwrap_or_default();
-        let reasoning_tokens = provider.last_reasoning_tokens();
+        let usage = provider.last_response_usage();
+        let CacheUsage {
+            creation: cache_write,
+            read: cache_read,
+        } = usage.and_then(|u| u.cache).unwrap_or_default();
+        let auxiliary = usage.and_then(|u| u.auxiliary).unwrap_or_default();
+        let reasoning_tokens = usage.and_then(|u| u.reasoning);
         // Issue #6549 S1: prefer the true first-content-token time captured at the SSE stream
         // consumption point (speculative-decoding path) over the provider-level TTFB proxy —
         // `stream_ttft_ms` is `Some` only when this call actually streamed.

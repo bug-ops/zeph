@@ -260,12 +260,13 @@ pub(crate) fn init_tracing(
             || "zeph.log".to_owned(),
             |n| n.to_string_lossy().into_owned(),
         );
-        if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        if let Err(e) = prepare_log_dir(&log_dir, true, true) {
             eprintln!(
                 "[zeph] warning: could not create fallback log directory {}: {e}",
                 log_dir.display()
             );
         } else {
+            precreate_private_log_file(&log_dir.join(&filename), true);
             let file_appender = tracing_appender::rolling::never(&log_dir, &filename);
             let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
             let fallback_filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -296,7 +297,9 @@ pub(crate) fn init_tracing(
             .extension()
             .map_or_else(|| "log".to_owned(), |s| s.to_string_lossy().into_owned());
 
-        if let Err(e) = std::fs::create_dir_all(&dir) {
+        let is_default_dir =
+            path == std::path::Path::new(&zeph_core::config::default_log_file_path());
+        if let Err(e) = prepare_log_dir(&dir, is_default_dir, !runtime_ctx.tui_mode) {
             if !runtime_ctx.tui_mode {
                 eprintln!("zeph: log directory creation failed, file logging disabled: {e}");
             }
@@ -304,7 +307,13 @@ pub(crate) fn init_tracing(
             let rotation = match logging.rotation {
                 LogRotation::Daily => Rotation::DAILY,
                 LogRotation::Hourly => Rotation::HOURLY,
-                _ => Rotation::NEVER,
+                _ => {
+                    precreate_private_log_file(
+                        &dir.join(format!("{filename_prefix}.{filename_suffix}")),
+                        is_default_dir,
+                    );
+                    Rotation::NEVER
+                }
             };
             match RollingFileAppender::builder()
                 .rotation(rotation)
@@ -419,6 +428,56 @@ pub(crate) fn init_tracing(
     }
 }
 
+/// Create `dir` with owner-only permissions and, for the default log directory, tighten an
+/// existing one.
+///
+/// User-configured parents are never chmodded: only `is_default_dir` triggers
+/// [`zeph_common::fs_secure::restrict_dir_to_owner`], and a failure there is a warning, not an
+/// error, so logging keeps working.
+fn prepare_log_dir(dir: &std::path::Path, is_default_dir: bool, warn: bool) -> std::io::Result<()> {
+    zeph_common::fs_secure::create_private_dir_all(dir)?;
+    if is_default_dir
+        && let Err(e) = zeph_common::fs_secure::restrict_dir_to_owner(dir)
+        && warn
+    {
+        eprintln!(
+            "[zeph] warning: could not restrict log directory {} to its owner: {e}",
+            dir.display()
+        );
+    }
+    Ok(())
+}
+
+/// Create the non-rotating log file with mode 0o600 before the appender opens it with the
+/// process umask. A file that already exists keeps its mode unless `tighten_existing` is set
+/// (the default log path), in which case its group and other bits are cleared. Failures are
+/// ignored here: the appender reports its own open error.
+fn precreate_private_log_file(path: &std::path::Path, tighten_existing: bool) {
+    if let Err(e) = zeph_common::fs_secure::append_private(path) {
+        tracing::debug!(path = %path.display(), error = %e, "log file pre-create failed");
+        return;
+    }
+    #[cfg(unix)]
+    if tighten_existing && let Err(e) = zeph_common::fs_secure::restrict_to_owner(path) {
+        tracing::debug!(path = %path.display(), error = %e, "log file restrict failed");
+    }
+    #[cfg(not(unix))]
+    let _ = tighten_existing;
+}
+
+/// Create `trace_dir` (owner-only when missing) and a fresh owner-only trace file named
+/// `filename` in it, returning the path and the open handle.
+#[cfg(any(feature = "profiling", test))]
+fn create_private_trace_file(
+    trace_dir: &std::path::Path,
+    filename: &str,
+) -> std::io::Result<(std::path::PathBuf, std::fs::File)> {
+    zeph_common::fs_secure::create_private_dir_all(trace_dir)?;
+    let path = trace_dir.join(filename);
+    let file = zeph_common::fs_secure::open_private_truncate(&path)?;
+    Ok((path, file))
+}
+
 /// Shared take-once cell holding the file-log [`WorkerGuard`].
 ///
 /// Cloned between [`TracingGuards::log_guard`](TracingGuards) and, when nothing else on the
@@ -473,18 +532,19 @@ fn build_chrome_layer(
         return None;
     }
 
-    if let Err(e) = std::fs::create_dir_all(&telemetry.trace_dir) {
-        eprintln!(
-            "zeph: failed to create trace directory {}: {e}",
-            telemetry.trace_dir.display()
-        );
-        return None;
-    }
-
     let session_id = uuid::Uuid::new_v4().simple();
     let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%S");
     let filename = format!("{session_id}_{timestamp}.json");
-    let trace_path = telemetry.trace_dir.join(filename);
+    let trace_file = match create_private_trace_file(&telemetry.trace_dir, &filename) {
+        Ok((_, file)) => file,
+        Err(e) => {
+            eprintln!(
+                "zeph: failed to create trace file in {}: {e}",
+                telemetry.trace_dir.display()
+            );
+            return None;
+        }
+    };
 
     // TraceStyle::Async records on_new_span/on_close once per span lifetime (true wall-clock
     // duration) instead of Threaded's on_enter/on_exit, which fire on every poll of an async
@@ -493,7 +553,7 @@ fn build_chrome_layer(
     // produces share an `id` (the span tree's root) rather than pairing complete "X" events;
     // see the reworked jq recipes in `.claude/rules/continuous-improvement.md`.
     let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
-        .file(trace_path)
+        .writer(trace_file)
         .include_args(telemetry.include_args)
         .trace_style(tracing_chrome::TraceStyle::Async)
         .build();
@@ -796,6 +856,112 @@ fn build_otlp_layer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn mode_of(path: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    fn world_readable_dir(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::create_dir_all(path).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_log_dir_tightens_only_the_default_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let default_like = root.path().join("default");
+        let custom = root.path().join("custom");
+        world_readable_dir(&default_like);
+        world_readable_dir(&custom);
+
+        prepare_log_dir(&default_like, true, false).unwrap();
+        prepare_log_dir(&custom, false, false).unwrap();
+
+        assert_eq!(mode_of(&default_like), 0o700);
+        assert_eq!(
+            mode_of(&custom),
+            0o755,
+            "user-configured dirs are never chmodded"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_log_dir_creates_missing_directories_private() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("a").join("logs");
+        prepare_log_dir(&dir, false, false).unwrap();
+        assert_eq!(mode_of(&dir), 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_log_dir_refuses_to_follow_a_symlinked_default_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        world_readable_dir(&target);
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        prepare_log_dir(&link, true, false).unwrap();
+        assert_eq!(
+            mode_of(&target),
+            0o755,
+            "symlink target must stay untouched"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn precreated_log_file_is_owner_only() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("zeph.log");
+        precreate_private_log_file(&file, false);
+        assert_eq!(mode_of(&file), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn precreate_tightens_an_existing_log_file_only_when_asked() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let loose = root.path().join("loose.log");
+        let default_like = root.path().join("default.log");
+        for file in [&loose, &default_like] {
+            std::fs::write(file, b"old line\n").unwrap();
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+
+        precreate_private_log_file(&loose, false);
+        precreate_private_log_file(&default_like, true);
+
+        assert_eq!(
+            mode_of(&loose),
+            0o644,
+            "user-configured files are left alone"
+        );
+        assert_eq!(mode_of(&default_like), 0o600);
+        assert_eq!(
+            std::fs::read(&default_like).unwrap(),
+            b"old line\n",
+            "content kept"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trace_file_and_missing_trace_dir_are_owner_only() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("traces");
+        let (path, _file) = create_private_trace_file(&dir, "t.json").unwrap();
+        assert_eq!(mode_of(&dir), 0o700);
+        assert_eq!(mode_of(&path), 0o600);
+    }
 
     /// Verify the full truth table of `should_install_sigterm_flush_task` (critic finding S3):
     /// the gate is now unconditional (not `profiling`-gated), so a mis-wire here would silently
@@ -1147,6 +1313,12 @@ mod tests {
         assert!(
             !json_files.is_empty(),
             "expected at least one .json trace file"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            mode_of(&json_files[0].path()),
+            0o600,
+            "chrome trace file must be owner-only"
         );
     }
 

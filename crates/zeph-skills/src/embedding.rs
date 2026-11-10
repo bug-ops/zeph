@@ -371,6 +371,10 @@ mod tests {
     }
 
     impl LlmProvider for BatchTestProvider {
+        fn last_response_usage(&self) -> Option<zeph_llm::provider::ResponseUsage> {
+            None
+        }
+
         async fn chat(
             &self,
             _messages: &[zeph_llm::provider::Message],

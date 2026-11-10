@@ -13,7 +13,7 @@ use crate::card_signing::{SignatureVerification, TrustedKey, verify_card_signatu
 use crate::error::A2aError;
 use crate::types::AgentCard;
 
-// TODO(critic): 1.0.0 serves /.well-known/agent-card.json — needs version-aware
+// TODO(#6932): 1.0.0 serves /.well-known/agent-card.json — needs version-aware
 // fetch/fallback before pure-1.0.0 peers are discoverable (#5928 follow-up).
 const WELL_KNOWN_PATH: &str = "/.well-known/agent.json";
 

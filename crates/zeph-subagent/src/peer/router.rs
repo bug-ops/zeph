@@ -205,7 +205,7 @@ impl PeerRouter {
     /// `root(S) == root(T) AND S != T AND (T == parent(S) | parent(T) == parent(S) | S is an
     /// ancestor of T)`.
     ///
-    /// TODO(spec `087-subagent-peer-messaging`, review M6): a grandchild cannot reply
+    /// TODO(#6933): (spec `087-subagent-peer-messaging`, review M6) a grandchild cannot reply
     /// to an ancestor beyond its direct parent (only `T == parent(S)`, not "T is an ancestor
     /// of S") — latent until a sub-agent-side spawn tool exists, since every spawn's `parent`
     /// is a group root today (`manager/spawn.rs`'s own comment at the `spawn()`/`resume()`

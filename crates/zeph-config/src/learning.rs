@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::calibration::ConfidenceCalibration;
+use crate::calibration::{ConfidenceCalibration, ConfidenceThreshold};
 use crate::providers::ProviderName;
 use serde::{Deserialize, Serialize};
 
@@ -31,10 +31,6 @@ fn default_cooldown_minutes() -> u64 {
 
 fn default_correction_detection() -> bool {
     true
-}
-
-fn default_correction_confidence_threshold() -> f32 {
-    0.6
 }
 
 fn default_judge_adaptive_low() -> f32 {
@@ -223,8 +219,8 @@ pub struct LearningConfig {
     pub cooldown_minutes: u64,
     #[serde(default = "default_correction_detection")]
     pub correction_detection: bool,
-    #[serde(default = "default_correction_confidence_threshold")]
-    pub correction_confidence_threshold: f32,
+    #[serde(default)]
+    pub correction_confidence_threshold: ConfidenceThreshold,
     /// Piecewise-linear `[raw, calibrated]` curve applied to LLM-reported correction confidence
     /// before the threshold gate (`detector_mode = "judge"` / `"model"`). Empty = identity.
     #[serde(default, skip_serializing_if = "ConfidenceCalibration::is_identity")]
@@ -457,7 +453,7 @@ impl Default for LearningConfig {
             max_versions: default_max_versions(),
             cooldown_minutes: default_cooldown_minutes(),
             correction_detection: default_correction_detection(),
-            correction_confidence_threshold: default_correction_confidence_threshold(),
+            correction_confidence_threshold: ConfidenceThreshold::default(),
             correction_confidence_calibration: ConfidenceCalibration::identity(),
             detector_mode: DetectorMode::default(),
             judge_model: String::new(),
@@ -553,6 +549,22 @@ mod tests {
             let deserialized: DetectorMode = serde_json::from_str(&serialized).unwrap();
             assert_eq!(deserialized, mode, "deserialize {mode:?}");
         }
+    }
+
+    #[test]
+    fn correction_threshold_invalid_fails_config_load() {
+        assert!(toml::from_str::<LearningConfig>("correction_confidence_threshold = nan").is_err());
+        assert!(toml::from_str::<LearningConfig>("correction_confidence_threshold = 1.5").is_err());
+        let cfg: LearningConfig = toml::from_str("correction_confidence_threshold = 0.8").unwrap();
+        assert!((cfg.correction_confidence_threshold.get() - 0.8).abs() < f32::EPSILON);
+        assert!(
+            (LearningConfig::default()
+                .correction_confidence_threshold
+                .get()
+                - 0.6)
+                .abs()
+                < f32::EPSILON
+        );
     }
 
     #[test]

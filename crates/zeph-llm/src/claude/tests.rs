@@ -2251,7 +2251,12 @@ fn clone_preserves_cache_user_messages() {
 #[test]
 fn store_cache_usage_updates_last_usage() {
     let provider = ClaudeProvider::new("k".into(), "m".into(), 256);
-    assert!(provider.last_usage().is_none());
+    assert!(
+        provider
+            .last_response_usage()
+            .map(|u| (u.input, u.output))
+            .is_none()
+    );
 
     let usage = ApiUsage {
         input_tokens: 42,
@@ -2262,7 +2267,10 @@ fn store_cache_usage_updates_last_usage() {
     };
     provider.store_cache_usage(&usage);
 
-    assert_eq!(provider.last_usage(), Some((42, 17)));
+    assert_eq!(
+        provider.last_response_usage().map(|u| (u.input, u.output)),
+        Some((42, 17))
+    );
 }
 
 /// C1 (issue #6549 review): `AnyProvider::last_ttft_ms()` must delegate to the wrapped
@@ -2285,7 +2293,7 @@ fn any_provider_claude_surfaces_last_ttft_ms() {
 }
 
 /// C1 (issue #6549 review): `MaskedProvider` had the identical omission as `AnyProvider` —
-/// `last_usage`/`last_cache_usage` were delegated but `last_ttft_ms` was not.
+/// `last_response_usage` was delegated but `last_ttft_ms` was not.
 #[test]
 fn masked_provider_surfaces_last_ttft_ms() {
     #[derive(Debug)]
@@ -4115,14 +4123,20 @@ fn usage_iterations_sum_only_compaction_and_leave_top_level_alone() {
 
     let provider = ClaudeProvider::new("k".into(), TEST_CLAUDE_MODEL.into(), 256);
     provider.store_cache_usage(&usage);
-    assert_eq!(provider.last_usage(), Some((10, 5)));
-    assert_eq!(provider.last_auxiliary_usage(), Some(aux));
+    assert_eq!(
+        provider.last_response_usage().map(|u| (u.input, u.output)),
+        Some((10, 5))
+    );
+    assert_eq!(
+        provider.last_response_usage().and_then(|u| u.auxiliary),
+        Some(aux)
+    );
 
     let plain: ApiUsage =
         serde_json::from_str(r#"{"input_tokens": 1, "output_tokens": 1}"#).unwrap();
     provider.store_cache_usage(&plain);
     assert_eq!(
-        provider.last_auxiliary_usage(),
+        provider.last_response_usage().and_then(|u| u.auxiliary),
         None,
         "reset on the next response"
     );
@@ -4455,13 +4469,14 @@ async fn auxiliary_usage_is_not_rebilled_on_later_requests() {
 
     provider.chat_with_tools(&msgs, &[]).await.unwrap();
     let aux = provider
-        .last_auxiliary_usage()
+        .last_response_usage()
+        .and_then(|u| u.auxiliary)
         .expect("compaction billed once");
     assert_eq!((aux.input, aux.output), (100, 40));
 
     assert!(provider.chat_with_tools_stream(&msgs, &[]).await.is_err());
     assert_eq!(
-        provider.last_auxiliary_usage(),
+        provider.last_response_usage().and_then(|u| u.auxiliary),
         None,
         "a later (failed) stream request must not expose the previous compaction"
     );

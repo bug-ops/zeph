@@ -59,7 +59,10 @@ impl<C: Channel> Agent<C> {
             && let Some(ref mut tc) = self.runtime.debug.trace_collector
         {
             let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-            let (prompt_tokens, completion_tokens) = self.provider.last_usage().unwrap_or((0, 0));
+            let (prompt_tokens, completion_tokens) = self
+                .provider
+                .last_response_usage()
+                .map_or((0, 0), |u| (u.input, u.output));
             tc.end_llm_request(
                 guard,
                 &crate::debug_dump::trace::LlmAttributes {
@@ -104,11 +107,12 @@ impl<C: Channel> Agent<C> {
             }
             _ => 0,
         };
-        let (final_prompt, final_completion) = self
-            .provider
-            .last_usage()
-            .unwrap_or((prompt_estimate, completion_heuristic));
-        let reasoning = self.provider.last_reasoning_tokens().unwrap_or(0);
+        let usage = self.provider.last_response_usage();
+        let (final_prompt, final_completion) = usage
+            .map_or((prompt_estimate, completion_heuristic), |u| {
+                (u.input, u.output)
+            });
+        let reasoning = usage.and_then(|u| u.reasoning).unwrap_or(0);
         let router_stats = self.provider.router_thompson_stats();
         self.update_metrics(|m| {
             m.api_calls += 1;
@@ -201,6 +205,7 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) fn apply_server_compaction(&mut self, summary: String) {
         let history = std::mem::take(&mut self.msg.messages);
         self.msg.messages = mirror_server_compaction(history, summary);
+        self.ratchet_skill_input_trust(ContentTrustLevel::ExternalUntrusted);
         self.services
             .compression
             .subgoal_registry
@@ -211,13 +216,14 @@ impl<C: Channel> Agent<C> {
 
     /// Emit `send_usage` with token counts and cumulative cost from the last LLM call.
     async fn emit_usage_event(&mut self) {
-        let Some((input_tokens, output_tokens)) = self.provider.last_usage() else {
+        let Some(usage) = self.provider.last_response_usage() else {
             return;
         };
+        let (input_tokens, output_tokens) = (usage.input, usage.output);
         let context_window =
             u64::try_from(self.provider.context_window().unwrap_or(0)).unwrap_or(0);
-        let (cache_read_tokens, cache_write_tokens) =
-            self.provider.last_cache_usage().unwrap_or((0, 0));
+        let cache = usage.cache.unwrap_or_default();
+        let (cache_read_tokens, cache_write_tokens) = (cache.read, cache.creation);
         // Read cumulative cost after record_cost_and_cache updated the metrics snapshot.
         let cost_cents = self
             .runtime
@@ -236,5 +242,48 @@ impl<C: Channel> Agent<C> {
                 cost_cents,
             )
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use zeph_llm::any::AnyProvider;
+    use zeph_llm::mock::MockProvider;
+    use zeph_llm::provider::{CacheUsage, ResponseUsage};
+
+    use super::*;
+    use crate::agent::agent_tests::{
+        MockChannel, MockToolExecutor, UsageEvent, create_test_registry,
+    };
+
+    #[tokio::test]
+    async fn usage_event_reports_cache_read_and_write_not_swapped() {
+        let usage = ResponseUsage {
+            input: 100,
+            output: 30,
+            cache: Some(CacheUsage {
+                creation: 7,
+                read: 50,
+            }),
+            ..ResponseUsage::default()
+        };
+        let mut agent = Agent::new(
+            AnyProvider::Mock(MockProvider::with_responses(vec![]).with_response_usage(usage)),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.emit_usage_event().await;
+        assert_eq!(
+            agent.channel.usage_events(),
+            vec![UsageEvent {
+                input: 100,
+                output: 30,
+                cache_read: 50,
+                cache_write: 7,
+            }]
+        );
     }
 }

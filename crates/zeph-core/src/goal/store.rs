@@ -51,7 +51,7 @@ pub enum GoalError {
 ///   `idx_zeph_goals_single_active` partial unique index + transactional `create`).
 /// - Stale transitions (wrong `expected_updated_at`) return [`GoalError::StaleUpdate`].
 ///
-/// # TODO(critic): cross-process goal cache invalidation; not handled in v1
+/// # TODO(#6935): cross-process goal cache invalidation; not handled in v1
 #[derive(Clone)]
 pub struct GoalStore {
     pool: Arc<DbPool>,

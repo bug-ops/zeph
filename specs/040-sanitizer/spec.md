@@ -547,8 +547,7 @@ and marker-anchored AWS secret access keys (`AWS_SECRET_KEY_PATTERN` — require
 `aws_secret_access_key`/`aws_session_token`-style key name, not a bare base64-ish token, to
 avoid false positives on unrelated 40-char strings) — regardless of registration. Wired into
 the sub-agent live-transcript forward pipeline and the background sub-agent completion notice;
-`zeph-core::redact::redact_secrets` and `zeph-memory`'s `compression_guidelines` both delegate
-to the same function rather than duplicating the regex logic. The prefix pass compiles
+The one ordered pipeline lives in `zeph_common::secret_redact` (`scrub_secret_shapes`, then `scrub_secrets` = URL credentials + shapes, then `scrub_content` = secrets + paths, plus `sanitize_paths`); `zeph_sanitizer::scrub_secret_shapes` re-exports it, `zeph-core::redact::{redact_secrets, scrub_content, sanitize_paths}` delegate to it, and `zeph-memory` persists trajectory, session digest and compression-failure text through `scrub_content` (the former `redact_sensitive` is removed), so the pass list is defined once. GitHub App tokens (`ghs_`/`ghu_`/`ghr_`, `GITHUB_APP_TOKEN_PATTERN`), AWS STS key ids (`ASIA...`, `AWS_STS_ACCESS_KEY_ID_PATTERN`) and Telegram bot tokens (`TELEGRAM_BOT_TOKEN_PATTERN`) are matched by length-bound shape so `ghs_config` and `ASIAN_` stay intact; `xapp-`, `rk_live_` and `rk_test_` are prefixes (distinctive tier). The prefix pass compiles
 `zeph_common::secrets::SECRET_TOKEN_PATTERN`: a boundary group (start, a non-alphanumeric
 character, a literal escape `\[nrtbf0v]`, `\xXX`, `\uXXXX` or a percent escape `%XX`) followed by the
 prefix alternation and the token body, replaced with `${1}[REDACTED]`. The boundary keeps

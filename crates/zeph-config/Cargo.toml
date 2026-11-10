@@ -24,7 +24,6 @@ card-signing = []
 
 [dependencies]
 dirs.workspace = true
-ordered-float = { workspace = true, features = ["serde"] }
 regex.workspace = true
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }

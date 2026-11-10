@@ -51,5 +51,8 @@ postgres = ["zeph-skills/postgres", "zeph-tools/postgres"]
 # `mock` feature.
 mock = []
 
+[package.metadata.cargo-machete]
+ignored = ["zeph-tools"]
+
 [lints]
 workspace = true

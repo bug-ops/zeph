@@ -12,7 +12,7 @@
 //! On Unix the helpers set mode `0o600` via `OpenOptionsExt::mode`. On non-Unix
 //! platforms (Windows) the helpers fall back to plain [`OpenOptions`] without extra
 //! permissions — Windows uses ACLs rather than mode bits, and proper ACL hardening
-//! requires additional platform-specific code (TODO: tracked for a follow-up issue).
+//! requires additional platform-specific code (TODO(#6929): Windows ACL hardening).
 //! The Windows fallback is **not atomic** for [`atomic_write_private`]: `std::fs::rename`
 //! fails with `ERROR_ALREADY_EXISTS` when the destination already exists, unlike the
 //! POSIX atomic-replace semantics.
@@ -265,6 +265,94 @@ pub fn restrict_to_owner(path: &Path) -> io::Result<u32> {
     Ok(raw)
 }
 
+/// Create `path` and any missing parent directories with mode 0o700 on Unix.
+///
+/// Only components that do not exist yet are created; existing directories keep their mode, so a
+/// user-chosen parent such as `~` or `/var/log` is never tightened by accident. On non-Unix
+/// platforms this is [`std::fs::create_dir_all`].
+///
+/// # Errors
+///
+/// Returns the underlying [`io::Error`] if a component cannot be created.
+///
+/// # Examples
+///
+/// ```no_run
+/// use zeph_common::fs_secure;
+///
+/// fs_secure::create_private_dir_all(std::path::Path::new("/tmp/zeph/logs"))?;
+/// # Ok::<(), std::io::Error>(())
+/// ```
+pub fn create_private_dir_all(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(path)
+    }
+}
+
+/// Clear the group and other permission bits of an existing directory.
+///
+/// The directory is opened with `O_DIRECTORY | O_NOFOLLOW` and `fchmod`ed through that
+/// descriptor, so a symlink swapped in at `path` is refused instead of followed. Owner and
+/// special bits stay (`0o755` becomes `0o700`).
+///
+/// Returns the new permission bits (without the file-type bits). On non-Unix platforms this is a
+/// no-op that returns `0`, because permissions there are ACLs rather than mode bits.
+///
+/// # Errors
+///
+/// Returns the underlying [`io::Error`] if `path` cannot be opened as a directory, or an
+/// [`io::ErrorKind::InvalidInput`] error if it is a symlink.
+///
+/// # Examples
+///
+/// ```no_run
+/// use zeph_common::fs_secure;
+///
+/// let mode = fs_secure::restrict_dir_to_owner(std::path::Path::new("/tmp/zeph/logs"))?;
+/// # let _ = mode;
+/// # Ok::<(), std::io::Error>(())
+/// ```
+pub fn restrict_dir_to_owner(path: &Path) -> io::Result<u32> {
+    #[cfg(unix)]
+    {
+        use rustix::fs::{Mode, OFlags};
+
+        let fd = rustix::fs::open(
+            path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|e| {
+            if e == rustix::io::Errno::LOOP {
+                io::Error::new(io::ErrorKind::InvalidInput, "not a directory (symlink)")
+            } else {
+                io::Error::from(e)
+            }
+        })?;
+        let stat = rustix::fs::fstat(&fd).map_err(io::Error::from)?;
+        let new_mode = Mode::from_raw_mode(stat.st_mode).difference(Mode::RWXG | Mode::RWXO);
+        rustix::fs::fchmod(&fd, new_mode).map_err(io::Error::from)?;
+        // mode_t is u16 on macOS and u32 on Linux, so the widening is a no-op on Linux only.
+        #[allow(clippy::useless_conversion)]
+        let raw = u32::from(new_mode.as_raw_mode());
+        Ok(raw & 0o7777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(0)
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(all(test, unix))]
@@ -274,6 +362,44 @@ mod tests {
 
     fn mode(path: &Path) -> u32 {
         std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn create_private_dir_all_creates_0700_and_leaves_existing_dirs_alone() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let leaf = root.path().join("a").join("b");
+        create_private_dir_all(&leaf).unwrap();
+        assert_eq!(mode(&root.path().join("a")), 0o700);
+        assert_eq!(mode(&leaf), 0o700);
+        assert_eq!(mode(root.path()), 0o755, "existing parent is not chmodded");
+        create_private_dir_all(&leaf).unwrap();
+    }
+
+    #[test]
+    fn restrict_dir_to_owner_tightens_an_existing_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("logs");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(restrict_dir_to_owner(&dir).unwrap(), 0o700);
+        assert_eq!(mode(&dir), 0o700);
+    }
+
+    #[test]
+    fn restrict_dir_to_owner_refuses_a_symlink_and_a_file() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(restrict_dir_to_owner(&link).is_err());
+        assert_eq!(mode(&target), 0o755, "symlink target must stay untouched");
+
+        let file = root.path().join("f");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(restrict_dir_to_owner(&file).is_err());
     }
 
     #[test]

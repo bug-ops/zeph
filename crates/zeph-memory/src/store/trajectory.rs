@@ -5,7 +5,7 @@ use zeph_db::{ActiveDialect, query, query_as, query_scalar, sql};
 
 use super::SqliteStore;
 use crate::error::MemoryError;
-use crate::store::compression_guidelines::redact_sensitive;
+use zeph_common::secret_redact::scrub_content;
 
 /// Input for inserting a trajectory entry.
 #[derive(Debug, Clone)]
@@ -47,8 +47,8 @@ impl SqliteStore {
         entry: NewTrajectoryEntry<'_>,
     ) -> Result<i64, MemoryError> {
         // Redact potential secrets echoed by the LLM from tool outputs before persisting.
-        let intent = redact_sensitive(entry.intent);
-        let outcome = redact_sensitive(entry.outcome);
+        let intent = scrub_content(entry.intent);
+        let outcome = scrub_content(entry.outcome);
 
         let (id,): (i64,) = query_as(sql!(
             "INSERT INTO trajectory_memory

@@ -140,7 +140,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             || zeph_llm::classifier::llm::FeedbackGate::uncalibrated(0.6),
             |c| {
                 zeph_llm::classifier::llm::FeedbackGate::new(
-                    c.correction_confidence_threshold,
+                    c.correction_confidence_threshold.get(),
                     c.correction_confidence_calibration.clone(),
                 )
             },

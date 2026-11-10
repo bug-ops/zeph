@@ -2055,7 +2055,7 @@ impl<C: Channel> Agent<C> {
             self.channel
                 .send_status_best_effort("Analyzing changes...")
                 .await;
-            // TODO: cooperative MCP cancellation — dropped futures here may leave
+            // TODO(#6935): cooperative MCP cancellation — dropped futures here may leave
             // in-flight MCP JSON-RPC requests pending until the server-side timeout.
             let lsp_result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
                 for (name, input, output) in lsp_tool_calls {

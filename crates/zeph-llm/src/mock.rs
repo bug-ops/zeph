@@ -38,9 +38,12 @@ pub struct MockProvider {
     pub thinking_binding: crate::provider::ThinkingBinding,
     /// Value returned by `prefix_cache()`; set via [`MockProvider::with_prefix_cache`].
     pub prefix_cache: crate::provider::PrefixCache,
-    /// Value returned by `last_auxiliary_usage()`; set via
+    /// Value returned by `last_response_usage()`; set via
     /// [`MockProvider::with_auxiliary_usage`].
     pub auxiliary_usage: Option<crate::provider::AuxiliaryUsage>,
+    /// Full snapshot returned by `last_response_usage()`, taking precedence over
+    /// `auxiliary_usage`; set via [`MockProvider::with_response_usage`].
+    pub response_usage: Option<crate::provider::ResponseUsage>,
     /// Milliseconds to sleep before returning a response.
     pub delay_ms: u64,
     /// Sequence of errors to return before switching to normal responses.
@@ -113,6 +116,7 @@ impl Default for MockProvider {
             thinking_binding: crate::provider::ThinkingBinding::Unbound,
             prefix_cache: crate::provider::PrefixCache::None,
             auxiliary_usage: None,
+            response_usage: None,
             delay_ms: 0,
             errors: Arc::new(Mutex::new(VecDeque::new())),
             recorded: None,
@@ -436,10 +440,17 @@ impl MockProvider {
         self
     }
 
-    /// Report `usage` from `last_auxiliary_usage()` after every call.
+    /// Report `usage` from `last_response_usage()` after every call.
     #[must_use]
     pub fn with_auxiliary_usage(mut self, usage: crate::provider::AuxiliaryUsage) -> Self {
         self.auxiliary_usage = Some(usage);
+        self
+    }
+
+    /// Report the whole `usage` snapshot from `last_response_usage()` after every call.
+    #[must_use]
+    pub fn with_response_usage(mut self, usage: crate::provider::ResponseUsage) -> Self {
+        self.response_usage = Some(usage);
         self
     }
 
@@ -596,8 +607,14 @@ impl LlmProvider for MockProvider {
         self.prefix_cache
     }
 
-    fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {
-        self.auxiliary_usage
+    fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+        self.response_usage.or_else(|| {
+            self.auxiliary_usage
+                .map(|auxiliary| crate::provider::ResponseUsage {
+                    auxiliary: Some(auxiliary),
+                    ..crate::provider::ResponseUsage::default()
+                })
+        })
     }
 
     fn supports_vision(&self) -> bool {

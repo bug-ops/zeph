@@ -106,3 +106,52 @@ async fn next_event_reports_closed_channel_without_erroring() {
         "an already-empty channel must be observed as closed by next_event()"
     );
 }
+
+/// `abort_enrichment_on_turn` must act at the turn boundary only: the idle metrics tick reaps
+/// but never aborts enrichment started at the end of the previous turn (#6922).
+#[tokio::test]
+async fn idle_tick_does_not_abort_enrichment_but_turn_start_does() {
+    use crate::agent::agent_supervisor::TaskClass;
+
+    let mut agent = base_agent();
+    agent
+        .runtime
+        .config
+        .supervisor_config
+        .abort_enrichment_on_turn = true;
+    assert!(agent.runtime.lifecycle.supervisor.spawn(
+        TaskClass::Enrichment,
+        "pending_enrichment",
+        std::future::pending(),
+    ));
+
+    agent.reap_background_tasks_and_update_metrics();
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+    assert_eq!(agent.runtime.lifecycle.supervisor.inflight(), 1);
+
+    agent.abort_enrichment_if_configured();
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+    assert_eq!(agent.runtime.lifecycle.supervisor.inflight(), 0);
+}
+
+/// Between-turn notifications are suppressed on channels that cannot deliver them (#6923).
+#[tokio::test]
+async fn between_turn_message_skipped_on_loopback_and_sent_on_capable_channel() {
+    let (channel, mut handle) = crate::channel::LoopbackChannel::pair(8);
+    let mut agent = crate::agent::Agent::new(
+        mock_provider(vec![]),
+        channel,
+        create_test_registry(),
+        None,
+        5,
+        MockToolExecutor::no_tools(),
+    );
+    agent.send_between_turns("update available", "test").await;
+    assert!(handle.output_rx.try_recv().is_err());
+
+    let mut agent = base_agent();
+    agent.send_between_turns("update available", "test").await;
+    assert_eq!(agent.channel.sent_messages(), vec!["update available"]);
+}

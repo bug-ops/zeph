@@ -24,12 +24,12 @@ const SKILL_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
 
 impl Embeddable for &SkillMeta {
     fn key(&self) -> &str {
-        &self.name
+        self.name.as_str()
     }
 
     fn content_hash(&self) -> String {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(self.name.as_bytes());
+        hasher.update(self.name.as_str().as_bytes());
         hasher.update(self.description.as_bytes());
         hasher.finalize().to_hex().to_string()
     }
@@ -201,7 +201,7 @@ impl QdrantSkillMatcher {
     pub(crate) async fn refresh_vector_cache(&self, meta: &[&SkillMeta], scored: &[ScoredMatch]) {
         let keys: Vec<String> = scored
             .iter()
-            .filter_map(|m| meta.get(m.index).map(|s| s.name.clone()))
+            .filter_map(|m| meta.get(m.index).map(|s| s.name.to_string()))
             .collect();
 
         let vectors_by_key = match self.registry.get_vectors_by_keys(&keys).await {
@@ -241,15 +241,13 @@ impl QdrantSkillMatcher {
 
 #[cfg(test)]
 mod tests {
+    use zeph_common::SkillName;
+
     use super::*;
     use std::assert_matches;
 
     fn make_meta(name: &str, description: &str) -> SkillMeta {
-        SkillMeta {
-            name: name.into(),
-            description: description.into(),
-            ..Default::default()
-        }
+        SkillMeta::new(SkillName::parse(name).unwrap(), description)
     }
 
     #[test]

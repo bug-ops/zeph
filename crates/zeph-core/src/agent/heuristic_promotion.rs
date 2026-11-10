@@ -656,11 +656,7 @@ mod tests {
         GeneratedSkill {
             name: name.to_string(),
             content: format!("---\nname: {name}\ndescription: Test skill.\n---\n\n# Body\n"),
-            meta: SkillMeta {
-                name: name.to_string(),
-                description: "Test skill.".to_string(),
-                ..SkillMeta::default()
-            },
+            meta: SkillMeta::new(zeph_common::SkillName::parse(name).unwrap(), "Test skill."),
             warnings: vec![],
             has_injection_patterns: false,
         }

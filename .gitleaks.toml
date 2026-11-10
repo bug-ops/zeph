@@ -52,4 +52,8 @@ regexes = [
   '''base64body''',
   '''with no matching end marker''',
   '''EC PRIVATE KEY-----\\nsecond''',
+  # #6891/#6892: dummy token fixtures in secret-scrub tests (zeph-common, zeph-context, zeph-agent-context).
+  '''xapp-1-A0123456789-1234567890123-abcdef''',
+  '''rk_(live|test)_51H8abcDEFghiJKLmnoPQRstu''',
+  '''sk-proj-abc123def456''',
 ]

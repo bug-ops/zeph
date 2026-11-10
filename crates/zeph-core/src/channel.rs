@@ -256,7 +256,7 @@ const STATUS_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 
 /// Bidirectional communication channel for the agent.
 ///
-/// # TODO (A3 — deferred: split monolithic Channel into focused sub-traits)
+/// # TODO(#6935) (A3 — deferred: split monolithic Channel into focused sub-traits)
 ///
 /// `Channel` currently has 16+ methods with 12 default no-op bodies. This makes it easy to
 /// accidentally ignore capabilities (e.g., streaming, elicitation) on a new channel

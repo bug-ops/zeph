@@ -69,7 +69,7 @@
 //! # }
 //! ```
 
-// TODO(critic): A-4 — evaluate channel-adapter collapse after spec 013 amendment for Send/!Send agent variant.
+// TODO(#6935): A-4 — evaluate channel-adapter collapse after spec 013 amendment for Send/!Send agent variant.
 
 pub mod agent;
 pub mod client;

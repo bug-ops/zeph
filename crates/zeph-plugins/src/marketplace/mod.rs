@@ -345,9 +345,9 @@ pub(crate) fn materialize_package(
         })?;
     let (meta, _body) = zeph_skills::loader::load_skill_meta_from_str(skill_md_content)
         .map_err(|e| RegistryError::InvalidResponse(format!("invalid SKILL.md: {e}")))?;
-    validate_registry_skill_name(&meta.name)?;
+    validate_registry_skill_name(meta.name.as_str())?;
 
-    let install_dir = tmp_root.join(&meta.name);
+    let install_dir = tmp_root.join(meta.name.as_str());
     write_files_safe(&install_dir, files)?;
     Ok((false, install_dir))
 }

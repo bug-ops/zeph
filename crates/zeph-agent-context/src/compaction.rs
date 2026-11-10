@@ -863,6 +863,10 @@ mod tests {
     }
 
     impl zeph_llm::provider::LlmProvider for StubProvider {
+        fn last_response_usage(&self) -> Option<zeph_llm::provider::ResponseUsage> {
+            None
+        }
+
         fn chat(
             &self,
             _messages: &[Message],
@@ -904,6 +908,10 @@ mod tests {
     struct HangingProvider;
 
     impl zeph_llm::provider::LlmProvider for HangingProvider {
+        fn last_response_usage(&self) -> Option<zeph_llm::provider::ResponseUsage> {
+            None
+        }
+
         async fn chat(&self, _messages: &[Message]) -> Result<String, zeph_llm::LlmError> {
             std::future::pending::<()>().await;
             unreachable!()

@@ -38,9 +38,9 @@ use crate::{
 /// concurrent in-process `create()` calls without relying on caller-side
 /// locking — see `create`'s `# Concurrency` section for details.
 ///
-/// ## TODO
+/// ## TODO(#6935)
 ///
-/// TODO(critic D1): concurrent per-agent cwd isolation requires child-process
+/// D1: concurrent per-agent cwd isolation requires child-process
 /// bgIsolation or full `ToolExecutor` cwd-threading; in-process MVP is
 /// concurrency-1 only.
 pub struct WorktreeManager<R: GitRunner> {
@@ -192,9 +192,9 @@ impl<R: GitRunner> WorktreeManager<R> {
     /// unrelated invariants and is not load-bearing for `max_worktrees`
     /// enforcement.
     ///
-    /// ## TODO
+    /// ## TODO(#6935)
     ///
-    /// TODO(critic D2): head worktree does not include parent uncommitted changes
+    /// D2: head worktree does not include parent uncommitted changes
     /// by design; revisit if users need stash-based propagation.
     ///
     /// # Errors

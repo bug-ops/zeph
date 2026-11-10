@@ -158,7 +158,7 @@ impl EnvironmentContext {
 
     #[must_use]
     pub fn gather_for_dir(model_name: &str, working_dir: &std::path::Path) -> Self {
-        let working_dir = if working_dir.as_os_str().is_empty() {
+        let working_dir = if working_dir.is_empty() {
             "unknown".into()
         } else {
             working_dir.display().to_string()

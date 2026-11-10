@@ -605,6 +605,8 @@ pub fn session_record(
 
 #[cfg(test)]
 mod tests {
+    use zeph_common::SkillName;
+
     use super::*;
 
     fn make_extractor() -> TraceExtractor {
@@ -700,7 +702,7 @@ mod tests {
         use crate::merger::find_nearest;
         use std::path::PathBuf;
         let meta = SkillMeta {
-            name: "test-skill".into(),
+            name: SkillName::parse("test-skill").unwrap(),
             description: "desc".into(),
             version: 1,
             source: "trace_extraction".into(),
@@ -964,7 +966,7 @@ mod tests {
             None,
         );
         let existing_meta = SkillMeta {
-            name: "existing-skill".into(),
+            name: SkillName::parse("existing-skill").unwrap(),
             description: "An existing skill.".into(),
             version: 1,
             source: "trace_extraction".into(),
@@ -1030,7 +1032,7 @@ mod tests {
             None,
         );
         let existing_meta = SkillMeta {
-            name: "existing-skill".into(),
+            name: SkillName::parse("existing-skill").unwrap(),
             description: "An existing skill.".into(),
             version: 1,
             source: "trace_extraction".into(),

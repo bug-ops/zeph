@@ -573,8 +573,8 @@ pub struct TaskSupervisorConfig {
     /// Default: `8`.
     #[serde(default = "default_telemetry_limit")]
     pub telemetry_limit: usize,
-    /// Abort all inflight enrichment tasks at turn boundary to prevent backlog buildup.
-    /// Default: `false`.
+    /// Abort all inflight enrichment tasks when a new turn starts, to prevent backlog buildup.
+    /// Idle ticks never abort. Default: `false`.
     #[serde(default)]
     pub abort_enrichment_on_turn: bool,
     /// Maximum concurrent background shell runs tracked by the supervisor.

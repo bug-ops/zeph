@@ -78,7 +78,7 @@ struct DisambiguationResponse {
 /// Keyed by normalized entity name. Entities with different names resolve concurrently;
 /// entities with the same name are serialized.
 ///
-/// TODO(SEC-M33-02): This map grows unboundedly — one entry per unique normalized name.
+/// TODO(#6928): This map grows unboundedly — one entry per unique normalized name.
 /// For a short-lived resolver this is acceptable. If the resolver becomes long-lived
 /// (stored in `SemanticMemory`), add eviction or use a fixed-size sharded lock array.
 type NameLockMap = Arc<DashMap<String, Arc<Mutex<()>>>>;
@@ -677,7 +677,7 @@ impl<'a> EntityResolver<'a> {
         let merged_summary = if let Some(new) = new_summary {
             if !new.is_empty() && !existing_summary.is_empty() {
                 let combined = format!("{existing_summary}; {new}");
-                // TODO(S2): use LLM-based summary merge when summary exceeds 512 bytes
+                // TODO(#6935): S2 use LLM-based summary merge when summary exceeds 512 bytes
                 truncate_to_bytes_ref(&combined, MAX_FACT_BYTES).to_owned()
             } else if !new.is_empty() {
                 new.to_owned()
@@ -1116,25 +1116,25 @@ impl<'a> EntityResolver<'a> {
                         Err(err) => {
                             tracing::warn!(error = %err,
                                     "belief_revision: find_superseded_edges failed, falling back to exact match");
-                            matching.map(|e| vec![e.id]).unwrap_or_default()
+                            matching.map_or_default(|e| vec![e.id])
                         }
                     }
                 }
                 Ok(Err(err)) => {
                     tracing::warn!(error = %err,
                             "belief_revision: embed new fact failed, falling back to exact match");
-                    matching.map(|e| vec![e.id]).unwrap_or_default()
+                    matching.map_or_default(|e| vec![e.id])
                 }
                 Err(_) => {
                     tracing::warn!(
                         "belief_revision: embed new fact timed out, falling back to exact match"
                     );
-                    matching.map(|e| vec![e.id]).unwrap_or_default()
+                    matching.map_or_default(|e| vec![e.id])
                 }
             }
         } else {
             // Legacy: exact (relation, edge_type) match with different fact.
-            matching.map(|e| vec![e.id]).unwrap_or_default()
+            matching.map_or_default(|e| vec![e.id])
         };
 
         let new_id = self

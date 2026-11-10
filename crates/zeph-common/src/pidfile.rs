@@ -79,7 +79,7 @@ impl PidLockGuard {
     /// - [`PidLockError::Io`] for filesystem errors.
     pub fn acquire(path: &Path) -> Result<Self, PidLockError> {
         // Create parent directory on-demand so first-run works out of the box.
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if let Some(parent) = path.parent().filter(|p| !p.is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
 

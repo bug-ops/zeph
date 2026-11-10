@@ -2242,6 +2242,17 @@ fn strip_bundled_markers_removes_marker_files() {
     );
 }
 
+#[test]
+fn strip_bundled_markers_also_removes_hash_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let hash = tmp.path().join(".bundled-hash");
+    std::fs::write(&hash, "abc").unwrap();
+
+    strip_bundled_markers(tmp.path());
+
+    assert!(!hash.exists(), ".bundled-hash must be removed");
+}
+
 // --- regression: #5401 apply_staged_update validation parity with add() ---
 
 #[test]

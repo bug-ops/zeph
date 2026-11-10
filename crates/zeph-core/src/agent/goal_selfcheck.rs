@@ -162,18 +162,28 @@ pub(super) fn recent_tool_actions(messages: &[Message]) -> Vec<String> {
     actions
 }
 
+/// Condition text given to `/goal check`: trimmed and never empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ExplicitCondition(String);
+
+impl ExplicitCondition {
+    /// `None` when `raw` is empty or whitespace-only, i.e. no explicit condition was given.
+    pub(super) fn parse(raw: &str) -> Option<Self> {
+        let trimmed = raw.trim();
+        (!trimmed.is_empty()).then(|| Self(trimmed.to_owned()))
+    }
+}
+
 fn resolve_condition(
-    explicit: &str,
+    explicit: Option<&ExplicitCondition>,
     active_goal: Option<String>,
     last_user: Option<String>,
 ) -> Option<(GoalConditionSource, String)> {
-    let explicit = explicit.trim();
-    let (source, text) = if explicit.is_empty() {
-        active_goal
+    let (source, text) = match explicit {
+        Some(ExplicitCondition(text)) => (GoalConditionSource::Explicit, text.clone()),
+        None => active_goal
             .map(|t| (GoalConditionSource::ActiveGoal, t))
-            .or_else(|| last_user.map(|t| (GoalConditionSource::LastUserMessage, t)))?
-    } else {
-        (GoalConditionSource::Explicit, explicit.to_owned())
+            .or_else(|| last_user.map(|t| (GoalConditionSource::LastUserMessage, t)))?,
     };
     // Scrub before truncating so a secret cut mid-token cannot escape the scrub.
     let text = scrub_content(&text);
@@ -230,7 +240,7 @@ fn format_report(
 
 pub(super) struct GoalCheckJob {
     pub(super) trigger: GoalCheckTrigger,
-    pub(super) explicit: String,
+    pub(super) explicit: Option<ExplicitCondition>,
     pub(super) last_user: Option<String>,
     pub(super) summary: String,
     pub(super) recent_actions: Vec<String>,
@@ -262,13 +272,13 @@ impl GoalCheckJob {
     }
 
     pub(super) async fn run(self) -> GoalCheckOutcome {
-        let active_goal = if self.explicit.is_empty() {
+        let active_goal = if self.explicit.is_none() {
             self.resolve_active_goal().await
         } else {
             None
         };
         let Some((source, condition)) =
-            resolve_condition(&self.explicit, active_goal, self.last_user)
+            resolve_condition(self.explicit.as_ref(), active_goal, self.last_user)
         else {
             return GoalCheckOutcome::NoCondition;
         };
@@ -312,8 +322,8 @@ impl<C: Channel + Send + 'static> Agent<C> {
                 Ok("An autonomous goal session is running; use /goal status.".to_owned())
             });
         }
-        let explicit = condition.to_owned();
-        let active_goal = if explicit.is_empty() {
+        let explicit = ExplicitCondition::parse(condition);
+        let active_goal = if explicit.is_none() {
             self.ensure_goal_accounting()
                 .map_or(ActiveGoalLookup::Skip, ActiveGoalLookup::Refresh)
         } else {
@@ -449,13 +459,25 @@ mod tests {
 
     #[test]
     fn condition_priority_explicit_then_goal_then_last_user() {
-        let r = resolve_condition("do x", Some("g".into()), Some("u".into())).unwrap();
+        let explicit = ExplicitCondition::parse("do x");
+        let r = resolve_condition(explicit.as_ref(), Some("g".into()), Some("u".into())).unwrap();
         assert_eq!(r.0, GoalConditionSource::Explicit);
-        let r = resolve_condition("", Some("g".into()), Some("u".into())).unwrap();
+        let r = resolve_condition(None, Some("g".into()), Some("u".into())).unwrap();
         assert_eq!((r.0, r.1.as_str()), (GoalConditionSource::ActiveGoal, "g"));
-        let r = resolve_condition("  ", None, Some("u".into())).unwrap();
+        let blank = ExplicitCondition::parse("  ");
+        let r = resolve_condition(blank.as_ref(), None, Some("u".into())).unwrap();
         assert_eq!(r.0, GoalConditionSource::LastUserMessage);
-        assert!(resolve_condition("", None, None).is_none());
+        assert!(resolve_condition(None, None, None).is_none());
+    }
+
+    #[test]
+    fn explicit_condition_is_trimmed_and_non_empty() {
+        assert_eq!(ExplicitCondition::parse(""), None);
+        assert_eq!(ExplicitCondition::parse(" \t\n"), None);
+        assert_eq!(
+            ExplicitCondition::parse("  ship it "),
+            Some(ExplicitCondition("ship it".to_owned()))
+        );
     }
 
     fn verdict(achieved: bool) -> SupervisorVerdict {
@@ -503,7 +525,7 @@ mod tests {
     fn job(explicit: &str, last_user: Option<&str>, provider: MockProvider) -> GoalCheckJob {
         GoalCheckJob {
             trigger: GoalCheckTrigger::Command,
-            explicit: explicit.into(),
+            explicit: ExplicitCondition::parse(explicit),
             last_user: last_user.map(Into::into),
             summary: "summary".into(),
             recent_actions: vec![],
@@ -585,7 +607,8 @@ mod tests {
     fn condition_is_scrubbed_before_truncation() {
         let secret = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH";
         let text = format!("{} {secret}", "a".repeat(CONDITION_MAX_CHARS - 10));
-        let (_, cond) = resolve_condition(&text, None, None).unwrap();
+        let explicit = ExplicitCondition::parse(&text);
+        let (_, cond) = resolve_condition(explicit.as_ref(), None, None).unwrap();
         assert!(!cond.contains("sk-ant"), "{cond}");
     }
 

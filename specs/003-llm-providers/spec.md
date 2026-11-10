@@ -70,7 +70,7 @@ trait LlmProvider: Send + Sync {
     fn supports_structured_output(&self) -> bool;
     fn debug_request_json(&self, ...) -> serde_json::Value;
     fn name(&self) -> &str;
-    fn last_usage(&self) -> Option<(u64, u64)>;  // (input_tokens, output_tokens)
+    fn last_response_usage(&self) -> Option<ResponseUsage>;  // required; None = no usage reported
 }
 ```
 
@@ -242,7 +242,8 @@ character.
 - `with_server_compaction(true)` is ignored with a warning on models without the `server_compaction` capability.
 - `context_management` is sent only on `chat_with_tools` and the tools stream; plain `chat`, `chat_stream`, typed and vision requests never carry it, because they do not carry the full conversation history.
 - `ChatResponse::Text { text, replay, compaction }` carries the summary of a text-only reply exactly as `ToolUse` does; it is never dropped. `replay` is the thinking-replay report (`ChatResponse::replay()`/`set_replay()` read it for either shape); Claude fills it on text replies, including the truncated-by-`max_tokens` path, and the streaming drainer does the same.
-- `usage.iterations[]` entries of kind `compaction` are billed in addition to the top-level counters and exposed through `LlmProvider::last_auxiliary_usage()` (`AuxiliaryUsage`); the top-level counters stay the context-size value. Unknown iteration kinds are not billed (warning). The tracker resets the value on every recorded response.
+- `usage.iterations[]` entries of kind `compaction` are billed in addition to the top-level counters and exposed as `ResponseUsage::auxiliary` (`AuxiliaryUsage`); the top-level counters stay the context-size value. Unknown iteration kinds are not billed (warning).
+- `LlmProvider::last_response_usage()` (and `LlmProviderDyn`) returns one immutable `ResponseUsage { input, output, cache: Option<CacheUsage { creation, read }>, reasoning: Option<u64>, auxiliary: Option<AuxiliaryUsage> }` snapshot; the method is required, `None` means the provider reported nothing. A provider builds the whole snapshot for a response and publishes it once through `UsageTracker::record` (one lock), so a reader never mixes two responses and cache/reasoning never carry over from an earlier response. A new request clears the snapshot (`send_with_retry` / stream open). `UsageTracker::clone` yields a fresh tracker: usage belongs to the instance that made the call. The router reports `None`.
 
 ### Beta latches
 
@@ -479,7 +480,7 @@ Three layers, plus one prevention primitive:
 - A request builder MUST go through `AgentVisible` — never iterate a raw `&[Message]` for emission or adjacency
 - Provider methods are always `&self` — immutable, concurrent-safe. This scopes to **request/inference** methods (`chat`, `chat_stream`, `chat_with_tools`, …). In-place `&mut self` config setters applied only at turn boundaries between requests (e.g. `set_reasoning_effort`, and the runtime `set_thinking`/`set_thinking_budget`/`set_thinking_level`/`apply_reasoning_effort` setters from `[[specs/070-runtime-thinking-controls/spec]]`) are exempt — request methods remain `&self`.
 - `debug_request_json()` must return exactly the JSON that would be sent to the API — used for debugging and testing
-- `last_usage()` is updated after every call — must be accurate for cost tracking
+- `last_response_usage()` is updated after every call — must be accurate for cost tracking
 - `chat`, `chat_stream`, `chat_with_tools` are independent codepaths — do not delegate one to another
 - Candle and metal/cuda features are mutually exclusive in the build
 - Provider identity is the `name` field from `[[llm.providers]]` — never resolved by type string

@@ -24,7 +24,7 @@ args = ["About to run: $ZEPH_TOOL_NAME with args: $ZEPH_TOOL_ARGS_JSON"]
 tools = "write_file|edit_file"       # File write tools
 command = "git"
 args = ["add", "$ZEPH_TOOL_NAME"]
-fail_closed = false                  # If true, hook failure aborts the tool chain (default: false)
+fail_closed = false                  # If true, hook failure stops the remaining hooks in the chain (default: false)
 ```
 
 **Conditional hooks** — optionally fire only when a condition is met:
@@ -125,14 +125,14 @@ The indicator disappears once all hook commands for that event have completed.
 tools = "shell|bash|sh"           # Tool name pattern (pipe-separated, glob matching)
 command = "echo"
 args = ["Running: $ZEPH_TOOL_NAME"]
-fail_closed = false               # If true, hook failure aborts the tool (default: false)
+fail_closed = false               # If true, a failing hook blocks the tool call (default: false)
 
 # Post-tool-use hooks — run after tool execution completes
 [[hooks.post_tool_use]]
 tools = "write_file"
 command = "git"
 args = ["add", "$ZEPH_TOOL_NAME"]
-fail_closed = false               # If true, hook failure blocks subsequent tools
+fail_closed = false               # If true, hook failure stops the remaining hooks in the chain
 
 # cwd_changed hooks — run in order when the working directory changes
 [[hooks.cwd_changed]]
@@ -154,11 +154,11 @@ args = ["check", "--quiet"]
 | `hooks.pre_tool_use[].tools` | `string` | — | Pipe-separated tool name patterns to match |
 | `hooks.pre_tool_use[].command` | `string` | — | Executable to run |
 | `hooks.pre_tool_use[].args` | `Vec<String>` | `[]` | Arguments (env vars expanded) |
-| `hooks.pre_tool_use[].fail_closed` | `bool` | false | If true, hook failure aborts the tool chain |
+| `hooks.pre_tool_use[].fail_closed` | `bool` | false | If true, hook failure blocks the tool call (main agent only; subagents only log) |
 | `hooks.post_tool_use[].tools` | `string` | — | Pipe-separated tool name patterns to match |
 | `hooks.post_tool_use[].command` | `string` | — | Executable to run |
 | `hooks.post_tool_use[].args` | `Vec<String>` | `[]` | Arguments (env vars expanded) |
-| `hooks.post_tool_use[].fail_closed` | `bool` | false | If true, hook failure aborts the tool chain |
+| `hooks.post_tool_use[].fail_closed` | `bool` | false | If true, hook failure stops the remaining hooks in the chain (never blocks a tool) |
 | `hooks.cwd_changed[].command` | `string` | — | Executable to run |
 | `hooks.cwd_changed[].args` | `Vec<String>` | `[]` | Arguments (env vars expanded) |
 | `hooks.file_changed.watch_paths` | `Vec<String>` | `[]` | Paths to monitor |
@@ -305,9 +305,11 @@ Each hook definition (`HookDef`) carries:
 | `command` | `string` | — | Executable to run (must be on `PATH` or an absolute path) |
 | `args` | `Vec<String>` | `[]` | Arguments; `$VAR` references in args are expanded from the hook environment |
 | `timeout_secs` | `u64` | `10` | Maximum time to wait for the command to complete |
-| `fail_closed` | `bool` | `false` | When `true`, a hook failure blocks the agent turn; when `false`, failures are logged as warnings |
+| `fail_closed` | `bool` | `false` | When `true`, a failing `pre_tool_use` hook blocks the tool call (main agent) and a failure stops the remaining hooks for the event; when `false`, failures are logged as warnings |
 
 Multiple hooks for the same event are executed in declaration order. If `fail_closed = true` on any hook, a failure in that hook stops execution of subsequent hooks for that event.
+
+For `pre_tool_use` in the main agent, a failing `fail_closed` hook also blocks the tool call: the tool is not executed and the model receives a `[blocked]` result. Each block counts against `hooks.hook_block_cap` (default `8`, `0` = unlimited, reset every turn); reaching the cap ends the turn. In subagents hook failures are only logged and the tool still runs.
 
 ### `TurnComplete`
 

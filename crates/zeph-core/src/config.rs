@@ -125,7 +125,7 @@ fn log_gonka_credential_status(has_key: bool, has_address: bool) {
     }
 }
 
-// TODO(critic): vault values are inserted verbatim into typed config fields.
+// TODO(#6935): vault values are inserted verbatim into typed config fields.
 // Consider centralizing whitespace trimming and empty-string normalization
 // here so every consumer (qdrant client, claude, openai, etc.) sees a clean value.
 impl SecretResolver for Config {

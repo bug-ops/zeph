@@ -930,7 +930,7 @@ impl<C: Channel> Agent<C> {
 
         self.services.skill.active_skill_names = matched_indices
             .iter()
-            .filter_map(|&i| all_meta.get(i).map(|m| m.name.clone()))
+            .filter_map(|&i| all_meta.get(i).map(|m| m.name.to_string()))
             .collect();
 
         // #6701 (S7): a skill the D1 filter above dropped from `active_skill_names` (Quarantined
@@ -1528,7 +1528,7 @@ impl<C: Channel> Agent<C> {
                     |idx| {
                         all_meta
                             .get(idx)
-                            .and_then(|m| metrics_map.get(&m.name))
+                            .and_then(|m| metrics_map.get(m.name.as_str()))
                             .copied()
                             .unwrap_or((0, 0))
                     },
@@ -1589,7 +1589,7 @@ impl<C: Channel> Agent<C> {
                             .map(|(idx, _, _)| {
                                 let (succ, fail) = all_meta
                                     .get(*idx)
-                                    .and_then(|m| metrics_map.get(&m.name))
+                                    .and_then(|m| metrics_map.get(m.name.as_str()))
                                     .copied()
                                     .unwrap_or((0, 0));
                                 let total = succ + fail;
@@ -1638,9 +1638,10 @@ impl<C: Channel> Agent<C> {
                         let rerank_summary: Vec<(String, f32, f32)> = reranked
                             .iter()
                             .map(|(idx, post_score)| {
-                                let name = all_meta
-                                    .get(*idx)
-                                    .map_or_else(|| "<unknown>".to_string(), |m| m.name.clone());
+                                let name = all_meta.get(*idx).map_or_else(
+                                    || "<unknown>".to_string(),
+                                    |m| m.name.to_string(),
+                                );
                                 let pre_score = candidates
                                     .iter()
                                     .find(|(cidx, _, _)| cidx == idx)
@@ -1705,7 +1706,7 @@ impl<C: Channel> Agent<C> {
                 // usage stats — before disambiguation may reorder indices.
                 skills_to_record = scored
                     .iter()
-                    .filter_map(|s| all_meta.get(s.index).map(|m| m.name.clone()))
+                    .filter_map(|s| all_meta.get(s.index).map(|m| m.name.to_string()))
                     .collect();
 
                 if scored.len() >= 2
@@ -1793,7 +1794,7 @@ impl<C: Channel> Agent<C> {
             let all: Vec<Skill> = reg
                 .all_meta()
                 .iter()
-                .filter_map(|m| reg.skill(&m.name).ok())
+                .filter_map(|m| reg.skill(m.name.as_str()).ok())
                 .filter(|s| {
                     let allowed = zeph_config::is_skill_allowed(
                         s.name(),
@@ -1917,7 +1918,7 @@ impl<C: Channel> Agent<C> {
                 let Some(meta) = all_meta.get(i) else {
                     return false;
                 };
-                match trust_map.get(&meta.name) {
+                match trust_map.get(meta.name.as_str()) {
                     Some(snap)
                         if matches!(
                             snap.trust_level,
@@ -2508,7 +2509,7 @@ impl<C: Channel> Agent<C> {
                     .tool_state
                     .tool_to_skill
                     .entry(tool_name.clone())
-                    .or_insert_with(|| (skill.meta.name.clone(), skill_hash.clone()));
+                    .or_insert_with(|| (skill.meta.name.to_string(), skill_hash.clone()));
             }
         }
 
@@ -2539,7 +2540,7 @@ impl<C: Channel> Agent<C> {
 
             let predictions = match tokio::time::timeout(
                 std::time::Duration::from_millis(500),
-                store.predict(skill_name, &skill_hash, None, 3),
+                store.predict(skill_name.as_str(), &skill_hash, None, 3),
             )
             .await
             {
@@ -2756,9 +2757,10 @@ mod tests {
 
     fn skill_meta_named(name: &str) -> SkillMeta {
         SkillMeta {
-            name: name.to_owned(),
-            description: format!("{name} description"),
-            ..Default::default()
+            ..SkillMeta::new(
+                zeph_common::SkillName::parse(name).unwrap(),
+                format!("{name} description"),
+            )
         }
     }
 
@@ -3311,11 +3313,7 @@ mod tests {
 
         fn make_skill(name: &str) -> Skill {
             Skill {
-                meta: SkillMeta {
-                    name: name.into(),
-                    description: "desc".into(),
-                    ..Default::default()
-                },
+                meta: SkillMeta::new(zeph_common::SkillName::parse(name).unwrap(), "desc"),
                 body: "body".into(),
                 resources: zeph_skills::resource::SkillResources::default(),
             }
@@ -3380,11 +3378,7 @@ mod tests {
 
         fn make_skill(name: &str) -> Skill {
             Skill {
-                meta: SkillMeta {
-                    name: name.into(),
-                    description: "desc".into(),
-                    ..Default::default()
-                },
+                meta: SkillMeta::new(zeph_common::SkillName::parse(name).unwrap(), "desc"),
                 body: "body".into(),
                 resources: zeph_skills::resource::SkillResources::default(),
             }
@@ -3426,11 +3420,8 @@ mod tests {
         trust_map.insert("allowed-skill".to_owned(), SkillTrustLevel::Trusted);
 
         // Two minimal SkillMeta stubs.
-        let make_meta = |name: &str| SkillMeta {
-            name: name.to_owned(),
-            description: "desc".to_owned(),
-            ..Default::default()
-        };
+        let make_meta =
+            |name: &str| SkillMeta::new(zeph_common::SkillName::parse(name).unwrap(), "desc");
         let skills = [make_meta("blocked-skill"), make_meta("allowed-skill")];
 
         // Apply the same filter logic used in the catalog-building path.
@@ -3466,11 +3457,7 @@ mod tests {
 
         fn make_skill(name: &str) -> Skill {
             Skill {
-                meta: SkillMeta {
-                    name: name.into(),
-                    description: "desc".into(),
-                    ..Default::default()
-                },
+                meta: SkillMeta::new(zeph_common::SkillName::parse(name).unwrap(), "desc"),
                 body: "body".into(),
                 resources: zeph_skills::resource::SkillResources::default(),
             }

@@ -670,8 +670,20 @@ sufficient.
 ## 12. Cross-References to Other Compaction and Context Work
 
 - **#5916 (provenance decay)** — sentinel-clearing preserves `metadata.trust_level` on the
-  retained message (`tier_loop.rs:1988`), so it is strictly better-behaved than summarization
-  with respect to provenance. Cross-reference only; no coupling.
+  retained message (`tier_loop.rs:1988`), but that covers only the emptied shell, not the text
+  the model copied into the state. The state therefore carries its own provenance (#6894):
+  `Agent` keeps a running `input_trust_since_patch` accumulator, ratcheted to `Untrusted`
+  wherever a message stamped `trust_level != Trusted` enters history (per-call tool results
+  excluding built-in context tools such as the patch tool itself, server-compaction summaries,
+  the focus Knowledge block). A state that is replaced or dropped (skill switch, schema
+  hot-reload, inert gate) hands its taint back to the accumulator, so the next state cannot
+  start cleaner than the context it reads; `/clear` and `/reset` clear both. An accepted `skill_state_patch`
+  consumes it into the state's sticky `InputTrust` and resets it; a rejected patch leaves it
+  alone, and a session reset clears it. A tainted state renders
+  `<skill_state ... derived_from="untrusted">` followed by the spotlighter-style IMPORTANT
+  warning, stays tainted across `Dormant`, and starts `Trusted` only as a new state with no carried taint. The
+  accumulator is immune to history rewrites and compaction because it is not derived from
+  message indices.
 - **#6563 (cache-prefix stability)** — genuine interaction: registering a conditional built-in
   tool (`skill_state_patch`) changes the tool-definition set, and therefore the prompt-cache
   prefix, whenever a state-declaring skill activates. This is a known, explicit cost of the
@@ -847,7 +859,8 @@ sufficient.
   The pending set is committed only when the patch's own batch completed: a cancelled batch
   (tombstoned patch) clears nothing.
 - **D13** Model-recorded state is untrusted data. Rendered as
-  `<skill_state source="model" skill="NAME">` plus compact JSON in which `<`, `>` and `&` are
+  `<skill_state source="model" skill="NAME">` (plus `derived_from="untrusted"` and an IMPORTANT
+  warning once a patch followed non-`Trusted` input, §12) plus compact JSON in which `<`, `>` and `&` are
   written as `\u003c`, `\u003e`, `\u0026` (still valid JSON, so a value can never contain the
   close tag), and the text is stripped of control characters. Bounds: default `max_len` 1024 and
   `max_items` 64 when the schema omits them, merged state at most 16 KiB in its rendered,

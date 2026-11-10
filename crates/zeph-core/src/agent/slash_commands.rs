@@ -585,12 +585,12 @@ impl<C: crate::channel::Channel> Agent<C> {
             if let Some(ref memory) = memory {
                 let info = memory
                     .sqlite()
-                    .load_skill_trust(&meta.name)
+                    .load_skill_trust(meta.name.as_str())
                     .await
                     .ok()
                     .flatten()
                     .map_or_else(String::new, |r| format!(" [{}]", r.trust_level));
-                trust_map.insert(meta.name.clone(), info);
+                trust_map.insert(meta.name.to_string(), info);
             }
         }
 
@@ -607,14 +607,14 @@ impl<C: crate::channel::Channel> Agent<C> {
             for (cat, skills) in &by_category {
                 let _ = writeln!(output, "[{cat}]");
                 for meta in skills {
-                    let trust_info = trust_map.get(&meta.name).map_or("", String::as_str);
+                    let trust_info = trust_map.get(meta.name.as_str()).map_or("", String::as_str);
                     let _ = writeln!(output, "- {} — {}{trust_info}", meta.name, meta.description);
                 }
                 output.push('\n');
             }
         } else {
             for meta in &all_meta {
-                let trust_info = trust_map.get(&meta.name).map_or("", String::as_str);
+                let trust_info = trust_map.get(meta.name.as_str()).map_or("", String::as_str);
                 let _ = writeln!(output, "- {} — {}{trust_info}", meta.name, meta.description);
             }
         }

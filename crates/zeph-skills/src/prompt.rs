@@ -584,6 +584,8 @@ pub fn format_skills_catalog<S: std::hash::BuildHasher>(
 
 #[cfg(test)]
 mod tests {
+    use zeph_common::SkillName;
+
     use super::*;
     use std::path::PathBuf;
 
@@ -591,11 +593,7 @@ mod tests {
 
     fn make_skill(name: &str, description: &str, body: &str) -> Skill {
         Skill {
-            meta: SkillMeta {
-                name: name.into(),
-                description: description.into(),
-                ..Default::default()
-            },
+            meta: SkillMeta::new(SkillName::parse(name).unwrap(), description),
             body: body.into(),
             resources: crate::resource::SkillResources::default(),
         }
@@ -605,10 +603,8 @@ mod tests {
         let resources = crate::resource::discover_resources(&dir);
         Skill {
             meta: SkillMeta {
-                name: name.into(),
-                description: description.into(),
                 skill_dir: dir,
-                ..Default::default()
+                ..SkillMeta::new(SkillName::parse(name).unwrap(), description)
             },
             body: body.into(),
             resources,
@@ -993,22 +989,13 @@ mod tests {
     }
 
     #[test]
-    fn xml_special_chars_in_name_and_description_are_escaped() {
-        let skills = vec![make_skill(
-            "a&b<c>d\"e",
-            "desc & <special> \"quoted\"",
-            "body",
-        )];
+    fn xml_special_chars_in_description_are_escaped() {
+        let skills = vec![make_skill("a-b", "desc & <special> \"quoted\"", "body")];
         let output = format_skills_prompt(&skills, &HashMap::new(), &HashMap::new());
-        assert!(
-            output.contains("a&amp;b&lt;c&gt;d&quot;e"),
-            "name not escaped"
-        );
         assert!(
             output.contains("desc &amp; &lt;special&gt; &quot;quoted&quot;"),
             "description not escaped"
         );
-        assert!(!output.contains("a&b"), "raw & in name must not appear");
         assert!(
             !output.contains("<special>"),
             "raw < in description must not appear"
@@ -1016,19 +1003,11 @@ mod tests {
 
         let compact = format_skills_prompt_compact(&skills);
         assert!(
-            compact.contains("a&amp;b&lt;c&gt;d&quot;e"),
-            "compact: name not escaped"
-        );
-        assert!(
             compact.contains("desc &amp; &lt;special&gt; &quot;quoted&quot;"),
             "compact: description not escaped"
         );
 
         let catalog = format_skills_catalog(&skills, &HashMap::new());
-        assert!(
-            catalog.contains("a&amp;b&lt;c&gt;d&quot;e"),
-            "catalog: name not escaped"
-        );
         assert!(
             catalog.contains("desc &amp; &lt;special&gt; &quot;quoted&quot;"),
             "catalog: description not escaped"

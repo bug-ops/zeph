@@ -3,86 +3,15 @@
 
 //! SQLite-backed store for ACON compression guidelines and failure pairs.
 
-use std::borrow::Cow;
-use std::sync::LazyLock;
 #[allow(unused_imports)]
 use zeph_db::sql;
 
-use regex::Regex;
-use zeph_common::secret_redact::redact_prefixed_secrets;
-use zeph_common::secrets::{
-    BEARER_TOKEN_PATTERN, JWT_PATTERN, PATH_PREFIXES, PEM_PRIVATE_KEY_PATTERN,
-    PEM_PRIVATE_KEY_UNTERMINATED_PATTERN,
-};
+use zeph_common::secret_redact::scrub_content;
 use zeph_common::text::truncate_to_bytes_ref;
 
 use crate::error::MemoryError;
 use crate::store::SqliteStore;
 use crate::types::ConversationId;
-
-static PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
-    let alt = PATH_PREFIXES.join("|");
-    Regex::new(&format!(r#"(?:{alt})[^\s"'`,;\{{\}}\[\]]*"#)).expect("path regex")
-});
-
-/// Matches `Authorization: Bearer <token>` headers; captures the token value for redaction.
-static BEARER_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(BEARER_TOKEN_PATTERN).expect("bearer regex"));
-
-/// Matches standalone JWT tokens (three Base64url-encoded parts separated by dots).
-/// The signature segment uses `*` to handle `alg=none` JWTs with an empty signature.
-static JWT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(JWT_PATTERN).expect("jwt regex"));
-
-/// Matches a full, properly-closed PEM/SSH2 private-key block (see
-/// `zeph_common::secrets::PEM_PRIVATE_KEY_PATTERN`). Unlike the `-----BEGIN` entry in
-/// `SECRET_PREFIXES`, this spans the multi-line base64 body, not just the header token (#6592
-/// follow-up — persisted compression-failure text must not retain PEM key material).
-static PEM_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(PEM_PRIVATE_KEY_PATTERN).expect("pem regex"));
-
-/// Fallback for a PEM/SSH2 header with no matching footer (truncated/adversarial input). Must
-/// run after `PEM_RE` so already-closed blocks are consumed first.
-static PEM_UNTERMINATED_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(PEM_PRIVATE_KEY_UNTERMINATED_PATTERN).expect("pem unterminated regex")
-});
-
-/// Redact secrets and filesystem paths from text before persistent storage.
-///
-/// Returns `Cow::Borrowed` when no sensitive content is found (zero-alloc fast path).
-pub(crate) fn redact_sensitive(text: &str) -> Cow<'_, str> {
-    // Each replace_all may return Cow::Borrowed (no match) or Cow::Owned (replaced).
-    // We materialise intermediate Owned values into String so that subsequent steps
-    // do not hold a borrow of a local.
-    //
-    // PEM passes run first, before the prefix pass: `SECRET_RE` (built from
-    // `SECRET_PREFIXES`, which includes the raw `-----BEGIN` literal) would otherwise consume
-    // just the header token on its own, leaving the rest of a multi-line PEM body — the
-    // actual key material — unredacted (see `zeph_sanitizer::secret_shape::scrub_secret_shapes`
-    // for the equivalent transcript-forward-path fix and its rationale).
-    let s_pem: Cow<'_, str> = PEM_RE.replace_all(text, "[REDACTED_PEM_KEY]");
-    let s_pem_fallback: Cow<'_, str> =
-        match PEM_UNTERMINATED_RE.replace_all(s_pem.as_ref(), "[REDACTED_PEM_KEY]") {
-            Cow::Borrowed(_) => s_pem,
-            Cow::Owned(o) => Cow::Owned(o),
-        };
-    let s0: Cow<'_, str> = match redact_prefixed_secrets(s_pem_fallback.as_ref()) {
-        Cow::Borrowed(_) => s_pem_fallback,
-        Cow::Owned(o) => Cow::Owned(o),
-    };
-    let s1: Cow<'_, str> = match PATH_RE.replace_all(s0.as_ref(), "[PATH]") {
-        Cow::Borrowed(_) => s0,
-        Cow::Owned(o) => Cow::Owned(o),
-    };
-    // Replace only the token value in Bearer headers, keeping the header name intact.
-    let s2: Cow<'_, str> = match BEARER_RE.replace_all(s1.as_ref(), "${1}[REDACTED]") {
-        Cow::Borrowed(_) => s1,
-        Cow::Owned(o) => Cow::Owned(o),
-    };
-    match JWT_RE.replace_all(s2.as_ref(), "[REDACTED_JWT]") {
-        Cow::Borrowed(_) => s2,
-        Cow::Owned(o) => Cow::Owned(o),
-    }
-}
 
 /// A recorded compression failure pair: the compressed context and the response
 /// that indicated context was lost.
@@ -237,9 +166,9 @@ impl SqliteStore {
         failure_reason: &str,
         category: &str,
     ) -> Result<i64, MemoryError> {
-        let ctx = redact_sensitive(compressed_context);
+        let ctx = scrub_content(compressed_context);
         let ctx = truncate_field(&ctx);
-        let reason = redact_sensitive(failure_reason);
+        let reason = scrub_content(failure_reason);
         let reason = truncate_field(&reason);
         let id = zeph_db::query_scalar(sql!(
             "INSERT INTO compression_failure_pairs \
@@ -504,6 +433,8 @@ impl SqliteStore {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::*;
 
     // pool_size=1 is required: SQLite :memory: creates an isolated database per
@@ -752,8 +683,8 @@ mod tests {
     }
 
     #[test]
-    fn redact_sensitive_api_key_is_redacted() {
-        let result = redact_sensitive("token sk-abc123def456 used for auth");
+    fn scrub_content_api_key_is_redacted() {
+        let result = scrub_content("token sk-abc123def456 used for auth");
         assert!(result.contains("[REDACTED]"), "API key must be redacted");
         assert!(
             !result.contains("sk-abc123"),
@@ -762,45 +693,45 @@ mod tests {
     }
 
     #[test]
-    fn redact_sensitive_keeps_hyphenated_words_and_redacts_escaped_secrets() {
+    fn scrub_content_keeps_hyphenated_words_and_redacts_escaped_secrets() {
         assert_eq!(
-            redact_sensitive("run disk-usage and disk-usage-table"),
+            scrub_content("run disk-usage and disk-usage-table"),
             "run disk-usage and disk-usage-table"
         );
-        let result = redact_sensitive(r"out\nsk-abc123 and key%3Dsk-def456");
+        let result = scrub_content(r"out\nsk-abc123 and key%3Dsk-def456");
         assert_eq!(result, r"out\n[REDACTED] and key%3D[REDACTED]");
     }
 
     #[test]
-    fn redact_sensitive_redacts_glued_key_shaped_tokens_only() {
-        let result = redact_sensitive("\x1b[32msk-abc123def456ghij\x1b[0m and risk-2024-report");
+    fn scrub_content_redacts_glued_key_shaped_tokens_only() {
+        let result = scrub_content("\x1b[32msk-abc123def456ghij\x1b[0m and risk-2024-report");
         assert!(!result.contains("abc123def456"), "{result}");
         assert!(result.contains("risk-2024-report"), "{result}");
     }
 
     #[test]
-    fn redact_sensitive_glued_rejection_neither_swallows_a_key_nor_allocates() {
-        let result = redact_sensitive("run-task-id=3Dsk-abc123def456ghij");
+    fn scrub_content_glued_rejection_neither_swallows_a_key_nor_allocates() {
+        let result = scrub_content("run-task-id=3Dsk-abc123def456ghij");
         assert!(!result.contains("abc123def456"), "{result}");
         assert!(matches!(
-            redact_sensitive("see disk-usage and risk-2024-report"),
+            scrub_content("see disk-usage and risk-2024-report"),
             Cow::Borrowed(_)
         ));
     }
 
     #[test]
-    fn redact_sensitive_keeps_hyphenated_identifiers() {
+    fn scrub_content_keeps_hyphenated_identifiers() {
         for text in [
             "task-runner-for-k8s-clusters",
             "disk-cleanup-utility-v2",
             "risk-assessment-2024-q3",
         ] {
-            assert!(matches!(redact_sensitive(text), Cow::Borrowed(_)), "{text}");
+            assert!(matches!(scrub_content(text), Cow::Borrowed(_)), "{text}");
         }
     }
 
     #[test]
-    fn redact_sensitive_rejected_glued_candidates_never_hide_a_later_key() {
+    fn scrub_content_rejected_glued_candidates_never_hide_a_later_key() {
         for text in [
             "run-task-id=3Dsk-abc123def456ghij",
             "?next=%2Ftask-list%253Fp%253Dsk-abc123def456ghij",
@@ -810,15 +741,24 @@ mod tests {
             "flask-app=3Dsk-abc123def456ghij",
             "/disk-usage/x9sk-abc123def456ghij",
         ] {
-            let result = redact_sensitive(text);
+            let result = scrub_content(text);
             assert!(!result.contains("abc123def456"), "{text} -> {result}");
         }
     }
 
     #[test]
-    fn redact_sensitive_plain_text_borrows() {
+    fn scrub_content_redacts_aws_secret_and_url_credentials() {
+        let result = scrub_content(
+            "aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY via https://u:pw@host/x",
+        );
+        assert!(!result.contains("wJalr"), "{result}");
+        assert!(!result.contains("u:pw"), "{result}");
+    }
+
+    #[test]
+    fn scrub_content_plain_text_borrows() {
         let text = "safe text, no secrets here";
-        let result = redact_sensitive(text);
+        let result = scrub_content(text);
         assert!(
             matches!(result, Cow::Borrowed(_)),
             "plain text must return Cow::Borrowed (zero-alloc)"
@@ -826,8 +766,8 @@ mod tests {
     }
 
     #[test]
-    fn redact_sensitive_filesystem_path_is_redacted() {
-        let result = redact_sensitive("config loaded from /Users/dev/project/config.toml");
+    fn scrub_content_filesystem_path_is_redacted() {
+        let result = scrub_content("config loaded from /Users/dev/project/config.toml");
         assert!(
             result.contains("[PATH]"),
             "filesystem path must be redacted"
@@ -839,8 +779,8 @@ mod tests {
     }
 
     #[test]
-    fn redact_sensitive_combined_secret_and_path() {
-        let result = redact_sensitive("key sk-abc at /home/user/file");
+    fn scrub_content_combined_secret_and_path() {
+        let result = scrub_content("key sk-abc at /home/user/file");
         assert!(result.contains("[REDACTED]"), "secret must be redacted");
         assert!(result.contains("[PATH]"), "path must be redacted");
     }
@@ -948,9 +888,8 @@ mod tests {
     }
 
     #[test]
-    fn redact_sensitive_bearer_token_is_redacted() {
-        let result =
-            redact_sensitive("Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.payload.signature");
+    fn scrub_content_bearer_token_is_redacted() {
+        let result = scrub_content("Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.payload.signature");
         assert!(
             result.contains("[REDACTED]"),
             "Bearer token must be redacted: {result}"
@@ -966,9 +905,8 @@ mod tests {
     }
 
     #[test]
-    fn redact_sensitive_bearer_token_case_insensitive() {
-        let result =
-            redact_sensitive("authorization: bearer eyJhbGciOiJSUzI1NiJ9.payload.signature");
+    fn scrub_content_bearer_token_case_insensitive() {
+        let result = scrub_content("authorization: bearer eyJhbGciOiJSUzI1NiJ9.payload.signature");
         assert!(
             result.contains("[REDACTED]"),
             "Bearer header match must be case-insensitive: {result}"
@@ -976,10 +914,10 @@ mod tests {
     }
 
     #[test]
-    fn redact_sensitive_standalone_jwt_is_redacted() {
+    fn scrub_content_standalone_jwt_is_redacted() {
         let jwt = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyMTIzIn0.SflKxwRJSMeKKF2";
         let input = format!("token value: {jwt} was found in logs");
-        let result = redact_sensitive(&input);
+        let result = scrub_content(&input);
         assert!(
             result.contains("[REDACTED_JWT]"),
             "standalone JWT must be replaced with [REDACTED_JWT]: {result}"
@@ -991,10 +929,10 @@ mod tests {
     }
 
     #[test]
-    fn redact_sensitive_mixed_content_all_redacted() {
+    fn scrub_content_mixed_content_all_redacted() {
         let input =
             "key sk-abc123 at /home/user/f with Authorization: Bearer eyJhbG.pay.sig and eyJx.b.c";
-        let result = redact_sensitive(input);
+        let result = scrub_content(input);
         assert!(result.contains("[REDACTED]"), "API key must be redacted");
         assert!(result.contains("[PATH]"), "path must be redacted");
         assert!(!result.contains("sk-abc123"), "raw API key must not appear");
@@ -1002,10 +940,10 @@ mod tests {
     }
 
     #[test]
-    fn redact_sensitive_partial_jwt_not_redacted() {
+    fn scrub_content_partial_jwt_not_redacted() {
         // A string starting with eyJ but missing the third segment is not a valid JWT.
         let input = "eyJhbGciOiJSUzI1NiJ9.onlytwoparts";
-        let result = redact_sensitive(input);
+        let result = scrub_content(input);
         // Should not be replaced by the JWT regex (only two dot-separated parts).
         assert!(
             !result.contains("[REDACTED_JWT]"),
@@ -1019,11 +957,11 @@ mod tests {
     }
 
     #[test]
-    fn redact_sensitive_alg_none_jwt_empty_signature_redacted() {
+    fn scrub_content_alg_none_jwt_empty_signature_redacted() {
         // alg=none JWTs have an empty third segment: <header>.<payload>.
         let input =
             "token: eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyIn0. was submitted without signature";
-        let result = redact_sensitive(input);
+        let result = scrub_content(input);
         assert!(
             result.contains("[REDACTED_JWT]"),
             "alg=none JWT with empty signature must be redacted: {result}"
@@ -1035,12 +973,12 @@ mod tests {
     }
 
     #[test]
-    fn redact_sensitive_full_pem_private_key_body_is_redacted() {
+    fn scrub_content_full_pem_private_key_body_is_redacted() {
         // #6592 follow-up: persisted compression-failure text must not retain a PEM private
         // key's multi-line base64 body — only the `-----BEGIN` header token was previously
         // covered by `SECRET_RE` (built from `SECRET_PREFIXES`).
         let input = "compressed context leaked:\n-----BEGIN RSA PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0B\n-----END RSA PRIVATE KEY-----\nend of context";
-        let result = redact_sensitive(input);
+        let result = scrub_content(input);
         assert!(result.contains("[REDACTED_PEM_KEY]"));
         assert!(!result.contains("MIIBVQIBADANBgkqhkiG9w0B"));
         assert!(result.contains("compressed context leaked:"));
@@ -1048,9 +986,9 @@ mod tests {
     }
 
     #[test]
-    fn redact_sensitive_footerless_pem_header_is_redacted() {
+    fn scrub_content_footerless_pem_header_is_redacted() {
         let input = "-----BEGIN RSA PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0B with no footer";
-        let result = redact_sensitive(input);
+        let result = scrub_content(input);
         assert!(result.contains("[REDACTED_PEM_KEY]"));
         assert!(!result.contains("MIIBVQIBADANBgkqhkiG9w0B"));
     }

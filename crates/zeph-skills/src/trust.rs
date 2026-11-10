@@ -35,7 +35,7 @@ pub use zeph_common::SkillTrustLevel;
 /// let src = SkillSource::Hub { url: "https://github.com/example/skill".into() };
 /// assert_eq!(src.to_string(), "hub(https://github.com/example/skill)");
 /// ```
-// TODO: SkillSource (used in zeph-skills for user-installed provenance) intentionally has no
+// TODO(#6935): SkillSource (used in zeph-skills for user-installed provenance) intentionally has no
 // `Bundled` variant — bundled skills are indistinguishable at the install API level. The trust DB
 // layer (`zeph-memory::store::SourceKind`) has the `Bundled` variant and is the authoritative
 // source. Align these enums if `SkillSource` ever gains first-class bundled-skill support.

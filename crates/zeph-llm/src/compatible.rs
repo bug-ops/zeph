@@ -361,24 +361,12 @@ impl LlmProvider for CompatibleProvider {
         self.inner.chat_with_tools(messages, tools).await
     }
 
-    fn last_cache_usage(&self) -> Option<(u64, u64)> {
-        self.inner.last_cache_usage()
-    }
-
-    fn last_usage(&self) -> Option<(u64, u64)> {
-        self.inner.last_usage()
+    fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+        self.inner.last_response_usage()
     }
 
     fn thinking_binding(&self) -> crate::provider::ThinkingBinding {
         self.inner.thinking_binding()
-    }
-
-    fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {
-        self.inner.last_auxiliary_usage()
-    }
-
-    fn last_reasoning_tokens(&self) -> Option<u64> {
-        self.inner.last_reasoning_tokens()
     }
 
     fn supports_vision(&self) -> bool {
@@ -519,7 +507,12 @@ mod tests {
 
     #[test]
     fn last_usage_initially_none() {
-        assert!(test_provider().last_usage().is_none());
+        assert!(
+            test_provider()
+                .last_response_usage()
+                .map(|u| (u.input, u.output))
+                .is_none()
+        );
     }
 
     #[test]
@@ -608,7 +601,12 @@ mod tests {
 
     #[test]
     fn last_reasoning_tokens_initially_none() {
-        assert!(test_provider().last_reasoning_tokens().is_none());
+        assert!(
+            test_provider()
+                .last_response_usage()
+                .and_then(|u| u.reasoning)
+                .is_none()
+        );
     }
 
     #[test]

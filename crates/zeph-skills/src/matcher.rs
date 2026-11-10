@@ -290,7 +290,7 @@ impl SkillMatcher {
         let raw: Vec<EmbedOutcome> = stream::iter(skills.iter().enumerate())
             .map(|(i, skill)| {
                 let fut = embed_fn(&skill.description);
-                let name = skill.name.clone();
+                let name = skill.name.to_string();
                 async move {
                     let result = match tokio::time::timeout(Duration::from_secs(10), fut).await {
                         Ok(Ok(vec)) => Ok(vec),
@@ -527,7 +527,7 @@ impl SkillMatcher {
             .iter()
             .enumerate()
             .filter(|(i, _)| !embedded_indices.contains(i))
-            .map(|(_, m)| m.name.clone())
+            .map(|(_, m)| m.name.to_string())
             .collect();
 
         let mut pairs = Vec::new();
@@ -537,8 +537,8 @@ impl SkillMatcher {
                     cosine_similarity(self.embeddings[i].1.as_ref(), self.embeddings[j].1.as_ref());
                 if sim >= threshold {
                     pairs.push(ConfusabilityPair {
-                        skill_a: skills[self.embeddings[i].0].name.clone(),
-                        skill_b: skills[self.embeddings[j].0].name.clone(),
+                        skill_a: skills[self.embeddings[i].0].name.to_string(),
+                        skill_b: skills[self.embeddings[j].0].name.to_string(),
                         similarity: sim,
                     });
                 }
@@ -730,23 +730,19 @@ pub use zeph_common::math::cosine_similarity;
 
 #[cfg(test)]
 mod tests {
+    use zeph_common::SkillName;
+
     use super::*;
     use std::assert_matches;
 
     fn make_meta(name: &str, description: &str) -> SkillMeta {
-        SkillMeta {
-            name: name.into(),
-            description: description.into(),
-            ..Default::default()
-        }
+        SkillMeta::new(SkillName::parse(name).unwrap(), description)
     }
 
     fn make_meta_with_category(name: &str, description: &str, category: &str) -> SkillMeta {
         SkillMeta {
-            name: name.into(),
-            description: description.into(),
             category: Some(category.into()),
-            ..Default::default()
+            ..SkillMeta::new(SkillName::parse(name).unwrap(), description)
         }
     }
 
@@ -1540,10 +1536,8 @@ mod tests {
 
     fn make_meta_with_triggers(name: &str, description: &str, triggers: Vec<&str>) -> SkillMeta {
         SkillMeta {
-            name: name.into(),
-            description: description.into(),
             triggers: triggers.into_iter().map(String::from).collect(),
-            ..Default::default()
+            ..SkillMeta::new(SkillName::parse(name).unwrap(), description)
         }
     }
 

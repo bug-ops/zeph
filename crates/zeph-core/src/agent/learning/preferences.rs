@@ -286,7 +286,7 @@ impl<C: Channel> Agent<C> {
         let high_confidence: Vec<_> = prefs
             .into_iter()
             .filter(|p| p.confidence >= PERSIST_THRESHOLD)
-            // TODO(skill-affinity): implement when skill_outcomes tracking is wired
+            // TODO(#6935): skill-affinity, implement when skill_outcomes tracking is wired
             .take(MAX_INJECTED_PREFS)
             .collect();
 

@@ -151,6 +151,7 @@ impl fmt::Debug for OpenAiConfig {
     }
 }
 
+use crate::provider::ResponseUsage;
 use crate::provider::{
     AgentVisible, ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message,
     MessagePart, Role, StatusTx, ToolDefinition, ToolUseRequest,
@@ -590,22 +591,20 @@ impl OpenAiProvider {
     }
 
     fn store_cache_usage(&self, usage: &OpenAiUsage) {
-        self.usage
-            .record_usage(usage.prompt_tokens, usage.completion_tokens);
         let cached = usage
             .prompt_tokens_details
             .as_ref()
             .map_or(0, |d| d.cached_tokens);
-        if cached > 0 {
-            self.usage.record_cache(0, cached);
-        }
         let reasoning = usage
             .completion_tokens_details
             .as_ref()
             .map_or(0, |d| d.reasoning_tokens);
-        if reasoning > 0 {
-            self.usage.record_reasoning(reasoning);
-        }
+        self.usage.record(Some(ResponseUsage::from_openai_counters(
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            cached,
+            reasoning,
+        )));
         tracing::debug!(
             prompt_tokens = usage.prompt_tokens,
             cached_tokens = cached,
@@ -933,16 +932,8 @@ impl LlmProvider for OpenAiProvider {
         vec![self.model.clone()]
     }
 
-    fn last_cache_usage(&self) -> Option<(u64, u64)> {
-        self.usage.last_cache_usage()
-    }
-
-    fn last_usage(&self) -> Option<(u64, u64)> {
-        self.usage.last_usage()
-    }
-
-    fn last_reasoning_tokens(&self) -> Option<u64> {
-        self.usage.last_reasoning()
+    fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+        self.usage.last()
     }
 
     fn last_ttft_ms(&self) -> Option<u64> {

@@ -347,6 +347,7 @@ confusability_threshold = 0.0   # 0.0 disables confusability reporting
 - `two_stage_matching` applies to matching only — skill injection, trust, and governance are unaffected
 - Confusability report is O(n²) — NEVER compute it on the hot path; use `spawn_blocking`
 - Bundled skills provisioned before the `.bundled` marker system are re-provisioned on upgrade to restore `category` without overwriting user-modified skills
+- Bundled skill provisioning records a blake3 content digest in a sibling `.bundled-hash` file (over each embedded file's path, length and content, in sorted path order). A marker-bearing skill is re-provisioned when the marker version differs, `.bundled-hash` is missing (legacy install, re-provisioned once), or the digest differs from the embedded one. Comparison is embedded vs recorded digest; skills without a `.bundled` marker are never touched by it
 
 ---
 

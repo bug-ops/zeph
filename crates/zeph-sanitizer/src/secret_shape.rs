@@ -9,103 +9,17 @@
 //! *values* explicitly registered at runtime (actual vault-loaded secrets) — a string a
 //! subagent invents, echoes, or fabricates in its own response text is invisible to it. This
 //! module closes that gap by scanning for the same secret shapes `zeph-core::redact` already
-//! scrubs from debug dumps and tool-execution output (issue #6571), compiling its own
-//! `regex::Regex` instances from the canonical prefix/pattern constants in
-//! [`zeph_common::secrets`] — the single source of truth both crates share.
+//! scrubs from debug dumps and tool-execution output (issue #6571), using the canonical
+//! prefix/pattern constants in
+//! [`zeph_common::secrets`]. The pipeline itself lives in [`zeph_common::secret_redact`] and is
+//! re-exported here.
 
-use std::borrow::Cow;
-use std::sync::LazyLock;
-
-use regex::Regex;
-use zeph_common::secret_redact::redact_prefixed_secrets;
-use zeph_common::secrets::{
-    AWS_SECRET_KEY_PATTERN, BEARER_TOKEN_PATTERN, JWT_PATTERN, PEM_PRIVATE_KEY_PATTERN,
-    PEM_PRIVATE_KEY_UNTERMINATED_PATTERN,
-};
-
-static BEARER_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(BEARER_TOKEN_PATTERN).expect("bearer shape regex is valid"));
-
-static JWT_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(JWT_PATTERN).expect("jwt shape regex is valid"));
-
-static PEM_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(PEM_PRIVATE_KEY_PATTERN).expect("pem shape regex is valid"));
-
-// Fallback for a PEM/SSH2 header with no matching footer (truncated input, adversarially
-// unterminated, or a footer chunk dropped by a bounded ingress channel — see #6592 follow-up
-// and `PEM_PRIVATE_KEY_UNTERMINATED_PATTERN`'s doc comment). Must run after `PEM_REGEX` so
-// already-closed blocks are consumed first and only genuinely unterminated headers remain.
-static PEM_UNTERMINATED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(PEM_PRIVATE_KEY_UNTERMINATED_PATTERN).expect("pem unterminated shape regex is valid")
-});
-
-static AWS_SECRET_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(AWS_SECRET_KEY_PATTERN).expect("aws secret shape regex is valid"));
-
-/// Replace secret-shaped substrings (known API-key prefixes, `Authorization: Bearer` headers,
-/// standalone JWTs, PEM private-key blocks, marker-anchored AWS secret access keys) with
-/// redaction markers.
-///
-/// Unlike [`SecretMaskRegistry::mask`][crate::secret_mask::SecretMaskRegistry::mask], this
-/// does not require the secret value to have been registered ahead of time — it flags
-/// anything matching a known secret *shape*, so it also catches secrets a subagent fabricates
-/// or echoes in generated text. Returns `Cow::Borrowed` when nothing matched (zero-allocation
-/// fast path).
-///
-/// No existing pattern spanned a PEM key's multi-line body before this fix (see #6592) — the
-/// `-----BEGIN` entry in [`zeph_common::secrets::SECRET_PREFIXES`] only ever matches a literal
-/// token on a single line, regardless of scrub ordering. Two PEM passes run first, before the
-/// prefix pass: the
-/// properly-closed-block pattern, then a footerless-header fallback (truncated/adversarial
-/// input, or a footer chunk dropped by a bounded ingress channel). Running them first also
-/// matters operationally — the prefix pass would otherwise consume just the `-----BEGIN`
-/// token and prevent either PEM pattern from matching the header at all.
-///
-/// # Examples
-///
-/// ```rust
-/// use zeph_sanitizer::secret_shape::scrub_secret_shapes;
-///
-/// let result = scrub_secret_shapes("here is a key: sk-test-abc123def456");
-/// assert!(!result.contains("sk-test-abc123def456"));
-/// assert!(result.contains("[REDACTED]"));
-/// ```
-#[must_use]
-pub fn scrub_secret_shapes(text: &str) -> Cow<'_, str> {
-    let after_pem: Cow<'_, str> = PEM_REGEX.replace_all(text, "[REDACTED_PEM_KEY]");
-
-    let after_pem_fallback: Cow<'_, str> =
-        match PEM_UNTERMINATED_REGEX.replace_all(after_pem.as_ref(), "[REDACTED_PEM_KEY]") {
-            Cow::Borrowed(_) => after_pem,
-            Cow::Owned(s) => Cow::Owned(s),
-        };
-
-    let after_prefixes: Cow<'_, str> = match redact_prefixed_secrets(after_pem_fallback.as_ref()) {
-        Cow::Borrowed(_) => after_pem_fallback,
-        Cow::Owned(s) => Cow::Owned(s),
-    };
-
-    let after_bearer: Cow<'_, str> =
-        match BEARER_REGEX.replace_all(after_prefixes.as_ref(), "${1}[REDACTED]") {
-            Cow::Borrowed(_) => after_prefixes,
-            Cow::Owned(s) => Cow::Owned(s),
-        };
-
-    let after_jwt: Cow<'_, str> =
-        match JWT_REGEX.replace_all(after_bearer.as_ref(), "[REDACTED_JWT]") {
-            Cow::Borrowed(_) => after_bearer,
-            Cow::Owned(s) => Cow::Owned(s),
-        };
-
-    match AWS_SECRET_REGEX.replace_all(after_jwt.as_ref(), "${1}[REDACTED]${2}") {
-        Cow::Borrowed(_) => after_jwt,
-        Cow::Owned(s) => Cow::Owned(s),
-    }
-}
+pub use zeph_common::secret_redact::scrub_secret_shapes;
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::*;
 
     #[test]

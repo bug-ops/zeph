@@ -276,7 +276,6 @@ otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", 
 pdf = ["zeph-memory/pdf"]
 profiling = [
     "dep:tracing-chrome",
-    "dep:sysinfo",
     "zeph-core/profiling",
     "zeph-llm/profiling",
     "zeph-memory/profiling",
@@ -370,9 +369,7 @@ schemars = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 similar.workspace = true
-sysinfo = { workspace = true, optional = true }
 tempfile.workspace = true
-thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { workspace = true, features = ["sync"], optional = true }
 tokio-util.workspace = true

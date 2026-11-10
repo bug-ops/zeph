@@ -20,7 +20,7 @@ use zeph_commands::transcript::{TranscriptEntry, TranscriptRole};
 use zeph_llm::provider::{Message, MessagePart, Role};
 
 use super::log_commands;
-use super::state::{DebugState, MetricsState, ProviderState, SecurityState, ToolState};
+use super::state::{DebugState, MetricsState, ProviderState, SecurityState, SkillState, ToolState};
 use super::tool_orchestrator::ToolOrchestrator;
 
 // --- DebugAccess ---
@@ -112,6 +112,7 @@ impl DebugAccess for DebugState {
 pub(super) struct MessageAccessImpl<'a> {
     pub msg: &'a mut super::state::MessageState,
     pub tool_state: &'a mut ToolState,
+    pub skill: &'a mut SkillState,
     pub providers: &'a mut ProviderState,
     pub metrics: &'a MetricsState,
     pub security: &'a mut SecurityState,
@@ -130,6 +131,8 @@ impl MessageAccess for MessageAccessImpl<'_> {
         self.msg.layout.reset();
         // Clear tool dependency state (reset between conversations).
         self.tool_state.completed_tool_ids.clear();
+        // New conversation: drop the skill execution state and its input-trust accumulator.
+        self.skill.reset_execution(self.tool_state);
         // Recompute cached prompt token count after truncation.
         self.providers.cached_prompt_tokens = self
             .msg
@@ -416,6 +419,7 @@ mod tests {
         MessageAccessImpl {
             msg: &mut agent.msg,
             tool_state: &mut agent.services.tool_state,
+            skill: &mut agent.services.skill,
             providers: &mut agent.runtime.providers,
             metrics: &agent.runtime.metrics,
             security: &mut agent.services.security,
@@ -578,6 +582,18 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn clear_history_resets_skill_state_and_input_trust() {
+        let mut agent = make_agent();
+        agent.services.skill.input_trust_since_patch = zeph_skills::state::InputTrust::Untrusted;
+        access(&mut agent).clear_history();
+        assert_eq!(
+            agent.services.skill.input_trust_since_patch,
+            zeph_skills::state::InputTrust::Trusted
+        );
+        assert!(!agent.services.skill.execution.is_active());
     }
 
     #[test]

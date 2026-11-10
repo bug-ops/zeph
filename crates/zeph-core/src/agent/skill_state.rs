@@ -13,20 +13,23 @@
 //! layout and never under durable agent turns; in every other configuration it is inert and
 //! leaves the tool list, history and prompt cache untouched.
 
+use zeph_common::delimiter::DelimiterTag;
 use zeph_llm::provider::{Message, MessagePart, Role, ToolDefinition};
+use zeph_sanitizer::ContentTrustLevel;
 use zeph_skills::loader::Skill;
-use zeph_skills::state::SkillExecutionState;
+use zeph_skills::state::{InputTrust, SkillExecutionState};
 
 use crate::agent::Agent;
 use crate::agent::runtime_note::RuntimeNoteSection;
+use crate::agent::state::{SkillState, ToolState};
 use crate::channel::Channel;
 
 /// Name of the synthetic patch tool.
 pub(crate) const SKILL_STATE_PATCH_TOOL: &str = "skill_state_patch";
 
-const SECTION_OPEN: &str = "<skill_state ";
-const SECTION_CLOSE: &str = "</skill_state>";
-const NOTE_CLOSE: &str = "</runtime-note>";
+const SECTION_OPEN: &str = DelimiterTag::SkillState.open_prefix();
+const SECTION_CLOSE: &str = DelimiterTag::SkillState.close_tag();
+const NOTE_CLOSE: &str = DelimiterTag::RuntimeNote.close_tag();
 
 /// Results of a finished tool batch that ran real tools: their call ids and the history index
 /// of the message holding them. Ids alone are not unique (Ollama reuses `call_{i}` per
@@ -40,9 +43,19 @@ pub(crate) struct AbsorbableBatch {
 /// A batch a validated patch declared absorbed, captured at validation so a later batch can
 /// never be cleared by mistake. Cleared only once the patch's own batch completed.
 #[derive(Debug)]
-pub(crate) struct AbsorbedBatch {
-    batch: AbsorbableBatch,
-    committed: bool,
+pub(crate) enum AbsorbedBatch {
+    /// The patch's own tool batch has not completed yet.
+    Pending(AbsorbableBatch),
+    /// The patch's own tool batch completed; the absorbed results may be cleared.
+    Committed(AbsorbableBatch),
+}
+
+impl AbsorbedBatch {
+    fn commit(self) -> Self {
+        match self {
+            Self::Pending(batch) | Self::Committed(batch) => Self::Committed(batch),
+        }
+    }
 }
 
 /// Session slot of the execution state (spec 086 R5).
@@ -157,6 +170,17 @@ fn last_section(messages: &[Message]) -> Option<&str> {
         })
 }
 
+impl SkillState {
+    /// Drop the execution slot, the input-trust accumulator and the absorption bookkeeping
+    /// (new conversation: `/clear`, `/reset`).
+    pub(in crate::agent) fn reset_execution(&mut self, tools: &mut ToolState) {
+        self.execution = SkillExecution::Inactive;
+        self.input_trust_since_patch = InputTrust::Trusted;
+        tools.last_batch = None;
+        tools.pending_absorbed = None;
+    }
+}
+
 impl<C: Channel> Agent<C> {
     fn skill_state_inert_reason(&self) -> Option<Inert> {
         if !self.services.skill.state_enabled {
@@ -207,6 +231,7 @@ impl<C: Channel> Agent<C> {
             if !candidates.is_empty() {
                 self.log_inert_once(reason);
             }
+            self.carry_held_taint();
             self.services.skill.execution = SkillExecution::Inactive;
             return;
         }
@@ -228,22 +253,53 @@ impl<C: Channel> Agent<C> {
         let slot = std::mem::take(&mut self.services.skill.execution);
         let reuse = slot
             .held()
-            .is_some_and(|cur| cur.skill() == primary.name() && **cur.schema() == *schema);
+            .is_some_and(|cur| *cur.skill() == primary.meta.name && **cur.schema() == *schema);
+        if !reuse {
+            Self::carry_taint(&slot, &mut self.services.skill.input_trust_since_patch);
+        }
         self.services.skill.execution = match slot {
             SkillExecution::Active(s) | SkillExecution::Dormant(s) if reuse => {
                 SkillExecution::Active(s)
             }
             _ => SkillExecution::Active(SkillExecutionState::new(
-                primary.name(),
+                primary.meta.name.clone(),
                 std::sync::Arc::new(schema.clone()),
             )),
         };
     }
 
+    /// A replaced or dropped state takes its taint with it, but the content it was derived from
+    /// is still in context: hand the taint to the accumulator so the next state inherits it.
+    fn carry_taint(slot: &SkillExecution, accumulator: &mut InputTrust) {
+        if slot
+            .held()
+            .is_some_and(|s| s.taint() == InputTrust::Untrusted)
+        {
+            *accumulator = InputTrust::Untrusted;
+        }
+    }
+
+    fn carry_held_taint(&mut self) {
+        Self::carry_taint(
+            &self.services.skill.execution,
+            &mut self.services.skill.input_trust_since_patch,
+        );
+    }
+
     /// Drop the execution slot (new conversation).
     pub(in crate::agent) fn reset_skill_state(&mut self) {
-        self.services.skill.execution = SkillExecution::Inactive;
-        self.begin_skill_state_turn();
+        self.services
+            .skill
+            .reset_execution(&mut self.services.tool_state);
+    }
+
+    /// Record that content with `level` entered history; anything but `Trusted` taints the next
+    /// accepted `skill_state_patch`.
+    pub(in crate::agent) fn ratchet_skill_input_trust(&mut self, level: ContentTrustLevel) {
+        let taint = &mut self.services.skill.input_trust_since_patch;
+        if level != ContentTrustLevel::Trusted {
+            *taint = InputTrust::Untrusted;
+        }
     }
 
     /// Reset the turn-scoped absorption bookkeeping (spec 086 FR-009).
@@ -295,13 +351,13 @@ impl<C: Channel> Agent<C> {
         };
         match exec.prepare_patch(input) {
             Ok(patch) => {
-                exec.apply(patch);
+                let input = std::mem::take(&mut self.services.skill.input_trust_since_patch);
+                exec.apply(&patch, input);
                 let tools = &mut self.services.tool_state;
                 if let Some(batch) = tools.last_batch.take() {
-                    tools.pending_absorbed.get_or_insert(AbsorbedBatch {
-                        batch,
-                        committed: false,
-                    });
+                    tools
+                        .pending_absorbed
+                        .get_or_insert(AbsorbedBatch::Pending(batch));
                 }
                 "State recorded.".to_owned()
             }
@@ -319,9 +375,8 @@ impl<C: Channel> Agent<C> {
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
     ) {
-        if let Some(pending) = self.services.tool_state.pending_absorbed.as_mut() {
-            pending.committed = true;
-        }
+        let tools = &mut self.services.tool_state;
+        tools.pending_absorbed = tools.pending_absorbed.take().map(AbsorbedBatch::commit);
         if !self.services.skill.execution.is_active() {
             return;
         }
@@ -344,15 +399,14 @@ impl<C: Channel> Agent<C> {
     /// tombstoned) clears nothing, and so does a batch whose message moved or changed since it
     /// was recorded.
     pub(in crate::agent) fn clear_absorbed_results(&mut self) {
-        let Some(AbsorbedBatch { batch, committed }) =
-            self.services.tool_state.pending_absorbed.take()
-        else {
-            return;
+        let batch = match self.services.tool_state.pending_absorbed.take() {
+            None => return,
+            Some(AbsorbedBatch::Pending(_)) => {
+                tracing::debug!("skill state: patch batch did not complete, nothing cleared");
+                return;
+            }
+            Some(AbsorbedBatch::Committed(batch)) => batch,
         };
-        if !committed {
-            tracing::debug!("skill state: patch batch did not complete, nothing cleared");
-            return;
-        }
         let _span = tracing::info_span!("core.skillstate.clear", ids = batch.ids.len()).entered();
         let holds_batch = self.msg.messages.get(batch.msg_index).is_some_and(|m| {
             m.role == Role::User
@@ -572,7 +626,7 @@ mod tests {
                 .skill
                 .execution
                 .active()
-                .map(SkillExecutionState::skill),
+                .map(|s| s.skill().as_str()),
             Some("s1")
         );
         assert!(a.skill_state_tool_definition().is_some());
@@ -581,7 +635,7 @@ mod tests {
         let p = exec
             .prepare_patch(&serde_json::json!({"phase": "b"}))
             .unwrap();
-        exec.apply(p);
+        exec.apply(&p, InputTrust::Trusted);
         a.resolve_skill_state(&skills);
         assert_eq!(values(&a)["phase"], serde_json::json!("b"));
 
@@ -690,7 +744,7 @@ mod tests {
         let p = exec
             .prepare_patch(&serde_json::json!({"phase": "b"}))
             .unwrap();
-        exec.apply(p);
+        exec.apply(&p, InputTrust::Trusted);
         a.push_message(results_msg(&["b"]));
         a.attach_runtime_note(2);
         assert_eq!(
@@ -721,7 +775,7 @@ mod tests {
         let p = exec
             .prepare_patch(&serde_json::json!({"note": "</skill_state>"}))
             .unwrap();
-        exec.apply(p);
+        exec.apply(&p, InputTrust::Trusted);
         a.push_message(results_msg(&["a"]));
         a.attach_runtime_note(1);
         let text = a
@@ -910,6 +964,199 @@ mod tests {
         assert!(message_cleared(result_messages(&a)[0]));
     }
 
+    fn taint(a: &Agent<MockChannel>) -> InputTrust {
+        a.services.skill.execution.active().unwrap().taint()
+    }
+
+    #[tokio::test]
+    async fn untrusted_input_before_a_patch_taints_the_state() {
+        let mut a = active_agent();
+        a.ratchet_skill_input_trust(ContentTrustLevel::ExternalUntrusted);
+        let out = a
+            .handle_skill_state_patch(&serde_json::json!({"phase": "b"}))
+            .await;
+        assert!(out.contains("recorded"), "{out}");
+        assert_eq!(taint(&a), InputTrust::Untrusted);
+        assert_eq!(
+            a.services.skill.input_trust_since_patch,
+            InputTrust::Trusted
+        );
+        assert!(
+            a.services
+                .skill
+                .execution
+                .active()
+                .unwrap()
+                .render_xml()
+                .contains("derived_from=\"untrusted\"")
+        );
+    }
+
+    #[tokio::test]
+    async fn trusted_input_leaves_the_state_untainted() {
+        let mut a = active_agent();
+        a.ratchet_skill_input_trust(ContentTrustLevel::Trusted);
+        a.handle_skill_state_patch(&serde_json::json!({"phase": "b"}))
+            .await;
+        assert_eq!(taint(&a), InputTrust::Trusted);
+    }
+
+    #[tokio::test]
+    async fn taint_stays_after_a_later_patch_with_no_new_results() {
+        let mut a = active_agent();
+        a.ratchet_skill_input_trust(ContentTrustLevel::LocalUntrusted);
+        a.handle_skill_state_patch(&serde_json::json!({"phase": "b"}))
+            .await;
+        a.handle_skill_state_patch(&serde_json::json!({"note": "later"}))
+            .await;
+        assert_eq!(taint(&a), InputTrust::Untrusted);
+    }
+
+    #[tokio::test]
+    async fn rejected_patch_keeps_the_accumulator() {
+        let mut a = active_agent();
+        a.ratchet_skill_input_trust(ContentTrustLevel::ExternalUntrusted);
+        let out = a
+            .handle_skill_state_patch(&serde_json::json!({"phase": "zzz"}))
+            .await;
+        assert!(out.contains("rejected"), "{out}");
+        assert_eq!(
+            a.services.skill.input_trust_since_patch,
+            InputTrust::Untrusted
+        );
+        a.handle_skill_state_patch(&serde_json::json!({"phase": "b"}))
+            .await;
+        assert_eq!(taint(&a), InputTrust::Untrusted);
+    }
+
+    #[tokio::test]
+    async fn history_rewrite_between_ingestion_and_patch_still_taints() {
+        let mut a = active_agent();
+        a.ratchet_skill_input_trust(ContentTrustLevel::ExternalUntrusted);
+        a.msg.messages.clear();
+        a.handle_skill_state_patch(&serde_json::json!({"phase": "b"}))
+            .await;
+        assert_eq!(taint(&a), InputTrust::Untrusted);
+    }
+
+    #[tokio::test]
+    async fn server_compaction_taints_the_next_patch() {
+        let mut a = active_agent();
+        a.apply_server_compaction("summary".to_owned());
+        assert_eq!(
+            a.services.skill.input_trust_since_patch,
+            InputTrust::Untrusted
+        );
+        a.handle_skill_state_patch(&serde_json::json!({"phase": "b"}))
+            .await;
+        assert_eq!(taint(&a), InputTrust::Untrusted);
+    }
+
+    #[test]
+    fn focus_knowledge_block_taints_the_accumulator() {
+        let mut a = active_agent();
+        a.services
+            .focus
+            .append_llm_knowledge("kept fact".to_owned());
+        a.rebuild_knowledge_block();
+        assert_eq!(
+            a.services.skill.input_trust_since_patch,
+            InputTrust::Untrusted
+        );
+    }
+
+    #[tokio::test]
+    async fn patch_only_batch_keeps_input_trust_trusted() {
+        let mut a = active_agent();
+        run_real(&mut a, &[patch("p1", serde_json::json!({"phase": "b"}))]).await;
+        assert_eq!(
+            a.services.skill.input_trust_since_patch,
+            InputTrust::Trusted
+        );
+        assert_eq!(taint(&a), InputTrust::Trusted);
+        run_real(&mut a, &[patch("p2", serde_json::json!({"note": "x"}))]).await;
+        assert_eq!(
+            a.services.skill.input_trust_since_patch,
+            InputTrust::Trusted
+        );
+        assert_eq!(taint(&a), InputTrust::Trusted);
+    }
+
+    #[tokio::test]
+    async fn real_tool_batch_taints_the_next_patch_through_the_loop() {
+        let mut a = active_agent();
+        run_real(&mut a, &[("a", "shell", NOOP)]).await;
+        assert_eq!(
+            a.services.skill.input_trust_since_patch,
+            InputTrust::Untrusted
+        );
+        run_real(&mut a, &[patch("p1", serde_json::json!({"phase": "b"}))]).await;
+        assert_eq!(taint(&a), InputTrust::Untrusted);
+        assert_eq!(
+            a.services.skill.input_trust_since_patch,
+            InputTrust::Trusted
+        );
+    }
+
+    #[tokio::test]
+    async fn switching_skills_carries_the_taint_to_the_new_state() {
+        let mut a = agent();
+        turn(&mut a, &[skill("s1", Some(STATE_YAML))]);
+        a.ratchet_skill_input_trust(ContentTrustLevel::ExternalUntrusted);
+        a.handle_skill_state_patch(&serde_json::json!({"phase": "b"}))
+            .await;
+        assert_eq!(
+            a.services.skill.input_trust_since_patch,
+            InputTrust::Trusted
+        );
+
+        turn(&mut a, &[skill("s2", Some(STATE_YAML))]);
+        assert_eq!(
+            a.services.skill.input_trust_since_patch,
+            InputTrust::Untrusted
+        );
+        a.handle_skill_state_patch(&serde_json::json!({"phase": "b"}))
+            .await;
+        assert_eq!(taint(&a), InputTrust::Untrusted);
+    }
+
+    #[tokio::test]
+    async fn schema_hot_reload_carries_the_taint_to_the_new_state() {
+        let changed = "state:\n  phase:\n    type: enum\n    values: [a, b, c]\n    default: a\n";
+        let mut a = agent();
+        turn(&mut a, &[skill("s1", Some(STATE_YAML))]);
+        a.ratchet_skill_input_trust(ContentTrustLevel::ExternalUntrusted);
+        a.handle_skill_state_patch(&serde_json::json!({"phase": "b"}))
+            .await;
+        turn(&mut a, &[skill("s1", Some(changed))]);
+        a.handle_skill_state_patch(&serde_json::json!({"phase": "c"}))
+            .await;
+        assert_eq!(taint(&a), InputTrust::Untrusted);
+    }
+
+    #[tokio::test]
+    async fn untainted_replacement_stays_trusted() {
+        let mut a = agent();
+        turn(&mut a, &[skill("s1", Some(STATE_YAML))]);
+        a.handle_skill_state_patch(&serde_json::json!({"phase": "b"}))
+            .await;
+        turn(&mut a, &[skill("s2", Some(STATE_YAML))]);
+        a.handle_skill_state_patch(&serde_json::json!({"phase": "b"}))
+            .await;
+        assert_eq!(taint(&a), InputTrust::Trusted);
+    }
+
+    #[test]
+    fn reset_clears_the_accumulator() {
+        let mut a = active_agent();
+        a.ratchet_skill_input_trust(ContentTrustLevel::ExternalUntrusted);
+        a.reset_skill_state();
+        assert_eq!(
+            a.services.skill.input_trust_since_patch,
+            InputTrust::Trusted
+        );
+    }
+
     #[tokio::test]
     async fn patches_are_exempt_from_gates_and_repeat_history() {
         let (tx, rx) = tokio::sync::watch::channel(crate::metrics::MetricsSnapshot::default());
@@ -983,7 +1230,7 @@ mod tests {
                 .skill
                 .execution
                 .active()
-                .map(SkillExecutionState::skill),
+                .map(|s| s.skill().as_str()),
             Some("s2")
         );
 

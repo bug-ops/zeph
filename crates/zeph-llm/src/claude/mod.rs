@@ -58,6 +58,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::error::LlmError;
+use crate::provider::{CacheUsage, ResponseUsage};
 use crate::tool_desc::build_tool_description;
 use crate::usage::UsageTracker;
 
@@ -362,12 +363,16 @@ pub(crate) use self::types::StreamUsage;
 /// Publish `usage` as the last response's usage: counters, cache counters and the compaction
 /// iterations billed on top of them.
 fn record_api_usage(tracker: &UsageTracker, usage: &types::ApiUsage) {
-    tracker.record_cache(
-        usage.cache_creation_input_tokens,
-        usage.cache_read_input_tokens,
-    );
-    tracker.record_usage(usage.input_tokens, usage.output_tokens);
-    tracker.record_auxiliary(usage.auxiliary());
+    tracker.record(Some(ResponseUsage {
+        input: usage.input_tokens,
+        output: usage.output_tokens,
+        cache: Some(CacheUsage {
+            creation: usage.cache_creation_input_tokens,
+            read: usage.cache_read_input_tokens,
+        }),
+        reasoning: None,
+        auxiliary: usage.auxiliary(),
+    }));
 }
 
 /// Record the usage a streamed response has reported so far, after `message_start` and again
@@ -1938,20 +1943,12 @@ impl LlmProvider for ClaudeProvider {
         true
     }
 
-    fn last_cache_usage(&self) -> Option<(u64, u64)> {
-        self.usage.last_cache_usage()
-    }
-
-    fn last_usage(&self) -> Option<(u64, u64)> {
-        self.usage.last_usage()
+    fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+        self.usage.last()
     }
 
     fn last_ttft_ms(&self) -> Option<u64> {
         self.usage.last_ttft_ms()
-    }
-
-    fn last_auxiliary_usage(&self) -> Option<crate::provider::AuxiliaryUsage> {
-        self.usage.last_auxiliary()
     }
 
     fn thinking_binding(&self) -> crate::provider::ThinkingBinding {

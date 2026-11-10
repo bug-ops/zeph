@@ -60,7 +60,7 @@ pub fn resolve_agent_paths(
 
     // 3. User-level
     if let Some(dir) = config_user_dir {
-        if !dir.as_os_str().is_empty() {
+        if !dir.is_empty() {
             paths.push(dir.clone());
         }
         // explicit empty string = user disabled user-level dir
@@ -140,7 +140,7 @@ pub fn scope_label(
 
     // Check user-level dir
     let user_dir = if let Some(dir) = config_user_dir {
-        if dir.as_os_str().is_empty() {
+        if dir.is_empty() {
             None
         } else {
             Some(dir.clone())

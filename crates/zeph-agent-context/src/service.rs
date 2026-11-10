@@ -894,7 +894,6 @@ impl ContextService {
         view: &mut ContextAssemblyView<'_>,
         prepared: zeph_context::assembler::PreparedContext,
     ) -> (ContextDelta, usize) {
-        use std::borrow::Cow;
         use zeph_llm::provider::{Message, MessageMetadata, Role};
         use zeph_sanitizer::MemorySourceHint;
 
@@ -1015,9 +1014,7 @@ impl ContextService {
                 if msg.role == Role::System {
                     continue;
                 }
-                if let Cow::Owned(s) = (view.scrub)(&msg.content) {
-                    msg.content = s;
-                }
+                zeph_context::scrub::scrub_message(msg);
             }
         }
 
@@ -3777,6 +3774,76 @@ mod tests {
                 expected_hub_dirs.as_slice(),
                 "hub_dirs read before spawn_blocking must survive the off-lock rebuild"
             );
+        }
+
+        async fn tool_result_after_replace_pass(redact_credentials: bool) -> String {
+            let fixture = setup_fixture(MockProvider::with_responses(vec![]));
+            let tool_result = Message::from_parts(
+                Role::User,
+                vec![zeph_llm::provider::MessagePart::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "KEY=sk-proj-abc123def456ghi789 DB=postgres://u:hunter2@h/db".into(),
+                    is_error: false,
+                }],
+            );
+            let mut msgs: Vec<Message> =
+                vec![Message::from_legacy(Role::System, "system"), tool_result];
+            let mut cached = 0u64;
+            let mut completed = HashSet::new();
+            let mut window = make_window(&mut msgs, &mut cached, &mut completed);
+
+            let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+            let mut ctx_mgr = ContextManager::new();
+            ctx_mgr.budget = Some(ContextBudget::new(100_000, 0.1));
+            let mut sink = NoopSink;
+            let mut last_confidence = None::<f32>;
+            let mut last_skills_prompt = String::new();
+            let mut active_skill_names = Vec::new();
+
+            let mut view = make_view(
+                &fixture,
+                &mut last_confidence,
+                &mut last_skills_prompt,
+                &mut active_skill_names,
+                &sanitizer,
+                &mut ctx_mgr,
+                &mut sink,
+            );
+            view.redact_credentials = redact_credentials;
+
+            let result = ContextService::new()
+                .prepare_context("hello", &mut window, &mut view)
+                .await;
+            assert!(result.is_ok(), "prepare_context must succeed: {result:?}");
+
+            let tool_msg = msgs
+                .iter()
+                .find(|m| {
+                    m.parts
+                        .iter()
+                        .any(|p| matches!(p, zeph_llm::provider::MessagePart::ToolResult { .. }))
+                })
+                .expect("tool result message kept");
+            let zeph_llm::provider::MessagePart::ToolResult { content, .. } = &tool_msg.parts[0]
+            else {
+                panic!("part kind changed");
+            };
+            content.clone()
+        }
+
+        #[tokio::test]
+        async fn replace_pass_scrubs_tool_result_parts_when_redaction_is_on() {
+            let content = tool_result_after_replace_pass(true).await;
+            assert!(
+                !content.contains("sk-proj-abc123") && !content.contains("hunter2"),
+                "tool result part must be scrubbed: {content}"
+            );
+        }
+
+        #[tokio::test]
+        async fn replace_pass_leaves_tool_result_parts_when_redaction_is_off() {
+            let content = tool_result_after_replace_pass(false).await;
+            assert!(content.contains("sk-proj-abc123") && content.contains("hunter2"));
         }
 
         #[tokio::test]

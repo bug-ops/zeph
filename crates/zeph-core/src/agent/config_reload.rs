@@ -212,7 +212,7 @@ impl<C: Channel> Agent<C> {
         };
 
         // Re-apply plugin overlays. On error, keep previous runtime state intact.
-        let new_overlay = if self.runtime.lifecycle.plugins_dir.as_os_str().is_empty() {
+        let new_overlay = if self.runtime.lifecycle.plugins_dir.is_empty() {
             None
         } else {
             match zeph_plugins::apply_plugin_config_overlays(

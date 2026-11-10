@@ -17,7 +17,6 @@ readme = "README.md"
 chrono = { workspace = true, features = ["std"] }
 futures.workspace = true
 parking_lot.workspace = true
-serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
@@ -25,7 +24,6 @@ tracing.workspace = true
 zeph-common.workspace = true
 zeph-config.workspace = true
 zeph-context.workspace = true
-zeph-index = { workspace = true, optional = true }
 zeph-llm.workspace = true
 zeph-memory.workspace = true
 zeph-sanitizer.workspace = true
@@ -43,7 +41,7 @@ sqlite = ["zeph-memory/sqlite", "zeph-sanitizer/sqlite", "zeph-skills/sqlite"]
 postgres = ["zeph-memory/postgres", "zeph-sanitizer/postgres", "zeph-skills/postgres"]
 default = ["sqlite"]
 # Enables `zeph-index` integration via `IndexAccess` in context assembly views.
-index = ["dep:zeph-index"]
+index = []
 
 [lints]
 workspace = true

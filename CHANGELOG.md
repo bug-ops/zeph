@@ -27,6 +27,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-llm`, `zeph-core`: `chat_typed` returns `impl Future + Send` and `chat_typed_erased` is removed (breaking) (#6850)
 - `zeph-llm`: streamed Claude responses record merged usage (#6850)
 - `zeph-llm`, `zeph-core`: the "Cache expired" warning is keyed on the provider cache TTL (5 minutes by default) instead of `gap_threshold_minutes`; `gap_threshold_minutes` remains the fallback when the provider reports no TTL (breaking: `PrefixCache::Prefix { ttl }`) (#6866)
+- `zeph-llm`, `zeph-core`: `LlmProvider` usage accessors replaced by required `last_response_usage()` returning a `ResponseUsage`/`CacheUsage` snapshot recorded once per response; cache and reasoning no longer carry over between responses (breaking) (#6952)
+- `zeph-common`, `zeph-skills`, `zeph-core`: `SkillName` is a validated newtype used by `SkillMeta` and `SkillExecutionState`; `SkillMeta::default()` replaced by `SkillMeta::new` (breaking) (#6952)
+- `zeph-skills`, `zeph-core`: bundled skills re-provision when their embedded content changes, tracked by a sibling `.bundled-hash` (#6952)
+- `zeph-skills`, `zeph-core`: `DelimiterTag::open_prefix`/`close_tag` replace hard-coded tag literals; `AbsorbedBatch` is a Pending/Committed enum and the `/goal check` condition a typed `Option` (#6952)
+- `zeph-common`, `zeph-sanitizer`, `zeph-memory`, `zeph-core`: one shared secret and path scrub pipeline in `zeph-common`; memory persistence now scrubs AWS secrets and URL credentials (#6952)
+- `zeph-config`: `LearningConfig.correction_confidence_threshold` is a `ConfidenceThreshold`; NaN and values outside 0.0..=1.0 fail config load (breaking) (#6952)
+- `deps`: remove unused dependencies from 11 crates, enable `ordered-float/serde` explicitly in `zeph-experiments`, update `clipboard-win` to 5.4.3 (#6952)
+- `ci`: pin the `reqwest012` alias to 0.12.x, group the ACP SDK with its schema in Renovate, drop stale zip advisory ignores and scan windows-msvc targets in `deny.toml` (#6952)
+- `workspace`: use std `Path::is_empty`, `floor_char_boundary`, `strip_circumfix`, `map_or_default`; link every untracked TODO marker to a tracking issue (#6952)
+- `zeph-core`: `/clear` and `/reset` reset the skill execution state (#6952)
 
 ### Fixed
 
@@ -79,6 +89,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-context`: removed the `assembler::MAX_KEEP_TAIL_SCAN` constant (breaking; the memory-first tail cut is now placed by `pair_safe_cut`) (#6782) (#6866)
 - `zeph-sanitizer`, `zeph-core`: shared-state rows can no longer forge the `<shared-state>` delimiter, with content isolation on or off (#6778) (#6866)
 - `zeph-subagent`: added `#![recursion_limit = "256"]` to fix a CI build failure where the
+- `zeph-core`, `zeph-context`: the replace context layout scrubs tool result and tool output parts before every provider request, not only `content` once per turn (#6952)
+- `zeph-common`, `zeph-sanitizer`: redact GitHub App, AWS STS, Slack app-level, Stripe restricted and Telegram bot tokens (#6952)
+- `zeph-common`, `zeph`: log and Chrome trace files and directories are created owner-only; the default log directory is tightened (#6952)
+- `zeph-core`: skill state patches recorded after untrusted tool, compaction or focus content render with `derived_from="untrusted"` and a warning (#6952)
+- `zeph-core`: channel usage events no longer report cache read and write tokens swapped (#6952)
+- `zeph-tui`, `zeph-core`: Enter in slash autocomplete submits free-form arguments verbatim and the queue badge resets after handled slash commands (#6952)
+- `zeph-core`: `abort_enrichment_on_turn` aborts at turn start instead of the idle tick; update and experiment notifications skip channels that cannot deliver between turns (#6952)
+- `zeph`: `doctor --fix` requires a terminal on stderr and reports prompt failures (#6952)
+- `docs`: `fail_closed` PreToolUse hook blocking and `hook_block_cap` documented (#6952)
   compiler's `Send` auto-trait check on the nested `spawn_agent_task -> run_agent_loop ->
   run_turn` async chain exceeded the default recursion limit, producing a `future_incompatible`
   warning promoted to a hard error by `build.warnings = "deny"`.

@@ -142,6 +142,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use zeph_common::SkillName;
+
     use std::assert_matches;
 
     use super::*;
@@ -149,10 +151,7 @@ mod tests {
 
     fn make_skill(name: &str) -> Skill {
         Skill {
-            meta: SkillMeta {
-                name: name.into(),
-                ..Default::default()
-            },
+            meta: SkillMeta::new(SkillName::parse(name).unwrap(), ""),
             body: String::new(),
             resources: crate::resource::SkillResources::default(),
         }
@@ -258,10 +257,10 @@ mod tests {
 
     #[test]
     fn missing_support_embedding_skipped_others_still_grouped() {
-        // index 5 → no embedding for "e_no_embed"
-        let skills = vec![make_skill("a"), make_skill("b"), make_skill("e_no_embed")];
+        // index 5 → no embedding for "e-no-embed"
+        let skills = vec![make_skill("a"), make_skill("b"), make_skill("e-no-embed")];
         let result = group_skills(&skills, &[0, 1, 5], embedding_for_index, 0.5);
-        // "b" has similarity; "e_no_embed" is skipped — group still formed
+        // "b" has similarity; "e-no-embed" is skipped — group still formed
         let GroupResult::Grouped(g) = result else {
             panic!("expected Grouped");
         };

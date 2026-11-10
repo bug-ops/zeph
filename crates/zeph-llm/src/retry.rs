@@ -62,8 +62,8 @@ where
     Fut: Future<Output = Result<reqwest::Response, reqwest::Error>>,
 {
     if let Some(tracker) = usage {
-        // A new request must never inherit the previous response's auxiliary usage.
-        tracker.record_auxiliary(None);
+        // A new request must never inherit the previous response's usage.
+        tracker.clear_response();
     }
     for attempt in 0..=max_retries {
         let send_start = Instant::now();

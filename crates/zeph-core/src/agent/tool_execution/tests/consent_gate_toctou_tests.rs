@@ -560,3 +560,21 @@ async fn knowledge_block_is_untrusted_even_when_the_summarised_content_was_trust
         ContentTrustLevel::ExternalUntrusted
     );
 }
+
+/// #6894 — an `ExternalUntrusted` tool-result batch taints the next `skill_state_patch`.
+#[tokio::test]
+async fn untrusted_tool_batch_ratchets_skill_input_trust() {
+    let mut agent = make_agent().await;
+    assert_eq!(
+        agent.services.skill.input_trust_since_patch,
+        zeph_skills::state::InputTrust::Trusted
+    );
+    agent
+        .handle_native_tool_calls(None, &[web_scrape_call("t1")])
+        .await
+        .unwrap();
+    assert_eq!(
+        agent.services.skill.input_trust_since_patch,
+        zeph_skills::state::InputTrust::Untrusted
+    );
+}

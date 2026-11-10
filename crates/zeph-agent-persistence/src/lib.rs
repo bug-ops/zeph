@@ -21,7 +21,7 @@
 //! construct the borrow-lens views (`MemoryPersistenceView`, `SecurityView`, `MetricsView`)
 //! from their respective `Agent` fields and delegate to `PersistenceService`.
 //!
-//! # TODO(critic): consolidate MockChannel/MockToolExecutor into shared zeph-agent-test-helpers
+//! # TODO(#6935): consolidate MockChannel/MockToolExecutor into shared zeph-agent-test-helpers
 //! crate; tracked separately from #3515/#3516
 
 pub mod condense;

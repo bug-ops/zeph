@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use base64::{Engine, engine::general_purpose::STANDARD};
 
 use crate::error::LlmError;
+use crate::provider::ResponseUsage;
 use crate::provider::{
     AgentVisible, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart,
     Role, StatusTx, ToolDefinition, ToolUseRequest, TurnContextKind,
@@ -348,8 +349,11 @@ impl GeminiProvider {
         let resp: GenerateContentResponse = serde_json::from_str(&body)?;
 
         if let Some(ref u) = resp.usage_metadata {
-            self.usage
-                .record_usage(u.prompt_token_count, u.candidates_token_count);
+            self.usage.record(Some(ResponseUsage {
+                input: u.prompt_token_count,
+                output: u.candidates_token_count,
+                ..ResponseUsage::default()
+            }));
         }
 
         resp.candidates
@@ -416,8 +420,11 @@ impl GeminiProvider {
         let resp: GenerateContentResponse = serde_json::from_str(&body)?;
 
         if let Some(ref u) = resp.usage_metadata {
-            self.usage
-                .record_usage(u.prompt_token_count, u.candidates_token_count);
+            self.usage.record(Some(ResponseUsage {
+                input: u.prompt_token_count,
+                output: u.candidates_token_count,
+                ..ResponseUsage::default()
+            }));
         }
 
         parse_tool_response(resp)
@@ -468,7 +475,7 @@ impl GeminiProvider {
     /// # Errors
     ///
     /// Returns an error if the HTTP request fails or returns a non-success status.
-    // TODO: pagination via nextPageToken can be added if the model count grows significantly.
+    // TODO(#6935): pagination via nextPageToken can be added if the model count grows significantly.
     pub async fn list_models_remote(
         &self,
     ) -> Result<Vec<crate::model_cache::RemoteModelInfo>, LlmError> {
@@ -1483,8 +1490,8 @@ impl LlmProvider for GeminiProvider {
         models
     }
 
-    fn last_usage(&self) -> Option<(u64, u64)> {
-        self.usage.last_usage()
+    fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+        self.usage.last()
     }
 
     fn last_ttft_ms(&self) -> Option<u64> {

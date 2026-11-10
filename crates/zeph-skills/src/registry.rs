@@ -433,7 +433,7 @@ impl SkillRegistry {
         let mut results = Vec::new();
 
         for entry in &self.entries {
-            let body = match self.body(&entry.meta.name) {
+            let body = match self.body(entry.meta.name.as_str()) {
                 Ok(b) => b,
                 Err(e) => {
                     tracing::warn!(
@@ -467,7 +467,7 @@ impl SkillRegistry {
                         patterns = ?result.matched_patterns,
                         "skill content scan: potential injection patterns found"
                     );
-                    results.push((entry.meta.name.clone(), result));
+                    results.push((entry.meta.name.to_string(), result));
                 }
             }
         }

@@ -5,8 +5,8 @@
 
 use crate::error::MemoryError;
 use crate::store::SqliteStore;
-use crate::store::compression_guidelines::redact_sensitive;
 use crate::types::ConversationId;
+use zeph_common::secret_redact::scrub_content;
 #[allow(unused_imports)]
 use zeph_db::sql;
 
@@ -35,7 +35,7 @@ impl SqliteStore {
         digest: &str,
         token_count: i64,
     ) -> Result<(), MemoryError> {
-        let safe_digest = redact_sensitive(digest);
+        let safe_digest = scrub_content(digest);
         zeph_db::query(sql!(
             "INSERT INTO session_digest (conversation_id, digest, token_count, updated_at) \
              VALUES (?, ?, ?, CURRENT_TIMESTAMP) \

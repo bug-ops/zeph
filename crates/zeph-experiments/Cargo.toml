@@ -15,7 +15,7 @@ readme = "README.md"
 
 [dependencies]
 futures.workspace = true
-ordered-float.workspace = true
+ordered-float = { workspace = true, features = ["serde"] }
 rand.workspace = true
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }

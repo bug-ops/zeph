@@ -175,9 +175,11 @@ pub struct HookDef {
     /// sequence (no further hooks in the list run). When `false` (default), errors are logged
     /// and the next hook in the sequence continues.
     ///
-    /// Note: in `pre_tool_use` and `post_tool_use` contexts this field controls hook-chain
-    /// execution only — it does **not** block the tool call itself. Hook dispatch is always
-    /// fail-open at the agent level; the tool executes regardless of hook outcomes.
+    /// In the main agent a failing `fail_closed` `pre_tool_use` hook also blocks the tool call:
+    /// the tool is not executed and the model receives a `[blocked]` result. Each block counts
+    /// against `hooks.hook_block_cap` (default 8, `0` = unlimited, reset every turn); reaching
+    /// the cap ends the turn. A `post_tool_use` failure never blocks anything. In subagents hook
+    /// failures are only logged and the tool always runs.
     #[serde(default)]
     pub fail_closed: bool,
     /// Optional condition that must match for this hook to fire.

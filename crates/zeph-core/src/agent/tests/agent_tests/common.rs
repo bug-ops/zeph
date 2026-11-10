@@ -92,6 +92,15 @@ pub(crate) fn mock_provider_with_models(
     AnyProvider::Mock(MockProvider::with_responses(responses).with_models(models))
 }
 
+/// One recorded `Channel::send_usage` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UsageEvent {
+    pub(crate) input: u64,
+    pub(crate) output: u64,
+    pub(crate) cache_read: u64,
+    pub(crate) cache_write: u64,
+}
+
 #[allow(clippy::struct_excessive_bools)] // test double: independent behaviour toggles
 pub(crate) struct MockChannel {
     pub(crate) messages: Arc<Mutex<Vec<String>>>,
@@ -102,6 +111,10 @@ pub(crate) struct MockChannel {
     /// tests assert on prompt content (e.g. that a real command is shown, not a generic string).
     pub(crate) confirmed_prompts: Arc<Mutex<Vec<String>>>,
     pub(crate) statuses: Arc<Mutex<Vec<String>>>,
+    /// Records every `Channel::send_queue_count` call, in order.
+    pub(crate) queue_counts: Arc<Mutex<Vec<usize>>>,
+    /// Records every `Channel::send_usage` call, in order.
+    pub(crate) usage_events: Arc<Mutex<Vec<UsageEvent>>>,
     pub(crate) tool_starts: Arc<Mutex<Vec<ToolStartEvent>>>,
     /// Records every `Channel::notify_foreground_subagent_completed` call as
     /// `(task_id, name, success)`, in order — lets tests assert on TUI-completion-event count
@@ -133,6 +146,8 @@ impl MockChannel {
             confirmations: Arc::new(Mutex::new(Vec::new())),
             confirmed_prompts: Arc::new(Mutex::new(Vec::new())),
             statuses: Arc::new(Mutex::new(Vec::new())),
+            queue_counts: Arc::new(Mutex::new(Vec::new())),
+            usage_events: Arc::new(Mutex::new(Vec::new())),
             tool_starts: Arc::new(Mutex::new(Vec::new())),
             notify_completed_calls: Arc::new(Mutex::new(Vec::new())),
             notify_background_completed_calls: Arc::new(Mutex::new(Vec::new())),
@@ -164,7 +179,6 @@ impl MockChannel {
 
     /// Make `recv` pend forever once the scripted messages run out, so the run loop idles.
     /// `try_recv` then reports nothing, so messages only arrive through `recv` (the `LoopEvent::Message` path).
-    #[cfg(feature = "sqlite")]
     pub(crate) fn blocking_when_empty(mut self) -> Self {
         self.block_when_empty = true;
         self
@@ -195,6 +209,10 @@ impl MockChannel {
 
     pub(crate) fn confirmed_prompts(&self) -> Vec<String> {
         self.confirmed_prompts.lock().unwrap().clone()
+    }
+
+    pub(crate) fn usage_events(&self) -> Vec<UsageEvent> {
+        self.usage_events.lock().unwrap().clone()
     }
 
     pub(crate) fn notify_completed_calls(&self) -> Vec<(String, String, bool)> {
@@ -271,6 +289,31 @@ impl Channel for MockChannel {
     #[allow(clippy::unused_async_trait_impl)]
     async fn send_status(&mut self, text: &str) -> Result<(), crate::channel::ChannelError> {
         self.statuses.lock().unwrap().push(text.to_string());
+        Ok(())
+    }
+
+    #[allow(clippy::unused_async_trait_impl)]
+    async fn send_usage(
+        &mut self,
+        input_tokens: u64,
+        output_tokens: u64,
+        _context_window: u64,
+        cache_read_tokens: u64,
+        cache_write_tokens: u64,
+        _cost_cents: f64,
+    ) -> Result<(), crate::channel::ChannelError> {
+        self.usage_events.lock().unwrap().push(UsageEvent {
+            input: input_tokens,
+            output: output_tokens,
+            cache_read: cache_read_tokens,
+            cache_write: cache_write_tokens,
+        });
+        Ok(())
+    }
+
+    #[allow(clippy::unused_async_trait_impl)]
+    async fn send_queue_count(&mut self, count: usize) -> Result<(), crate::channel::ChannelError> {
+        self.queue_counts.lock().unwrap().push(count);
         Ok(())
     }
 

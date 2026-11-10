@@ -3,13 +3,10 @@
 
 //! Canonical secret-token and path prefixes shared by redaction layers across crates.
 //!
-//! `zeph-core::redact` and `zeph-memory::store::compression_guidelines` both scrub
-//! secrets and filesystem paths before persisting or displaying untrusted text. Each
-//! crate previously carried its own hand-rolled copy of these lists, and the copies had
-//! already begun to drift from each other (see #5917). This module is the single source
-//! of truth for the raw prefixes/patterns. This module holds only constants and pure
-//! functions; [`crate::secret_redact`] compiles the prefix patterns and applies them in order,
-//! while consumers compile their own `regex::Regex` instances for the remaining ones.
+//! `zeph-core::redact`, `zeph-sanitizer` and `zeph-memory` scrub secrets and filesystem paths
+//! before persisting or displaying untrusted text. This module is the single source of truth for
+//! the raw prefixes and patterns and holds only constants and pure functions;
+//! [`crate::secret_redact`] compiles them and applies them in the one correct order.
 
 /// Prefixes of API keys, tokens, and other secret material recognized across Zeph.
 ///
@@ -37,6 +34,9 @@ pub const SECRET_PREFIXES: &[&str] = &[
     "hf_",
     "npm_",
     "dckr_pat_",
+    "xapp-",
+    "rk_live_",
+    "rk_test_",
 ];
 
 /// Regex matching a [`SECRET_PREFIXES`] token together with its left boundary and body.
@@ -51,7 +51,7 @@ pub const SECRET_PREFIXES: &[&str] = &[
 /// The prefix alternation is the `regex::escape`d join of [`SECRET_PREFIXES`]; a unit test
 /// pins the equality so the two cannot drift. The body stops at whitespace, quotes, commas,
 /// semicolons, braces and brackets.
-pub const SECRET_TOKEN_PATTERN: &str = r#"(^|[^A-Za-z0-9]|\\[nrtbf0v]|\\x[0-9A-Fa-f]{2}|\\u[0-9A-Fa-f]{4}|%[0-9A-Fa-f]{2})(?:sk\-|sk_live_|sk_test_|AKIA|ghp_|gho_|\-\-\-\-\-BEGIN|xoxb\-|xoxp\-|AIza|ya29\.|glpat\-|hf_|npm_|dckr_pat_)[^\s"'`,;{}\[\]]*"#;
+pub const SECRET_TOKEN_PATTERN: &str = r#"(^|[^A-Za-z0-9]|\\[nrtbf0v]|\\x[0-9A-Fa-f]{2}|\\u[0-9A-Fa-f]{4}|%[0-9A-Fa-f]{2})(?:sk\-|sk_live_|sk_test_|AKIA|ghp_|gho_|\-\-\-\-\-BEGIN|xoxb\-|xoxp\-|AIza|ya29\.|glpat\-|hf_|npm_|dckr_pat_|xapp\-|rk_live_|rk_test_)[^\s"'`,;{}\[\]]*"#;
 
 /// Prefixes distinctive enough that a glued match is a key once its body run looks random
 /// (`glpat-`, `AKIA`, ...).
@@ -67,6 +67,9 @@ pub const DISTINCTIVE_SECRET_PREFIXES: &[&str] = &[
     "ya29.",
     "glpat-",
     "dckr_pat_",
+    "xapp-",
+    "rk_live_",
+    "rk_test_",
 ];
 
 /// Prefixes that also start ordinary words (`task-`, `pnpm_`, `chf_`); a glued match needs a
@@ -81,7 +84,7 @@ pub const AMBIGUOUS_SECRET_PREFIXES: &[&str] = &["sk-", "-----BEGIN", "hf_", "np
 /// leaves a letter or digit in front of a real key. Capture group 1 is that character, group 2
 /// the run of `[A-Za-z0-9_-]` after the prefix. Callers redact a match only when
 /// [`GluedTier::accepts`] takes group 2 and replace with `"${1}[REDACTED]"`.
-pub const SECRET_TOKEN_GLUED_DISTINCTIVE_PATTERN: &str = r"([A-Za-z0-9])(?:sk_live_|sk_test_|AKIA|ghp_|gho_|xoxb\-|xoxp\-|AIza|ya29\.|glpat\-|dckr_pat_)([A-Za-z0-9_\-]*)";
+pub const SECRET_TOKEN_GLUED_DISTINCTIVE_PATTERN: &str = r"([A-Za-z0-9])(?:sk_live_|sk_test_|AKIA|ghp_|gho_|xoxb\-|xoxp\-|AIza|ya29\.|glpat\-|dckr_pat_|xapp\-|rk_live_|rk_test_)([A-Za-z0-9_\-]*)";
 
 /// Regex matching an [`AMBIGUOUS_SECRET_PREFIXES`] token glued directly to a preceding
 /// alphanumeric; see [`GluedTier::Ambiguous`].
@@ -98,6 +101,31 @@ pub const SECRET_TOKEN_GLUED_AMBIGUOUS_PATTERN: &str =
 /// prose such as "the `github_pat_` prefix" never match, and a token glued to a preceding
 /// alphanumeric still does.
 pub const GITHUB_FINE_GRAINED_PAT_PATTERN: &str = r"github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{20,}";
+
+/// Regex matching a GitHub App installation (`ghs_`), user-to-server (`ghu_`) or refresh
+/// (`ghr_`) token by shape: the prefix and at least 36 base62 characters.
+///
+/// Deliberately a length-bound shape and not a [`SECRET_PREFIXES`] entry: the prefix tier has no
+/// length rule, so listing `ghs_` there would redact ordinary identifiers such as `ghs_config`.
+/// Real tokens carry 36 (`ghs_`, `ghu_`) or 76 (`ghr_`) base62 characters; the `{36,}` run is
+/// consumed whole. Like [`GITHUB_FINE_GRAINED_PAT_PATTERN`] it needs no boundary group, so a
+/// token glued to a preceding character is still redacted.
+pub const GITHUB_APP_TOKEN_PATTERN: &str = r"gh[sur]_[A-Za-z0-9]{36,}";
+
+/// Regex matching an AWS STS temporary access key id: `ASIA` followed by 16 uppercase
+/// alphanumerics, delimited by word boundaries.
+///
+/// Deliberately a length-bound shape and not a [`SECRET_PREFIXES`] entry (as `AKIA` is): the
+/// prefix tier has no length rule, so listing `ASIA` there would redact words such as `ASIAN_`.
+/// An STS key id is exactly 20 characters, which the word boundaries enforce.
+pub const AWS_STS_ACCESS_KEY_ID_PATTERN: &str = r"\bASIA[A-Z0-9]{16}\b";
+
+/// Regex matching a Telegram bot token: 8-10 digit bot id, `:`, then `AA` and at least 33 URL-safe
+/// base64 characters. It has no fixed prefix, so it cannot live in [`SECRET_PREFIXES`].
+///
+/// There is no leading `\b`: the Bot API URL form `https://api.telegram.org/bot<id>:AA...` glues
+/// the id to the letters `bot`, where a word boundary would not match.
+pub const TELEGRAM_BOT_TOKEN_PATTERN: &str = r"[0-9]{8,10}:AA[A-Za-z0-9_\-]{33,}";
 
 /// Minimum body run of a distinctive glued key; the shortest real body is the 16-character
 /// `AKIA` access key id.

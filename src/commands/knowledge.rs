@@ -1098,7 +1098,7 @@ async fn run_graph_ingest(
 
     // Build SharedPostExtractValidator wrapping MemoryWriteValidator (INV-4).
     // Always Some — required on both dry-run and live paths (spec-067 §G-5 S3).
-    // TODO(critic): P4 — ingest sanitizer covers entity-name PII + counts; edge-fact bodies
+    // TODO(#6935): P4 — ingest sanitizer covers entity-name PII + counts; edge-fact bodies
     // length-capped only, no body PII / exfiltration URL scan (#5023 INV-4 MVP boundary).
     let shared_validator = build_shared_validator(config.security.memory_validation.clone());
 
@@ -1677,7 +1677,7 @@ fn git_head_sha(root: &Path) -> String {
 
 /// Return the git commit sha for the last commit touching `rel_path` (7-char prefix),
 /// or `None` for untracked files.
-// TODO(perf): batch git log calls with `git ls-files -s` to reduce N subprocesses to 1 (Phase 2 optimization).
+// TODO(#6935): batch git log calls with `git ls-files -s` to reduce N subprocesses to 1 (Phase 2 optimization).
 #[tracing::instrument(skip(root))]
 fn git_file_rev(root: &Path, rel_path: &str) -> Option<String> {
     std::process::Command::new("git")

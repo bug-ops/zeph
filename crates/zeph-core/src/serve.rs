@@ -938,7 +938,7 @@ mod tests {
         sys.process(pid).map_or(0, sysinfo::Process::memory)
     }
 
-    // TODO(critic): decompose idle floor (stack-resident vs Agent heap vs skill registry) and
+    // TODO(#6935): decompose idle floor (stack-resident vs Agent heap vs skill registry) and
     // add a production-realistic (non-mock) upper-bound variant.
     //
     /// NFR-P7 follow-up (#5840): the #5445 standalone harness measured `SessionActor::spawn`'s

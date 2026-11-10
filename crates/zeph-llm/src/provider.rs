@@ -179,6 +179,69 @@ impl AuxiliaryUsage {
     }
 }
 
+/// Prompt-cache token counters of one response.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CacheUsage {
+    /// Input tokens written to the prompt cache.
+    pub creation: u64,
+    /// Input tokens served from the prompt cache.
+    pub read: u64,
+}
+
+/// Immutable snapshot of the token usage a provider reported for its last response.
+///
+/// Replaces the former `(u64, u64)` tuple accessors: every field is named, and a provider
+/// publishes the whole snapshot at once so a reader never mixes values of two responses.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::{CacheUsage, ResponseUsage};
+///
+/// let usage = ResponseUsage {
+///     input: 100,
+///     output: 20,
+///     cache: Some(CacheUsage { creation: 0, read: 80 }),
+///     ..ResponseUsage::default()
+/// };
+/// assert_eq!(usage.cache.map(|c| c.read), Some(80));
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ResponseUsage {
+    /// Input (prompt) tokens.
+    pub input: u64,
+    /// Output (completion) tokens.
+    pub output: u64,
+    /// Prompt-cache counters; `None` when the provider reports none.
+    pub cache: Option<CacheUsage>,
+    /// Reasoning tokens, a **subset** of `output`; never add them to cost separately.
+    pub reasoning: Option<u64>,
+    /// Usage billed outside the top-level counters (server compaction iterations).
+    pub auxiliary: Option<AuxiliaryUsage>,
+}
+
+impl ResponseUsage {
+    /// Build a snapshot from OpenAI-style counters, where zero cached/reasoning tokens mean
+    /// the provider reported nothing for that field.
+    pub(crate) fn from_openai_counters(
+        input: u64,
+        output: u64,
+        cached: u64,
+        reasoning: u64,
+    ) -> Self {
+        Self {
+            input,
+            output,
+            cache: (cached > 0).then_some(CacheUsage {
+                creation: 0,
+                read: cached,
+            }),
+            reasoning: (reasoning > 0).then_some(reasoning),
+            auxiliary: None,
+        }
+    }
+}
+
 /// Thinking block returned by Claude when extended or adaptive thinking is enabled.
 ///
 /// Both variants must be echoed verbatim in the next turn's `assistant` message so
@@ -2028,7 +2091,8 @@ impl Message {
 ///
 /// Implementors must provide: [`chat`](Self::chat), [`chat_stream`](Self::chat_stream),
 /// [`supports_streaming`](Self::supports_streaming), [`embed`](Self::embed),
-/// [`supports_embeddings`](Self::supports_embeddings), and [`name`](Self::name).
+/// [`supports_embeddings`](Self::supports_embeddings), [`name`](Self::name), and
+/// [`last_response_usage`](Self::last_response_usage) (return `None` when usage is not reported).
 ///
 /// # Optional methods
 ///
@@ -2072,6 +2136,8 @@ impl Message {
 ///     fn supports_embeddings(&self) -> bool { false }
 ///
 ///     fn name(&self) -> &str { "echo" }
+///
+///     fn last_response_usage(&self) -> Option<zeph_llm::provider::ResponseUsage> { None }
 /// }
 /// ```
 pub trait LlmProvider: Send + Sync {
@@ -2191,17 +2257,12 @@ pub trait LlmProvider: Send + Sync {
         async move { Ok(ChatResponse::text(self.chat(&msgs).await?)) }
     }
 
-    /// Return the cache usage from the last API call, if available.
-    /// Returns `(cache_creation_tokens, cache_read_tokens)`.
-    fn last_cache_usage(&self) -> Option<(u64, u64)> {
-        None
-    }
-
-    /// Return token counts from the last API call, if available.
-    /// Returns `(input_tokens, output_tokens)`.
-    fn last_usage(&self) -> Option<(u64, u64)> {
-        None
-    }
+    /// Return the usage of the last response as one consistent snapshot, if available.
+    ///
+    /// Implementors must return `None` when the provider reports no usage or has not completed
+    /// a call yet, and must never let counters of an earlier response carry over into the
+    /// snapshot of a later one. Wrappers delegate to the provider that served the call.
+    fn last_response_usage(&self) -> Option<ResponseUsage>;
 
     /// Whether this provider's thinking blocks are bound to the conversation prefix.
     ///
@@ -2216,20 +2277,6 @@ pub trait LlmProvider: Send + Sync {
     /// Routers report [`PrefixCache::Prefix`] when any member does; wrappers delegate.
     fn prefix_cache(&self) -> PrefixCache {
         PrefixCache::None
-    }
-
-    /// Usage billed outside the top-level request counters during the last call (for example
-    /// server-side compaction iterations). `None` when the provider reports none.
-    fn last_auxiliary_usage(&self) -> Option<AuxiliaryUsage> {
-        None
-    }
-
-    /// Return reasoning tokens from the last API call, if the provider reports them.
-    ///
-    /// Reasoning tokens are a **subset** of completion tokens (`OpenAI` o-series only).
-    /// Returns `None` for providers that do not expose reasoning token counts.
-    fn last_reasoning_tokens(&self) -> Option<u64> {
-        None
     }
 
     /// Return the time-to-first-byte (milliseconds) of the last API call, if available.
@@ -2382,6 +2429,10 @@ mod tests {
     }
 
     impl LlmProvider for StubProvider {
+        fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+            None
+        }
+
         fn chat(
             &self,
             _messages: &[Message],
@@ -2476,6 +2527,10 @@ mod tests {
         struct FailProvider;
 
         impl LlmProvider for FailProvider {
+            fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+                None
+            }
+
             fn chat(
                 &self,
                 _messages: &[Message],
@@ -2539,6 +2594,10 @@ mod tests {
         struct FailProvider;
 
         impl LlmProvider for FailProvider {
+            fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+                None
+            }
+
             fn chat(
                 &self,
                 _messages: &[Message],
@@ -2974,6 +3033,10 @@ mod tests {
     }
 
     impl LlmProvider for SequentialStub {
+        fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+            None
+        }
+
         #[allow(clippy::unused_async_trait_impl)]
         async fn chat(&self, _messages: &[Message]) -> Result<String, LlmError> {
             let mut responses = self.responses.lock().unwrap();

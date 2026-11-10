@@ -1506,11 +1506,10 @@ mod tests {
         config.skills.two_stage_matching = true;
         config.skills.confusability_threshold = 0.42;
 
-        let skill_meta = zeph_skills::loader::SkillMeta {
-            name: "solo-skill".to_owned(),
-            description: "a lone skill with no confusable sibling".to_owned(),
-            ..Default::default()
-        };
+        let skill_meta = zeph_skills::loader::SkillMeta::new(
+            zeph_common::SkillName::parse("solo-skill").unwrap(),
+            "a lone skill with no confusable sibling",
+        );
         let inner_matcher = zeph_skills::matcher::SkillMatcher::new(
             &[&skill_meta],
             build_daemon_agent_test_embed_fn,
@@ -1599,11 +1598,10 @@ mod tests {
         config.skills.support_similarity_threshold = 0.73;
         config.skills.min_injection_score = 0.35;
 
-        let skill_meta = zeph_skills::loader::SkillMeta {
-            name: "solo-skill".to_owned(),
-            description: "a lone skill with no confusable sibling".to_owned(),
-            ..Default::default()
-        };
+        let skill_meta = zeph_skills::loader::SkillMeta::new(
+            zeph_common::SkillName::parse("solo-skill").unwrap(),
+            "a lone skill with no confusable sibling",
+        );
         let inner_matcher = zeph_skills::matcher::SkillMatcher::new(
             &[&skill_meta],
             build_daemon_agent_test_embed_fn,

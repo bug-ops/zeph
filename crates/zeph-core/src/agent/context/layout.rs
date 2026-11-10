@@ -435,9 +435,9 @@ impl<C: Channel> Agent<C> {
             .pinned()
             .and_then(PinnedLayout::request_policy);
         self.msg.stamp_request_policy(policy);
-        if policy.is_some() {
-            self.scrub_unsent_tail();
-        }
+        // Every layout: a tool result added after `prepare_context` reaches the provider on the
+        // next request of the same turn, so the replace pass alone would miss it.
+        self.scrub_unsent_tail();
     }
 }
 
@@ -859,7 +859,7 @@ mod agent_tests {
     }
 
     #[test]
-    fn request_state_scrubs_the_unsent_tail_only_in_append() {
+    fn request_state_scrubs_the_unsent_tail_in_append() {
         let mut agent = agent_with(ContextLayout::Append);
         agent.runtime.config.redact_credentials = true;
         agent.ensure_layout_pinned();
@@ -869,6 +869,46 @@ mod agent_tests {
         ));
         agent.prepare_request_state();
         assert!(!agent.msg.messages[1].content.contains("sk-abc123def456"));
+    }
+
+    #[test]
+    fn request_state_scrubs_a_fresh_tool_result_in_replace() {
+        use zeph_llm::provider::MessagePart;
+
+        let mut agent = agent_with(ContextLayout::Replace);
+        agent.runtime.config.redact_credentials = true;
+        agent.ensure_layout_pinned();
+        agent.msg.messages.push(Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "OPENAI_API_KEY=sk-proj-abc123def456ghi789".into(),
+                is_error: false,
+            }],
+        ));
+        agent.prepare_request_state();
+        let MessagePart::ToolResult { content, .. } = &agent.msg.messages[1].parts[0] else {
+            panic!("part kind changed");
+        };
+        assert!(!content.contains("sk-proj-abc123"), "{content}");
+
+        agent.runtime.config.redact_credentials = false;
+        agent.msg.messages.push(Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t2".into(),
+                content: "KEY=sk-proj-abc123def456ghi789".into(),
+                is_error: false,
+            }],
+        ));
+        agent.prepare_request_state();
+        let MessagePart::ToolResult { content, .. } = &agent.msg.messages[2].parts[0] else {
+            panic!("part kind changed");
+        };
+        assert!(
+            content.contains("sk-proj-abc123"),
+            "redaction off leaves it"
+        );
     }
 
     async fn agent_with_summary(layout: ContextLayout) -> Agent<MockChannel> {

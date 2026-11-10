@@ -30,7 +30,6 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 zeph-common.workspace = true
-zeph-config.workspace = true
 zeph-core.workspace = true
 zeph-llm.workspace = true
 zeph-memory.workspace = true

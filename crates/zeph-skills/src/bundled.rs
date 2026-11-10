@@ -14,6 +14,12 @@
 //! the marker differs from the embedded version, the skill is re-provisioned.
 //! Skills without a `.bundled` marker are treated as user-owned and never touched.
 //!
+//! A sibling `.bundled-hash` file records a blake3 digest over every embedded file of the
+//! skill (path, length and content, in sorted path order). A marker-bearing skill is also
+//! re-provisioned when that digest is missing (installs from before the digest existed) or
+//! differs from the embedded one, so content-only edits ship without a version bump. The
+//! comparison is embedded versus recorded digest: on-disk edits alone never trigger a rewrite.
+//!
 //! # Binary rollback
 //!
 //! Rolling back to an older binary will downgrade bundled skills to the older
@@ -27,6 +33,12 @@ use include_dir::{Dir, include_dir};
 use tracing::{debug, info, warn};
 
 static BUNDLED_SKILLS_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/skills");
+
+const MARKER_FILE: &str = ".bundled";
+const HASH_FILE: &str = ".bundled-hash";
+
+/// Provenance files written by provisioning; installers strip them from third-party packages.
+pub const PROVENANCE_FILES: [&str; 2] = [MARKER_FILE, HASH_FILE];
 
 /// Returns the names of all compile-time bundled skills.
 ///
@@ -72,7 +84,8 @@ pub struct ProvisionReport {
 /// `SKILL.md` file). For each skill:
 /// - If the skill directory is absent → install it.
 /// - If the skill directory is present and has a `.bundled` marker whose version
-///   differs from the embedded version → update it.
+///   differs from the embedded version, or whose `.bundled-hash` is missing or differs
+///   from the embedded content digest → update it.
 /// - If the skill directory is present but has no `.bundled` marker → skip (user-owned).
 ///
 /// All per-skill errors are non-fatal: they are collected in `report.failed` and
@@ -103,12 +116,13 @@ pub fn provision_bundled_skills(managed_dir: &Path) -> Result<ProvisionReport, s
         }
 
         let embedded_version = extract_embedded_version(skill_dir);
+        let embedded_hash = embedded_content_hash(skill_dir);
         let target_dir = managed_dir.join(&skill_name);
-        let marker_path = target_dir.join(".bundled");
+        let marker_path = target_dir.join(MARKER_FILE);
 
         if !target_dir.exists() {
             // Skill is absent — install it.
-            match write_skill(skill_dir, &target_dir, &marker_path, &embedded_version) {
+            match write_skill(skill_dir, &target_dir, &embedded_version, &embedded_hash) {
                 Ok(()) => {
                     info!(skill = %skill_name, version = %embedded_version, "installed bundled skill");
                     report.installed.push(skill_name);
@@ -127,7 +141,7 @@ pub fn provision_bundled_skills(managed_dir: &Path) -> Result<ProvisionReport, s
                 // Check if this is a legacy bundled skill (provisioned before the
                 // .bundled marker system): compare on-disk SKILL.md to embedded.
                 if is_legacy_bundled(&target_dir, &skill_name) {
-                    match write_skill(skill_dir, &target_dir, &marker_path, &embedded_version) {
+                    match write_skill(skill_dir, &target_dir, &embedded_version, &embedded_hash) {
                         Ok(()) => {
                             info!(
                                 skill = %skill_name,
@@ -155,14 +169,18 @@ pub fn provision_bundled_skills(managed_dir: &Path) -> Result<ProvisionReport, s
                 report.skipped.push(skill_name);
             }
             MarkerState::Version(marker_version) => {
-                // Use != so both upgrades and rollbacks re-provision.
-                if marker_version != embedded_version {
-                    match write_skill(skill_dir, &target_dir, &marker_path, &embedded_version) {
+                // Use != so both upgrades and rollbacks re-provision; a missing digest
+                // (legacy marker-only install) is re-provisioned once.
+                let recorded_hash = read_recorded_hash(&target_dir);
+                let content_changed = recorded_hash.as_deref() != Some(embedded_hash.as_str());
+                if marker_version != embedded_version || content_changed {
+                    match write_skill(skill_dir, &target_dir, &embedded_version, &embedded_hash) {
                         Ok(()) => {
                             info!(
                                 skill = %skill_name,
                                 from = %marker_version,
                                 to = %embedded_version,
+                                content_changed,
                                 "updated bundled skill"
                             );
                             report.updated.push(skill_name);
@@ -192,16 +210,16 @@ pub fn provision_bundled_skills(managed_dir: &Path) -> Result<ProvisionReport, s
 
 /// Write all files from an embedded skill dir to `target_dir` atomically.
 ///
-/// All files (including the `.bundled` marker) are first written to a sibling
-/// temp directory, then the temp directory is renamed into place in a single
+/// All files (including the `.bundled` marker and `.bundled-hash` digest) are first written
+/// to a sibling temp directory, then the temp directory is renamed into place in a single
 /// `fs::rename` call. Because the rename is atomic on the same filesystem,
 /// a process killed mid-write leaves no partial `target_dir` — the absent
 /// directory is re-provisioned on the next startup.
 fn write_skill(
     skill_dir: &include_dir::Dir<'_>,
     target_dir: &Path,
-    marker_path: &Path,
     version: &str,
+    content_hash: &str,
 ) -> Result<(), std::io::Error> {
     // Write to a sibling temp dir, then atomically rename.
     let parent = target_dir.parent().ok_or_else(|| {
@@ -224,9 +242,9 @@ fn write_skill(
     // Write all embedded files into the temp dir.
     write_dir_contents(skill_dir, &tmp_dir)?;
 
-    // Write the .bundled marker inside the temp dir (atomic move covers it).
-    let tmp_marker = tmp_dir.join(".bundled");
-    fs::write(&tmp_marker, version)?;
+    // Write the marker and digest inside the temp dir (atomic move covers them).
+    fs::write(tmp_dir.join(MARKER_FILE), version)?;
+    fs::write(tmp_dir.join(HASH_FILE), content_hash)?;
 
     // Atomically replace the target dir.
     if target_dir.exists() {
@@ -234,10 +252,43 @@ fn write_skill(
     }
     fs::rename(&tmp_dir, target_dir)?;
 
-    // Sanity: marker_path should now exist at target_dir/.bundled.
-    debug_assert_eq!(marker_path, &target_dir.join(".bundled"));
-
     Ok(())
+}
+
+/// blake3 digest over every embedded file of `skill_dir`, in sorted path order.
+///
+/// Each file contributes its path, length and content, so a rename or a content shift
+/// between files changes the digest.
+fn embedded_content_hash(skill_dir: &include_dir::Dir<'_>) -> String {
+    let mut files = Vec::new();
+    collect_embedded_files(skill_dir, &mut files);
+    files.sort_by(|a, b| a.path().cmp(b.path()));
+    let mut hasher = blake3::Hasher::new();
+    for file in files {
+        let path = file.path().to_string_lossy();
+        hasher.update(&(path.len() as u64).to_le_bytes());
+        hasher.update(path.as_bytes());
+        hasher.update(&(file.contents().len() as u64).to_le_bytes());
+        hasher.update(file.contents());
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+fn collect_embedded_files<'a>(
+    dir: &'a include_dir::Dir<'a>,
+    out: &mut Vec<&'a include_dir::File<'a>>,
+) {
+    out.extend(dir.files());
+    for sub in dir.dirs() {
+        collect_embedded_files(sub, out);
+    }
+}
+
+/// Digest recorded by the last provisioning run, if any.
+fn read_recorded_hash(target_dir: &Path) -> Option<String> {
+    let recorded = fs::read_to_string(target_dir.join(HASH_FILE)).ok()?;
+    let recorded = recorded.trim();
+    (!recorded.is_empty()).then(|| recorded.to_owned())
 }
 
 /// Recursively write all files from an [`include_dir::Dir`] into `dest`.
@@ -552,5 +603,113 @@ mod tests {
                 "{name}: .bundled marker is empty"
             );
         }
+    }
+
+    fn provision_and_first_skill() -> (TempDir, String) {
+        let managed = TempDir::new().unwrap();
+        let report = provision_bundled_skills(managed.path()).expect("provision");
+        assert!(report.failed.is_empty(), "{:?}", report.failed);
+        let first = report.installed.first().cloned().expect("a bundled skill");
+        (managed, first)
+    }
+
+    #[test]
+    fn provision_writes_content_hash_next_to_marker() {
+        let (managed, name) = provision_and_first_skill();
+        let hash = fs::read_to_string(managed.path().join(&name).join(HASH_FILE)).unwrap();
+        assert_eq!(hash.trim().len(), 64);
+    }
+
+    #[test]
+    fn unchanged_content_is_not_rewritten() {
+        let (managed, _) = provision_and_first_skill();
+        let report = provision_bundled_skills(managed.path()).unwrap();
+        assert!(
+            report.installed.is_empty() && report.updated.is_empty() && report.failed.is_empty()
+        );
+    }
+
+    #[test]
+    fn content_change_without_version_bump_reprovisions() {
+        let (managed, name) = provision_and_first_skill();
+        let skill_dir = managed.path().join(&name);
+        let hash_before = fs::read_to_string(skill_dir.join(HASH_FILE)).unwrap();
+        fs::write(skill_dir.join(HASH_FILE), "stale-digest").unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "stale content").unwrap();
+
+        let report = provision_bundled_skills(managed.path()).unwrap();
+
+        assert!(report.updated.contains(&name), "{:?}", report.updated);
+        assert_eq!(
+            fs::read_to_string(skill_dir.join(HASH_FILE)).unwrap(),
+            hash_before
+        );
+        assert_ne!(
+            fs::read_to_string(skill_dir.join("SKILL.md")).unwrap(),
+            "stale content"
+        );
+    }
+
+    #[test]
+    fn missing_hash_file_reprovisions_once() {
+        let (managed, name) = provision_and_first_skill();
+        fs::remove_file(managed.path().join(&name).join(HASH_FILE)).unwrap();
+
+        let first = provision_bundled_skills(managed.path()).unwrap();
+        assert!(first.updated.contains(&name));
+        assert!(managed.path().join(&name).join(HASH_FILE).exists());
+
+        let second = provision_bundled_skills(managed.path()).unwrap();
+        assert_eq!(second.updated, Vec::<String>::new());
+    }
+
+    #[test]
+    fn on_disk_edit_with_intact_hash_is_not_rewritten() {
+        let (managed, name) = provision_and_first_skill();
+        let skill_md = managed.path().join(&name).join("SKILL.md");
+        fs::write(&skill_md, "locally edited").unwrap();
+
+        let report = provision_bundled_skills(managed.path()).unwrap();
+
+        assert!(!report.updated.contains(&name), "{:?}", report.updated);
+        assert_eq!(fs::read_to_string(&skill_md).unwrap(), "locally edited");
+    }
+
+    #[test]
+    fn legacy_migration_writes_marker_and_hash() {
+        let (managed, name) = provision_and_first_skill();
+        let skill_dir = managed.path().join(&name);
+        fs::remove_file(skill_dir.join(MARKER_FILE)).unwrap();
+        fs::remove_file(skill_dir.join(HASH_FILE)).unwrap();
+
+        let report = provision_bundled_skills(managed.path()).unwrap();
+
+        assert!(report.updated.contains(&name), "{:?}", report.updated);
+        assert!(skill_dir.join(MARKER_FILE).exists());
+        assert_eq!(
+            fs::read_to_string(skill_dir.join(HASH_FILE))
+                .unwrap()
+                .trim()
+                .len(),
+            64
+        );
+    }
+
+    #[test]
+    fn user_owned_skill_without_marker_is_untouched_by_hash_logic() {
+        let (managed, name) = provision_and_first_skill();
+        let skill_dir = managed.path().join(&name);
+        fs::remove_file(skill_dir.join(MARKER_FILE)).unwrap();
+        fs::remove_file(skill_dir.join(HASH_FILE)).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "user content").unwrap();
+
+        let report = provision_bundled_skills(managed.path()).unwrap();
+
+        assert!(report.skipped.contains(&name));
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("SKILL.md")).unwrap(),
+            "user content"
+        );
+        assert!(!skill_dir.join(HASH_FILE).exists());
     }
 }

@@ -136,7 +136,7 @@ async fn reload_skills_offloads_registry_load_and_reflects_new_skills() {
         .read()
         .all_meta()
         .iter()
-        .map(|m| m.name.clone())
+        .map(|m| m.name.to_string())
         .collect();
     assert_eq!(
         names,
@@ -168,7 +168,7 @@ async fn reload_skills_is_noop_when_safe_mode_active() {
         .read()
         .all_meta()
         .iter()
-        .map(|m| m.name.clone())
+        .map(|m| m.name.to_string())
         .collect();
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -190,7 +190,7 @@ async fn reload_skills_is_noop_when_safe_mode_active() {
         .read()
         .all_meta()
         .iter()
-        .map(|m| m.name.clone())
+        .map(|m| m.name.to_string())
         .collect();
     assert_eq!(
         names_after, names_before,

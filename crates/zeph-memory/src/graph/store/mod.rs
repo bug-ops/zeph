@@ -1491,7 +1491,6 @@ impl GraphStore {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        // TODO: chunk when ids.len() > 5_000 to guard against extreme cases
         let mut result = Vec::with_capacity(ids.len());
         for chunk in ids.chunks(SQLITE_BATCH_LIMIT_2X) {
             let placeholders = zeph_db::placeholder_list(1, chunk.len());
@@ -2647,7 +2646,7 @@ impl GraphStore {
     /// - [`MemoryError::SupersedeDepthExceeded`] — chain depth cap would be exceeded.
     /// - [`MemoryError::Sqlx`] / [`MemoryError::Db`] — database errors.
     #[allow(clippy::too_many_arguments)]
-    // TODO(B3): refactor into a builder or config struct to reduce argument count
+    // TODO(#6935): B3 refactor into a builder or config struct to reduce argument count
     // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     #[tracing::instrument(name = "memory.graph.insert_or_supersede", skip_all)]
     pub async fn insert_or_supersede_with_metrics(

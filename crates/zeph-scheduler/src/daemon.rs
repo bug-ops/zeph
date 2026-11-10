@@ -199,7 +199,7 @@ pub fn detach_and_run(cfg: &DaemonConfig, extra_args: &[&str]) -> Result<(), Sch
     .entered();
 
     // Create parent directories for the log file.
-    if let Some(parent) = cfg.log_file.parent().filter(|p| !p.as_os_str().is_empty()) {
+    if let Some(parent) = cfg.log_file.parent().filter(|p| !p.is_empty()) {
         std::fs::create_dir_all(parent).map_err(|e| {
             SchedulerError::Detach(format!(
                 "failed to create log directory {}: {e}",

@@ -33,7 +33,7 @@ pub enum IngestSourceKind {
     /// (spec-067 §3 D1); `zeph-memory` treats `ExternalAgent` the same as
     /// `StaticArtifact` for prompt selection.
     ExternalAgent,
-    // TODO(D1): add per-source trust classification once the trust-level spec is finalised.
+    // TODO(#6934): add per-source trust classification once the trust-level spec is finalised.
 }
 
 impl IngestSourceKind {

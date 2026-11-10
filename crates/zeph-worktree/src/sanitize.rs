@@ -128,7 +128,7 @@ fn nearest_existing_ancestor(path: &Path) -> PathBuf {
             return current.to_path_buf();
         }
         match current.parent() {
-            Some(parent) if !parent.as_os_str().is_empty() => current = parent,
+            Some(parent) if !parent.is_empty() => current = parent,
             _ => return current.to_path_buf(),
         }
     }

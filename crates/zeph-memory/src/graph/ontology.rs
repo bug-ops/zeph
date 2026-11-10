@@ -128,7 +128,7 @@ impl OntologyTable {
     ///
     /// Returns an error if the file exists but cannot be parsed.
     pub async fn from_path(path: &Path, cache_max: usize) -> Result<Self, MemoryError> {
-        let predicates = if path.as_os_str().is_empty() {
+        let predicates = if path.is_empty() {
             default_predicates().to_vec()
         } else {
             load_toml_file(path).await?
@@ -146,7 +146,7 @@ impl OntologyTable {
     ///
     /// Returns an error if the new TOML cannot be parsed.
     pub async fn reload(&self, path: &Path) -> Result<(), MemoryError> {
-        let predicates = if path.as_os_str().is_empty() {
+        let predicates = if path.is_empty() {
             default_predicates().to_vec()
         } else {
             load_toml_file(path).await?

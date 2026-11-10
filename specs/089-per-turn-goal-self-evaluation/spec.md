@@ -64,7 +64,7 @@ With no source the reply asks the user to state a condition and no LLM call is m
 | FR-014 | THE SYSTEM SHALL deliver the report between turns (`LoopEvent::GoalAutoCheckDone`) only if no turn began since the check was spawned (a never-reset turn counter); otherwise it is dropped. The report is labelled `Goal check (auto, advisory)`, is not added to history or persistence, and span `core.goal.turn_selfcheck` carries `trigger = turn_end`. |
 | FR-015 | THE SYSTEM SHALL skip the check on channels whose `Channel::delivers_between_turns()` is `false` (`LoopbackChannel`: ACP, daemon A2A and loopback gateway; `JsonCliChannel`; `BenchmarkChannel`; a `GatewayChannel` over CLI/TUI forwards the inner answer, so it is not skipped), because there a between-turn message is discarded or taken as the next request's answer. Known limitation: no auto-check under ACP. |
 
-Cost: one supervisor call (plus one parse retry) per qualifying turn. Known limitation: with `[agent] abort_enrichment_on_turn = true` the idle tick aborts the check within about 2 s (#6279 behaviour). The report is not in history, so a follow-up such as "apply those suggestions" needs the user to quote them.
+Cost: one supervisor call (plus one parse retry) per qualifying turn. With `[agent] abort_enrichment_on_turn = true` enrichment is aborted when the next turn starts (`process_turn`), not on the idle tick, so a check survives idle time (#6922). The report is not in history, so a follow-up such as "apply those suggestions" needs the user to quote them.
 
 ## 4. Non-Functional Requirements
 

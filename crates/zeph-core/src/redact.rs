@@ -6,65 +6,18 @@ use std::sync::LazyLock;
 
 use base64::Engine as _;
 use regex::Regex;
-use zeph_common::secrets::PATH_PREFIXES;
-use zeph_sanitizer::secret_shape::scrub_secret_shapes;
 
-/// Apply URL-credential stripping, secret redaction (including Bearer headers and JWTs),
-/// and path sanitization in a single pass.
+pub use zeph_common::secret_redact::{sanitize_paths, scrub_content};
+
+/// Replace tokens containing known secret patterns, and URL-embedded credentials, with
+/// `[REDACTED]`.
 ///
-/// Returns `Cow::Borrowed` when no changes are needed (zero-allocation fast path).
-#[must_use]
-pub fn scrub_content(text: &str) -> Cow<'_, str> {
-    // Strip URL-embedded credentials first (https://user:pass@host → https://[REDACTED]@host).
-    let after_url: Cow<'_, str> = URL_CREDS_REGEX.replace_all(text, "${scheme}[REDACTED]@");
-    let after_secrets: Cow<'_, str> = match redact_secrets(after_url.as_ref()) {
-        Cow::Borrowed(_) => after_url,
-        Cow::Owned(s) => Cow::Owned(s),
-    };
-    match sanitize_paths(after_secrets.as_ref()) {
-        Cow::Borrowed(_) => after_secrets,
-        Cow::Owned(s) => Cow::Owned(s),
-    }
-}
-
-static PATH_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    let alt = PATH_PREFIXES.join("|");
-    let full = format!(r#"(?:{alt})[^\s"'`,;{{}}\[\]]*"#);
-    Regex::new(&full).expect("path redaction regex is valid")
-});
-
-// Matches basic-auth credentials embedded in URLs: https://user:pass@host
-static URL_CREDS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?P<scheme>[a-z][a-z0-9+\-.]*://)(?P<creds>[^@/\s]+:[^@/\s]+@)")
-        .expect("url credential redaction regex is valid")
-});
-
-/// Replace tokens containing known secret patterns with `[REDACTED]`.
-///
-/// Detects secrets embedded in URLs, JSON values, and quoted strings (via the
-/// [`zeph_common::secrets::SECRET_PREFIXES`] prefix list), `Authorization: Bearer` headers,
-/// and standalone JWTs. Delegates the actual shape matching to
-/// [`zeph_sanitizer::secret_shape::scrub_secret_shapes`] — the same shape-based detection used
-/// by the subagent transcript-forward sanitize pipeline (issue #6571) — so both consumers stay
-/// in sync against a single implementation. Returns `Cow::Borrowed` when nothing was redacted
-/// (zero-allocation fast path).
+/// Delegates to [`zeph_common::secret_redact::scrub_secrets`], the pipeline shared with the
+/// subagent transcript-forward sanitizer (issue #6571) and the persistence paths. Returns
+/// `Cow::Borrowed` when nothing was redacted (zero-allocation fast path).
 #[must_use]
 pub fn redact_secrets(text: &str) -> Cow<'_, str> {
-    scrub_secret_shapes(text)
-}
-
-/// Replace absolute filesystem paths with `[PATH]` to prevent information disclosure.
-#[must_use]
-pub fn sanitize_paths(text: &str) -> Cow<'_, str> {
-    if !PATH_PREFIXES.iter().any(|p| text.contains(*p)) {
-        return Cow::Borrowed(text);
-    }
-
-    let result = PATH_REGEX.replace_all(text, "[PATH]");
-    match result {
-        Cow::Borrowed(_) => Cow::Borrowed(text),
-        Cow::Owned(s) => Cow::Owned(s),
-    }
+    zeph_common::secret_redact::scrub_secrets(text)
 }
 
 /// Minimum length of a contiguous base64-alphabet run to treat as probable binary data.

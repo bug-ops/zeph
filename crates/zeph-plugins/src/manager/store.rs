@@ -141,7 +141,7 @@ pub(crate) fn collect_skill_names(root: &Path, manifest: &PluginManifest) -> Vec
         .all_meta()
         .iter()
         .filter(|m| allowed.contains(&m.skill_dir))
-        .map(|m| m.name.clone())
+        .map(|m| m.name.to_string())
         .collect()
 }
 
@@ -247,7 +247,12 @@ pub(crate) fn parse_frontmatter_meta(content: &str, fallback_path: &str) -> (Str
 /// Plugin skills are third-party and must never be treated as bundled by the scanner.
 pub(crate) fn strip_bundled_markers(root: &Path) {
     for entry in WalkDir::new(root).into_iter().flatten() {
-        if entry.file_type().is_file() && entry.file_name().to_str() == Some(".bundled") {
+        if entry.file_type().is_file()
+            && entry
+                .file_name()
+                .to_str()
+                .is_some_and(|n| zeph_skills::bundled::PROVENANCE_FILES.contains(&n))
+        {
             let _ = std::fs::remove_file(entry.path());
         }
     }

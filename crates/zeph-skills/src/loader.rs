@@ -57,7 +57,7 @@
 
 use std::path::{Path, PathBuf};
 
-use zeph_common::SessionId;
+use zeph_common::{SessionId, SkillName};
 
 use crate::error::SkillError;
 use crate::extensions::{SkillExtensions, parse_extensions};
@@ -70,8 +70,8 @@ use crate::state::{SkillStateSchema, parse_state};
 /// [`Skill`] struct including the Markdown body.
 #[derive(Clone, Debug)]
 pub struct SkillMeta {
-    /// Unique skill identifier (`name` frontmatter field).
-    pub name: String,
+    /// Unique skill identifier (`name` frontmatter field), validated at parse time.
+    pub name: SkillName,
     /// Short capability description used for embedding-based matching.
     pub description: String,
     /// Monotonically incrementing version counter (spec 057). Default: `0`.
@@ -167,11 +167,26 @@ pub struct Skill {
     pub resources: crate::resource::SkillResources,
 }
 
-impl Default for SkillMeta {
-    fn default() -> Self {
+impl SkillMeta {
+    /// Build metadata with the given identity and every other field at its default.
+    ///
+    /// Replaces `Default`: a skill without a valid name is unrepresentable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::SkillName;
+    /// use zeph_skills::loader::SkillMeta;
+    ///
+    /// let meta = SkillMeta::new(SkillName::parse("my-skill").unwrap(), "Does things.");
+    /// assert_eq!(meta.version, 0);
+    /// assert!(meta.state.is_none());
+    /// ```
+    #[must_use]
+    pub fn new(name: SkillName, description: impl Into<String>) -> Self {
         Self {
-            name: String::new(),
-            description: String::new(),
+            name,
+            description: description.into(),
             version: 0,
             source: String::new(),
             session_id: None,
@@ -197,7 +212,7 @@ impl Skill {
     /// Returns the skill's unique name.
     #[must_use]
     pub fn name(&self) -> &str {
-        &self.meta.name
+        self.meta.name.as_str()
     }
 
     /// Returns the skill's capability description.
@@ -207,31 +222,7 @@ impl Skill {
     }
 }
 
-fn validate_skill_name(name: &str, dir_name: &str) -> Result<(), SkillError> {
-    if name.is_empty() || name.len() > 64 {
-        return Err(SkillError::Invalid(format!(
-            "skill name must be 1-64 characters, got {}",
-            name.len()
-        )));
-    }
-    if !name
-        .bytes()
-        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-    {
-        return Err(SkillError::Invalid(format!(
-            "skill name must contain only lowercase letters, digits, and hyphens: {name}"
-        )));
-    }
-    if name.starts_with('-') || name.ends_with('-') {
-        return Err(SkillError::Invalid(format!(
-            "skill name must not start or end with hyphen: {name}"
-        )));
-    }
-    if name.contains("--") {
-        return Err(SkillError::Invalid(format!(
-            "skill name must not contain consecutive hyphens: {name}"
-        )));
-    }
+fn validate_skill_name(name: &SkillName, dir_name: &str) -> Result<(), SkillError> {
     if name != dir_name {
         return Err(SkillError::Invalid(format!(
             "skill name '{name}' does not match directory name '{dir_name}'"
@@ -694,6 +685,7 @@ pub fn load_skill_meta_from_str(content: &str) -> Result<(SkillMeta, String), Sk
         .description
         .filter(|s| !s.is_empty())
         .ok_or_else(|| SkillError::Invalid("missing 'description' in frontmatter".into()))?;
+    let name = SkillName::parse(&name).map_err(|e| SkillError::Invalid(e.to_string()))?;
 
     if description.len() > 1024 {
         return Err(SkillError::Invalid(format!(
@@ -807,10 +799,12 @@ pub fn load_skill_meta(path: &Path) -> Result<SkillMeta, SkillError> {
         )));
     }
 
-    let skill_dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    let skill_dir = path.parent().map_or_default(Path::to_path_buf);
 
     let dir_name = skill_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
+    let name = SkillName::parse(&name)
+        .map_err(|e| SkillError::Other(format!("in {}: {e}", path.display())))?;
     validate_skill_name(&name, dir_name)
         .map_err(|e| SkillError::Other(format!("in {}: {e}", path.display())))?;
 
@@ -1160,6 +1154,26 @@ mod tests {
         std::fs::write(&path, "---\nname: a--b\ndescription: d\n---\nb").unwrap();
 
         assert!(load_skill_meta(&path).is_err());
+    }
+
+    #[test]
+    fn load_from_str_rejects_invalid_names() {
+        for bad in ["Bad", "-bad", "bad-", "a--b", "a_b", "has space"] {
+            let content = format!("---\nname: {bad}\ndescription: d\n---\nb");
+            assert!(load_skill_meta_from_str(&content).is_err(), "{bad}");
+        }
+        let (meta, _) =
+            load_skill_meta_from_str("---\nname: ok-name\ndescription: d\n---\nb").unwrap();
+        assert_eq!(meta.name, "ok-name");
+    }
+
+    #[test]
+    fn skill_meta_new_sets_defaults() {
+        let meta = SkillMeta::new(SkillName::parse("x-skill").unwrap(), "desc");
+        assert_eq!(meta.name, "x-skill");
+        assert_eq!(meta.description, "desc");
+        assert_eq!(meta.version, 0);
+        assert!(meta.state.is_none() && meta.skill_dir.is_empty());
     }
 
     #[test]
@@ -1950,6 +1964,6 @@ body
                 with_state.push(meta.name);
             }
         }
-        assert_eq!(with_state, vec!["skill-audit".to_string()]);
+        assert_eq!(with_state, vec!["skill-audit"]);
     }
 }

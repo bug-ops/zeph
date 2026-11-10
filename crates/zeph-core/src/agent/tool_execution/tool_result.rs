@@ -494,6 +494,10 @@ impl<C: Channel> Agent<C> {
                     *batch_source_kind = kind;
                 }
                 *batch_trust_level = (*batch_trust_level).max(trust);
+                // Built-in context tools (e.g. the patch tool itself) carry no outside content.
+                if self.builtin_tool(tc.name.as_str()).is_none() {
+                    self.ratchet_skill_input_trust(trust);
+                }
                 (body, flags)
             };
         *has_any_injection_flags |= tool_had_injection_flags;

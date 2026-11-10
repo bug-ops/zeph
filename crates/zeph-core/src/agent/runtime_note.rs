@@ -194,9 +194,11 @@ impl RuntimeNoteState {
             return None;
         }
         Some(format!(
-            "<runtime-note id=\"{}\">\n{}\n</runtime-note>",
+            "{}id=\"{}\">\n{}\n{}",
+            DelimiterTag::RuntimeNote.open_prefix(),
             self.nonce,
-            body.join("\n")
+            body.join("\n"),
+            DelimiterTag::RuntimeNote.close_tag()
         ))
     }
 }

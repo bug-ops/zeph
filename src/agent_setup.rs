@@ -1695,7 +1695,7 @@ pub(crate) async fn apply_code_indexer(
         // for tokio worker threads (#3357).
         // Plain `tokio::task::spawn_blocking` (the fallback when spawner = None) routes
         // CPU-heavy chunk work to the dedicated blocking thread pool, keeping async workers free.
-        // TODO(review): re-enable via a lightweight atomic counter rather than BlockingSpawner
+        // TODO(#6935): re-enable via a lightweight atomic counter rather than BlockingSpawner
         // once the dependency cycle is resolved (#2961).
         let indexer = std::sync::Arc::new(base_indexer);
         anyhow::Ok(indexer)

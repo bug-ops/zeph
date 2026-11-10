@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-// TODO(critic): remove async_trait once rmcp drops the #[async_trait] macro from CredentialStore.
+// TODO(#6935): remove async_trait once rmcp drops the #[async_trait] macro from CredentialStore.
 // As of rmcp 1.5, CredentialStore is still defined with #[async_trait], requiring implementors to do the same.
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -564,7 +564,7 @@ impl McpClient {
     /// `McpError::Timeout` if the handshake exceeds `timeout`, or
     /// `McpError::Connection` if the handshake fails.
     #[allow(clippy::too_many_arguments)]
-    // TODO(B3): refactor into a builder or config struct to reduce argument count
+    // TODO(#6935): B3 refactor into a builder or config struct to reduce argument count
     // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     #[cfg_attr(
         feature = "profiling",
