@@ -156,6 +156,7 @@ impl MockChannel {
         self
     }
 
+    #[cfg(feature = "sqlite")]
     pub(crate) fn without_between_turn_delivery(mut self) -> Self {
         self.between_turn_delivery = false;
         self
@@ -163,12 +164,14 @@ impl MockChannel {
 
     /// Make `recv` pend forever once the scripted messages run out, so the run loop idles.
     /// `try_recv` then reports nothing, so messages only arrive through `recv` (the `LoopEvent::Message` path).
+    #[cfg(feature = "sqlite")]
     pub(crate) fn blocking_when_empty(mut self) -> Self {
         self.block_when_empty = true;
         self
     }
 
     /// Mark every received message as sent by another bot.
+    #[cfg(feature = "sqlite")]
     pub(crate) fn with_bot_messages(mut self) -> Self {
         self.from_bot = true;
         self
