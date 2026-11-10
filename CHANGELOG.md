@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `deps`: bump `rmcp` to 3.9.0 (RUSTSEC-2026-0462) and ignore RUSTSEC-2026-0459 for `libsqlite3-sys` pinned below 0.38 by `sqlx-sqlite` (#6885)
 - `deps`: bump `crypto-bigint` 0.7 and `ctutils` to patched versions and ignore RUSTSEC-2026-0387 for `crypto-bigint` 0.5 pinned by `age` (#6870)
 - `zeph-acp`: bump `agent-client-protocol` to 3.5 and refresh workspace dependencies; `unstable-elicitation` and `unstable-auth-methods` no longer forward to upstream features (breaking) (#6868)
 - `zeph-llm`, `zeph-core`: `chat_typed` returns `impl Future + Send` and `chat_typed_erased` is removed (breaking) (#6850)
