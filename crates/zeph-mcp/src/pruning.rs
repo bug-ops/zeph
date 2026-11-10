@@ -435,7 +435,7 @@ mod tests {
     #[test]
     fn parse_empty_array() {
         let names = parse_name_array("[]").unwrap();
-        assert!(names.is_empty());
+        assert_eq!(names, [] as [String; 0]);
     }
 
     #[test]

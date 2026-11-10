@@ -152,6 +152,10 @@ impl Channel for JsonCliChannel {
         true
     }
 
+    fn delivers_between_turns(&self) -> bool {
+        false
+    }
+
     #[allow(clippy::unused_async_trait_impl)]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.sink.emit(&JsonEvent::ResponseChunk { text });
@@ -484,6 +488,13 @@ mod tests {
         );
         assert!(ch.send_usage(100, 50, 200_000, 0, 0, 0.0).await.is_ok());
         assert!(ch.send_stop_hint(StopHint::MaxTokens).await.is_ok());
+    }
+
+    #[test]
+    fn does_not_deliver_between_turns() {
+        let (sink, _) = make_test_sink();
+        let ch = JsonCliChannel::new(sink, false);
+        assert!(!ch.delivers_between_turns());
     }
 
     #[test]

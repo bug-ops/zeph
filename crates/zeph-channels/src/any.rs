@@ -132,6 +132,18 @@ impl Channel for AnyChannel {
         }
     }
 
+    fn delivers_between_turns(&self) -> bool {
+        match self {
+            Self::Cli(c) => c.delivers_between_turns(),
+            Self::JsonCli(c) => c.delivers_between_turns(),
+            Self::Telegram(c) => c.delivers_between_turns(),
+            #[cfg(feature = "discord")]
+            Self::Discord(c) => c.delivers_between_turns(),
+            #[cfg(feature = "slack")]
+            Self::Slack(c) => c.delivers_between_turns(),
+        }
+    }
+
     fn requires_input_sanitization(&self) -> bool {
         match self {
             Self::Cli(c) => c.requires_input_sanitization(),
@@ -207,6 +219,16 @@ mod tests {
     use super::*;
     use crate::cli::CliChannel;
     use zeph_core::channel::Channel;
+
+    #[test]
+    fn any_channel_forwards_delivers_between_turns() {
+        let sink = std::sync::Arc::new(zeph_core::json_event_sink::JsonEventSink::with_writer(
+            std::io::sink(),
+        ));
+        let json = AnyChannel::JsonCli(JsonCliChannel::new(sink, false));
+        assert!(!json.delivers_between_turns());
+        assert!(AnyChannel::Cli(CliChannel::new()).delivers_between_turns());
+    }
 
     #[tokio::test]
     async fn any_channel_cli_send_returns_ok() {

@@ -54,4 +54,7 @@ pub(crate) enum LoopEvent {
     /// `bg_telemetry_inflight` (and reap completed tasks) so the TUI status segment stays live
     /// during idle time between turns, not only at the start of the next one (#6279).
     BgMetricsTick,
+
+    /// The background goal auto-check finished, was aborted, or its task died.
+    GoalAutoCheckDone(crate::agent::goal_auto_check::Resolution),
 }

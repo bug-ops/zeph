@@ -192,7 +192,7 @@ mod tests {
         match result {
             AttestationResult::Verified { fingerprints } => {
                 assert!(fingerprints.contains_key("read_file"));
-                assert!(!fingerprints["read_file"].is_empty());
+                assert_ne!(fingerprints["read_file"], "");
             }
             other => panic!("expected Verified, got {other:?}"),
         }

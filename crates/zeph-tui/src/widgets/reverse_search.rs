@@ -224,9 +224,9 @@ mod tests {
     #[test]
     fn new_with_empty_history_has_no_matches() {
         let state = ReverseSearchState::new(&[]);
-        assert!(state.matches.is_empty());
+        assert_eq!(state.matches.len(), 0);
         assert_eq!(state.selected, 0);
-        assert!(state.query.is_empty());
+        assert_eq!(state.query.len(), 0);
     }
 
     #[test]

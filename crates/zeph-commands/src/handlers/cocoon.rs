@@ -63,8 +63,8 @@ mod tests {
 
     #[test]
     fn description_and_args_hint_non_empty() {
-        assert!(!CocoonCommand.description().is_empty());
-        assert!(!CocoonCommand.args_hint().is_empty());
+        assert_ne!(CocoonCommand.description(), "");
+        assert_ne!(CocoonCommand.args_hint(), "");
     }
 
     #[test]

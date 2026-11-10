@@ -133,7 +133,7 @@ mod tests {
     #[test]
     fn think_tokens_name_and_description() {
         assert_eq!(ThinkTokensCommand.name(), "/think-tokens");
-        assert!(!ThinkTokensCommand.description().is_empty());
+        assert_ne!(ThinkTokensCommand.description(), "");
     }
 
     #[tokio::test]

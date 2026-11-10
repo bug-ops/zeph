@@ -510,7 +510,7 @@ mod tests {
         }
 
         // No ToolUse was queued, so no path is available and nothing is detected.
-        assert!(detected.is_empty());
+        assert_eq!(detected, [] as [std::path::PathBuf; 0]);
     }
 
     /// Native path: `ToolResult { tool_use_id, content }` in a `Role::User` message is matched
@@ -613,6 +613,6 @@ mod tests {
             }
         }
 
-        assert!(detected.is_empty());
+        assert_eq!(detected, [] as [std::path::PathBuf; 0]);
     }
 }

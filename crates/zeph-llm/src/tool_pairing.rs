@@ -1034,7 +1034,7 @@ mod tests {
                 _ => None,
             })
             .expect("orphan must survive downgraded to Text");
-        assert!(!text.trim().is_empty());
+        assert_ne!(text.trim(), "");
     }
 
     #[test]
@@ -1253,7 +1253,7 @@ mod tests {
                 _ => None,
             })
             .expect("orphan must survive downgraded to Text");
-        assert!(!text_part.trim().is_empty());
+        assert_ne!(text_part.trim(), "");
         assert!(
             messages[0].content.contains(text_part),
             "content must be resynced to the downgraded anchor text, not left as stale whitespace"

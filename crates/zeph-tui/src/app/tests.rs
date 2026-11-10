@@ -19,7 +19,7 @@ fn make_app() -> (App, mpsc::Receiver<String>, mpsc::Sender<AgentEvent>) {
 #[test]
 fn initial_state() {
     let (app, _rx, _tx) = make_app();
-    assert!(app.input().is_empty());
+    assert_eq!(app.input().len(), 0);
     assert_eq!(app.input_mode(), InputMode::Insert);
     assert!(app.messages().is_empty());
     assert!(app.show_splash());
@@ -230,7 +230,7 @@ fn enter_submits_input() {
     app.sessions.current_mut().cursor_position = 5;
     let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
     app.handle_event(AppEvent::Key(key));
-    assert!(app.input().is_empty());
+    assert_eq!(app.input().len(), 0);
     assert_eq!(app.messages().len(), 1);
     assert_eq!(app.messages()[0].content, "hello");
 
@@ -341,7 +341,7 @@ fn ctrl_u_clears_input() {
     app.sessions.current_mut().cursor_position = 9;
     let key = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
     app.handle_event(AppEvent::Key(key));
-    assert!(app.input().is_empty());
+    assert_eq!(app.input().len(), 0);
     assert_eq!(app.cursor_position(), 0);
 }
 
@@ -557,7 +557,7 @@ fn confirm_modal_blocks_other_keys() {
     });
     let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
     app.handle_event(AppEvent::Key(key));
-    assert!(app.input().is_empty());
+    assert_eq!(app.input().len(), 0);
     assert!(app.confirm_state.is_some());
 }
 
@@ -883,7 +883,7 @@ fn other_keys_ignored_when_help_open() {
     // Typing a character should not modify input
     let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
     app.handle_event(AppEvent::Key(key));
-    assert!(app.input().is_empty());
+    assert_eq!(app.input().len(), 0);
     assert!(app.show_help);
 
     // Enter should not submit
@@ -974,7 +974,7 @@ fn up_with_empty_input_and_queued_recalls_from_history() {
     assert_eq!(app.cursor_position(), 10);
     assert!(app.editing_queued());
     assert_eq!(app.queued_count(), 1);
-    assert!(app.sessions.current_mut().input_history.is_empty());
+    assert_eq!(app.sessions.current_mut().input_history.len(), 0);
     assert!(app.messages().is_empty());
     let sent = rx.try_recv().unwrap();
     assert_eq!(sent, "/drop-last-queued");
@@ -1530,7 +1530,7 @@ mod command_palette_tests {
         // Typing a char goes to palette, not to input field
         let key = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
-        assert!(app.input().is_empty());
+        assert_eq!(app.input().len(), 0);
         let palette = app.command_palette.as_ref().unwrap();
         assert_eq!(palette.query, "s");
     }
@@ -1589,7 +1589,7 @@ mod command_palette_tests {
 
         let bs = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(bs));
-        assert!(app.command_palette.as_ref().unwrap().query.is_empty());
+        assert_eq!(app.command_palette.as_ref().unwrap().query.len(), 0);
     }
 
     #[test]
@@ -2258,7 +2258,7 @@ mod mention_picker_tests {
         let effects =
             crate::app::reducer::reduce(&mut app, crate::app::action::Action::MentionPickerAccept);
 
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert!(app.mention_picker.is_none());
     }
 
@@ -2277,7 +2277,7 @@ mod mention_picker_tests {
             )),
         );
 
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert!(
             app.mention_picker.is_none(),
             "S2: Dispatch reaching PrefillVerbatim must resync and close the stale picker"
@@ -2321,7 +2321,7 @@ mod mention_picker_tests {
         let effects =
             crate::app::reducer::reduce(&mut app, crate::app::action::Action::MentionPickerAccept);
 
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().input, "src/main.rs ");
     }
 
@@ -2336,7 +2336,7 @@ mod mention_picker_tests {
         let effects =
             crate::app::reducer::reduce(&mut app, crate::app::action::Action::MentionPickerAccept);
 
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(
             app.sessions.current().input,
             "src/main.rs bar",
@@ -2355,7 +2355,7 @@ mod mention_picker_tests {
         let effects =
             crate::app::reducer::reduce(&mut app, crate::app::action::Action::MentionPickerAccept);
 
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().input, "hello src/main.rs ");
     }
 
@@ -3051,7 +3051,7 @@ mod slash_autocomplete_tests {
         let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
         app.handle_event(AppEvent::Key(key));
         assert!(app.slash_autocomplete.is_none());
-        assert!(app.input().is_empty());
+        assert_eq!(app.input().len(), 0);
     }
 }
 
@@ -3269,7 +3269,7 @@ fn paste_in_normal_mode_ignored() {
     let (mut app, _rx, _tx) = make_app();
     app.sessions.current_mut().input_mode = InputMode::Normal;
     app.handle_event(AppEvent::Paste("should not appear".to_owned()));
-    assert!(app.input().is_empty());
+    assert_eq!(app.input().len(), 0);
 }
 
 #[test]

@@ -3183,6 +3183,11 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         let goal_store = std::sync::Arc::new(zeph_core::goal::GoalStore::new(goal_pool));
         let accounting = std::sync::Arc::new(zeph_core::goal::GoalAccounting::new(goal_store));
         tracing::info!("goals: enabled, GoalAccounting wired");
+        match tokio::time::timeout(std::time::Duration::from_secs(5), accounting.refresh()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!(error = %e, "goals: initial active-goal load failed"),
+            Err(_) => tracing::warn!("goals: initial active-goal load timed out"),
+        }
         agent.with_goal_accounting(Some(accounting))
     } else {
         agent

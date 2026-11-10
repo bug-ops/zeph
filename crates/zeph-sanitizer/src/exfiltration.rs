@@ -685,7 +685,7 @@ mod tests {
         let text = "Look: ![diagram](./diagram.png) — local";
         let (cleaned, events) = guard().scan_output(text);
         assert_eq!(cleaned, text);
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 0);
     }
 
     #[test]
@@ -693,7 +693,7 @@ mod tests {
         let text = "Inline: ![icon](data:image/png;base64,abc123)";
         let (cleaned, events) = guard().scan_output(text);
         assert_eq!(cleaned, text);
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 0);
     }
 
     #[test]
@@ -717,7 +717,7 @@ mod tests {
         let text = "![track](https://evil.com/p.gif)";
         let (cleaned, events) = guard_disabled().scan_output(text);
         assert_eq!(cleaned, text);
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 0);
     }
 
     #[test]
@@ -746,7 +746,7 @@ mod tests {
         let text = "![alt][ref]\n[ref]: ./local.png\n";
         let (cleaned, events) = guard().scan_output(text);
         assert_eq!(cleaned, text);
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 0);
     }
 
     #[test]
@@ -976,7 +976,7 @@ mod tests {
         let input = r#"text <img src="https://evil.com/p.gif"> end"#;
         let (cleaned, events) = guard_disabled().scan_output(input);
         assert_eq!(cleaned, input);
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 0);
     }
 
     #[test]
@@ -1024,7 +1024,7 @@ mod tests {
         let input = "!\u{200B}[alt](https://evil.com/track)";
         let (cleaned, events) = guard_disabled().scan_output(input);
         assert_eq!(cleaned, input);
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 0);
     }
 
     #[test]
@@ -1268,7 +1268,7 @@ mod tests {
         let text = "Look: ![diagram](images/pic.gif) — local";
         let (cleaned, events) = guard().scan_output(text);
         assert_eq!(cleaned, text);
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 0);
     }
 
     #[test]
@@ -1279,7 +1279,7 @@ mod tests {
         let text = "Look: ![diagram](assets//img/pic.gif) — local";
         let (cleaned, events) = guard().scan_output(text);
         assert_eq!(cleaned, text);
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 0);
     }
 
     #[test]
@@ -1375,7 +1375,7 @@ mod tests {
         flagged.insert("https://other.com/benign".to_owned());
         let args = r#"{"url": "https://legitimate.com/page"}"#;
         let events = guard().validate_tool_call("fetch", args, &flagged);
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 0);
     }
 
     #[test]
@@ -1384,14 +1384,14 @@ mod tests {
         flagged.insert("https://evil.com/x".to_owned());
         let args = r#"{"url": "https://evil.com/x"}"#;
         let events = guard_disabled().validate_tool_call("fetch", args, &flagged);
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 0);
     }
 
     #[test]
     fn validate_tool_call_noop_with_empty_flagged() {
         let args = r#"{"url": "https://evil.com/x"}"#;
         let events = guard().validate_tool_call("fetch", args, &HashSet::new());
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 0);
     }
 
     #[test]
@@ -1545,7 +1545,7 @@ mod tests {
         let value = nested_array(10_000, "deep");
         let mut out = Vec::new();
         collect_strings(&value, &mut out, 0);
-        assert!(out.is_empty());
+        assert_eq!(out, [] as [&str; 0]);
     }
 
     #[test]
@@ -1558,6 +1558,6 @@ mod tests {
         let just_outside = nested_array(MAX_JSON_DEPTH, "just_outside");
         let mut out = Vec::new();
         collect_strings(&just_outside, &mut out, 0);
-        assert!(out.is_empty());
+        assert_eq!(out, [] as [&str; 0]);
     }
 }

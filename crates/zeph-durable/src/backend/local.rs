@@ -4549,7 +4549,7 @@ mod tests {
             Some((1_000, true))
         );
         // The fired timer no longer appears as due.
-        assert!(backend.due_timers(5_000).await.unwrap().is_empty());
+        assert_eq!(backend.due_timers(5_000).await.unwrap().len(), 0);
     }
 
     #[tokio::test]
@@ -4587,7 +4587,7 @@ mod tests {
         assert_eq!(deleted, 1, "only the aged terminal execution is pruned");
 
         // The old execution and its journal are gone; the live one survives.
-        assert!(backend.read_execution(old).await.unwrap().is_empty());
+        assert_eq!(backend.read_execution(old).await.unwrap().len(), 0);
         assert!(
             backend
                 .promise_state(PromiseId::derive(old, StepId::new(0)))
@@ -4634,7 +4634,7 @@ mod tests {
 
         let deleted = backend.prune(&policy).await.unwrap();
         assert_eq!(deleted, 1, "an aged canceled row must actually be pruned");
-        assert!(backend.read_execution(exec).await.unwrap().is_empty());
+        assert_eq!(backend.read_execution(exec).await.unwrap().len(), 0);
     }
 
     /// Regression for issue #6360 (critic B1): a keyed backend's `durable_execution_integrity` row
@@ -4690,7 +4690,7 @@ mod tests {
             .expect("prune must not fail closed on a keyed execution's FK");
         assert_eq!(deleted, 1, "the keyed execution is pruned like any other");
 
-        assert!(backend.read_execution(old).await.unwrap().is_empty());
+        assert_eq!(backend.read_execution(old).await.unwrap().len(), 0);
         let after: (i64,) = zeph_db::query_as(sql!(
             "SELECT COUNT(*) FROM durable_execution_integrity WHERE execution_id = ?"
         ))

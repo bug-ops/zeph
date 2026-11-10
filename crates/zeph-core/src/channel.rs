@@ -305,6 +305,16 @@ pub trait Channel: Send {
         true
     }
 
+    /// Whether output sent between turns reaches the user.
+    ///
+    /// Returns `false` for channels that pair each outbound message with an inbound request
+    /// (ACP, the daemon's A2A processor and loopback-backed gateway, `--json`): there, a message sent while no request is
+    /// being served is discarded or taken as the answer to the next request. Agent-initiated
+    /// between-turn output, such as the goal auto-check report, is skipped on those channels.
+    fn delivers_between_turns(&self) -> bool {
+        true
+    }
+
     /// Whether messages from this channel are raw external input that must be sanitized
     /// (`ContentTrustLevel::ExternalUntrusted`) before the residual, non-command text reaches
     /// the LLM context.
@@ -819,6 +829,10 @@ impl Channel for LoopbackChannel {
         false
     }
 
+    fn delivers_between_turns(&self) -> bool {
+        false
+    }
+
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, ChannelError> {
         Ok(self.input_rx.recv().await)
     }
@@ -1275,6 +1289,13 @@ mod tests {
         };
         assert_eq!(msg.attachments.len(), 1);
         assert_eq!(msg.attachments[0].kind, AttachmentKind::Audio);
+    }
+
+    #[test]
+    fn delivers_between_turns_default_true_loopback_false() {
+        assert!(StubChannel.delivers_between_turns());
+        let (channel, _handle) = LoopbackChannel::pair(8);
+        assert!(!channel.delivers_between_turns());
     }
 
     #[test]

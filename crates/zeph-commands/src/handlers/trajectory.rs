@@ -105,13 +105,13 @@ mod tests {
     #[test]
     fn trajectory_name_and_description() {
         assert_eq!(TrajectoryCommand.name(), "/trajectory");
-        assert!(!TrajectoryCommand.description().is_empty());
+        assert_ne!(TrajectoryCommand.description(), "");
     }
 
     #[test]
     fn scope_name_and_description() {
         assert_eq!(ScopeCommand.name(), "/scope");
-        assert!(!ScopeCommand.description().is_empty());
+        assert_ne!(ScopeCommand.description(), "");
     }
 
     #[tokio::test]

@@ -91,7 +91,10 @@ mod tests {
             default_compose_types: vec![FunctionalType::UserFact],
             intent_scoped: true,
         };
-        assert!(resolve_active_functional_types(&config, "anything").is_empty());
+        assert_eq!(
+            resolve_active_functional_types(&config, "anything"),
+            [] as [zeph_memory::FunctionalType; 0]
+        );
     }
 
     #[test]
@@ -101,7 +104,10 @@ mod tests {
             default_compose_types: Vec::new(),
             intent_scoped: false,
         };
-        assert!(resolve_active_functional_types(&config, "anything").is_empty());
+        assert_eq!(
+            resolve_active_functional_types(&config, "anything"),
+            [] as [zeph_memory::FunctionalType; 0]
+        );
     }
 
     #[test]

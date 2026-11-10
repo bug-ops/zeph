@@ -124,6 +124,7 @@ On each subsequent query, the top-3 most similar corrections (cosine similarity 
 [skills.learning]
 detector_mode = "regex"              # "regex" (default) or "judge"
 judge_model = ""                     # Model for judge calls (empty = use primary provider)
+correction_confidence_calibration = [] # [[raw, calibrated], ...] curve for LLM confidence; empty = identity
 judge_adaptive_low = 0.5            # Below this, regex "no correction" is trusted (default: 0.5)
 judge_adaptive_high = 0.8           # At or above, regex result accepted without judge (default: 0.8)
 

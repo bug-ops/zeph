@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn goal_name_and_description() {
         assert_eq!(GoalCommand.name(), "/goal");
-        assert!(!GoalCommand.description().is_empty());
+        assert_ne!(GoalCommand.description(), "");
     }
 
     #[tokio::test]

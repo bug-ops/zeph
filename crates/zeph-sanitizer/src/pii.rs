@@ -928,7 +928,7 @@ mod tests {
     #[test]
     fn detect_spans_disabled_returns_empty() {
         let f = filter_disabled();
-        assert!(f.detect_spans("user@example.com").is_empty());
+        assert_eq!(f.detect_spans("user@example.com").len(), 0);
     }
 
     // --- build_char_to_byte_map ---
@@ -1045,7 +1045,7 @@ mod tests {
 
     #[test]
     fn merge_empty_returns_empty() {
-        assert!(merge_spans(vec![]).is_empty());
+        assert_eq!(merge_spans(vec![]).len(), 0);
     }
 
     // --- redact_spans ---

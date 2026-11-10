@@ -71,7 +71,7 @@ async fn store_and_search_vector() {
         .await
         .unwrap();
 
-    assert!(!point_id.is_empty());
+    assert_ne!(point_id, "");
     assert!(qdrant.has_embedding(msg_id).await.unwrap());
 
     let results = qdrant.search(&vector, 10, None).await.unwrap();

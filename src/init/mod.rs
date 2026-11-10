@@ -126,6 +126,10 @@ pub(crate) struct WizardState {
     /// "regex", "judge", or "model" — defaults to "regex" (no LLM calls).
     pub(crate) detector_mode: Option<String>,
     pub(crate) judge_model: Option<String>,
+    /// Run the advisory end-of-turn goal check; implies `[goals] enabled` (#6881).
+    pub(crate) goals_auto_check: bool,
+    /// Calibration curve for LLM-reported correction confidence; identity unless fitted (#6880).
+    pub(crate) correction_confidence_calibration: zeph_config::ConfidenceCalibration,
     /// Provider name from `[[llm.providers]]` for `DetectorMode::Model`. Empty = primary.
     pub(crate) feedback_provider: Option<String>,
     /// Router strategy: None = no router, "ema", "thompson", or "cascade".
@@ -465,6 +469,8 @@ impl Default for WizardState {
             agents_peer_messaging_enabled: true,
             detector_mode: None,
             judge_model: None,
+            goals_auto_check: false,
+            correction_confidence_calibration: zeph_config::ConfidenceCalibration::identity(),
             feedback_provider: None,
             router_strategy: None,
             router_thompson_state_path: None,
@@ -1288,14 +1294,29 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
             if let Some(ref model) = state.judge_model {
                 config.skills.learning.judge_model.clone_from(model);
             }
+            config
+                .skills
+                .learning
+                .correction_confidence_calibration
+                .clone_from(&state.correction_confidence_calibration);
         }
         Some("model") => {
             config.skills.learning.detector_mode = zeph_core::config::DetectorMode::Model;
             if let Some(ref provider) = state.feedback_provider {
                 config.skills.learning.feedback_provider = ProviderName::new(provider.as_str());
             }
+            config
+                .skills
+                .learning
+                .correction_confidence_calibration
+                .clone_from(&state.correction_confidence_calibration);
         }
         _ => {}
+    }
+
+    if state.goals_auto_check {
+        config.goals.enabled = true;
+        config.goals.auto_check = true;
     }
 
     config.orchestration = OrchestrationConfig {
@@ -2666,6 +2687,33 @@ mod tests {
     }
 
     #[test]
+    fn build_config_goal_auto_check_enables_goals_and_calibration_follows_detector() {
+        let curve: zeph_config::ConfidenceCalibration =
+            "[[0.0, 0.0], [0.5, 0.4], [1.0, 1.0]]".parse().unwrap();
+        let state = WizardState {
+            goals_auto_check: true,
+            detector_mode: Some("judge".into()),
+            correction_confidence_calibration: curve.clone(),
+            ..single_provider_state()
+        };
+        let config = build_config(&state);
+        assert!(config.goals.enabled && config.goals.auto_check);
+        assert_eq!(
+            config.skills.learning.correction_confidence_calibration,
+            curve
+        );
+
+        let off = build_config(&single_provider_state());
+        assert!(!off.goals.enabled && !off.goals.auto_check);
+        assert!(
+            off.skills
+                .learning
+                .correction_confidence_calibration
+                .is_identity()
+        );
+    }
+
+    #[test]
     fn build_config_wires_server_compaction_trigger_only_when_enabled() {
         let mut state = WizardState {
             server_compaction_trigger: zeph_config::CompactionTrigger::new(120_000).ok(),
@@ -3336,13 +3384,13 @@ mod tests {
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert!(
+        assert_eq!(
             config
                 .security
                 .pre_execution_verify
                 .destructive_commands
-                .allowed_paths
-                .is_empty()
+                .allowed_paths,
+            [] as [String; 0]
         );
     }
 
@@ -3592,8 +3640,8 @@ mod tests {
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert!(config.tools.file.deny_read.is_empty());
-        assert!(config.tools.file.allow_read.is_empty());
+        assert_eq!(config.tools.file.deny_read, [] as [String; 0]);
+        assert_eq!(config.tools.file.allow_read, [] as [String; 0]);
     }
 
     #[test]

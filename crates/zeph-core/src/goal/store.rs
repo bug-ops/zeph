@@ -313,35 +313,37 @@ impl GoalRow {
     }
 }
 
+/// In-memory `GoalStore` with the production schema, shared by tests across the crate.
+#[cfg(all(test, feature = "sqlite"))]
+pub(crate) async fn in_memory_store() -> GoalStore {
+    let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
+    sqlx::query(
+        "CREATE TABLE zeph_goals (\
+         id TEXT PRIMARY KEY, text TEXT NOT NULL, \
+         status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','completed','cleared')), \
+         token_budget INTEGER, turns_used INTEGER NOT NULL DEFAULT 0, \
+         tokens_used INTEGER NOT NULL DEFAULT 0, \
+         created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE UNIQUE INDEX idx_zeph_goals_single_active ON zeph_goals(status) WHERE status = 'active'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    GoalStore {
+        pool: Arc::new(pool),
+    }
+}
+
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use std::assert_matches;
 
     use super::*;
-
-    async fn in_memory_store() -> GoalStore {
-        let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
-        sqlx::query(
-            "CREATE TABLE zeph_goals (\
-             id TEXT PRIMARY KEY, text TEXT NOT NULL, \
-             status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','completed','cleared')), \
-             token_budget INTEGER, turns_used INTEGER NOT NULL DEFAULT 0, \
-             tokens_used INTEGER NOT NULL DEFAULT 0, \
-             created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "CREATE UNIQUE INDEX idx_zeph_goals_single_active ON zeph_goals(status) WHERE status = 'active'",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        GoalStore {
-            pool: Arc::new(pool),
-        }
-    }
 
     #[tokio::test]
     async fn create_pauses_existing_active() {

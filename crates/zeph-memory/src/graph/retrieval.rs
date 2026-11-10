@@ -531,7 +531,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(result.is_empty());
+        assert_eq!(result.len(), 0);
     }
 
     #[tokio::test]
@@ -554,7 +554,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(result.is_empty());
+        assert_eq!(result.len(), 0);
     }
 
     #[tokio::test]
@@ -601,7 +601,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!result.is_empty());
+        assert_ne!(result.len(), 0);
         assert_eq!(result[0].relation, "uses");
     }
 

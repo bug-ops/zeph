@@ -995,7 +995,7 @@ mod tests {
             .store_list("local", "no/such/ns", 0, StoreListOrder::KeyAsc)
             .await
             .unwrap();
-        assert!(rows.is_empty());
+        assert_eq!(rows.len(), 0);
     }
 
     /// M1 (GitHub #6768): `RecentFirst` returns rows ordered by `updated_at DESC`,

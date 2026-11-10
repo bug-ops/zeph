@@ -2439,7 +2439,7 @@ mod tests {
             .store_list("local", &namespace, 0, StoreListOrder::KeyAsc)
             .await
             .unwrap();
-        assert!(items.is_empty());
+        assert_eq!(items, [] as [zeph_memory::store::StoreItem; 0]);
     }
 
     #[tokio::test]

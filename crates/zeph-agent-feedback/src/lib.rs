@@ -39,9 +39,7 @@ use tokio::time::Instant;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use zeph_llm::any::AnyProvider;
-use zeph_llm::classifier::llm::{
-    FeedbackGateDecision, FeedbackVerdictSource, trace_feedback_verdict,
-};
+use zeph_llm::classifier::llm::{FeedbackGate, FeedbackGateDecision, FeedbackVerdictSource};
 use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
 
 use regex::Regex;
@@ -720,7 +718,7 @@ impl JudgeDetector {
         provider: &AnyProvider,
         user_message: &str,
         assistant_response: &str,
-        confidence_threshold: f32,
+        gate: &FeedbackGate,
         timeout: Duration,
     ) -> Result<JudgeVerdict, JudgeError> {
         let messages = Self::build_messages(user_message, assistant_response);
@@ -736,33 +734,22 @@ impl JudgeDetector {
             "judge verdict"
         );
 
-        // Clamp and apply confidence threshold.
-        let confidence = verdict.confidence.clamp(0.0, 1.0);
-        if verdict.is_correction && confidence < confidence_threshold {
-            trace_feedback_verdict(
-                FeedbackVerdictSource::Judge,
-                &verdict.kind,
-                verdict.confidence,
-                confidence_threshold,
-                FeedbackGateDecision::Suppressed,
-            );
+        let outcome = gate.apply(
+            FeedbackVerdictSource::Judge,
+            verdict.is_correction,
+            &verdict.kind,
+            verdict.confidence,
+        );
+        if outcome.decision == FeedbackGateDecision::Suppressed {
             return Ok(JudgeVerdict {
                 is_correction: false,
                 kind: "neutral".into(),
-                confidence,
+                confidence: outcome.confidence,
                 ..verdict
             });
         }
-
-        trace_feedback_verdict(
-            FeedbackVerdictSource::Judge,
-            &verdict.kind,
-            verdict.confidence,
-            confidence_threshold,
-            FeedbackGateDecision::unsuppressed(verdict.is_correction),
-        );
         Ok(JudgeVerdict {
-            confidence,
+            confidence: outcome.confidence,
             ..verdict
         })
     }
@@ -1185,7 +1172,7 @@ mod tests {
     fn judge_verdict_deserialize_without_reasoning_field() {
         let json = r#"{"is_correction": true, "kind": "repetition", "confidence": 0.8}"#;
         let v: JudgeVerdict = serde_json::from_str(json).expect("missing reasoning must not fail");
-        assert!(v.reasoning.is_empty());
+        assert_eq!(v.reasoning, "");
         assert!(v.is_correction);
     }
 
@@ -1976,7 +1963,7 @@ mod tests {
                 &provider,
                 "user msg",
                 "assistant resp",
-                0.5,
+                &FeedbackGate::uncalibrated(0.5),
                 Duration::from_secs(30),
             )
             .await
@@ -2083,7 +2070,7 @@ mod tests {
             &provider,
             "secret user text",
             "assistant text",
-            threshold,
+            &FeedbackGate::uncalibrated(threshold),
             Duration::from_secs(5),
         )
         .await

@@ -1098,7 +1098,7 @@ mod tests {
         );
     }
 
-    /// Unclosed fence (no closing ```) must not trigger blocking — it is not an executable
+    /// Unclosed fence (no closing fence line) must not trigger blocking — it is not an executable
     /// tool invocation. Verified by debugger as an intentional false-negative.
     #[tokio::test]
     async fn unclosed_fenced_block_returns_ok_none() {

@@ -148,13 +148,13 @@ mod tests {
     #[test]
     fn skill_name_and_description() {
         assert_eq!(SkillCommand.name(), "/skill");
-        assert!(!SkillCommand.description().is_empty());
+        assert_ne!(SkillCommand.description(), "");
     }
 
     #[test]
     fn skills_name_and_description() {
         assert_eq!(SkillsCommand.name(), "/skills");
-        assert!(!SkillsCommand.description().is_empty());
+        assert_ne!(SkillsCommand.description(), "");
     }
 
     #[test]
@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn feedback_name_and_description() {
         assert_eq!(FeedbackCommand.name(), "/feedback");
-        assert!(!FeedbackCommand.description().is_empty());
+        assert_ne!(FeedbackCommand.description(), "");
     }
 
     #[tokio::test]

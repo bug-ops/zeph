@@ -273,7 +273,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [i64; 0]);
     }
 
     #[tokio::test]

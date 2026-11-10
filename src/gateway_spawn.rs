@@ -93,6 +93,10 @@ impl<C: zeph_core::channel::Channel> zeph_core::channel::Channel for GatewayChan
         }
     }
 
+    fn delivers_between_turns(&self) -> bool {
+        self.inner.delivers_between_turns()
+    }
+
     async fn send(&mut self, text: &str) -> Result<(), zeph_core::channel::ChannelError> {
         self.inner.send(text).await
     }
@@ -567,6 +571,15 @@ mod tests {
         let ch = GatewayChannel::new(inner, webhook_rx);
         // LoopbackChannel::supports_exit returns false.
         assert!(!ch.supports_exit());
+    }
+
+    /// `GatewayChannel::delivers_between_turns` forwards the inner channel's answer.
+    #[test]
+    fn delivers_between_turns_delegates_to_inner() {
+        let (inner, _handle) = LoopbackChannel::pair(8);
+        let (_webhook_tx, webhook_rx) = tokio::sync::mpsc::channel::<ChannelMessage>(1);
+        let ch = GatewayChannel::new(inner, webhook_rx);
+        assert!(!ch.delivers_between_turns());
     }
 
     /// Minimal `Channel` impl reporting `supports_exit() == true`, i.e. a trusted local

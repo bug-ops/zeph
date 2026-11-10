@@ -398,9 +398,9 @@ mod tests {
         let absent = dir.path().join("no-such-dir");
         let mut cfg = base_config();
         let overlay = apply_plugin_config_overlays(&mut cfg, &absent).unwrap();
-        assert!(overlay.source_plugins.is_empty());
-        assert!(overlay.skipped_plugins.is_empty());
-        assert!(cfg.tools.shell.blocked_commands.is_empty());
+        assert_eq!(overlay.source_plugins, [] as [String; 0]);
+        assert_eq!(overlay.skipped_plugins, [] as [String; 0]);
+        assert_eq!(cfg.tools.shell.blocked_commands, [] as [String; 0]);
     }
 
     // 2. plugins_dir_without_manifests_is_noop
@@ -410,8 +410,8 @@ mod tests {
         fs::create_dir(dir.path().join("myplugin")).unwrap();
         let mut cfg = base_config();
         let overlay = apply_plugin_config_overlays(&mut cfg, dir.path()).unwrap();
-        assert!(overlay.source_plugins.is_empty());
-        assert!(cfg.tools.shell.blocked_commands.is_empty());
+        assert_eq!(overlay.source_plugins, [] as [String; 0]);
+        assert_eq!(cfg.tools.shell.blocked_commands, [] as [String; 0]);
     }
 
     // 3. single_plugin_blocked_commands_union
@@ -513,10 +513,10 @@ mod tests {
             "[config.tools]\nallowed_commands = [\"curl\"]",
         );
         let mut cfg = base_config();
-        assert!(cfg.tools.shell.allowed_commands.is_empty());
+        assert_eq!(cfg.tools.shell.allowed_commands, [] as [String; 0]);
         apply_plugin_config_overlays(&mut cfg, dir.path()).unwrap();
         // Base was empty — plugin must NOT have widened it.
-        assert!(cfg.tools.shell.allowed_commands.is_empty());
+        assert_eq!(cfg.tools.shell.allowed_commands, [] as [String; 0]);
     }
 
     // 8. disambiguation_threshold_max_wins
@@ -671,8 +671,8 @@ mod tests {
         std::os::unix::fs::symlink(&plugin_in_real, dir.path().join("evil")).unwrap();
         let mut cfg = base_config();
         let overlay = apply_plugin_config_overlays(&mut cfg, dir.path()).unwrap();
-        assert!(overlay.source_plugins.is_empty());
-        assert!(cfg.tools.shell.blocked_commands.is_empty());
+        assert_eq!(overlay.source_plugins, [] as [String; 0]);
+        assert_eq!(cfg.tools.shell.blocked_commands, [] as [String; 0]);
     }
 
     // 16. idempotent_merge
@@ -810,9 +810,9 @@ mod tests {
         let mut cfg = base_config();
         let overlay = apply_plugin_config_overlays(&mut cfg, dir.path()).unwrap();
         // Plugin skipped due to invalid name — no commands added.
-        assert!(cfg.tools.shell.blocked_commands.is_empty());
+        assert_eq!(cfg.tools.shell.blocked_commands, [] as [String; 0]);
         // source_plugins must NOT contain the untrusted name.
-        assert!(overlay.source_plugins.is_empty());
+        assert_eq!(overlay.source_plugins, [] as [String; 0]);
     }
 
     // H4 regression: a stray `.plugin-integrity.toml` inside plugins_dir must not be

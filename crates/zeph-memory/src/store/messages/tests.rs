@@ -557,7 +557,7 @@ async fn keyword_search_no_match() {
         .unwrap();
 
     let results = store.keyword_search("nonexistent", 10, None).await.unwrap();
-    assert!(results.is_empty());
+    assert_eq!(results.len(), 0);
 }
 
 #[tokio::test]
@@ -906,7 +906,7 @@ async fn keyword_search_with_time_range_empty_query_returns_empty() {
         .keyword_search_with_time_range("", 10, None, None, None)
         .await
         .unwrap();
-    assert!(results.is_empty());
+    assert_eq!(results.len(), 0);
 }
 
 #[tokio::test]

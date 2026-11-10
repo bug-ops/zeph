@@ -1788,7 +1788,7 @@ mod tests {
         let tc = FixedTc(1);
         let mut s = String::new();
         truncate_to_tokens(&mut s, 5, &tc);
-        assert!(s.is_empty());
+        assert_eq!(s, "");
     }
 
     // max_tokens=0 truncates everything

@@ -312,6 +312,10 @@ impl zeph_core::channel::Channel for BenchmarkChannel {
         false
     }
 
+    fn delivers_between_turns(&self) -> bool {
+        false
+    }
+
     #[allow(clippy::unused_async_trait_impl)]
     async fn send(&mut self, text: &str) -> Result<(), ChannelError> {
         self.responses.push(CapturedResponse {
@@ -429,6 +433,12 @@ mod tests {
         ch.flush_chunks().await.unwrap();
         assert_eq!(ch.responses().len(), 1);
         assert_eq!(ch.responses()[0].text, "part1 part2");
+    }
+
+    #[tokio::test]
+    async fn does_not_deliver_between_turns() {
+        let ch = BenchmarkChannel::new(vec![]);
+        assert!(!ch.delivers_between_turns());
     }
 
     #[tokio::test]

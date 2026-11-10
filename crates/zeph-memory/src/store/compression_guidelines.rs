@@ -519,7 +519,7 @@ mod tests {
         let store = make_store().await;
         let (version, created_at) = store.load_compression_guidelines_meta(None).await.unwrap();
         assert_eq!(version, 0);
-        assert!(created_at.is_empty());
+        assert_eq!(created_at, "");
     }
 
     #[tokio::test]
@@ -539,7 +539,7 @@ mod tests {
         let store = make_store().await;
         let (version, text) = store.load_compression_guidelines(None).await.unwrap();
         assert_eq!(version, 0);
-        assert!(text.is_empty());
+        assert_eq!(text, "");
     }
 
     #[tokio::test]
@@ -605,7 +605,7 @@ mod tests {
         // None should not return conversation-scoped guidelines.
         let (version, text) = store.load_compression_guidelines(None).await.unwrap();
         assert_eq!(version, 0);
-        assert!(text.is_empty());
+        assert_eq!(text, "");
     }
 
     #[tokio::test]
@@ -682,7 +682,7 @@ mod tests {
             .unwrap();
         let (version, text) = store.load_compression_guidelines(Some(cid)).await.unwrap();
         assert_eq!(version, 0);
-        assert!(text.is_empty());
+        assert_eq!(text, "");
     }
 
     #[tokio::test]

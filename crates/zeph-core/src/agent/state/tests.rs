@@ -216,7 +216,7 @@ fn session_state_optional_fields_default_none() {
 #[test]
 fn runtime_config_construction() {
     let config = make_runtime_config();
-    assert!(config.model_name.is_empty());
+    assert_eq!(config.model_name, "");
     assert!(config.redact_credentials);
 }
 

@@ -71,6 +71,7 @@
 
 pub mod agent;
 pub mod autonomous;
+pub mod calibration;
 pub mod channels;
 pub mod classifiers;
 pub mod cli;
@@ -118,6 +119,7 @@ pub use agent::{
     ParentContextPolicy, PeerMessagingConfig, SubAgentConfig, SubAgentLifecycleHooks,
     TaskSupervisorConfig, ToolFilterConfig,
 };
+pub use calibration::{CalibrationError, ConfidenceCalibration};
 pub use channels::{
     A2aClientConfig, A2aServerConfig, CardTrustPolicy, ChannelSkillsConfig, DiscordConfig,
     IbctKeyConfig, McpConfig, McpMediaConfig, McpOAuthConfig, McpPolicy, McpServerConfig,

@@ -1743,7 +1743,10 @@ mod tests {
     #[test]
     fn extract_fenced_blocks_no_prefix_match() {
         // ```bashrc must NOT match when searching for "bash"
-        assert!(extract_fenced_blocks("```bashrc\nfoo\n```", "bash").is_empty());
+        assert_eq!(
+            extract_fenced_blocks("```bashrc\nfoo\n```", "bash"),
+            [] as [&str; 0]
+        );
         // exact match
         assert_eq!(
             extract_fenced_blocks("```bash\nfoo\n```", "bash"),

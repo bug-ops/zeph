@@ -1904,7 +1904,7 @@ mod tests {
         let __ra = make_rev_adj(&graph);
         let to_cancel = propagate_failure(&mut graph, TaskId(1), &__ra);
 
-        assert!(to_cancel.is_empty());
+        assert_eq!(to_cancel.len(), 0);
         assert_eq!(
             graph.tasks[1].status,
             TaskStatus::Failed,
@@ -2042,7 +2042,7 @@ mod tests {
         let __ra = make_rev_adj(&graph);
         let resolved = resolve_dormant_after_terminal(&mut graph, &__ra);
 
-        assert!(resolved.is_empty());
+        assert_eq!(resolved.len(), 0);
         assert_eq!(graph.tasks[0].status, TaskStatus::Dormant);
     }
 
@@ -2058,7 +2058,7 @@ mod tests {
         let __ra = make_rev_adj(&graph);
         let resolved = resolve_dormant_after_terminal(&mut graph, &__ra);
 
-        assert!(resolved.is_empty());
+        assert_eq!(resolved.len(), 0);
         assert_eq!(graph.tasks[0].status, TaskStatus::Ready);
     }
 
@@ -2149,7 +2149,7 @@ mod tests {
         graph.tasks[1].failure_strategy = Some(FailureStrategy::Abort);
         let to_cancel = propagate_failure(&mut graph, TaskId(1), &__ra);
 
-        assert!(to_cancel.is_empty());
+        assert_eq!(to_cancel.len(), 0);
         assert_eq!(
             graph.tasks[0].status,
             TaskStatus::Ready,
@@ -2315,7 +2315,7 @@ mod tests {
         graph.tasks[0].status = TaskStatus::Completed;
         graph.tasks[1].status = TaskStatus::Completed;
         let ready = ready_tasks(&graph);
-        assert!(ready.is_empty());
+        assert_eq!(ready.len(), 0);
     }
 
     #[test]
@@ -2434,7 +2434,7 @@ mod tests {
         let __ra = make_rev_adj(&graph);
 
         let to_cancel = propagate_failure(&mut graph, TaskId(0), &__ra);
-        assert!(to_cancel.is_empty());
+        assert_eq!(to_cancel.len(), 0);
         assert_eq!(graph.tasks[0].status, TaskStatus::Skipped);
         assert_eq!(graph.tasks[1].status, TaskStatus::Skipped);
     }
@@ -2490,7 +2490,7 @@ mod tests {
         let __ra = make_rev_adj(&graph);
 
         let to_cancel = propagate_failure(&mut graph, TaskId(0), &__ra);
-        assert!(to_cancel.is_empty());
+        assert_eq!(to_cancel.len(), 0);
         assert_eq!(graph.tasks[0].status, TaskStatus::Ready);
         assert_eq!(graph.tasks[0].retry_count, 2);
     }
@@ -2518,7 +2518,7 @@ mod tests {
         let __ra = make_rev_adj(&graph);
 
         let to_cancel = propagate_failure(&mut graph, TaskId(0), &__ra);
-        assert!(to_cancel.is_empty());
+        assert_eq!(to_cancel.len(), 0);
         assert_eq!(graph.status, GraphStatus::Paused);
     }
 
@@ -2548,7 +2548,7 @@ mod tests {
         let __ra = make_rev_adj(&graph);
 
         let to_cancel = propagate_failure(&mut graph, TaskId(0), &__ra);
-        assert!(to_cancel.is_empty());
+        assert_eq!(to_cancel.len(), 0);
         assert_eq!(graph.status, GraphStatus::Created);
     }
 
@@ -2568,7 +2568,7 @@ mod tests {
         let __ra = make_rev_adj(&graph);
 
         let to_cancel = propagate_failure(&mut graph, TaskId(0), &__ra);
-        assert!(to_cancel.is_empty());
+        assert_eq!(to_cancel.len(), 0);
         assert_eq!(graph.tasks[0].status, TaskStatus::Completed);
         assert_eq!(
             graph.tasks[0].result.as_ref().unwrap().output,
@@ -2601,7 +2601,7 @@ mod tests {
         let __ra = make_rev_adj(&graph);
 
         let to_cancel = propagate_failure(&mut graph, TaskId(0), &__ra);
-        assert!(to_cancel.is_empty());
+        assert_eq!(to_cancel.len(), 0);
         assert_eq!(graph.tasks[0].status, TaskStatus::Completed);
         assert_eq!(
             graph.tasks[0].result.as_ref().unwrap().output,

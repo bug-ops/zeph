@@ -411,7 +411,7 @@ mod tests {
             ExecutionStatus::Aborted,
             ExecutionStatus::Canceled,
         ] {
-            assert!(!status.as_str().is_empty());
+            assert_ne!(status.as_str(), "");
             assert_eq!(ExecutionStatus::from_tag(status.as_str()), Some(status));
         }
         assert!(ExecutionStatus::Running.is_running());

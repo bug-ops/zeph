@@ -73,7 +73,7 @@ mod tests {
     #[test]
     fn experiment_name_and_description() {
         assert_eq!(ExperimentCommand.name(), "/experiment");
-        assert!(!ExperimentCommand.description().is_empty());
+        assert_ne!(ExperimentCommand.description(), "");
     }
 
     #[tokio::test]

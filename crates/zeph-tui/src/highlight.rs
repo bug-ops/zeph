@@ -400,7 +400,7 @@ mod tests {
         let spans = hl.highlight("rust", "let x = 42;", &theme);
         assert!(spans.is_some());
         let spans = spans.unwrap();
-        assert!(!spans.is_empty());
+        assert_ne!(spans.len(), 0);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "let x = 42;");
     }
@@ -449,7 +449,7 @@ mod tests {
         let theme = SyntaxTheme::default();
         let spans = hl.highlight("rust", "", &theme);
         assert!(spans.is_some());
-        assert!(spans.unwrap().is_empty());
+        assert_eq!(spans.unwrap().len(), 0);
     }
 
     #[test]

@@ -916,19 +916,19 @@ mod tests {
         let m = MetricsSnapshot::default();
         assert_eq!(m.total_tokens, 0);
         assert_eq!(m.api_calls, 0);
-        assert!(m.active_skills.is_empty());
-        assert!(m.active_mcp_tools.is_empty());
+        assert_eq!(m.active_skills, [] as [String; 0]);
+        assert_eq!(m.active_mcp_tools, [] as [String; 0]);
         assert_eq!(m.mcp_tool_count, 0);
         assert_eq!(m.mcp_server_count, 0);
-        assert!(m.provider_name.is_empty());
+        assert_eq!(m.provider_name, "");
         assert_eq!(m.summaries_count, 0);
         // Phase 2 fields
         assert!(m.stt_model.is_none());
         assert!(m.compaction_model.is_none());
         assert!(m.provider_temperature.is_none());
         assert!(m.provider_top_p.is_none());
-        assert!(m.active_channel.is_empty());
-        assert!(m.embedding_model.is_empty());
+        assert_eq!(m.active_channel, "");
+        assert_eq!(m.embedding_model, "");
         assert!(m.token_budget.is_none());
         assert!(!m.self_learning_enabled);
         assert!(!m.semantic_cache_enabled);

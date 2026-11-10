@@ -1056,7 +1056,7 @@ mod tests {
     #[test]
     fn allowed_tools_empty() {
         let raw = parse_frontmatter("allowed-tools:\n");
-        assert!(raw.allowed_tools.is_empty());
+        assert_eq!(raw.allowed_tools, [] as [String; 0]);
     }
 
     #[test]
@@ -1257,7 +1257,7 @@ mod tests {
             "---\nname: no-secrets\ndescription: No secrets needed.\n---\nbody",
         );
         let meta = load_skill_meta(&path).unwrap();
-        assert!(meta.requires_secrets.is_empty());
+        assert_eq!(meta.requires_secrets, [] as [String; 0]);
     }
 
     #[test]
@@ -1340,7 +1340,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let body = "See [external](https://example.com) and [local](docs/guide.md).";
         let warnings = validate_skill_references(body, dir.path());
-        assert!(warnings.is_empty());
+        assert_eq!(warnings, [] as [String; 0]);
     }
 
     #[test]
@@ -1511,7 +1511,7 @@ mod tests {
     fn metadata_empty_block() {
         let yaml = "metadata:\nname: my-skill\n";
         let raw = parse_frontmatter(yaml);
-        assert!(raw.metadata.is_empty());
+        assert_eq!(raw.metadata, [] as [(String, String); 0]);
         assert_eq!(raw.name.as_deref(), Some("my-skill"));
     }
 
@@ -1760,7 +1760,7 @@ mod tests {
     #[test]
     fn triggers_empty_value_produces_empty_vec() {
         let raw = parse_frontmatter("triggers: \n");
-        assert!(raw.triggers.is_empty());
+        assert_eq!(raw.triggers, [] as [String; 0]);
     }
 
     #[test]

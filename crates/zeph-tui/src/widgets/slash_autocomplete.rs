@@ -188,7 +188,7 @@ mod tests {
         let expected = filter_commands("");
         assert_eq!(state.filtered.len(), expected.len());
         assert_eq!(state.selected, 0);
-        assert!(state.query.is_empty());
+        assert_eq!(state.query.len(), 0);
     }
 
     #[test]

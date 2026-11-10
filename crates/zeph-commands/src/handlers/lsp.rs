@@ -60,7 +60,7 @@ mod tests {
     #[test]
     fn lsp_name_and_description() {
         assert_eq!(LspCommand.name(), "/lsp");
-        assert!(!LspCommand.description().is_empty());
+        assert_ne!(LspCommand.description(), "");
     }
 
     #[tokio::test]

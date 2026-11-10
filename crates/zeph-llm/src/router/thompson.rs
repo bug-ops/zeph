@@ -438,7 +438,7 @@ mod tests {
         for _ in 0..10 {
             let result = state.select(&providers);
             assert!(result.is_some());
-            assert!(!result.unwrap().provider.is_empty());
+            assert_ne!(result.unwrap().provider, "");
         }
     }
 

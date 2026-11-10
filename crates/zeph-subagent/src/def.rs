@@ -1120,7 +1120,7 @@ mod tests {
         let def = SubAgentDef::parse(content).unwrap();
         assert_eq!(def.name, "bot");
         assert_eq!(def.description, "A bot");
-        assert!(!def.system_prompt.is_empty());
+        assert_ne!(def.system_prompt, "");
     }
 
     #[test]
@@ -1285,7 +1285,7 @@ mod tests {
         assert_eq!(p.timeout_secs, 600);
         assert_eq!(p.ttl_secs, 300);
         assert!(!p.background);
-        assert!(p.secrets.is_empty());
+        assert_eq!(p.secrets, [] as [String; 0]);
     }
 
     #[test]
@@ -1309,7 +1309,7 @@ mod tests {
         let def = SubAgentDef::parse(content).unwrap();
         assert_eq!(def.name, "bot");
         assert_eq!(def.description, "A bot");
-        assert!(!def.system_prompt.is_empty());
+        assert_ne!(def.system_prompt, "");
     }
 
     #[test]
@@ -1527,7 +1527,7 @@ mod tests {
     #[test]
     fn parse_yaml_disallowed_tools_empty_when_no_except() {
         let def = SubAgentDef::parse(MINIMAL_DEF_YAML).unwrap();
-        assert!(def.disallowed_tools.is_empty());
+        assert_eq!(def.disallowed_tools, [] as [String; 0]);
     }
 
     #[test]
@@ -1586,7 +1586,7 @@ mod tests {
     fn parse_yaml_explicit_empty_except_gives_empty_disallowed_tools() {
         let content = "---\nname: a\ndescription: b\ntools:\n  allow:\n    - shell\n  except: []\n---\n\nbody\n";
         let def = SubAgentDef::parse(content).unwrap();
-        assert!(def.disallowed_tools.is_empty());
+        assert_eq!(def.disallowed_tools, [] as [String; 0]);
     }
 
     #[test]
@@ -1731,7 +1731,7 @@ mod tests {
         assert_eq!(def.description, "Runs tests");
         assert!(def.model.is_none());
         assert_matches!(def.tools, ToolPolicy::InheritAll);
-        assert!(def.system_prompt.is_empty());
+        assert_eq!(def.system_prompt, "");
     }
 
     #[test]

@@ -467,9 +467,9 @@ mod tests {
 
     #[test]
     fn entity_node_kinds_config_empty() {
-        assert!(Lang::Toml.entity_node_kinds().is_empty());
-        assert!(Lang::Json.entity_node_kinds().is_empty());
-        assert!(Lang::Markdown.entity_node_kinds().is_empty());
+        assert_eq!(Lang::Toml.entity_node_kinds().len(), 0);
+        assert_eq!(Lang::Json.entity_node_kinds().len(), 0);
+        assert_eq!(Lang::Markdown.entity_node_kinds().len(), 0);
     }
 
     #[test]
@@ -540,7 +540,7 @@ mod tests {
             Lang::Markdown,
         ];
         for lang in langs {
-            assert!(!lang.id().is_empty());
+            assert_ne!(lang.id(), "");
             assert_eq!(lang.to_string(), lang.id());
         }
     }

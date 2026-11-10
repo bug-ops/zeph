@@ -135,7 +135,7 @@ mod tests {
         assert!(rf.activation_score.is_none());
         assert!(rf.provenance_message_id.is_none());
         assert!(rf.provenance_snippet.is_none());
-        assert!(rf.neighbors.is_empty());
+        assert_eq!(rf.neighbors.len(), 0);
     }
 
     #[test]

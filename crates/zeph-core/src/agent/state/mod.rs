@@ -1526,6 +1526,7 @@ impl Default for FeedbackState {
 
 /// Goal lifecycle feature configuration stored in `RuntimeConfig`.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)] // runtime mirror of the TOML config struct
 pub(crate) struct GoalRuntimeConfig {
     /// Whether goal tracking is enabled.
     pub(crate) enabled: bool,
@@ -1551,6 +1552,8 @@ pub(crate) struct GoalRuntimeConfig {
     pub(crate) autonomous_turn_timeout_secs: u64,
     /// Maximum consecutive supervisor verification failures before pausing the session.
     pub(crate) max_supervisor_fail_count: u32,
+    /// Run an advisory background goal check after qualifying user turns (`[goals] auto_check`).
+    pub(crate) auto_check: bool,
 }
 
 impl Default for GoalRuntimeConfig {
@@ -1568,6 +1571,7 @@ impl Default for GoalRuntimeConfig {
             max_stuck_count: 3,
             autonomous_turn_timeout_secs: 300,
             max_supervisor_fail_count: 3,
+            auto_check: false,
         }
     }
 }

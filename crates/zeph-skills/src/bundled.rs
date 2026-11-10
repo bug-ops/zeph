@@ -429,7 +429,7 @@ mod tests {
         // migrated (moved to updated), not skipped.
         let managed = TempDir::new().unwrap();
         let report1 = provision_bundled_skills(managed.path()).expect("first provision");
-        assert!(report1.failed.is_empty());
+        assert_eq!(report1.failed, [] as [(String, String); 0]);
 
         // Remove all .bundled markers to simulate pre-marker state.
         for name in &report1.installed {
@@ -476,8 +476,8 @@ mod tests {
     fn is_legacy_bundled_skips_modified_skill() {
         let managed = TempDir::new().unwrap();
         let report1 = provision_bundled_skills(managed.path()).expect("first provision");
-        assert!(report1.failed.is_empty());
-        assert!(!report1.installed.is_empty());
+        assert_eq!(report1.failed, [] as [(String, String); 0]);
+        assert_ne!(report1.installed, [] as [String; 0]);
 
         // Remove .bundled markers AND modify SKILL.md to simulate user edits.
         for name in &report1.installed {

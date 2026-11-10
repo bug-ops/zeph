@@ -769,7 +769,7 @@ mod tests {
     #[test]
     fn session_id_default_is_generated() {
         let id = SessionId::default();
-        assert!(!id.as_str().is_empty());
+        assert_ne!(id.as_str(), "");
         assert_eq!(id.as_str().len(), 36);
     }
 

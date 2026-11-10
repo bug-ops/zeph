@@ -105,9 +105,9 @@ mod tests {
     fn discover_empty_skill_dir() {
         let dir = tempfile::tempdir().unwrap();
         let resources = discover_resources(dir.path());
-        assert!(resources.scripts.is_empty());
-        assert!(resources.references.is_empty());
-        assert!(resources.assets.is_empty());
+        assert_eq!(resources.scripts, [] as [std::path::PathBuf; 0]);
+        assert_eq!(resources.references, [] as [std::path::PathBuf; 0]);
+        assert_eq!(resources.assets, [] as [std::path::PathBuf; 0]);
     }
 
     #[test]

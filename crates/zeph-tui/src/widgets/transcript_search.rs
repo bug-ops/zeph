@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn new_state_has_no_matches_before_any_query() {
         let state = TranscriptSearchState::new(5);
-        assert!(state.matches.is_empty());
+        assert_eq!(state.matches.len(), 0);
         assert_eq!(state.selected, 0);
         assert_eq!(state.pre_search_scroll_offset, 5);
     }
@@ -218,11 +218,11 @@ mod tests {
         // empty query — here an empty query means "nothing typed yet", not "browse all".
         let msgs = messages(&["a", "b", "c"]);
         let state = TranscriptSearchState::new(0);
-        assert!(state.matches.is_empty());
+        assert_eq!(state.matches.len(), 0);
         let mut state2 = TranscriptSearchState::new(0);
         state2.push_char('a', &msgs);
         state2.pop_char(&msgs);
-        assert!(state2.matches.is_empty());
+        assert_eq!(state2.matches.len(), 0);
     }
 
     #[test]
@@ -287,7 +287,7 @@ mod tests {
             state.push_char(c, &msgs);
         }
         // no message contains "catxyz" -> matches empty, selected clamped to 0
-        assert!(state.matches.is_empty());
+        assert_eq!(state.matches.len(), 0);
         assert_eq!(state.selected, 0);
     }
 

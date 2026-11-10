@@ -265,7 +265,7 @@ mod tests {
     fn char_split_full_overlap_makes_progress() {
         // overlap >= chunk_size should still make progress (step = max(1, 0))
         let chunks = super::split_chars("abcde", 3, 3);
-        assert!(!chunks.is_empty());
+        assert_ne!(chunks, [] as [String; 0]);
         assert_eq!(chunks[0], "abc");
     }
 
@@ -282,7 +282,7 @@ mod tests {
         // Later chunks should contain overlap from previous
         if chunks.len() >= 2 {
             // Second chunk should start with overlap content, not fresh
-            assert!(!chunks[1].content.is_empty());
+            assert_ne!(chunks[1].content, "");
         }
     }
 

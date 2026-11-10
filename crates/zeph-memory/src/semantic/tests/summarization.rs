@@ -207,7 +207,7 @@ async fn summarize_stores_summary() {
     let summaries = memory.load_summaries(cid).await.unwrap();
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].id, outcome.summary_id);
-    assert!(!summaries[0].content.is_empty());
+    assert_ne!(summaries[0].content, "");
 }
 
 #[tokio::test]
@@ -285,7 +285,7 @@ async fn summary_fields_populated() {
     assert!(s.first_message_id > Some(MessageId(0)));
     assert!(s.last_message_id >= s.first_message_id);
     assert!(s.token_estimate >= 0);
-    assert!(!s.content.is_empty());
+    assert_ne!(s.content, "");
 }
 
 #[tokio::test]
@@ -541,7 +541,7 @@ async fn summarize_fallback_to_plain_text_when_structured_fails() {
     assert!(result.is_ok());
     let summaries = memory.load_summaries(cid).await.unwrap();
     assert_eq!(summaries.len(), 1);
-    assert!(!summaries[0].content.is_empty());
+    assert_ne!(summaries[0].content, "");
 }
 
 #[test]
@@ -591,8 +591,8 @@ fn structured_summary_deserialize() {
 fn structured_summary_empty_facts() {
     let json = r#"{"summary":"s","key_facts":[],"entities":[]}"#;
     let ss: StructuredSummary = serde_json::from_str(json).unwrap();
-    assert!(ss.key_facts.is_empty());
-    assert!(ss.entities.is_empty());
+    assert_eq!(ss.key_facts, [] as [String; 0]);
+    assert_eq!(ss.entities, [] as [String; 0]);
 }
 
 #[test]
@@ -628,7 +628,7 @@ fn summary_debug() {
 async fn search_key_facts_no_qdrant_empty() {
     let memory = test_semantic_memory(false).await;
     let facts = memory.search_key_facts("query", 5, None).await.unwrap();
-    assert!(facts.is_empty());
+    assert_eq!(facts, [] as [String; 0]);
 }
 
 #[tokio::test]

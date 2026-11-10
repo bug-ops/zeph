@@ -92,6 +92,10 @@ See [Instruction Files](../concepts/instruction-files.md) for provider-specific 
 - It is rejected while an autonomous goal session is running; use `/goal status` instead.
 - Secrets are scrubbed from the conversation excerpt before it is sent.
 
+#### Automatic check after a turn
+
+Set `[goals] enabled = true` and `auto_check = true` to get the same advisory report automatically in the background after a turn that used tools while a goal is active. It judges the active goal only, skips scheduler and `/loop` turns, and shows `Verifying goal…` while it runs. It costs one supervisor call per such turn and is not shown in ACP, daemon (A2A and loopback gateway) or `--json` sessions.
+
 Type `exit`, `quit`, or press Ctrl-D to stop the agent.
 
 ## Next Steps

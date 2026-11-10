@@ -72,8 +72,8 @@ mod tests {
 
     #[test]
     fn description_and_args_hint_non_empty() {
-        assert!(!AcpCommand.description().is_empty());
-        assert!(!AcpCommand.args_hint().is_empty());
+        assert_ne!(AcpCommand.description(), "");
+        assert_ne!(AcpCommand.args_hint(), "");
     }
 
     #[test]

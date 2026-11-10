@@ -670,14 +670,14 @@ mod tests {
     fn test_unclosed_bold() {
         let input = "**unclosed bold";
         let output = markdown_to_telegram(input);
-        assert!(!output.is_empty());
+        assert_ne!(output, "");
     }
 
     #[test]
     fn test_unclosed_code_block() {
         let input = "```\nunclosed";
         let output = markdown_to_telegram(input);
-        assert!(!output.is_empty());
+        assert_ne!(output, "");
     }
 
     #[test]

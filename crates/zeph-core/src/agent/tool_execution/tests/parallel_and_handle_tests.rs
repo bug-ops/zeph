@@ -733,10 +733,10 @@ async fn inject_active_skill_env_injects_only_active_skill_secrets() {
         .insert("other_key".into(), Secret::new("other-val"));
 
     // No active skills — inject_active_skill_env should be a no-op
-    assert!(agent.services.skill.active_skill_names.is_empty());
+    assert_eq!(agent.services.skill.active_skill_names, [] as [String; 0]);
     agent.inject_active_skill_env();
     // tool_executor.set_skill_env was not called (no-op path)
-    assert!(agent.services.skill.active_skill_names.is_empty());
+    assert_eq!(agent.services.skill.active_skill_names, [] as [String; 0]);
 }
 
 #[test]

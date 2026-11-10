@@ -650,7 +650,7 @@ mod tests {
         assert!(result.included.contains("bash"));
         assert!(result.included.contains("grep"));
         assert!(result.included.contains("write"));
-        assert!(result.excluded.is_empty());
+        assert_eq!(result.excluded, [] as [String; 0]);
     }
 
     #[test]
@@ -668,7 +668,7 @@ mod tests {
         let result = filter.filter(&all_ids, &[], "test", &query_emb);
 
         assert_eq!(result.included.len(), 6); // all included
-        assert!(result.excluded.is_empty());
+        assert_eq!(result.excluded, [] as [String; 0]);
     }
 
     #[test]
@@ -763,7 +763,7 @@ mod tests {
         let ids = vec!["read", "edit", "fetch", "grep"];
         // "read" should NOT match inside "thread" or "breadcrumb"
         let found = find_mentioned_tool_ids("thread breadcrumb", &ids);
-        assert!(found.is_empty());
+        assert_eq!(found, [] as [String; 0]);
     }
 
     #[test]
@@ -904,7 +904,7 @@ mod tests {
         graph.apply(&mut result, &completed(&["read"]), 0.15, 0.2, &always_on);
 
         assert!(result.included.contains("apply_patch"));
-        assert!(result.dependency_exclusions.is_empty());
+        assert_eq!(result.dependency_exclusions.len(), 0);
     }
 
     #[test]
@@ -931,7 +931,7 @@ mod tests {
 
         // Deadlock fallback: only_tool remains included (all non-always-on would be blocked)
         assert!(result.included.contains("only_tool"));
-        assert!(result.dependency_exclusions.is_empty());
+        assert_eq!(result.dependency_exclusions.len(), 0);
     }
 
     #[test]
@@ -1036,7 +1036,7 @@ mod tests {
 
         // apply_patch should now be included
         assert!(result2.included.contains("apply_patch"));
-        assert!(result2.dependency_exclusions.is_empty());
+        assert_eq!(result2.dependency_exclusions.len(), 0);
     }
 
     /// Three-step linear chain: `read` → `search` → `apply_patch`.
@@ -1075,7 +1075,7 @@ mod tests {
             &always_on,
         );
         assert!(r3.included.contains("apply_patch"));
-        assert!(r3.dependency_exclusions.is_empty());
+        assert_eq!(r3.dependency_exclusions.len(), 0);
     }
 
     /// Multi-requires: `apply_patch` needs both `read` AND `search` to be done.
@@ -1104,7 +1104,7 @@ mod tests {
             &always_on,
         );
         assert!(r2.included.contains("apply_patch"));
-        assert!(r2.dependency_exclusions.is_empty());
+        assert_eq!(r2.dependency_exclusions.len(), 0);
     }
 
     /// Preference boost increases across turns as soft deps are satisfied.

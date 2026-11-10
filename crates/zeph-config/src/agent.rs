@@ -463,6 +463,7 @@ fn default_max_supervisor_fail_count() -> u32 {
 /// autonomous_turn_delay_ms = 500
 /// default_token_budget = 50000
 /// ```
+#[allow(clippy::struct_excessive_bools)] // config struct — boolean flags are idiomatic for TOML-deserialized configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct GoalConfig {
@@ -506,6 +507,10 @@ pub struct GoalConfig {
     /// Default: `3`.
     #[serde(default = "default_max_supervisor_fail_count")]
     pub max_supervisor_fail_count: u32,
+    /// After a user turn that used tools while a goal is active, run one advisory background
+    /// supervisor check and show the report. Requires `enabled`; costs one supervisor LLM call
+    /// per such turn. Skipped on channels that cannot deliver between turns (ACP, daemon/gateway loopback, `--json`). Default: `false`.
+    pub auto_check: bool,
 }
 
 impl Default for GoalConfig {
@@ -525,6 +530,7 @@ impl Default for GoalConfig {
             autonomous_turn_delay_ms: default_autonomous_turn_delay_ms(),
             autonomous_turn_timeout_secs: default_autonomous_turn_timeout_secs(),
             max_supervisor_fail_count: default_max_supervisor_fail_count(),
+            auto_check: false,
         }
     }
 }
@@ -1091,6 +1097,18 @@ mod tests {
         let cfg: GoalConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.autonomous_turn_timeout_secs, 120);
         assert_eq!(cfg.max_supervisor_fail_count, 5);
+    }
+
+    #[test]
+    fn goal_config_auto_check_defaults_off_and_deserializes() {
+        assert!(!GoalConfig::default().auto_check);
+        let cfg: GoalConfig = toml::from_str("enabled = true\nauto_check = true").unwrap();
+        assert!(cfg.auto_check);
+        assert!(
+            !toml::from_str::<GoalConfig>("enabled = true")
+                .unwrap()
+                .auto_check
+        );
     }
 
     #[test]

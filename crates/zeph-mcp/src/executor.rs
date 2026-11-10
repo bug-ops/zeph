@@ -718,7 +718,7 @@ mod tests {
     fn no_mcp_blocks() {
         let text = "```bash\necho hello\n```";
         let blocks = extract_fenced_blocks(text, "mcp");
-        assert!(blocks.is_empty());
+        assert_eq!(blocks, [] as [&str; 0]);
     }
 
     #[test]
@@ -768,7 +768,7 @@ mod tests {
     #[test]
     fn extract_mcp_blocks_empty_input() {
         let blocks = extract_fenced_blocks("", "mcp");
-        assert!(blocks.is_empty());
+        assert_eq!(blocks, [] as [&str; 0]);
     }
 
     #[test]

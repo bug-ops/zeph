@@ -570,7 +570,7 @@ mod tests {
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].content(), "Rust is a systems language");
         assert_eq!(docs[0].source_uri(), "subagent:task-1#0");
-        assert!(!docs[0].content_hash().is_empty());
+        assert_ne!(docs[0].content_hash(), "");
     }
 
     #[test]
@@ -595,7 +595,7 @@ mod tests {
         let batch = ImportBatchId::new();
         let docs = adapter.parse(&raw, &batch).unwrap();
         assert_eq!(docs.len(), 4);
-        assert!(docs[0].context().is_empty());
+        assert_eq!(docs[0].context().len(), 0);
         assert_eq!(docs[1].context().len(), 1);
         assert_eq!(docs[2].context().len(), 2);
         assert_eq!(docs[3].context().len(), 2); // capped at window size
@@ -736,7 +736,7 @@ mod tests {
         let batch = ImportBatchId::new();
         let docs = adapter.parse(&raw, &batch).unwrap();
         assert_eq!(docs.len(), 4);
-        assert!(docs[0].context().is_empty());
+        assert_eq!(docs[0].context().len(), 0);
         assert_eq!(docs[1].context().len(), 1);
         assert_eq!(docs[2].context().len(), 2);
         assert_eq!(docs[3].context().len(), 2); // capped at window
@@ -876,7 +876,7 @@ mod tests {
         let batch = ImportBatchId::new();
         let docs = adapter.parse(&raw, &batch).unwrap();
         assert_eq!(docs.len(), 4);
-        assert!(docs[0].context().is_empty());
+        assert_eq!(docs[0].context().len(), 0);
         assert_eq!(docs[1].context().len(), 1);
         assert_eq!(docs[2].context().len(), 2);
         assert_eq!(docs[3].context().len(), 2);

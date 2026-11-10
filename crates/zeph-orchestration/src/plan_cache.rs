@@ -687,7 +687,7 @@ mod tests {
 
     #[test]
     fn goal_hash_nonempty() {
-        assert!(!goal_hash("goal").is_empty());
+        assert_ne!(goal_hash("goal"), "");
     }
 
     // --- PlanTemplate extraction tests ---
@@ -716,7 +716,7 @@ mod tests {
         let graph = make_graph("goal", &[("Task A", "do A", &[]), ("Task B", "do B", &[0])]);
         let template = PlanTemplate::from_task_graph(&graph).unwrap();
         assert_eq!(template.tasks.len(), 2);
-        assert!(template.tasks[0].depends_on.is_empty());
+        assert_eq!(template.tasks[0].depends_on.len(), 0);
         assert_eq!(template.tasks[1].depends_on.len(), 1);
         assert_eq!(template.tasks[1].depends_on[0], template.tasks[0].task_id);
     }

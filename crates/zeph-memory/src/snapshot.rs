@@ -269,7 +269,7 @@ mod tests {
         let snapshot = export_snapshot(&store).await.unwrap();
         assert_eq!(snapshot.version, 1);
         assert!(snapshot.conversations.is_empty());
-        assert!(!snapshot.exported_at.is_empty());
+        assert_ne!(snapshot.exported_at, "");
     }
 
     #[tokio::test]

@@ -92,6 +92,7 @@ pub(crate) fn mock_provider_with_models(
     AnyProvider::Mock(MockProvider::with_responses(responses).with_models(models))
 }
 
+#[allow(clippy::struct_excessive_bools)] // test double: independent behaviour toggles
 pub(crate) struct MockChannel {
     pub(crate) messages: Arc<Mutex<Vec<String>>>,
     pub(crate) sent: Arc<Mutex<Vec<String>>>,
@@ -112,6 +113,9 @@ pub(crate) struct MockChannel {
     /// them (#6570).
     pub(crate) notify_background_completed_calls: Arc<Mutex<Vec<(String, String, bool)>>>,
     pub(crate) exit_supported: bool,
+    pub(crate) between_turn_delivery: bool,
+    pub(crate) block_when_empty: bool,
+    pub(crate) from_bot: bool,
     pub(crate) input_sanitization_required: bool,
     /// When `true`, `send()` fails with `ChannelError::ChannelClosed` instead of recording the
     /// message — simulates a disconnected adapter (closed mpsc receiver, dropped
@@ -133,6 +137,9 @@ impl MockChannel {
             notify_completed_calls: Arc::new(Mutex::new(Vec::new())),
             notify_background_completed_calls: Arc::new(Mutex::new(Vec::new())),
             exit_supported: true,
+            between_turn_delivery: true,
+            block_when_empty: false,
+            from_bot: false,
             input_sanitization_required: false,
             fail_send: false,
         }
@@ -146,6 +153,27 @@ impl MockChannel {
 
     pub(crate) fn without_exit_support(mut self) -> Self {
         self.exit_supported = false;
+        self
+    }
+
+    #[cfg(feature = "sqlite")]
+    pub(crate) fn without_between_turn_delivery(mut self) -> Self {
+        self.between_turn_delivery = false;
+        self
+    }
+
+    /// Make `recv` pend forever once the scripted messages run out, so the run loop idles.
+    /// `try_recv` then reports nothing, so messages only arrive through `recv` (the `LoopEvent::Message` path).
+    #[cfg(feature = "sqlite")]
+    pub(crate) fn blocking_when_empty(mut self) -> Self {
+        self.block_when_empty = true;
+        self
+    }
+
+    /// Mark every received message as sent by another bot.
+    #[cfg(feature = "sqlite")]
+    pub(crate) fn with_bot_messages(mut self) -> Self {
+        self.from_bot = true;
         self
     }
 
@@ -184,21 +212,27 @@ impl MockChannel {
 impl Channel for MockChannel {
     #[allow(clippy::unused_async_trait_impl)]
     async fn recv(&mut self) -> Result<Option<ChannelMessage>, crate::channel::ChannelError> {
-        let mut msgs = self.messages.lock().unwrap();
-        if msgs.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(ChannelMessage {
-                text: msgs.remove(0),
+        let next = {
+            let mut msgs = self.messages.lock().unwrap();
+            (!msgs.is_empty()).then(|| msgs.remove(0))
+        };
+        match next {
+            None if self.block_when_empty => std::future::pending().await,
+            None => Ok(None),
+            Some(text) => Ok(Some(ChannelMessage {
+                text,
                 attachments: vec![],
                 is_guest_context: false,
-                is_from_bot: false,
+                is_from_bot: self.from_bot,
                 owner_key: None,
-            }))
+            })),
         }
     }
 
     fn try_recv(&mut self) -> Option<ChannelMessage> {
+        if self.block_when_empty {
+            return None;
+        }
         let mut msgs = self.messages.lock().unwrap();
         if msgs.is_empty() {
             None
@@ -265,6 +299,10 @@ impl Channel for MockChannel {
 
     fn supports_exit(&self) -> bool {
         self.exit_supported
+    }
+
+    fn delivers_between_turns(&self) -> bool {
+        self.between_turn_delivery
     }
 
     fn requires_input_sanitization(&self) -> bool {

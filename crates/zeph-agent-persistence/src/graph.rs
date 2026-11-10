@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn collect_empty_messages() {
         let ctx = collect_context_messages(&[]);
-        assert!(ctx.is_empty());
+        assert_eq!(ctx, [] as [String; 0]);
     }
 
     #[test]

@@ -423,7 +423,7 @@ mod tests {
                 known_leaves,
                 missing_required,
             } => {
-                assert!(missing_required.is_empty());
+                assert_eq!(missing_required, [] as [String; 0]);
                 let v = known_leaves["command"].as_str().unwrap();
                 assert!(v.contains("ls") && v.contains("la"), "got: {v}");
             }
@@ -468,7 +468,7 @@ mod tests {
                 known_leaves,
                 missing_required,
             } => {
-                assert!(missing_required.is_empty());
+                assert_eq!(missing_required, [] as [String; 0]);
                 let v = known_leaves["msg"].as_str().unwrap();
                 assert!(v.contains("hello"), "got: {v}");
             }
@@ -488,7 +488,7 @@ mod tests {
                 known_leaves,
                 missing_required,
             } => {
-                assert!(missing_required.is_empty());
+                assert_eq!(missing_required.len(), 0);
                 assert_eq!(known_leaves["x"], 42);
             }
             PrefixState::Incomplete => {} // also acceptable
@@ -517,7 +517,7 @@ mod tests {
                 known_leaves,
                 missing_required,
             } => {
-                assert!(missing_required.is_empty());
+                assert_eq!(missing_required, [] as [String; 0]);
                 assert!(known_leaves["items"].is_array());
             }
             other => panic!("expected ValidPrefix, got {other:?}"),
@@ -552,7 +552,7 @@ mod tests {
                 known_leaves,
                 missing_required,
             } => {
-                assert!(missing_required.is_empty());
+                assert_eq!(missing_required, [] as [String; 0]);
                 let v = known_leaves["path"].as_str().unwrap();
                 assert!(v.contains("Привет"), "non-ASCII corrupted: {v}");
             }

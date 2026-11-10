@@ -1438,8 +1438,8 @@ mod tests {
             .unwrap();
         assert_eq!(new_tasks.len(), 2);
         // Root tasks have no parent dependencies (whole-plan replan).
-        assert!(new_tasks[0].depends_on.is_empty());
-        assert!(new_tasks[1].depends_on.is_empty());
+        assert_eq!(new_tasks[0].depends_on.len(), 0);
+        assert_eq!(new_tasks[1].depends_on.len(), 0);
         // IDs start from next_id=5.
         assert_eq!(new_tasks[0].id, TaskId(5));
         assert_eq!(new_tasks[1].id, TaskId(6));
@@ -1767,7 +1767,7 @@ mod tests {
         let outcome = ground(true, vec![], &[], Some(&trace));
         assert!(outcome.complete);
         assert!(outcome.gaps.is_empty());
-        assert!(outcome.unmatched_claims.is_empty());
+        assert_eq!(outcome.unmatched_claims, [] as [String; 0]);
     }
 
     /// AC-3: claim is a truncation paraphrase (claim ⊆ real) — matches via bidirectional
@@ -1782,7 +1782,7 @@ mod tests {
             Some(&trace),
         );
         assert!(outcome.complete);
-        assert!(outcome.unmatched_claims.is_empty());
+        assert_eq!(outcome.unmatched_claims, [] as [String; 0]);
     }
 
     /// AC-3b: claim is an embellishment paraphrase (real ⊆ claim) — a one-directional rule
@@ -1797,7 +1797,7 @@ mod tests {
             Some(&trace),
         );
         assert!(outcome.complete);
-        assert!(outcome.unmatched_claims.is_empty());
+        assert_eq!(outcome.unmatched_claims, [] as [String; 0]);
     }
 
     /// AC-4: two claimed commands, only one has a matching real trace entry — the unmatched
@@ -1845,7 +1845,7 @@ mod tests {
         let outcome = ground(true, vec![], &["bash: cargo test".to_string()], None);
         assert!(outcome.complete);
         assert!(outcome.gaps.is_empty());
-        assert!(outcome.unmatched_claims.is_empty());
+        assert_eq!(outcome.unmatched_claims, [] as [String; 0]);
     }
 
     /// AC-12: a real same-tool entry with `args_summary: None` (uncaptured args) is treated as
@@ -1860,7 +1860,7 @@ mod tests {
             Some(&trace),
         );
         assert!(outcome.complete);
-        assert!(outcome.unmatched_claims.is_empty());
+        assert_eq!(outcome.unmatched_claims, [] as [String; 0]);
     }
 
     /// A bare claim (no `"<tool>: "` prefix) is matched against any trace entry's command,
@@ -1888,7 +1888,7 @@ mod tests {
         let trace: Vec<ToolCallSummary> = vec![];
         let outcome = ground(true, vec![], &["   ".to_string()], Some(&trace));
         assert!(outcome.complete);
-        assert!(outcome.unmatched_claims.is_empty());
+        assert_eq!(outcome.unmatched_claims, [] as [String; 0]);
     }
 
     /// M3 regression: a blank claim alongside a real hallucinated claim must not suppress or
@@ -1922,7 +1922,7 @@ mod tests {
             Some(&trace),
         );
         assert!(outcome.complete);
-        assert!(outcome.unmatched_claims.is_empty());
+        assert_eq!(outcome.unmatched_claims, [] as [String; 0]);
     }
 
     /// Tool-name comparison in `claim_matches_any_trace_entry` is case-insensitive
@@ -1937,7 +1937,7 @@ mod tests {
             Some(&trace),
         );
         assert!(outcome.complete);
-        assert!(outcome.unmatched_claims.is_empty());
+        assert_eq!(outcome.unmatched_claims, [] as [String; 0]);
     }
 
     /// AC-5 (purity): `ground()` is a pure function of its inputs — same inputs, same output,
@@ -2121,7 +2121,7 @@ mod tests {
             outcome.complete,
             "claim matches the second task's real call"
         );
-        assert!(outcome.unmatched_claims.is_empty());
+        assert_eq!(outcome.unmatched_claims, [] as [String; 0]);
     }
 
     /// M3 regression at the `verify_plan()` entry point: an aggregate that is `Some(&[])`

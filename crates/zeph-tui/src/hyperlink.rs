@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn detect_urls_none() {
         let urls = detect_urls_in_text("no links here");
-        assert!(urls.is_empty());
+        assert_eq!(urls.len(), 0);
     }
 
     #[test]

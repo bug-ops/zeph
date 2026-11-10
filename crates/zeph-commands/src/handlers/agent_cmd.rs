@@ -72,7 +72,7 @@ mod tests {
     #[test]
     fn agent_cmd_name_and_description() {
         assert_eq!(AgentCommand.name(), "/agent");
-        assert!(!AgentCommand.description().is_empty());
+        assert_ne!(AgentCommand.description(), "");
     }
 
     #[tokio::test]

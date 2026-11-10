@@ -201,6 +201,9 @@ min_evaluations = 5
 max_versions = 10
 # Cooldown between improvements for same skill (minutes)
 cooldown_minutes = 60
+# Piecewise-linear [raw, calibrated] curve for LLM-reported correction confidence (judge/model
+# modes). Empty = identity; leave unset unless fitted from labelled data.
+# correction_confidence_calibration = [[0.0, 0.0], [1.0, 1.0]]
 
 [skills.trust]
 # Default trust level for newly discovered skills: trusted, verified, quarantined, blocked

@@ -93,7 +93,7 @@ mod tests {
         let config: ToolsConfig = toml::from_str(toml_str).unwrap();
         assert!(config.enabled);
         assert_eq!(config.shell.timeout, 30);
-        assert!(config.shell.blocked_commands.is_empty());
+        assert_eq!(config.shell.blocked_commands, [] as [String; 0]);
     }
 
     #[test]
@@ -102,7 +102,7 @@ mod tests {
         assert!(config.enabled);
         assert!(config.summarize_output);
         assert_eq!(config.shell.timeout, 30);
-        assert!(config.shell.blocked_commands.is_empty());
+        assert_eq!(config.shell.blocked_commands, [] as [String; 0]);
         assert!(config.audit.enabled);
     }
 
@@ -125,10 +125,10 @@ mod tests {
     fn default_shell_config() {
         let config = ShellConfig::default();
         assert_eq!(config.timeout, 30);
-        assert!(config.blocked_commands.is_empty());
-        assert!(config.allowed_paths.is_empty());
+        assert_eq!(config.blocked_commands, [] as [String; 0]);
+        assert_eq!(config.allowed_paths, [] as [String; 0]);
         assert!(config.allow_network);
-        assert!(!config.confirm_patterns.is_empty());
+        assert_ne!(config.confirm_patterns, [] as [String; 0]);
     }
 
     #[test]
@@ -137,9 +137,9 @@ mod tests {
         let config: ToolsConfig = toml::from_str(toml_str).unwrap();
         assert!(config.enabled);
         assert_eq!(config.shell.timeout, 30);
-        assert!(config.shell.blocked_commands.is_empty());
+        assert_eq!(config.shell.blocked_commands, [] as [String; 0]);
         assert!(config.shell.allow_network);
-        assert!(!config.shell.confirm_patterns.is_empty());
+        assert_ne!(config.shell.confirm_patterns, [] as [String; 0]);
         assert_eq!(config.scrape.timeout, 15);
         assert_eq!(config.scrape.max_body_bytes, 4_194_304);
         assert!(config.audit.enabled);
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn default_allowed_commands_empty() {
         let config = ShellConfig::default();
-        assert!(config.allowed_commands.is_empty());
+        assert_eq!(config.allowed_commands, [] as [String; 0]);
     }
 
     #[test]
@@ -273,7 +273,7 @@ mod tests {
         assert!(config.permissions.is_none());
         let policy = build_permission_policy(&config, AutonomyLevel::Supervised);
         // Default ShellConfig has confirm_patterns, so legacy rules are generated
-        assert!(!config.shell.confirm_patterns.is_empty());
+        assert_ne!(config.shell.confirm_patterns, [] as [String; 0]);
         assert!(policy.rules().contains_key("bash"));
     }
 

@@ -79,7 +79,7 @@ mod tests {
 
     #[test]
     fn empty_tools_returns_empty() {
-        assert!(format_mcp_tools_prompt(&[]).is_empty());
+        assert_eq!(format_mcp_tools_prompt(&[]), "");
     }
 
     #[test]

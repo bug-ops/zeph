@@ -96,7 +96,10 @@ async fn default_off_regression_never_touches_ensemble_metrics() {
             .is_none(),
         "default-off path must never populate ensemble_last_agreement_ratio"
     );
-    assert!(snapshot.orchestration.ensemble_member_stats.is_empty());
+    assert_eq!(
+        snapshot.orchestration.ensemble_member_stats,
+        [] as [(String, f64, u64); 0]
+    );
 }
 
 /// T4.5: full quorum (3 of 3 members agree `complete: true`) merges through the ensemble path

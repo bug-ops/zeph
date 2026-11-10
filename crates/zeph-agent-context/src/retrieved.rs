@@ -144,7 +144,7 @@ mod tests {
         )];
         let rc = collect_retrieved_context(&msgs);
         assert_eq!(rc.recall, vec!["recall fragment"]);
-        assert!(rc.summaries.is_empty());
+        assert_eq!(rc.summaries, [] as [&str; 0]);
     }
 
     #[test]

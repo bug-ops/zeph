@@ -196,7 +196,7 @@ fn test_resource_exhausted_error_parsing() {
 fn gemini_list_models_non_empty() {
     let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
     let models = p.list_models();
-    assert!(!models.is_empty());
+    assert_ne!(models, [] as [String; 0]);
     assert!(models.iter().any(|m| m.contains("gemini")));
 }
 
@@ -1086,7 +1086,7 @@ fn test_debug_request_json_with_tools_includes_function_declarations() {
     let json = p.debug_request_json(&messages, &tools, false);
     assert!(json.get("tools").is_some());
     let tools_arr = json["tools"].as_array().unwrap();
-    assert!(!tools_arr.is_empty());
+    assert_ne!(tools_arr.len(), 0);
     let decls = &tools_arr[0]["functionDeclarations"];
     assert!(decls.is_array());
     assert_eq!(decls[0]["name"], "get_weather");
@@ -1452,7 +1452,7 @@ fn embed_content_response_deserialization() {
 fn embed_content_response_empty_values() {
     let json = r#"{"embedding":{"values":[]}}"#;
     let resp: EmbedContentResponse = serde_json::from_str(json).unwrap();
-    assert!(resp.embedding.values.is_empty());
+    assert_eq!(resp.embedding.values, [] as [f32; 0]);
 }
 
 #[tokio::test]

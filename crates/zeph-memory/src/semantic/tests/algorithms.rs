@@ -105,7 +105,7 @@ fn mmr_empty_input_returns_empty() {
     let ranked = vec![];
     let vectors = std::collections::HashMap::new();
     let result = apply_mmr(&ranked, &vectors, 0.7, 5);
-    assert!(result.is_empty());
+    assert_eq!(result.len(), 0);
 }
 
 #[test]
@@ -190,7 +190,7 @@ fn mmr_limit_zero_returns_empty() {
     vectors.insert(MessageId(1), vec![1.0f32, 0.0]);
     vectors.insert(MessageId(2), vec![0.0f32, 1.0]);
     let result = apply_mmr(&ranked, &vectors, 0.7, 0);
-    assert!(result.is_empty());
+    assert_eq!(result.len(), 0);
 }
 
 #[test]

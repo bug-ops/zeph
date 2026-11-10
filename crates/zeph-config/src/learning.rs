@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::calibration::ConfidenceCalibration;
 use crate::providers::ProviderName;
 use serde::{Deserialize, Serialize};
 
@@ -224,6 +225,10 @@ pub struct LearningConfig {
     pub correction_detection: bool,
     #[serde(default = "default_correction_confidence_threshold")]
     pub correction_confidence_threshold: f32,
+    /// Piecewise-linear `[raw, calibrated]` curve applied to LLM-reported correction confidence
+    /// before the threshold gate (`detector_mode = "judge"` / `"model"`). Empty = identity.
+    #[serde(default, skip_serializing_if = "ConfidenceCalibration::is_identity")]
+    pub correction_confidence_calibration: ConfidenceCalibration,
     /// Detector strategy: "regex" (default) or "judge".
     #[serde(default)]
     pub detector_mode: DetectorMode,
@@ -453,6 +458,7 @@ impl Default for LearningConfig {
             cooldown_minutes: default_cooldown_minutes(),
             correction_detection: default_correction_detection(),
             correction_confidence_threshold: default_correction_confidence_threshold(),
+            correction_confidence_calibration: ConfidenceCalibration::identity(),
             detector_mode: DetectorMode::default(),
             judge_model: String::new(),
             judge_provider: String::new(),
@@ -547,6 +553,24 @@ mod tests {
             let deserialized: DetectorMode = serde_json::from_str(&serialized).unwrap();
             assert_eq!(deserialized, mode, "deserialize {mode:?}");
         }
+    }
+
+    #[test]
+    fn calibration_curve_loads_and_invalid_fails() {
+        let cfg: LearningConfig = toml::from_str(
+            "correction_confidence_calibration = [[0.0, 0.0], [0.8, 0.4], [1.0, 1.0]]",
+        )
+        .unwrap();
+        assert!((cfg.correction_confidence_calibration.calibrate(0.8) - 0.4).abs() < 1e-6);
+        assert!(
+            LearningConfig::default()
+                .correction_confidence_calibration
+                .is_identity()
+        );
+        assert!(
+            toml::from_str::<LearningConfig>("correction_confidence_calibration = [[0.0, 0.0]]")
+                .is_err()
+        );
     }
 
     #[test]
@@ -787,7 +811,7 @@ heuristic_promotion_interval_hours = 48
     #[test]
     fn judge_provider_default_is_empty() {
         let cfg = LearningConfig::default();
-        assert!(cfg.judge_provider.is_empty());
+        assert_eq!(cfg.judge_provider, "");
     }
 
     #[test]

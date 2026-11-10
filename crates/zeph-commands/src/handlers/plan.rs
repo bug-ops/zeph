@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn plan_name_and_description() {
         assert_eq!(PlanCommand.name(), "/plan");
-        assert!(!PlanCommand.description().is_empty());
+        assert_ne!(PlanCommand.description(), "");
     }
 
     #[tokio::test]

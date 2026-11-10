@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn environment_context_gather() {
         let env = EnvironmentContext::gather("test-model");
-        assert!(!env.working_dir.is_empty());
+        assert_ne!(env.working_dir, "");
         assert_eq!(env.os, std::env::consts::OS);
         assert_eq!(env.model_name, "test-model");
     }

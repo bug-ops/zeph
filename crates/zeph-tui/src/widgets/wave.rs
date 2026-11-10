@@ -206,7 +206,7 @@ pub fn band_value(state: WaveState, band_idx: u32, t: u64) -> f32 {
         v
     } else {
         // Network: superpose sines at golden-ratio omega multiples.
-        let omegas: [f32; 3] = [1.0, 1.618_034, 2.414_214];
+        let omegas: [f32; 3] = [1.0, std::f32::consts::GOLDEN_RATIO, 2.414_214];
         let count = p.sines as usize;
         let mut sum = 0.0_f32;
         for (i, &om) in omegas[..count].iter().enumerate() {

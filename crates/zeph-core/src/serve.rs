@@ -740,7 +740,7 @@ mod tests {
     #[test]
     fn registry_ids_lists_all_tracked_sessions() {
         let registry = LiveSessionRegistry::new();
-        assert!(registry.ids().is_empty());
+        assert_eq!(registry.ids(), [] as [zeph_common::SessionId; 0]);
         registry.insert(SessionId::new("s1"), make_handle());
         registry.insert(SessionId::new("s2"), make_handle());
         let mut ids: Vec<String> = registry
@@ -760,7 +760,10 @@ mod tests {
         // No subscriber to tx_out, but last_active is "now" — not yet past a long TTL.
         handle.last_active = Instant::now();
         registry.insert(id.clone(), handle);
-        assert!(registry.idle_candidates(Duration::from_hours(1)).is_empty());
+        assert_eq!(
+            registry.idle_candidates(Duration::from_hours(1)),
+            [] as [zeph_common::SessionId; 0]
+        );
     }
 
     #[test]
@@ -773,7 +776,10 @@ mod tests {
             .unwrap();
         let _subscriber = handle.tx_out.subscribe();
         registry.insert(id, handle);
-        assert!(registry.idle_candidates(Duration::from_secs(1)).is_empty());
+        assert_eq!(
+            registry.idle_candidates(Duration::from_secs(1)),
+            [] as [zeph_common::SessionId; 0]
+        );
     }
 
     #[test]

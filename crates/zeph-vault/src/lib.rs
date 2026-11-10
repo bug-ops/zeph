@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn mock_vault_list_keys_empty() {
         let vault = MockVaultProvider::new();
-        assert!(vault.list_keys().is_empty());
+        assert_eq!(vault.list_keys(), [] as [String; 0]);
     }
 
     #[allow(unsafe_code)]

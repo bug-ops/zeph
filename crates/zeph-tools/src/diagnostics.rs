@@ -327,14 +327,14 @@ mod tests {
     #[test]
     fn parse_cargo_json_empty_input() {
         let result = parse_cargo_json("", 50);
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [String; 0]);
     }
 
     #[test]
     fn parse_cargo_json_non_compiler_message_ignored() {
         let line = r#"{"reason":"build-script-executed","package_id":"foo"}"#;
         let result = parse_cargo_json(line, 50);
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [String; 0]);
     }
 
     #[test]
@@ -376,7 +376,7 @@ mod tests {
     fn parse_cargo_json_empty_message_skipped() {
         let line = r#"{"reason":"compiler-message","message":{"level":"note","message":"   ","spans":[]}}"#;
         let result = parse_cargo_json(line, 50);
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [String; 0]);
     }
 
     #[test]
@@ -392,7 +392,7 @@ mod tests {
     fn parse_cargo_json_invalid_json_line_skipped() {
         let input = "not json\n{\"reason\":\"build-script-executed\"}";
         let result = parse_cargo_json(input, 50);
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [String; 0]);
     }
 
     // --- timeout tests ---

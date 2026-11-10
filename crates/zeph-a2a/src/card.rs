@@ -224,7 +224,7 @@ mod tests {
         assert_eq!(card.name, "agent");
         assert_eq!(card.url, "http://localhost");
         assert_eq!(card.version, "0.1.0");
-        assert!(card.description.is_empty());
+        assert_eq!(card.description, "");
         assert!(!card.capabilities.streaming);
         assert!(card.skills.is_empty());
     }

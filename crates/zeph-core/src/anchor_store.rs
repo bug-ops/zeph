@@ -936,7 +936,7 @@ mod tests {
             second.orphans_reaped, 1,
             "second sweep past grace must reap"
         );
-        assert!(vault.read().unwrap().list_keys().is_empty());
+        assert_eq!(vault.read().unwrap().list_keys(), [] as [&str; 0]);
     }
 
     /// #6463: mirrors the transcript two-phase test for `AnchorSubsystem::SessionLog`, and
@@ -1079,7 +1079,7 @@ mod tests {
         let fifth =
             run_anchor_sweep(&vault, &transcript_dir, &sessions_dir, 512, past_new_grace).unwrap();
         assert_eq!(fifth.orphans_reaped, 1);
-        assert!(vault.read().unwrap().list_keys().is_empty());
+        assert_eq!(vault.read().unwrap().list_keys(), [] as [&str; 0]);
     }
 
     /// N-1 vs N boundary: one millisecond short of the grace window must not reap; reaching (or
@@ -1128,7 +1128,7 @@ mod tests {
             at_grace.orphans_reaped, 1,
             "must reap once the grace window is reached"
         );
-        assert!(vault.read().unwrap().list_keys().is_empty());
+        assert_eq!(vault.read().unwrap().list_keys(), [] as [&str; 0]);
     }
 
     /// Clock skew: a backward clock jump (`now` older than the recorded `orphaned_since`) must

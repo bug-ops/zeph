@@ -37,6 +37,8 @@ pub(crate) struct Services {
     // Optional service singletons
     /// Goal lifecycle store and accounting, initialised at startup when `[goals] enabled = true`.
     pub(crate) goal_accounting: Option<std::sync::Arc<crate::goal::GoalAccounting>>,
+    /// In-flight end-of-turn goal check (`[goals] auto_check`).
+    pub(crate) goal_auto_check: crate::agent::goal_auto_check::GoalAutoCheckState,
 
     /// MARCH self-check pipeline, built at startup and rebuilt on provider swap.
     pub(crate) quality: Option<std::sync::Arc<crate::quality::SelfCheckPipeline>>,

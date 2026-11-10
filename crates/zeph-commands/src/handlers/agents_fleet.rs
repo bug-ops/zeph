@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn agents_fleet_command_name() {
         assert_eq!(AgentsFleetCommand.name(), "/agents");
-        assert!(!AgentsFleetCommand.description().is_empty());
+        assert_ne!(AgentsFleetCommand.description(), "");
     }
 
     #[tokio::test]

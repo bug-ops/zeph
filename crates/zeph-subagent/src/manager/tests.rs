@@ -169,7 +169,7 @@ async fn spawn_and_cancel() {
     mgr.definitions.push(sample_def());
 
     let task_id = do_spawn(&mut mgr, "bot", "do stuff").await.unwrap();
-    assert!(!task_id.is_empty());
+    assert_ne!(task_id, "");
 
     mgr.cancel(&task_id).unwrap();
     assert_eq!(mgr.agents[&task_id].state, SubAgentState::Canceled);
@@ -1378,7 +1378,7 @@ async fn spawn_with_plan_mode_definition_succeeds() {
     mgr.definitions.push(def);
 
     let task_id = do_spawn(&mut mgr, "planner", "make a plan").await.unwrap();
-    assert!(!task_id.is_empty());
+    assert_ne!(task_id, "");
     mgr.cancel(&task_id).unwrap();
 }
 
@@ -1406,7 +1406,7 @@ async fn spawn_with_disallowed_tools_definition_succeeds() {
     mgr.definitions.push(def);
 
     let task_id = do_spawn(&mut mgr, "safe-bot", "task").await.unwrap();
-    assert!(!task_id.is_empty());
+    assert_ne!(task_id, "");
     mgr.cancel(&task_id).unwrap();
 }
 
@@ -1439,7 +1439,7 @@ async fn spawn_applies_default_permission_mode_from_config() {
         )
         .await
         .unwrap();
-    assert!(!task_id.is_empty());
+    assert_ne!(task_id, "");
     mgr.cancel(&task_id).unwrap();
 }
 
@@ -1479,7 +1479,7 @@ async fn spawn_does_not_override_explicit_permission_mode() {
         )
         .await
         .unwrap();
-    assert!(!task_id.is_empty());
+    assert_ne!(task_id, "");
     mgr.cancel(&task_id).unwrap();
 }
 
@@ -1508,7 +1508,7 @@ async fn spawn_merges_global_disallowed_tools() {
         )
         .await
         .unwrap();
-    assert!(!task_id.is_empty());
+    assert_ne!(task_id, "");
     mgr.cancel(&task_id).unwrap();
 }
 
@@ -1582,7 +1582,7 @@ async fn spawn_bypass_permissions_with_config_gate_succeeds() {
         )
         .await
         .unwrap();
-    assert!(!task_id.is_empty());
+    assert_ne!(task_id, "");
     mgr.cancel(&task_id).unwrap();
 }
 
@@ -2387,7 +2387,7 @@ async fn spawn_with_memory_scope_project_creates_directory() {
         )
         .await
         .unwrap();
-    assert!(!task_id.is_empty());
+    assert_ne!(task_id, "");
     mgr.cancel(&task_id).unwrap();
 
     // Verify memory directory was created.
@@ -2438,7 +2438,7 @@ async fn spawn_with_config_default_memory_scope_applies_when_def_has_none() {
         )
         .await
         .unwrap();
-    assert!(!task_id.is_empty());
+    assert_ne!(task_id, "");
     mgr.cancel(&task_id).unwrap();
 
     // Verify memory directory was created via config default.
@@ -2490,7 +2490,7 @@ async fn spawn_with_memory_blocked_by_disallowed_tools_skips_memory() {
         )
         .await
         .unwrap();
-    assert!(!task_id.is_empty());
+    assert_ne!(task_id, "");
     mgr.cancel(&task_id).unwrap();
 
     // Memory dir should NOT be created because tools are blocked (HIGH-04).
@@ -2536,7 +2536,7 @@ async fn spawn_without_memory_scope_no_directory_created() {
         )
         .await
         .unwrap();
-    assert!(!task_id.is_empty());
+    assert_ne!(task_id, "");
     mgr.cancel(&task_id).unwrap();
 
     // No agent-memory directory should exist (transcript dirs may be created separately).
@@ -2675,7 +2675,7 @@ async fn spawn_with_explicit_def_memory_overrides_config_default() {
         )
         .await
         .unwrap();
-    assert!(!task_id.is_empty());
+    assert_ne!(task_id, "");
     mgr.cancel(&task_id).unwrap();
 
     // Local scope directory should be created, not project scope.
@@ -2734,7 +2734,7 @@ async fn spawn_memory_blocked_by_deny_list_policy() {
         )
         .await
         .unwrap();
-    assert!(!task_id.is_empty());
+    assert_ne!(task_id, "");
     mgr.cancel(&task_id).unwrap();
 
     // Memory dir should NOT be created because DenyList blocks file tools (REV-HIGH-02).
@@ -3517,7 +3517,7 @@ fn spawn_context_default_is_empty() {
     assert!(ctx.parent_cancel.is_none());
     assert!(ctx.parent_provider_name.is_none());
     assert_eq!(ctx.spawn_depth, 0);
-    assert!(ctx.mcp_tool_names.is_empty());
+    assert_eq!(ctx.mcp_tool_names, [] as [String; 0]);
 }
 
 #[test]
@@ -4384,7 +4384,7 @@ async fn spawn_with_user_memory_scope_sets_memory_aware_executor() {
         .await
         .unwrap();
 
-    assert!(!task_id.is_empty());
+    assert_ne!(task_id, "");
     mgr.cancel(&task_id).unwrap();
 
     // Verify memory directory was created under home.

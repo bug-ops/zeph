@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        112,
-        "MIGRATIONS registry must contain all 112 sequential steps"
+        114,
+        "MIGRATIONS registry must contain all 114 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -855,7 +855,7 @@ fn migrate_mcp_trust_levels_no_mcp_section_is_noop() {
     let src = "[agent]\nname = \"Zeph\"\n";
     let result = migrate_mcp_trust_levels(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
     assert_eq!(result.output, src);
 }
 
@@ -864,7 +864,7 @@ fn migrate_mcp_trust_levels_no_servers_is_noop() {
     let src = "[mcp]\nallowed_commands = [\"npx\"]\n";
     let result = migrate_mcp_trust_levels(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
     assert_eq!(result.output, src);
 }
 
@@ -881,7 +881,7 @@ trust_level = "untrusted"
 "#;
     let result = migrate_mcp_trust_levels(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
 }
 
 #[test]
@@ -903,7 +903,7 @@ fn migrate_database_url_is_noop_when_present() {
         "[memory]\nsqlite_path = \"/tmp/zeph.db\"\ndatabase_url = \"postgres://localhost/zeph\"\n";
     let result = migrate_database_url(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
     assert_eq!(result.output, src);
 }
 
@@ -2129,7 +2129,7 @@ fn migrate_memory_reasoning_idempotent_on_existing_block() {
     let input = "[agent]\nmodel = \"gpt-4o\"\n# [memory.reasoning]\n# enabled = false\n";
     let result = migrate_memory_reasoning_config(input).unwrap();
     assert_eq!(result.changed_count, 0);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
     assert_eq!(result.output, input);
 }
 
@@ -2156,7 +2156,7 @@ fn migrate_hooks_turn_complete_idempotent_on_existing_block() {
         "[agent]\nmodel = \"gpt-4o\"\n# [[hooks.turn_complete]]\n# command = \"echo done\"\n";
     let result = migrate_hooks_turn_complete_config(input).unwrap();
     assert_eq!(result.changed_count, 0);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
     assert_eq!(result.output, input);
 }
 
@@ -2210,7 +2210,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 112);
+    assert_eq!(MIGRATIONS.len(), 114);
 }
 
 /// Mirrors the SC-003 wire-X-into-registry check below for `MigrateTuiPanelSizing` (#6675):
@@ -2418,6 +2418,8 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_claude_compaction_trigger",
         "migrate_memory_context_layout",
         "migrate_skill_state_config",
+        "migrate_correction_confidence_calibration",
+        "migrate_goals_auto_check",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -2478,7 +2480,7 @@ fn migrate_qdrant_api_key_is_noop_when_present() {
         "[memory]\nqdrant_url = \"https://xyz.cloud.qdrant.io\"\nqdrant_api_key = \"secret\"\n";
     let result = migrate_qdrant_api_key(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
     assert_eq!(result.output, src);
 }
 
@@ -2520,7 +2522,7 @@ fn migrate_qdrant_timeout_secs_is_noop_when_present() {
     let src = "[memory]\nqdrant_url = \"http://localhost:6334\"\nqdrant_timeout_secs = 5\n";
     let result = migrate_qdrant_timeout_secs(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
     assert_eq!(result.output, src);
 }
 
@@ -2562,7 +2564,7 @@ fn migrate_utility_high_gain_tools_is_noop_when_present() {
     let src = "[tools.utility]\nhigh_gain_tools = [\"github_create_issue\"]\n";
     let result = migrate_utility_high_gain_tools(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
     assert_eq!(result.output, src);
 }
 
@@ -5235,7 +5237,7 @@ fn migrate_search_config_noop_when_real_section_present() {
     let result = migrate_search_config(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
     assert_eq!(result.output, src);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
 }
 
 #[test]
@@ -5614,4 +5616,79 @@ fn migrate_skill_state_config_noop_without_skills_or_with_section() {
     let r = migrate_skill_state_config(active).unwrap();
     assert_eq!(r.changed_count, 0);
     assert_eq!(r.output, active);
+}
+
+#[test]
+fn migrate_correction_confidence_calibration_adds_advisory_once() {
+    let src = "[skills.learning]\nenabled = true\n\n[memory]\nx = 1\n";
+    let first = migrate_correction_confidence_calibration(src).unwrap();
+    assert_eq!(first.changed_count, 1);
+    let comment = first
+        .output
+        .find("# correction_confidence_calibration")
+        .unwrap();
+    assert!(comment < first.output.find("[memory]").unwrap());
+    let second = migrate_correction_confidence_calibration(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0);
+    assert_eq!(second.output, first.output);
+}
+
+#[test]
+fn migrate_correction_confidence_calibration_noop_without_learning_table() {
+    let src = "[skills]\nmax_active_skills = 5\n";
+    let r = migrate_correction_confidence_calibration(src).unwrap();
+    assert_eq!(r.changed_count, 0);
+    assert_eq!(r.output, src);
+}
+
+#[test]
+fn migrate_goals_auto_check_adds_advisory_once() {
+    let src = "[goals]\nenabled = true\n\n[memory]\nx = 1\n";
+    let first = migrate_goals_auto_check(src).unwrap();
+    assert_eq!(first.changed_count, 1);
+    let comment = first.output.find("# auto_check = false").unwrap();
+    assert!(comment < first.output.find("[memory]").unwrap());
+    let second = migrate_goals_auto_check(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0);
+    assert_eq!(second.output, first.output);
+}
+
+#[test]
+fn migrate_goals_auto_check_noop_without_goals_table() {
+    let src = "# [goals]\n# enabled = false\n";
+    let r = migrate_goals_auto_check(src).unwrap();
+    assert_eq!(r.changed_count, 0);
+    assert_eq!(r.output, src);
+}
+
+#[test]
+fn migrate_correction_confidence_calibration_respects_existing_key_in_section_only() {
+    let active =
+        "[skills.learning]\ncorrection_confidence_calibration = [[0.0, 0.0], [1.0, 1.0]]\n";
+    assert_eq!(
+        migrate_correction_confidence_calibration(active)
+            .unwrap()
+            .changed_count,
+        0
+    );
+    let elsewhere =
+        "[skills.learning]\nenabled = true\n\n[other]\ncorrection_confidence_calibration = 1\n";
+    assert_eq!(
+        migrate_correction_confidence_calibration(elsewhere)
+            .unwrap()
+            .changed_count,
+        1
+    );
+}
+
+#[test]
+fn migrate_goals_auto_check_respects_existing_key_in_section_only() {
+    let active = "[goals]\nenabled = true\nauto_check = true\n";
+    let r = migrate_goals_auto_check(active).unwrap();
+    assert_eq!((r.changed_count, r.output.as_str()), (0, active));
+    let elsewhere = "[goals]\nenabled = true\n\n[other]\nauto_check = true\n";
+    assert_eq!(
+        migrate_goals_auto_check(elsewhere).unwrap().changed_count,
+        1
+    );
 }

@@ -434,7 +434,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(result.is_empty());
+        assert_eq!(result.len(), 0);
     }
 
     #[tokio::test]
@@ -457,7 +457,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(result.is_empty());
+        assert_eq!(result.len(), 0);
     }
 
     #[tokio::test]
@@ -495,7 +495,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!result.is_empty());
+        assert_ne!(result.len(), 0);
     }
 
     // PRISM: query_sensitive_cost=true with no embedding store → fallback to confidence-only.
@@ -594,7 +594,7 @@ mod tests {
         .await
         .unwrap();
         // Entity embeddings missing → fallback to confidence-only → same results as baseline.
-        assert!(!result.is_empty());
+        assert_ne!(result.len(), 0);
         assert_eq!(result[0].entity_name, "alice");
     }
 

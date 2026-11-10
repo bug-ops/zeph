@@ -1613,7 +1613,7 @@ mod tests {
         assert!(config.enabled);
         assert!(config.summarize_output);
         assert_eq!(config.shell.timeout, 30);
-        assert!(config.shell.blocked_commands.is_empty());
+        assert_eq!(config.shell.blocked_commands, [] as [String; 0]);
         assert!(config.audit.enabled);
     }
 
@@ -1707,7 +1707,7 @@ destination = "/var/log/zeph-audit.log""#,
     #[test]
     fn high_gain_tools_default_is_empty() {
         let config = UtilityScoringConfig::default();
-        assert!(config.high_gain_tools.is_empty());
+        assert_eq!(config.high_gain_tools, [] as [String; 0]);
     }
 
     #[test]

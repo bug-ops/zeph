@@ -108,13 +108,13 @@ mod tests {
     #[test]
     fn model_name_and_description() {
         assert_eq!(ModelCommand.name(), "/model");
-        assert!(!ModelCommand.description().is_empty());
+        assert_ne!(ModelCommand.description(), "");
     }
 
     #[test]
     fn provider_name_and_description() {
         assert_eq!(ProviderCommand.name(), "/provider");
-        assert!(!ProviderCommand.description().is_empty());
+        assert_ne!(ProviderCommand.description(), "");
     }
 
     #[tokio::test]

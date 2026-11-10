@@ -60,7 +60,7 @@ mod tests {
     async fn load_input_history_empty() {
         let store = test_store().await;
         let entries = store.load_input_history(100).await.unwrap();
-        assert!(entries.is_empty());
+        assert_eq!(entries, [] as [String; 0]);
     }
 
     #[tokio::test]
@@ -90,6 +90,6 @@ mod tests {
         store.save_input_entry("b").await.unwrap();
         store.clear_input_history().await.unwrap();
         let entries = store.load_input_history(100).await.unwrap();
-        assert!(entries.is_empty());
+        assert_eq!(entries, [] as [String; 0]);
     }
 }

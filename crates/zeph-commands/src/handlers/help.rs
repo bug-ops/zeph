@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn help_name_and_description() {
         assert_eq!(HelpCommand.name(), "/help");
-        assert!(!HelpCommand.description().is_empty());
+        assert_ne!(HelpCommand.description(), "");
     }
 
     #[test]

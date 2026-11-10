@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn new_defaults() {
         let o = ToolOrchestrator::new();
-        assert!(o.doom_loop_history.is_empty());
+        assert_eq!(o.doom_loop_history, [] as [u64; 0]);
         assert_eq!(o.max_iterations, 10);
         assert!(!o.summarize_tool_output_enabled);
         assert!(o.recent_tool_calls.is_empty());
@@ -527,7 +527,7 @@ mod tests {
         assert!(o.is_doom_loop());
         o.clear_doom_history();
         assert!(!o.is_doom_loop());
-        assert!(o.doom_loop_history.is_empty());
+        assert_eq!(o.doom_loop_history, [] as [u64; 0]);
     }
 
     // Repeat-detection tests

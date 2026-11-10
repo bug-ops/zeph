@@ -239,7 +239,7 @@ mod tests {
         let t = EmaTracker::new(0.3, 1);
         // interval=1 → triggers on first call
         let result = t.maybe_reorder(&[]).unwrap();
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [String; 0]);
     }
 
     #[test]

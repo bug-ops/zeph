@@ -95,28 +95,29 @@ use super::{
     migrate_agents_max_spawns_per_session, migrate_agents_peer_messaging_config,
     migrate_autodream_config, migrate_caveman_config, migrate_claude_compaction_trigger,
     migrate_cocoon_provider_notice, migrate_cocoon_show_balance,
-    migrate_compression_predictor_config, migrate_database_url, migrate_deep_link_config,
-    migrate_durable_config, migrate_durable_hwm_advisory, migrate_durable_key_rotation,
-    migrate_durable_shared_db, migrate_durable_stale_running_after_secs, migrate_egress_config,
-    migrate_embed_provider_rename, migrate_eval_model_to_provider,
-    migrate_fidelity_timeout_defaults, migrate_five_signal_config,
-    migrate_focus_auto_consolidate_min_window, migrate_forgetting_config, migrate_goals_config,
-    migrate_hooks_permission_denied_config, migrate_hooks_turn_complete_config,
-    migrate_integrity_config, migrate_knowledge_config, migrate_llm_stream_limits,
-    migrate_magic_docs_config, migrate_mcp_elicitation_config, migrate_mcp_max_connect_attempts,
-    migrate_mcp_media_config, migrate_mcp_retry_and_tool_timeout, migrate_mcp_trust_levels,
-    migrate_memory_consent_gate_config, migrate_memory_context_layout, migrate_memory_graph_config,
-    migrate_memory_graph_recall_include_imported, migrate_memory_hebbian_config,
-    migrate_memory_hebbian_consolidation_config, migrate_memory_hebbian_spread_config,
-    migrate_memory_persona_config, migrate_memory_reasoning_config,
-    migrate_memory_reasoning_judge_config, migrate_memory_retrieval_config,
-    migrate_memory_retrieval_query_bias, migrate_memory_store_config,
-    migrate_memory_store_max_namespace_rows, migrate_memory_type_aware_compose_config,
-    migrate_microcompact_config, migrate_nli_config, migrate_orchestration_asset_sensitivity,
-    migrate_orchestration_command_config, migrate_orchestration_ensemble,
-    migrate_orchestration_idle_timeout, migrate_orchestration_orchestrator_provider,
-    migrate_orchestration_persistence, migrate_orchestration_whole_plan_verifier_timeout,
-    migrate_otel_filter, migrate_overflow_max_per_call_override, migrate_pii_filter_names,
+    migrate_compression_predictor_config, migrate_correction_confidence_calibration,
+    migrate_database_url, migrate_deep_link_config, migrate_durable_config,
+    migrate_durable_hwm_advisory, migrate_durable_key_rotation, migrate_durable_shared_db,
+    migrate_durable_stale_running_after_secs, migrate_egress_config, migrate_embed_provider_rename,
+    migrate_eval_model_to_provider, migrate_fidelity_timeout_defaults, migrate_five_signal_config,
+    migrate_focus_auto_consolidate_min_window, migrate_forgetting_config, migrate_goals_auto_check,
+    migrate_goals_config, migrate_hooks_permission_denied_config,
+    migrate_hooks_turn_complete_config, migrate_integrity_config, migrate_knowledge_config,
+    migrate_llm_stream_limits, migrate_magic_docs_config, migrate_mcp_elicitation_config,
+    migrate_mcp_max_connect_attempts, migrate_mcp_media_config, migrate_mcp_retry_and_tool_timeout,
+    migrate_mcp_trust_levels, migrate_memory_consent_gate_config, migrate_memory_context_layout,
+    migrate_memory_graph_config, migrate_memory_graph_recall_include_imported,
+    migrate_memory_hebbian_config, migrate_memory_hebbian_consolidation_config,
+    migrate_memory_hebbian_spread_config, migrate_memory_persona_config,
+    migrate_memory_reasoning_config, migrate_memory_reasoning_judge_config,
+    migrate_memory_retrieval_config, migrate_memory_retrieval_query_bias,
+    migrate_memory_store_config, migrate_memory_store_max_namespace_rows,
+    migrate_memory_type_aware_compose_config, migrate_microcompact_config, migrate_nli_config,
+    migrate_orchestration_asset_sensitivity, migrate_orchestration_command_config,
+    migrate_orchestration_ensemble, migrate_orchestration_idle_timeout,
+    migrate_orchestration_orchestrator_provider, migrate_orchestration_persistence,
+    migrate_orchestration_whole_plan_verifier_timeout, migrate_otel_filter,
+    migrate_overflow_max_per_call_override, migrate_pii_filter_names,
     migrate_planner_model_to_provider, migrate_plugins_reputation_config,
     migrate_policy_provider_and_utility_window, migrate_provider_max_concurrent,
     migrate_qdrant_api_key, migrate_qdrant_timeout_secs, migrate_quality_config,
@@ -1445,5 +1446,30 @@ impl Migration for MigrateSkillStateConfig {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_skill_state_config(toml_src)
+    }
+}
+
+/// Step 113 — add an advisory `correction_confidence_calibration` line under `[skills.learning]`
+/// (spec 054, issue #6880).
+pub(super) struct MigrateCorrectionConfidenceCalibration;
+impl Migration for MigrateCorrectionConfidenceCalibration {
+    fn name(&self) -> &'static str {
+        "migrate_correction_confidence_calibration"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_correction_confidence_calibration(toml_src)
+    }
+}
+
+/// Step 114 — add an advisory `auto_check` line under `[goals]` (spec 089, issue #6881).
+pub(super) struct MigrateGoalsAutoCheck;
+impl Migration for MigrateGoalsAutoCheck {
+    fn name(&self) -> &'static str {
+        "migrate_goals_auto_check"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_goals_auto_check(toml_src)
     }
 }

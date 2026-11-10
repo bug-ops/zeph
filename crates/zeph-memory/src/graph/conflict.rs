@@ -371,7 +371,7 @@ mod tests {
         let candidates = vec![make_edge(42, "2026-01-01 00:00:00", 0.8)];
         let result = resolver.resolve(candidates, &metrics).await.unwrap();
         assert_eq!(result.winner.id, 42);
-        assert!(result.alternatives.is_empty());
+        assert_eq!(result.alternatives.len(), 0);
     }
 
     #[tokio::test]

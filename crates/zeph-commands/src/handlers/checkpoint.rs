@@ -105,13 +105,13 @@ mod tests {
     #[test]
     fn undo_name_and_description() {
         assert_eq!(UndoCommand.name(), "/undo");
-        assert!(!UndoCommand.description().is_empty());
+        assert_ne!(UndoCommand.description(), "");
     }
 
     #[test]
     fn redo_name_and_description() {
         assert_eq!(RedoCommand.name(), "/redo");
-        assert!(!RedoCommand.description().is_empty());
+        assert_ne!(RedoCommand.description(), "");
     }
 
     #[tokio::test]
@@ -125,7 +125,7 @@ mod tests {
         let result = UndoCommand.handle(&mut ctx, "").await;
         assert!(result.is_ok());
         if let Ok(CommandOutput::Message(msg)) = result {
-            assert!(!msg.is_empty());
+            assert_ne!(msg, "");
         }
     }
 
@@ -140,7 +140,7 @@ mod tests {
         let result = RedoCommand.handle(&mut ctx, "").await;
         assert!(result.is_ok());
         if let Ok(CommandOutput::Message(msg)) = result {
-            assert!(!msg.is_empty());
+            assert_ne!(msg, "");
         }
     }
 
