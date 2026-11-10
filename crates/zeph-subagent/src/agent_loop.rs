@@ -23,7 +23,9 @@ use zeph_tools::executor::{ErasedToolExecutor, ToolCall};
 use super::filter::FilteredToolExecutor;
 use super::forward::ForwardSender;
 use super::grants::{GrantedSecret, PermissionGrants, SecretRequest, ToolGrantCheck};
-use super::hooks::{HookDef, SubagentHooks, fire_hooks, make_base_hook_env, matching_hooks};
+use super::hooks::{
+    HookDef, SubagentHooks, fire_hooks, make_base_hook_env, matching_hooks, pre_tool_block_message,
+};
 use super::manager::SubAgentStatus;
 use super::state::SubAgentState;
 use super::transcript::TranscriptWriter;
@@ -911,8 +913,20 @@ async fn handle_tool_step(
                     let hook_env = make_hook_env(task_id, agent_name, tc.name.as_str(), &tc.input);
                     let pre_owned: Vec<HookDef> = pre_hooks.into_iter().cloned().collect();
                     // MCP dispatch is not available in the subagent execution path.
+                    // `fire_hooks` returns `Err` only when a fail-closed hook fails.
                     if let Err(e) = fire_hooks(&pre_owned, &hook_env, None, None).await {
-                        tracing::warn!(error = %e, tool = %tc.name, "PreToolUse hook failed");
+                        tracing::warn!(
+                            error = %e,
+                            tool = %tc.name,
+                            task_id,
+                            "PreToolUse hook blocked tool (fail_closed)"
+                        );
+                        result_parts.push(MessagePart::ToolResult {
+                            tool_use_id: tc.id.clone(),
+                            content: pre_tool_block_message(tc.name.as_str()),
+                            is_error: true,
+                        });
+                        continue;
                     }
                 }
 
@@ -2405,6 +2419,149 @@ mod handle_tool_step_granted_secrets_tests {
                 .map(String::as_str),
             Some("the-secret-value")
         );
+    }
+
+    fn pre_hook(command: &str, timeout_secs: u64, fail_closed: bool) -> SubagentHooks {
+        SubagentHooks {
+            pre_tool_use: vec![zeph_config::HookMatcher {
+                matcher: "shell".to_owned(),
+                hooks: vec![HookDef {
+                    action: zeph_config::HookAction::Command {
+                        command: command.to_owned(),
+                    },
+                    timeout_secs,
+                    fail_closed,
+                    r#if: None,
+                }],
+            }],
+            post_tool_use: vec![],
+        }
+    }
+
+    fn failing_pre_hook(fail_closed: bool) -> SubagentHooks {
+        pre_hook("exit 1", 5, fail_closed)
+    }
+
+    async fn run_tool_step_with_hooks(
+        hooks: &SubagentHooks,
+        response: ChatResponse,
+    ) -> (Arc<RecordingExecutor>, Vec<Message>) {
+        let recorder = Arc::new(RecordingExecutor::default());
+        let executor = FilteredToolExecutor::new(
+            Arc::clone(&recorder) as Arc<dyn ErasedToolExecutor>,
+            ToolPolicy::InheritAll,
+        );
+        let mut messages = Vec::new();
+        let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+        handle_tool_step(
+            &executor,
+            response,
+            &mut messages,
+            hooks,
+            "task-1",
+            "bot",
+            &sanitizer,
+            &mut HashMap::new(),
+            None,
+            &Arc::new(Mutex::new(PermissionGrants::default())),
+            &mut std::collections::HashSet::new(),
+        )
+        .await;
+        (recorder, messages)
+    }
+
+    fn tool_results(messages: &[Message]) -> Vec<(&str, &str, bool)> {
+        messages
+            .iter()
+            .flat_map(|m| m.parts.iter())
+            .filter_map(|p| match p {
+                MessagePart::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } => Some((tool_use_id.as_str(), content.as_str(), *is_error)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    const BLOCKED_SHELL: &str = "[blocked] PreToolUse hook blocked tool `shell`";
+
+    #[tokio::test]
+    async fn fail_closed_pre_tool_hook_failure_blocks_tool() {
+        let (recorder, messages) =
+            run_tool_step_with_hooks(&failing_pre_hook(true), tool_use_response()).await;
+
+        assert!(
+            recorder.calls.lock().unwrap().is_empty(),
+            "tool must not execute when a fail_closed PreToolUse hook fails"
+        );
+        assert_eq!(
+            tool_results(&messages),
+            vec![("call-1", BLOCKED_SHELL, true)]
+        );
+    }
+
+    #[tokio::test]
+    async fn fail_closed_block_message_does_not_leak_hook_command() {
+        let hooks = pre_hook("echo SECRET_TOKEN_123 >&2; exit 1", 5, true);
+        let (_recorder, messages) = run_tool_step_with_hooks(&hooks, tool_use_response()).await;
+
+        let results = tool_results(&messages);
+        assert_eq!(results.len(), 1);
+        assert!(
+            !results[0].1.contains("SECRET_TOKEN_123"),
+            "hook command/stderr must not reach the model"
+        );
+    }
+
+    #[tokio::test]
+    async fn fail_closed_pre_tool_hook_timeout_blocks_tool() {
+        let hooks = pre_hook("sleep 5", 1, true);
+        let (recorder, messages) = run_tool_step_with_hooks(&hooks, tool_use_response()).await;
+
+        assert!(recorder.calls.lock().unwrap().is_empty());
+        assert_eq!(
+            tool_results(&messages),
+            vec![("call-1", BLOCKED_SHELL, true)]
+        );
+    }
+
+    #[tokio::test]
+    async fn fail_open_pre_tool_hook_failure_still_runs_tool() {
+        let (recorder, _messages) =
+            run_tool_step_with_hooks(&failing_pre_hook(false), tool_use_response()).await;
+        assert_eq!(recorder.calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn blocked_call_does_not_prevent_other_call_in_same_step() {
+        let response = ChatResponse::tool_use(
+            None,
+            vec![
+                ToolUseRequest {
+                    id: "call-1".into(),
+                    name: "shell".into(),
+                    input: serde_json::json!({"command": "ls"}),
+                },
+                ToolUseRequest {
+                    id: "call-2".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({"path": "a"}),
+                },
+            ],
+        );
+        let (recorder, messages) =
+            run_tool_step_with_hooks(&failing_pre_hook(true), response).await;
+
+        let calls = recorder.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].tool_id.as_str(), "read");
+        let results = tool_results(&messages);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0], ("call-1", BLOCKED_SHELL, true));
+        assert_eq!(results[1].0, "call-2");
+        assert!(!results[1].2);
     }
 
     #[tokio::test]

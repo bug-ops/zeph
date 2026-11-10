@@ -298,13 +298,13 @@ impl<C: crate::channel::Channel> Agent<C> {
                 .learning_engine
                 .config
                 .as_ref()
-                .map_or(0.5, |c| c.judge_adaptive_low);
+                .map_or(0.5, |c| c.judge_adaptive_low.get());
             let adaptive_high = self
                 .services
                 .learning_engine
                 .config
                 .as_ref()
-                .map_or(0.8, |c| c.judge_adaptive_high);
+                .map_or(0.8, |c| c.judge_adaptive_high.get());
             let rate_limit = self
                 .services
                 .learning_engine

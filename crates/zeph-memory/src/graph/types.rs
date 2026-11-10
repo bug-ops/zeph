@@ -6,6 +6,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use zeph_llm::provider::TurnContextTrust;
+
 use crate::sqlite_time::parse_sqlite_datetime_to_unix;
 use crate::types::{EntityId, MessageId};
 
@@ -290,12 +292,14 @@ impl GraphOrigin {
 /// # Examples
 ///
 /// ```
+/// use zeph_llm::provider::TurnContextTrust;
 /// use zeph_memory::graph::types::{GraphOrigin, GraphProvenance};
 ///
 /// let prov = GraphProvenance {
 ///     origin: GraphOrigin::Subagent,
 ///     import_batch_id: "batch-2026-001".to_owned(),
 ///     source_uri: Some("subagent:task-42".to_owned()),
+///     trust: TurnContextTrust::LocalUntrusted,
 /// };
 /// assert_eq!(prov.origin.as_str(), "subagent");
 /// ```
@@ -307,6 +311,10 @@ pub struct GraphProvenance {
     pub import_batch_id: String,
     /// Source locator, e.g. `"subagent:<task_id>"`. `NULL` for conversation rows.
     pub source_uri: Option<String>,
+    /// Trust tier of the source the row was extracted from (spec-067 §3 D1).
+    ///
+    /// Held in memory only; it is not yet persisted with the row.
+    pub trust: TurnContextTrust,
 }
 
 /// Unpack `Option<&GraphProvenance>` into the three SQL-bind values for `origin`,

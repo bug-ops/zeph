@@ -86,6 +86,10 @@ pub struct MetricsCounters {
     pub quarantine_invocations: u64,
     /// Quarantine failures during this pass.
     pub quarantine_failures: u64,
+    /// Retrieved content (memory recall, graph, cross-session, digest, document RAG, code RAG)
+    /// entered the context this pass; the shim ratchets the skill-state input trust once per
+    /// turn.
+    pub untrusted_context_injected: bool,
 }
 
 /// Abstract sink for security events raised during context assembly.

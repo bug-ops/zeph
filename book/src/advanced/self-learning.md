@@ -135,6 +135,8 @@ correction_recall_limit = 3           # Max corrections injected into system pro
 correction_min_similarity = 0.75      # Minimum cosine similarity for correction recall (default: 0.75)
 ```
 
+> `judge_adaptive_low`, `judge_adaptive_high` and `correction_min_similarity` must be finite and within `0.0..=1.0`, and `judge_adaptive_low` must not exceed `judge_adaptive_high`; otherwise config loading fails.
+
 > Setting `detector_mode = "judge"` does not disable regex — regex always runs first. The judge is invoked only for borderline or missed cases, keeping LLM costs minimal.
 
 ## Phase 3 — Bayesian Re-Ranking and Trust Transitions

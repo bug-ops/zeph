@@ -362,6 +362,17 @@ pub fn make_base_hook_env(
     env
 }
 
+/// Builds the tool-result text returned to the model when a fail-closed `PreToolUse` hook
+/// blocks `tool_name`.
+///
+/// Deliberately omits the hook command and its error: tool results of sub-agents are not
+/// credential-scrubbed, so hook details could leak secrets to the provider. Callers log the
+/// failure via `tracing` instead.
+#[must_use]
+pub fn pre_tool_block_message(tool_name: &str) -> String {
+    format!("[blocked] PreToolUse hook blocked tool `{tool_name}`")
+}
+
 // ── Execution ─────────────────────────────────────────────────────────────────
 
 /// Execute a list of hook definitions, setting the provided environment variables.

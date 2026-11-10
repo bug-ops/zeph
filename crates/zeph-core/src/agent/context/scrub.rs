@@ -10,7 +10,7 @@
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use zeph_llm::provider::{Message, MessagePart, Role};
+use zeph_llm::provider::{Message, MessagePart};
 
 use crate::agent::Agent;
 use crate::channel::Channel;
@@ -60,10 +60,13 @@ impl<C: Channel> Agent<C> {
         });
         let start = verified.map_or(1, |p| p.index + 1);
         let mut scanned = 0usize;
-        for msg in self.msg.messages.iter_mut().skip(start) {
-            if msg.role == Role::System {
-                continue;
-            }
+        for msg in self
+            .msg
+            .messages
+            .iter_mut()
+            .skip(start)
+            .filter(|m| zeph_context::scrub::needs_scrub(m))
+        {
             scanned += 1;
             zeph_context::scrub::scrub_message(msg);
         }
@@ -83,6 +86,7 @@ impl<C: Channel> Agent<C> {
 mod tests {
     use zeph_llm::any::AnyProvider;
     use zeph_llm::mock::MockProvider;
+    use zeph_llm::provider::Role;
 
     use super::*;
     use crate::agent::agent_tests::{MockChannel, MockToolExecutor, create_test_registry};
@@ -154,6 +158,22 @@ mod tests {
             !msg.content.contains("sk-abc123def456"),
             "content is rebuilt"
         );
+    }
+
+    #[test]
+    fn system_role_recall_part_is_scrubbed() {
+        let mut agent = agent();
+        agent.msg.messages.push(Message::from_parts(
+            Role::System,
+            vec![MessagePart::Recall {
+                text: "- [user] key sk-abc123def456 here".to_owned(),
+            }],
+        ));
+        agent.scrub_unsent_tail();
+        let MessagePart::Recall { text } = &agent.msg.messages[1].parts[0] else {
+            panic!("part kind changed");
+        };
+        assert!(!text.contains("sk-abc123def456"), "{text}");
     }
 
     #[test]

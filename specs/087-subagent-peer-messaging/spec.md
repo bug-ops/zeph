@@ -160,9 +160,13 @@ bounded `mpsc` mailbox; it never touches the parent agent's turn loop and introd
 A sender `S` may address a target `T` iff, after confirming `S.group == T.group` (same spawn
 tree) and `S != T` (no self-addressing):
 
-1. `T` is `S`'s own parent, **or**
+1. `T` is an ancestor of `S` (the direct parent or any higher ancestor; walk `S`'s parent
+   chain looking for `T`), **or**
 2. `T` shares the same parent as `S` (siblings), **or**
 3. `S` is an ancestor of `T` (walk `T`'s parent chain looking for `S`)
+
+Ancestor walks keep a visited set, so a parent cycle terminates (and is denied) instead of
+spinning under the router's read lock.
 
 Any other same-group pair, or any cross-group pair, is denied. A cross-group target is resolved
 to `DeliveryError::TargetNotFound` — **never** `Unauthorized` — because `resolve_target` filters
@@ -299,12 +303,8 @@ max_wait_ms = 30000     # ceiling for check_messages' optional wait_ms argument 
   uniformly regardless of same-process origin
 - A peer message is never auto-injected into a sub-agent's context; it is observable only via an
   explicit `check_messages` tool call
-- `authorize()`'s ancestor-walk has no visited-set or depth cap: safe today because every
-  registered node's `parent` is either `None` (a root) or a root's own `AgentId` — `manager::spawn`
-  never registers a node nested deeper than one level below a root. A future nested-spawn feature
-  MUST add a cycle guard before registering a node whose ancestry is not trivially a root, or a
-  parent cycle would spin forever while holding the router's read lock, wedging every concurrent
-  send
+- `authorize()`'s ancestor walks carry a visited-set cycle guard, so a parent cycle cannot wedge
+  the router's read lock
 
 ---
 

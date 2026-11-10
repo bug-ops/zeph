@@ -3,6 +3,8 @@
 
 //! Ingest-document types for `zeph knowledge ingest` (spec-067 §2.3).
 
+use zeph_llm::provider::TurnContextTrust;
+
 use crate::graph::ingest::ledger::IngestLedger;
 use crate::graph::types::{GraphOrigin, GraphProvenance};
 
@@ -25,15 +27,9 @@ pub enum IngestSourceKind {
 
     /// Content sourced from a foreign agent system (A2A / ACP / external API).
     ///
-    /// Uses the tech-doc extraction prompt.
-    ///
-    /// # Note
-    ///
-    /// Trust classification for external agents is resolved at the binary layer
-    /// (spec-067 §3 D1); `zeph-memory` treats `ExternalAgent` the same as
-    /// `StaticArtifact` for prompt selection.
+    /// Uses the tech-doc extraction prompt and is classified as
+    /// [`TurnContextTrust::ExternalUntrusted`] (see [`Self::trust_level`]).
     ExternalAgent,
-    // TODO(#6934): add per-source trust classification once the trust-level spec is finalised.
 }
 
 impl IngestSourceKind {
@@ -53,6 +49,21 @@ impl IngestSourceKind {
             Self::StaticArtifact | Self::SubagentTranscript | Self::ExternalAgent => {
                 super::prompt::TECH_DOC_SYSTEM_PROMPT
             }
+        }
+    }
+
+    /// Returns the trust tier stamped on entities and edges extracted from this kind.
+    ///
+    /// External-agent content is the least trusted; subagent transcripts embed local tool
+    /// output; static repository artifacts are first-party.
+    // ASSUMPTION: StaticArtifact is treated as first-party (`Trusted`); revisit if artifacts
+    // may be sourced from untrusted checkouts.
+    #[must_use]
+    pub fn trust_level(self) -> TurnContextTrust {
+        match self {
+            Self::StaticArtifact => TurnContextTrust::Trusted,
+            Self::SubagentTranscript => TurnContextTrust::LocalUntrusted,
+            Self::ExternalAgent => TurnContextTrust::ExternalUntrusted,
         }
     }
 
@@ -168,6 +179,26 @@ mod tests {
         assert_eq!(
             IngestSourceKind::StaticArtifact.graph_origin(),
             GraphOrigin::Ingest
+        );
+    }
+
+    #[test]
+    fn trust_level_maps_each_kind() {
+        assert_eq!(
+            IngestSourceKind::StaticArtifact.trust_level(),
+            TurnContextTrust::Trusted
+        );
+        assert_eq!(
+            IngestSourceKind::SubagentTranscript.trust_level(),
+            TurnContextTrust::LocalUntrusted
+        );
+        assert_eq!(
+            IngestSourceKind::ExternalAgent.trust_level(),
+            TurnContextTrust::ExternalUntrusted
+        );
+        assert!(
+            IngestSourceKind::ExternalAgent.trust_level()
+                > IngestSourceKind::StaticArtifact.trust_level()
         );
     }
 }

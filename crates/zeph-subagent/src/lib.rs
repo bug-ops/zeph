@@ -84,7 +84,7 @@ pub use grants::{Grant, GrantKind, GrantedSecret, PermissionGrants, SecretReques
 pub use hooks::{
     HookAction, HookDef, HookError, HookMatcher, HookOutput, HookRunResult, McpDispatch,
     PostToolUseHookInput, SubagentHooks, TOOL_ARGS_JSON_LIMIT, fire_hooks, hook_if_matches,
-    make_base_hook_env, matching_hooks,
+    make_base_hook_env, matching_hooks, pre_tool_block_message,
 };
 pub use manager::{
     SpawnContext, SpawnOrigin, SubAgentHandle, SubAgentManager, SubAgentStatus,

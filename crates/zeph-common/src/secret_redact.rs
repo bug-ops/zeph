@@ -66,11 +66,77 @@ static TOKEN_SHAPE_REGEXES: LazyLock<[Regex; 3]> = LazyLock::new(|| {
     .map(|pattern| Regex::new(pattern).expect("token shape regex is valid"))
 });
 
-// Matches basic-auth credentials embedded in URLs: https://user:pass@host
+/// Minimum length for colon-less URL userinfo to be treated as an opaque credential token.
+const URL_OPAQUE_USERINFO_MIN_LEN: usize = 20;
+
+// Userinfo is everything in the authority up to the LAST '@' (greedy), so passwords containing
+// '@' are consumed whole. '?' and '#' stay allowed because passwords may contain them; '"' is
+// excluded so a match cannot span JSON string boundaries.
 static URL_CREDS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?P<scheme>[a-z][a-z0-9+\-.]*://)(?P<creds>[^@/\s]+:[^@/\s]+@)")
+    Regex::new(r#"(?i)(?P<scheme>[a-z][a-z0-9+\-.]*://)(?P<userinfo>[^/\s"]*)@"#)
         .expect("url credential redaction regex is valid")
 });
+
+const URL_TEXT_DELIMITERS: [char; 4] = ['?', '#', ',', '\''];
+
+/// `host:port?name=...`: digits, then a query whose first parameter has a name.
+fn is_port_then_query(pass: &str) -> bool {
+    let Some((port, query)) = pass.split_once('?') else {
+        return false;
+    };
+    let Some((name, _)) = query.split_once('=') else {
+        return false;
+    };
+    !port.is_empty()
+        && port.bytes().all(|b| b.is_ascii_digit())
+        && !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+}
+
+/// `user:pass` (user may be empty, password must not be) is a credential unless the user part
+/// contains `?`/`#` or the rest looks like `host:port?name=`; colon-less userinfo only when it is
+/// long and free of text delimiters. Passwords starting with digits followed by `#`/`,` stay
+/// credentials, so `host:8080#frag@x` is deliberately over-redacted.
+fn is_url_credential(userinfo: &str) -> bool {
+    match userinfo.split_once(':') {
+        Some((user, pass)) => {
+            !pass.is_empty() && !user.contains(['?', '#']) && !is_port_then_query(pass)
+        }
+        None => {
+            userinfo.len() >= URL_OPAQUE_USERINFO_MIN_LEN && !userinfo.contains(URL_TEXT_DELIMITERS)
+        }
+    }
+}
+
+/// Redact credential-bearing userinfo; keep `text` borrowed when no URL qualifies.
+fn redact_url_credentials(text: &str) -> Cow<'_, str> {
+    let mut out: Option<String> = None;
+    let mut last = 0;
+    for caps in URL_CREDS_REGEX.captures_iter(text) {
+        let (Some(whole), Some(scheme), Some(userinfo)) =
+            (caps.get(0), caps.name("scheme"), caps.name("userinfo"))
+        else {
+            continue;
+        };
+        if !is_url_credential(userinfo.as_str()) {
+            continue;
+        }
+        let buf = out.get_or_insert_with(|| String::with_capacity(text.len()));
+        buf.push_str(&text[last..whole.start()]);
+        buf.push_str(scheme.as_str());
+        buf.push_str("[REDACTED]@");
+        last = whole.end();
+    }
+    match out {
+        Some(mut buf) => {
+            buf.push_str(&text[last..]);
+            Cow::Owned(buf)
+        }
+        None => Cow::Borrowed(text),
+    }
+}
 
 static PATH_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     let alt = PATH_PREFIXES.join("|");
@@ -181,8 +247,11 @@ pub fn scrub_secret_shapes(text: &str) -> Cow<'_, str> {
 
 /// Strip URL-embedded credentials, then apply [`scrub_secret_shapes`].
 ///
-/// `https://user:pass@host` becomes `https://[REDACTED]@host`. Returns `Cow::Borrowed` when
-/// nothing changed.
+/// `https://user:pass@host` becomes `https://[REDACTED]@host`. Userinfo runs to the last `@` of the
+/// authority (so `u:p@ss@host` is redacted whole); colon-less userinfo is redacted only when it is
+/// at least 20 characters, leaving `https://user@host` intact. A password containing a raw `"`
+/// is not redacted (the quote bounds the match so JSON text is not swallowed). Returns
+/// `Cow::Borrowed` when nothing changed.
 ///
 /// # Examples
 ///
@@ -196,7 +265,7 @@ pub fn scrub_secret_shapes(text: &str) -> Cow<'_, str> {
 /// ```
 #[must_use]
 pub fn scrub_secrets(text: &str) -> Cow<'_, str> {
-    let current = URL_CREDS_REGEX.replace_all(text, "${scheme}[REDACTED]@");
+    let current = redact_url_credentials(text);
     chain(current, scrub_secret_shapes)
 }
 
@@ -332,6 +401,126 @@ mod tests {
     fn scrub_secrets_leaves_paths_but_strips_url_credentials() {
         let result = scrub_secrets("postgres://u:p@h/db in /home/a/b");
         assert_eq!(result, "postgres://[REDACTED]@h/db in /home/a/b");
+    }
+
+    #[test]
+    fn url_password_containing_at_is_fully_redacted() {
+        assert_eq!(
+            scrub_content("https://u:p@ss@host/x"),
+            "https://[REDACTED]@host/x"
+        );
+        assert_eq!(
+            scrub_secrets("see https://u:p@ss@host and more"),
+            "see https://[REDACTED]@host and more"
+        );
+    }
+
+    #[test]
+    fn url_password_with_query_or_fragment_chars_is_redacted() {
+        assert_eq!(
+            scrub_secrets("postgres://admin:Pa#ss1@db/x"),
+            "postgres://[REDACTED]@db/x"
+        );
+        assert_eq!(
+            scrub_secrets("https://u:p?ss@host/x"),
+            "https://[REDACTED]@host/x"
+        );
+        assert_eq!(
+            scrub_secrets("redis://:pw@host:6379"),
+            "redis://[REDACTED]@host:6379"
+        );
+    }
+
+    #[test]
+    fn url_passwords_with_special_characters_are_redacted() {
+        for pass in [
+            "p[ss", "p{ss}", "p|ss", "p^ss", "p\\ss", "p<ss>", "p`ss", "p]ss", "p>ss",
+        ] {
+            let text = format!("postgres://u:{pass}@db/x");
+            assert_eq!(scrub_secrets(&text), "postgres://[REDACTED]@db/x", "{pass}");
+        }
+    }
+
+    #[test]
+    fn digit_prefixed_passwords_and_apostrophe_users_are_redacted() {
+        for (text, expected) in [
+            (
+                "postgres://admin:2024#Summer!@db/x",
+                "postgres://[REDACTED]@db/x",
+            ),
+            ("https://u:123,abc@h", "https://[REDACTED]@h"),
+            ("https://o'brien:hunter2@h", "https://[REDACTED]@h"),
+        ] {
+            assert_eq!(scrub_secrets(text), expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn host_port_followed_by_query_is_not_a_credential() {
+        for text in [
+            "https://host:443?email=a@b.com",
+            "http://localhost:3000?email=me@x.com",
+        ] {
+            assert!(
+                matches!(scrub_secrets(text), Cow::Borrowed(_)),
+                "{text} -> {}",
+                scrub_secrets(text)
+            );
+        }
+    }
+
+    #[test]
+    fn compact_json_with_url_and_email_is_not_mangled() {
+        let text = r#"{"u":"https://example.com","e":"alice@x.com"}"#;
+        assert!(matches!(scrub_secrets(text), Cow::Borrowed(_)));
+        let authors = r#"{"homepage":"https://example.com","authors":["a@x.org","b@y.org"]}"#;
+        assert!(matches!(scrub_secrets(authors), Cow::Borrowed(_)));
+        assert_eq!(
+            scrub_secrets("redis://:hunter2@host"),
+            "redis://[REDACTED]@host"
+        );
+        let long = r#"{"u":"https://example.com","e":"alice.longname.abcdefgh@x.com"}"#;
+        assert!(matches!(scrub_secrets(long), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn url_colonless_opaque_userinfo_is_redacted() {
+        let token = "abcdefghijklmnopqrstuvwxyz0123";
+        let text = format!("https://{token}@host/x");
+        assert_eq!(scrub_content(&text), "https://[REDACTED]@host/x");
+        assert_eq!(
+            scrub_secrets(&format!("https://{}@host", "a".repeat(20))),
+            "https://[REDACTED]@host"
+        );
+    }
+
+    #[test]
+    fn url_non_credential_userinfo_stays_intact() {
+        for text in [
+            "https://user@host/x",
+            "https://aaaaaaaaaaaaaaaaaaa@host",
+            "ssh://git@github.com/org/repo",
+            "git@github.com:org/repo.git",
+            "mail bob@example.com about https://example.com/a@b",
+            "https://host:8080/path@x",
+            "https://host/a:b@c",
+            "https://example.com?email=someone.with.a.long.name@example.com",
+        ] {
+            assert!(
+                matches!(scrub_secrets(text), Cow::Borrowed(_)),
+                "{text} -> {}",
+                scrub_secrets(text)
+            );
+        }
+    }
+
+    #[test]
+    fn multiple_urls_each_redacted_independently() {
+        let result = scrub_secrets("a https://u:p@h1/x b https://v:q@h2/y c https://safe@h3");
+        assert_eq!(
+            result,
+            "a https://[REDACTED]@h1/x b https://[REDACTED]@h2/y c https://safe@h3"
+        );
     }
 
     #[test]

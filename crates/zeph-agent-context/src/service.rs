@@ -278,7 +278,7 @@ impl ContextService {
         query: &str,
         token_budget: usize,
         window: &mut MessageWindowView<'_>,
-        view: &ContextAssemblyView<'_>,
+        view: &mut ContextAssemblyView<'_>,
     ) -> Result<(), ContextError> {
         self.remove_recall_messages(window);
 
@@ -296,13 +296,31 @@ impl ContextService {
             .run_tiered_recall(&params, window, view.memory.as_deref())
             .await?;
 
-        if let Some(msg) = msg
-            && window.messages.len() > 1
-        {
-            insert_at_context_floor(window.messages, msg);
+        if let Some(msg) = msg {
+            self.insert_sanitized_recall(msg, window, view).await;
         }
 
         Ok(())
+    }
+
+    /// Sanitize (and scrub) a tiered recall message, then insert it at the context floor.
+    async fn insert_sanitized_recall(
+        &self,
+        msg: Message,
+        window: &mut MessageWindowView<'_>,
+        view: &mut ContextAssemblyView<'_>,
+    ) {
+        if window.messages.len() <= 1 {
+            return;
+        }
+        let msg = self
+            .sanitize_memory_message(
+                msg,
+                zeph_sanitizer::MemorySourceHint::ConversationHistory,
+                view,
+            )
+            .await;
+        insert_at_context_floor(window.messages, msg);
     }
 
     /// Inject semantic recall without a full [`ContextAssemblyView`].
@@ -1010,10 +1028,11 @@ impl ContextService {
 
         // Credential scrubbing pass.
         if view.redact_credentials {
-            for msg in &mut *window.messages {
-                if msg.role == Role::System {
-                    continue;
-                }
+            for msg in window
+                .messages
+                .iter_mut()
+                .filter(|m| zeph_context::scrub::needs_scrub(m))
+            {
                 zeph_context::scrub::scrub_message(msg);
             }
         }
@@ -1033,6 +1052,7 @@ impl ContextService {
     fn sanitize_code_context(text: &str, view: &mut ContextAssemblyView<'_>) -> String {
         use zeph_sanitizer::{ContentSource, ContentSourceKind};
 
+        view.metrics.untrusted_context_injected = true;
         let sanitized = view
             .sanitizer
             .sanitize(text, ContentSource::new(ContentSourceKind::ToolResult));
@@ -1255,8 +1275,8 @@ impl ContextService {
     ///
     /// Truncation, control-char stripping, delimiter escaping, and spotlighting are active
     /// for all hints (defense-in-depth invariant).
-    #[tracing::instrument(name = "agent_context.service.sanitize_memory_message", skip_all)]
-    async fn sanitize_memory_message(
+    #[tracing::instrument(name = "agent_context.service.sanitize_memory_content", skip_all)]
+    async fn sanitize_memory_content(
         &self,
         mut msg: zeph_llm::provider::Message,
         hint: zeph_sanitizer::MemorySourceHint,
@@ -1345,6 +1365,28 @@ impl ContextService {
 
         msg.content = sanitized.body;
         msg
+    }
+
+    /// Single entry point for every retrieved-memory message injected into context.
+    ///
+    /// Credential-scrubs when `redact_credentials` is set, sanitizes (see
+    /// `sanitize_memory_content`), and records that untrusted content entered the context so
+    /// the caller can taint the skill-state input trust. Covers every injected source in both
+    /// context layouts.
+    async fn sanitize_memory_message(
+        &self,
+        msg: zeph_llm::provider::Message,
+        hint: zeph_sanitizer::MemorySourceHint,
+        view: &mut ContextAssemblyView<'_>,
+    ) -> zeph_llm::provider::Message {
+        view.metrics.untrusted_context_injected = true;
+        let mut msg = msg;
+        // Scrub first: `scrub_message` rebuilds `content` from parts, which would discard the
+        // spotlight/quarantine wrapping the sanitizer writes into `content`.
+        if view.redact_credentials {
+            zeph_context::scrub::scrub_message(&mut msg);
+        }
+        self.sanitize_memory_content(msg, hint, view).await
     }
 
     /// Reset the conversation history.
@@ -2692,6 +2734,7 @@ mod tests {
             memory: Option<Arc<zeph_memory::semantic::SemanticMemory>>,
             conversation_id: Option<zeph_memory::ConversationId>,
             digest: Option<String>,
+            redact: bool,
         }
 
         async fn apply(msgs: &mut Vec<Message>, prepared: PreparedContext) -> usize {
@@ -2746,7 +2789,7 @@ mod tests {
                 metrics: MetricsCounters::default(),
                 security_events: &mut sink,
                 cached_prompt_tokens: 0,
-                redact_credentials: false,
+                redact_credentials: setup.redact,
                 channel_skills: &[],
                 scrub: scrub_noop,
                 tiered_retrieval_config: TieredRetrievalConfig {
@@ -2814,6 +2857,81 @@ mod tests {
             assert_eq!(inserted, 1);
             assert!(is_block(&msgs[1]));
             assert!(msgs[2].content.contains("previous session"));
+        }
+
+        #[tokio::test]
+        async fn replace_pass_scrubs_system_role_recall_part() {
+            let key = "sk-proj-abc123def456ghi789";
+            let prepared = || PreparedContext {
+                recall: Some(Message::from_parts(
+                    Role::System,
+                    vec![zeph_llm::provider::MessagePart::Recall {
+                        text: format!("- [user] my key is {key}\n"),
+                    }],
+                )),
+                ..PreparedContext::default()
+            };
+            for (redact, leaks) in [(true, false), (false, true)] {
+                let mut msgs = vec![
+                    Message::from_legacy(Role::System, "system"),
+                    Message::from_legacy(Role::User, "turn input"),
+                ];
+                let setup = Setup {
+                    redact,
+                    ..Setup::default()
+                };
+                run(&mut msgs, setup, Op::Prepared(Box::new(prepared()))).await;
+
+                let text = msgs
+                    .iter()
+                    .flat_map(|m| &m.parts)
+                    .find_map(|p| match p {
+                        zeph_llm::provider::MessagePart::Recall { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .expect("recall part injected");
+                assert_eq!(text.contains(key), leaks, "redact={redact}: {text}");
+            }
+        }
+
+        #[tokio::test]
+        async fn spotlight_survives_sanitize_and_replace_pass_with_redaction_on() {
+            let key = "sk-proj-abc123def456ghi789";
+            let mut contents = Vec::new();
+            for redact in [false, true] {
+                let prepared = PreparedContext {
+                    recall: Some(Message::from_parts(
+                        Role::System,
+                        vec![zeph_llm::provider::MessagePart::Recall {
+                            text: format!("- [user] my key is {key}\n"),
+                        }],
+                    )),
+                    ..PreparedContext::default()
+                };
+                let mut msgs = vec![
+                    Message::from_legacy(Role::System, "system"),
+                    Message::from_legacy(Role::User, "turn input"),
+                ];
+                let setup = Setup {
+                    redact,
+                    ..Setup::default()
+                };
+                run(&mut msgs, setup, Op::Prepared(Box::new(prepared))).await;
+                let recall = msgs
+                    .into_iter()
+                    .find(|m| {
+                        m.parts
+                            .iter()
+                            .any(|p| matches!(p, zeph_llm::provider::MessagePart::Recall { .. }))
+                    })
+                    .expect("recall injected");
+                contents.push(recall.content);
+            }
+            let (raw, scrubbed) = (&contents[0], &contents[1]);
+            let open_tag = raw.lines().next().expect("spotlight opening line");
+            assert!(open_tag.starts_with('<'), "spotlight expected: {raw}");
+            assert_eq!(scrubbed.lines().next(), Some(open_tag), "{scrubbed}");
+            assert!(!scrubbed.contains(key), "{scrubbed}");
         }
 
         #[tokio::test]
@@ -3159,6 +3277,179 @@ mod tests {
                 result.content
             );
         }
+
+        #[tokio::test]
+        async fn sanitize_memory_message_scrubs_system_role_content_when_redaction_is_on() {
+            let key = "sk-proj-abc123def456ghi789";
+            let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+            let mut ctx_mgr = ContextManager::new();
+            let mut sink = RecordingSink { events: vec![] };
+            let mut last_confidence = None::<f32>;
+            let mut last_skills_prompt = String::new();
+            let mut active_skill_names = Vec::new();
+            let mut view = make_view(
+                &sanitizer,
+                None,
+                &mut last_confidence,
+                &mut last_skills_prompt,
+                &mut active_skill_names,
+                &mut ctx_mgr,
+                &mut sink,
+            );
+            for (redact, leaks) in [(true, false), (false, true)] {
+                view.redact_credentials = redact;
+                let msg = Message {
+                    role: Role::System,
+                    content: format!("[graph facts] token {key}"),
+                    parts: vec![],
+                    metadata: MessageMetadata::default(),
+                };
+                let out = ContextService::new()
+                    .sanitize_memory_message(msg, MemorySourceHint::ExternalContent, &mut view)
+                    .await;
+                assert_eq!(out.content.contains(key), leaks, "redact={redact}");
+            }
+        }
+
+        #[tokio::test]
+        async fn scrub_does_not_discard_sanitizer_wrapping_of_recall_parts() {
+            let key = "sk-proj-abc123def456ghi789";
+            let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+            let mut ctx_mgr = ContextManager::new();
+            let mut sink = RecordingSink { events: vec![] };
+            let mut last_confidence = None::<f32>;
+            let mut last_skills_prompt = String::new();
+            let mut active_skill_names = Vec::new();
+            let mut view = make_view(
+                &sanitizer,
+                None,
+                &mut last_confidence,
+                &mut last_skills_prompt,
+                &mut active_skill_names,
+                &mut ctx_mgr,
+                &mut sink,
+            );
+            let mut outputs = Vec::new();
+            for redact in [false, true] {
+                view.redact_credentials = redact;
+                let msg = Message::from_parts(
+                    Role::System,
+                    vec![zeph_llm::provider::MessagePart::Recall {
+                        text: format!("- [user] key {key}\n"),
+                    }],
+                );
+                outputs.push(
+                    ContextService::new()
+                        .sanitize_memory_message(
+                            msg,
+                            MemorySourceHint::ConversationHistory,
+                            &mut view,
+                        )
+                        .await
+                        .content,
+                );
+            }
+            let (raw, scrubbed) = (&outputs[0], &outputs[1]);
+            let open_tag = raw.lines().next().expect("spotlight opening line");
+            assert!(open_tag.starts_with('<'), "spotlight expected: {raw}");
+            assert_eq!(scrubbed.lines().next(), Some(open_tag), "{scrubbed}");
+            assert!(
+                scrubbed
+                    .trim_end()
+                    .ends_with(raw.trim_end().lines().last().unwrap())
+            );
+            assert!(!scrubbed.contains(key), "{scrubbed}");
+        }
+
+        #[tokio::test]
+        async fn tiered_recall_insertion_is_sanitized_scrubbed_and_flagged() {
+            let key = "sk-proj-abc123def456ghi789";
+            let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+            let mut ctx_mgr = ContextManager::new();
+            let mut sink = RecordingSink { events: vec![] };
+            let mut last_confidence = None::<f32>;
+            let mut last_skills_prompt = String::new();
+            let mut active_skill_names = Vec::new();
+            let mut view = make_view(
+                &sanitizer,
+                None,
+                &mut last_confidence,
+                &mut last_skills_prompt,
+                &mut active_skill_names,
+                &mut ctx_mgr,
+                &mut sink,
+            );
+            view.redact_credentials = true;
+            let mut msgs = vec![
+                Message::from_legacy(Role::System, "system"),
+                Message::from_legacy(Role::User, "hello"),
+            ];
+            let mut cached = 0u64;
+            let mut completed = std::collections::HashSet::new();
+            let mut window = super::make_window(&mut msgs, &mut cached, &mut completed);
+            let recall = Message::from_parts(
+                Role::System,
+                vec![zeph_llm::provider::MessagePart::Recall {
+                    text: format!("- [user] key {key}\n"),
+                }],
+            );
+
+            ContextService::new()
+                .insert_sanitized_recall(recall, &mut window, &mut view)
+                .await;
+
+            assert!(view.metrics.untrusted_context_injected);
+            assert_eq!(msgs.len(), 3, "recall inserted");
+            assert!(msgs.iter().all(|m| !m.content.contains(key)));
+            let zeph_llm::provider::MessagePart::Recall { text } = &msgs[1].parts[0] else {
+                panic!("recall part expected at the context floor");
+            };
+            assert!(!text.contains(key), "{text}");
+        }
+
+        #[tokio::test]
+        async fn sanitize_memory_message_flags_untrusted_for_every_source_hint() {
+            let sources = [
+                ("recall", MemorySourceHint::ConversationHistory),
+                ("graph", MemorySourceHint::ExternalContent),
+                ("document_rag", MemorySourceHint::ExternalContent),
+                ("cross_session", MemorySourceHint::LlmSummary),
+                ("session_digest", MemorySourceHint::LlmSummary),
+            ];
+            for (source, hint) in sources {
+                let sanitizer = ContentSanitizer::new(&ContentIsolationConfig::default());
+                let mut ctx_mgr = ContextManager::new();
+                let mut sink = RecordingSink { events: vec![] };
+                let mut last_confidence = None::<f32>;
+                let mut last_skills_prompt = String::new();
+                let mut active_skill_names = Vec::new();
+                let mut view = make_view(
+                    &sanitizer,
+                    None,
+                    &mut last_confidence,
+                    &mut last_skills_prompt,
+                    &mut active_skill_names,
+                    &mut ctx_mgr,
+                    &mut sink,
+                );
+                assert!(!view.metrics.untrusted_context_injected);
+
+                let msg = Message {
+                    role: Role::User,
+                    content: format!("{source} content"),
+                    parts: vec![],
+                    metadata: MessageMetadata::default(),
+                };
+                ContextService::new()
+                    .sanitize_memory_message(msg, hint, &mut view)
+                    .await;
+
+                assert!(
+                    view.metrics.untrusted_context_injected,
+                    "{source} must flag untrusted context"
+                );
+            }
+        }
     }
 
     mod inject_semantic_recall_tests {
@@ -3242,7 +3533,7 @@ mod tests {
             let mut active_skill_names = Vec::new();
             let registry = Arc::new(RwLock::new(SkillRegistry::default()));
 
-            let view = ContextAssemblyView {
+            let mut view = ContextAssemblyView {
                 memory: None,
                 conversation_id: None,
                 recall_limit: 10,
@@ -3297,7 +3588,7 @@ mod tests {
             };
 
             let result = ContextService::new()
-                .inject_semantic_recall("test query", 1000, &mut window, &view)
+                .inject_semantic_recall("test query", 1000, &mut window, &mut view)
                 .await;
 
             assert!(result.is_ok(), "disabled tiered recall must return Ok(())");
@@ -3327,7 +3618,7 @@ mod tests {
             let mut active_skill_names = Vec::new();
             let registry = Arc::new(RwLock::new(SkillRegistry::default()));
 
-            let view = ContextAssemblyView {
+            let mut view = ContextAssemblyView {
                 memory: None,
                 conversation_id: None,
                 recall_limit: 10,
@@ -3382,7 +3673,7 @@ mod tests {
             };
 
             let result = ContextService::new()
-                .inject_semantic_recall("test query", 1000, &mut window, &view)
+                .inject_semantic_recall("test query", 1000, &mut window, &mut view)
                 .await;
 
             assert!(

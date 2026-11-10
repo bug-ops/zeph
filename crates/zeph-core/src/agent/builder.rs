@@ -2709,8 +2709,8 @@ impl<C: Channel> Agent<C> {
             );
             if config.detector_mode == crate::config::DetectorMode::Judge {
                 self.services.feedback.judge = Some(zeph_agent_feedback::JudgeDetector::new(
-                    config.judge_adaptive_low,
-                    config.judge_adaptive_high,
+                    config.judge_adaptive_low.get(),
+                    config.judge_adaptive_high.get(),
                     config.judge_rate_limit,
                     std::time::Duration::from_secs(config.judge_rate_window_secs),
                 ));

@@ -3,7 +3,7 @@
 
 //! [`PeerRouter`]: the `Arc`-shared node table backing live inter-sub-agent messaging.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -202,16 +202,11 @@ impl PeerRouter {
     }
 
     /// Implements the plan's authorization truth table:
-    /// `root(S) == root(T) AND S != T AND (T == parent(S) | parent(T) == parent(S) | S is an
-    /// ancestor of T)`.
+    /// `root(S) == root(T) AND S != T AND (S is an ancestor of T | T is an ancestor of S |
+    /// parent(T) == parent(S))`.
     ///
-    /// TODO(#6933): (spec `087-subagent-peer-messaging`, review M6) a grandchild cannot reply
-    /// to an ancestor beyond its direct parent (only `T == parent(S)`, not "T is an ancestor
-    /// of S") — latent until a sub-agent-side spawn tool exists, since every spawn's `parent`
-    /// is a group root today (`manager/spawn.rs`'s own comment at the `spawn()`/`resume()`
-    /// peer-install sites), making every live node's depth exactly 1 and this asymmetry
-    /// unreachable in production. Do not "fix" the truth table without a nested-spawn path to
-    /// verify it against end to end.
+    /// "T is an ancestor of S" covers the direct parent (`T == parent(S)`) and any higher
+    /// ancestor, so a descendant can reply to every node above it.
     fn authorize(
         nodes: &HashMap<AgentId, PeerNode>,
         from_node: &PeerNode,
@@ -223,27 +218,38 @@ impl PeerRouter {
         if from_node.group != to_node.group {
             return Err(UnauthorizedReason::DifferentGroup);
         }
-        if from_node.parent.as_ref() == Some(&to_node.id) {
-            return Ok(());
-        }
         if to_node.parent.is_some() && to_node.parent == from_node.parent {
             return Ok(());
         }
-        // S is an ancestor of T: walk T's parent chain looking for S. No visited-set or depth
-        // cap (review LOW finding): a parent cycle would spin forever while holding the
-        // router's read lock, wedging every concurrent send. Unreachable today — every node's
-        // `parent` is either `None` (a root) or a root's own `AgentId` (register()'s only
-        // callers, `manager::spawn`, never nest deeper) — but a future nested-spawn feature
-        // must add a cycle guard here before it can register a node whose ancestry isn't
-        // trivially a root.
-        let mut cursor = to_node.parent.clone();
-        while let Some(ancestor_id) = cursor {
-            if ancestor_id == from_node.id {
-                return Ok(());
-            }
-            cursor = nodes.get(&ancestor_id).and_then(|n| n.parent.clone());
+        if Self::is_ancestor(nodes, &to_node.id, from_node)
+            || Self::is_ancestor(nodes, &from_node.id, to_node)
+        {
+            return Ok(());
         }
         Err(UnauthorizedReason::NotInScope)
+    }
+
+    /// Returns `true` when `ancestor` appears on `node`'s parent chain.
+    ///
+    /// Terminates on a parent cycle: the walk runs under the router's read lock, so an
+    /// unbounded loop would wedge every concurrent send. A revisited id ends the walk.
+    fn is_ancestor(
+        nodes: &HashMap<AgentId, PeerNode>,
+        ancestor: &AgentId,
+        node: &PeerNode,
+    ) -> bool {
+        let mut visited = HashSet::new();
+        let mut cursor = node.parent.as_ref();
+        while let Some(id) = cursor {
+            if id == ancestor {
+                return true;
+            }
+            if !visited.insert(id) {
+                return false;
+            }
+            cursor = nodes.get(id).and_then(|n| n.parent.as_ref());
+        }
+        false
     }
 
     /// Send a message from `from` to the agent addressable as `target` (FR-001).
@@ -552,6 +558,98 @@ mod tests {
             .expect("root reaches a grandchild by ancestor walk");
         let msg = gc_rx.try_recv().expect("delivered");
         assert_eq!(msg.body, "go");
+    }
+
+    #[test]
+    fn grandchild_can_reply_to_any_ancestor() {
+        let r = router(PeerMessagingConfig::default());
+        let (root_reg, mut root_rx) = r.register(
+            AgentId::Root(PeerGroupId::Session),
+            "spawner".to_owned(),
+            None,
+            PeerGroupId::Session,
+        );
+        let (child, mut child_rx) = register_task(
+            &r,
+            "child",
+            "child",
+            root_reg.id().clone(),
+            PeerGroupId::Session,
+        );
+        let (grandchild, _gc_rx) = register_task(
+            &r,
+            "grandchild",
+            "grandchild",
+            child.id().clone(),
+            PeerGroupId::Session,
+        );
+
+        r.send(grandchild.id(), "child", "to parent".to_owned())
+            .expect("grandchild to direct parent");
+        r.send(grandchild.id(), "spawner", "to root".to_owned())
+            .expect("grandchild to non-parent ancestor");
+        assert_eq!(child_rx.try_recv().expect("parent msg").body, "to parent");
+        assert_eq!(root_rx.try_recv().expect("root msg").body, "to root");
+    }
+
+    #[test]
+    fn parent_cycle_terminates_and_is_denied() {
+        let r = router(PeerMessagingConfig::default());
+        let root = register_root(&r, PeerGroupId::Session, "spawner");
+        let (a, _a_rx) = register_task(
+            &r,
+            "a",
+            "a",
+            AgentId::Task("b".to_owned()),
+            PeerGroupId::Session,
+        );
+        let (_b, _b_rx) = register_task(
+            &r,
+            "b",
+            "b",
+            AgentId::Task("a".to_owned()),
+            PeerGroupId::Session,
+        );
+        let (_c, _c_rx) = register_task(&r, "c", "c", root.id().clone(), PeerGroupId::Session);
+
+        let err = r.send(a.id(), "c", "hi".to_owned()).unwrap_err();
+        assert!(matches!(
+            err,
+            DeliveryError::Unauthorized {
+                reason: UnauthorizedReason::NotInScope,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn target_side_parent_cycle_terminates_and_is_denied() {
+        let r = router(PeerMessagingConfig::default());
+        let root = register_root(&r, PeerGroupId::Session, "spawner");
+        let (c, _c_rx) = register_task(&r, "c", "c", root.id().clone(), PeerGroupId::Session);
+        let (_a, _a_rx) = register_task(
+            &r,
+            "a",
+            "a",
+            AgentId::Task("b".to_owned()),
+            PeerGroupId::Session,
+        );
+        let (_b, _b_rx) = register_task(
+            &r,
+            "b",
+            "b",
+            AgentId::Task("a".to_owned()),
+            PeerGroupId::Session,
+        );
+
+        let err = r.send(c.id(), "a", "hi".to_owned()).unwrap_err();
+        assert!(matches!(
+            err,
+            DeliveryError::Unauthorized {
+                reason: UnauthorizedReason::NotInScope,
+                ..
+            }
+        ));
     }
 
     #[test]

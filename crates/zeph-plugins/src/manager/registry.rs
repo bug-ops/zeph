@@ -830,11 +830,9 @@ pub(crate) fn apply_staged_update(
 
     // Update integrity registry for the new manifest.
     let installed_manifest_path = dest.join(".plugin.toml");
-    let mut registry = crate::integrity::IntegrityRegistry::load(integrity_registry_path);
-    if let Err(e) = registry
-        .record(manifest.plugin.name.as_str(), &installed_manifest_path)
-        .and_then(|()| registry.save(integrity_registry_path))
-    {
+    if let Err(e) = crate::integrity::IntegrityRegistry::update(integrity_registry_path, |r| {
+        r.record(manifest.plugin.name.as_str(), &installed_manifest_path)
+    }) {
         tracing::warn!(
             plugin = %manifest.plugin.name,
             error = %e,

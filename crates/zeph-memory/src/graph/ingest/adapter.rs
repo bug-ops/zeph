@@ -17,7 +17,7 @@ use zeph_llm::provider::Message;
 
 use crate::MemoryError;
 use crate::graph::ingest::document::IngestSourceKind;
-use crate::graph::types::{GraphOrigin, GraphProvenance};
+use crate::graph::types::GraphProvenance;
 
 use super::document::IngestDocument;
 use super::report::ImportBatchId;
@@ -30,13 +30,13 @@ mod sealed {
 /// `context_window` preceding texts.
 ///
 /// Shared by every [`IngestSourceAdapter`] impl in this module — they differ only in how
-/// `source_uri` is formatted and which [`GraphOrigin`] tags the provenance.
+/// `source_uri` is formatted and which [`IngestSourceKind`] tags the provenance.
 fn build_ingest_documents(
     texts: &[String],
     ids: &[String],
     context_window: usize,
     batch_id: &ImportBatchId,
-    origin: GraphOrigin,
+    kind: IngestSourceKind,
     source_uri: impl Fn(&str) -> String,
 ) -> Vec<IngestDocument> {
     let mut docs = Vec::with_capacity(texts.len());
@@ -47,9 +47,10 @@ fn build_ingest_documents(
         let start = i.saturating_sub(context_window);
         let ctx: Vec<String> = texts[start..i].to_vec();
         let provenance = GraphProvenance {
-            origin,
+            origin: kind.graph_origin(),
             import_batch_id: batch_id.as_str().to_owned(),
             source_uri: Some(source_uri(id)),
+            trust: kind.trust_level(),
         };
         docs.push(IngestDocument::new(content.clone(), ctx, provenance));
     }
@@ -190,7 +191,7 @@ impl IngestSourceAdapter for SubagentJsonl {
             &ids,
             self.context_window,
             batch_id,
-            IngestSourceKind::SubagentTranscript.graph_origin(),
+            IngestSourceKind::SubagentTranscript,
             |id| format!("subagent:{}#{id}", self.task_id),
         ))
     }
@@ -371,7 +372,7 @@ impl IngestSourceAdapter for ClaudeCodeJsonl {
             &uuids,
             self.context_window,
             batch_id,
-            IngestSourceKind::ExternalAgent.graph_origin(),
+            IngestSourceKind::ExternalAgent,
             |uuid| format!("claude-code:{}#{uuid}", self.session_id),
         ))
     }
@@ -538,7 +539,7 @@ impl IngestSourceAdapter for CodexJsonl {
             &item_ids,
             self.context_window,
             batch_id,
-            IngestSourceKind::ExternalAgent.graph_origin(),
+            IngestSourceKind::ExternalAgent,
             |item_id| format!("codex:{}#{item_id}", self.session_id),
         ))
     }
@@ -570,6 +571,10 @@ mod tests {
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].content(), "Rust is a systems language");
         assert_eq!(docs[0].source_uri(), "subagent:task-1#0");
+        assert_eq!(
+            docs[0].provenance().trust,
+            zeph_llm::provider::TurnContextTrust::LocalUntrusted
+        );
         assert_ne!(docs[0].content_hash(), "");
     }
 
@@ -655,6 +660,10 @@ mod tests {
         assert_eq!(docs[0].content(), "Hello from user");
         assert_eq!(docs[0].source_uri(), "claude-code:sess-1#uuid-1");
         assert_eq!(docs[0].provenance().origin, GraphOrigin::ExternalAgent);
+        assert_eq!(
+            docs[0].provenance().trust,
+            zeph_llm::provider::TurnContextTrust::ExternalUntrusted
+        );
     }
 
     #[test]
@@ -837,6 +846,10 @@ mod tests {
         let batch = ImportBatchId::new();
         let docs = adapter.parse(&raw, &batch).unwrap();
         assert_eq!(docs[0].provenance().origin, GraphOrigin::ExternalAgent);
+        assert_eq!(
+            docs[0].provenance().trust,
+            zeph_llm::provider::TurnContextTrust::ExternalUntrusted
+        );
     }
 
     #[test]

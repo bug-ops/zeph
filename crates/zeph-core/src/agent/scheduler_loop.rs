@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use tokio_util::sync::CancellationToken;
-use zeph_llm::provider::LlmProvider;
+use zeph_llm::provider::{LlmProvider, Message};
 use zeph_memory::store::StoreListOrder;
 
 use super::Agent;
@@ -1715,7 +1715,10 @@ impl<C: crate::channel::Channel> Agent<C> {
             "inline tool loop: starting"
         );
 
-        let mut messages: Vec<Message> = vec![Message::from_legacy(Role::User, prompt)];
+        let mut messages: Vec<Message> = vec![redacted(
+            Message::from_legacy(Role::User, prompt),
+            self.runtime.config.redact_credentials,
+        )];
         let mut last_text = String::new();
         let mut tool_trace: Vec<ToolCallSummary> = Vec::new();
 
@@ -1805,7 +1808,10 @@ impl<C: crate::channel::Channel> Agent<C> {
                             is_error,
                         });
                     }
-                    messages.push(Message::from_parts(Role::User, result_parts));
+                    messages.push(redacted(
+                        Message::from_parts(Role::User, result_parts),
+                        self.runtime.config.redact_credentials,
+                    ));
                 }
                 _ => {}
             }
@@ -1968,6 +1974,17 @@ impl<C: crate::channel::Channel> Agent<C> {
             }
         }
     }
+}
+
+/// Credential-scrub `msg` when `redact` is set.
+///
+/// The inline loop bypasses the interactive scrub passes, so its prompt and tool results would
+/// otherwise reach the provider verbatim.
+fn redacted(mut msg: Message, redact: bool) -> Message {
+    if redact {
+        zeph_context::scrub::scrub_message(&mut msg);
+    }
+    msg
 }
 
 #[cfg(test)]
@@ -4220,6 +4237,38 @@ mod tests {
             "a genuinely successful tool call must not be corrected away from Completed"
         );
         assert_eq!(status, GraphStatus::Completed);
+    }
+
+    #[test]
+    fn redacted_scrubs_tool_results_and_prompt_only_when_redaction_is_on() {
+        use super::redacted;
+        use zeph_llm::provider::{Message, MessagePart, Role};
+
+        let key = "sk-proj-abc123def456ghi789";
+        let parts = || {
+            vec![MessagePart::ToolResult {
+                tool_use_id: "t1".into(),
+                content: format!("KEY={key}"),
+                is_error: false,
+            }]
+        };
+        let scrubbed = redacted(Message::from_parts(Role::User, parts()), true);
+        assert!(!scrubbed.content.contains(key));
+        let MessagePart::ToolResult { content, .. } = &scrubbed.parts[0] else {
+            panic!("part kind changed");
+        };
+        assert!(!content.contains(key), "{content}");
+
+        let raw = redacted(Message::from_parts(Role::User, parts()), false);
+        assert!(raw.content.contains(key));
+
+        let prompt = redacted(Message::from_legacy(Role::User, format!("use {key}")), true);
+        assert!(!prompt.content.contains(key));
+        let raw_prompt = redacted(
+            Message::from_legacy(Role::User, format!("use {key}")),
+            false,
+        );
+        assert!(raw_prompt.content.contains(key));
     }
 
     // ---------------------------------------------------------------------------
