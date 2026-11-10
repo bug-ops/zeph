@@ -506,7 +506,7 @@ mod tests {
     fn pii_ner_allowlist_empty_disables() {
         let toml = "pii_ner_allowlist = []";
         let cfg: ClassifiersConfig = toml::from_str(toml).unwrap();
-        assert!(cfg.pii_ner_allowlist.is_empty());
+        assert_eq!(cfg.pii_ner_allowlist, [] as [String; 0]);
     }
 
     #[test]

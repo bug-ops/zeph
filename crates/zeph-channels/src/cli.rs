@@ -1104,7 +1104,7 @@ mod tests {
         let mut ch = CliChannel::new();
         ch.send_chunk("test").await.unwrap();
         ch.flush_chunks().await.unwrap();
-        assert!(ch.accumulated.is_empty());
+        assert_eq!(ch.accumulated, "");
     }
 
     #[test]
@@ -1116,7 +1116,7 @@ mod tests {
     #[test]
     fn cli_channel_new() {
         let ch = CliChannel::new();
-        assert!(ch.accumulated.is_empty());
+        assert_eq!(ch.accumulated, "");
     }
 
     #[tokio::test]
@@ -1175,23 +1175,23 @@ mod tests {
     fn image_command_empty_args_detected() {
         let trimmed = "/image";
         let arg = trimmed.strip_prefix("/image").map_or("", str::trim);
-        assert!(arg.is_empty());
+        assert_eq!(arg, "");
 
         let trimmed_space = "/image   ";
         let arg_space = trimmed_space.strip_prefix("/image").map_or("", str::trim);
-        assert!(arg_space.is_empty());
+        assert_eq!(arg_space, "");
     }
 
     #[test]
     fn cli_channel_new_has_empty_accumulated() {
         let ch = CliChannel::new();
-        assert!(ch.accumulated.is_empty());
+        assert_eq!(ch.accumulated, "");
     }
 
     #[test]
     fn cli_channel_with_history_constructs_ok() {
         let ch = CliChannel::with_history(vec![], |_| {});
-        assert!(ch.accumulated.is_empty());
+        assert_eq!(ch.accumulated, "");
     }
 
     #[test]

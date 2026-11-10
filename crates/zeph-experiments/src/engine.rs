@@ -889,7 +889,7 @@ mod tests {
     #[test]
     fn utc_now_rfc3339_is_non_empty() {
         let ts = timestamp::utc_now_rfc3339();
-        assert!(!ts.is_empty());
+        assert_ne!(ts, "");
         assert_eq!(ts.len(), 20);
     }
 

@@ -811,7 +811,7 @@ heuristic_promotion_interval_hours = 48
     #[test]
     fn judge_provider_default_is_empty() {
         let cfg = LearningConfig::default();
-        assert!(cfg.judge_provider.is_empty());
+        assert_eq!(cfg.judge_provider, "");
     }
 
     #[test]

@@ -137,7 +137,7 @@ mod tests {
             "Compiling zeph v0.9.0\nFinished dev [unoptimized] target(s) in 2.3s",
             &[],
         );
-        assert!(lines.is_empty());
+        assert_eq!(lines, [] as [&str; 0]);
     }
 
     #[test]

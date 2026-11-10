@@ -583,7 +583,7 @@ mod tests {
         assert_eq!(registry.all_meta()[0].name, "good");
         let errors = registry.load_errors();
         assert_eq!(errors.len(), 1);
-        assert!(!errors[0].1.is_empty());
+        assert_ne!(errors[0].1, "");
     }
 
     #[test]

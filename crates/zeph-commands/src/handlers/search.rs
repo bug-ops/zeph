@@ -64,7 +64,7 @@ mod tests {
     #[test]
     fn search_name_and_description() {
         assert_eq!(SearchCommand.name(), "/search");
-        assert!(!SearchCommand.description().is_empty());
+        assert_ne!(SearchCommand.description(), "");
     }
 
     #[tokio::test]
@@ -78,7 +78,7 @@ mod tests {
         let result = SearchCommand.handle(&mut ctx, "rust async").await;
         assert!(result.is_ok());
         if let Ok(CommandOutput::Message(msg)) = result {
-            assert!(!msg.is_empty());
+            assert_ne!(msg, "");
         }
     }
 

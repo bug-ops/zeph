@@ -63,7 +63,7 @@ mod tests {
     #[test]
     fn cd_name_and_description() {
         assert_eq!(CdCommand.name(), "/cd");
-        assert!(!CdCommand.description().is_empty());
+        assert_ne!(CdCommand.description(), "");
     }
 
     #[test]

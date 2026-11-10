@@ -756,7 +756,10 @@ mod tests {
                     DurableStatus::GateRejected,
                     "gate rejection must be distinguishable from a plain Unavailable snapshot"
                 );
-                assert!(snapshot.executions.is_empty());
+                assert_eq!(
+                    snapshot.executions,
+                    [] as [zeph_tui::widgets::durable::DurableRow; 0]
+                );
                 // Regression for #6450: key_id/previous_key_id must reach the panel even on the
                 // early-return gate-rejected branch, not just the happy-path Available branch.
                 assert_eq!(snapshot.key_id, 7);
@@ -802,7 +805,10 @@ mod tests {
         match event {
             zeph_tui::AgentEvent::DurableSnapshot(snapshot) => {
                 assert_eq!(snapshot.status, DurableStatus::Unavailable);
-                assert!(snapshot.executions.is_empty());
+                assert_eq!(
+                    snapshot.executions,
+                    [] as [zeph_tui::widgets::durable::DurableRow; 0]
+                );
                 assert_eq!(snapshot.key_id, 9);
                 assert_eq!(snapshot.previous_key_id, Some(8));
             }

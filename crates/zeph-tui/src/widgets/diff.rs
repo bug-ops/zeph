@@ -176,7 +176,7 @@ mod tests {
         let diff_lines = compute_diff("", "line\n");
         let theme = Theme::default();
         let rendered = render_diff_lines(&diff_lines, "test.rs", &theme, &theme.syntax_theme);
-        assert!(!rendered.is_empty());
+        assert_ne!(rendered.len(), 0);
         let header: String = rendered[0]
             .spans
             .iter()

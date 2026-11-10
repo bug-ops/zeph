@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn compute_key_empty_message() {
         let k = ResponseCache::compute_key("", "model");
-        assert!(!k.is_empty());
+        assert_ne!(k, "");
     }
 
     #[tokio::test]

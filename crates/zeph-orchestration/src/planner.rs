@@ -547,7 +547,7 @@ mod tests {
         };
         let graph = convert_response(response, "parallel", &agents(), 20, true).unwrap();
         for node in &graph.tasks {
-            assert!(node.depends_on.is_empty());
+            assert_eq!(node.depends_on.len(), 0);
         }
     }
 
@@ -1046,7 +1046,7 @@ mod tests {
             let planner = LlmPlanner::new(provider, &make_config());
             let (graph, _usage) = planner.plan("simple task", &agents()).await.unwrap();
             assert_eq!(graph.tasks.len(), 1);
-            assert!(graph.tasks[0].depends_on.is_empty());
+            assert_eq!(graph.tasks[0].depends_on.len(), 0);
         }
 
         #[tokio::test]

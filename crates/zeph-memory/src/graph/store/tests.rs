@@ -478,7 +478,7 @@ async fn bfs_max_hops_0_returns_only_start() {
     let (entities, edges) = gs.bfs(a, 0).await.unwrap();
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0].id.0, a);
-    assert!(edges.is_empty());
+    assert_eq!(edges.len(), 0);
 }
 
 #[tokio::test]
@@ -1020,7 +1020,7 @@ async fn find_entities_fuzzy_includes_aliases() {
 
     // "rust-lang" is an alias, not the entity name — fuzzy search should still find it
     let results = gs.find_entities_fuzzy("rust-lang", 10).await.unwrap();
-    assert!(!results.is_empty());
+    assert_ne!(results.len(), 0);
     assert!(results.iter().any(|e| e.id.0 == id));
 }
 
@@ -1545,7 +1545,7 @@ async fn find_entity_by_name_case_insensitive_exact() {
         .unwrap();
 
     let results = gs.find_entity_by_name("bob").await.unwrap();
-    assert!(!results.is_empty());
+    assert_ne!(results.len(), 0);
     assert_eq!(results[0].name, "Bob");
 }
 
@@ -1565,7 +1565,7 @@ async fn find_entity_by_name_falls_back_to_fuzzy_when_no_exact_match() {
 async fn find_entity_by_name_returns_empty_for_unknown() {
     let gs = setup().await;
     let results = gs.find_entity_by_name("NonExistent").await.unwrap();
-    assert!(results.is_empty());
+    assert_eq!(results.len(), 0);
 }
 
 #[tokio::test]
@@ -4018,7 +4018,7 @@ async fn episodes_for_entity_returns_empty_when_no_links() {
         .unwrap()
         .0;
     let episodes = gs.episodes_for_entity(entity_id).await.unwrap();
-    assert!(episodes.is_empty());
+    assert_eq!(episodes.len(), 0);
 }
 
 #[tokio::test]
@@ -4026,7 +4026,7 @@ async fn episodes_for_entity_unknown_id_returns_empty() {
     // entity_id 99999 does not exist — should return empty, not error
     let gs = setup().await;
     let episodes = gs.episodes_for_entity(99999).await.unwrap();
-    assert!(episodes.is_empty());
+    assert_eq!(episodes.len(), 0);
 }
 
 #[tokio::test]
@@ -4621,7 +4621,7 @@ async fn test_apply_hebbian_increment_skips_invalidated_edges() {
 async fn source_message_ids_for_edges_empty_input() {
     let gs = setup().await;
     let result = gs.source_message_ids_for_edges(&[]).await.unwrap();
-    assert!(result.is_empty());
+    assert_eq!(result.len(), 0);
 }
 
 #[tokio::test]

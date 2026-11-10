@@ -384,7 +384,7 @@ mod tests {
             "channel_id": "456"
         });
         let msg = parse_message_create(&d).unwrap();
-        assert!(msg.author_roles.is_empty());
+        assert_eq!(msg.author_roles, [] as [String; 0]);
     }
 
     #[test]

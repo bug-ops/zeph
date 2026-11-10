@@ -1642,7 +1642,7 @@ fn infer_no_false_positive_from_unrelated_shorter() {
 #[test]
 fn infer_no_result_on_empty_input() {
     let prefs = infer_preferences(&[]);
-    assert!(prefs.is_empty());
+    assert_eq!(prefs.len(), 0);
 }
 
 #[test]

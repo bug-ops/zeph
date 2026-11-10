@@ -528,7 +528,7 @@ allowed_commands = ["curl"]
     );
 
     let result = mgr.add(source.to_str().unwrap()).unwrap();
-    assert!(result.warnings.is_empty());
+    assert_eq!(result.warnings, [] as [String; 0]);
 }
 
 #[test]
@@ -550,7 +550,7 @@ allowed_commands = []
     let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
 
     let result = mgr.add(source.to_str().unwrap()).unwrap();
-    assert!(result.warnings.is_empty());
+    assert_eq!(result.warnings, [] as [String; 0]);
 }
 
 #[test]
@@ -774,7 +774,7 @@ fn collect_skill_dirs_empty_when_no_plugins_installed() {
     let plugins_dir = real.join("plugins");
     let mgr = PluginManager::new(plugins_dir, real.clone(), vec![], vec![]);
     let dirs = mgr.collect_skill_dirs().unwrap();
-    assert!(dirs.is_empty());
+    assert_eq!(dirs, [] as [std::path::PathBuf; 0]);
 }
 
 #[test]
@@ -1685,7 +1685,7 @@ fn dependencies_field_defaults_to_empty() {
     let manifest_path = plugins_dir.path().join("base").join(".plugin.toml");
     let text = std::fs::read_to_string(manifest_path).unwrap();
     let manifest: crate::manifest::PluginManifest = toml::from_str(&text).unwrap();
-    assert!(manifest.plugin.dependencies.is_empty());
+    assert_eq!(manifest.plugin.dependencies, [] as [String; 0]);
 }
 
 #[test]

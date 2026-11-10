@@ -1145,13 +1145,13 @@ mod tests {
     #[test]
     fn no_blocks_returns_empty() {
         let blocks = extract_scrape_blocks("plain text, no code blocks");
-        assert!(blocks.is_empty());
+        assert_eq!(blocks, [] as [&str; 0]);
     }
 
     #[test]
     fn unclosed_block_ignored() {
         let blocks = extract_scrape_blocks("```scrape\n{\"url\":\"https://x.com\"}");
-        assert!(blocks.is_empty());
+        assert_eq!(blocks, [] as [&str; 0]);
     }
 
     #[test]
@@ -1794,7 +1794,7 @@ mod tests {
         let text = "```scrape\n\n```";
         let blocks = extract_scrape_blocks(text);
         assert_eq!(blocks.len(), 1);
-        assert!(blocks[0].is_empty());
+        assert_eq!(blocks[0], "");
     }
 
     #[test]
@@ -2258,8 +2258,8 @@ mod tests {
         let result = resolve_and_validate(&url_no_host).await;
         assert!(result.is_ok());
         let (host, addrs) = result.unwrap();
-        assert!(host.is_empty());
-        assert!(addrs.is_empty());
+        assert_eq!(host, "");
+        assert_eq!(addrs, [] as [std::net::SocketAddr; 0]);
         drop(url);
         drop(url_no_host);
     }

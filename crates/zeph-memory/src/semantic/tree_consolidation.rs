@@ -470,7 +470,7 @@ mod tests {
 
         // Require 3 — no cluster should form.
         let clusters = cluster_by_similarity(&embedded, 0.9, 3);
-        assert!(clusters.is_empty());
+        assert_eq!(clusters, [] as [Vec<(i64, String, Vec<f32>)>; 0]);
     }
 
     #[test]

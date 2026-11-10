@@ -208,6 +208,6 @@ mod tests {
         // documents the invariant; a `select_subset` addition would not fail this test but
         // would be caught in code review per spec 073 §4 "Never".
         let tracker = EnsembleTracker::new(0.3, 0.95, 5);
-        assert!(tracker.snapshot().is_empty());
+        assert_eq!(tracker.snapshot(), [] as [(String, f64, u64); 0]);
     }
 }

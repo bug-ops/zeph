@@ -242,7 +242,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(result.is_empty());
+        assert_eq!(result.len(), 0);
     }
 
     #[tokio::test]
@@ -265,7 +265,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(result.is_empty());
+        assert_eq!(result.len(), 0);
     }
 
     #[tokio::test]
@@ -303,7 +303,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!result.is_empty());
+        assert_ne!(result.len(), 0);
     }
 
     #[tokio::test]
@@ -370,7 +370,7 @@ mod tests {
         let dave_facts: Vec<_> = result.iter().filter(|f| f.target_name == "dave").collect();
         assert_eq!(dave_facts.len(), 2, "both edges into Dave must resolve");
         for fact in &dave_facts {
-            assert!(!fact.entity_name.is_empty());
+            assert_ne!(fact.entity_name, "");
             assert_eq!(fact.target_name, "dave");
         }
     }

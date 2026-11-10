@@ -141,19 +141,19 @@ mod tests {
     #[test]
     fn cache_stats_name_and_description() {
         assert_eq!(CacheStatsCommand.name(), "/cache-stats");
-        assert!(!CacheStatsCommand.description().is_empty());
+        assert_ne!(CacheStatsCommand.description(), "");
     }
 
     #[test]
     fn notify_test_name_and_description() {
         assert_eq!(NotifyTestCommand.name(), "/notify-test");
-        assert!(!NotifyTestCommand.description().is_empty());
+        assert_ne!(NotifyTestCommand.description(), "");
     }
 
     #[test]
     fn image_name_and_description() {
         assert_eq!(ImageCommand.name(), "/image");
-        assert!(!ImageCommand.description().is_empty());
+        assert_ne!(ImageCommand.description(), "");
     }
 
     #[tokio::test]

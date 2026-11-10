@@ -3357,13 +3357,13 @@ mod tests {
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert!(
+        assert_eq!(
             config
                 .security
                 .pre_execution_verify
                 .destructive_commands
-                .allowed_paths
-                .is_empty()
+                .allowed_paths,
+            [] as [String; 0]
         );
     }
 
@@ -3613,8 +3613,8 @@ mod tests {
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert!(config.tools.file.deny_read.is_empty());
-        assert!(config.tools.file.allow_read.is_empty());
+        assert_eq!(config.tools.file.deny_read, [] as [String; 0]);
+        assert_eq!(config.tools.file.allow_read, [] as [String; 0]);
     }
 
     #[test]

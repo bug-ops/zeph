@@ -529,7 +529,7 @@ mod tests {
 
         let client = client_for(&server, Some("test-token"));
         let results = client.search("x").await.unwrap();
-        assert!(results.is_empty());
+        assert_eq!(results.len(), 0);
     }
 
     #[tokio::test]

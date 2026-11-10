@@ -105,7 +105,7 @@ mod tests {
 
         let docs = TextLoader::default().load(&file).await.unwrap();
         assert_eq!(docs.len(), 1);
-        assert!(docs[0].content.is_empty());
+        assert_eq!(docs[0].content, "");
     }
 
     #[tokio::test]

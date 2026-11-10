@@ -310,7 +310,7 @@ fn builder_with_compaction_cooldown_sets_field() {
 fn compaction_hard_count_zero_by_default() {
     let snapshot = crate::metrics::MetricsSnapshot::default();
     assert_eq!(snapshot.compaction_hard_count, 0);
-    assert!(snapshot.compaction_turns_after_hard.is_empty());
+    assert_eq!(snapshot.compaction_turns_after_hard, [] as [u64; 0]);
 }
 
 #[tokio::test]

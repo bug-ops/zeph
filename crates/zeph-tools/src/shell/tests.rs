@@ -60,14 +60,14 @@ fn ignore_non_bash_blocks() {
 fn no_blocks_returns_none() {
     let text = "Just plain text, no code blocks.";
     let blocks = extract_bash_blocks(text);
-    assert!(blocks.is_empty());
+    assert_eq!(blocks, [] as [&str; 0]);
 }
 
 #[test]
 fn unclosed_block_ignored() {
     let text = "```bash\necho hello";
     let blocks = extract_bash_blocks(text);
-    assert!(blocks.is_empty());
+    assert_eq!(blocks, [] as [&str; 0]);
 }
 
 #[tokio::test]
@@ -877,7 +877,7 @@ async fn dyn_executor_forwards_remaining_cross_cutting_methods() {
 #[test]
 fn default_confirm_patterns_loaded() {
     let config = ShellConfig::default();
-    assert!(!config.confirm_patterns.is_empty());
+    assert_ne!(config.confirm_patterns, [] as [String; 0]);
     assert!(config.confirm_patterns.contains(&"rm ".to_owned()));
     assert!(config.confirm_patterns.contains(&"git push -f".to_owned()));
     assert!(config.confirm_patterns.contains(&"$(".to_owned()));
@@ -1071,7 +1071,7 @@ async fn with_audit_attaches_logger() {
 #[test]
 fn chrono_now_returns_valid_timestamp() {
     let ts = chrono_now();
-    assert!(!ts.is_empty());
+    assert_ne!(ts, "");
     let parsed: u64 = ts.parse().unwrap();
     assert!(parsed > 0);
 }
@@ -1160,7 +1160,7 @@ async fn execute_bash_command_not_found() {
 
 #[test]
 fn extract_paths_empty() {
-    assert!(extract_paths("").is_empty());
+    assert_eq!(extract_paths(""), [] as [String; 0]);
 }
 
 #[test]
@@ -2308,9 +2308,9 @@ fn config_deserialization_defaults() {
     let toml_str = "[shell]\ntimeout = 30";
     let config: crate::config::ToolsConfig = toml::from_str(toml_str).unwrap();
     assert!(!config.shell.transactional);
-    assert!(config.shell.transaction_scope.is_empty());
+    assert_eq!(config.shell.transaction_scope, [] as [String; 0]);
     assert!(!config.shell.auto_rollback);
-    assert!(config.shell.auto_rollback_exit_codes.is_empty());
+    assert_eq!(config.shell.auto_rollback_exit_codes, [] as [i32; 0]);
     assert!(!config.shell.snapshot_required);
 }
 

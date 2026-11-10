@@ -778,7 +778,7 @@ mod tests {
     #[test]
     fn compute_tfidf_empty_candidates_returns_empty() {
         let scores = compute_tfidf_scores("hello", &[]);
-        assert!(scores.is_empty());
+        assert_eq!(scores, [] as [f64; 0]);
     }
 
     #[test]

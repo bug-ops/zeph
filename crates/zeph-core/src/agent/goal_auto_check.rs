@@ -362,7 +362,7 @@ mod tests {
         assert!(resolution.outcome.is_err());
         agent.handle_goal_auto_check_done(resolution).await;
 
-        assert!(sent.lock().unwrap().clone().is_empty());
+        assert_eq!(sent.lock().unwrap().clone(), [] as [String; 0]);
         assert_eq!(rx.recv().await.as_deref(), Some(STATUS_VERIFYING));
         assert_eq!(rx.recv().await.as_deref(), Some(""));
     }
@@ -378,7 +378,7 @@ mod tests {
         let resolution = agent.services.goal_auto_check.resolved().await;
         assert!(!resolution.current);
         agent.handle_goal_auto_check_done(resolution).await;
-        assert!(sent.lock().unwrap().clone().is_empty());
+        assert_eq!(sent.lock().unwrap().clone(), [] as [String; 0]);
     }
 
     #[tokio::test]
@@ -392,7 +392,7 @@ mod tests {
                 current: true,
             })
             .await;
-        assert!(sent.lock().unwrap().clone().is_empty());
+        assert_eq!(sent.lock().unwrap().clone(), [] as [String; 0]);
     }
 
     #[tokio::test]

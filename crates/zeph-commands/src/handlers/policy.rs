@@ -66,7 +66,7 @@ mod tests {
     #[test]
     fn policy_name_and_description() {
         assert_eq!(PolicyCommand.name(), "/policy");
-        assert!(!PolicyCommand.description().is_empty());
+        assert_ne!(PolicyCommand.description(), "");
     }
 
     #[tokio::test]

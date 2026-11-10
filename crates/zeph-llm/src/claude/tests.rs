@@ -485,7 +485,7 @@ async fn integration_claude_chat_stream() {
         chunk_count += 1;
     }
 
-    assert!(!full_response.is_empty());
+    assert_ne!(full_response, "");
     assert!(full_response.to_lowercase().contains("pong"));
     assert!(chunk_count >= 1);
 }

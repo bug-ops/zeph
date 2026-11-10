@@ -1803,9 +1803,9 @@ mod tests {
     fn firewall_config_default_deserialization() {
         let cfg: FirewallVerifierConfig = toml::from_str("").unwrap();
         assert!(cfg.enabled);
-        assert!(cfg.blocked_paths.is_empty());
-        assert!(cfg.blocked_env_vars.is_empty());
-        assert!(cfg.exempt_tools.is_empty());
+        assert_eq!(cfg.blocked_paths, [] as [String; 0]);
+        assert_eq!(cfg.blocked_env_vars, [] as [String; 0]);
+        assert_eq!(cfg.exempt_tools, [] as [String; 0]);
     }
 
     // --- FirewallVerifier::collect_strings depth guard ---
@@ -1827,7 +1827,7 @@ mod tests {
         let value = nested_array(10_000, "deep");
         let mut out = Vec::new();
         FirewallVerifier::collect_strings(&value, &mut out, 0);
-        assert!(out.is_empty());
+        assert_eq!(out, [] as [String; 0]);
     }
 
     #[test]
@@ -1840,7 +1840,7 @@ mod tests {
         let just_outside = nested_array(MAX_JSON_DEPTH, "just_outside");
         let mut out = Vec::new();
         FirewallVerifier::collect_strings(&just_outside, &mut out, 0);
-        assert!(out.is_empty());
+        assert_eq!(out, [] as [String; 0]);
     }
 
     // --- InjectionPatternVerifier::check_value/check_object depth guard ---

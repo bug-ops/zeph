@@ -649,7 +649,7 @@ mod tests {
     #[test]
     fn score_empty_questions_list() {
         let (scores, avg) = score_answers(&[], &[]);
-        assert!(scores.is_empty());
+        assert_eq!(scores, [] as [f32; 0]);
         assert!((avg - 0.0).abs() < 0.01);
     }
 

@@ -163,13 +163,19 @@ mod tests {
     #[test]
     fn capability_escalation_trusted_allows_all() {
         let tools = vec!["bash".to_owned(), "write".to_owned()];
-        assert!(check_capability_escalation(&tools, SkillTrustLevel::Trusted).is_empty());
+        assert_eq!(
+            check_capability_escalation(&tools, SkillTrustLevel::Trusted),
+            [] as [String; 0]
+        );
     }
 
     #[test]
     fn capability_escalation_verified_allows_all() {
         let tools = vec!["bash".to_owned()];
-        assert!(check_capability_escalation(&tools, SkillTrustLevel::Verified).is_empty());
+        assert_eq!(
+            check_capability_escalation(&tools, SkillTrustLevel::Verified),
+            [] as [String; 0]
+        );
     }
 
     #[test]
@@ -183,7 +189,7 @@ mod tests {
     fn capability_escalation_quarantined_allows_safe_tool() {
         let tools = vec!["read_file".to_owned()];
         let denied = check_capability_escalation(&tools, SkillTrustLevel::Quarantined);
-        assert!(denied.is_empty());
+        assert_eq!(denied, [] as [String; 0]);
     }
 
     #[test]
@@ -196,8 +202,14 @@ mod tests {
     #[test]
     fn capability_escalation_empty_allowed_tools() {
         let tools: Vec<String> = vec![];
-        assert!(check_capability_escalation(&tools, SkillTrustLevel::Quarantined).is_empty());
-        assert!(check_capability_escalation(&tools, SkillTrustLevel::Blocked).is_empty());
+        assert_eq!(
+            check_capability_escalation(&tools, SkillTrustLevel::Quarantined),
+            [] as [String; 0]
+        );
+        assert_eq!(
+            check_capability_escalation(&tools, SkillTrustLevel::Blocked),
+            [] as [String; 0]
+        );
     }
 
     #[test]

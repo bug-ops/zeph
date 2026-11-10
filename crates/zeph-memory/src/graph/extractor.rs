@@ -247,15 +247,15 @@ mod tests {
             result.entities[0].summary.as_deref(),
             Some("A systems language")
         );
-        assert!(result.edges.is_empty());
+        assert_eq!(result.edges.len(), 0);
     }
 
     #[test]
     fn extraction_result_deserialize_empty_arrays() {
         let json = r#"{"entities":[],"edges":[]}"#;
         let result: ExtractionResult = serde_json::from_str(json).unwrap();
-        assert!(result.entities.is_empty());
-        assert!(result.edges.is_empty());
+        assert_eq!(result.entities.len(), 0);
+        assert_eq!(result.edges.len(), 0);
     }
 
     #[test]

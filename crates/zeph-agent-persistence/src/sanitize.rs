@@ -87,7 +87,7 @@ mod tests {
         let mut msgs: Vec<Message> = vec![];
         let (removed, ids) = sanitize_tool_pairs(&mut msgs);
         assert_eq!(removed, 0);
-        assert!(ids.is_empty());
+        assert_eq!(ids, [] as [i64; 0]);
     }
 
     #[test]

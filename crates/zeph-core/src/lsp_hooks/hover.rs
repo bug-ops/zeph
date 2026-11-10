@@ -353,7 +353,7 @@ mod tests {
     fn regex_skips_non_rust_files() {
         let src = "def foo(): pass\nclass Bar: pass";
         let positions = extract_symbol_positions_regex(src, "foo.py", 10);
-        assert!(positions.is_empty());
+        assert_eq!(positions, [] as [(u64, u64); 0]);
     }
 
     #[test]
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn no_symbols_empty_file() {
         let positions = extract_symbol_positions_regex("", "a.rs", 10);
-        assert!(positions.is_empty());
+        assert_eq!(positions, [] as [(u64, u64); 0]);
     }
 
     #[test]
@@ -391,21 +391,21 @@ mod tests {
     fn non_digit_tab_prefix_no_symbol_match() {
         let src = "  abc\tpub fn foo() {}";
         let positions = extract_symbol_positions_regex(src, "a.rs", 10);
-        assert!(positions.is_empty());
+        assert_eq!(positions, [] as [(u64, u64); 0]);
     }
 
     #[test]
     fn empty_prefix_before_tab_no_symbol_match() {
         let src = "\tpub fn foo() {}";
         let positions = extract_symbol_positions_regex(src, "a.rs", 10);
-        assert!(positions.is_empty());
+        assert_eq!(positions, [] as [(u64, u64); 0]);
     }
 
     #[test]
     fn max_symbols_zero_returns_empty() {
         let src = "pub fn a() {}\npub fn b() {}";
         let positions = extract_symbol_positions_regex(src, "a.rs", 0);
-        assert!(positions.is_empty());
+        assert_eq!(positions, [] as [(u64, u64); 0]);
     }
 
     #[test]
@@ -421,7 +421,7 @@ mod tests {
     fn tsquery_extracts_rust_symbols() {
         let src = "pub fn foo() {}\npub struct Bar;\npub enum Baz {}";
         let positions = extract_symbol_positions_tsquery(src, "a.rs", 10).unwrap();
-        assert!(!positions.is_empty());
+        assert_ne!(positions, [] as [(u64, u64); 0]);
         // All three symbols at lines 0,1,2
         let lines: Vec<u64> = positions.iter().map(|(l, _)| *l).collect();
         assert!(lines.contains(&0));

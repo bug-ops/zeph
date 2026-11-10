@@ -984,7 +984,7 @@ mod tests {
 
         assert!(result.is_some());
         let summary = result.unwrap();
-        assert!(!summary.is_empty());
+        assert_ne!(summary, "");
     }
 
     #[tokio::test]

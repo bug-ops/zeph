@@ -171,7 +171,10 @@ fn multi_turn_chain_turn3_all_tools_available() {
         result.included.contains("save"),
         "save must unlock after format_results completes"
     );
-    assert!(result.dependency_exclusions.is_empty());
+    assert_eq!(
+        result.dependency_exclusions,
+        [] as [zeph_tools::DependencyExclusion; 0]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -441,7 +444,10 @@ fn always_on_bypasses_hard_gate() {
         result.included.contains("bash"),
         "always-on tool must bypass hard dependency gate"
     );
-    assert!(result.dependency_exclusions.is_empty());
+    assert_eq!(
+        result.dependency_exclusions,
+        [] as [zeph_tools::DependencyExclusion; 0]
+    );
 }
 
 /// A tool included via `SimilarityRank` is subject to hard gates (not bypassed).
@@ -555,7 +561,10 @@ fn unknown_tool_in_requires_tool_still_available_if_requires_met() {
         result.included.contains("real_tool"),
         "real_tool with met requires must be included"
     );
-    assert!(result.dependency_exclusions.is_empty());
+    assert_eq!(
+        result.dependency_exclusions,
+        [] as [zeph_tools::DependencyExclusion; 0]
+    );
 }
 
 /// A `requires` entry referencing a non-existent tool ID means the prerequisite
@@ -695,7 +704,7 @@ fn toml_dependency_config_deserializes() {
 
     let save = dep.rules.get("save").expect("save rule must exist");
     assert_eq!(save.requires, vec!["format_results"]);
-    assert!(save.prefers.is_empty());
+    assert_eq!(save.prefers, [] as [String; 0]);
 }
 
 /// Default `DependencyConfig`: disabled, defaults for boost values.
@@ -743,7 +752,7 @@ fn unmet_requires_returns_only_missing_deps() {
 fn unmet_requires_empty_for_unconfigured_tool() {
     let graph = build_graph(&[("save", &["search"], &[])]);
     let unmet = graph.unmet_requires("unknown_tool", &completed(&[]));
-    assert!(unmet.is_empty());
+    assert_eq!(unmet, [] as [&str; 0]);
 }
 
 /// `unmet_requires` returns empty when all deps satisfied.
@@ -751,7 +760,7 @@ fn unmet_requires_empty_for_unconfigured_tool() {
 fn unmet_requires_empty_when_all_satisfied() {
     let graph = build_graph(&[("save", &["a", "b"], &[])]);
     let unmet = graph.unmet_requires("save", &completed(&["a", "b"]));
-    assert!(unmet.is_empty());
+    assert_eq!(unmet, [] as [&str; 0]);
 }
 
 // ---------------------------------------------------------------------------
@@ -792,5 +801,8 @@ fn apply_noop_for_empty_graph() {
         result.included, original_included,
         "empty graph must not change included set"
     );
-    assert!(result.dependency_exclusions.is_empty());
+    assert_eq!(
+        result.dependency_exclusions,
+        [] as [zeph_tools::DependencyExclusion; 0]
+    );
 }

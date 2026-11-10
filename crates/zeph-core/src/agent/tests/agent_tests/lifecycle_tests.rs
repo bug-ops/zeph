@@ -18,7 +18,7 @@ async fn agent_new_initializes_with_system_prompt() {
 
     assert_eq!(agent.msg.messages.len(), 1);
     assert_eq!(agent.msg.messages[0].role, Role::System);
-    assert!(!agent.msg.messages[0].content.is_empty());
+    assert_ne!(agent.msg.messages[0].content, "");
 }
 
 #[tokio::test]
@@ -1053,7 +1053,7 @@ async fn agent_metrics_skills_updated_on_prompt_rebuild() {
 
     let snapshot = rx.borrow().clone();
     assert_eq!(snapshot.total_skills, 1);
-    assert!(!snapshot.active_skills.is_empty());
+    assert_ne!(snapshot.active_skills, [] as [String; 0]);
 }
 
 /// Regression test for #4537: `maybe_start_heuristic_promotion` must run at session

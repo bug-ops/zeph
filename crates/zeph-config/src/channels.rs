@@ -126,7 +126,7 @@ mod tests {
         let cfg: TelegramConfig = toml::from_str(src).unwrap();
         assert!(!cfg.guest_mode);
         assert!(!cfg.bot_to_bot);
-        assert!(cfg.allowed_bots.is_empty());
+        assert_eq!(cfg.allowed_bots, [] as [String; 0]);
         assert_eq!(cfg.max_bot_chain_depth, 1);
     }
 
@@ -324,7 +324,7 @@ max_bot_chain_depth = 5
     fn a2a_client_config_card_trust_policy_defaults_to_ignore() {
         let cfg = A2aClientConfig::default();
         assert_eq!(cfg.card_trust_policy, CardTrustPolicy::Ignore);
-        assert!(cfg.trusted_agent_keys.is_empty());
+        assert_eq!(cfg.trusted_agent_keys.len(), 0);
     }
 
     #[test]

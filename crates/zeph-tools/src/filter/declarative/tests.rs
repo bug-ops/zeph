@@ -472,7 +472,7 @@ fn group_by_rule_no_warnings_strips_cargo_noise() {
     let f = group_by_rule_filter(r"^\s*-->\s*(.+:\d+)", r"#\[warn\(([^)]+)\)\]");
     let raw = "Checking my-crate v0.1.0\n    Finished dev [unoptimized] target(s)";
     let result = f.filter("cargo clippy", raw, 0);
-    assert!(result.output.is_empty());
+    assert_eq!(result.output, "");
     assert_eq!(result.confidence, FilterConfidence::Partial);
 }
 

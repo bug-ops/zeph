@@ -1172,7 +1172,7 @@ mod tests {
     fn judge_verdict_deserialize_without_reasoning_field() {
         let json = r#"{"is_correction": true, "kind": "repetition", "confidence": 0.8}"#;
         let v: JudgeVerdict = serde_json::from_str(json).expect("missing reasoning must not fail");
-        assert!(v.reasoning.is_empty());
+        assert_eq!(v.reasoning, "");
         assert!(v.is_correction);
     }
 

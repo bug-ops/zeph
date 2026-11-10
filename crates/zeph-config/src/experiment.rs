@@ -897,7 +897,7 @@ mod tests {
         let cfg = EnsembleConfig::default();
         assert!(!cfg.enabled);
         assert!(!cfg.verify);
-        assert!(cfg.members.is_empty());
+        assert_eq!(cfg.members, [] as [String; 0]);
         assert!((cfg.ema_alpha - 0.3).abs() < f64::EPSILON);
         assert!((cfg.ema_decay - 0.95).abs() < f64::EPSILON);
         assert_eq!(cfg.min_observations, 5);
@@ -940,7 +940,7 @@ mod tests {
         let toml_in = "enabled = true\n";
         let cfg: OrchestrationConfig = toml::from_str(toml_in).expect("deserialize");
         assert!(!cfg.ensemble.enabled);
-        assert!(cfg.ensemble.members.is_empty());
+        assert_eq!(cfg.ensemble.members, [] as [String; 0]);
     }
 
     #[test]

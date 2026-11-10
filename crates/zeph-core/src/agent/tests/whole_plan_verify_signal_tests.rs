@@ -134,5 +134,5 @@ async fn verify_completeness_disabled_emits_no_signal() {
         .await;
 
     assert!(extra_tasks.is_none());
-    assert!(agent.channel.sent_messages().is_empty());
+    assert_eq!(agent.channel.sent_messages(), [] as [String; 0]);
 }

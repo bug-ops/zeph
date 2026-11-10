@@ -471,7 +471,7 @@ mod tests {
         let rpc: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert!(rpc["result"].is_object());
         assert_eq!(rpc["result"]["status"]["state"], "completed");
-        assert!(!rpc["result"]["history"].as_array().unwrap().is_empty());
+        assert_ne!(rpc["result"]["history"].as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]

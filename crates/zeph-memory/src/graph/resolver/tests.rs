@@ -62,7 +62,7 @@ fn sanitize_relation_truncates_at_utf8_char_boundary() {
     let long = "日".repeat(MAX_RELATION_BYTES);
     let result = sanitize_relation(&long);
     assert!(result.len() <= MAX_RELATION_BYTES);
-    assert!(!result.is_empty());
+    assert_ne!(result, "");
 }
 
 #[test]
@@ -754,7 +754,7 @@ async fn resolve_batch_empty_returns_empty() {
     let gs = setup().await;
     let resolver = EntityResolver::new(&gs);
     let results = resolver.resolve_batch(&[]).await.unwrap();
-    assert!(results.is_empty());
+    assert_eq!(results.len(), 0);
 }
 
 #[tokio::test]

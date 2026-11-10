@@ -156,7 +156,7 @@ mod tests {
         assert!(cfg.enabled);
         assert!(!cfg.strict_mode);
         assert_eq!(cfg.sanitize_max_chars, 2048);
-        assert!(cfg.extra_patterns.is_empty());
+        assert_eq!(cfg.extra_patterns, [] as [String; 0]);
         assert!(cfg.exempt_tools.contains(&"memory_search".to_owned()));
         assert!(cfg.exempt_tools.contains(&"load_skill".to_owned()));
         assert!(cfg.exempt_tools.contains(&"invoke_skill".to_owned()));

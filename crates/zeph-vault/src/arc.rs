@@ -113,7 +113,7 @@ mod tests {
     async fn list_keys_empty_vault() {
         let provider = make_provider_with_keys(&[]);
         let keys = provider.list_keys();
-        assert!(keys.is_empty());
+        assert_eq!(keys, [] as [String; 0]);
     }
 
     /// `list_keys()` works correctly from `spawn_blocking` on the multi-thread runtime.
@@ -143,7 +143,7 @@ mod tests {
         let keys = tokio::task::spawn_blocking(move || provider.list_keys())
             .await
             .unwrap();
-        assert!(keys.is_empty());
+        assert_eq!(keys, [] as [String; 0]);
     }
 
     /// `get_secret()` delegates to the inner `AgeVaultProvider`.

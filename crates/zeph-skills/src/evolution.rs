@@ -676,7 +676,7 @@ mod tests {
         let json = r#"{"should_improve": false, "issues": [], "severity": "low"}"#;
         let eval: SkillEvaluation = serde_json::from_str(json).unwrap();
         assert!(!eval.should_improve);
-        assert!(eval.issues.is_empty());
+        assert_eq!(eval.issues, [] as [String; 0]);
     }
 
     #[test]
@@ -918,7 +918,7 @@ mod tests {
         let json = r#"{"failure_kind": "unknown", "hint": "retry with sudo"}"#;
         let result: CorrectionExtractionResult = serde_json::from_str(json).unwrap();
         assert_eq!(result.failure_kind, "unknown");
-        assert!(result.error_substring.is_empty());
+        assert_eq!(result.error_substring, "");
     }
 
     #[test]

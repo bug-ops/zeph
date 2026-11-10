@@ -1413,7 +1413,7 @@ mod session_event_replay_tests {
 
     #[test]
     fn bookkeeping_events_produce_no_client_visible_update() {
-        assert!(
+        assert_eq!(
             session_event_to_updates(zeph_session::SessionEvent::SessionStarted {
                 session_id: "s1".to_owned(),
                 cwd: "/tmp".to_owned(),
@@ -1421,19 +1421,22 @@ mod session_event_replay_tests {
                 model: "opus".to_owned(),
                 forked_from: None,
             })
-            .is_empty()
+            .len(),
+            0
         );
-        assert!(
+        assert_eq!(
             session_event_to_updates(zeph_session::SessionEvent::ForkPoint {
                 new_session_id: "s2".to_owned(),
             })
-            .is_empty()
+            .len(),
+            0
         );
-        assert!(
+        assert_eq!(
             session_event_to_updates(zeph_session::SessionEvent::SessionEnded {
                 reason: "user_quit".to_owned(),
             })
-            .is_empty()
+            .len(),
+            0
         );
     }
 

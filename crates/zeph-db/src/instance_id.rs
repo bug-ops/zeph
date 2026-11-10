@@ -65,7 +65,7 @@ mod tests {
     async fn generates_and_persists_id() {
         let pool = setup_pool().await;
         let id1 = get_or_create_instance_id(&pool).await.expect("first call");
-        assert!(!id1.is_empty());
+        assert_ne!(id1, "");
         let id2 = get_or_create_instance_id(&pool).await.expect("second call");
         assert_eq!(id1, id2, "instance id must be stable across calls");
     }

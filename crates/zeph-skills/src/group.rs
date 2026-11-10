@@ -276,8 +276,8 @@ mod tests {
         let GroupResult::Grouped(g) = result else {
             panic!("expected Grouped");
         };
-        assert!(g.requirements.is_empty());
-        assert!(g.failure_notes.is_empty());
+        assert_eq!(g.requirements, [] as [String; 0]);
+        assert_eq!(g.failure_notes, [] as [String; 0]);
     }
 
     #[test]

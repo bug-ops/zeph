@@ -2233,7 +2233,7 @@ mod tests {
         let mgr = make_manager(&dir, runner).await;
         let usage = mgr.disk_usage().await.unwrap();
         assert_eq!(usage.total_bytes, 0);
-        assert!(usage.per_worktree.is_empty());
+        assert_eq!(usage.per_worktree, [] as [(std::path::PathBuf, u64); 0]);
     }
 
     #[tokio::test]

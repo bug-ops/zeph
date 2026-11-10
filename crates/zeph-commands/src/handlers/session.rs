@@ -513,7 +513,7 @@ mod tests {
         let mut ctx = make_ctx(&mut sink, &mut debug, &mut messages, &session, &mut agent);
         let out = ExitCommand.handle(&mut ctx, "").await.unwrap();
         assert_matches!(out, CommandOutput::Continue);
-        assert!(!sink.sent.is_empty());
+        assert_ne!(sink.sent, [] as [String; 0]);
     }
 
     #[tokio::test]

@@ -855,7 +855,7 @@ fn migrate_mcp_trust_levels_no_mcp_section_is_noop() {
     let src = "[agent]\nname = \"Zeph\"\n";
     let result = migrate_mcp_trust_levels(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
     assert_eq!(result.output, src);
 }
 
@@ -864,7 +864,7 @@ fn migrate_mcp_trust_levels_no_servers_is_noop() {
     let src = "[mcp]\nallowed_commands = [\"npx\"]\n";
     let result = migrate_mcp_trust_levels(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
     assert_eq!(result.output, src);
 }
 
@@ -881,7 +881,7 @@ trust_level = "untrusted"
 "#;
     let result = migrate_mcp_trust_levels(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
 }
 
 #[test]
@@ -903,7 +903,7 @@ fn migrate_database_url_is_noop_when_present() {
         "[memory]\nsqlite_path = \"/tmp/zeph.db\"\ndatabase_url = \"postgres://localhost/zeph\"\n";
     let result = migrate_database_url(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
     assert_eq!(result.output, src);
 }
 
@@ -2129,7 +2129,7 @@ fn migrate_memory_reasoning_idempotent_on_existing_block() {
     let input = "[agent]\nmodel = \"gpt-4o\"\n# [memory.reasoning]\n# enabled = false\n";
     let result = migrate_memory_reasoning_config(input).unwrap();
     assert_eq!(result.changed_count, 0);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
     assert_eq!(result.output, input);
 }
 
@@ -2156,7 +2156,7 @@ fn migrate_hooks_turn_complete_idempotent_on_existing_block() {
         "[agent]\nmodel = \"gpt-4o\"\n# [[hooks.turn_complete]]\n# command = \"echo done\"\n";
     let result = migrate_hooks_turn_complete_config(input).unwrap();
     assert_eq!(result.changed_count, 0);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
     assert_eq!(result.output, input);
 }
 
@@ -2480,7 +2480,7 @@ fn migrate_qdrant_api_key_is_noop_when_present() {
         "[memory]\nqdrant_url = \"https://xyz.cloud.qdrant.io\"\nqdrant_api_key = \"secret\"\n";
     let result = migrate_qdrant_api_key(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
     assert_eq!(result.output, src);
 }
 
@@ -2522,7 +2522,7 @@ fn migrate_qdrant_timeout_secs_is_noop_when_present() {
     let src = "[memory]\nqdrant_url = \"http://localhost:6334\"\nqdrant_timeout_secs = 5\n";
     let result = migrate_qdrant_timeout_secs(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
     assert_eq!(result.output, src);
 }
 
@@ -2564,7 +2564,7 @@ fn migrate_utility_high_gain_tools_is_noop_when_present() {
     let src = "[tools.utility]\nhigh_gain_tools = [\"github_create_issue\"]\n";
     let result = migrate_utility_high_gain_tools(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
     assert_eq!(result.output, src);
 }
 
@@ -5237,7 +5237,7 @@ fn migrate_search_config_noop_when_real_section_present() {
     let result = migrate_search_config(src).expect("migrate");
     assert_eq!(result.changed_count, 0);
     assert_eq!(result.output, src);
-    assert!(result.sections_changed.is_empty());
+    assert_eq!(result.sections_changed, [] as [String; 0]);
 }
 
 #[test]

@@ -281,8 +281,8 @@ extensions:
             SkillUiElement::MenuItem { label, action }
             if label == "Open" && action == "open-skill"
         );
-        assert!(ext.keybindings.is_empty());
-        assert!(ext.monitors.is_empty());
+        assert_eq!(ext.keybindings.len(), 0);
+        assert_eq!(ext.monitors.len(), 0);
     }
 
     #[test]
@@ -325,9 +325,9 @@ extensions:
     #[test]
     fn default_is_all_empty() {
         let ext = SkillExtensions::default();
-        assert!(ext.ui.is_empty());
-        assert!(ext.keybindings.is_empty());
-        assert!(ext.monitors.is_empty());
+        assert_eq!(ext.ui.len(), 0);
+        assert_eq!(ext.keybindings.len(), 0);
+        assert_eq!(ext.monitors.len(), 0);
     }
 
     #[test]

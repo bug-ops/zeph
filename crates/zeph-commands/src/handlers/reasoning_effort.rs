@@ -67,7 +67,7 @@ mod tests {
     #[test]
     fn reasoning_effort_name_and_description() {
         assert_eq!(ReasoningEffortCommand.name(), "/reasoning-effort");
-        assert!(!ReasoningEffortCommand.description().is_empty());
+        assert_ne!(ReasoningEffortCommand.description(), "");
     }
 
     #[tokio::test]

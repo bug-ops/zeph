@@ -79,7 +79,7 @@ mod tests {
     #[test]
     fn worktree_name_and_description() {
         assert_eq!(WorktreeCommand.name(), "/worktree");
-        assert!(!WorktreeCommand.description().is_empty());
+        assert_ne!(WorktreeCommand.description(), "");
     }
 
     #[tokio::test]

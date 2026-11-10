@@ -22,5 +22,5 @@ fn agent_test_harness_with_responses_constructs_agent() {
 #[test]
 fn agent_test_harness_sent_messages_initially_empty() {
     let harness = QuickTestAgent::minimal("response");
-    assert!(harness.sent_messages().is_empty());
+    assert_eq!(harness.sent_messages(), [] as [String; 0]);
 }

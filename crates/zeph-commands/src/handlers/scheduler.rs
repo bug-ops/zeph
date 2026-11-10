@@ -75,7 +75,7 @@ mod tests {
     #[test]
     fn scheduler_name_and_description() {
         assert_eq!(SchedulerCommand.name(), "/scheduler");
-        assert!(!SchedulerCommand.description().is_empty());
+        assert_ne!(SchedulerCommand.description(), "");
     }
 
     #[tokio::test]

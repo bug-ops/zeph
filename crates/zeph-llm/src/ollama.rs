@@ -1296,7 +1296,7 @@ mod tests {
             metadata: MessageMetadata::default(),
         };
         let cm = convert_message(&msg);
-        assert!(cm.content.is_empty());
+        assert_eq!(cm.content, "");
     }
 
     #[tokio::test]
@@ -1649,7 +1649,7 @@ mod tests {
             chunk_count += 1;
         }
 
-        assert!(!full_response.is_empty());
+        assert_ne!(full_response, "");
         assert!(full_response.to_lowercase().contains("pong"));
         assert!(chunk_count >= 1);
     }
@@ -1694,7 +1694,7 @@ mod tests {
         );
 
         let embedding = provider.embed("hello world").await.unwrap();
-        assert!(!embedding.is_empty());
+        assert_ne!(embedding, [] as [f32; 0]);
         assert!(embedding.len() > 100);
         assert!(embedding.iter().all(|v| v.is_finite()));
     }
@@ -1768,7 +1768,7 @@ mod tests {
             chat_msg.role,
             ollama_rs::generation::chat::MessageRole::User
         );
-        assert!(!chat_msg.content.is_empty());
+        assert_ne!(chat_msg.content, "");
     }
 
     #[test]
@@ -2023,7 +2023,7 @@ mod tests {
         let provider =
             OllamaProvider::new("http://127.0.0.1:1", "test-model".into(), "embed".into());
         let result = provider.embed_batch(&[]).await.unwrap();
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [Vec<f32>; 0]);
     }
 
     #[test]

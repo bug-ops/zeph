@@ -2987,7 +2987,7 @@ mod tests {
 
         Agent::<MockChannel>::filter_skills_to_record(&mut skills_to_record, &[]);
 
-        assert!(skills_to_record.is_empty());
+        assert_eq!(skills_to_record, [] as [String; 0]);
     }
 
     // ── effective_recall_timeout_ms tests (#2514) ────────────────────────────

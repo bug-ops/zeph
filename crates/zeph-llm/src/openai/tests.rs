@@ -887,7 +887,7 @@ async fn integration_openai_chat_stream() {
         }
     }
 
-    assert!(!full_response.is_empty());
+    assert_ne!(full_response, "");
     assert!(full_response.to_lowercase().contains("pong"));
 }
 
@@ -1020,7 +1020,7 @@ async fn integration_openai_embed() {
     });
 
     let embedding = provider.embed("Hello world").await.unwrap();
-    assert!(!embedding.is_empty());
+    assert_ne!(embedding, [] as [f32; 0]);
 }
 
 #[test]
@@ -2002,7 +2002,7 @@ fn list_models_response_empty_data_array() {
                 .collect()
         })
         .unwrap_or_default();
-    assert!(models.is_empty());
+    assert_eq!(models.len(), 0);
 }
 
 #[test]
@@ -2025,7 +2025,7 @@ fn list_models_response_missing_data_key_returns_empty() {
                 .collect()
         })
         .unwrap_or_default();
-    assert!(models.is_empty());
+    assert_eq!(models.len(), 0);
 }
 
 #[tokio::test]
@@ -2690,7 +2690,7 @@ async fn embed_batch_empty_returns_empty_without_network() {
         vision: None,
     });
     let result = p.embed_batch(&[]).await.unwrap();
-    assert!(result.is_empty());
+    assert_eq!(result, [] as [Vec<f32>; 0]);
 }
 
 #[test]

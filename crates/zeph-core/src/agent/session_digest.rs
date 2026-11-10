@@ -580,7 +580,7 @@ mod tests {
     fn empty_messages_returns_empty_string() {
         let sanitizer = make_sanitizer();
         let result = format_and_sanitize_conversation(&[], &sanitizer);
-        assert!(result.is_empty());
+        assert_eq!(result, "");
     }
 
     #[test]

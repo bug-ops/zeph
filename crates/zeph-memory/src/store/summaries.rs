@@ -145,7 +145,7 @@ mod tests {
         let cid = store.create_conversation().await.unwrap();
 
         let summaries = store.load_summaries(cid).await.unwrap();
-        assert!(summaries.is_empty());
+        assert_eq!(summaries.len(), 0);
     }
 
     #[tokio::test]

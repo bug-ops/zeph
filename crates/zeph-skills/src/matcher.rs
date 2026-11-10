@@ -1318,7 +1318,7 @@ mod tests {
         let refs: Vec<&SkillMeta> = metas.iter().collect();
         let report = matcher.confusability_report(&refs, 0.99);
         assert!(report.pairs.is_empty());
-        assert!(report.excluded_skills.is_empty());
+        assert_eq!(report.excluded_skills, [] as [String; 0]);
     }
 
     #[test]

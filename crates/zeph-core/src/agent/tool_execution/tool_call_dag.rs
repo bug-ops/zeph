@@ -461,7 +461,7 @@ mod tests {
 
         // Leaf's own call depth == MAX_JSON_DEPTH: guard fires, must be dropped.
         let just_outside = nested_array(MAX_JSON_DEPTH, "just_outside");
-        assert!(extract_string_values(&just_outside).is_empty());
+        assert_eq!(extract_string_values(&just_outside), [] as [String; 0]);
     }
 
     #[test]
@@ -470,7 +470,7 @@ mod tests {
         // stack; the depth guard caps real recursion depth at MAX_JSON_DEPTH
         // regardless of how deeply the input is actually nested.
         let value = nested_array(2_000, "deep");
-        assert!(extract_string_values(&value).is_empty());
+        assert_eq!(extract_string_values(&value), [] as [String; 0]);
     }
 
     #[test]

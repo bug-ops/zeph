@@ -618,7 +618,7 @@ mod tests {
         ch.accumulated = "old data".into();
         user_tx.send("new".into()).await.unwrap();
         ch.recv().await.unwrap();
-        assert!(ch.accumulated.is_empty());
+        assert_eq!(ch.accumulated.len(), 0);
     }
 
     #[tokio::test]
@@ -641,7 +641,7 @@ mod tests {
         user_tx.try_send("queued".into()).unwrap();
         let msg = ch.try_recv().unwrap();
         assert_eq!(msg.text, "queued");
-        assert!(ch.accumulated.is_empty());
+        assert_eq!(ch.accumulated.len(), 0);
     }
 
     #[tokio::test]

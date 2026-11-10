@@ -826,7 +826,7 @@ mod tests {
     fn index_report_defaults() {
         let report = IndexReport::default();
         assert_eq!(report.files_scanned, 0);
-        assert!(report.errors.is_empty());
+        assert_eq!(report.errors, [] as [String; 0]);
     }
 
     /// Verify that `chunk_file` runs inside `spawn_blocking` and that the dedup path

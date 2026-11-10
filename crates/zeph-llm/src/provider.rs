@@ -3264,7 +3264,7 @@ mod tests {
             response: String::new(),
         };
         let result = provider.embed_batch(&[]).await.unwrap();
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [Vec<f32>; 0]);
     }
 
     #[tokio::test]

@@ -1240,7 +1240,7 @@ mod tests {
         let (mut app, _rx) = make_app();
         app.sessions.current_mut().scroll_offset = 5;
         let effects = reduce(&mut app, Action::ScrollLines(3));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().scroll_offset, 2);
     }
 
@@ -1249,7 +1249,7 @@ mod tests {
         let (mut app, _rx) = make_app();
         app.sessions.current_mut().scroll_offset = 2;
         let effects = reduce(&mut app, Action::ScrollLines(-3));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().scroll_offset, 5);
     }
 
@@ -1258,7 +1258,7 @@ mod tests {
         let (mut app, _rx) = make_app();
         app.sessions.current_mut().scroll_offset = 1;
         let effects = reduce(&mut app, Action::ScrollLines(100));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().scroll_offset, 0);
     }
 
@@ -1267,7 +1267,7 @@ mod tests {
         let (mut app, _rx) = make_app();
         app.sessions.current_mut().scroll_offset = 42;
         let effects = reduce(&mut app, Action::ScrollToBottom);
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().scroll_offset, 0);
     }
 
@@ -1282,7 +1282,7 @@ mod tests {
                 "hello".to_owned(),
             ));
         let effects = reduce(&mut app, Action::ScrollToTop);
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().scroll_offset, 1);
     }
 
@@ -1291,7 +1291,7 @@ mod tests {
         let (mut app, _rx) = make_app();
         assert!(!app.tool_expanded);
         let effects = reduce(&mut app, Action::ToggleToolExpanded);
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert!(app.tool_expanded);
     }
 
@@ -1366,7 +1366,7 @@ mod tests {
     fn enter_insert_sets_mode() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::EnterInsert);
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().input_mode, InputMode::Insert);
     }
 
@@ -1448,7 +1448,7 @@ mod tests {
             .push(ChatMessage::new(MessageRole::User, "hello".to_owned()));
         assert!(!app.sessions.current().messages.is_empty());
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::NewSession));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         // cleared, then exactly one system message appended
         assert_eq!(app.sessions.current().messages.len(), 1);
         assert_matches!(app.sessions.current().messages[0].role, MessageRole::System);
@@ -1468,7 +1468,7 @@ mod tests {
         let (mut app, _rx) = make_app();
         assert!(!app.show_task_panel);
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::TaskPanel));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert!(app.show_task_panel);
         // exactly-once: toggle flipped once, not twice
         reduce(&mut app, Action::Dispatch(TuiCommand::TaskPanel));
@@ -1480,7 +1480,7 @@ mod tests {
         let (mut app, _rx) = make_app();
         assert_eq!(app.active_panel, Panel::Chat);
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::FleetPanel));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.active_panel, Panel::Fleet);
     }
 
@@ -1488,7 +1488,7 @@ mod tests {
     fn dispatch_durable_panel_sets_panel() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::DurablePanel));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.active_panel, Panel::Durable);
     }
 
@@ -1499,7 +1499,7 @@ mod tests {
         let (mut app, _rx) = make_app();
         app.show_task_panel = true;
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::FleetPanel));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.active_panel, Panel::Fleet);
         assert!(
             !app.show_task_panel,
@@ -1513,7 +1513,7 @@ mod tests {
         let (mut app, _rx) = make_app();
         app.show_task_panel = true;
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::DurablePanel));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.active_panel, Panel::Durable);
         assert!(
             !app.show_task_panel,
@@ -1527,7 +1527,7 @@ mod tests {
         let (mut app, _rx) = make_app();
         app.active_panel = Panel::Fleet;
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::TaskPanel));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert!(app.show_task_panel);
         assert_eq!(
             app.active_panel,
@@ -1543,7 +1543,7 @@ mod tests {
         app.show_task_panel = true;
         app.active_panel = Panel::Tasks;
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::TaskPanel));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert!(!app.show_task_panel);
         // Toggling off must not itself reassign active_panel — only the "on" transition claims it.
         assert_eq!(app.active_panel, Panel::Tasks);
@@ -1554,7 +1554,7 @@ mod tests {
         let (mut app, _rx) = make_app();
         app.show_task_panel = true;
         let effects = reduce(&mut app, Action::SetActivePanel(Panel::Fleet));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.active_panel, Panel::Fleet);
         assert!(
             !app.show_task_panel,
@@ -1568,7 +1568,7 @@ mod tests {
         let (mut app, _rx) = make_app();
         app.show_task_panel = true;
         let effects = reduce(&mut app, Action::SetActivePanel(Panel::Durable));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.active_panel, Panel::Durable);
         assert!(
             !app.show_task_panel,
@@ -1587,7 +1587,7 @@ mod tests {
         let (mut app, _rx) = make_app();
         app.show_task_panel = true;
         let effects = reduce(&mut app, Action::SetActivePanel(Panel::SubAgents));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.active_panel, Panel::SubAgents);
         assert!(
             !app.show_task_panel,
@@ -1603,7 +1603,7 @@ mod tests {
         let (mut app, _rx) = make_app();
         app.show_task_panel = true;
         let effects = reduce(&mut app, Action::SetActivePanel(Panel::Skills));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.active_panel, Panel::Skills);
         assert!(app.show_task_panel);
     }
@@ -1613,7 +1613,7 @@ mod tests {
         let (mut app, _rx) = make_app();
         app.active_panel = Panel::Durable;
         let effects = reduce(&mut app, Action::ToggleTaskPanel);
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert!(app.show_task_panel);
         assert_eq!(
             app.active_panel,
@@ -1628,7 +1628,7 @@ mod tests {
         let (mut app, _rx) = make_app();
         assert!(!app.sessions.current().plan_view_active);
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::PlanToggleView));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert!(app.sessions.current().plan_view_active);
     }
 
@@ -1641,7 +1641,7 @@ mod tests {
             zeph_core::metrics::SubAgentMetrics::default(),
         ];
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::SubagentSidebarDown));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         // selection must have advanced — sidebar wraps within count
         assert!(app.subagent_sidebar.selected().is_some());
     }
@@ -1656,14 +1656,14 @@ mod tests {
         // prime selection at index 1
         app.subagent_sidebar.list_state.select(Some(1));
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::SubagentSidebarUp));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
     }
 
     #[test]
     fn dispatch_list_themes_pushes_system_message() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ListThemes));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().messages.len(), 1);
         assert_matches!(app.sessions.current().messages[0].role, MessageRole::System);
     }
@@ -1672,7 +1672,7 @@ mod tests {
     fn dispatch_view_filters_pushes_system_message() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ViewFilters));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().messages.len(), 1);
     }
 
@@ -1680,7 +1680,7 @@ mod tests {
     fn dispatch_ingest_pushes_system_message() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::Ingest));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().messages.len(), 1);
     }
 
@@ -1688,7 +1688,7 @@ mod tests {
     fn dispatch_gateway_status_pushes_system_message() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::GatewayStatus));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().messages.len(), 1);
     }
 
@@ -1696,7 +1696,7 @@ mod tests {
     fn dispatch_daemon_connect_pushes_system_message() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::DaemonConnect));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().messages.len(), 1);
     }
 
@@ -1704,7 +1704,7 @@ mod tests {
     fn dispatch_migrate_config_pushes_system_message() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::MigrateConfig));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().messages.len(), 1);
     }
 
@@ -1715,7 +1715,7 @@ mod tests {
             &mut app,
             Action::Dispatch(TuiCommand::KnowledgeIngestPrompt),
         );
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().messages.len(), 1);
     }
 
@@ -1725,7 +1725,7 @@ mod tests {
     fn dispatch_skill_list_pushes_system_message() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::SkillList));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().messages.len(), 1);
     }
 
@@ -1733,7 +1733,7 @@ mod tests {
     fn dispatch_mcp_list_pushes_system_message() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::McpList));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().messages.len(), 1);
     }
 
@@ -1741,7 +1741,7 @@ mod tests {
     fn dispatch_memory_stats_pushes_system_message() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::MemoryStats));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().messages.len(), 1);
     }
 
@@ -1749,7 +1749,7 @@ mod tests {
     fn dispatch_view_cost_pushes_system_message() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ViewCost));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().messages.len(), 1);
     }
 
@@ -1757,7 +1757,7 @@ mod tests {
     fn dispatch_view_tools_pushes_system_message() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ViewTools));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().messages.len(), 1);
     }
 
@@ -1765,7 +1765,7 @@ mod tests {
     fn dispatch_view_latency_pushes_system_message() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::ViewLatency));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().messages.len(), 1);
     }
 
@@ -1773,7 +1773,7 @@ mod tests {
     fn dispatch_scheduler_list_pushes_system_message() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::SchedulerList));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().messages.len(), 1);
     }
 
@@ -1781,7 +1781,7 @@ mod tests {
     fn dispatch_router_stats_pushes_system_message() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::RouterStats));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().messages.len(), 1);
     }
 
@@ -1789,7 +1789,7 @@ mod tests {
     fn dispatch_security_events_pushes_system_message() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::SecurityEvents));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().messages.len(), 1);
     }
 
@@ -1797,7 +1797,7 @@ mod tests {
     fn dispatch_daemon_status_reports_local_mode_when_disconnected() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::DaemonStatus));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         let msg = &app.sessions.current().messages.last().unwrap().content;
         assert!(msg.contains("local mode"));
         assert!(msg.contains("--connect"));
@@ -1808,7 +1808,7 @@ mod tests {
         let (mut app, _rx) = make_app();
         app = app.with_remote_daemon_url("http://example.com:9000");
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::DaemonStatus));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         let msg = &app.sessions.current().messages.last().unwrap().content;
         assert!(msg.contains("Connected"));
         assert!(msg.contains("http://example.com:9000"));
@@ -2050,7 +2050,7 @@ mod tests {
             &mut app,
             Action::Dispatch(TuiCommand::PrefillVerbatim("/image ".to_owned())),
         );
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().input, "/image ");
         assert!(
             app.sessions
@@ -2098,9 +2098,9 @@ mod tests {
 
         let effects = reduce(&mut app, Action::SlashAutocompleteAccept);
 
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert!(app.slash_autocomplete.is_none());
-        assert!(app.sessions.current().input.is_empty());
+        assert_eq!(app.sessions.current().input.len(), 0);
         // The command ran in-process (pushed a system message) instead of being
         // sent to the LLM as the literal text "/skill list".
         assert!(
@@ -2127,9 +2127,9 @@ mod tests {
 
         let effects = reduce(&mut app, Action::SlashAutocompleteAcceptAndSubmit);
 
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert!(app.show_task_panel);
-        assert!(app.sessions.current().input.is_empty());
+        assert_eq!(app.sessions.current().input.len(), 0);
         assert!(
             app.sessions
                 .current()
@@ -2148,7 +2148,7 @@ mod tests {
 
         let effects = reduce(&mut app, Action::SlashAutocompleteAcceptAndSubmit);
 
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.sessions.current().input, "/agent cancel ");
         assert!(
             app.sessions
@@ -2169,7 +2169,7 @@ mod tests {
 
         let effects = reduce(&mut app, Action::SubmitInput);
 
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.motion, zeph_config::Motion::Minimal);
     }
 
@@ -2180,7 +2180,7 @@ mod tests {
 
         let effects = reduce(&mut app, Action::SubmitInput);
 
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         // Single-session default: close() refuses and reports in-process,
         // proving the command ran locally rather than being dropped by the bridge.
         assert!(app.sessions.current().messages.iter().any(|m| {
@@ -2201,7 +2201,7 @@ mod tests {
 
         let effects = reduce(&mut app, Action::SubmitInput);
 
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         let msg = rx.try_recv().expect("channel must have one message");
         assert_eq!(msg, "/acp dirs");
     }
@@ -2213,7 +2213,7 @@ mod tests {
 
         let effects = reduce(&mut app, Action::SubmitInput);
 
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         let msg = rx.try_recv().expect("channel must have one message");
         assert_eq!(msg, "/subagent spawn review the diff");
     }
@@ -2280,7 +2280,7 @@ mod tests {
 
         let effects = reduce(&mut app, Action::OpenTranscriptSearch);
 
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         let state = app
             .transcript_search
             .as_ref()
@@ -2374,7 +2374,7 @@ mod tests {
 
         let effects = reduce(&mut app, Action::CloseTranscriptSearch);
 
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert!(app.transcript_search.is_none(), "overlay must close");
         assert_eq!(
             app.sessions.current().scroll_offset,
@@ -2401,7 +2401,7 @@ mod tests {
 
         let effects = reduce(&mut app, Action::TranscriptSearchAccept);
 
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert!(app.transcript_search.is_none(), "overlay must close");
         assert_eq!(
             app.sessions.current().scroll_offset,
@@ -2414,7 +2414,7 @@ mod tests {
     fn transcript_search_dispatch_command_opens_overlay() {
         let (mut app, _rx) = make_app_with_transcript();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::TranscriptSearch));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert!(app.transcript_search.is_some());
     }
 
@@ -2467,7 +2467,7 @@ mod tests {
     fn settings_dispatch_command_opens_settings_panel() {
         let (mut app, _rx) = make_app();
         let effects = reduce(&mut app, Action::Dispatch(TuiCommand::Settings));
-        assert!(effects.is_empty());
+        assert_eq!(effects.len(), 0);
         assert_eq!(app.active_panel, Panel::Settings);
     }
 }

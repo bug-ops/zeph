@@ -329,7 +329,7 @@ mod handoff_command_tests {
         let text = "```zeph-command\n{\"goto\": \"fallback task\"}\n```";
         let cmd = parse_handoff_command(text).expect("should parse");
         assert_eq!(cmd.goto, TaskRef::ByTitle("fallback task".to_string()));
-        assert!(cmd.update.is_empty());
+        assert_eq!(cmd.update, [] as [(String, String); 0]);
     }
 
     #[test]

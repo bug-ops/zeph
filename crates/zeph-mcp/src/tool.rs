@@ -413,7 +413,10 @@ mod tests {
     fn tool_default_security_meta_is_none_sensitivity() {
         let tool = make_tool("srv", "some_tool");
         assert_eq!(tool.security_meta.data_sensitivity, DataSensitivity::None);
-        assert!(tool.security_meta.capabilities.is_empty());
+        assert_eq!(
+            tool.security_meta.capabilities,
+            [] as [zeph_config::CapabilityClass; 0]
+        );
     }
 
     // infer_security_meta tests
@@ -538,7 +541,7 @@ mod tests {
     fn infer_unknown_tool_defaults_to_low_sensitivity_empty_caps() {
         let meta = infer_security_meta("do_something_random");
         assert_eq!(meta.data_sensitivity, DataSensitivity::Low);
-        assert!(meta.capabilities.is_empty());
+        assert_eq!(meta.capabilities, [] as [zeph_config::CapabilityClass; 0]);
     }
 
     #[test]

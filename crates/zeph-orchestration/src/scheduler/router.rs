@@ -254,7 +254,7 @@ mod tests {
 
         let rev_adj = build_rev_adj(&graph.tasks);
         let to_cancel = propagate_failure(&mut graph, TaskId(0), &rev_adj);
-        assert!(to_cancel.is_empty());
+        assert_eq!(to_cancel.len(), 0);
         assert_eq!(graph.tasks[0].status, TaskStatus::Completed);
 
         // DagScheduler::new independently requires a freshly-`Created` graph; recovery leaves
@@ -309,7 +309,7 @@ mod tests {
 
         let rev_adj = build_rev_adj(&graph.tasks);
         let to_cancel = propagate_failure(&mut graph, TaskId(0), &rev_adj);
-        assert!(to_cancel.is_empty());
+        assert_eq!(to_cancel.len(), 0);
         assert_eq!(graph.tasks[1].status, TS::Ready);
         assert_eq!(graph.tasks[1].routed_from, Some(TaskId(0)));
 

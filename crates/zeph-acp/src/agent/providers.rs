@@ -226,7 +226,10 @@ mod tests {
         let resp = state
             .do_list_providers(schema::ListProvidersRequest::new())
             .unwrap();
-        assert!(resp.providers.is_empty());
+        assert_eq!(
+            resp.providers,
+            [] as [agent_client_protocol_schema::v1::ProviderInfo; 0]
+        );
     }
 
     #[test]

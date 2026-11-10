@@ -3351,7 +3351,7 @@ mod tests {
         std::env::set_current_dir(tmp.path()).unwrap();
         let result = collect_project_rules(&[]);
         std::env::set_current_dir(orig).unwrap();
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [std::path::PathBuf; 0]);
     }
 
     #[test]
@@ -4770,7 +4770,10 @@ mod tests {
         // explicitly to exercise the empty-providers branch.
         let mut config = zeph_core::config::Config::default();
         config.llm.providers.clear();
-        assert!(acp_provider_names(&config).is_empty());
+        assert_eq!(
+            acp_provider_names(&config),
+            [] as [(String, zeph_acp::LlmProtocol); 0]
+        );
     }
 
     #[test]

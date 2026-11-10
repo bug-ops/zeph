@@ -2291,7 +2291,7 @@ mod tests {
             .into_iter()
             .partition(|s| matches!(s, KnowledgeSource::Subagents));
         assert_eq!(graph.len(), 1);
-        assert!(notes.is_empty());
+        assert_eq!(notes.len(), 0);
     }
 
     #[test]
@@ -2300,7 +2300,7 @@ mod tests {
         let (graph, notes): (Vec<_>, Vec<_>) = sources
             .into_iter()
             .partition(|s| matches!(s, KnowledgeSource::Subagents));
-        assert!(graph.is_empty());
+        assert_eq!(graph.len(), 0);
         assert_eq!(notes.len(), 2);
     }
 

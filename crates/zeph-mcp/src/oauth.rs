@@ -715,7 +715,7 @@ mod tests {
 
         let next = PinningOAuthHttpClient::next_hop_request(&prev, &response).unwrap();
         assert_eq!(next.method(), http::Method::GET);
-        assert!(next.body().is_empty());
+        assert_eq!(next.body().len(), 0);
         assert_eq!(next.uri(), "http://other.example/next");
     }
 
@@ -832,7 +832,7 @@ mod tests {
         let next = PinningOAuthHttpClient::next_hop_request(&prev, &response).unwrap();
         assert!(next.headers().get(http::header::CONTENT_TYPE).is_none());
         assert!(next.headers().get(http::header::CONTENT_ENCODING).is_none());
-        assert!(next.body().is_empty());
+        assert_eq!(next.body().len(), 0);
     }
 
     // --- execute_with_policy / execute_single (network, wiremock) ---

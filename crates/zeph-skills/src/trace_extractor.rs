@@ -626,7 +626,7 @@ mod tests {
     fn build_prompt_text_empty_messages() {
         let extractor = make_extractor();
         let result = extractor.build_prompt_text(&[]);
-        assert!(result.is_empty());
+        assert_eq!(result, "");
     }
 
     #[test]

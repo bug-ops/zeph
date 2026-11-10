@@ -179,25 +179,25 @@ mod tests {
     #[test]
     fn status_name_and_description() {
         assert_eq!(StatusCommand.name(), "/status");
-        assert!(!StatusCommand.description().is_empty());
+        assert_ne!(StatusCommand.description(), "");
     }
 
     #[test]
     fn guardrail_name_and_description() {
         assert_eq!(GuardrailCommand.name(), "/guardrail");
-        assert!(!GuardrailCommand.description().is_empty());
+        assert_ne!(GuardrailCommand.description(), "");
     }
 
     #[test]
     fn focus_name_and_description() {
         assert_eq!(FocusCommand.name(), "/focus");
-        assert!(!FocusCommand.description().is_empty());
+        assert_ne!(FocusCommand.description(), "");
     }
 
     #[test]
     fn sidequest_name_and_description() {
         assert_eq!(SideQuestCommand.name(), "/sidequest");
-        assert!(!SideQuestCommand.description().is_empty());
+        assert_ne!(SideQuestCommand.description(), "");
     }
 
     #[tokio::test]

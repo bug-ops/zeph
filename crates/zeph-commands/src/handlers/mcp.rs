@@ -73,7 +73,7 @@ mod tests {
     #[test]
     fn mcp_name_and_description() {
         assert_eq!(McpCommand.name(), "/mcp");
-        assert!(!McpCommand.description().is_empty());
+        assert_ne!(McpCommand.description(), "");
     }
 
     #[tokio::test]

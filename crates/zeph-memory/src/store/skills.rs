@@ -1940,7 +1940,7 @@ mod tests {
             .unwrap();
 
         let patterns = store.find_recurring_patterns(3, 90).await.unwrap();
-        assert!(patterns.is_empty());
+        assert_eq!(patterns, [] as [(String, String, u32, u32); 0]);
     }
 
     #[tokio::test]

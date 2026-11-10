@@ -970,7 +970,7 @@ async fn disambiguate_skills_empty_candidates() {
 
     let result = agent.disambiguate_skills("query", &refs, &scored).await;
     assert!(result.is_some());
-    assert!(result.unwrap().is_empty());
+    assert_eq!(result.unwrap(), [] as [usize; 0]);
 }
 
 #[tokio::test]

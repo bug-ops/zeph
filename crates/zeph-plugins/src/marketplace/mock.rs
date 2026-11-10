@@ -133,7 +133,7 @@ mod tests {
         let mock = MockRegistryClient::new().with_entry(sample_entry("a/b", "PDF Tools"));
         let results = mock.search("pdf").await.unwrap();
         assert_eq!(results.len(), 1);
-        assert!(mock.search("nomatch").await.unwrap().is_empty());
+        assert_eq!(mock.search("nomatch").await.unwrap().len(), 0);
     }
 
     #[tokio::test]

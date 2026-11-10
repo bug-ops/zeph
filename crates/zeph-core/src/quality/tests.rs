@@ -238,7 +238,7 @@ async fn supported_with_high_evidence_not_flagged() {
     let report = pipeline
         .run("text", RetrievedContext::default(), "q", 1)
         .await;
-    assert!(report.flagged_ids.is_empty());
+    assert_eq!(report.flagged_ids, [] as [u32; 0]);
 }
 
 // ─── Config validation tests ──────────────────────────────────────────────────

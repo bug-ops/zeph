@@ -331,14 +331,14 @@ mod tests {
     #[test]
     fn build_empty() {
         let idx = Bm25Index::build(&[]);
-        assert!(idx.search("anything", 5).is_empty());
+        assert_eq!(idx.search("anything", 5), [] as [(usize, f32); 0]);
     }
 
     #[test]
     fn search_no_match() {
         let idx = Bm25Index::build(&["run git commands", "manage docker containers"]);
         let results = idx.search("zzzyyyxxx", 5);
-        assert!(results.is_empty());
+        assert_eq!(results, [] as [(usize, f32); 0]);
     }
 
     #[test]
@@ -349,7 +349,7 @@ mod tests {
             "web search browsing",
         ]);
         let results = idx.search("git", 3);
-        assert!(!results.is_empty());
+        assert_ne!(results, [] as [(usize, f32); 0]);
         assert_eq!(results[0].0, 1, "git doc should rank first");
     }
 
@@ -357,7 +357,7 @@ mod tests {
     fn search_multi_word_query() {
         let idx = Bm25Index::build(&["run shell commands bash", "git version control commit"]);
         let results = idx.search("git commit", 5);
-        assert!(!results.is_empty());
+        assert_ne!(results, [] as [(usize, f32); 0]);
         assert_eq!(results[0].0, 1);
     }
 
@@ -449,7 +449,7 @@ mod tests {
     fn search_limit_zero_returns_empty() {
         let idx = Bm25Index::build(&["run git commands"]);
         let results = idx.search("git", 0);
-        assert!(results.is_empty());
+        assert_eq!(results, [] as [(usize, f32); 0]);
     }
 
     /// Rank-0 in one list must normalize to 0.5, which is well above

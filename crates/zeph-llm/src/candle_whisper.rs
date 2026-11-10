@@ -372,7 +372,7 @@ mod tests {
     fn debug_format() {
         let d = detect_device();
         let name = device_name(&d);
-        assert!(!name.is_empty());
+        assert_ne!(name, "");
     }
 
     #[test]
@@ -393,7 +393,7 @@ mod tests {
     fn resample_zeros_preserves_silence() {
         let input = vec![0.0_f32; 1000];
         let output = resample(&input, 44100, 16000).unwrap();
-        assert!(!output.is_empty());
+        assert_ne!(output, [] as [f32; 0]);
         for &s in &output {
             assert!(s.abs() < 1e-6, "expected silence, got {s}");
         }

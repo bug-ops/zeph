@@ -196,7 +196,7 @@ mod tests {
     fn file_changed_config_default_debounce() {
         let cfg = FileChangedConfig::default();
         assert_eq!(cfg.debounce_ms, 500);
-        assert!(cfg.watch_paths.is_empty());
+        assert_eq!(cfg.watch_paths, [] as [std::path::PathBuf; 0]);
         assert!(cfg.hooks.is_empty());
     }
 

@@ -2052,7 +2052,7 @@ mod tests {
         let paths = agent
             .resolve_whole_plan_trace_paths(&graph)
             .expect("no completed tasks means vacuously available, not unavailable");
-        assert!(paths.is_empty());
+        assert_eq!(paths, [] as [std::path::PathBuf; 0]);
 
         let union = Agent::<MockChannel>::build_whole_plan_tool_trace(paths)
             .await

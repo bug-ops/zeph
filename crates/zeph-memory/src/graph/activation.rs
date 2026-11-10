@@ -1283,7 +1283,7 @@ mod tests {
         let p = HelaSpreadParams::default();
         assert_eq!(p.spread_depth, 2);
         assert!(p.step_budget.is_some());
-        assert!(p.edge_types.is_empty());
+        assert_eq!(p.edge_types, [] as [zeph_common::memory::EdgeType; 0]);
         assert_eq!(p.max_visited, 200);
     }
 

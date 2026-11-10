@@ -574,7 +574,7 @@ impl Foo {
             max_results: 10,
         };
         let result = run_find_text_references_paths(dir.path(), &rel_paths, &params);
-        assert!(result.as_array().unwrap().is_empty());
+        assert_eq!(result.as_array().unwrap().len(), 0);
     }
 
     #[test]
@@ -607,7 +607,7 @@ impl Foo {
             "module_summary for lib.rs should not be null"
         );
         let entities = result["entities"].as_array().unwrap();
-        assert!(!entities.is_empty());
+        assert_ne!(entities.len(), 0);
         // At least one of hello/world/Foo should be listed.
         let names: Vec<&str> = entities.iter().filter_map(|e| e["name"].as_str()).collect();
         assert!(
@@ -656,7 +656,7 @@ impl Foo {
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].as_str(), Some("nonexistent_fn_xyz"));
         let edges = result["edges"].as_array().unwrap();
-        assert!(edges.is_empty());
+        assert_eq!(edges.len(), 0);
     }
 
     #[test]

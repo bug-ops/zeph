@@ -1650,7 +1650,7 @@ mod tests {
         let theme = Theme::default();
         let base = theme.assistant_message;
         let lines = spans_only(render_md("# Title", base, &theme).0);
-        assert!(!lines.is_empty());
+        assert_ne!(lines.len(), 0);
         let heading_span = &lines[0][0];
         assert_eq!(heading_span.content, "Title");
         assert_eq!(
@@ -1664,7 +1664,7 @@ mod tests {
         let theme = Theme::default();
         let (tagged, link_refs) =
             render_md("[click](https://x.com)", theme.assistant_message, &theme);
-        assert!(!tagged.is_empty());
+        assert_ne!(tagged.len(), 0);
         assert_eq!(link_refs.len(), 1);
         assert_eq!(link_refs[0].text, "click");
         assert_eq!(link_refs[0].url, "https://x.com");
@@ -1675,7 +1675,7 @@ mod tests {
         let theme = Theme::default();
         let (tagged, link_refs) =
             render_md("[**bold**](https://x.com)", theme.assistant_message, &theme);
-        assert!(!tagged.is_empty());
+        assert_ne!(tagged.len(), 0);
         assert_eq!(link_refs.len(), 1);
         assert_eq!(link_refs[0].text, "bold");
         assert_eq!(link_refs[0].url, "https://x.com");
@@ -1729,7 +1729,7 @@ mod tests {
         let theme = Theme::default();
         let content = "<think>still thinking";
         let (tagged, _) = render_with_thinking(content, theme.assistant_message, &theme);
-        assert!(!tagged.is_empty());
+        assert_ne!(tagged.len(), 0);
         assert_eq!(tagged[0].1[0].style, theme.thinking_message);
     }
 
@@ -2701,7 +2701,7 @@ mod tests {
             theme.assistant_message,
             &theme,
         );
-        assert!(!tagged.is_empty());
+        assert_ne!(tagged.len(), 0);
         for (kind, _) in &tagged {
             assert_eq!(
                 *kind,
@@ -2733,7 +2733,7 @@ mod tests {
     fn empty_code_block_tagged_correctly() {
         let theme = Theme::default();
         let (tagged, _) = render_md("```\n```", theme.assistant_message, &theme);
-        assert!(!tagged.is_empty());
+        assert_ne!(tagged.len(), 0);
         for (kind, _) in &tagged {
             assert_eq!(*kind, LineKind::CodeBlock);
         }

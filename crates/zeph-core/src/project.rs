@@ -58,7 +58,7 @@ mod tests {
     fn discover_project_configs_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
         let configs = discover_project_configs(dir.path());
-        assert!(configs.is_empty());
+        assert_eq!(configs, [] as [std::path::PathBuf; 0]);
     }
 
     #[test]
@@ -95,7 +95,7 @@ mod tests {
     #[test]
     fn load_project_context_empty() {
         let result = load_project_context(&[]);
-        assert!(result.is_empty());
+        assert_eq!(result, "");
     }
 
     #[test]

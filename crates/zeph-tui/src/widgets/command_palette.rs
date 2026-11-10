@@ -169,7 +169,7 @@ mod tests {
         let state = CommandPaletteState::new();
         assert!(state.filtered.len() >= 12);
         assert_eq!(state.selected, 0);
-        assert!(state.query.is_empty());
+        assert_eq!(state.query.len(), 0);
         assert_eq!(state.cursor, 0);
     }
 
@@ -198,7 +198,7 @@ mod tests {
     fn pop_char_on_empty_is_noop() {
         let mut state = CommandPaletteState::new();
         state.pop_char();
-        assert!(state.query.is_empty());
+        assert_eq!(state.query.len(), 0);
         assert_eq!(state.cursor, 0);
     }
 

@@ -171,7 +171,7 @@ mod tests {
 
     #[test]
     fn format_heuristics_section_empty() {
-        assert!(format_heuristics_section(&[]).is_empty());
+        assert_eq!(format_heuristics_section(&[]), "");
     }
 
     #[test]

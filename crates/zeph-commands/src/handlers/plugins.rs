@@ -69,12 +69,12 @@ mod tests {
 
     #[test]
     fn description_is_non_empty() {
-        assert!(!PluginsCommand.description().is_empty());
+        assert_ne!(PluginsCommand.description(), "");
     }
 
     #[test]
     fn args_hint_is_non_empty() {
-        assert!(!PluginsCommand.args_hint().is_empty());
+        assert_ne!(PluginsCommand.args_hint(), "");
     }
 
     #[tokio::test]

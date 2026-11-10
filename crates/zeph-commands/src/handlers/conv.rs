@@ -75,7 +75,7 @@ mod tests {
     #[test]
     fn conv_name_and_description() {
         assert_eq!(ConvCommand.name(), "/conv");
-        assert!(!ConvCommand.description().is_empty());
+        assert_ne!(ConvCommand.description(), "");
     }
 
     #[tokio::test]
@@ -89,7 +89,7 @@ mod tests {
         let result = ConvCommand.handle(&mut ctx, "").await;
         assert!(result.is_ok());
         if let Ok(CommandOutput::Message(msg)) = result {
-            assert!(!msg.is_empty());
+            assert_ne!(msg, "");
         }
     }
 

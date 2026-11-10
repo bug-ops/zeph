@@ -65,7 +65,7 @@ mod tests {
     #[test]
     fn caveman_name_and_description() {
         assert_eq!(CavemanCommand.name(), "/caveman");
-        assert!(!CavemanCommand.description().is_empty());
+        assert_ne!(CavemanCommand.description(), "");
     }
 
     #[tokio::test]
