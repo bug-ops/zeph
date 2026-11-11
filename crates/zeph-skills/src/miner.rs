@@ -595,7 +595,7 @@ impl SkillMiner {
     /// Returns `SkillError::Other` if the embedding call fails.
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "skills.miner.is_novel", skip(self, candidate, existing_embeddings), fields(candidate_name = %candidate.name, existing_count = existing_embeddings.len()))
+        tracing::instrument(name = "skills.miner.is_novel", skip(self, candidate, existing_embeddings), fields(candidate_name = %candidate.name(), existing_count = existing_embeddings.len()))
     )]
     pub async fn is_novel(
         &self,

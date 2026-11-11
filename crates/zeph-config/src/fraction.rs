@@ -368,6 +368,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // parsed literal must round-trip exactly
     fn from_str_parses_and_validates() {
         assert_eq!("0.25".parse::<UnitOpen>().unwrap().get(), 0.25);
         assert!(matches!(
@@ -382,6 +383,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // const literal must be stored exactly
     fn literal_in_const_context() {
         const V: UnitUpperClosed = UnitUpperClosed::literal(1.0);
         assert_eq!(V.get(), 1.0);

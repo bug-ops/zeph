@@ -1048,6 +1048,7 @@ mod tests {
     /// `serde(default)` can never silently pick another field's default (cascade abort must stay
     /// disabled at 0.0).
     #[test]
+    #[allow(clippy::float_cmp)] // defaults must be exactly the documented constants
     fn omitted_unit_interval_keys_keep_their_defaults() {
         let cases = [
             float_default_cases_0(),

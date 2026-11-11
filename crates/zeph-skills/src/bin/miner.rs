@@ -103,10 +103,10 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&output_dir)
         .with_context(|| format!("failed to create output dir {}", output_dir.display()))?;
 
-    let queries: Vec<String> = if !cli.queries.is_empty() {
-        cli.queries
-    } else {
+    let queries: Vec<String> = if cli.queries.is_empty() {
         config.skills.mining.queries.clone()
+    } else {
+        cli.queries
     };
 
     if queries.is_empty() {
@@ -152,7 +152,7 @@ async fn main() -> anyhow::Result<()> {
         println!(
             "[{}] {} (nearest_sim={:.2}{})",
             mined.repo,
-            mined.skill.name,
+            mined.skill.name(),
             mined.nearest_similarity,
             if cli.dry_run { ", dry-run" } else { "" }
         );
@@ -171,7 +171,7 @@ fn default_config_path() -> PathBuf {
         .join("config.toml")
 }
 
-/// Resolve GitHub token from ZEPH_GITHUB_TOKEN environment variable.
+/// Resolve GitHub token from `ZEPH_GITHUB_TOKEN` environment variable.
 ///
 /// Production use: store the token in the Zeph age vault via `zeph vault set ZEPH_GITHUB_TOKEN`.
 /// The miner binary cannot access the vault directly (no `zeph-core` dependency), so the token
@@ -252,9 +252,7 @@ fn build_provider(config: &zeph_config::Config, name: &str) -> anyhow::Result<An
 
 fn expand_tilde(path: &str) -> PathBuf {
     if let Some(stripped) = path.strip_prefix("~/") {
-        dirs::home_dir()
-            .map(|h| h.join(stripped))
-            .unwrap_or_else(|| PathBuf::from(path))
+        dirs::home_dir().map_or_else(|| PathBuf::from(path), |h| h.join(stripped))
     } else {
         PathBuf::from(path)
     }
