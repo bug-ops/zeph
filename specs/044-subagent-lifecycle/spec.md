@@ -218,7 +218,7 @@ AND memory content exceeding the token budget is truncated, not omitted entirely
 | `SubAgentManager` | Lifecycle manager | Concurrency limit, active handles map, cancellation registry |
 | `SubAgentHandle` | Reference to a running task | Task ID (UUID), status channel, cancellation token |
 | `SubAgentStatus` | Current state of a task | Variants: `Running`, `Completed`, `Failed`, `Cancelled` |
-| `SpawnContext` | Parent-derived spawn state | `parent_messages`, `parent_cancel`, `parent_provider_name`, `spawn_depth`, `mcp_tool_names`, `max_trust_level`, `inherited_tool_allowlist` |
+| `SpawnContext` | Parent-derived spawn state | `parent_messages`, `parent_cancel`, `parent_provider_name`, `spawn_depth`, `mcp_tool_names`, `max_trust_level`, `inherited_tool_allowlist`, `credential_scrub` |
 | `PermissionGrants` | TTL-bounded permission registry | Map of `GrantKind` → expiry timestamp |
 | `Grant` | Single permission grant | `kind: GrantKind`, `ttl_secs`, expiry instant |
 | `GrantKind` | Type of permission | Variants: `Secret(String)` (vault key), `Tool(String)` (tool name, #6625) |
@@ -781,7 +781,38 @@ resets at session start and is never persisted across sessions.
 
 ---
 
-## 20. See Also
+## 20. Tool-Result Pipeline, Hook Dispatch and Trust-Filter Warning (#6981, #6987, #6995)
+
+### Per-result pipeline (#6981)
+
+Every sub-agent tool result (the `Ok(Some)` summary and the `Err` text) is protected in `protect_tool_text` (`agent_loop.rs`, span `subagent.tool.sanitize_result`) before it enters `messages`, in the same order the main agent applies it:
+
+1. `PostToolUse` hooks (replacement only on `Ok(Some)`, `[[028-hooks/spec]]`)
+2. `strip_control_chars_preserve_whitespace` (control and zero-width characters are removed first so they cannot split a secret past the matchers)
+3. `SecretMaskRegistry::mask` (`would_mask` pre-check; section 16)
+4. `zeph_common::secret_redact::scrub_secrets`, only when `CredentialScrub::Enabled`
+5. `ContentSanitizer::sanitize(raw, zeph_sanitizer::tool_output_source(tool_name))` (injection flags logged at `warn`)
+6. `[tool output: name]` fence for results, `[tool error]:` prefix for errors
+
+`SpawnContext.credential_scrub: CredentialScrub { Enabled, Disabled }` (`Default = Enabled`, `From<bool>`) is set from `runtime.config.redact_credentials` when the context is built in `subagent_commands.rs` and threaded into `AgentLoopArgs`. The sub-agent wire `is_error` stays `Err`-only: a non-zero exit is not a sub-agent tool error (`[[006-tools/spec]]`).
+
+### Hook dispatch (#6987)
+
+Pre/post tool hooks and lifecycle hooks use `HookAgentType`, `HookAgentCtx` (`tool_env`, `lifecycle_env`), `PreToolHookCall` and `PostToolHookCall` from `zeph_subagent::hooks`; the former `make_hook_env` helper in `manager/secrets.rs` is replaced by `HookAgentCtx::lifecycle_env`. Details in `[[028-hooks/spec]]`.
+
+### Trust-filter warning (#6995)
+
+`filter_skills` emits exactly one `warn!` per call, with per-trust-level exclusion counts and the promote hint; the per-skill exclusion is `debug!`.
+
+### Key Invariants
+
+- NEVER push a sub-agent tool result into history without the pipeline above; `CredentialScrub::Disabled` is only reachable through `redact_credentials = false`
+- A new `SpawnContext` construction path MUST set `credential_scrub` from config; the secure default is `Enabled`
+- `filter_skills` MUST NOT log one `warn!` per excluded skill
+
+---
+
+## 21. See Also
 
 - [[constitution]] — project principles
 - [[002-agent-loop/spec]] — parent agent loop that uses `SubAgentManager`

@@ -48,7 +48,7 @@ impl<C: Channel> Agent<C> {
                         .send_status_best_effort("context too long, compacting...")
                         .await;
                     let _ = self.compact_context().await?;
-                    self.channel.send_status_best_effort("").await;
+                    self.channel.clear_status_best_effort().await;
                 }
                 Err(e) if e.is_beta_header_rejected() && attempt + 1 < max_attempts => {
                     // SEC-COMPACT-03: the compact-2026-01-12 beta header was rejected by the API.
@@ -65,7 +65,7 @@ impl<C: Channel> Agent<C> {
                             "server compaction unavailable, falling back to client-side...",
                         )
                         .await;
-                    self.channel.send_status_best_effort("").await;
+                    self.channel.clear_status_best_effort().await;
                 }
                 Err(crate::agent::error::AgentError::Llm(e)) if e.is_refusal() => {
                     return self.surface_refusal(&e).await;

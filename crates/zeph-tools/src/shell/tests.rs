@@ -209,12 +209,10 @@ async fn timeout_logged_as_audit_timeout_not_error() {
     );
 }
 
-#[tokio::test]
 #[cfg(not(target_os = "windows"))]
-async fn stderr_output_logged_as_audit_error() {
+async fn audited_executor(dir: &tempfile::TempDir) -> (ShellExecutor, std::path::PathBuf) {
     use crate::audit::AuditLogger;
     use crate::config::AuditConfig;
-    let dir = tempfile::tempdir().unwrap();
     let log_path = dir.path().join("audit.log");
     let audit_config = AuditConfig {
         enabled: true,
@@ -226,13 +224,144 @@ async fn stderr_output_logged_as_audit_error() {
             .await
             .unwrap(),
     );
-    let executor = ShellExecutor::new(&default_config()).with_audit(logger);
-    let _ = executor.execute("```bash\necho err >&2\n```").await;
+    (
+        ShellExecutor::new(&default_config()).with_audit(logger),
+        log_path,
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn bash_call(command: &str) -> ToolCall {
+    ToolCall {
+        tool_id: ToolName::new("bash"),
+        params: [("command".to_owned(), serde_json::json!(command))]
+            .into_iter()
+            .collect(),
+        caller_id: None,
+        context: None,
+        tool_call_id: None,
+        skill_name: None,
+    }
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn stderr_output_with_exit_zero_is_audit_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let (executor, log_path) = audited_executor(&dir).await;
+    let out = executor
+        .execute_tool_call(&bash_call("echo err >&2"))
+        .await
+        .unwrap()
+        .unwrap();
+    let content = tokio::fs::read_to_string(&log_path).await.unwrap();
+    assert!(
+        content.contains("\"type\":\"success\""),
+        "exit 0 with stderr must be audit success, got: {content}"
+    );
+    assert_eq!(out.status, ToolStatus::Success);
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn error_marker_text_with_exit_zero_is_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let (executor, log_path) = audited_executor(&dir).await;
+    let out = executor
+        .execute_tool_call(&bash_call("echo '[error] sample line'"))
+        .await
+        .unwrap()
+        .unwrap();
+    let content = tokio::fs::read_to_string(&log_path).await.unwrap();
+    assert!(content.contains("\"type\":\"success\""), "{content}");
+    assert_eq!(out.status, ToolStatus::Success);
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn permission_denied_text_with_exit_zero_is_ok_success() {
+    let executor = ShellExecutor::new(&default_config());
+    let out = executor
+        .execute_tool_call(&bash_call("echo 'Permission denied' >&2"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out.status, ToolStatus::Success);
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn nonzero_exit_is_audit_error_and_non_zero_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let (executor, log_path) = audited_executor(&dir).await;
+    let out = executor
+        .execute_tool_call(&bash_call("echo boom; exit 1"))
+        .await
+        .unwrap()
+        .unwrap();
     let content = tokio::fs::read_to_string(&log_path).await.unwrap();
     assert!(
         content.contains("\"type\":\"error\""),
-        "expected AuditResult::Error for [stderr] output, got: {content}"
+        "non-zero exit must be audit error, got: {content}"
     );
+    assert_eq!(out.status, ToolStatus::from_exit_code(1));
+    assert!(out.status.is_failure());
+    assert!(!out.status.aborts_dependants());
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn legacy_block_path_sets_status_from_exit_code() {
+    let executor = ShellExecutor::new(&default_config());
+    let out = executor
+        .execute("```bash\nexit 3\n```")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out.status, ToolStatus::from_exit_code(3));
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn multi_block_status_and_envelope_come_from_the_same_block() {
+    let executor = ShellExecutor::new(&default_config());
+    let out = executor
+        .execute("```bash\nexit 3\n```\n```bash\ntrue\n```")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out.status, ToolStatus::from_exit_code(3));
+    let envelope: ShellOutputEnvelope = serde_json::from_value(out.raw_response.unwrap()).unwrap();
+    assert_eq!(envelope.exit_code, 3);
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn sandbox_launch_failure_is_shell_permanent_failure_error() {
+    let (_, out) = {
+        let run = spawn_error_run(&std::io::Error::other("boom"));
+        assert_eq!(run.termination, BashTermination::LaunchFailed);
+        run.into_pair()
+    };
+    let executor = ShellExecutor::new(&default_config());
+    let err = executor
+        .classify_and_audit("x", &out, BashTermination::LaunchFailed, 1, 0)
+        .await
+        .expect("launch failure must be an error");
+    assert!(matches!(
+        err,
+        ToolError::Shell {
+            category: crate::error_taxonomy::ToolErrorCategory::PermanentFailure,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn exit_zero_with_permission_denied_text_does_not_classify() {
+    assert_eq!(classify_shell_exit(0, "Permission denied"), None);
+    assert_eq!(classify_shell_exit(0, "No such file or directory"), None);
 }
 
 #[tokio::test]
@@ -3896,4 +4025,53 @@ async fn output_chunks_carry_the_call_execution_id() {
     }
     assert!(!chunk_ids.is_empty(), "expected at least one OutputChunk");
     assert!(chunk_ids.iter().all(|c| c.as_ref() == Some(&id)));
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn background_run_reports_real_exit_code_and_ignores_output_text() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let executor = ShellExecutor::new(&default_config()).with_background_completion_tx(tx);
+    for (command, exit_code, success) in
+        [("echo '[error] only text'", 0, true), ("exit 7", 7, false)]
+    {
+        let call = ToolCall {
+            tool_id: ToolName::new("bash"),
+            params: [
+                ("command".to_owned(), serde_json::json!(command)),
+                ("background".to_owned(), serde_json::json!(true)),
+            ]
+            .into_iter()
+            .collect(),
+            caller_id: None,
+            context: None,
+            tool_call_id: None,
+            skill_name: None,
+        };
+        executor.execute_tool_call(&call).await.unwrap().unwrap();
+        let done = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(done.exit_code, exit_code, "{command}");
+        assert_eq!(done.success, success, "{command}");
+    }
+}
+
+#[test]
+fn tool_status_predicates_differ_only_on_nonzero_exit() {
+    let statuses = [
+        ToolStatus::Success,
+        ToolStatus::from_exit_code(2),
+        ToolStatus::Failed,
+        ToolStatus::Synthetic(crate::SyntheticKind::GateRefused),
+        ToolStatus::Synthetic(crate::SyntheticKind::HookBlocked),
+        ToolStatus::Synthetic(crate::SyntheticKind::RateLimited),
+        ToolStatus::Synthetic(crate::SyntheticKind::UtilitySkipped),
+    ];
+    let differing: Vec<_> = statuses
+        .into_iter()
+        .filter(|s| s.is_failure() != s.aborts_dependants())
+        .collect();
+    assert_eq!(differing, vec![ToolStatus::from_exit_code(2)]);
 }

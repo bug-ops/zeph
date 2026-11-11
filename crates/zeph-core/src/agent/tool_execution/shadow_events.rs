@@ -80,7 +80,7 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let cfg = zeph_config::ShadowMemoryConfig {
             enabled,
-            drift_threshold: 0.01,
+            drift_threshold: zeph_config::UnitUpperClosed::literal(0.01),
             window_size: 3,
             max_events: 50,
         };
@@ -122,7 +122,7 @@ mod tests {
             let (tx, rx) = watch::channel(crate::metrics::MetricsSnapshot::default());
             let cfg = zeph_config::ShadowMemoryConfig {
                 enabled: true,
-                drift_threshold: 0.01,
+                drift_threshold: zeph_config::UnitUpperClosed::literal(0.01),
                 window_size: 3,
                 max_events: 100,
             };

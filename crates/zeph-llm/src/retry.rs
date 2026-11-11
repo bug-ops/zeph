@@ -5,7 +5,7 @@ use std::future::Future;
 use std::time::{Duration, Instant};
 
 use crate::error::LlmError;
-use crate::provider::StatusTx;
+use crate::provider::{StatusTx, StatusUpdate};
 use crate::usage::UsageTracker;
 
 const BASE_BACKOFF_SECS: u64 = 1;
@@ -92,7 +92,7 @@ where
                 max_retries
             );
             if let Some(tx) = status_tx {
-                let _ = tx.send(msg.clone());
+                let _ = tx.send(StatusUpdate::set(msg.clone()));
             }
             tracing::warn!("{msg}");
             tokio::time::sleep(delay).await;

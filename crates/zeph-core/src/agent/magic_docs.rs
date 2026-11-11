@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use zeph_llm::provider::StatusUpdate;
 
 use zeph_common::ToolCallId;
 use zeph_llm::provider::{LlmProvider as _, Message, MessagePart, Role};
@@ -255,12 +256,12 @@ impl<C: Channel> super::Agent<C> {
             docs = due_paths.len(),
             "magic_docs: spawning background update"
         );
-        let _ = self
-            .services
-            .session
-            .status_tx
-            .as_ref()
-            .map(|tx| tx.send(format!("Updating {} magic doc(s)…", due_paths.len())));
+        let _ = self.services.session.status_tx.as_ref().map(|tx| {
+            tx.send(StatusUpdate::set(format!(
+                "Updating {} magic doc(s)…",
+                due_paths.len()
+            )))
+        });
 
         let update_future = async move {
             for path in &due_paths {

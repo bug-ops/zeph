@@ -24,6 +24,7 @@ use serial_test::serial;
 use crate::agent_loop::{AgentLoopArgs, make_message, run_agent_loop};
 use crate::def::{MemoryScope, ModelSpec, ToolPolicy};
 use crate::filter::FilteredToolExecutor;
+use crate::manager::CredentialScrub;
 use zeph_config::{ContentIsolationConfig, SubAgentConfig};
 use zeph_llm::provider::{ChatResponse, Role};
 
@@ -2786,6 +2787,7 @@ fn make_agent_loop_args(
         spawn_depth: 0,
         mcp_tool_names: Vec::new(),
         content_isolation: ContentIsolationConfig::default(),
+        credential_scrub: CredentialScrub::default(),
         max_history_messages: 200,
         llm_timeout: std::time::Duration::from_mins(2),
         progress_at: None,
@@ -2946,6 +2948,7 @@ async fn run_agent_loop_publishes_failed_status_on_llm_call_timeout() {
         spawn_depth: 0,
         mcp_tool_names: Vec::new(),
         content_isolation: ContentIsolationConfig::default(),
+        credential_scrub: CredentialScrub::default(),
         max_history_messages: 200,
         // Much shorter than the mock provider's 500ms delay so the timeout branch fires
         // deterministically instead of racing the real response.
@@ -3110,6 +3113,7 @@ async fn run_agent_loop_finalizes_transcript_anchor_on_llm_error_exit_path() {
         spawn_depth: 0,
         mcp_tool_names: Vec::new(),
         content_isolation: ContentIsolationConfig::default(),
+        credential_scrub: CredentialScrub::default(),
         max_history_messages: 200,
         // Much shorter than the mock provider's 500ms delay so the timeout branch fires
         // deterministically instead of racing the real response.

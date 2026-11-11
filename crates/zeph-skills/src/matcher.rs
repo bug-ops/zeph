@@ -185,7 +185,11 @@ impl CategoryMatcher {
         let mut uncategorized: Vec<usize> = Vec::new();
 
         for (pos, (skill_idx, _)) in embeddings.iter().enumerate() {
-            match skills[*skill_idx].category.as_deref() {
+            match skills[*skill_idx]
+                .category
+                .as_ref()
+                .map(zeph_common::SkillCategory::as_str)
+            {
                 Some(cat) => by_category.entry(cat.to_string()).or_default().push(pos),
                 None => uncategorized.push(pos),
             }
@@ -741,7 +745,7 @@ mod tests {
 
     fn make_meta_with_category(name: &str, description: &str, category: &str) -> SkillMeta {
         SkillMeta {
-            category: Some(category.into()),
+            category: Some(zeph_common::SkillCategory::parse(category).unwrap()),
             ..SkillMeta::new(SkillName::parse(name).unwrap(), description)
         }
     }

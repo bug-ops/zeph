@@ -146,8 +146,8 @@ pub struct PostToolUseHookInput<'a> {
     /// `task_id` for sub-agents. Absent when no conversation has been bound yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<&'a str>,
-    /// Discriminator for the agent that fired this hook: `"main"` or `"subagent"`.
-    pub agent_type: &'a str,
+    /// Discriminator for the agent that fired this hook.
+    pub agent_type: HookAgentType,
 }
 
 /// Maximum number of bytes read from hook stdout before truncation.
@@ -628,6 +628,289 @@ fn parse_hook_stdout(command: &str, bytes: &[u8]) -> HookOutput {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+// ── Agent context and tool-hook dispatch ──────────────────────────────────────
+
+/// Which kind of agent fires a hook.
+///
+/// Serialized as `"main"` / `"subagent"`, the value hook scripts see in the `agent_type`
+/// stdin field and the `ZEPH_AGENT_TYPE` environment variable.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_subagent::hooks::HookAgentType;
+///
+/// assert_eq!(HookAgentType::Main.as_str(), "main");
+/// assert_eq!(serde_json::to_string(&HookAgentType::Subagent).unwrap(), "\"subagent\"");
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HookAgentType {
+    /// The main agent loop (tier loop and inline orchestration loop).
+    Main,
+    /// A spawned sub-agent.
+    Subagent,
+}
+
+impl HookAgentType {
+    /// The wire value of this agent type.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Main => "main",
+            Self::Subagent => "subagent",
+        }
+    }
+}
+
+/// Identity of the agent firing a hook: the single source of the agent-context environment
+/// variables and stdin fields, so every dispatch site reports it the same way.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_subagent::hooks::HookAgentCtx;
+///
+/// let env = HookAgentCtx::subagent("task-1", "bot").lifecycle_env();
+/// assert_eq!(env["ZEPH_AGENT_TYPE"], "subagent");
+/// assert_eq!(env["ZEPH_AGENT_ID"], "task-1");
+/// assert_eq!(env["ZEPH_AGENT_NAME"], "bot");
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct HookAgentCtx<'a> {
+    /// Kind of agent.
+    pub agent_type: HookAgentType,
+    /// Stable agent identifier: the conversation id (main) or the task id (sub-agent).
+    pub agent_id: Option<&'a str>,
+    /// Agent definition name; sub-agents only.
+    pub agent_name: Option<&'a str>,
+    /// Conversation / session identifier handed to tool hooks.
+    pub session_id: Option<&'a str>,
+}
+
+impl<'a> HookAgentCtx<'a> {
+    /// Context of the main agent; the conversation id doubles as agent id and session id.
+    #[must_use]
+    pub const fn main(session_id: Option<&'a str>) -> Self {
+        Self {
+            agent_type: HookAgentType::Main,
+            agent_id: session_id,
+            agent_name: None,
+            session_id,
+        }
+    }
+
+    /// Context of a sub-agent identified by its task id and definition name.
+    #[must_use]
+    pub const fn subagent(task_id: &'a str, agent_name: &'a str) -> Self {
+        Self {
+            agent_type: HookAgentType::Subagent,
+            agent_id: Some(task_id),
+            agent_name: Some(agent_name),
+            session_id: None,
+        }
+    }
+
+    /// Insert `ZEPH_AGENT_TYPE` and, when known, `ZEPH_AGENT_ID` and `ZEPH_AGENT_NAME`.
+    pub fn insert_agent_vars(&self, env: &mut HashMap<String, String>) {
+        env.insert(
+            "ZEPH_AGENT_TYPE".to_owned(),
+            self.agent_type.as_str().to_owned(),
+        );
+        if let Some(id) = self.agent_id {
+            env.insert("ZEPH_AGENT_ID".to_owned(), id.to_owned());
+        }
+        if let Some(name) = self.agent_name {
+            env.insert("ZEPH_AGENT_NAME".to_owned(), name.to_owned());
+        }
+    }
+
+    /// Environment for a `PreToolUse`/`PostToolUse` hook on one tool call.
+    #[must_use]
+    pub fn tool_env(
+        &self,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+    ) -> HashMap<String, String> {
+        let mut env = make_base_hook_env(tool_name, tool_input);
+        if let Some(sid) = self.session_id {
+            env.insert("ZEPH_SESSION_ID".to_owned(), sid.to_owned());
+        }
+        self.insert_agent_vars(&mut env);
+        env
+    }
+
+    /// Environment for a lifecycle hook (start, stop) that is not tied to a tool call.
+    #[must_use]
+    pub fn lifecycle_env(&self) -> HashMap<String, String> {
+        let mut env = HashMap::new();
+        env.insert("ZEPH_TOOL_NAME".to_owned(), String::new());
+        self.insert_agent_vars(&mut env);
+        env
+    }
+}
+
+/// The `PreToolUse` hooks that match one tool call, with their environment, ready to fire.
+///
+/// Shared by the main tier loop (which fires many of these concurrently), the inline
+/// orchestration loop and the sub-agent loop, so all three build the same hook environment
+/// and run the same `core.hooks.pre_tool_use` span.
+#[derive(Debug)]
+pub struct PreToolHookCall {
+    hooks: Vec<HookDef>,
+    env: HashMap<String, String>,
+    agent_type: HookAgentType,
+}
+
+impl PreToolHookCall {
+    /// Select the hooks in `pre_hooks` matching `tool_name`; `None` when none match.
+    #[must_use]
+    pub fn prepare(
+        pre_hooks: &[HookMatcher],
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+        ctx: HookAgentCtx<'_>,
+    ) -> Option<Self> {
+        let hooks: Vec<HookDef> = matching_hooks(pre_hooks, tool_name)
+            .into_iter()
+            .cloned()
+            .collect();
+        if hooks.is_empty() {
+            return None;
+        }
+        Some(Self {
+            hooks,
+            env: ctx.tool_env(tool_name, tool_input),
+            agent_type: ctx.agent_type,
+        })
+    }
+
+    /// Fire the selected hooks.
+    ///
+    /// # Errors
+    ///
+    /// Returns the hook error only when a `fail_closed` hook fails; fail-open failures are
+    /// swallowed by [`fire_hooks`].
+    pub async fn fire(
+        &self,
+        tool_name: &str,
+        mcp: Option<&dyn McpDispatch>,
+    ) -> Result<HookRunResult, HookError> {
+        use tracing::Instrument as _;
+        fire_hooks(&self.hooks, &self.env, mcp, None)
+            .instrument(tracing::info_span!(
+                "core.hooks.pre_tool_use",
+                tool = %tool_name,
+                agent_type = self.agent_type.as_str()
+            ))
+            .await
+    }
+}
+
+/// The `PostToolUse` hooks that match one tool call, with their environment and stdin context.
+///
+/// Shared by every tool loop so all report the same agent context, duration env,
+/// `core.hooks.post_tool_use` span and `updated_tool_output` replacement.
+#[derive(Debug)]
+pub struct PostToolHookCall {
+    hooks: Vec<HookDef>,
+    env: HashMap<String, String>,
+    tool_input: serde_json::Value,
+    agent_type: HookAgentType,
+    agent_id: Option<String>,
+    session_id: Option<String>,
+}
+
+impl PostToolHookCall {
+    /// Select the hooks in `post_hooks` matching `tool_name`; `None` when none match.
+    #[must_use]
+    pub fn prepare(
+        post_hooks: &[HookMatcher],
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+        ctx: HookAgentCtx<'_>,
+    ) -> Option<Self> {
+        let hooks: Vec<HookDef> = matching_hooks(post_hooks, tool_name)
+            .into_iter()
+            .cloned()
+            .collect();
+        if hooks.is_empty() {
+            return None;
+        }
+        Some(Self {
+            hooks,
+            env: ctx.tool_env(tool_name, tool_input),
+            tool_input: tool_input.clone(),
+            agent_type: ctx.agent_type,
+            agent_id: ctx.agent_id.map(str::to_owned),
+            session_id: ctx.session_id.map(str::to_owned),
+        })
+    }
+
+    /// Fire the selected hooks (fail-open) and apply an `updated_tool_output` replacement to
+    /// a successful `result` that carries output.
+    pub async fn fire(
+        &self,
+        tool_name: &str,
+        duration: std::time::Duration,
+        result: &mut Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+        mcp: Option<&dyn McpDispatch>,
+    ) {
+        use tracing::Instrument as _;
+        let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+        let mut env = self.env.clone();
+        env.insert("ZEPH_TOOL_DURATION_MS".to_owned(), duration_ms.to_string());
+
+        let tool_error_text = result.as_ref().err().map(ToString::to_string);
+        let hook_input = PostToolUseHookInput {
+            tool_name,
+            tool_args: &self.tool_input,
+            session_id: self.session_id.as_deref(),
+            duration_ms,
+            tool_output: match result {
+                Ok(Some(out)) => Some(out.summary.as_str()),
+                _ => None,
+            },
+            tool_error: tool_error_text.as_deref(),
+            agent_id: self.agent_id.as_deref(),
+            agent_type: self.agent_type,
+        };
+        let stdin_bytes = match serde_json::to_vec(&hook_input) {
+            Ok(bytes) => Some(bytes),
+            Err(e) => {
+                tracing::warn!(error = %e, tool = %tool_name, "PostToolUse hook stdin serialization failed");
+                None
+            }
+        };
+
+        match fire_hooks(&self.hooks, &env, mcp, stdin_bytes.as_deref())
+            .instrument(tracing::info_span!(
+                "core.hooks.post_tool_use",
+                tool = %tool_name,
+                agent_type = self.agent_type.as_str()
+            ))
+            .await
+        {
+            Ok(run_result) => {
+                if let Some(replacement) = run_result.output.updated_tool_output
+                    && let Ok(Some(out)) = result
+                {
+                    tracing::debug!(
+                        tool = %tool_name,
+                        original_len = out.summary.len(),
+                        replacement_len = replacement.len(),
+                        "PostToolUse hook replaced tool output"
+                    );
+                    out.summary = replacement;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, tool = %tool_name, "PostToolUse hook failed");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1105,7 +1388,7 @@ PreToolUse:
             tool_output: Some("out"),
             tool_error: None,
             agent_id: Some("conv-1"),
-            agent_type: "main",
+            agent_type: HookAgentType::Main,
         };
         let json = serde_json::to_value(&input).unwrap();
         assert_eq!(json["agent_type"], "main");
@@ -1122,7 +1405,7 @@ PreToolUse:
             tool_output: None,
             tool_error: None,
             agent_id: None,
-            agent_type: "main",
+            agent_type: HookAgentType::Main,
         };
         let json = serde_json::to_value(&input).unwrap();
         assert_eq!(json["agent_type"], "main");
@@ -1131,6 +1414,79 @@ PreToolUse:
         assert!(
             !text.contains("agent_id"),
             "agent_id must not appear when None"
+        );
+    }
+
+    // ── HookAgentCtx env bytes per dispatch path ─────────────────────────────
+
+    #[test]
+    fn main_tool_env_carries_session_and_agent_vars() {
+        let env = HookAgentCtx::main(Some("sess-42")).tool_env("Read", &serde_json::Value::Null);
+        assert_eq!(env["ZEPH_SESSION_ID"], "sess-42");
+        assert_eq!(env["ZEPH_AGENT_ID"], "sess-42");
+        assert_eq!(env["ZEPH_AGENT_TYPE"], "main");
+        assert_eq!(env["ZEPH_TOOL_NAME"], "Read");
+        assert!(!env.contains_key("ZEPH_AGENT_NAME"));
+    }
+
+    #[test]
+    fn main_tool_env_omits_session_and_agent_id_when_unbound() {
+        let env = HookAgentCtx::main(None).tool_env("Read", &serde_json::Value::Null);
+        assert!(!env.contains_key("ZEPH_SESSION_ID"));
+        assert!(!env.contains_key("ZEPH_AGENT_ID"));
+        assert_eq!(env["ZEPH_AGENT_TYPE"], "main");
+    }
+
+    #[test]
+    fn subagent_tool_env_carries_name_and_no_session() {
+        let env =
+            HookAgentCtx::subagent("task-1", "bot").tool_env("Edit", &serde_json::Value::Null);
+        assert_eq!(env["ZEPH_AGENT_ID"], "task-1");
+        assert_eq!(env["ZEPH_AGENT_NAME"], "bot");
+        assert_eq!(env["ZEPH_AGENT_TYPE"], "subagent");
+        assert!(!env.contains_key("ZEPH_SESSION_ID"));
+    }
+
+    #[test]
+    fn lifecycle_env_has_empty_tool_name_and_no_args() {
+        let env = HookAgentCtx::subagent("task-1", "bot").lifecycle_env();
+        assert_eq!(env["ZEPH_TOOL_NAME"], "");
+        assert!(!env.contains_key("ZEPH_TOOL_ARGS_JSON"));
+        assert_eq!(env["ZEPH_AGENT_TYPE"], "subagent");
+    }
+
+    #[test]
+    fn tool_env_truncates_large_payload_on_char_boundary() {
+        let mut big = String::from(r#"{"data":""#);
+        while big.len() < TOOL_ARGS_JSON_LIMIT - 3 {
+            big.push('a');
+        }
+        big.push('€');
+        while big.len() < TOOL_ARGS_JSON_LIMIT + 100 {
+            big.push('b');
+        }
+        big.push_str(r#""}"#);
+        let input: serde_json::Value = serde_json::from_str(&big).unwrap_or_default();
+        let env = HookAgentCtx::main(None).tool_env("Shell", &input);
+        let args = &env["ZEPH_TOOL_ARGS_JSON"];
+        assert!(args.ends_with('…'));
+        assert!(args.is_char_boundary(args.len()));
+    }
+
+    #[test]
+    fn tool_env_serializes_small_payload_verbatim() {
+        let input: serde_json::Value = serde_json::from_str(r#"{"path": "/tmp/foo.txt"}"#).unwrap();
+        let env = HookAgentCtx::main(None).tool_env("Write", &input);
+        let parsed: serde_json::Value = serde_json::from_str(&env["ZEPH_TOOL_ARGS_JSON"]).unwrap();
+        assert_eq!(parsed["path"], "/tmp/foo.txt");
+    }
+
+    #[test]
+    fn hook_agent_type_serializes_lowercase() {
+        assert_eq!(serde_json::to_value(HookAgentType::Main).unwrap(), "main");
+        assert_eq!(
+            serde_json::to_value(HookAgentType::Subagent).unwrap(),
+            "subagent"
         );
     }
 

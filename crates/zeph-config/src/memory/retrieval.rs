@@ -6,6 +6,7 @@
 //! Hybrid vector/keyword retrieval, `MemFlow` tiered retrieval, A-MAC admission
 //! control, store routing, consolidation sweeps, and retrieval-failure capture.
 
+use crate::fraction::UnitClosed;
 use crate::providers::ProviderName;
 use serde::{Deserialize, Serialize};
 use zeph_common::memory::{FunctionalType, MemoryRoute};
@@ -543,12 +544,12 @@ fn default_consolidation_llm_timeout_secs() -> u64 {
     30
 }
 
-fn default_admission_threshold() -> f32 {
-    0.40
+fn default_admission_threshold() -> UnitClosed {
+    const { UnitClosed::literal(0.40) }
 }
 
-fn default_admission_fast_path_margin() -> f32 {
-    0.15
+fn default_admission_fast_path_margin() -> UnitClosed {
+    const { UnitClosed::literal(0.15) }
 }
 
 fn default_rl_min_samples() -> u32 {
@@ -679,12 +680,10 @@ pub struct AdmissionConfig {
     pub enabled: bool,
     /// Composite score threshold below which messages are rejected. Range: `[0.0, 1.0]`.
     /// Default: `0.40`.
-    #[serde(deserialize_with = "crate::de_helpers::de_unit_closed")]
-    pub threshold: f32,
+    pub threshold: UnitClosed,
     /// Margin above threshold at which the fast path admits without an LLM call. Range: `[0.0, 1.0]`.
     /// When heuristic score >= threshold + margin, LLM call is skipped. Default: `0.15`.
-    #[serde(deserialize_with = "crate::de_helpers::de_unit_closed")]
-    pub fast_path_margin: f32,
+    pub fast_path_margin: UnitClosed,
     /// Provider name from `[[llm.providers]]` for `future_utility` LLM evaluation.
     /// Falls back to the primary provider when empty. Default: `""`.
     pub admission_provider: ProviderName,

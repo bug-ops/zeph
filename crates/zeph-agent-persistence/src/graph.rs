@@ -42,14 +42,14 @@ pub fn build_graph_extraction_config(
         lpa_edge_chunk_size: cfg.lpa_edge_chunk_size,
         note_linking: zeph_memory::NoteLinkingConfig {
             enabled: cfg.note_linking.enabled,
-            similarity_threshold: cfg.note_linking.similarity_threshold,
+            similarity_threshold: cfg.note_linking.similarity_threshold.get(),
             top_k: cfg.note_linking.top_k,
             timeout_secs: cfg.note_linking.timeout_secs,
         },
-        link_weight_decay_lambda: cfg.link_weight_decay_lambda,
+        link_weight_decay_lambda: cfg.link_weight_decay_lambda.get(),
         link_weight_decay_interval_secs: cfg.link_weight_decay_interval_secs,
         belief_revision_enabled: cfg.belief_revision.enabled,
-        belief_revision_similarity_threshold: cfg.belief_revision.similarity_threshold,
+        belief_revision_similarity_threshold: cfg.belief_revision.similarity_threshold.get(),
         conversation_id,
         apex_mem_enabled: cfg.apex_mem.enabled,
         llm_timeout_secs: cfg.llm_timeout_secs,
@@ -58,9 +58,9 @@ pub fn build_graph_extraction_config(
         write_gate_min_relevance: cfg
             .write_gate
             .enabled
-            .then_some(cfg.write_gate.min_edge_relevance),
-        benna_fast_rate: cfg.spreading_activation.benna_fast_rate,
-        benna_slow_rate: cfg.spreading_activation.benna_slow_rate,
+            .then_some(cfg.write_gate.min_edge_relevance.get()),
+        benna_fast_rate: cfg.spreading_activation.benna_fast_rate.get(),
+        benna_slow_rate: cfg.spreading_activation.benna_slow_rate.get(),
         provenance: None,
         system_prompt: None,
         recall_include_imported: cfg.recall_include_imported,

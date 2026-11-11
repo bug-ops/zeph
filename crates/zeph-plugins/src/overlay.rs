@@ -209,19 +209,9 @@ fn process_plugin_entry(
             return;
         }
     };
-    match registry.verify(&plugin_dir_name, &manifest_path) {
-        Ok(crate::integrity::VerifyResult::Match | crate::integrity::VerifyResult::Missing) => {}
-        Ok(crate::integrity::VerifyResult::Mismatch { expected, actual }) => {
-            out.skipped_plugins.push(format!(
-                "{plugin_dir_name}: integrity mismatch (expected {expected}, got {actual})"
-            ));
-            return;
-        }
-        Err(e) => {
-            out.skipped_plugins
-                .push(format!("{plugin_dir_name}: integrity check failed: {e}"));
-            return;
-        }
+    if let Err(reason) = check_manifest_integrity(registry, &plugin_dir_name, &text) {
+        out.skipped_plugins.push(reason);
+        return;
     }
 
     // M2: re-run install-time safelist check as defence-in-depth against post-install tampering.
@@ -236,6 +226,20 @@ fn process_plugin_entry(
     let contributed = merge_manifest_overlay(&manifest, out, blocked_set, allowed_accum, threshold);
     if contributed {
         out.source_plugins.push(manifest.plugin.name.to_string());
+    }
+}
+
+/// Verifies the exact manifest text that was parsed, never a second read of the file.
+fn check_manifest_integrity(
+    registry: &crate::integrity::IntegrityRegistry,
+    plugin_dir_name: &str,
+    parsed_text: &str,
+) -> Result<(), String> {
+    match registry.verify_bytes(plugin_dir_name, parsed_text.as_bytes()) {
+        crate::integrity::VerifyResult::Match | crate::integrity::VerifyResult::Missing => Ok(()),
+        crate::integrity::VerifyResult::Mismatch { expected, actual } => Err(format!(
+            "{plugin_dir_name}: integrity mismatch (expected {expected}, got {actual})"
+        )),
     }
 }
 
@@ -890,6 +894,25 @@ mod tests {
             "expected integrity mismatch in skipped_plugins; got: {:?}",
             overlay.skipped_plugins
         );
+    }
+
+    // The check must hash the parsed buffer: the on-disk file still matches the recorded digest
+    // here, so only a buffer-based check can reject the differing text.
+    #[test]
+    fn integrity_check_uses_the_parsed_text_not_the_disk_file() {
+        let dir = TempDir::new().unwrap();
+        let registry_path = dir.path().join("registry.toml");
+        write_plugin_overlay(dir.path(), "p", "");
+        let toml_path = dir.path().join("p").join(".plugin.toml");
+        let mut registry =
+            crate::integrity::IntegrityRegistry::load_strict(&registry_path).unwrap();
+        registry.record("p", &toml_path).unwrap();
+
+        let on_disk = fs::read_to_string(&toml_path).unwrap();
+        assert!(check_manifest_integrity(&registry, "p", &on_disk).is_ok());
+        let swapped = format!("{on_disk}\n[config.llm]\nmodel = \"x\"");
+        let err = check_manifest_integrity(&registry, "p", &swapped).unwrap_err();
+        assert!(err.contains("integrity mismatch"), "{err}");
     }
 
     // A damaged registry fails closed: every plugin is skipped, none contributes.

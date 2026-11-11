@@ -156,6 +156,8 @@ pub enum AgentEvent {
     Typing,
     /// A short status string to display in the activity bar (e.g. `"Searching memory…"`).
     Status(String),
+    /// Clears the activity-bar status (the typed counterpart of an empty [`AgentEvent::Status`]).
+    ClearStatus,
     /// A tool call has started; the TUI should display a spinner with the tool name.
     ToolStart {
         /// Canonical tool name (e.g. `"bash"`, `"read_file"`).

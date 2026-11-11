@@ -269,7 +269,7 @@ pub struct ContextAssemblyView<'a> {
     ///
     /// Mirrors the channel wired in `ContextSummarizationView::status_tx`. `None` in
     /// non-TUI modes; the service skips sending when the sender is absent.
-    pub status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    pub status_tx: Option<zeph_llm::provider::StatusTx>,
     /// Background task supervisor for registering `JoinHandle`s produced during context
     /// assembly (e.g. `mark_reasoning_used` in `fetch_reasoning_strategies`).
     ///
@@ -413,7 +413,7 @@ pub struct ContextSummarizationView<'a> {
     /// Hash of the last user message when subgoal extraction was scheduled.
     pub subgoal_user_msg_hash: &'a mut Option<u64>,
     /// TUI / channel status sender for spinner messages. `None` when TUI is disabled.
-    pub status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    pub status_tx: Option<zeph_llm::provider::StatusTx>,
 
     // ── Credential scrubber ───────────────────────────────────────────────────
     /// Function pointer for scrubbing credentials from summary text.
@@ -525,6 +525,9 @@ pub struct ProviderHandles {
 pub trait StatusSink: Send + Sync {
     /// Send a short status string to the active channel.
     fn send_status(&self, msg: &str) -> impl Future<Output = ()> + Send + '_;
+
+    /// Clear the status indicator on the active channel.
+    fn clear_status(&self) -> impl Future<Output = ()> + Send + '_;
 }
 
 /// Abstract gate for applying a skill trust level to the tool executor.

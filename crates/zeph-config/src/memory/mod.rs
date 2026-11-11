@@ -66,7 +66,10 @@ pub use retrieval::{
     RetrievalConfig, RetrievalFailuresConfig, StoreRoutingConfig, StoreRoutingStrategy, TierConfig,
     TieredRetrievalConfig, TypeAwareComposeConfig,
 };
-pub use root::{MemoryConfig, VectorBackend};
+pub use root::{
+    DEFAULT_HARD_COMPACTION_THRESHOLD, DEFAULT_SOFT_COMPACTION_THRESHOLD, MemoryConfig,
+    VectorBackend,
+};
 pub use session::{ContextLayout, ContextStrategy, DocumentConfig, SemanticConfig, SessionsConfig};
 pub use store::CrossThreadStoreConfig;
 

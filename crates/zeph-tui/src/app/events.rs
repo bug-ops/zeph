@@ -123,12 +123,13 @@ impl App {
                 self.stream_rate.on_turn_start();
             }
             AgentEvent::Status(text) => {
-                self.sessions.current_mut().status_label =
-                    if text.is_empty() { None } else { Some(text) };
-                // Non-empty status update counts as progress (supervisor activity, tool dispatch…).
-                if self.sessions.current().status_label.is_some() {
-                    self.last_progress_at = Instant::now();
-                }
+                self.sessions.current_mut().status_label = Some(text);
+                // A status update counts as progress (supervisor activity, tool dispatch…).
+                self.last_progress_at = Instant::now();
+                self.auto_scroll();
+            }
+            AgentEvent::ClearStatus => {
+                self.sessions.current_mut().status_label = None;
                 self.auto_scroll();
             }
             AgentEvent::ToolStart {

@@ -143,7 +143,7 @@ pub(crate) async fn maybe_summarize_tool_pair(
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {
                 tracing::warn!(%e, "tool pair summarization failed, stopping batch");
-                status.send_status("").await;
+                status.clear_status().await;
                 break;
             }
             Err(_elapsed) => {
@@ -151,7 +151,7 @@ pub(crate) async fn maybe_summarize_tool_pair(
                     timeout_secs = llm_timeout.as_secs(),
                     "tool pair summarization timed out, stopping batch"
                 );
-                status.send_status("").await;
+                status.clear_status().await;
                 break;
             }
         };
@@ -168,7 +168,7 @@ pub(crate) async fn maybe_summarize_tool_pair(
             "deferred tool pair summary stored"
         );
     }
-    status.send_status("").await;
+    status.clear_status().await;
     if summarized > 0 {
         tracing::info!(summarized, "batch-summarized tool pairs above cutoff");
     }

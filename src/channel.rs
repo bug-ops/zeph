@@ -102,6 +102,12 @@ impl Channel for AppChannel {
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
         dispatch_app_channel!(self, send_status, text)
     }
+    async fn clear_status(&mut self) -> Result<(), ChannelError> {
+        dispatch_app_channel!(self, clear_status)
+    }
+    async fn clear_status_best_effort(&mut self) {
+        dispatch_app_channel!(self, clear_status_best_effort);
+    }
     async fn send_skill_catalog(&mut self, items: &[SkillCatalogItem]) -> Result<(), ChannelError> {
         dispatch_app_channel!(self, send_skill_catalog, items)
     }
@@ -452,6 +458,25 @@ mod tests {
         // 20. elicit — skipped (CliChannel auto-declines on non-tty stdin regardless
         // of forwarding correctness; real dispatch is verified separately below via
         // TuiChannel, whose response only arrives if AppChannel forwards the call).
+    }
+
+    #[tokio::test]
+    async fn app_channel_forwards_clear_status_to_typed_tui_clear() {
+        use zeph_tui::{AgentEvent, TuiChannel};
+
+        let (_user_tx, user_rx) = tokio::sync::mpsc::channel(1);
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel(4);
+        let mut ch = AppChannel::Tui(TuiChannel::new(user_rx, agent_tx));
+
+        ch.clear_status().await.unwrap();
+        ch.clear_status_best_effort().await;
+
+        for _ in 0..2 {
+            assert!(matches!(
+                agent_rx.recv().await,
+                Some(AgentEvent::ClearStatus)
+            ));
+        }
     }
 
     /// Regression test for #6388: `AppChannel::elicit` must forward to the

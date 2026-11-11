@@ -8,6 +8,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use parking_lot::RwLock;
 
 use zeph_common::ToolName;
+use zeph_llm::provider::StatusUpdate;
 use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, extract_fenced_blocks};
 use zeph_tools::registry::{InvocationHint, ToolDef};
 
@@ -148,7 +149,7 @@ impl McpToolExecutor {
             .iter()
             .any(|b| matches!(b, rmcp::model::ContentBlock::Image(_)));
         if has_images {
-            self.send_status("Decoding MCP image\u{2026}");
+            self.send_status(StatusUpdate::set("Decoding MCP image\u{2026}"));
         }
 
         let mut media = Vec::new();
@@ -202,7 +203,7 @@ impl McpToolExecutor {
             }
         }
         if has_images {
-            self.send_status("");
+            self.send_status(StatusUpdate::Clear);
         }
         media
     }
@@ -210,9 +211,9 @@ impl McpToolExecutor {
     /// Send a best-effort status update via [`Self::status_tx`], when attached. Mirrors the
     /// `let _ = stx.send(...)` idiom used for MCP OAuth status messages
     /// (`crates/zeph-mcp/src/manager/connect.rs`).
-    fn send_status(&self, text: &str) {
+    fn send_status(&self, update: StatusUpdate) {
         if let Some(ref tx) = self.status_tx {
-            let _ = tx.send(text.to_owned());
+            let _ = tx.send(update);
         }
     }
 
@@ -388,6 +389,7 @@ impl ToolExecutor for McpToolExecutor {
             claim_source: Some(zeph_tools::ClaimSource::Mcp),
             media,
             max_result_size_chars,
+            status: zeph_tools::ToolStatus::Success,
         }))
     }
 
@@ -642,10 +644,13 @@ mod tests {
             .await;
         assert_eq!(media.len(), 1);
 
-        assert_eq!(rx.try_recv().unwrap(), "Decoding MCP image\u{2026}");
         assert_eq!(
             rx.try_recv().unwrap(),
-            "",
+            StatusUpdate::set("Decoding MCP image\u{2026}")
+        );
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            StatusUpdate::Clear,
             "status must be cleared once decoding finishes"
         );
         assert!(rx.try_recv().is_err(), "no further status messages");

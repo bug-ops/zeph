@@ -239,7 +239,7 @@ impl<C: Channel> Agent<C> {
                     let _ = memory
                         .sqlite()
                         .set_skill_trust_level(
-                            &generated.name,
+                            generated.name().as_str(),
                             zeph_common::SkillTrustLevel::Quarantined,
                         )
                         .await;
@@ -247,7 +247,8 @@ impl<C: Channel> Agent<C> {
                 let _ = write!(
                     output,
                     "Generated skill **{}**:\n\n```\n{}\n```",
-                    generated.name, generated.content
+                    generated.name(),
+                    generated.content
                 );
                 if !generated.warnings.is_empty() {
                     output.push_str("\n\n**Warnings:**");
@@ -261,7 +262,7 @@ impl<C: Channel> Agent<C> {
                     output,
                     "\n\nAuto-saved to {} with quarantined trust. Use `/skill remove {}` to discard.",
                     path.display(),
-                    generated.name,
+                    generated.name(),
                 );
             }
             Err(e) => {
@@ -287,11 +288,7 @@ impl<C: Channel> Agent<C> {
             return Ok("Usage: /skill reject <name> <reason>".to_owned());
         }
         // SEC-PH1-002: cap reason length to prevent oversized LLM prompts
-        let reason = if reason.len() > 500 {
-            reason[..500].to_string()
-        } else {
-            reason
-        };
+        let reason = zeph_common::text::truncate_to_bytes(&reason, 500);
         // Clone Arc before .await to avoid holding &self across suspension points.
         let memory = self.services.memory.persistence.memory.clone();
         let Some(memory) = memory else {
@@ -568,7 +565,8 @@ fn format_generated_skill_blocked(generated: &zeph_skills::GeneratedSkill) -> St
     let _ = write!(
         output,
         "Generated skill **{}** (NOT saved):\n\n```\n{}\n```",
-        generated.name, generated.content
+        generated.name(),
+        generated.content
     );
     if !generated.warnings.is_empty() {
         output.push_str("\n\n**Warnings:**");

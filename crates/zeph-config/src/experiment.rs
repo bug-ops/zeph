@@ -4,6 +4,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+use crate::fraction::{UnitClosed, UnitClosed64};
 use crate::providers::ProviderName;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -144,8 +145,12 @@ fn default_max_replans() -> u32 {
     2
 }
 
-fn default_completeness_threshold() -> f32 {
-    0.7
+fn default_cascade_failure_rate_abort_threshold() -> UnitClosed {
+    const { UnitClosed::literal(0.0) }
+}
+
+fn default_completeness_threshold() -> UnitClosed {
+    const { UnitClosed::literal(0.7) }
 }
 
 fn default_cascade_failure_threshold() -> f32 {
@@ -184,12 +189,12 @@ fn default_verifier_timeout_secs() -> u64 {
     120
 }
 
-fn default_ensemble_ema_alpha() -> f64 {
-    0.3
+fn default_ensemble_ema_alpha() -> UnitClosed64 {
+    const { UnitClosed64::literal(0.3) }
 }
 
-fn default_ensemble_ema_decay() -> f64 {
-    0.95
+fn default_ensemble_ema_decay() -> UnitClosed64 {
+    const { UnitClosed64::literal(0.95) }
 }
 
 fn default_ensemble_min_observations() -> u32 {
@@ -298,10 +303,10 @@ pub struct EnsembleConfig {
     /// EMA smoothing factor for `EnsembleTracker`'s per-member agreement score, in `[0.0, 1.0]`.
     /// Higher values weight the most recent observation more heavily. Default: `0.3`.
     #[serde(default = "default_ensemble_ema_alpha")]
-    pub ema_alpha: f64,
+    pub ema_alpha: UnitClosed64,
     /// Decay-toward-neutral-prior factor for `EnsembleTracker`, in `[0.0, 1.0]`. Default: `0.95`.
     #[serde(default = "default_ensemble_ema_decay")]
-    pub ema_decay: f64,
+    pub ema_decay: UnitClosed64,
     /// Minimum recorded observations before `EnsembleTracker::ema()` returns a score instead
     /// of `None` (cold-start gate). Default: `5`.
     #[serde(default = "default_ensemble_min_observations")]
@@ -436,7 +441,7 @@ pub struct OrchestrationConfig {
     /// Used by both per-task and whole-plan verification.
     /// Values outside [0.0, 1.0] are rejected at startup by `Config::validate()`.
     #[serde(default = "default_completeness_threshold")]
-    pub completeness_threshold: f32,
+    pub completeness_threshold: UnitClosed,
     /// Enable cascade-aware routing for Mixed-topology DAGs. Requires `topology_selection = true`.
     /// When enabled, tasks in failing subtrees are deprioritized in favour of healthy branches.
     /// Default: false (opt-in).
@@ -467,8 +472,8 @@ pub struct OrchestrationConfig {
     /// When a DAG region's failure rate reaches this value AND the region has ≥ 3 tasks,
     /// the DAG is aborted immediately. `0.0` disables this signal (opt-in).
     /// Recommended production value: `0.7`.
-    #[serde(default)]
-    pub cascade_failure_rate_abort_threshold: f32,
+    #[serde(default = "default_cascade_failure_rate_abort_threshold")]
+    pub cascade_failure_rate_abort_threshold: UnitClosed,
     /// TTL for lineage entries in seconds. Entries older than this are pruned during
     /// chain merge. Setting this too low can prevent detection of slow-build cascades.
     ///
@@ -629,7 +634,7 @@ impl Default for OrchestrationConfig {
             tree_optimized_dispatch: false,
             adaptorch: AdaptOrchConfig::default(),
             cascade_chain_threshold: default_cascade_chain_threshold(),
-            cascade_failure_rate_abort_threshold: 0.0,
+            cascade_failure_rate_abort_threshold: default_cascade_failure_rate_abort_threshold(),
             lineage_ttl_secs: default_lineage_ttl_secs(),
             verify_predicate_enabled: false,
             predicate_provider: ProviderName::default(),
@@ -861,9 +866,9 @@ mod tests {
     fn completeness_threshold_default_is_0_7() {
         let cfg = OrchestrationConfig::default();
         assert!(
-            (cfg.completeness_threshold - 0.7).abs() < f32::EPSILON,
+            (cfg.completeness_threshold.get() - 0.7).abs() < f32::EPSILON,
             "completeness_threshold default must be 0.7, got {}",
-            cfg.completeness_threshold
+            cfg.completeness_threshold.get()
         );
     }
 
@@ -874,11 +879,11 @@ mod tests {
             completeness_threshold = 0.85
         ";
         let cfg: OrchestrationConfig = toml::from_str(toml_in).expect("deserialize");
-        assert!((cfg.completeness_threshold - 0.85).abs() < f32::EPSILON);
+        assert!((cfg.completeness_threshold.get() - 0.85).abs() < f32::EPSILON);
 
         let serialized = toml::to_string(&cfg).expect("serialize");
         let cfg2: OrchestrationConfig = toml::from_str(&serialized).expect("re-deserialize");
-        assert!((cfg2.completeness_threshold - 0.85).abs() < f32::EPSILON);
+        assert!((cfg2.completeness_threshold.get() - 0.85).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -886,9 +891,9 @@ mod tests {
         let toml_in = "enabled = true\n";
         let cfg: OrchestrationConfig = toml::from_str(toml_in).expect("deserialize");
         assert!(
-            (cfg.completeness_threshold - 0.7).abs() < f32::EPSILON,
+            (cfg.completeness_threshold.get() - 0.7).abs() < f32::EPSILON,
             "missing field must use default 0.7, got {}",
-            cfg.completeness_threshold
+            cfg.completeness_threshold.get()
         );
     }
 
@@ -898,8 +903,8 @@ mod tests {
         assert!(!cfg.enabled);
         assert!(!cfg.verify);
         assert_eq!(cfg.members, [] as [String; 0]);
-        assert!((cfg.ema_alpha - 0.3).abs() < f64::EPSILON);
-        assert!((cfg.ema_decay - 0.95).abs() < f64::EPSILON);
+        assert!((cfg.ema_alpha.get() - 0.3).abs() < f64::EPSILON);
+        assert!((cfg.ema_decay.get() - 0.95).abs() < f64::EPSILON);
         assert_eq!(cfg.min_observations, 5);
         assert_eq!(cfg.member_timeout_secs, 0);
     }
@@ -924,7 +929,7 @@ mod tests {
         assert!(cfg.enabled);
         assert!(cfg.verify);
         assert_eq!(cfg.members, vec!["fast", "quality", "cheap"]);
-        assert!((cfg.ema_alpha - 0.4).abs() < f64::EPSILON);
+        assert!((cfg.ema_alpha.get() - 0.4).abs() < f64::EPSILON);
 
         let serialized = toml::to_string(&cfg).expect("serialize");
         let cfg2: EnsembleConfig = toml::from_str(&serialized).expect("re-deserialize");

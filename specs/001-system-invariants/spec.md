@@ -123,7 +123,7 @@ The `Channel` trait (`crates/zeph-core/src/channel.rs`) is the only I/O boundary
 - Returns `Option<ToolOutput>` — `None` = this executor doesn't own the tool (pass to next in composite chain)
 - `CompositeExecutor` chains executors; order matters (first `Some(...)` wins)
 - Shell blocklist check runs **unconditionally before** `PermissionPolicy` — cannot be bypassed
-- `ClaimSource::Synthetic` marks harness-authored placeholders for calls that never ran; `ClaimSource::ContextManagement` marks the results of `start_focus`, `complete_focus`, `compress_context` and `request_compaction`, which did run. `ToolError::is_local_policy_denial()` is true only for denials raised by zeph's own policy layer (see `[[040-sanitizer/spec]]`)
+- `ToolOutput.status: ToolStatus` is the single typed outcome of a call (`Success | NonZeroExit(NonZeroI32) | Failed | Synthetic(SyntheticKind)`); `ToolStatus::Synthetic(_)` is the only marker for harness-authored placeholders for calls that never ran (`ClaimSource::Synthetic` no longer exists, and a synthetic output carries `claim_source: None`). Success and failure are never derived from the rendered output text (`[error]`, `[stderr]`, `[exit code`); see `[[006-tools/spec]]`. `ClaimSource::ContextManagement` marks the results of `start_focus`, `complete_focus`, `compress_context` and `request_compaction`, which did run. `ToolError::is_local_policy_denial()` is true only for denials raised by zeph's own policy layer (see `[[040-sanitizer/spec]]`)
 
 **NEVER**: collapse the two trust-gate methods into one; approval logic must remain separate.
 
@@ -294,7 +294,7 @@ Every new feature MUST be wired at all applicable integration points:
 ## Agent Boundaries
 
 ### Always (without asking)
-- Preserve all trait method signatures exactly, except `Channel::send_diff`, whose `tool_call_id` parameter becomes `&ToolExecutionId` (#6964)
+- Preserve all trait method signatures exactly, except `Channel::send_diff`, whose `tool_call_id` parameter becomes `&ToolExecutionId` (#6964), and `Channel` gaining `clear_status` / `clear_status_best_effort` (#6988; existing signatures unchanged, see `[[007-channels/spec]]`)
 - Only add features to `default` that gate real optional deps AND have `Tested` coverage status (per spec 029 §2 + §3.1)
 - Maintain `kind` discriminator in `MessagePart` serde
 - Enforce `max_active_skills` limit in skill injection

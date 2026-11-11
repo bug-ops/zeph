@@ -145,6 +145,10 @@ fn default_pricing() -> HashMap<String, ModelPricing> {
         "claude-fable-5-1".into(),
         claude_pricing_with_cache_read(1.0, 5.0, 0.025),
     );
+    m.insert(
+        "claude-fable-5-2".into(),
+        claude_pricing_with_cache_read(0.8, 4.0, 0.025),
+    );
     // OpenAI
     m.insert("gpt-4o".into(), openai_pricing(0.25, 1.0));
     m.insert("gpt-4o-mini".into(), openai_pricing(0.015, 0.06));
@@ -700,6 +704,7 @@ mod tests {
             ("claude-haiku-5-5", 0.1, 0.5),
             ("claude-fable-5", 10.0, 50.0),
             ("claude-fable-5-1", 10.0, 50.0),
+            ("claude-fable-5-2", 8.0, 40.0),
         ];
         for (model, input, output) in rows {
             let expected = (input + output) / 10.0;
@@ -718,6 +723,7 @@ mod tests {
         assert!((read("claude-sonnet-5-5") - 0.02).abs() < 1e-9);
         assert!((read("claude-opus-5-5") - 0.02).abs() < 1e-9);
         assert!((read("claude-fable-5-1") - 0.025).abs() < 1e-9);
+        assert!((read("claude-fable-5-2") - 0.02).abs() < 1e-9);
     }
 
     #[test]

@@ -614,13 +614,11 @@ mod tests {
         let a = store
             .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("Bob", "Bob", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(a, b, "knows", "Alice knows Bob", 1.0, None, None)
             .await
@@ -644,13 +642,11 @@ mod tests {
         let a = store
             .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("Bob", "Bob", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(a, b, "knows", "Alice knows Bob", 1.0, None, None)
             .await

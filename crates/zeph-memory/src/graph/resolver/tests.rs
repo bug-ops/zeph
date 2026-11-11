@@ -247,20 +247,18 @@ async fn resolve_edge_inserts_new() {
     let src = gs
         .upsert_entity("src", "src", EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     let tgt = gs
         .upsert_entity("tgt", "tgt", EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     let result = resolver
         .resolve_edge(src, tgt, "uses", "src uses tgt", 0.9, None)
         .await
         .unwrap();
     assert!(result.is_some());
-    assert!(result.unwrap() > 0);
+    assert!(result.unwrap().get() > 0);
 }
 
 #[tokio::test]
@@ -271,13 +269,11 @@ async fn resolve_edge_deduplicates_identical() {
     let src = gs
         .upsert_entity("a", "a", EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     let tgt = gs
         .upsert_entity("b", "b", EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     let first = resolver
         .resolve_edge(src, tgt, "uses", "a uses b", 0.9, None)
@@ -300,13 +296,11 @@ async fn resolve_edge_supersedes_contradictory() {
     let src = gs
         .upsert_entity("x", "x", EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     let tgt = gs
         .upsert_entity("y", "y", EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     let first_id = resolver
         .resolve_edge(src, tgt, "prefers", "x prefers y (old)", 0.8, None)
@@ -336,13 +330,11 @@ async fn resolve_edge_direction_sensitive() {
     let a = gs
         .upsert_entity("node_a", "node_a", EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     let b = gs
         .upsert_entity("node_b", "node_b", EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     // Insert A->B
     let id1 = resolver
@@ -371,13 +363,11 @@ async fn resolve_edge_normalizes_relation_case() {
     let src = gs
         .upsert_entity("p", "p", EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     let tgt = gs
         .upsert_entity("q", "q", EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     // Insert with uppercase relation
     let id1 = resolver
@@ -568,8 +558,7 @@ async fn resolve_with_embedding_store_score_above_threshold_merges() {
             None,
         )
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     let mock_vec = vec![1.0_f32, 0.0, 0.0, 0.0];
     emb.ensure_named_collection(ENTITY_COLLECTION, 4)
@@ -609,7 +598,11 @@ async fn resolve_with_embedding_store_score_above_threshold_merges() {
         .await
         .unwrap();
 
-    assert_eq!(id, existing_id, "should return existing entity ID on merge");
+    assert_eq!(
+        EntityId(id),
+        existing_id,
+        "should return existing entity ID on merge"
+    );
     assert!(
         matches!(outcome, ResolutionOutcome::EmbeddingMatch { score } if score > 0.85),
         "outcome should be EmbeddingMatch with score > 0.85, got {outcome:?}"
@@ -629,8 +622,7 @@ async fn resolve_with_embedding_store_score_below_ambiguous_creates_new() {
             None,
         )
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     // Existing uses [1,0,0,0]; new entity will embed to [0,1,0,0] (orthogonal, score=0)
     emb.ensure_named_collection(ENTITY_COLLECTION, 4)
@@ -660,7 +652,11 @@ async fn resolve_with_embedding_store_score_below_ambiguous_creates_new() {
         .await
         .unwrap();
 
-    assert_ne!(id, existing_id, "orthogonal entity should create new");
+    assert_ne!(
+        EntityId(id),
+        existing_id,
+        "orthogonal entity should create new"
+    );
     assert_eq!(outcome, ResolutionOutcome::Created);
 }
 
@@ -772,8 +768,7 @@ async fn merge_combines_summaries() {
             None,
         )
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     let mock_vec = vec![1.0_f32, 0.0, 0.0, 0.0];
     emb.ensure_named_collection(ENTITY_COLLECTION, 4)
@@ -807,7 +802,7 @@ async fn merge_combines_summaries() {
         .await
         .unwrap();
 
-    assert_eq!(id, existing_id);
+    assert_eq!(EntityId(id), existing_id);
     assert_matches!(outcome, ResolutionOutcome::EmbeddingMatch { .. });
 
     // Verify the merged summary was updated on the existing entity
@@ -836,8 +831,7 @@ async fn merge_preserves_older_entity_id() {
             None,
         )
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     let mock_vec = vec![1.0_f32, 0.0, 0.0, 0.0];
     emb.ensure_named_collection(ENTITY_COLLECTION, 4)
@@ -867,7 +861,8 @@ async fn merge_preserves_older_entity_id() {
         .unwrap();
 
     assert_eq!(
-        returned_id, existing_id,
+        EntityId(returned_id),
+        existing_id,
         "older entity ID should be preserved on merge"
     );
 }
@@ -920,7 +915,10 @@ async fn merge_corrects_stale_cross_db_entity_id() {
         "resolve() must not return the stale Qdrant-payload entity id verbatim"
     );
     assert!(
-        gs.find_entity_by_id(returned_id).await.unwrap().is_some(),
+        gs.find_entity_by_id(EntityId(returned_id))
+            .await
+            .unwrap()
+            .is_some(),
         "returned entity id must reference a row that actually exists in the local SQLite database"
     );
     assert!(
@@ -991,7 +989,10 @@ async fn resolve_ambiguous_llm_disambiguated_corrects_stale_cross_db_id() {
         "resolve() must not return the stale Qdrant-payload entity id verbatim"
     );
     assert!(
-        gs.find_entity_by_id(returned_id).await.unwrap().is_some(),
+        gs.find_entity_by_id(EntityId(returned_id))
+            .await
+            .unwrap()
+            .is_some(),
         "returned entity id must reference a row that actually exists in the local SQLite database"
     );
     assert!(
@@ -1014,8 +1015,7 @@ async fn entity_type_filter_prevents_cross_type_merge() {
             None,
         )
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     let mock_vec = vec![1.0_f32, 0.0, 0.0, 0.0];
     emb.ensure_named_collection(ENTITY_COLLECTION, 4)
@@ -1048,7 +1048,8 @@ async fn entity_type_filter_prevents_cross_type_merge() {
     // The entity_type filter should prevent merging person "python" with language "python"
     // Check: either created new or an exact match was found under language type
     assert_ne!(
-        lang_id, person_id,
+        EntityId(lang_id),
+        person_id,
         "language entity should not merge with person entity"
     );
     // The entity_type filter causes no embedding candidate to survive the type filter,
@@ -1071,8 +1072,7 @@ async fn custom_thresholds_respected() {
             None,
         )
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     let existing_vec = vec![1.0_f32, 0.0, 0.0, 0.0];
     emb.ensure_named_collection(ENTITY_COLLECTION, 4)
@@ -1103,7 +1103,7 @@ async fn custom_thresholds_respected() {
         .await
         .unwrap();
 
-    assert_ne!(id, existing_id);
+    assert_ne!(EntityId(id), existing_id);
     assert_eq!(outcome, ResolutionOutcome::Created);
 }
 
@@ -1159,8 +1159,7 @@ async fn seed_entity_with_vector(
     let id = gs
         .upsert_entity(name, name, entity_type, Some(summary), None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     emb.ensure_named_collection(ENTITY_COLLECTION, u64::try_from(vector.len()).unwrap())
         .await
         .unwrap();
@@ -1175,7 +1174,7 @@ async fn seed_entity_with_vector(
         .await
         .unwrap();
     gs.set_entity_qdrant_point_id(id, &point_id).await.unwrap();
-    id
+    id.0
 }
 
 // ── GAP-1: ambiguous score + LLM says same_entity=true → LlmDisambiguated ─
@@ -1431,7 +1430,7 @@ async fn resolve_adds_alias_on_create() {
         .resolve("Rust", "language", None, None)
         .await
         .unwrap();
-    let aliases = gs.aliases_for_entity(id).await.unwrap();
+    let aliases = gs.aliases_for_entity(EntityId(id)).await.unwrap();
     assert!(
         !aliases.is_empty(),
         "new entity should have at least one alias"
@@ -1449,7 +1448,7 @@ async fn resolve_reuses_entity_by_alias() {
         .resolve("rust", "language", None, None)
         .await
         .unwrap();
-    gs.add_alias(id1, "rust-lang").await.unwrap();
+    gs.add_alias(EntityId(id1), "rust-lang").await.unwrap();
 
     // Resolve using the alias — should return the same entity
     let (id2, _) = resolver
@@ -1493,14 +1492,14 @@ async fn resolve_preserves_existing_aliases() {
         .resolve("rust", "language", None, None)
         .await
         .unwrap();
-    gs.add_alias(id, "rust-lang").await.unwrap();
+    gs.add_alias(EntityId(id), "rust-lang").await.unwrap();
 
     // Upserting same entity should not remove prior aliases
     resolver
         .resolve("rust", "language", Some("updated"), None)
         .await
         .unwrap();
-    let aliases = gs.aliases_for_entity(id).await.unwrap();
+    let aliases = gs.aliases_for_entity(EntityId(id)).await.unwrap();
     assert!(
         aliases.iter().any(|a| a.alias_name == "rust-lang"),
         "prior alias must be preserved"
@@ -1518,7 +1517,7 @@ async fn resolve_original_form_registered_as_alias() {
         .resolve("  Rust  ", "language", None, None)
         .await
         .unwrap();
-    let aliases = gs.aliases_for_entity(id).await.unwrap();
+    let aliases = gs.aliases_for_entity(EntityId(id)).await.unwrap();
     assert!(aliases.iter().any(|a| a.alias_name == "rust"));
 }
 
@@ -1528,8 +1527,7 @@ async fn resolve_entity_with_many_aliases() {
     let id = gs
         .upsert_entity("bigentity", "bigentity", EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     for i in 0..100 {
         gs.add_alias(id, &format!("alias-{i}")).await.unwrap();
     }
@@ -1538,7 +1536,7 @@ async fn resolve_entity_with_many_aliases() {
 
     // Fuzzy search should still work via alias
     let results = gs.find_entities_fuzzy("alias-50", 10).await.unwrap();
-    assert!(results.iter().any(|e| e.id.0 == id));
+    assert!(results.iter().any(|e| e.id == id));
 }
 
 #[tokio::test]

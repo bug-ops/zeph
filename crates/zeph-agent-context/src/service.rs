@@ -9,6 +9,7 @@ use zeph_context::budget::{AllocationMode, ContextBudget};
 use zeph_context::fidelity::FidelityScorer;
 use zeph_context::input::ItemKeys;
 use zeph_llm::LlmProvider;
+use zeph_llm::provider::StatusUpdate;
 use zeph_llm::provider::{
     Message, MessagePart, RetrievalKey, Role, TurnContextBlock, TurnContextKind, TurnContextTrust,
     context_floor, insert_at_context_floor,
@@ -750,7 +751,7 @@ impl ContextService {
         {
             use tracing::Instrument as _;
             if let Some(ref tx) = view.status_tx {
-                let _ = tx.send("Scoring context fidelity\u{2026}".into());
+                let _ = tx.send(StatusUpdate::set("Scoring context fidelity\u{2026}"));
             }
             let (embed_provider, compress_provider) = fidelity_provider_pair(
                 view.fidelity_semantic_provider.as_ref(),
@@ -779,7 +780,7 @@ impl ContextService {
             persist_fidelity_tags(window.messages, view.memory.as_deref()).await;
             recompute_prompt_tokens(window);
             if let Some(ref tx) = view.status_tx {
-                let _ = tx.send(String::new());
+                let _ = tx.send(StatusUpdate::Clear);
             }
         }
 
@@ -1509,7 +1510,7 @@ impl ContextService {
             crate::summarization::pruning::prune_tool_outputs(summ, min_to_free);
         }
 
-        status.send_status("").await;
+        status.clear_status().await;
         tracing::info!(
             cached_tokens = *summ.cached_prompt_tokens,
             soft_threshold,
@@ -1584,7 +1585,7 @@ impl ContextService {
             if let Err(e) = crate::summarization::deferred::flush_deferred_summaries(summ).await {
                 tracing::warn!(%e, "flush_deferred_summaries failed after hard compaction");
             }
-            status.send_status("").await;
+            status.clear_status().await;
             return Ok(());
         }
 
@@ -1598,7 +1599,7 @@ impl ContextService {
             );
             summ.context_manager
                 .set_compaction_state(CompactionState::Exhausted { warned: false });
-            status.send_status("").await;
+            status.clear_status().await;
             return Ok(());
         }
 
@@ -1615,7 +1616,7 @@ impl ContextService {
             tracing::warn!("hard compaction: no net reduction, marking exhausted");
             summ.context_manager
                 .set_compaction_state(CompactionState::Exhausted { warned: false });
-            status.send_status("").await;
+            status.clear_status().await;
             return Ok(());
         }
 
@@ -1630,7 +1631,7 @@ impl ContextService {
             );
             summ.context_manager
                 .set_compaction_state(CompactionState::Exhausted { warned: false });
-            status.send_status("").await;
+            status.clear_status().await;
             return Ok(());
         }
 
@@ -1648,7 +1649,7 @@ impl ContextService {
             );
         }
 
-        status.send_status("").await;
+        status.clear_status().await;
         Ok(())
     }
 
@@ -1666,7 +1667,7 @@ impl ContextService {
         crate::summarization::deferred::maybe_summarize_tool_pair(
             summ,
             providers,
-            &TxStatusSink(summ.status_tx.clone()),
+            &TxStatusSink::new(summ.status_tx.clone()),
         )
         .await;
     }
@@ -1796,7 +1797,7 @@ impl ContextService {
             Err(e) => tracing::warn!(%e, "proactive compression failed"),
         }
 
-        status.send_status("").await;
+        status.clear_status().await;
     }
 
     /// Refresh the task goal when the last user message has changed.
@@ -1819,15 +1820,46 @@ impl ContextService {
 
 // ── StatusSink adapters ───────────────────────────────────────────────────────
 
-/// `StatusSink` adapter over an optional `UnboundedSender<String>`.
+/// `StatusSink` adapter over an optional [`zeph_llm::provider::StatusTx`].
 ///
-/// Sends status strings when the sender is present; silently drops them otherwise.
-struct TxStatusSink(Option<tokio::sync::mpsc::UnboundedSender<String>>);
+/// Sends typed status updates when the sender is present; silently drops them otherwise.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_agent_context::{StatusSink, TxStatusSink};
+/// use zeph_llm::provider::StatusUpdate;
+///
+/// # tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
+/// let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+/// let sink = TxStatusSink::new(Some(tx));
+/// sink.send_status("working").await;
+/// sink.clear_status().await;
+/// assert_eq!(rx.try_recv().unwrap(), StatusUpdate::set("working"));
+/// assert_eq!(rx.try_recv().unwrap(), StatusUpdate::Clear);
+/// # });
+/// ```
+pub struct TxStatusSink(Option<zeph_llm::provider::StatusTx>);
+
+impl TxStatusSink {
+    /// Wrap an optional status sender.
+    #[must_use]
+    pub fn new(tx: Option<zeph_llm::provider::StatusTx>) -> Self {
+        Self(tx)
+    }
+}
 
 impl StatusSink for TxStatusSink {
     fn send_status(&self, msg: &str) -> impl std::future::Future<Output = ()> + Send + '_ {
         if let Some(ref tx) = self.0 {
-            let _ = tx.send(msg.to_owned());
+            let _ = tx.send(StatusUpdate::set(msg.to_owned()));
+        }
+        std::future::ready(())
+    }
+
+    fn clear_status(&self) -> impl std::future::Future<Output = ()> + Send + '_ {
+        if let Some(ref tx) = self.0 {
+            let _ = tx.send(StatusUpdate::Clear);
         }
         std::future::ready(())
     }
@@ -4674,6 +4706,9 @@ mod tests {
         struct NoopStatus;
         impl StatusSink for NoopStatus {
             fn send_status(&self, _msg: &str) -> impl std::future::Future<Output = ()> + Send + '_ {
+                std::future::ready(())
+            }
+            fn clear_status(&self) -> impl std::future::Future<Output = ()> + Send + '_ {
                 std::future::ready(())
             }
         }

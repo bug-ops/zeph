@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::agent::Agent;
 use crate::channel::Channel;
+use zeph_llm::provider::StatusUpdate;
 
 // Re-export for tests in this module (subgoal_extraction_tests) — test-only.
 #[cfg(test)]
@@ -48,12 +49,15 @@ impl<C: Channel> Agent<C> {
 
         // Forward collected statuses to the channel AND the TUI status sender.
         let collected = status.take();
-        for msg in &collected {
-            self.channel.send_status_best_effort(msg).await;
+        for update in &collected {
+            match update {
+                StatusUpdate::Set(text) => self.channel.send_status_best_effort(text).await,
+                StatusUpdate::Clear => self.channel.clear_status_best_effort().await,
+            }
         }
         if let Some(ref tx) = self.services.session.status_tx {
-            for msg in &collected {
-                let _ = tx.send(msg.clone());
+            for update in collected {
+                let _ = tx.send(update);
             }
         }
 
@@ -124,7 +128,7 @@ impl<C: Channel> Agent<C> {
         let guidelines = self.load_compression_guidelines_for_compact().await;
         let tokens_before = self.runtime.providers.cached_prompt_tokens;
         let svc = zeph_agent_context::ContextService::new();
-        let status = TxStatusSink(self.services.session.status_tx.clone());
+        let status = zeph_agent_context::TxStatusSink::new(self.services.session.status_tx.clone());
         let mut summ = self
             .summarization_view()
             .with_compression_guidelines(guidelines);
@@ -172,33 +176,17 @@ impl<C: Channel> Agent<C> {
     }
 }
 
-/// `StatusSink` adapter over an optional `UnboundedSender<String>`.
-///
-/// Sends status strings when the sender is present; silently drops them otherwise.
-/// Mirrors the same adapter in `zeph-agent-context::service` for use in `Agent<C>`
-/// delegation shims.
-struct TxStatusSink(Option<tokio::sync::mpsc::UnboundedSender<String>>);
-
-impl zeph_agent_context::StatusSink for TxStatusSink {
-    fn send_status(&self, msg: &str) -> impl std::future::Future<Output = ()> + Send + '_ {
-        if let Some(ref tx) = self.0 {
-            let _ = tx.send(msg.to_owned());
-        }
-        std::future::ready(())
-    }
-}
-
-/// `StatusSink` that collects status strings in-memory for later forwarding.
+/// `StatusSink` that collects status updates in-memory for later forwarding.
 ///
 /// Used by [`Agent::maybe_compact`] to capture status messages emitted by the service
 /// so they can be forwarded to `channel.send_status` (and optionally `status_tx`)
 /// after the `&mut ContextSummarizationView` borrow is released.
 #[derive(Default)]
-struct CollectStatusSink(Arc<Mutex<Vec<String>>>);
+struct CollectStatusSink(Arc<Mutex<Vec<StatusUpdate>>>);
 
 impl CollectStatusSink {
     /// Drain and return all collected status messages.
-    fn take(&self) -> Vec<String> {
+    fn take(&self) -> Vec<StatusUpdate> {
         std::mem::take(
             &mut self
                 .0
@@ -213,7 +201,15 @@ impl zeph_agent_context::StatusSink for CollectStatusSink {
         self.0
             .lock()
             .expect("invariant: CollectStatusSink mutex is not poisoned")
-            .push(msg.to_owned());
+            .push(StatusUpdate::set(msg.to_owned()));
+        std::future::ready(())
+    }
+
+    fn clear_status(&self) -> impl std::future::Future<Output = ()> + Send + '_ {
+        self.0
+            .lock()
+            .expect("invariant: CollectStatusSink mutex is not poisoned")
+            .push(StatusUpdate::Clear);
         std::future::ready(())
     }
 }

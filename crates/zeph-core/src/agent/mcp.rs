@@ -570,12 +570,12 @@ impl<C: Channel> Agent<C> {
                     server_id = event.server_id,
                     "elicitation channel error: {e:#}"
                 );
-                self.channel.send_status_best_effort("").await;
+                self.channel.clear_status_best_effort().await;
                 let _ = event.response_tx.send(decline);
                 return;
             }
         };
-        self.channel.send_status_best_effort("").await;
+        self.channel.clear_status_best_effort().await;
 
         let result = match response {
             ElicitationResponse::Accepted(value) => {

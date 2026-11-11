@@ -5122,7 +5122,7 @@ mod tests {
         config.security.content_isolation.quarantine.model = "ollama".to_owned();
         config.security.guardrail.enabled = true;
         config.security.causal_ipi.enabled = true;
-        config.security.causal_ipi.threshold = 0.42;
+        config.security.causal_ipi.threshold = zeph_config::UnitUpperClosed::literal(0.42);
         config.security.content_isolation.nli.enabled = true;
         config.security.content_isolation.nli.threshold = 0.33;
         config.security.pii_filter.enabled = true;
@@ -5133,7 +5133,7 @@ mod tests {
         #[cfg(feature = "classifiers")]
         {
             config.classifiers.enabled = true;
-            config.classifiers.injection_threshold = 0.81;
+            config.classifiers.injection_threshold = zeph_config::UnitUpperClosed::literal(0.81);
         }
 
         let app = crate::bootstrap::AppBuilder::for_test(config);
@@ -5166,7 +5166,7 @@ mod tests {
                 "config.security.causal_ipi.enabled must flow into {label}"
             );
             assert!(
-                (causal.threshold - 0.42).abs() < f32::EPSILON,
+                (causal.threshold.get() - 0.42).abs() < f32::EPSILON,
                 "config.security.causal_ipi.threshold must flow into {label}"
             );
         }
@@ -5224,7 +5224,7 @@ mod tests {
                     "config.classifiers.enabled must flow into {label}"
                 );
                 assert!(
-                    (classifiers.injection_threshold - 0.81).abs() < f32::EPSILON,
+                    (classifiers.injection_threshold.get() - 0.81).abs() < f32::EPSILON,
                     "config.classifiers.injection_threshold must flow into {label}"
                 );
             }

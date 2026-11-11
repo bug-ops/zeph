@@ -66,6 +66,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod body_limit;
 pub mod card;
 pub mod card_signing;
 pub mod client;

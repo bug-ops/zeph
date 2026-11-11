@@ -1905,13 +1905,13 @@ async fn native_anomaly_stderr_output_records_error() {
     );
 }
 
-// R-AN-3b: classify_tool_result itself must classify a "[stderr]"-marked summary as
-// AnomalyOutcome::Error. R-AN-3 above drives this through AnomalyDetector, but a single
+// R-AN-3b: classify_tool_result itself must classify a failing status as
+// AnomalyOutcome::Error; output text never decides. R-AN-3 above drives this through AnomalyDetector, but a single
 // [stderr] call in a 20-window never crosses either threshold regardless of how it was
 // classified, so it cannot catch a regression in classify_tool_result. This test calls
 // classify_tool_result directly and asserts on the returned anomaly_outcome (#6618).
 #[test]
-fn classify_tool_result_stderr_marker_yields_error_outcome() {
+fn classify_tool_result_failing_status_yields_error_outcome() {
     use crate::agent::agent_tests::{MockChannel, create_test_registry, mock_provider};
 
     let executor = FixedOutputExecutor {
@@ -1928,15 +1928,61 @@ fn classify_tool_result_stderr_marker_yields_error_outcome() {
         &tc,
         Ok(Some(zeph_tools::ToolOutput {
             tool_name: "bash".into(),
-            summary: "[stderr] something went wrong".into(),
+            summary: "something went wrong".into(),
+            status: zeph_tools::ToolStatus::from_exit_code(2),
             ..Default::default()
         })),
     );
 
     assert!(
         matches!(result.anomaly_outcome, super::super::AnomalyOutcome::Error),
-        "a [stderr]-marked summary must classify as AnomalyOutcome::Error"
+        "a non-zero exit must classify as AnomalyOutcome::Error"
     );
+    assert!(
+        !result.outcome.is_wire_error(),
+        "tier-loop wire is_error stays Err-only"
+    );
+}
+
+#[test]
+fn classify_tool_result_stderr_and_error_text_with_success_status_is_success() {
+    use crate::agent::agent_tests::{MockChannel, create_test_registry, mock_provider};
+
+    let executor = FixedOutputExecutor {
+        summary: String::new(),
+        is_err: false,
+    };
+    let mut agent = crate::agent::Agent::new(
+        mock_provider(vec![]),
+        MockChannel::new(vec![]),
+        create_test_registry(),
+        None,
+        5,
+        executor,
+    );
+
+    let tc = make_tool_use_request("id-text", "bash");
+    for summary in ["[stderr] Compiling...", "[error] only printed"] {
+        let result = agent.classify_tool_result(
+            &tc,
+            Ok(Some(zeph_tools::ToolOutput {
+                tool_name: "bash".into(),
+                summary: summary.into(),
+                ..Default::default()
+            })),
+        );
+        assert!(
+            matches!(
+                result.anomaly_outcome,
+                super::super::AnomalyOutcome::Success
+            ),
+            "{summary}"
+        );
+        assert_eq!(
+            result.outcome,
+            super::super::ToolResultKind::Ok(zeph_tools::ToolStatus::Success)
+        );
+    }
 }
 
 // R-AN-3c: contrast case — a plain-success summary (no [error]/[stderr] markers) must

@@ -9,7 +9,7 @@ use std::str::FromStr;
 use zeph_common::trust_level::TurnContextTrust;
 
 use crate::sqlite_time::parse_sqlite_datetime_to_unix;
-use crate::types::{EntityId, MessageId};
+use crate::types::{EdgeId, EntityId, MessageId};
 
 /// MAGMA edge type: the semantic category of a relationship between two entities.
 ///
@@ -126,9 +126,9 @@ pub struct EntityAlias {
 /// A directed, typed relationship between two entities in the knowledge graph.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Edge {
-    pub id: i64,
-    pub source_entity_id: i64,
-    pub target_entity_id: i64,
+    pub id: EdgeId,
+    pub source_entity_id: EntityId,
+    pub target_entity_id: EntityId,
     pub relation: String,
     pub fact: String,
     pub confidence: f32,
@@ -148,13 +148,13 @@ pub struct Edge {
     pub last_retrieved_at: Option<i64>,
     /// ID of the edge that superseded this one during Kumiho belief revision.
     /// `None` for active edges and for edges invalidated by legacy exact-match dedup.
-    pub superseded_by: Option<i64>,
+    pub superseded_by: Option<EdgeId>,
     /// Canonical (ontology-normalized) relation. Equals `relation` when no ontology is loaded.
     /// Added by APEX-MEM migration 075.
     pub canonical_relation: String,
     /// ID of the prior active edge that this edge replaced in the supersede chain.
     /// `None` for the chain root. Added by APEX-MEM migration 075.
-    pub supersedes: Option<i64>,
+    pub supersedes: Option<EdgeId>,
     /// Hebbian reinforcement weight (HL-F1, #3344).
     ///
     /// Starts at `1.0` for all edges; incremented by `hebbian_lr` on each recall
@@ -192,9 +192,10 @@ impl Edge {
     ///
     /// ```
     /// use zeph_common::trust_level::TurnContextTrust;
+    /// use zeph_memory::EntityId;
     /// use zeph_memory::graph::types::Edge;
     ///
-    /// let mut edge = Edge::synthetic_anchor(1);
+    /// let mut edge = Edge::synthetic_anchor(EntityId(1));
     /// assert_eq!(edge.effective_trust(), TurnContextTrust::ExternalUntrusted);
     /// edge.trust_level = Some(TurnContextTrust::Trusted);
     /// assert_eq!(edge.effective_trust(), TurnContextTrust::Trusted);
@@ -214,9 +215,9 @@ impl Edge {
     ///
     /// Callers detect the synthetic marker via `edge.id == 0`.
     #[must_use]
-    pub fn synthetic_anchor(entity_id: i64) -> Self {
+    pub fn synthetic_anchor(entity_id: EntityId) -> Self {
         Self {
-            id: 0,
+            id: EdgeId(0),
             source_entity_id: entity_id,
             target_entity_id: entity_id,
             relation: String::new(),
@@ -350,24 +351,50 @@ pub struct GraphProvenance {
     pub trust: TurnContextTrust,
 }
 
-/// Unpack `Option<&GraphProvenance>` into the SQL-bind values for `origin`,
-/// `import_batch_id`, `source_uri`, and `trust_level`.
+/// SQL-bind values for the provenance columns `origin`, `import_batch_id`, `source_uri` and
+/// `trust_level`, derived from an optional [`GraphProvenance`].
 ///
 /// Callers that pass `None` get the default conversation values (`trust_level = NULL`: never
 /// ingest-classified); callers that pass `Some(prov)` get the ingest-origin values.
-#[must_use]
-pub(crate) fn provenance_parts(
-    prov: Option<&GraphProvenance>,
-) -> (&'static str, Option<&str>, Option<&str>, Option<i16>) {
-    match prov {
-        None => ("conversation", None, None, None),
-        Some(p) => (
-            p.origin.as_str(),
-            Some(p.import_batch_id.as_str()),
-            p.source_uri.as_deref(),
-            Some(i16::from(p.trust.as_u8())),
-        ),
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProvenanceColumns<'a> {
+    pub(crate) origin: &'static str,
+    pub(crate) batch_id: Option<&'a str>,
+    pub(crate) source_uri: Option<&'a str>,
+    pub(crate) trust: Option<TurnContextTrust>,
+}
+
+impl<'a> ProvenanceColumns<'a> {
+    /// Unpack `prov` into column values.
+    #[must_use]
+    pub(crate) fn new(prov: Option<&'a GraphProvenance>) -> Self {
+        match prov {
+            None => Self {
+                origin: "conversation",
+                batch_id: None,
+                source_uri: None,
+                trust: None,
+            },
+            Some(p) => Self {
+                origin: p.origin.as_str(),
+                batch_id: Some(p.import_batch_id.as_str()),
+                source_uri: p.source_uri.as_deref(),
+                trust: Some(p.trust),
+            },
+        }
     }
+
+    /// The `trust_level` column value.
+    #[must_use]
+    pub(crate) fn trust_column(&self) -> Option<i16> {
+        trust_to_column(self.trust)
+    }
+}
+
+/// Encode an optional trust tier as the `trust_level` column value.
+#[must_use]
+pub(crate) fn trust_to_column(trust: Option<TurnContextTrust>) -> Option<i16> {
+    trust.map(|t| i16::from(t.as_u8()))
 }
 
 /// Decode a stored `trust_level` column value.
@@ -442,7 +469,7 @@ pub struct GraphFact {
     /// `None` for facts produced by code paths that do not yet propagate the edge id.
     /// Populated by [`crate::graph::retrieval::graph_recall`] and used by
     /// [`crate::recall_view`] for Zoom-In provenance lookups.
-    pub edge_id: Option<i64>,
+    pub edge_id: Option<EdgeId>,
     /// Trust tier of the ingest source of the underlying edge (spec-067).
     ///
     /// A `NULL` edge tier resolves to [`TurnContextTrust::ExternalUntrusted`] (see

@@ -224,7 +224,7 @@ impl ProactiveExplorer {
         // Evaluator gate (S3 fix — see arch spec §2.3).
         if let Some(ref evaluator) = self.evaluator {
             let eval_req = SkillEvaluationRequest {
-                name: &skill.name,
+                name: skill.name().as_str(),
                 description: &skill.meta.description,
                 body: &skill.content,
                 original_intent: &description,
@@ -243,11 +243,11 @@ impl ProactiveExplorer {
         }
 
         // Write SKILL.md to disk. Skip if already exists (idempotent).
-        let skill_dir = self.output_dir.join(&skill.name);
+        let skill_dir = self.output_dir.join(skill.name().as_str());
         if skill_dir.exists() {
             tracing::debug!(
                 domain = %domain.0,
-                skill = %skill.name,
+                skill = %skill.name(),
                 "proactive skill already exists, skipping"
             );
             return Ok(());
@@ -258,7 +258,7 @@ impl ProactiveExplorer {
         tokio::fs::write(&skill_path, &content).await?;
         tracing::info!(
             domain = %domain.0,
-            skill = %skill.name,
+            skill = %skill.name(),
             path = %skill_path.display(),
             "proactive skill written to disk"
         );

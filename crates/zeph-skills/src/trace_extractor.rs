@@ -31,6 +31,7 @@ use std::time::Duration;
 
 use tracing::Instrument as _;
 use zeph_llm::any::AnyProvider;
+use zeph_llm::provider::StatusUpdate;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use crate::embedding::{SkillEmbedding, embed_skills_with_timeout};
@@ -122,7 +123,7 @@ pub struct TraceExtractor {
     /// Timeout for individual LLM calls.
     llm_timeout: Duration,
     /// Optional status sender for TUI notifications.
-    status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    status_tx: Option<zeph_llm::provider::StatusTx>,
 }
 
 impl TraceExtractor {
@@ -168,7 +169,7 @@ impl TraceExtractor {
         merge_threshold: f32,
         dedup_threshold: f32,
         merge_enabled: bool,
-        status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+        status_tx: Option<zeph_llm::provider::StatusTx>,
     ) -> Self {
         Self {
             generator: SkillGenerator::new(extract_provider.clone(), output_dir),
@@ -276,7 +277,7 @@ impl TraceExtractor {
         if body_scan.has_matches() {
             tracing::warn!(
                 session_id,
-                skill = %skill.name,
+                skill = %skill.name(),
                 patterns = ?body_scan.matched_patterns,
                 "trace_extractor: injection detected, discarding candidate"
             );
@@ -287,7 +288,7 @@ impl TraceExtractor {
         let candidate_emb = match self.embed_candidate(&skill).await {
             Ok(e) => e,
             Err(e) => {
-                tracing::warn!(session_id, skill = %skill.name, error = %e, "trace_extractor: embed failed, skipping candidate");
+                tracing::warn!(session_id, skill = %skill.name(), error = %e, "trace_extractor: embed failed, skipping candidate");
                 return;
             }
         };
@@ -317,20 +318,24 @@ impl TraceExtractor {
     ) {
         if existing_embeddings.is_empty() {
             if let Some(path) = self.save_quarantined(skill, session_id).await {
-                result.saved_skill_paths.push((skill.name.clone(), path));
+                result
+                    .saved_skill_paths
+                    .push((skill.name().to_string(), path));
             }
             result.candidates_saved += 1;
-            self.notify_proposed(&skill.name);
+            self.notify_proposed(skill.name().as_str());
             return;
         }
 
         let Some((nearest_meta, nearest_sim)) = find_nearest(candidate_emb, existing_embeddings)
         else {
             if let Some(path) = self.save_quarantined(skill, session_id).await {
-                result.saved_skill_paths.push((skill.name.clone(), path));
+                result
+                    .saved_skill_paths
+                    .push((skill.name().to_string(), path));
             }
             result.candidates_saved += 1;
-            self.notify_proposed(&skill.name);
+            self.notify_proposed(skill.name().as_str());
             return;
         };
 
@@ -343,13 +348,15 @@ impl TraceExtractor {
         ) {
             MergeDecision::Add => {
                 if let Some(path) = self.save_quarantined(skill, session_id).await {
-                    result.saved_skill_paths.push((skill.name.clone(), path));
+                    result
+                        .saved_skill_paths
+                        .push((skill.name().to_string(), path));
                 }
                 result.candidates_saved += 1;
-                self.notify_proposed(&skill.name);
+                self.notify_proposed(skill.name().as_str());
             }
             MergeDecision::Discard => {
-                tracing::debug!(session_id, skill = %skill.name, similarity = nearest_sim, "trace_extractor: candidate discarded as duplicate");
+                tracing::debug!(session_id, skill = %skill.name(), similarity = nearest_sim, "trace_extractor: candidate discarded as duplicate");
                 result.candidates_discarded += 1;
             }
             MergeDecision::Merge {
@@ -357,7 +364,7 @@ impl TraceExtractor {
                 nearest_version,
             } => {
                 tracing::debug!(
-                    session_id, skill = %skill.name, nearest = nearest_name,
+                    session_id, skill = %skill.name(), nearest = nearest_name,
                     similarity = nearest_sim, next_version = nearest_version + 1,
                     "trace_extractor: merging candidate with nearest skill"
                 );
@@ -381,7 +388,7 @@ impl TraceExtractor {
                         self.notify_proposed(&format!("{nearest_name} v{}", nearest_version + 1));
                     }
                     Err(e) => {
-                        tracing::warn!(session_id, skill = %skill.name, error = %e, "trace_extractor: merge failed, discarding candidate");
+                        tracing::warn!(session_id, skill = %skill.name(), error = %e, "trace_extractor: merge failed, discarding candidate");
                     }
                 }
             }
@@ -428,7 +435,7 @@ impl TraceExtractor {
     /// # Errors
     ///
     /// Returns `SkillError::Other` on timeout or provider failure.
-    #[tracing::instrument(name = "skills.trace_extraction.embed_candidate", skip(self, skill), fields(candidate = %skill.name))]
+    #[tracing::instrument(name = "skills.trace_extraction.embed_candidate", skip(self, skill), fields(candidate = %skill.name()))]
     async fn embed_candidate(&self, skill: &GeneratedSkill) -> Result<SkillEmbedding, SkillError> {
         tokio::time::timeout(
             self.llm_timeout,
@@ -443,13 +450,13 @@ impl TraceExtractor {
     }
 
     /// Write a candidate skill to the quarantine directory. Logs on failure.
-    #[tracing::instrument(name = "skills.trace_extraction.save_quarantined", skip_all, fields(skill = %skill.name, session_id))]
+    #[tracing::instrument(name = "skills.trace_extraction.save_quarantined", skip_all, fields(skill = %skill.name(), session_id))]
     async fn save_quarantined(&self, skill: &GeneratedSkill, session_id: &str) -> Option<PathBuf> {
         match self.generator.write_quarantined(skill).await {
             Ok(path) => {
                 tracing::info!(
                     session_id,
-                    skill = %skill.name,
+                    skill = %skill.name(),
                     path = %path.display(),
                     "trace_extractor: skill quarantined"
                 );
@@ -458,7 +465,7 @@ impl TraceExtractor {
             Err(e) => {
                 tracing::warn!(
                     session_id,
-                    skill = %skill.name,
+                    skill = %skill.name(),
                     error = %e,
                     "trace_extractor: failed to write quarantined skill"
                 );
@@ -528,12 +535,12 @@ impl TraceExtractor {
             tracing::info!(
                 session_id,
                 existing = existing_name,
-                merged = %merged.name,
+                merged = %merged.name(),
                 next_version = existing_version + 1,
                 "trace_extractor: merged skill quarantined"
             );
 
-            Ok((merged.name, path))
+            Ok((merged.name().to_string(), path))
         }
         .instrument(tracing::info_span!(
             "skills.trace_extraction.merge",
@@ -546,7 +553,9 @@ impl TraceExtractor {
     /// Send a TUI notification about a proposed skill (non-blocking).
     fn notify_proposed(&self, name: &str) {
         if let Some(ref tx) = self.status_tx {
-            let _ = tx.send(format!("Proposed skill: {name} (review pending)"));
+            let _ = tx.send(StatusUpdate::set(format!(
+                "Proposed skill: {name} (review pending)"
+            )));
         }
     }
 

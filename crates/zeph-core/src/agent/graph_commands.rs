@@ -19,7 +19,7 @@ use std::time::Duration;
 use tracing::Instrument as _;
 use zeph_commands::{CommandError, GraphAccess};
 use zeph_memory::semantic::SemanticMemory;
-use zeph_memory::{Edge, Entity, GraphExtractionConfig, GraphStore, extract_and_store};
+use zeph_memory::{Edge, Entity, EntityId, GraphExtractionConfig, GraphStore, extract_and_store};
 
 use super::Agent;
 use crate::channel::Channel;
@@ -104,9 +104,10 @@ async fn build_entity_name_map(
     store: &GraphStore,
     entity: &Entity,
     edges: &[Edge],
-) -> std::collections::HashMap<i64, String> {
-    let mut entity_names: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
-    entity_names.insert(entity.id.0, entity.name.clone());
+) -> std::collections::HashMap<EntityId, String> {
+    let mut entity_names: std::collections::HashMap<EntityId, String> =
+        std::collections::HashMap::new();
+    entity_names.insert(entity.id, entity.name.clone());
     for edge in edges {
         entity_names.entry(edge.source_entity_id).or_default();
         entity_names.entry(edge.target_entity_id).or_default();
@@ -244,7 +245,7 @@ impl<C: Channel + Send + 'static> GraphAccess for Agent<C> {
                 };
 
                 let edges =
-                    match with_graph_store_timeout(store.edges_for_entity(entity.id.0)).await? {
+                    match with_graph_store_timeout(store.edges_for_entity(entity.id)).await? {
                         StoreCallOutcome::Completed(v) => v,
                         StoreCallOutcome::TimedOut => {
                             return Ok("Graph store unavailable (Qdrant unreachable).".to_owned());
@@ -300,7 +301,7 @@ impl<C: Channel + Send + 'static> GraphAccess for Agent<C> {
                 };
 
                 let edges =
-                    match with_graph_store_timeout(store.edge_history_for_entity(entity.id.0, 50))
+                    match with_graph_store_timeout(store.edge_history_for_entity(entity.id, 50))
                         .await?
                     {
                         StoreCallOutcome::Completed(v) => v,
@@ -462,12 +463,13 @@ impl<C: Channel + Send + 'static> GraphAccess for Agent<C> {
                         community_summary_concurrency: graph_cfg.community_summary_concurrency,
                         lpa_edge_chunk_size: graph_cfg.lpa_edge_chunk_size,
                         note_linking: zeph_memory::NoteLinkingConfig::default(),
-                        link_weight_decay_lambda: graph_cfg.link_weight_decay_lambda,
+                        link_weight_decay_lambda: graph_cfg.link_weight_decay_lambda.get(),
                         link_weight_decay_interval_secs: graph_cfg.link_weight_decay_interval_secs,
                         belief_revision_enabled: graph_cfg.belief_revision.enabled,
                         belief_revision_similarity_threshold: graph_cfg
                             .belief_revision
-                            .similarity_threshold,
+                            .similarity_threshold
+                            .get(),
                         conversation_id: None,
                         apex_mem_enabled: graph_cfg.apex_mem.enabled,
                         llm_timeout_secs: graph_cfg.llm_timeout_secs,
@@ -476,9 +478,9 @@ impl<C: Channel + Send + 'static> GraphAccess for Agent<C> {
                         write_gate_min_relevance: graph_cfg
                             .write_gate
                             .enabled
-                            .then_some(graph_cfg.write_gate.min_edge_relevance),
-                        benna_fast_rate: graph_cfg.spreading_activation.benna_fast_rate,
-                        benna_slow_rate: graph_cfg.spreading_activation.benna_slow_rate,
+                            .then_some(graph_cfg.write_gate.min_edge_relevance.get()),
+                        benna_fast_rate: graph_cfg.spreading_activation.benna_fast_rate.get(),
+                        benna_slow_rate: graph_cfg.spreading_activation.benna_slow_rate.get(),
                         provenance: None,
                         system_prompt: None,
                         recall_include_imported: graph_cfg.recall_include_imported,
@@ -1117,7 +1119,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .insert_edge(alice.0, bob.0, "knows", "Alice knows Bob", 0.9, None, None)
+            .insert_edge(alice, bob, "knows", "Alice knows Bob", 0.9, None, None)
             .await
             .unwrap();
 
@@ -1294,7 +1296,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .insert_edge(alice.0, bob.0, "knows", "Alice knows Bob", 0.9, None, None)
+            .insert_edge(alice, bob, "knows", "Alice knows Bob", 0.9, None, None)
             .await
             .unwrap();
 

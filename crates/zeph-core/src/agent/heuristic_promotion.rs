@@ -15,6 +15,7 @@
 
 use std::path::PathBuf;
 use std::time::Duration;
+use zeph_llm::provider::StatusUpdate;
 
 use tracing::Instrument as _;
 use zeph_llm::any::AnyProvider;
@@ -131,7 +132,7 @@ async fn run_promotion_loop(
     merge_threshold: f32,
     dedup_threshold: f32,
     merge_enabled: bool,
-    status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    status_tx: Option<zeph_llm::provider::StatusTx>,
 ) {
     // Delay startup to let the agent finish initialization.
     tokio::time::sleep(Duration::from_secs(INITIAL_DELAY_SECS)).await;
@@ -169,7 +170,7 @@ async fn run_promotion_scan(
     merge_threshold: f32,
     dedup_threshold: f32,
     merge_enabled: bool,
-    status_tx: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
+    status_tx: Option<&zeph_llm::provider::StatusTx>,
 ) {
     let Some(pool) = db_pool else {
         tracing::debug!("heuristic_promotion: no DB pool, skipping scan");
@@ -227,7 +228,7 @@ async fn run_promotion_scan(
         let msg = format!("Heuristic promotion: {promoted_count} draft(s) queued for review");
         tracing::info!("{msg}");
         if let Some(tx) = status_tx {
-            let _ = tx.send(msg);
+            let _ = tx.send(StatusUpdate::set(msg));
         }
     }
 }
@@ -494,7 +495,7 @@ async fn add_merge_discard_decision(
 ) -> MergeDecision {
     let span = tracing::info_span!(
         "skills.heuristic_promotion.amd_decision",
-        candidate = %candidate.name
+        candidate = %candidate.name()
     );
     async move {
         // Embed the candidate description.
@@ -506,11 +507,11 @@ async fn add_merge_discard_decision(
         {
             Ok(Ok(v)) => SkillEmbedding::from_raw(v),
             Ok(Err(e)) => {
-                tracing::warn!(candidate = %candidate.name, error = %e, "heuristic_promotion: embed failed, defaulting to Add");
+                tracing::warn!(candidate = %candidate.name(), error = %e, "heuristic_promotion: embed failed, defaulting to Add");
                 return MergeDecision::Add;
             }
             Err(_) => {
-                tracing::warn!(candidate = %candidate.name, "heuristic_promotion: embed timed out, defaulting to Add");
+                tracing::warn!(candidate = %candidate.name(), "heuristic_promotion: embed timed out, defaulting to Add");
                 return MergeDecision::Add;
             }
         };
@@ -567,8 +568,15 @@ fn build_generated_skill(name: &str, content: &str) -> Option<GeneratedSkill> {
                     "heuristic_promotion: injection patterns detected in draft body (writing to quarantine for human review)"
                 );
             }
+            if meta.name != name {
+                tracing::warn!(
+                    name = name,
+                    meta_name = %meta.name,
+                    "heuristic_promotion: draft frontmatter name differs from requested name, discarding"
+                );
+                return None;
+            }
             Some(GeneratedSkill {
-                name: name.to_string(),
                 content: content.to_string(),
                 meta,
                 warnings: if scan.has_matches() {
@@ -652,9 +660,21 @@ mod tests {
         AnyProvider::Mock(MockProvider::default().with_embedding(vec![0.1_f32; 384]))
     }
 
+    #[test]
+    fn build_generated_skill_keeps_matching_name() {
+        let content = "---\nname: promo-skill\ndescription: Test skill.\n---\n\n# Body\n";
+        let skill = build_generated_skill("promo-skill", content).unwrap();
+        assert_eq!(skill.name(), "promo-skill");
+    }
+
+    #[test]
+    fn build_generated_skill_rejects_name_mismatch() {
+        let content = "---\nname: other-skill\ndescription: Test skill.\n---\n\n# Body\n";
+        assert!(build_generated_skill("promo-skill", content).is_none());
+    }
+
     fn dummy_candidate(name: &str) -> GeneratedSkill {
         GeneratedSkill {
-            name: name.to_string(),
             content: format!("---\nname: {name}\ndescription: Test skill.\n---\n\n# Body\n"),
             meta: SkillMeta::new(zeph_common::SkillName::parse(name).unwrap(), "Test skill."),
             warnings: vec![],

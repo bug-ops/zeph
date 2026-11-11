@@ -393,7 +393,7 @@ Canonicalization and inclusion checks prevent `../` escapes.
 Every installed plugin has a SHA-256 digest recorded in the integrity registry. At load time,
 the manifest's digest is verified to detect tampering.
 
-**Guarantee**: Tampering with plugin manifests is detected (logged at WARN; overlay still applied).
+**Guarantee**: Tampering with plugin manifests is detected: a digest mismatch skips the plugin's overlay and is recorded in `ResolvedOverlay::skipped_plugins` (matches `[[010-security/spec]]` "hard rejection"; the earlier "logged at WARN; overlay still applied" wording did not match the code). The overlay verifies the exact bytes it parses: `IntegrityRegistry::verify_bytes(plugin, &[u8])` hashes the already-read manifest text, replacing the path-based `verify(path)` that re-read the file (#6985, closes the read-verify-parse window).
 A damaged registry is never overwritten: registry updates load it strictly and abort instead of dropping stored digests.
 
 ### Deterministic Enumeration Invariant

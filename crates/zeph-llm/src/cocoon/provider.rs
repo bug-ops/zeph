@@ -19,7 +19,9 @@ use crate::embed::truncate_for_embed;
 use crate::error::LlmError;
 use crate::openai::OpenAiProvider;
 use crate::provider::ResponseUsage;
-use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
+use crate::provider::{
+    ChatResponse, ChatStream, LlmProvider, Message, StatusTx, StatusUpdate, ToolDefinition,
+};
 use crate::sse::openai_sse_to_stream;
 use crate::usage::UsageTracker;
 
@@ -293,7 +295,7 @@ impl LlmProvider for CocoonProvider {
         async {
             tracing::debug!(model = self.model_identifier());
             if let Some(ref tx) = self.status_tx {
-                let _ = tx.send("Cocoon: sending request...".into());
+                let _ = tx.send(StatusUpdate::set("Cocoon: sending request..."));
             }
             let body = self.inner.debug_request_json(messages, &[], false);
             let body_bytes = serde_json::to_vec(&body)
@@ -338,7 +340,7 @@ impl LlmProvider for CocoonProvider {
         async {
             tracing::debug!(model = self.model_identifier());
             if let Some(ref tx) = self.status_tx {
-                let _ = tx.send("Cocoon: streaming...".into());
+                let _ = tx.send(StatusUpdate::set("Cocoon: streaming..."));
             }
             let body = self.inner.debug_request_json(messages, &[], true);
             let body_bytes = serde_json::to_vec(&body)

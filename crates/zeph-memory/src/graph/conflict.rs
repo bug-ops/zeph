@@ -313,9 +313,9 @@ mod tests {
 
     fn make_edge(id: i64, valid_from: &str, confidence: f32) -> Edge {
         Edge {
-            id,
-            source_entity_id: 1,
-            target_entity_id: 2,
+            id: crate::types::EdgeId::new(id),
+            source_entity_id: crate::types::EntityId(1),
+            target_entity_id: crate::types::EntityId(2),
             relation: "works_at".into(),
             canonical_relation: "works_at".into(),
             fact: "fact".into(),
@@ -349,7 +349,11 @@ mod tests {
             make_edge(3, "2026-03-01 00:00:00", 0.7),
         ];
         let result = resolver.resolve(candidates, &metrics).await.unwrap();
-        assert_eq!(result.winner.id, 2, "newest valid_from wins");
+        assert_eq!(
+            result.winner.id,
+            crate::types::EdgeId::new(2),
+            "newest valid_from wins"
+        );
     }
 
     #[tokio::test]
@@ -362,7 +366,7 @@ mod tests {
             make_edge(3, "2026-03-01 00:00:00", 0.7),
         ];
         let result = resolver.resolve(candidates, &metrics).await.unwrap();
-        assert_eq!(result.winner.id, 1);
+        assert_eq!(result.winner.id, crate::types::EdgeId::new(1));
     }
 
     #[tokio::test]
@@ -371,7 +375,7 @@ mod tests {
         let resolver = ConflictResolver::new(ConflictStrategy::Recency, 500, 3, false);
         let candidates = vec![make_edge(42, "2026-01-01 00:00:00", 0.8)];
         let result = resolver.resolve(candidates, &metrics).await.unwrap();
-        assert_eq!(result.winner.id, 42);
+        assert_eq!(result.winner.id, crate::types::EdgeId::new(42));
         assert_eq!(result.alternatives.len(), 0);
     }
 
@@ -384,9 +388,9 @@ mod tests {
             make_edge(2, "2026-06-01 00:00:00", 0.5),
         ];
         let result = resolver.resolve(candidates, &metrics).await.unwrap();
-        assert_eq!(result.winner.id, 2);
+        assert_eq!(result.winner.id, crate::types::EdgeId::new(2));
         assert_eq!(result.alternatives.len(), 1);
-        assert_eq!(result.alternatives[0].id, 1);
+        assert_eq!(result.alternatives[0].id, crate::types::EdgeId::new(1));
     }
 
     #[tokio::test]
@@ -399,7 +403,7 @@ mod tests {
             make_edge(2, "2026-06-01 00:00:00", 0.5),
         ];
         let result = resolver.resolve(candidates, &metrics).await.unwrap();
-        assert_eq!(result.winner.id, 2);
+        assert_eq!(result.winner.id, crate::types::EdgeId::new(2));
     }
 
     #[test]

@@ -8,6 +8,7 @@ use zeph_db::sql;
 
 use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
+use crate::types::{EdgeId, EntityId};
 
 use super::activation::{ActivatedFact, SpreadingActivation, SpreadingActivationParams};
 use super::store::GraphStore;
@@ -95,13 +96,13 @@ pub async fn graph_recall(
 
         // Use canonical_name for stable dedup keys (S5 fix): entities reached via different
         // aliases have different display names but share canonical_name, preventing duplicates.
-        let name_map: HashMap<i64, &str> = entities
+        let name_map: HashMap<EntityId, &str> = entities
             .iter()
-            .map(|e| (e.id.0, e.canonical_name.as_str()))
+            .map(|e| (e.id, e.canonical_name.as_str()))
             .collect();
 
         // Collect edge IDs before conversion to GraphFact (critic: issue 7 fix).
-        let traversed_edge_ids: Vec<i64> = edges.iter().map(|e| e.id).collect();
+        let traversed_edge_ids: Vec<EdgeId> = edges.iter().map(|e| e.id).collect();
 
         for edge in &edges {
             let Some(&hop_distance) = depth_map
@@ -218,7 +219,7 @@ async fn seed_embedding_fallback(
     provider: &zeph_llm::any::AnyProvider,
     query: &str,
     limit: usize,
-    fts_map: &mut HashMap<i64, (super::types::Entity, f32)>,
+    fts_map: &mut HashMap<EntityId, (super::types::Entity, f32)>,
     embed_timeout: std::time::Duration,
 ) -> bool {
     use zeph_llm::LlmProvider as _;
@@ -244,6 +245,7 @@ async fn seed_embedding_fallback(
                     .payload
                     .get("entity_id")
                     .and_then(serde_json::Value::as_i64)
+                    .map(EntityId)
                     && let Ok(Some(entity)) = store.find_entity_by_id(entity_id).await
                 {
                     fts_map.insert(entity_id, (entity, result.score));
@@ -273,7 +275,7 @@ pub(crate) async fn find_seed_entities(
     structural_weight: f32,
     community_cap: usize,
     embed_timeout: std::time::Duration,
-) -> Result<HashMap<i64, f32>, MemoryError> {
+) -> Result<HashMap<EntityId, f32>, MemoryError> {
     use crate::graph::types::ScoredEntity;
 
     const MAX_WORDS: usize = 5;
@@ -290,12 +292,12 @@ pub(crate) async fn find_seed_entities(
     };
 
     // Step 1: gather ranked FTS5 matches per word, merge by max fts_score.
-    let mut fts_map: HashMap<i64, (super::types::Entity, f32)> = HashMap::new();
+    let mut fts_map: HashMap<EntityId, (super::types::Entity, f32)> = HashMap::new();
     for word in &words {
         let ranked = store.find_entities_ranked(word, limit * 2).await?;
         for (entity, fts_score) in ranked {
             fts_map
-                .entry(entity.id.0)
+                .entry(entity.id)
                 .and_modify(|(_, s)| *s = s.max(fts_score))
                 .or_insert((entity, fts_score));
         }
@@ -322,7 +324,7 @@ pub(crate) async fn find_seed_entities(
         return Ok(HashMap::new());
     }
 
-    let entity_ids: Vec<i64> = fts_map.keys().copied().collect();
+    let entity_ids: Vec<EntityId> = fts_map.keys().copied().collect();
 
     // Step 3: structural scores.
     let structural_scores = store.entity_structural_scores(&entity_ids).await?;
@@ -331,15 +333,15 @@ pub(crate) async fn find_seed_entities(
     #[cfg(any(feature = "sqlite", feature = "postgres"))]
     let community_ids = store.entity_community_ids(&entity_ids).await?;
     #[cfg(not(any(feature = "sqlite", feature = "postgres")))]
-    let community_ids: HashMap<i64, i64> = HashMap::new();
+    let community_ids: HashMap<EntityId, i64> = HashMap::new();
 
     // Step 5: compute hybrid scores.
     let fts_weight = 1.0 - structural_weight;
     let mut scored: Vec<ScoredEntity> = fts_map
         .into_values()
         .map(|(entity, fts_score)| {
-            let struct_score = structural_scores.get(&entity.id.0).copied().unwrap_or(0.0);
-            let community_id = community_ids.get(&entity.id.0).copied();
+            let struct_score = structural_scores.get(&entity.id).copied().unwrap_or(0.0);
+            let community_id = community_ids.get(&entity.id).copied();
             ScoredEntity {
                 entity,
                 fts_score,
@@ -387,12 +389,12 @@ pub(crate) async fn find_seed_entities(
         capped.into_iter().take(limit).collect()
     };
 
-    let entity_scores: HashMap<i64, f32> = selected
+    let entity_scores: HashMap<EntityId, f32> = selected
         .into_iter()
         .map(|se| {
             let hybrid = se.fts_score * fts_weight + se.structural_score * structural_weight;
             // Clamp to [0.1, 1.0] to keep hybrid seeds above activation_threshold.
-            (se.entity.id.0, hybrid.clamp(0.1, 1.0))
+            (se.entity.id, hybrid.clamp(0.1, 1.0))
         })
         .collect();
 
@@ -456,7 +458,7 @@ pub async fn graph_recall_activated(
     let (_, mut facts) = sa.spread(store, entity_scores, edge_types).await?;
 
     // Record edge retrievals from activated facts (fire-and-forget).
-    let edge_ids: Vec<i64> = facts.iter().map(|f| f.edge.id).collect();
+    let edge_ids: Vec<EdgeId> = facts.iter().map(|f| f.edge.id).collect();
     if !edge_ids.is_empty()
         && let Err(e) = store.record_edge_retrieval(&edge_ids).await
     {
@@ -474,7 +476,7 @@ pub async fn graph_recall_activated(
     facts.sort_by(|a, b| b.activation_score.total_cmp(&a.activation_score));
 
     // Deduplicate by (source, relation, target, edge_type) keeping highest activation.
-    let mut seen: HashSet<(i64, String, i64, EdgeType)> = HashSet::new();
+    let mut seen: HashSet<(EntityId, String, EntityId, EdgeType)> = HashSet::new();
     facts.retain(|f| {
         seen.insert((
             f.edge.source_entity_id,
@@ -564,13 +566,11 @@ mod tests {
         let user_id = store
             .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let tool_id = store
             .upsert_entity("neovim", "neovim", EntityType::Tool, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(
                 user_id,
@@ -617,18 +617,16 @@ mod tests {
 
     async fn seed_alice_uses_neovim(
         stored: Option<zeph_common::trust_level::TurnContextTrust>,
-    ) -> (GraphStore, i64) {
+    ) -> (GraphStore, crate::types::EntityId) {
         let store = setup_store().await;
         let a = store
             .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("neovim", "neovim", EntityType::Tool, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let edge_id = store
             .insert_edge(a, b, "uses", "Alice uses neovim", 0.9, None, None)
             .await
@@ -766,18 +764,15 @@ mod tests {
         let a = store
             .upsert_entity("Alpha", "Alpha", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("Beta", "Beta", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let c = store
             .upsert_entity("Gamma", "Gamma", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(a, b, "knows", "Alpha knows Beta", 0.8, None, None)
             .await
@@ -815,13 +810,11 @@ mod tests {
         let alice = store
             .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let bob = store
             .upsert_entity("Bob", "Bob", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(alice, bob, "knows", "Alice knows Bob", 0.9, None, None)
             .await
@@ -860,18 +853,15 @@ mod tests {
         let a = store
             .upsert_entity("Alpha", "Alpha", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("Beta", "Beta", EntityType::Tool, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let c = store
             .upsert_entity("AlphaGadget", "AlphaGadget", EntityType::Tool, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         // high-confidence direct edge
         store
             .insert_edge(a, b, "uses", "Alpha uses Beta", 1.0, None, None)
@@ -922,8 +912,7 @@ mod tests {
         let root = store
             .upsert_entity("Root", "Root", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         for i in 0..10 {
             let target = store
                 .upsert_entity(
@@ -934,8 +923,7 @@ mod tests {
                     None,
                 )
                 .await
-                .unwrap()
-                .0;
+                .unwrap();
             store
                 .insert_edge(
                     root,
@@ -976,13 +964,11 @@ mod tests {
         let alice = store
             .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let bob = store
             .upsert_entity("Bob", "Bob", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         // Insert an edge with valid_from = year 2100 (far future).
         zeph_db::query(
             sql!("INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence, valid_from)
@@ -1021,13 +1007,11 @@ mod tests {
         let alice = store
             .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let carol = store
             .upsert_entity("Carol", "Carol", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         // Insert an edge valid 2020-01-01 → 2021-01-01 (already expired by 2026).
         zeph_db::query(
             sql!("INSERT INTO graph_edges
@@ -1108,8 +1092,7 @@ mod tests {
                     None,
                 )
                 .await
-                .unwrap()
-                .0;
+                .unwrap();
             entity_ids.push(id);
         }
 
@@ -1130,8 +1113,7 @@ mod tests {
                 None,
             )
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         for &target in &entity_ids {
             store
                 .insert_edge(hub, target, "has", "Hub has entity", 0.9, None, None)
@@ -1181,8 +1163,7 @@ mod tests {
                 None,
             )
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity(
                 "Concept",
@@ -1192,8 +1173,7 @@ mod tests {
                 None,
             )
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(a, b, "rel", "Zephyr rel Concept", 0.9, None, None)
             .await
@@ -1229,18 +1209,15 @@ mod tests {
         let a = store
             .upsert_entity("Alpha", "Alpha", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("Beta", "Beta", EntityType::Tool, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let c = store
             .upsert_entity("AlphaGadget", "AlphaGadget", EntityType::Tool, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(a, b, "uses", "Alpha uses Beta", 1.0, None, None)
             .await
@@ -1292,13 +1269,11 @@ mod tests {
         let user = store
             .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let tool = store
             .upsert_entity("Vim", "Vim", EntityType::Tool, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let eid = store
             .insert_edge(user, tool, "uses", "Alice uses Vim", 0.9, None, None)
             .await
@@ -1349,13 +1324,11 @@ mod tests {
         let user = store
             .upsert_entity("Bob", "Bob", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let tool = store
             .upsert_entity("Emacs", "Emacs", EntityType::Tool, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let eid = store
             .insert_edge(user, tool, "uses", "Bob uses Emacs", 0.9, None, None)
             .await

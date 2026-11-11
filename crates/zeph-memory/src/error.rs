@@ -72,11 +72,11 @@ pub enum MemoryError {
 
     /// Returned when inserting a supersede pointer would form a cycle in the chain.
     #[error("supersede cycle detected at edge id={0}")]
-    SupersedeCycle(i64),
+    SupersedeCycle(crate::types::EdgeId),
 
     /// Returned when the supersede chain depth would exceed [`crate::graph::conflict::SUPERSEDE_DEPTH_CAP`].
     #[error("supersede chain depth cap exceeded at edge id={0}")]
-    SupersedeDepthExceeded(i64),
+    SupersedeDepthExceeded(crate::types::EdgeId),
 
     /// A promotion-scan or promote error (Feature A, #3305).
     ///
@@ -183,7 +183,15 @@ mod tests {
 
         // Neither entity id exists in this fresh database — a genuine FK violation.
         let err = store
-            .insert_edge(999_999, 888_888, "related_to", "fact", 0.9, None, None)
+            .insert_edge(
+                crate::types::EntityId(999_999),
+                crate::types::EntityId(888_888),
+                "related_to",
+                "fact",
+                0.9,
+                None,
+                None,
+            )
             .await
             .expect_err("inserting an edge between nonexistent entities must fail");
 

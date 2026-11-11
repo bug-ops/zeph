@@ -15,6 +15,7 @@ use crate::error::MemoryError;
 use crate::graph::retrieval::find_seed_entities;
 use crate::graph::store::GraphStore;
 use crate::graph::types::{EdgeType, GraphFact};
+use crate::types::{EdgeId, EntityId};
 
 const DEFAULT_STRUCTURAL_WEIGHT: f32 = 0.4;
 const DEFAULT_COMMUNITY_CAP: usize = 3;
@@ -71,15 +72,15 @@ pub async fn graph_recall_beam(
         .map_or(0, |d| d.as_secs().cast_signed());
 
     // Initial beam: top-`beam_width` seeds by score.
-    let mut beam_scores: Vec<(i64, f32)> = entity_scores.into_iter().collect();
+    let mut beam_scores: Vec<(EntityId, f32)> = entity_scores.into_iter().collect();
     beam_scores.sort_by(|(_, sa), (_, sb)| sb.total_cmp(sa));
     beam_scores.truncate(beam_width);
 
-    let mut beam_ids: Vec<i64> = beam_scores.iter().map(|(id, _)| *id).collect();
-    let mut beam_score_map: HashMap<i64, f32> = beam_scores.into_iter().collect();
+    let mut beam_ids: Vec<EntityId> = beam_scores.iter().map(|(id, _)| *id).collect();
+    let mut beam_score_map: HashMap<EntityId, f32> = beam_scores.into_iter().collect();
 
     let mut all_db_edges: Vec<crate::graph::types::Edge> = Vec::new();
-    let mut entity_name_map: HashMap<i64, String> = HashMap::new();
+    let mut entity_name_map: HashMap<EntityId, String> = HashMap::new();
 
     for _hop in 0..max_hops {
         if beam_ids.is_empty() {
@@ -92,7 +93,7 @@ pub async fn graph_recall_beam(
         }
 
         // Collect entity IDs from edges and resolve their names in a single batched query.
-        let new_entity_ids: Vec<i64> = edges
+        let new_entity_ids: Vec<EntityId> = edges
             .iter()
             .flat_map(|e| [e.source_entity_id, e.target_entity_id])
             .filter(|id| !entity_name_map.contains_key(id))
@@ -105,7 +106,7 @@ pub async fn graph_recall_beam(
         }
 
         // Score each neighbour by edge confidence (proxy for traversal quality).
-        let mut neighbour_scores: HashMap<i64, f32> = HashMap::new();
+        let mut neighbour_scores: HashMap<EntityId, f32> = HashMap::new();
         for edge in &edges {
             let edge_conf = edge.confidence;
             neighbour_scores
@@ -119,7 +120,7 @@ pub async fn graph_recall_beam(
         }
 
         // Next beam: top-`beam_width` by score (excluding current beam members).
-        let mut candidates: Vec<(i64, f32)> = neighbour_scores
+        let mut candidates: Vec<(EntityId, f32)> = neighbour_scores
             .into_iter()
             .filter(|(id, _)| !beam_score_map.contains_key(id))
             .collect();
@@ -139,7 +140,7 @@ pub async fn graph_recall_beam(
     }
 
     // Record retrievals fire-and-forget.
-    let edge_ids: Vec<i64> = all_db_edges.iter().map(|e| e.id).collect();
+    let edge_ids: Vec<EdgeId> = all_db_edges.iter().map(|e| e.id).collect();
     if let Err(e) = store.record_edge_retrieval(&edge_ids).await {
         tracing::warn!(error = %e, "graph_recall_beam: failed to record edge retrieval");
     }
@@ -275,13 +276,11 @@ mod tests {
         let a = store
             .upsert_entity("Alice", "alice", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("Bob", "bob", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(a, b, "knows", "Alice knows Bob", 0.9, None, None)
             .await
@@ -316,23 +315,19 @@ mod tests {
         let a = store
             .upsert_entity("Alice", "alice", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("Bob", "bob", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let c = store
             .upsert_entity("Carol", "carol", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let d = store
             .upsert_entity("Dave", "dave", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(a, b, "knows", "Alice knows Bob", 0.9, None, None)
             .await

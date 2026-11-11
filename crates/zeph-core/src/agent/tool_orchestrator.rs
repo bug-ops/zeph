@@ -17,13 +17,8 @@ pub(crate) struct ToolOrchestrator {
     pub(super) max_iterations: usize,
     pub(super) summarize_tool_output_enabled: bool,
     pub(super) overflow_config: OverflowConfig,
-    /// Sliding window of recent (`tool_name`, `args_hash`) pairs for repeat-detection.
-    /// Only LLM-initiated calls are recorded here — retry re-executions are excluded.
-    /// Window capacity = 2 * `repeat_threshold`.
-    pub(super) recent_tool_calls: VecDeque<(String, u64)>,
-    /// Number of identical (`tool_name`, `args_hash`) appearances in the window required
-    /// to trigger repeat-detection abort. 0 = disabled.
-    pub(super) repeat_threshold: usize,
+    /// Session-scoped repeat-detection window; only LLM-initiated calls are recorded.
+    pub(super) repeat: RepeatWindow,
     /// Max retries for transient errors per tool call. 0 = disabled.
     pub(super) max_tool_retries: usize,
     /// Maximum wall-clock time (seconds) to spend on retries for a single tool call.
@@ -82,24 +77,111 @@ pub(crate) struct ToolOrchestrator {
 
 /// Truncate a tool name to at most 256 bytes, respecting UTF-8 char boundaries.
 ///
-/// Used by both `push_tool_call` and `is_repeat` to ensure stored and queried
-/// names always match when the original name exceeds the limit.
+/// Used by both `RepeatWindow::push` and `RepeatWindow::is_repeat` to ensure stored and
+/// queried names always match when the original name exceeds the limit.
 fn truncate_tool_name(name: &str) -> &str {
     const MAX_TOOL_NAME_BYTES: usize = 256;
     truncate_to_bytes_ref(name, MAX_TOOL_NAME_BYTES)
 }
 
+/// Sliding window of recent `(tool_name, args_hash)` pairs for repeat detection.
+///
+/// Window capacity is `2 * threshold`. The main agent owns one window for the whole session
+/// (cleared per user turn); each inline orchestration loop owns a private one spanning all
+/// its iterations, so a repeated call is refused across iterations of one loop without
+/// sharing state with the session.
+#[derive(Debug)]
+pub(in crate::agent) struct RepeatWindow {
+    pub(in crate::agent) calls: VecDeque<(String, u64)>,
+    /// Identical appearances in the window required to refuse a call. `0` disables detection.
+    pub(in crate::agent) threshold: usize,
+}
+
+impl RepeatWindow {
+    pub(in crate::agent) fn new(threshold: usize) -> Self {
+        Self {
+            calls: VecDeque::with_capacity(2 * threshold.max(1)),
+            threshold,
+        }
+    }
+
+    pub(in crate::agent) fn len(&self) -> usize {
+        self.calls.len()
+    }
+
+    pub(in crate::agent) fn clear(&mut self) {
+        self.calls.clear();
+    }
+
+    /// Record a call, evicting the oldest entry when the window is full. Names are truncated
+    /// to 256 bytes to bound memory against adversarially long names.
+    pub(in crate::agent) fn push(&mut self, name: &str, args_hash: u64) {
+        if self.threshold == 0 {
+            return;
+        }
+        if self.calls.len() >= 2 * self.threshold {
+            self.calls.pop_front();
+        }
+        self.calls
+            .push_back((truncate_tool_name(name).to_owned(), args_hash)); // lgtm[rust/cleartext-logging]
+    }
+
+    /// Whether `(name, args_hash)` already appears `>= threshold` times in the window.
+    pub(in crate::agent) fn is_repeat(&self, name: &str, args_hash: u64) -> bool {
+        if self.threshold == 0 {
+            return false;
+        }
+        let name = truncate_tool_name(name);
+        let count = self
+            .calls
+            .iter()
+            .filter(|(n, h)| n == name && *h == args_hash)
+            .count();
+        count >= self.threshold
+    }
+
+    /// Check a batch against the window, then record its non-exempt calls.
+    ///
+    /// Every entry is checked against the window as it stood before the batch, so two identical
+    /// calls in one batch do not refuse each other; `exempt` entries are neither checked nor
+    /// recorded. Returns one refusal flag per entry.
+    pub(in crate::agent) fn check_and_push(
+        &mut self,
+        entries: &[(&str, u64)],
+        exempt: &[bool],
+    ) -> Vec<bool> {
+        let blocked: Vec<bool> = entries
+            .iter()
+            .zip(exempt)
+            .map(|(&(name, hash), &exempt)| {
+                let blocked = !exempt && self.is_repeat(name, hash);
+                if blocked {
+                    tracing::warn!(
+                        tool = %name,
+                        "[repeat-detect] identical tool call detected, skipping execution"
+                    );
+                }
+                blocked
+            })
+            .collect();
+        for (&(name, hash), &exempt) in entries.iter().zip(exempt) {
+            if !exempt {
+                self.push(name, hash);
+            }
+        }
+        blocked
+    }
+}
+
 impl ToolOrchestrator {
     #[must_use]
     pub(crate) fn new() -> Self {
-        let repeat_threshold = 2_usize;
         Self {
             doom_loop_history: Vec::new(),
             max_iterations: 10,
             summarize_tool_output_enabled: false,
             overflow_config: OverflowConfig::default(),
-            recent_tool_calls: VecDeque::with_capacity(2 * repeat_threshold),
-            repeat_threshold,
+            repeat: RepeatWindow::new(2),
             max_tool_retries: 2,
             max_retry_duration_secs: 30,
             retry_base_ms: 500,
@@ -160,8 +242,7 @@ impl ToolOrchestrator {
         self.retry_base_ms = retry_base_ms;
         self.retry_max_ms = retry_max_ms;
         self.parameter_reformat_provider = parameter_reformat_provider;
-        self.repeat_threshold = tool_repeat_threshold;
-        self.recent_tool_calls = VecDeque::with_capacity(2 * tool_repeat_threshold.max(1));
+        self.repeat = RepeatWindow::new(tool_repeat_threshold);
         self.max_tool_calls_per_session = max_tool_calls_per_session;
         self.summarize_tool_output_enabled = tool_summarization;
         if overflow_config.max_per_call_override > 0
@@ -234,7 +315,7 @@ impl ToolOrchestrator {
 
     /// Reset the repeat-detection sliding window between user turns.
     pub(super) fn clear_recent_tool_calls(&mut self) {
-        self.recent_tool_calls.clear();
+        self.repeat.clear();
         self.last_tool_error.clear();
         self.retrieve_mandate_count = 0;
     }
@@ -329,41 +410,6 @@ impl ToolOrchestrator {
         let recent = &self.doom_loop_history[self.doom_loop_history.len() - DOOM_LOOP_WINDOW..];
         recent.array_windows::<2>().all(|[a, b]| a == b)
     }
-
-    /// Record a tool call (LLM-initiated only — not retry re-executions).
-    ///
-    /// Maintains a sliding window of size `2 * repeat_threshold`.
-    /// Tool names are truncated to 256 bytes to prevent unbounded memory growth
-    /// from adversarially long names.
-    pub(super) fn push_tool_call(&mut self, name: &str, args_hash: u64) {
-        if self.repeat_threshold == 0 {
-            return;
-        }
-        let window = 2 * self.repeat_threshold;
-        if self.recent_tool_calls.len() >= window {
-            self.recent_tool_calls.pop_front();
-        }
-        self.recent_tool_calls
-            .push_back((truncate_tool_name(name).to_owned(), args_hash)); // lgtm[rust/cleartext-logging]
-    }
-
-    /// Returns `true` if the same `(name, args_hash)` pair appears `>= repeat_threshold`
-    /// times in the current window.
-    ///
-    /// Applies the same 256-byte name truncation as `push_tool_call` so that long names
-    /// are correctly matched against stored (truncated) entries.
-    pub(super) fn is_repeat(&self, name: &str, args_hash: u64) -> bool {
-        if self.repeat_threshold == 0 {
-            return false;
-        }
-        let name = truncate_tool_name(name);
-        let count = self
-            .recent_tool_calls
-            .iter()
-            .filter(|(n, h)| n == name && *h == args_hash)
-            .count();
-        count >= self.repeat_threshold
-    }
 }
 
 #[cfg(test)]
@@ -376,8 +422,8 @@ mod tests {
         assert_eq!(o.doom_loop_history, [] as [u64; 0]);
         assert_eq!(o.max_iterations, 10);
         assert!(!o.summarize_tool_output_enabled);
-        assert!(o.recent_tool_calls.is_empty());
-        assert_eq!(o.repeat_threshold, 2);
+        assert!(o.repeat.calls.is_empty());
+        assert_eq!(o.repeat.threshold, 2);
         assert_eq!(o.max_tool_retries, 2);
         assert_eq!(o.max_retry_duration_secs, 30);
     }
@@ -535,61 +581,89 @@ mod tests {
     #[test]
     fn repeat_detection_no_repeat_before_threshold() {
         let mut o = ToolOrchestrator::new();
-        o.push_tool_call("bash", 42);
+        o.repeat.push("bash", 42);
         // Only 1 occurrence, threshold is 2 — not a repeat yet
-        assert!(!o.is_repeat("bash", 42));
+        assert!(!o.repeat.is_repeat("bash", 42));
     }
 
     #[test]
     fn repeat_detection_triggers_at_threshold() {
         let mut o = ToolOrchestrator::new();
-        o.push_tool_call("bash", 42);
-        o.push_tool_call("bash", 42);
+        o.repeat.push("bash", 42);
+        o.repeat.push("bash", 42);
         // 2 occurrences >= threshold 2 → repeat
-        assert!(o.is_repeat("bash", 42));
+        assert!(o.repeat.is_repeat("bash", 42));
     }
 
     #[test]
     fn repeat_detection_different_args_no_repeat() {
         let mut o = ToolOrchestrator::new();
-        o.push_tool_call("bash", 1);
-        o.push_tool_call("bash", 2);
-        assert!(!o.is_repeat("bash", 1));
-        assert!(!o.is_repeat("bash", 2));
+        o.repeat.push("bash", 1);
+        o.repeat.push("bash", 2);
+        assert!(!o.repeat.is_repeat("bash", 1));
+        assert!(!o.repeat.is_repeat("bash", 2));
     }
 
     #[test]
     fn repeat_detection_different_tool_no_repeat() {
         let mut o = ToolOrchestrator::new();
-        o.push_tool_call("bash", 42);
-        o.push_tool_call("read", 42);
-        assert!(!o.is_repeat("bash", 42));
-        assert!(!o.is_repeat("read", 42));
+        o.repeat.push("bash", 42);
+        o.repeat.push("read", 42);
+        assert!(!o.repeat.is_repeat("bash", 42));
+        assert!(!o.repeat.is_repeat("read", 42));
     }
 
     #[test]
     fn repeat_detection_window_evicts_old_entries() {
         let mut o = ToolOrchestrator::new();
         // Window size = 2 * threshold = 4
-        o.push_tool_call("bash", 42);
-        o.push_tool_call("read", 1);
-        o.push_tool_call("read", 2);
-        o.push_tool_call("read", 3);
+        o.repeat.push("bash", 42);
+        o.repeat.push("read", 1);
+        o.repeat.push("read", 2);
+        o.repeat.push("read", 3);
         // Now push another entry — "bash:42" should be evicted from front
-        o.push_tool_call("read", 4);
+        o.repeat.push("read", 4);
         // "bash:42" was in the window once, now evicted → not a repeat
-        assert!(!o.is_repeat("bash", 42));
+        assert!(!o.repeat.is_repeat("bash", 42));
     }
 
     #[test]
     fn repeat_detection_disabled_when_threshold_zero() {
         let mut o = ToolOrchestrator::new();
-        o.repeat_threshold = 0;
-        o.push_tool_call("bash", 42);
-        o.push_tool_call("bash", 42);
-        o.push_tool_call("bash", 42);
+        o.repeat.threshold = 0;
+        o.repeat.push("bash", 42);
+        o.repeat.push("bash", 42);
+        o.repeat.push("bash", 42);
         // Threshold 0 means disabled
-        assert!(!o.is_repeat("bash", 42));
+        assert!(!o.repeat.is_repeat("bash", 42));
+    }
+
+    #[test]
+    fn check_and_push_judges_batch_against_prior_window_only() {
+        let mut w = RepeatWindow::new(2);
+        // Two identical calls in one batch do not refuse each other.
+        let blocked = w.check_and_push(&[("bash", 7), ("bash", 7)], &[false, false]);
+        assert_eq!(blocked, [false, false]);
+        // The window now holds both, so the same call in the next batch is a repeat.
+        let blocked = w.check_and_push(&[("bash", 7)], &[false]);
+        assert_eq!(blocked, [true]);
+    }
+
+    #[test]
+    fn check_and_push_skips_exempt_calls() {
+        let mut w = RepeatWindow::new(1);
+        assert_eq!(w.check_and_push(&[("patch", 1)], &[true]), [false]);
+        assert_eq!(w.len(), 0, "exempt calls are never recorded");
+        assert_eq!(w.check_and_push(&[("patch", 1)], &[true]), [false]);
+    }
+
+    #[test]
+    fn fresh_window_does_not_see_other_windows_history() {
+        let mut session = RepeatWindow::new(1);
+        session.push("bash", 1);
+        let local = RepeatWindow::new(1);
+        assert!(session.is_repeat("bash", 1));
+        assert!(!local.is_repeat("bash", 1));
     }
 
     // ── SEC-003: tool name truncation ─────────────────────────────────────────
@@ -599,8 +673,8 @@ mod tests {
         let mut o = ToolOrchestrator::new();
         // Name well above 256 bytes
         let long_name = "a".repeat(512);
-        o.push_tool_call(&long_name, 99);
-        let stored = &o.recent_tool_calls[0].0;
+        o.repeat.push(&long_name, 99);
+        let stored = &o.repeat.calls[0].0;
         assert_eq!(stored.len(), 256, "stored name must be exactly 256 bytes");
         assert!(
             stored.is_char_boundary(stored.len()),
@@ -615,8 +689,8 @@ mod tests {
         // Appending one more gives 258 bytes total — must truncate to 255.
         let base: String = "日".repeat(85); // 255 bytes
         let long_name = format!("{base}日"); // 258 bytes — crosses 256-byte boundary
-        o.push_tool_call(&long_name, 1);
-        let stored = &o.recent_tool_calls[0].0;
+        o.repeat.push(&long_name, 1);
+        let stored = &o.repeat.calls[0].0;
         assert!(stored.len() <= 256, "stored name must not exceed 256 bytes");
         assert!(
             stored.is_char_boundary(stored.len()),
@@ -628,8 +702,8 @@ mod tests {
     fn push_tool_call_short_name_not_truncated() {
         let mut o = ToolOrchestrator::new();
         let short_name = "shell";
-        o.push_tool_call(short_name, 7);
-        assert_eq!(o.recent_tool_calls[0].0, short_name);
+        o.repeat.push(short_name, 7);
+        assert_eq!(o.repeat.calls[0].0, short_name);
     }
 
     #[test]
@@ -637,8 +711,8 @@ mod tests {
         // SEC-003: specifically test with 300-byte name as the boundary case
         let mut o = ToolOrchestrator::new();
         let name_300 = "x".repeat(300);
-        o.push_tool_call(&name_300, 42);
-        let stored = &o.recent_tool_calls[0].0;
+        o.repeat.push(&name_300, 42);
+        let stored = &o.repeat.calls[0].0;
         assert!(
             stored.len() <= 256,
             "300-byte name must be stored as ≤256 bytes, got {}",

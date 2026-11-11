@@ -198,8 +198,8 @@ mod general_config {
     fn admission_config_defaults() {
         let cfg = AdmissionConfig::default();
         assert!(!cfg.enabled);
-        assert!((cfg.threshold - 0.40).abs() < 0.001);
-        assert!((cfg.fast_path_margin - 0.15).abs() < 0.001);
+        assert!((cfg.threshold.get() - 0.40).abs() < 0.001);
+        assert!((cfg.fast_path_margin.get() - 0.15).abs() < 0.001);
         assert!(cfg.admission_provider.is_empty());
     }
 

@@ -108,6 +108,41 @@ pub struct ShellOutputEnvelope {
 
 ---
 
+## Typed Tool Outcome: `ToolStatus` (#6986)
+
+`crates/zeph-tools/src/executor.rs`. `ToolOutput.status: ToolStatus` is set once where the result is produced; no consumer derives success or failure from the rendered text (`[error]`, `[stderr]`, `[exit code`). `ToolStatus` is `Copy`, `Default = Success`, closed (no `#[non_exhaustive]`), so every consumer matches exhaustively.
+
+| Variant | Meaning | `is_failure()` | `aborts_dependants()` |
+|---|---|---|---|
+| `Success` | Tool ran and succeeded (shell: exit 0) | no | no |
+| `NonZeroExit(NonZeroI32)` | Process-backed tool exited non-zero | **yes** | **no** |
+| `Failed` | Tool ran but could not complete its job (context-management tool errors in `focus.rs`) | yes | yes |
+| `Synthetic(GateRefused)` | Pre-dispatch gate refused (prerequisite, quota, verifier, dispatch gate, repeat, task allowlist) | yes | yes |
+| `Synthetic(HookBlocked)` | `PreToolUse` hook blocked the call (`[blocked]`) | no | no |
+| `Synthetic(RateLimited)` | Rate limited (`[rate-limited]`) | no | no |
+| `Synthetic(UtilitySkipped)` | Utility policy skipped or stopped the call (`[skipped]`/`[stopped]`) | no | no |
+
+`SyntheticKind { GateRefused, HookBlocked, RateLimited, UtilitySkipped }`. `ToolOutput::synthetic(tool, summary, kind)` builds harness-authored placeholders (`claim_source: None`); `ToolStatus::from_exit_code(i32)` maps `0 -> Success`. `ToolStatus::Synthetic(_)` is the single "never ran" marker; `ClaimSource::Synthetic` is removed (see `[[001-system-invariants/spec]]`). Synthetic outputs never enter the result cache and never unlock dependants.
+
+**Two predicates, deliberately different** (user decision L5): a plain non-zero exit is a failure but never aborts dependants.
+
+- `is_failure()` drives: audit `Error`, the TUI/ACP `success` flag on `ToolEvent::Completed`, skill `tool_failure` outcome (`FailureKind::ExitNonzero` for `NonZeroExit`, `Unknown` for `Failed`/`GateRefused`), anomaly detector `Error`, ERL/ARISE gating, Wilson re-ranking input (`[[015-self-learning/spec]]`, `[[005-skills/spec]]`) and the inline-loop wire `is_error`.
+- `aborts_dependants()` drives: tier-loop `failed_ids` (dependant calls are skipped) and the inline-loop `ToolCallSummary.ok` (`!(Err || aborts_dependants() || HookBlocked)`), hence whether a `RunInline` DAG task ends `Failed` (`[[009-orchestration/spec]]`).
+- Wire `is_error` differs between loops for the same non-zero exit (R9, intentional, do not "fix" in #6993): the tier-loop `ToolResult.is_error` stays `Err`-only (`false` for `NonZeroExit`); the inline-loop wire `is_error` is `true` (follows `is_failure()`), while `ok` stays `true` in both loops.
+- Exit 0 is never an `Err` and never a failure, whatever the output text says (stderr progress, `[error]` text, "permission denied" in data).
+
+### Shell termination
+
+`ShellExecutor` returns a private `BashRun { envelope, out, termination: BashTermination }` with `BashTermination { Exited, TimedOut, Cancelled, LaunchFailed }`; `classify_and_audit` matches on it, never on text.
+
+- `TimedOut` -> `Err(ToolError::Timeout)` + audit `Timeout`; `Cancelled` -> `Err(ToolError::Cancelled)`.
+- `LaunchFailed` (spawn failure, sandbox setup error) -> `Err(ToolError::Shell { category: PermanentFailure })` chosen without text matching, audit `Error`. A launch failure is always an `Err`, including ones whose text lacks "permission denied"/"no such file" (previously `Ok`).
+- `Exited` + exit 0 -> `Success`; `Exited` + non-zero -> `Ok(NonZeroExit(n))` unless `classify_shell_exit` assigns a category (below), in which case `Err(ToolError::Shell)`. Multi-block bash calls report the first non-success block status.
+- Audit `Success` iff exit 0. `ToolEvent::Completed.success = !status.is_failure()`.
+- Background runs report the real process exit code (previously collapsed to 0/1); `success` = exited with 0.
+
+---
+
 ## Per-Path File Read Sandbox
 
 
@@ -164,6 +199,7 @@ Every tool call is logged to `audit.jsonl`:
 - Audit log is append-only — never truncated mid-session
 - Sensitive values in tool calls are redacted before logging
 - `exit_code: Option<i32>` — present for shell tool calls; `null` for non-shell tools
+- `result` is `error` iff the call's status `is_failure()` (shell: exit code non-zero) or it failed to launch; exit 0 with stderr output is `success`
 - `truncated: bool` — set to `true` when `ShellOutputEnvelope.truncated` is true
 - `claim_source` from `AdversarialPolicyGateExecutor` is propagated into `AuditEntry` — identifies the content source of adversarially-evaluated calls
 
@@ -284,6 +320,8 @@ dispatched.
 - Composite chain order is deterministic and must not change without explicit config
 - `ToolError::kind()` must be checked by callers: `Transient` → retry, `Permanent` → abort turn
 - Audit log is written before result is returned to agent
+- NEVER classify a tool result as success or failure by searching the output text; read `ToolOutput.status` / `Err(ToolError)`. Exit 0 is never an `Err`; a launch failure is always `Err(Shell { PermanentFailure })`
+- `is_failure()` and `aborts_dependants()` differ exactly on `NonZeroExit`; a non-zero exit never skips dependants and never fails a `RunInline` task (pinned by tests)
 
 ---
 
@@ -546,10 +584,12 @@ retryable: true
 
 ### ToolError::Shell Variant
 
-`ToolError::Shell { exit_code, category, message }` — used by `ShellExecutor` for classified exit-code failures:
+`ToolError::Shell { exit_code, category, message }` — used by `ShellExecutor` for classified failures. `classify_shell_exit` runs only for a process that exited (`BashTermination::Exited`) with a non-zero code; exit `0` always yields no category:
 - Exit 126 → `PolicyBlocked`
 - Exit 127 → `PermanentFailure`
-- Stderr "permission denied" / "no such file or directory" (case-insensitive) → `PermanentFailure`
+- Other non-zero exit with output containing "permission denied" → `PolicyBlocked`; "no such file or directory" → `PermanentFailure` (case-insensitive)
+- Launch failure → `PermanentFailure` (no text matching)
+- All other non-zero exits stay `Ok` with `ToolStatus::NonZeroExit` and surface verbatim to the LLM
 
 ### Config
 

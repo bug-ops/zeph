@@ -7,6 +7,7 @@
 //! subsystem — and the [`VectorBackend`] selector for the embedding store.
 
 use crate::defaults::{default_sqlite_path_field, default_true};
+use crate::fraction::{UnitOpen, UnitUpperClosed};
 use crate::providers::ProviderName;
 use serde::{Deserialize, Serialize};
 use zeph_common::secret::Secret;
@@ -62,12 +63,17 @@ fn default_context_budget_tokens() -> usize {
     0
 }
 
-fn default_soft_compaction_threshold() -> f32 {
-    0.60
+/// Default `soft_compaction_threshold`.
+pub const DEFAULT_SOFT_COMPACTION_THRESHOLD: UnitOpen = UnitOpen::literal(0.60);
+/// Default `hard_compaction_threshold`.
+pub const DEFAULT_HARD_COMPACTION_THRESHOLD: UnitOpen = UnitOpen::literal(0.90);
+
+fn default_soft_compaction_threshold() -> UnitOpen {
+    DEFAULT_SOFT_COMPACTION_THRESHOLD
 }
 
-fn default_hard_compaction_threshold() -> f32 {
-    0.90
+fn default_hard_compaction_threshold() -> UnitOpen {
+    DEFAULT_HARD_COMPACTION_THRESHOLD
 }
 
 fn default_compaction_preserve_tail() -> usize {
@@ -187,12 +193,12 @@ pub struct MemoryConfig {
     #[serde(default = "default_context_budget_tokens")]
     pub context_budget_tokens: usize,
     #[serde(default = "default_soft_compaction_threshold")]
-    pub soft_compaction_threshold: f32,
+    pub soft_compaction_threshold: UnitOpen,
     #[serde(
         default = "default_hard_compaction_threshold",
         alias = "compaction_threshold"
     )]
-    pub hard_compaction_threshold: f32,
+    pub hard_compaction_threshold: UnitOpen,
     #[serde(default = "default_compaction_preserve_tail")]
     pub compaction_preserve_tail: usize,
     #[serde(default = "default_compaction_cooldown_turns")]
@@ -310,7 +316,7 @@ pub struct MemoryConfig {
     /// Share of the history slot a trim brings history down to in the `append` layout.
     /// Must be in `(0.0, 1.0]`. Default: `0.75`.
     #[serde(default = "default_history_trim_watermark")]
-    pub history_trim_watermark: f32,
+    pub history_trim_watermark: UnitUpperClosed,
     /// All-Mem lifelong memory consolidation sweep.
     ///
     /// When `consolidation.enabled = true`, a background loop clusters semantically similar
@@ -565,8 +571,8 @@ fn default_turn_context_budget_ratio() -> f32 {
     0.05
 }
 
-fn default_history_trim_watermark() -> f32 {
-    0.75
+fn default_history_trim_watermark() -> UnitUpperClosed {
+    const { UnitUpperClosed::literal(0.75) }
 }
 
 fn default_crossover_turn_threshold() -> u32 {

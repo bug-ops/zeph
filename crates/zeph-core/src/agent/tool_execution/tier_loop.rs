@@ -14,12 +14,14 @@ use zeph_tools::executor::ToolCall;
 use zeph_common::ToolName;
 use zeph_llm::provider::ToolDefinition;
 
+use zeph_subagent::{HookAgentCtx, PostToolHookCall, PreToolHookCall};
+
+use super::gates::GateRefusal;
 use super::{
     CacheCheckResult, TierLoopData, TierLoopOutput, ToolDispatchContext, ToolExecFut,
     strip_tafc_fields, tool_args_hash,
 };
 use crate::agent::Agent;
-use crate::agent::hooks_dispatch::{PostToolHookCall, PreToolHookCall};
 use crate::agent::speculative::{COMMIT_LIMIT, CommitOutcome};
 use crate::agent::turn_gate::{DisabledReason, DispatchGate, RequiresGate, TurnToolSet};
 use crate::channel::{Channel, StopHint, ToolStartEvent};
@@ -126,127 +128,6 @@ impl<C: Channel> Agent<C> {
         Ok(())
     }
 
-    fn run_pre_execution_verifiers(&mut self, calls: &[ToolCall]) -> Vec<bool> {
-        let mut pre_exec_blocked = vec![false; calls.len()];
-        if self.tool_orchestrator.pre_execution_verifiers.is_empty() {
-            return pre_exec_blocked;
-        }
-        for (idx, call) in calls.iter().enumerate() {
-            if self.is_gate_exempt(call.tool_id.as_str()) {
-                continue;
-            }
-            let args_value = serde_json::Value::Object(call.params.clone());
-            for verifier in &self.tool_orchestrator.pre_execution_verifiers {
-                match verifier.verify(call.tool_id.as_str(), &args_value) {
-                    zeph_tools::VerificationResult::Block { reason } => {
-                        tracing::warn!(
-                            tool = %call.tool_id,
-                            verifier = verifier.name(),
-                            %reason,
-                            "pre-execution verifier blocked tool call"
-                        );
-                        self.update_metrics(|m| m.pre_execution_blocks += 1);
-                        self.push_security_event(
-                            zeph_common::SecurityEventCategory::PreExecutionBlock,
-                            call.tool_id.as_str(),
-                            format!("{}: {}", verifier.name(), reason),
-                        );
-                        if let Some(ref logger) = self.tool_orchestrator.audit_logger {
-                            let args_json = serde_json::to_string(&args_value).unwrap_or_default();
-                            let entry = zeph_tools::AuditEntry {
-                                source_kind: None,
-                                trust_level: None,
-                                timestamp: zeph_tools::chrono_now(),
-                                tool: call.tool_id.clone(),
-                                command: args_json,
-                                result: zeph_tools::AuditResult::Blocked {
-                                    reason: format!("{}: {}", verifier.name(), reason),
-                                },
-                                duration_ms: 0,
-                                error_category: Some("pre_execution_block".to_owned()),
-                                error_domain: Some("security".to_owned()),
-                                error_phase: Some(
-                                    zeph_tools::error_taxonomy::ToolInvocationPhase::Setup
-                                        .label()
-                                        .to_owned(),
-                                ),
-                                claim_source: None,
-                                mcp_server_id: None,
-                                injection_flagged: false,
-                                embedding_anomalous: false,
-                                cross_boundary_mcp_to_acp: false,
-                                adversarial_policy_decision: None,
-                                exit_code: None,
-                                truncated: false,
-                                caller_id: call.caller_id.clone(),
-                                skill_name: call.skill_name.clone(),
-                                policy_match: None,
-                                correlation_id: None,
-                                vigil_risk: None,
-                                execution_env: None,
-                                resolved_cwd: None,
-                                scope_at_definition: None,
-                                scope_at_dispatch: None,
-                            };
-                            let logger = std::sync::Arc::clone(logger);
-                            self.runtime.lifecycle.supervisor.spawn(
-                                crate::agent::agent_supervisor::TaskClass::Telemetry,
-                                "audit-log",
-                                async move { logger.log(&entry).await },
-                            );
-                        }
-                        pre_exec_blocked[idx] = true;
-                        break;
-                    }
-                    zeph_tools::VerificationResult::Warn { message } => {
-                        tracing::warn!(
-                            tool = %call.tool_id,
-                            verifier = verifier.name(),
-                            %message,
-                            "pre-execution verifier warning (not blocked)"
-                        );
-                        self.update_metrics(|m| m.pre_execution_warnings += 1);
-                        self.push_security_event(
-                            zeph_common::SecurityEventCategory::PreExecutionWarn,
-                            call.tool_id.as_str(),
-                            format!("{}: {}", verifier.name(), message),
-                        );
-                    }
-                    _ => {}
-                }
-            }
-        }
-        pre_exec_blocked
-    }
-
-    /// Block tool calls whose names are absent from the channel-level allowlist (#3879).
-    ///
-    /// No-op when no allowlist is configured (`None`). Skips already-blocked indices.
-    /// Comparison is case-sensitive; channel configs must use canonical lowercase names.
-    fn apply_channel_tool_allowlist(&mut self, calls: &[ToolCall], pre_exec_blocked: &mut [bool]) {
-        let Some(ref allowlist) = self.runtime.config.channel_tool_allowlist else {
-            return;
-        };
-        for (idx, call) in calls.iter().enumerate() {
-            if pre_exec_blocked[idx] || self.is_gate_exempt(call.tool_id.as_str()) {
-                continue;
-            }
-            if !allowlist.iter().any(|t| t == call.tool_id.as_str()) {
-                tracing::warn!(tool = %call.tool_id, "tool blocked by channel allowlist");
-                self.update_metrics(|m| m.pre_execution_blocks += 1);
-                self.push_security_event(
-                    zeph_common::SecurityEventCategory::PreExecutionBlock,
-                    call.tool_id.as_str(),
-                    format!(
-                        "channel allowlist: '{}' is not permitted on this channel",
-                        call.tool_id
-                    ),
-                );
-                pre_exec_blocked[idx] = true;
-            }
-        }
-    }
-
     fn compute_utility_actions(
         &mut self,
         calls: &[ToolCall],
@@ -258,7 +139,7 @@ impl<C: Channel> Agent<C> {
             usize::try_from(self.runtime.providers.cached_prompt_tokens).unwrap_or(usize::MAX);
         // token_budget = 0 signals "unknown" to UtilityContext — cost component is zeroed.
         let token_budget: usize = 0;
-        let tool_calls_this_turn = self.tool_orchestrator.recent_tool_calls.len();
+        let tool_calls_this_turn = self.tool_orchestrator.repeat.len();
         // Detect explicit tool request from the turn's query message (not the tool-result tail).
         // We only read MessagePart::Text parts so tool outputs/thinking blocks are excluded.
         let explicit_request = zeph_llm::provider::turn_query_message(&self.msg.messages)
@@ -646,12 +527,9 @@ impl<C: Channel> Agent<C> {
         // Timestamps filled just before each tier's join_all so audit reflects actual start.
         let tool_started_ats = vec![std::time::Instant::now(); tool_calls.len()];
 
-        self.check_exfiltration_urls(tool_calls);
-
-        // Pre-execution verification (TrustBench, #1630): runs before repeat-detection.
-        let mut pre_exec_blocked = self.run_pre_execution_verifiers(&calls);
-
-        self.apply_channel_tool_allowlist(&calls, &mut pre_exec_blocked);
+        // Exfiltration flags, pre-execution verifiers (TrustBench, #1630) and the channel
+        // allowlist run before repeat-detection.
+        let mut pre_exec_blocked = self.apply_policy_gates(tool_calls, &calls);
 
         // TAFC-stripped calls (kept as placeholders above to preserve index alignment)
         // are routed through the existing pre-exec gate so they skip dispatch with a
@@ -677,31 +555,16 @@ impl<C: Channel> Agent<C> {
             .iter()
             .map(|c| self.is_gate_exempt(c.tool_id.as_str()))
             .collect();
-        let repeat_blocked: Vec<bool> = calls
+        // CRIT-3: calls are recorded before execution; cache hits included (P1 invariant).
+        let repeat_entries: Vec<(&str, u64)> = calls
             .iter()
             .zip(args_hashes.iter())
-            .zip(exempt.iter())
-            .map(|((call, &hash), &exempt)| {
-                let blocked = !exempt
-                    && self
-                        .tool_orchestrator
-                        .is_repeat(call.tool_id.as_str(), hash);
-                if blocked {
-                    tracing::warn!(
-                        tool = %call.tool_id,
-                        "[repeat-detect] identical tool call detected, skipping execution"
-                    );
-                }
-                blocked
-            })
+            .map(|(call, &hash)| (call.tool_id.as_str(), hash))
             .collect();
-        // CRIT-3: push calls before execution; cache hits included (P1 invariant).
-        for ((call, &hash), &exempt) in calls.iter().zip(args_hashes.iter()).zip(exempt.iter()) {
-            if !exempt {
-                self.tool_orchestrator
-                    .push_tool_call(call.tool_id.as_str(), hash);
-            }
-        }
+        let repeat_blocked = self
+            .tool_orchestrator
+            .repeat
+            .check_and_push(&repeat_entries, &exempt);
 
         // Resolved once per dispatch batch and threaded through `ToolDispatchContext` so both
         // the cache-lookup gate below and the cache-store gate later in `apply_tier_results`
@@ -911,7 +774,7 @@ impl<C: Channel> Agent<C> {
             .await;
 
             if tier_count > 1 {
-                self.channel.send_status_best_effort("").await;
+                self.channel.clear_status_best_effort().await;
             }
 
             // Check hook block cap after each tier (RF-1: counter is per-turn, not per-tier).
@@ -1047,13 +910,14 @@ impl<C: Channel> Agent<C> {
         self.tool_orchestrator.record_retrieve_mandate();
         Ok(Some(ready_fut(
             idx,
-            skipped_output(
+            zeph_tools::ToolOutput::synthetic(
                 tc.name.clone(),
                 format!(
                     "[skipped] Tool call to {} skipped — utility policy recommends \
                      retrieving additional context first.",
                     tc.name
                 ),
+                zeph_tools::SyntheticKind::UtilitySkipped,
             ),
         )))
     }
@@ -1073,13 +937,14 @@ impl<C: Channel> Agent<C> {
                     .await;
                 Ok(Some(ready_fut(
                     idx,
-                    skipped_output(
+                    zeph_tools::ToolOutput::synthetic(
                         tc.name.clone(),
                         format!(
                             "[skipped] Tool call to {} skipped — utility policy recommends a \
                              direct response without further tool use.",
                             tc.name
                         ),
+                        zeph_tools::SyntheticKind::UtilitySkipped,
                     ),
                 )))
             }
@@ -1099,13 +964,14 @@ impl<C: Channel> Agent<C> {
                 ));
                 Ok(Some(ready_fut(
                     idx,
-                    skipped_output(
+                    zeph_tools::ToolOutput::synthetic(
                         tc.name.clone(),
                         format!(
                             "[skipped] Tool call to {} skipped — utility policy recommends \
                              verifying the previous result first.",
                             tc.name
                         ),
+                        zeph_tools::SyntheticKind::UtilitySkipped,
                     ),
                 )))
             }
@@ -1116,13 +982,14 @@ impl<C: Channel> Agent<C> {
                 let threshold = self.tool_orchestrator.utility_scorer.threshold();
                 Ok(Some(ready_fut(
                     idx,
-                    skipped_output(
+                    zeph_tools::ToolOutput::synthetic(
                         tc.name.clone(),
                         format!(
                             "[stopped] Tool call to {} halted by the utility gate — \
                              budget exhausted or score below threshold {threshold:.2}.",
                             tc.name
                         ),
+                        zeph_tools::SyntheticKind::UtilitySkipped,
                     ),
                 )))
             }
@@ -1199,70 +1066,29 @@ impl<C: Channel> Agent<C> {
         repeat_blocked: &[bool],
         pending_system_hints: &mut Vec<String>,
     ) -> Result<Option<((usize, ToolExecFut), String)>, crate::agent::error::AgentError> {
-        if has_failed_dep {
-            let reason = "prerequisite tool failed or requires confirmation".to_owned();
-            return Ok(Some((
-                ready_fut(
-                    idx,
-                    skipped_output(
-                        tc.name.clone(),
-                        "[error] Skipped: a prerequisite tool failed or requires confirmation",
-                    ),
-                ),
-                reason,
-            )));
-        }
-        if quota_blocked {
-            let max = self
-                .tool_orchestrator
-                .max_tool_calls_per_session
-                .unwrap_or(0);
-            let reason = format!("session tool call quota exceeded (limit: {max} calls)");
-            return Ok(Some((
-                ready_fut(
-                    idx,
-                    skipped_output(
-                        tc.name.clone(),
-                        format!(
-                            "[error] Tool call quota exceeded (session limit: {max} calls). \
-                             No further tool calls are allowed this session."
-                        ),
-                    ),
-                ),
-                reason,
-            )));
-        }
-        if pre_exec_blocked[idx] {
-            let reason = format!(
-                "blocked by pre-execution verifier: {} is not permitted",
-                tc.name
-            );
-            return Ok(Some((
-                ready_fut(
-                    idx,
-                    skipped_output(
-                        tc.name.clone(),
-                        format!(
-                            "[error] Tool call to {} was blocked by pre-execution verifier. \
-                             The requested operation is not permitted.",
-                            tc.name
-                        ),
-                    ),
-                ),
-                reason,
-            )));
-        }
-        if let Err(rejection) = gate.check(tc.name.as_str()) {
+        let refusal = if has_failed_dep {
+            Some(GateRefusal::FailedDependency)
+        } else if quota_blocked {
+            Some(GateRefusal::QuotaExceeded {
+                max: self
+                    .tool_orchestrator
+                    .max_tool_calls_per_session
+                    .unwrap_or(0),
+            })
+        } else if pre_exec_blocked[idx] {
+            Some(GateRefusal::PreExecutionBlocked)
+        } else if let Err(rejection) = gate.check(tc.name.as_str()) {
             tracing::warn!(tool = %tc.name, %rejection, "dispatch gate rejected tool call");
-            let reason = rejection.to_string();
+            Some(GateRefusal::DispatchRejected {
+                reason: rejection.to_string(),
+            })
+        } else {
+            None
+        };
+        if let Some(refusal) = refusal {
+            let reason = refusal.reason(tc.name.as_str());
             return Ok(Some((
-                ready_fut(
-                    idx,
-                    skipped_output(
-                        tc.name.clone(),
-                        format!("[error] Tool call to {} was rejected: {reason}.", tc.name),
-                    ),
-                ),
+                ready_fut(idx, refusal.into_output(tc.name.clone())),
                 reason,
             )));
         }
@@ -1277,19 +1103,10 @@ impl<C: Channel> Agent<C> {
             return Ok(Some((fut, reason)));
         }
         if repeat_blocked[idx] {
-            let reason = format!("repeated identical call to {} detected", tc.name);
+            let refusal = GateRefusal::Repeated;
+            let reason = refusal.reason(tc.name.as_str());
             return Ok(Some((
-                ready_fut(
-                    idx,
-                    skipped_output(
-                        tc.name.clone(),
-                        format!(
-                            "[error] Repeated identical call to {} detected. \
-                             Use different arguments or a different approach.",
-                            tc.name
-                        ),
-                    ),
-                ),
+                ready_fut(idx, refusal.into_output(tc.name.clone())),
                 reason,
             )));
         }
@@ -1358,7 +1175,7 @@ impl<C: Channel> Agent<C> {
                     &pre_hooks,
                     tc.name.as_str(),
                     &tc.input,
-                    conv_id_str.as_deref(),
+                    HookAgentCtx::main(conv_id_str.as_deref()),
                 )?;
                 let sem = std::sync::Arc::clone(semaphore);
                 let tool_name = tc.name.clone();
@@ -1412,10 +1229,13 @@ impl<C: Channel> Agent<C> {
                 self.discard_speculative(call);
                 tier_futs.push((
                     idx,
-                    Box::pin(std::future::ready(Ok(Some(skipped_output(
-                        tc.name.clone(),
-                        msg,
-                    ))))),
+                    Box::pin(std::future::ready(Ok(Some(
+                        zeph_tools::ToolOutput::synthetic(
+                            tc.name.clone(),
+                            msg,
+                            zeph_tools::SyntheticKind::HookBlocked,
+                        ),
+                    )))),
                 ));
                 continue;
             }
@@ -1480,7 +1300,11 @@ impl<C: Channel> Agent<C> {
                     .await;
                 tier_futs.push(ready_fut(
                     idx,
-                    skipped_output(tc.name.clone(), exceeded.to_error_message()),
+                    zeph_tools::ToolOutput::synthetic(
+                        tc.name.clone(),
+                        exceeded.to_error_message(),
+                        zeph_tools::SyntheticKind::RateLimited,
+                    ),
                 ));
                 continue;
             }
@@ -1631,15 +1455,16 @@ impl<C: Channel> Agent<C> {
         )> = Vec::with_capacity(indices.len());
         for (idx, result) in indices.into_iter().zip(tier_results) {
             // IMP-02: Err(_) covers all error variants including ConfirmationRequired.
-            // Ok(Some(out)) with "[error]" prefix covers synthetic/blocked results.
+            // Ok(Some(out)) aborts dependants only for `Failed` and gate refusals; a plain non-zero
+            // exit is a failure for audit/skills but never skips dependants.
             let is_failed = match &result {
                 Err(_) => true,
-                Ok(Some(out)) => out.summary.starts_with("[error]"),
+                Ok(Some(out)) => out.status.aborts_dependants(),
                 Ok(None) => false,
             };
             let is_synthetic_skip = matches!(
                 &result,
-                Ok(Some(out)) if out.claim_source == Some(zeph_tools::ClaimSource::Synthetic)
+                Ok(Some(out)) if out.status.is_synthetic()
             );
             if is_failed {
                 failed_ids.insert(tool_calls[idx].id.clone());
@@ -1721,8 +1546,12 @@ impl<C: Channel> Agent<C> {
             let sem = std::sync::Arc::clone(&semaphore);
             let tc = &tool_calls[idx];
             let call = &calls[idx];
-            let hook_call =
-                PostToolHookCall::prepare(&post_hooks, tc.name.as_str(), &tc.input, conv_id);
+            let hook_call = PostToolHookCall::prepare(
+                &post_hooks,
+                tc.name.as_str(),
+                &tc.input,
+                HookAgentCtx::main(conv_id),
+            );
             async move {
                 let Ok(_permit) = sem.acquire().await else {
                     tracing::warn!(
@@ -1990,7 +1819,7 @@ impl<C: Channel> Agent<C> {
                 }
             })
             .await;
-            self.channel.send_status_best_effort("").await;
+            self.channel.clear_status_best_effort().await;
             if lsp_result.is_err() {
                 tracing::warn!("LSP after_tool batch timed out (30s)");
             }
@@ -2050,26 +1879,6 @@ async fn recv_elicitation(
     match rx {
         Some(r) => r.recv().await,
         None => std::future::pending().await,
-    }
-}
-
-// `pub(super)`: called from `focus_compression` after the `tool_execution` split.
-pub(super) fn skipped_output(
-    tool_name: impl Into<zeph_common::ToolName>,
-    summary: impl Into<String>,
-) -> zeph_tools::ToolOutput {
-    zeph_tools::ToolOutput {
-        tool_name: tool_name.into(),
-        summary: summary.into(),
-        blocks_executed: 0,
-        filter_stats: None,
-        diff: None,
-        streamed: false,
-        terminal_id: None,
-        locations: None,
-        raw_response: None,
-        claim_source: Some(zeph_tools::ClaimSource::Synthetic),
-        ..Default::default()
     }
 }
 
@@ -2379,7 +2188,7 @@ impl<C: Channel> Agent<C> {
 
         let chat_result = self.call_llm_durable(tool_defs, iteration).await?;
 
-        self.channel.send_status_best_effort("").await;
+        self.channel.clear_status_best_effort().await;
 
         let Some(chat_result) = chat_result else {
             tracing::debug!("chat_with_tools returned None (timeout)");
@@ -2491,12 +2300,6 @@ impl<C: Channel> Agent<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::hooks_dispatch::make_tool_hook_env;
-    use zeph_subagent::TOOL_ARGS_JSON_LIMIT;
-
-    fn json_val(s: &str) -> serde_json::Value {
-        serde_json::from_str(s).unwrap()
-    }
 
     fn make_tool_req(name: &str) -> zeph_llm::provider::ToolUseRequest {
         zeph_llm::provider::ToolUseRequest {
@@ -2511,68 +2314,6 @@ mod tests {
             tool_id: zeph_common::ToolName::new(name),
             ..Default::default()
         }
-    }
-
-    #[test]
-    fn make_tool_hook_env_sets_tool_name() {
-        let env = make_tool_hook_env("Edit", &serde_json::Value::Null, None);
-        assert_eq!(env.get("ZEPH_TOOL_NAME").map(String::as_str), Some("Edit"));
-    }
-
-    #[test]
-    fn make_tool_hook_env_sets_args_json_for_small_payload() {
-        let input = json_val(r#"{"path": "/tmp/foo.txt"}"#);
-        let env = make_tool_hook_env("Write", &input, None);
-        let args = env
-            .get("ZEPH_TOOL_ARGS_JSON")
-            .expect("ZEPH_TOOL_ARGS_JSON missing");
-        let parsed: serde_json::Value = serde_json::from_str(args).unwrap();
-        assert_eq!(parsed["path"], "/tmp/foo.txt");
-    }
-
-    #[test]
-    fn make_tool_hook_env_truncates_large_payload_safely() {
-        // Build a JSON string > 64 KiB with a multi-byte char near the boundary.
-        let mut big = String::from(r#"{"data":""#);
-        // Fill mostly with ASCII, then add a 3-byte char (€ = 0xE2 0x82 0xAC) right at boundary.
-        // We want the char boundary to fall inside the limit so truncation must round down.
-        while big.len() < TOOL_ARGS_JSON_LIMIT - 3 {
-            big.push('a');
-        }
-        big.push('€'); // 3 bytes — may straddle the limit
-        while big.len() < TOOL_ARGS_JSON_LIMIT + 100 {
-            big.push('b');
-        }
-        big.push_str(r#""}"#);
-        let input: serde_json::Value = serde_json::from_str(&big).unwrap_or_default();
-        // Must not panic and must end with the ellipsis character.
-        let env = make_tool_hook_env("Shell", &input, None);
-        let args = env
-            .get("ZEPH_TOOL_ARGS_JSON")
-            .expect("ZEPH_TOOL_ARGS_JSON missing");
-        assert!(
-            args.ends_with('…'),
-            "truncated value should end with ellipsis"
-        );
-        assert!(
-            args.is_char_boundary(args.len()),
-            "truncation must land on char boundary"
-        );
-    }
-
-    #[test]
-    fn make_tool_hook_env_sets_session_id_when_present() {
-        let env = make_tool_hook_env("Read", &serde_json::Value::Null, Some("sess-42"));
-        assert_eq!(
-            env.get("ZEPH_SESSION_ID").map(String::as_str),
-            Some("sess-42")
-        );
-    }
-
-    #[test]
-    fn make_tool_hook_env_omits_session_id_when_none() {
-        let env = make_tool_hook_env("Read", &serde_json::Value::Null, None);
-        assert!(!env.contains_key("ZEPH_SESSION_ID"));
     }
 
     // Regression guard for issue #3738: pre_tool_use hooks must fire for tools that are
@@ -2637,7 +2378,7 @@ mod tests {
                 .context_manager
                 .set_compaction_state(CompactionState::CompactedThisTurn { cooldown: 0 });
             let input = serde_json::json!({"reason": "context is growing"});
-            let result = agent.handle_request_compaction(&input).await;
+            let result = agent.handle_request_compaction(&input).await.text;
             assert!(
                 result.contains("already performed this turn"),
                 "rate-limit guard must fire: got {result:?}"

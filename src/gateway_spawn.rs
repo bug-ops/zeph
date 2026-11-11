@@ -121,6 +121,14 @@ impl<C: zeph_core::channel::Channel> zeph_core::channel::Channel for GatewayChan
         self.inner.send_status(text).await
     }
 
+    async fn clear_status(&mut self) -> Result<(), zeph_core::channel::ChannelError> {
+        self.inner.clear_status().await
+    }
+
+    async fn clear_status_best_effort(&mut self) {
+        self.inner.clear_status_best_effort().await;
+    }
+
     async fn send_skill_catalog(
         &mut self,
         items: &[zeph_core::channel::SkillCatalogItem],

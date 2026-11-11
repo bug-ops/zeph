@@ -72,7 +72,7 @@ impl<C: Channel> Agent<C> {
             .persistence
             .conversation_id
             .map(|id| id.0.to_string());
-        crate::agent::hooks_dispatch::insert_main_agent_ctx(&mut env, conv_id_str.as_deref());
+        zeph_subagent::HookAgentCtx::main(conv_id_str.as_deref()).insert_agent_vars(&mut env);
         let dispatch = self.mcp_dispatch();
         let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
             .as_ref()

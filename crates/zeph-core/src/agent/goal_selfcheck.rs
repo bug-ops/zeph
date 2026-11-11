@@ -11,6 +11,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use zeph_llm::provider::StatusUpdate;
 
 use tracing::Instrument as _;
 use zeph_commands::CommandError;
@@ -247,7 +248,7 @@ pub(super) struct GoalCheckJob {
     pub(super) supervisor: GoalSupervisor,
     pub(super) timeout_secs: u64,
     pub(super) active_goal: ActiveGoalLookup,
-    pub(super) status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    pub(super) status_tx: Option<zeph_llm::provider::StatusTx>,
 }
 
 impl GoalCheckJob {
@@ -284,7 +285,7 @@ impl GoalCheckJob {
         };
 
         if let Some(tx) = &self.status_tx {
-            let _ = tx.send(STATUS_VERIFYING.to_owned());
+            let _ = tx.send(StatusUpdate::set(STATUS_VERIFYING));
         }
         let result = self
             .supervisor
@@ -296,7 +297,7 @@ impl GoalCheckJob {
             ))
             .await;
         if let Some(tx) = &self.status_tx {
-            let _ = tx.send(String::new());
+            let _ = tx.send(StatusUpdate::Clear);
         }
         GoalCheckOutcome::Report(format_report(
             self.trigger,
@@ -576,8 +577,8 @@ mod tests {
         let mut j = job("cond", None, provider);
         j.status_tx = Some(tx);
         j.run().await;
-        assert_eq!(rx.recv().await.as_deref(), Some(STATUS_VERIFYING));
-        assert_eq!(rx.recv().await.as_deref(), Some(""));
+        assert_eq!(rx.recv().await, Some(StatusUpdate::set(STATUS_VERIFYING)));
+        assert_eq!(rx.recv().await, Some(StatusUpdate::Clear));
     }
 
     fn agent_with_verdict(json: &str) -> Agent<crate::agent::agent_tests::MockChannel> {

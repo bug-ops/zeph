@@ -24,12 +24,13 @@ use crate::error::MemoryError;
 use crate::graph::store::GraphStore;
 use crate::graph::types::{Edge, EdgeType, edge_type_weight, evolved_weight};
 use crate::sqlite_time::parse_sqlite_datetime_to_unix;
+use crate::types::{EdgeId, EntityId};
 
 /// A graph node that was activated during spreading activation.
 #[derive(Debug, Clone)]
 pub struct ActivatedNode {
     /// Database ID of the activated entity.
-    pub entity_id: i64,
+    pub entity_id: EntityId,
     /// Final activation score in `[0.0, 1.0]`.
     pub activation: f32,
     /// Hop at which the maximum activation was received (`0` = seed).
@@ -255,27 +256,32 @@ pub async fn hela_spreading_recall(
         .payload
         .get("entity_id")
         .and_then(serde_json::Value::as_i64)
+        .map(EntityId)
     else {
         tracing::warn!("hela: anchor point missing entity_id payload");
         return Ok(Vec::new());
     };
     let anchor_cosine = anchor_point.score;
 
-    tracing::Span::current().record("anchor_id", anchor_entity_id);
-    tracing::debug!(anchor_entity_id, anchor_cosine, "hela: anchor resolved");
+    tracing::Span::current().record("anchor_id", anchor_entity_id.0);
+    tracing::debug!(
+        anchor_entity_id = anchor_entity_id.0,
+        anchor_cosine,
+        "hela: anchor resolved"
+    );
 
     let spread_depth = params.spread_depth.clamp(1, 6);
 
     // ── Step 2: BFS with multiplicative path-weight propagation ──────────────
     // `visited`: entity_id → (depth, path_weight, edge_id_via_which_we_arrived)
-    let mut visited: HashMap<i64, (u32, f32, Option<i64>)> = HashMap::new();
+    let mut visited: HashMap<EntityId, (u32, f32, Option<EdgeId>)> = HashMap::new();
     visited.insert(anchor_entity_id, (0, 1.0, None));
 
     // Dedup edges keyed by id for Step 4 lookup (avoids N clones per frontier).
     // MINOR-3 resolution: collect edges into a HashMap<id, Edge> outside the
     // per-source loop to avoid 10K clones on a hub × 50-entity frontier.
-    let mut edge_cache: HashMap<i64, Edge> = HashMap::new();
-    let mut frontier: Vec<i64> = vec![anchor_entity_id];
+    let mut edge_cache: HashMap<EdgeId, Edge> = HashMap::new();
+    let mut frontier: Vec<EntityId> = vec![anchor_entity_id];
 
     for hop in 0..spread_depth {
         if frontier.is_empty() {
@@ -297,8 +303,8 @@ pub async fn hela_spreading_recall(
             return Ok(Vec::new());
         }
 
-        let mut next_frontier: Vec<i64> = Vec::new();
-        let mut next_frontier_set: HashSet<i64> = HashSet::new();
+        let mut next_frontier: Vec<EntityId> = Vec::new();
+        let mut next_frontier_set: HashSet<EntityId> = HashSet::new();
 
         for edge in &edges {
             // Cache by edge id to avoid repeated clones per source in frontier.
@@ -362,7 +368,7 @@ pub async fn hela_spreading_recall(
     if visited.len() == 1 {
         tracing::Span::current().record("fallback", true);
         tracing::debug!(
-            anchor_entity_id,
+            anchor_entity_id = anchor_entity_id.0,
             anchor_cosine,
             "hela: anchor isolated, falling back to pure ANN"
         );
@@ -377,7 +383,7 @@ pub async fn hela_spreading_recall(
     }
 
     // ── Step 3: retrieve entity embeddings ───────────────────────────────────
-    let entity_ids: Vec<i64> = visited.keys().copied().collect();
+    let entity_ids: Vec<EntityId> = visited.keys().copied().collect();
     let point_id_map = store.qdrant_point_ids_for_entities(&entity_ids).await?;
     let point_ids: Vec<String> = point_id_map.values().cloned().collect();
 
@@ -438,10 +444,10 @@ pub async fn hela_spreading_recall(
     // graph/retrieval.rs:427-433. Note: SYNAPSE reinforces all traversed edges;
     // this PR intentionally reinforces only surfaced edges. See MINOR-5.
     if hebbian_enabled {
-        let edge_ids: Vec<i64> = facts
+        let edge_ids: Vec<EdgeId> = facts
             .iter()
             .map(|f| f.edge.id)
-            .filter(|&id| id != 0) // skip synthetic anchor
+            .filter(|&id| id != EdgeId::new(0)) // skip synthetic anchor
             .collect();
         if !edge_ids.is_empty()
             && let Err(e) = store.apply_hebbian_increment(&edge_ids, hebbian_lr).await
@@ -491,7 +497,7 @@ impl SpreadingActivation {
     pub async fn spread(
         &self,
         store: &GraphStore,
-        seeds: HashMap<i64, f32>,
+        seeds: HashMap<EntityId, f32>,
         edge_types: &[EdgeType],
     ) -> Result<(Vec<ActivatedNode>, Vec<ActivatedFact>), MemoryError> {
         if seeds.is_empty() {
@@ -508,7 +514,7 @@ impl SpreadingActivation {
         let mut activated_facts: Vec<ActivatedFact> = Vec::new();
 
         for hop in 0..self.params.max_hops {
-            let active_nodes: Vec<(i64, f32)> = activation
+            let active_nodes: Vec<(EntityId, f32)> = activation
                 .iter()
                 .filter(|(_, (score, _))| *score >= self.params.activation_threshold)
                 .map(|(&id, &(score, _))| (id, score))
@@ -518,7 +524,7 @@ impl SpreadingActivation {
                 break;
             }
 
-            let node_ids: Vec<i64> = active_nodes.iter().map(|(id, _)| *id).collect();
+            let node_ids: Vec<EntityId> = active_nodes.iter().map(|(id, _)| *id).collect();
             let edges = store.edges_for_entities(&node_ids, edge_types).await?;
             let edge_count = edges.len();
 
@@ -551,14 +557,14 @@ impl SpreadingActivation {
     }
 
     /// Populate the activation map from seed scores, filtering seeds below threshold.
-    fn initialize_seeds(&self, seeds: &HashMap<i64, f32>) -> HashMap<i64, (f32, u32)> {
-        let mut activation: HashMap<i64, (f32, u32)> = HashMap::new();
+    fn initialize_seeds(&self, seeds: &HashMap<EntityId, f32>) -> HashMap<EntityId, (f32, u32)> {
+        let mut activation: HashMap<EntityId, (f32, u32)> = HashMap::new();
         let mut seed_count = 0usize;
         // Seeds bypass activation_threshold (they are query anchors per SYNAPSE semantics).
         for (entity_id, match_score) in seeds {
             if *match_score < self.params.activation_threshold {
                 tracing::debug!(
-                    entity_id,
+                    %entity_id,
                     score = match_score,
                     threshold = self.params.activation_threshold,
                     "spreading activation: seed below threshold, skipping"
@@ -581,12 +587,12 @@ impl SpreadingActivation {
     fn propagate_one_hop(
         &self,
         hop: u32,
-        active_nodes: &[(i64, f32)],
+        active_nodes: &[(EntityId, f32)],
         edges: &[Edge],
-        activation: &HashMap<i64, (f32, u32)>,
+        activation: &HashMap<EntityId, (f32, u32)>,
         now_secs: i64,
-    ) -> HashMap<i64, (f32, u32)> {
-        let mut next_activation: HashMap<i64, (f32, u32)> = HashMap::new();
+    ) -> HashMap<EntityId, (f32, u32)> {
+        let mut next_activation: HashMap<EntityId, (f32, u32)> = HashMap::new();
 
         for edge in edges {
             for &(active_id, node_score) in active_nodes {
@@ -645,8 +651,8 @@ impl SpreadingActivation {
     /// Returns the number of pruned nodes for tracing.
     fn merge_and_prune(
         &self,
-        activation: &mut HashMap<i64, (f32, u32)>,
-        next_activation: HashMap<i64, (f32, u32)>,
+        activation: &mut HashMap<EntityId, (f32, u32)>,
+        next_activation: HashMap<EntityId, (f32, u32)>,
     ) -> usize {
         for (node_id, (new_score, new_depth)) in next_activation {
             let entry = activation.entry(node_id).or_insert((0.0, new_depth));
@@ -658,7 +664,7 @@ impl SpreadingActivation {
 
         if activation.len() > self.params.max_activated_nodes {
             let before = activation.len();
-            let mut entries: Vec<(i64, (f32, u32))> = activation.drain().collect();
+            let mut entries: Vec<(EntityId, (f32, u32))> = activation.drain().collect();
             entries.sort_by(|(_, (a, _)), (_, (b, _))| b.total_cmp(a));
             entries.truncate(self.params.max_activated_nodes);
             *activation = entries.into_iter().collect();
@@ -672,7 +678,7 @@ impl SpreadingActivation {
     fn collect_activated_facts(
         &self,
         edges: &[Edge],
-        activation: &HashMap<i64, (f32, u32)>,
+        activation: &HashMap<EntityId, (f32, u32)>,
         activated_facts: &mut Vec<ActivatedFact>,
     ) {
         for edge in edges {
@@ -697,7 +703,7 @@ impl SpreadingActivation {
     }
 
     /// Collect nodes above threshold into `Vec<ActivatedNode>`, sorted descending by score.
-    fn finalize(&self, activation: HashMap<i64, (f32, u32)>) -> Vec<ActivatedNode> {
+    fn finalize(&self, activation: HashMap<EntityId, (f32, u32)>) -> Vec<ActivatedNode> {
         let mut result: Vec<ActivatedNode> = activation
             .into_iter()
             .filter(|(_, (score, _))| *score >= self.params.activation_threshold)
@@ -766,11 +772,11 @@ mod tests {
     async fn spread_empty_graph_no_edges_no_facts() {
         let store = setup_store().await;
         let sa = SpreadingActivation::new(default_params());
-        let seeds = HashMap::from([(1_i64, 1.0_f32)]);
+        let seeds = HashMap::from([(EntityId(1), 1.0_f32)]);
         let (nodes, facts) = sa.spread(&store, seeds, &[]).await.unwrap();
         // Seed node is returned as activated (activation=1.0, depth=0).
         assert_eq!(nodes.len(), 1, "seed must be in activated nodes");
-        assert_eq!(nodes[0].entity_id, 1);
+        assert_eq!(nodes[0].entity_id, EntityId(1));
         assert!((nodes[0].activation - 1.0).abs() < 1e-6);
         // No edges in empty graph, so no ActivatedFacts.
         assert!(
@@ -796,8 +802,7 @@ mod tests {
         let alice = store
             .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
 
         let sa = SpreadingActivation::new(default_params());
         let seeds = HashMap::from([(alice, 1.0_f32)]);
@@ -815,18 +820,15 @@ mod tests {
         let a = store
             .upsert_entity("A", "A", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("B", "B", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let c = store
             .upsert_entity("C", "C", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(a, b, "knows", "A knows B", 1.0, None, None)
             .await
@@ -843,7 +845,7 @@ mod tests {
         let seeds = HashMap::from([(a, 1.0_f32)]);
         let (nodes, _) = sa.spread(&store, seeds, &[]).await.unwrap();
 
-        let ids: Vec<i64> = nodes.iter().map(|n| n.entity_id).collect();
+        let ids: Vec<EntityId> = nodes.iter().map(|n| n.entity_id).collect();
         assert!(ids.contains(&a), "A (seed) must be activated");
         assert!(ids.contains(&b), "B (hop 1) must be activated");
         assert!(ids.contains(&c), "C (hop 2) must be activated");
@@ -869,18 +871,15 @@ mod tests {
         let a = store
             .upsert_entity("A", "A", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("B", "B", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let c = store
             .upsert_entity("C", "C", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(a, b, "knows", "A knows B", 1.0, None, None)
             .await
@@ -896,7 +895,7 @@ mod tests {
         let seeds = HashMap::from([(a, 1.0_f32)]);
         let (nodes, _) = sa.spread(&store, seeds, &[]).await.unwrap();
 
-        let ids: Vec<i64> = nodes.iter().map(|n| n.entity_id).collect();
+        let ids: Vec<EntityId> = nodes.iter().map(|n| n.entity_id).collect();
         assert!(ids.contains(&a), "A must be activated (seed)");
         assert!(ids.contains(&b), "B must be activated (hop 1)");
         assert!(!ids.contains(&c), "C must NOT be activated with max_hops=1");
@@ -911,23 +910,19 @@ mod tests {
         let a = store
             .upsert_entity("A", "A", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("B", "B", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let c = store
             .upsert_entity("C", "C", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let d = store
             .upsert_entity("D", "D", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(a, b, "rel", "A-B", 1.0, None, None)
             .await
@@ -953,7 +948,7 @@ mod tests {
         let seeds = HashMap::from([(a, 1.0_f32)]);
         let (nodes, _) = sa.spread(&store, seeds, &[]).await.unwrap();
 
-        let ids: Vec<i64> = nodes.iter().map(|n| n.entity_id).collect();
+        let ids: Vec<EntityId> = nodes.iter().map(|n| n.entity_id).collect();
         assert!(ids.contains(&d), "D must be activated via diamond paths");
 
         // D should be activated at depth 2
@@ -969,8 +964,7 @@ mod tests {
         let hub = store
             .upsert_entity("Hub", "Hub", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
 
         for i in 0..5 {
             let leaf = store
@@ -982,8 +976,7 @@ mod tests {
                     None,
                 )
                 .await
-                .unwrap()
-                .0;
+                .unwrap();
             store
                 .insert_edge(
                     hub,
@@ -1035,8 +1028,7 @@ mod tests {
         let root = store
             .upsert_entity("Root", "Root", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
 
         // Create 20 leaf nodes connected to root
         for i in 0..20 {
@@ -1049,8 +1041,7 @@ mod tests {
                     None,
                 )
                 .await
-                .unwrap()
-                .0;
+                .unwrap();
             store
                 .insert_edge(
                     root,
@@ -1089,18 +1080,15 @@ mod tests {
         let src = store
             .upsert_entity("Src", "Src", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let recent = store
             .upsert_entity("Recent", "Recent", EntityType::Tool, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let old = store
             .upsert_entity("Old", "Old", EntityType::Tool, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
 
         // Insert recent edge (default valid_from = now)
         store
@@ -1151,18 +1139,15 @@ mod tests {
         let a = store
             .upsert_entity("A", "A", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b_semantic = store
             .upsert_entity("BSemantic", "BSemantic", EntityType::Tool, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let c_causal = store
             .upsert_entity("CCausal", "CCausal", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
 
         // Semantic edge from A
         store
@@ -1191,7 +1176,7 @@ mod tests {
             .await
             .unwrap();
 
-        let ids: Vec<i64> = nodes.iter().map(|n| n.entity_id).collect();
+        let ids: Vec<EntityId> = nodes.iter().map(|n| n.entity_id).collect();
         assert!(
             ids.contains(&b_semantic),
             "BSemantic must be activated via semantic edge"
@@ -1219,8 +1204,7 @@ mod tests {
                     None,
                 )
                 .await
-                .unwrap()
-                .0;
+                .unwrap();
             seeds.insert(id, 1.0_f32);
         }
 
@@ -1393,13 +1377,14 @@ mod tests {
 
     #[test]
     fn hela_synthetic_anchor_edge_id_is_zero() {
-        let edge = Edge::synthetic_anchor(42);
+        let edge = Edge::synthetic_anchor(EntityId(42));
         assert_eq!(
-            edge.id, 0,
+            edge.id,
+            EdgeId::new(0),
             "synthetic anchor must have id = 0 to be excluded from Hebbian"
         );
-        assert_eq!(edge.source_entity_id, 42);
-        assert_eq!(edge.target_entity_id, 42);
+        assert_eq!(edge.source_entity_id, EntityId(42));
+        assert_eq!(edge.target_entity_id, EntityId(42));
     }
 
     #[test]
@@ -1465,13 +1450,11 @@ mod tests {
         let src = gs
             .upsert_entity("Blend_src", "Blend_src", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let tgt = gs
             .upsert_entity("Blend_tgt", "Blend_tgt", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
 
         // First insert — fast=slow=0.5.
         gs.insert_edge_typed(

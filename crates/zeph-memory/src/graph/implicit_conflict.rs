@@ -22,14 +22,15 @@ use zeph_db::{DbTransaction, sql};
 use crate::error::MemoryError;
 use crate::graph::activation::ActivatedFact;
 use crate::graph::string_similarity::normalized_similarity;
+use crate::types::EdgeId;
 
 /// A candidate conflict pair detected at write time.
 #[derive(Debug, Clone)]
 pub struct ConflictCandidate {
     /// ID of the newly inserted edge.
-    pub edge_a_id: i64,
+    pub edge_a_id: EdgeId,
     /// ID of the existing edge with a similar predicate.
-    pub edge_b_id: i64,
+    pub edge_b_id: EdgeId,
     /// Similarity score in `[0.0, 1.0]`.
     pub similarity: f64,
     /// The similarity method that produced this candidate.
@@ -45,11 +46,12 @@ pub struct ConflictCandidate {
 ///
 /// ```rust,no_run
 /// use zeph_config::ImplicitConflictConfig;
+/// use zeph_memory::EdgeId;
 /// use zeph_memory::graph::implicit_conflict::ImplicitConflictDetector;
 ///
 /// let config = ImplicitConflictConfig { enabled: true, ..Default::default() };
 /// let detector = ImplicitConflictDetector::new(config);
-/// let candidates = detector.detect_candidates(42, "employ", &[(1, "employs")], false);
+/// let candidates = detector.detect_candidates(EdgeId::new(42), "employ", &[(EdgeId::new(1), "employs")], false);
 /// assert!(!candidates.is_empty());
 /// ```
 pub struct ImplicitConflictDetector {
@@ -82,9 +84,9 @@ impl ImplicitConflictDetector {
     #[must_use]
     pub fn detect_candidates(
         &self,
-        new_edge_id: i64,
+        new_edge_id: EdgeId,
         new_predicate: &str,
-        existing: &[(i64, &str)],
+        existing: &[(EdgeId, &str)],
         is_cardinality_n: bool,
     ) -> Vec<ConflictCandidate> {
         let _span = tracing::info_span!(
@@ -205,9 +207,9 @@ pub async fn annotate_conflicts(
         return Ok(());
     }
 
-    let edge_ids: Vec<i64> = facts.iter().map(|f| f.edge.id).collect();
+    let edge_ids: Vec<EdgeId> = facts.iter().map(|f| f.edge.id).collect();
 
-    let mut edge_to_candidate: std::collections::HashMap<i64, i64> =
+    let mut edge_to_candidate: std::collections::HashMap<EdgeId, i64> =
         std::collections::HashMap::new();
 
     for chunk in edge_ids.chunks(MAX_IDS_PER_QUERY) {
@@ -233,8 +235,8 @@ pub async fn annotate_conflicts(
         for row in rows {
             use sqlx::Row as _;
             let candidate_id: i64 = row.try_get("id").map_err(MemoryError::from)?;
-            let ea: i64 = row.try_get("edge_a_id").map_err(MemoryError::from)?;
-            let eb: i64 = row.try_get("edge_b_id").map_err(MemoryError::from)?;
+            let ea: EdgeId = row.try_get("edge_a_id").map_err(MemoryError::from)?;
+            let eb: EdgeId = row.try_get("edge_b_id").map_err(MemoryError::from)?;
             edge_to_candidate.entry(ea).or_insert(candidate_id);
             edge_to_candidate.entry(eb).or_insert(candidate_id);
         }
@@ -277,17 +279,27 @@ mod tests {
     fn detect_candidates_above_threshold_returns_candidate() {
         let d = detector(true);
         // "employ" vs "employs": distance = 1, max = 7, sim ≈ 0.857 — above 0.80
-        let candidates = d.detect_candidates(42, "employ", &[(7, "employs")], false);
+        let candidates = d.detect_candidates(
+            EdgeId::new(42),
+            "employ",
+            &[(EdgeId::new(7), "employs")],
+            false,
+        );
         assert_eq!(candidates.len(), 1, "expected one candidate");
-        assert_eq!(candidates[0].edge_a_id, 42);
-        assert_eq!(candidates[0].edge_b_id, 7);
+        assert_eq!(candidates[0].edge_a_id, EdgeId::new(42));
+        assert_eq!(candidates[0].edge_b_id, EdgeId::new(7));
         assert!(candidates[0].similarity >= 0.80);
     }
 
     #[test]
     fn detect_candidates_below_threshold_returns_empty() {
         let d = detector(true);
-        let candidates = d.detect_candidates(1, "uses", &[(2, "xyz_unrelated")], false);
+        let candidates = d.detect_candidates(
+            EdgeId::new(1),
+            "uses",
+            &[(EdgeId::new(2), "xyz_unrelated")],
+            false,
+        );
         assert!(
             candidates.is_empty(),
             "expected no candidates below threshold"
@@ -298,7 +310,8 @@ mod tests {
     fn detect_candidates_identical_predicate_skipped() {
         let d = detector(true);
         // Identical predicates are handled by APEX-MEM; detector must skip them.
-        let candidates = d.detect_candidates(1, "uses", &[(2, "uses")], false);
+        let candidates =
+            d.detect_candidates(EdgeId::new(1), "uses", &[(EdgeId::new(2), "uses")], false);
         assert!(
             candidates.is_empty(),
             "identical predicates must not create candidates"
@@ -309,14 +322,24 @@ mod tests {
     fn detect_candidates_disabled_returns_empty() {
         let d = detector(false);
         // Even with high-similarity predicates, disabled detector returns nothing.
-        let candidates = d.detect_candidates(1, "employ", &[(2, "employs")], false);
+        let candidates = d.detect_candidates(
+            EdgeId::new(1),
+            "employ",
+            &[(EdgeId::new(2), "employs")],
+            false,
+        );
         assert!(candidates.is_empty(), "disabled detector must return empty");
     }
 
     #[test]
     fn detect_candidates_cardinality_n_skipped() {
         let d = detector(true);
-        let candidates = d.detect_candidates(1, "employ", &[(2, "employs")], true);
+        let candidates = d.detect_candidates(
+            EdgeId::new(1),
+            "employ",
+            &[(EdgeId::new(2), "employs")],
+            true,
+        );
         assert!(
             candidates.is_empty(),
             "cardinality-n predicate must be skipped"
@@ -333,9 +356,9 @@ mod tests {
         use crate::graph::types::{Edge, EdgeType};
         ActivatedFact {
             edge: Edge {
-                id: edge_id,
-                source_entity_id: 1,
-                target_entity_id: 2,
+                id: crate::types::EdgeId::new(edge_id),
+                source_entity_id: crate::types::EntityId(1),
+                target_entity_id: crate::types::EntityId(2),
                 relation: "test".to_owned(),
                 canonical_relation: "test".to_owned(),
                 fact: "test fact".to_owned(),

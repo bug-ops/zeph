@@ -17,7 +17,9 @@ use crate::gonka::endpoints::{EndpointPool, now_ns};
 use crate::gonka::signer::RequestSigner;
 use crate::openai::{OpenAiConfig, OpenAiProvider};
 use crate::provider::ResponseUsage;
-use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, StatusTx, ToolDefinition};
+use crate::provider::{
+    ChatResponse, ChatStream, LlmProvider, Message, StatusTx, StatusUpdate, ToolDefinition,
+};
 use crate::sse::openai_sse_to_stream;
 use crate::usage::UsageTracker;
 
@@ -256,7 +258,10 @@ impl GonkaProvider {
 
             tracing::debug!(endpoint = %endpoint.base_url, "gonka POST {url}");
             if let Some(ref tx) = self.status_tx {
-                let _ = tx.send(format!("Gonka: signing request to {}", endpoint.base_url));
+                let _ = tx.send(StatusUpdate::set(format!(
+                    "Gonka: signing request to {}",
+                    endpoint.base_url
+                )));
             }
 
             // Fresh timestamp on every attempt — non-replayable signatures.

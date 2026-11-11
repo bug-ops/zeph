@@ -53,6 +53,8 @@ pub(super) enum ClaudeModel {
     Fable5,
     /// Claude Fable 5.1.
     Fable51,
+    /// Claude Fable 5.2.
+    Fable52,
     /// Claude Mythos 5.
     Mythos5,
     /// Claude Mythos 5.1.
@@ -196,6 +198,7 @@ impl ClaudeModel {
             ("opus", (Some(5), Some(5))) => Self::Opus55,
             ("fable", (Some(5), None | Some(0))) => Self::Fable5,
             ("fable", (Some(5), Some(1))) => Self::Fable51,
+            ("fable", (Some(5), Some(2))) => Self::Fable52,
             ("mythos", (Some(5), None | Some(0))) => Self::Mythos5,
             ("mythos", (Some(5), Some(1))) => Self::Mythos51,
             _ => Self::Unknown,
@@ -240,7 +243,7 @@ impl ClaudeModel {
                 mid_conversation_system: true,
                 ..ModelCapabilities::GEN5
             },
-            Self::Opus55 | Self::Sonnet55 | Self::Fable51 => ModelCapabilities {
+            Self::Opus55 | Self::Sonnet55 | Self::Fable51 | Self::Fable52 => ModelCapabilities {
                 mid_conversation_system: true,
                 ..ModelCapabilities::GEN5_BOUND
             },
@@ -293,6 +296,12 @@ mod tests {
             ("claude-haiku-5-5", ClaudeModel::Haiku55),
             ("claude-fable-5", ClaudeModel::Fable5),
             ("claude-fable-5-1", ClaudeModel::Fable51),
+            ("claude-fable-5-2", ClaudeModel::Fable52),
+            ("claude-fable-5-2-20261109", ClaudeModel::Fable52),
+            ("claude-fable-5-2@20261109", ClaudeModel::Fable52),
+            ("anthropic.claude-fable-5-2-v1:0", ClaudeModel::Fable52),
+            ("us.anthropic.claude-fable-5-2", ClaudeModel::Fable52),
+            ("claude-fable-5-3", ClaudeModel::Unknown),
             ("claude-mythos-5", ClaudeModel::Mythos5),
             ("claude-mythos-5-1", ClaudeModel::Mythos51),
             ("anthropic.claude-opus-5-5-v1:0", ClaudeModel::Opus55),
@@ -308,6 +317,20 @@ mod tests {
     }
 
     #[test]
+    fn fable_52_shares_fable_51_capabilities() {
+        let a = ClaudeModel::Fable52.capabilities();
+        let b = ClaudeModel::Fable51.capabilities();
+        assert_eq!(a.native_window, Some(WINDOW_1M));
+        assert!(!a.needs_1m_beta);
+        assert_eq!(a.native_window, b.native_window);
+        assert_eq!(a.preserved_thinking, b.preserved_thinking);
+        assert_eq!(a.structured_outputs, b.structured_outputs);
+        assert_eq!(a.forbids_forced_tool_choice, b.forbids_forced_tool_choice);
+        assert_eq!(a.mid_conversation_system, b.mid_conversation_system);
+        assert!(a.preserved_thinking && a.mid_conversation_system);
+    }
+
+    #[test]
     fn unknown_is_conservative() {
         let cap = ClaudeModel::Unknown.capabilities();
         assert!(cap.forbids_forced_tool_choice);
@@ -320,6 +343,7 @@ mod tests {
     fn preserved_thinking_models() {
         let bound: Vec<_> = [
             ClaudeModel::Fable51,
+            ClaudeModel::Fable52,
             ClaudeModel::Opus55,
             ClaudeModel::Sonnet55,
             ClaudeModel::Haiku55,
@@ -327,7 +351,7 @@ mod tests {
         .into_iter()
         .filter(|m| m.capabilities().preserved_thinking)
         .collect();
-        assert_eq!(bound.len(), 4);
+        assert_eq!(bound.len(), 5);
         assert!(!ClaudeModel::Mythos51.capabilities().preserved_thinking);
         assert!(!ClaudeModel::Opus5.capabilities().preserved_thinking);
     }
@@ -338,6 +362,7 @@ mod tests {
             ClaudeModel::Opus55,
             ClaudeModel::Sonnet55,
             ClaudeModel::Fable51,
+            ClaudeModel::Fable52,
             ClaudeModel::Mythos51,
         ] {
             assert!(m.capabilities().forbids_forced_tool_choice, "{m:?}");
@@ -360,6 +385,7 @@ mod tests {
             ClaudeModel::Opus48,
             ClaudeModel::Fable5,
             ClaudeModel::Fable51,
+            ClaudeModel::Fable52,
             ClaudeModel::Mythos5,
             ClaudeModel::Mythos51,
             ClaudeModel::Sonnet55,

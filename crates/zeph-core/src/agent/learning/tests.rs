@@ -57,7 +57,7 @@ fn learning_config_enabled() -> LearningConfig {
         max_versions: 5,
         cooldown_minutes: 0,
         correction_detection: true,
-        correction_confidence_threshold: zeph_config::ConfidenceThreshold::default(),
+        correction_confidence_threshold: zeph_config::DEFAULT_CORRECTION_CONFIDENCE,
         detector_mode: crate::config::DetectorMode::default(),
         judge_model: String::new(),
         judge_adaptive_low: zeph_config::ConfidenceThreshold::new(0.5).unwrap(),

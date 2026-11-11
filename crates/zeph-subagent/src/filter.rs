@@ -523,6 +523,7 @@ pub fn filter_skills(
     let compiled_include = compile_globs(&filter.include)?;
     let compiled_exclude = compile_globs(&filter.exclude)?;
 
+    let mut excluded = TrustExclusions::default();
     let all: Vec<Skill> = registry
         .all_meta()
         .into_iter()
@@ -539,14 +540,12 @@ pub fn filter_skills(
                 .copied()
                 .unwrap_or(zeph_common::SkillTrustLevel::MISSING_ENTRY_FALLBACK);
             if level.is_hidden_from_catalog() {
-                tracing::warn!(
+                tracing::debug!(
                     skill = %meta.name,
                     trust = %level,
-                    "skill excluded from sub-agent injection (trust={}); promote with \
-                     `zeph skill trust {} trusted` if this skill is safe",
-                    level,
-                    meta.name
+                    "skill excluded from sub-agent injection"
                 );
+                excluded.record(level);
                 false
             } else {
                 true
@@ -555,7 +554,37 @@ pub fn filter_skills(
         .filter_map(|meta| registry.skill(meta.name.as_str()).ok())
         .collect();
 
+    if let Some(summary) = excluded.summary() {
+        tracing::warn!(
+            "{summary} excluded from sub-agent injection; promote with \
+             `zeph skill trust <name> trusted` if a skill is safe"
+        );
+    }
     Ok(all)
+}
+
+/// Per-trust-level count of skills dropped from one sub-agent's skill injection, so the
+/// exclusion is reported as one log line per spawn instead of one per skill.
+#[derive(Debug, Default)]
+struct TrustExclusions(Vec<(zeph_common::SkillTrustLevel, usize)>);
+
+impl TrustExclusions {
+    fn record(&mut self, level: zeph_common::SkillTrustLevel) {
+        match self.0.iter_mut().find(|(l, _)| *l == level) {
+            Some((_, n)) => *n += 1,
+            None => self.0.push((level, 1)),
+        }
+    }
+
+    /// `"3 skills (2 quarantined, 1 blocked)"`, or `None` when nothing was excluded.
+    fn summary(&self) -> Option<String> {
+        if self.0.is_empty() {
+            return None;
+        }
+        let total: usize = self.0.iter().map(|(_, n)| n).sum();
+        let parts: Vec<String> = self.0.iter().map(|(l, n)| format!("{n} {l}")).collect();
+        Some(format!("{total} skills ({})", parts.join(", ")))
+    }
 }
 
 /// Compiled glob pattern: literal prefix + optional `*` wildcard suffix.
@@ -1787,6 +1816,21 @@ mod tests {
             vec!["trusted-skill", "unclassified-skill"],
             "Quarantined and Blocked skills must be dropped; Trusted and unclassified \
              (fallback-to-Trusted) skills must pass through"
+        );
+    }
+
+    #[test]
+    fn trust_exclusions_aggregate_per_level() {
+        use zeph_common::SkillTrustLevel::{Blocked, Quarantined};
+
+        let mut e = TrustExclusions::default();
+        assert_eq!(e.summary(), None);
+        e.record(Quarantined);
+        e.record(Quarantined);
+        e.record(Blocked);
+        assert_eq!(
+            e.summary().as_deref(),
+            Some("3 skills (2 quarantined, 1 blocked)")
         );
     }
 

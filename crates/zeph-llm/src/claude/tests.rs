@@ -54,6 +54,7 @@ fn stale_model_suggestion_old_gen_below_floor_returns_some() {
 fn stale_model_suggestion_current_gen_returns_none() {
     assert_eq!(stale_model_suggestion("claude-sonnet-5"), None);
     assert_eq!(stale_model_suggestion("claude-opus-4-8"), None);
+    assert_eq!(stale_model_suggestion("claude-fable-5-2"), None);
     assert_eq!(stale_model_suggestion("claude-haiku-4-5-20251001"), None);
 }
 
@@ -3145,6 +3146,7 @@ fn context_window_is_capped_at_200k_unless_extended() {
         ("claude-opus-5-5", Some(200_000), Some(1_000_000)),
         ("claude-sonnet-4-6", Some(200_000), Some(1_000_000)),
         ("claude-fable-5-1", Some(200_000), Some(1_000_000)),
+        ("claude-fable-5-2", Some(200_000), Some(1_000_000)),
         ("claude-haiku-5-5", Some(200_000), Some(1_000_000)),
         ("claude-haiku-4-5-20251001", Some(200_000), Some(200_000)),
         ("claude-sonnet-4-5-20250929", Some(200_000), Some(1_000_000)),
@@ -4407,6 +4409,7 @@ fn thinking_binding_follows_the_preserved_thinking_capability() {
         "claude-opus-5-5",
         "claude-sonnet-5-5",
         "claude-fable-5-1",
+        "claude-fable-5-2",
         "claude-haiku-5-5",
     ];
     let unbound = [

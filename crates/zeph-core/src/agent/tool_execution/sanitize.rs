@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use zeph_sanitizer::{ContentSource, ContentSourceKind, MemorySourceHint};
+use zeph_sanitizer::ContentSourceKind;
 
 use super::super::Agent;
 use crate::channel::Channel;
@@ -14,10 +14,10 @@ use crate::channel::Channel;
 /// that merely *prints* `[skipped]` or `category: policy_blocked` stays `Executed` and is
 /// classified like any other external output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ToolOutputOrigin {
+pub(in crate::agent) enum ToolOutputOrigin {
     /// The tool ran and produced the body; carries the executor's claimed provenance.
     Executed(Option<zeph_tools::ClaimSource>),
-    /// The harness wrote the body for a call that never ran ([`zeph_tools::ClaimSource::Synthetic`]).
+    /// The harness wrote the body for a call that never ran ([`zeph_tools::ToolStatus::Synthetic`]).
     HarnessAuthored,
     /// The body is the error of a denial raised by zeph's own policy layer
     /// ([`zeph_tools::ToolError::is_local_policy_denial`]).
@@ -25,14 +25,15 @@ pub(super) enum ToolOutputOrigin {
 }
 
 impl ToolOutputOrigin {
-    pub(super) fn from_claim_source(claim_source: Option<zeph_tools::ClaimSource>) -> Self {
-        match claim_source {
-            Some(zeph_tools::ClaimSource::Synthetic) => Self::HarnessAuthored,
-            other => Self::Executed(other),
+    pub(in crate::agent) fn from_output(output: &zeph_tools::ToolOutput) -> Self {
+        if output.status.is_synthetic() {
+            Self::HarnessAuthored
+        } else {
+            Self::Executed(output.claim_source)
         }
     }
 
-    pub(super) fn from_error(error: &zeph_tools::ToolError) -> Self {
+    pub(in crate::agent) fn from_error(error: &zeph_tools::ToolError) -> Self {
         if error.is_local_policy_denial() {
             Self::LocalPolicyDenial
         } else {
@@ -43,8 +44,7 @@ impl ToolOutputOrigin {
     pub(super) fn claim_source(self) -> Option<zeph_tools::ClaimSource> {
         match self {
             Self::Executed(claim_source) => claim_source,
-            Self::HarnessAuthored => Some(zeph_tools::ClaimSource::Synthetic),
-            Self::LocalPolicyDenial => None,
+            Self::HarnessAuthored | Self::LocalPolicyDenial => None,
         }
     }
 
@@ -128,7 +128,7 @@ fn split_bash_echo_prefix<'a>(body: &'a str, tool_name: &str) -> (&'a str, &'a s
 /// Worst-case content-trust tier a batch of about-to-be-dispatched tool calls could
 /// introduce, computed purely from `tool_name` — no execution needed.
 ///
-/// `build_tool_output_source(name).trust_level` never varies with a tool's actual output,
+/// `zeph_sanitizer::tool_output_source(name).trust_level` never varies with a tool's actual output,
 /// only with its name (see `sanitize_tool_output`, which computes `trust_level` from the
 /// source before any sanitization happens), so this precomputation is exact, not merely a
 /// conservative upper bound. Used to ratchet the write-time memory-consent gate slot BEFORE
@@ -145,28 +145,9 @@ fn batch_dispatch_trust_level(
     tool_calls
         .iter()
         .filter(|tc| tc.name.as_str() != "memory_save")
-        .map(|tc| build_tool_output_source(tc.name.as_str()).trust_level)
+        .map(|tc| zeph_sanitizer::tool_output_source(tc.name.as_str()).trust_level)
         .max()
         .unwrap_or(zeph_sanitizer::ContentTrustLevel::Trusted)
-}
-
-/// Build the `ContentSource` that describes a tool's trust level for the sanitizer.
-fn build_tool_output_source(tool_name: &str) -> ContentSource {
-    if tool_name.contains(':') || tool_name == "mcp" {
-        ContentSource::new(ContentSourceKind::McpResponse).with_identifier(tool_name)
-    } else if tool_name == "web-scrape"
-        || tool_name == "web_scrape"
-        || tool_name == "fetch"
-        || tool_name == "web_search"
-    {
-        ContentSource::new(ContentSourceKind::WebScrape).with_identifier(tool_name)
-    } else if tool_name == "memory_search" {
-        ContentSource::new(ContentSourceKind::MemoryRetrieval)
-            .with_identifier(tool_name)
-            .with_memory_hint(MemorySourceHint::ConversationHistory)
-    } else {
-        ContentSource::new(ContentSourceKind::ToolResult).with_identifier(tool_name)
-    }
 }
 
 impl<C: Channel> Agent<C> {
@@ -177,7 +158,7 @@ impl<C: Channel> Agent<C> {
     ///
     /// This is the SOLE sanitization point for tool output data flows. Do not add
     /// redundant sanitization in leaf crates (zeph-tools, zeph-mcp).
-    pub(super) async fn sanitize_tool_output(
+    pub(in crate::agent) async fn sanitize_tool_output(
         &mut self,
         body: &str,
         tool_name: &str,
@@ -188,7 +169,7 @@ impl<C: Channel> Agent<C> {
         ContentSourceKind,
         zeph_sanitizer::ContentTrustLevel,
     ) {
-        let source = build_tool_output_source(tool_name);
+        let source = zeph_sanitizer::tool_output_source(tool_name);
         let kind = source.kind;
         let trust_level = source.trust_level;
         tracing::debug!(
@@ -488,7 +469,7 @@ impl<C: Channel> Agent<C> {
         // `tool_name` here is always the qualified `server:tool` form (`ToolOutput.tool_name` is
         // deliberately set to `qualified_name()`, not `sanitized_id()` — see the invariant note
         // in `crates/zeph-mcp/src/executor.rs`), since this function only runs for
-        // `ContentSourceKind::McpResponse`, which `build_tool_output_source` only assigns when
+        // `ContentSourceKind::McpResponse`, which `tool_output_source` only assigns when
         // `tool_name.contains(':')`. Mirrors the reference split in
         // `crates/zeph-tools/src/policy_gate.rs`.
         let mcp_server_id = tool_name
@@ -713,42 +694,6 @@ mod split_bash_echo_prefix_tests {
         let (prefix, remainder) = split_bash_echo_prefix(body, "bash");
         assert_eq!(prefix, "");
         assert_eq!(remainder, body);
-    }
-}
-
-#[cfg(test)]
-mod build_tool_output_source_tests {
-    use super::build_tool_output_source;
-    use zeph_sanitizer::ContentSourceKind;
-
-    /// INVARIANT-1 (spec 006-1-web-search §4): `web_search` output must be classified
-    /// identically to `web_scrape`/`fetch` — `ContentSourceKind::WebScrape`
-    /// (`ExternalUntrusted` + quarantine) — via the tool-name string branch, not
-    /// `ClaimSource`. Regression guard: dropping `web_search` from this branch would
-    /// silently fall through to `ContentSourceKind::ToolResult`, a strictly weaker trust
-    /// class for equivalent attacker-controllable content.
-    #[test]
-    fn web_search_classified_as_web_scrape_source() {
-        let source = build_tool_output_source("web_search");
-        assert_eq!(source.kind, ContentSourceKind::WebScrape);
-    }
-
-    #[test]
-    fn web_scrape_and_fetch_classified_as_web_scrape_source() {
-        for name in ["web-scrape", "web_scrape", "fetch"] {
-            let source = build_tool_output_source(name);
-            assert_eq!(
-                source.kind,
-                ContentSourceKind::WebScrape,
-                "{name} must classify as WebScrape"
-            );
-        }
-    }
-
-    #[test]
-    fn unrelated_tool_classified_as_tool_result() {
-        let source = build_tool_output_source("some_other_tool");
-        assert_eq!(source.kind, ContentSourceKind::ToolResult);
     }
 }
 

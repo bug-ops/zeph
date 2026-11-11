@@ -69,7 +69,7 @@ use crate::admission::{AdmissionDecision, log_admission_decision};
 use crate::embedding_store::{MessageKind, SearchFilter};
 use crate::error::MemoryError;
 use crate::store::admission_training::AdmissionTrainingInput;
-use crate::types::{ConversationId, MessageId};
+use crate::types::{ConversationId, EntityId, MessageId};
 
 use super::SemanticMemory;
 use super::algorithms::{apply_mmr, apply_temporal_decay};
@@ -1411,11 +1411,11 @@ impl SemanticMemory {
         // Compute per-candidate causal distances (BFS from current goal entity).
         // FR-006: when goal_entity_id is None, compute() returns an empty map and all
         // candidates receive the neutral causal score via distance_to_score(neutral_distance).
-        let causal_distance_map: std::collections::HashMap<i64, u32> = {
-            let entity_ids: Vec<i64> = ids.iter().map(|id| id.0).collect();
+        let causal_distance_map: std::collections::HashMap<EntityId, u32> = {
+            let entity_ids: Vec<EntityId> = ids.iter().map(|id| EntityId(id.0)).collect();
             match fs
                 .causal_computer
-                .compute(goal_entity_id, &entity_ids)
+                .compute(goal_entity_id.map(EntityId), &entity_ids)
                 .await
             {
                 Ok(m) => m,
@@ -1440,7 +1440,7 @@ impl SemanticMemory {
                 .unwrap_or(fs.session_start);
             let novelty = fs.novelty_computer.compute(fact_created_at);
             let causal = causal_distance_map
-                .get(&msg_id.0)
+                .get(&EntityId(msg_id.0))
                 .map_or(neutral_causal_score, |&d| {
                     CausalDistanceComputer::distance_to_score(d)
                 });
@@ -1896,14 +1896,15 @@ impl SemanticMemory {
 
         // Zoom-In / Zoom-Out — fetch provenance snippets.
         if matches!(view, RecallView::ZoomIn | RecallView::ZoomOut) {
-            let edge_ids: Vec<i64> = recalled.iter().filter_map(|r| r.fact.edge_id).collect();
+            let edge_ids: Vec<crate::types::EdgeId> =
+                recalled.iter().filter_map(|r| r.fact.edge_id).collect();
 
             if !edge_ids.is_empty()
                 && let Some(ref store) = self.graph_store
             {
                 // Bulk fetch source_message_id for all edge ids.
                 const MAX_IDS: usize = 490;
-                let mut edge_to_msg: std::collections::HashMap<i64, MessageId> =
+                let mut edge_to_msg: std::collections::HashMap<crate::types::EdgeId, MessageId> =
                     std::collections::HashMap::new();
                 for chunk in edge_ids.chunks(MAX_IDS) {
                     match store.source_message_ids_for_edges(chunk).await {

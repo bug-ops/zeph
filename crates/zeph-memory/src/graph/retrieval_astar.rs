@@ -19,6 +19,7 @@ use crate::error::MemoryError;
 use crate::graph::retrieval::find_seed_entities;
 use crate::graph::store::GraphStore;
 use crate::graph::types::{EdgeType, GraphFact};
+use crate::types::{EdgeId, EntityId};
 
 const ENTITY_COLLECTION: &str = "zeph_graph_entities";
 
@@ -42,21 +43,21 @@ const DEFAULT_STRUCTURAL_WEIGHT: f32 = 0.4;
 const DEFAULT_COMMUNITY_CAP: usize = 3;
 
 /// Query embedding paired with per-entity embedding map, produced by the PRISM path.
-type PrismEmbeddings = Option<(Vec<f32>, HashMap<i64, Vec<f32>>)>;
+type PrismEmbeddings = Option<(Vec<f32>, HashMap<EntityId, Vec<f32>>)>;
 
 /// Truncate `node_map` in-place to at most `cap` entries, keeping those with the highest score.
 ///
 /// Score is looked up from `entity_scores`; entities absent from that map receive `0.0`.
 /// When `node_map.len() <= cap` the map is unchanged.
 pub(crate) fn cap_node_map<V>(
-    node_map: &mut HashMap<i64, V>,
-    entity_scores: &HashMap<i64, f32>,
+    node_map: &mut HashMap<EntityId, V>,
+    entity_scores: &HashMap<EntityId, f32>,
     cap: usize,
 ) {
     if node_map.len() <= cap {
         return;
     }
-    let mut scored: Vec<(i64, f32)> = node_map
+    let mut scored: Vec<(EntityId, f32)> = node_map
         .keys()
         .map(|&id| {
             let s = entity_scores.get(&id).copied().unwrap_or(0.0);
@@ -65,7 +66,7 @@ pub(crate) fn cap_node_map<V>(
         .collect();
     scored.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
     scored.truncate(cap);
-    let keep: HashSet<i64> = scored.into_iter().map(|(id, _)| id).collect();
+    let keep: HashSet<EntityId> = scored.into_iter().map(|(id, _)| id).collect();
     node_map.retain(|id, _| keep.contains(id));
     tracing::debug!(
         retained = node_map.len(),
@@ -139,7 +140,7 @@ pub async fn graph_recall_astar(
 
     // Gather all edges reachable from all seeds.
     let mut all_db_edges = Vec::new();
-    let mut entity_name_map: HashMap<i64, String> = HashMap::new();
+    let mut entity_name_map: HashMap<EntityId, String> = HashMap::new();
 
     for &seed_id in entity_scores.keys() {
         let (entities, edges, _depth_map) = if edge_types.is_empty() {
@@ -149,7 +150,7 @@ pub async fn graph_recall_astar(
         };
         for e in &entities {
             entity_name_map
-                .entry(e.id.0)
+                .entry(e.id)
                 .or_insert_with(|| e.canonical_name.clone());
         }
         all_db_edges.extend(edges);
@@ -183,7 +184,7 @@ pub async fn graph_recall_astar(
                         None
                     }
                     Ok(Ok(q_vec)) => {
-                        let entity_ids: Vec<i64> = all_db_edges
+                        let entity_ids: Vec<EntityId> = all_db_edges
                             .iter()
                             .flat_map(|e| [e.source_entity_id, e.target_entity_id])
                             .collect::<HashSet<_>>()
@@ -199,7 +200,7 @@ pub async fn graph_recall_astar(
                                 {
                                     Ok(vec_map) => {
                                         // Invert: entity_id → embedding vector.
-                                        let entity_vecs: HashMap<i64, Vec<f32>> = entity_ids
+                                        let entity_vecs: HashMap<EntityId, Vec<f32>> = entity_ids
                                             .iter()
                                             .filter_map(|&eid| {
                                                 let pid = point_id_map.get(&eid)?;
@@ -245,14 +246,14 @@ pub async fn graph_recall_astar(
     };
 
     // Build petgraph: node index ↔ entity_id mapping.
-    let mut node_map: HashMap<i64, NodeIndex> = HashMap::new();
-    let mut id_map: Vec<i64> = Vec::new();
-    let mut graph: UnGraph<i64, f32> = UnGraph::new_undirected();
+    let mut node_map: HashMap<EntityId, NodeIndex> = HashMap::new();
+    let mut id_map: Vec<EntityId> = Vec::new();
+    let mut graph: UnGraph<EntityId, f32> = UnGraph::new_undirected();
 
-    let get_or_add = |graph: &mut UnGraph<i64, f32>,
-                      node_map: &mut HashMap<i64, NodeIndex>,
-                      id_map: &mut Vec<i64>,
-                      entity_id: i64|
+    let get_or_add = |graph: &mut UnGraph<EntityId, f32>,
+                      node_map: &mut HashMap<EntityId, NodeIndex>,
+                      id_map: &mut Vec<EntityId>,
+                      entity_id: EntityId|
      -> NodeIndex {
         *node_map.entry(entity_id).or_insert_with(|| {
             let idx = graph.add_node(entity_id);
@@ -326,7 +327,7 @@ pub async fn graph_recall_astar(
     }
 
     // Build a lookup of db edges by (src_id, tgt_id).
-    let edge_lookup: HashMap<(i64, i64), &crate::graph::types::Edge> = all_db_edges
+    let edge_lookup: HashMap<(EntityId, EntityId), &crate::graph::types::Edge> = all_db_edges
         .iter()
         .map(|e| ((e.source_entity_id, e.target_entity_id), e))
         .collect();
@@ -382,7 +383,7 @@ pub async fn graph_recall_astar(
     facts.truncate(limit);
 
     // Record retrievals fire-and-forget.
-    let edge_ids: Vec<i64> = all_db_edges.iter().map(|e| e.id).collect();
+    let edge_ids: Vec<EdgeId> = all_db_edges.iter().map(|e| e.id).collect();
     if let Err(e) = store.record_edge_retrieval(&edge_ids).await {
         tracing::warn!(error = %e, "graph_recall_astar: failed to record edge retrieval");
     }
@@ -467,13 +468,11 @@ mod tests {
         let a = store
             .upsert_entity("Alice", "alice", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("Bob", "bob", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(a, b, "knows", "Alice knows Bob", 0.9, None, None)
             .await
@@ -508,13 +507,11 @@ mod tests {
         let a = store
             .upsert_entity("Alice", "alice", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("Bob", "bob", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(a, b, "knows", "Alice knows Bob", 0.9, None, None)
             .await
@@ -558,13 +555,11 @@ mod tests {
         let a = store
             .upsert_entity("Alice", "alice", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("Bob", "bob", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(a, b, "knows", "Alice knows Bob", 0.8, None, None)
             .await
@@ -603,13 +598,13 @@ mod tests {
     fn cap_node_map_truncates_to_cap_keeping_highest_scored() {
         use petgraph::graph::NodeIndex;
 
-        let mut node_map: HashMap<i64, NodeIndex> = (0..600i64)
-            .map(|id| (id, NodeIndex::new(usize::try_from(id).unwrap())))
+        let mut node_map: HashMap<EntityId, NodeIndex> = (0..600i64)
+            .map(|id| (EntityId(id), NodeIndex::new(usize::try_from(id).unwrap())))
             .collect();
         // Assign scores: entity 599 gets highest, 0 gets lowest.
         // i16 covers 0..600 exactly; the i16→f32 cast is lossless (f32 has 23 mantissa bits).
-        let entity_scores: HashMap<i64, f32> = (0..600i64)
-            .map(|id| (id, f32::from(i16::try_from(id).unwrap()) / 599.0))
+        let entity_scores: HashMap<EntityId, f32> = (0..600i64)
+            .map(|id| (EntityId(id), f32::from(i16::try_from(id).unwrap()) / 599.0))
             .collect();
 
         cap_node_map(&mut node_map, &entity_scores, MAX_GRAPH_NODES);
@@ -617,7 +612,7 @@ mod tests {
         assert_eq!(node_map.len(), MAX_GRAPH_NODES);
         // The 500 retained nodes must all have id >= 100 (top 500 by score are ids 100..=599).
         for &id in node_map.keys() {
-            assert!(id >= 100, "low-scored node {id} should have been dropped");
+            assert!(id.0 >= 100, "low-scored node {id} should have been dropped");
         }
     }
 
@@ -625,10 +620,10 @@ mod tests {
     fn cap_node_map_noop_when_within_limit() {
         use petgraph::graph::NodeIndex;
 
-        let mut node_map: HashMap<i64, NodeIndex> = (0..10i64)
-            .map(|id| (id, NodeIndex::new(usize::try_from(id).unwrap())))
+        let mut node_map: HashMap<EntityId, NodeIndex> = (0..10i64)
+            .map(|id| (EntityId(id), NodeIndex::new(usize::try_from(id).unwrap())))
             .collect();
-        let entity_scores: HashMap<i64, f32> = HashMap::new();
+        let entity_scores: HashMap<EntityId, f32> = HashMap::new();
 
         cap_node_map(&mut node_map, &entity_scores, MAX_GRAPH_NODES);
 

@@ -200,6 +200,58 @@ impl std::fmt::Display for EntityId {
     }
 }
 
+/// Strongly typed wrapper for `graph_edges.id` row IDs.
+///
+/// Distinguishes edge ids from [`EntityId`] and other integer ids at graph-store API
+/// boundaries (supersede chains, reinforcement, trust merges). The wrapper carries no value
+/// invariant; it only keeps id kinds from being swapped. The store mints ids from database
+/// rows; [`EdgeId::new`] wraps a known raw row id (e.g. in test fixtures).
+///
+/// # Examples
+///
+/// ```
+/// use zeph_memory::EdgeId;
+///
+/// let id = EdgeId::new(7);
+/// assert_eq!(id.get(), 7);
+/// assert_eq!(id.to_string(), "7");
+/// ```
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    sqlx::Type,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[sqlx(transparent)]
+pub struct EdgeId(pub(crate) i64);
+
+impl EdgeId {
+    /// Wrap a raw `graph_edges.id` value.
+    #[must_use]
+    pub const fn new(raw: i64) -> Self {
+        Self(raw)
+    }
+
+    /// The raw `graph_edges.id` value.
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for EdgeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// Discriminates which subsystem produced a [`UsageRecord`] row (issue #6549).
 ///
 /// `Conversation` rows link to a persisted `messages.id` via [`UsageRecord::message_id`];

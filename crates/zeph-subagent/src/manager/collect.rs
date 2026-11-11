@@ -10,8 +10,8 @@ use super::SubAgentStatus;
 use crate::def::SubAgentDef;
 use crate::error::SubAgentError;
 use crate::fleet::FleetSessionStatus;
+use crate::hooks::HookAgentCtx;
 use crate::hooks::fire_hooks;
-use crate::manager::secrets::make_hook_env;
 use crate::state::SubAgentState;
 use crate::transcript::{TranscriptMeta, TranscriptWriter, sweep_old_transcripts};
 
@@ -33,7 +33,7 @@ impl SubAgentManager {
 
         if !self.stop_hooks.is_empty() {
             let stop_hooks = self.stop_hooks.clone();
-            let stop_env = make_hook_env(task_id, &handle.def.name, "");
+            let stop_env = HookAgentCtx::subagent(task_id, &handle.def.name).lifecycle_env();
             self.spawn_hook_task(async move {
                 if let Err(e) = fire_hooks(&stop_hooks, &stop_env, None, None).await {
                     tracing::warn!(error = %e, "SubagentStop hook failed");

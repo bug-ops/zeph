@@ -611,7 +611,7 @@ pub(crate) async fn fetch_graph_facts(
     // Built unconditionally (not gated on `sa_config.enabled`) so it is available both for
     // an explicit `Synapse` strategy selection and for `Hybrid`'s classifier-fallback arm.
     let sa_params = Some(SpreadingActivationParams {
-        decay_lambda: sa_config.decay_lambda,
+        decay_lambda: sa_config.decay_lambda.get(),
         max_hops: sa_config.max_hops,
         activation_threshold: sa_config.activation_threshold,
         inhibition_threshold: sa_config.inhibition_threshold,
@@ -619,7 +619,7 @@ pub(crate) async fn fetch_graph_facts(
         temporal_decay_rate,
         seed_structural_weight: sa_config.seed_structural_weight,
         seed_community_cap: sa_config.seed_community_cap,
-        alpha: sa_config.alpha,
+        alpha: sa_config.alpha.get(),
     });
 
     // `sa_config.enabled` overrides any configured strategy to `Synapse`; otherwise the

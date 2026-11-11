@@ -6,6 +6,7 @@
 //! Covers entity/edge extraction, spreading activation, community summarization,
 //! implicit-conflict detection, APEX-MEM quality gating, and graph retrieval strategies.
 
+use crate::fraction::{UnitClosed, UnitUpperClosed, UnitUpperClosed64};
 use crate::providers::ProviderName;
 use serde::{Deserialize, Serialize};
 
@@ -67,8 +68,8 @@ fn default_graph_edge_history_limit() -> usize {
     100
 }
 
-fn default_spreading_activation_decay_lambda() -> f32 {
-    0.85
+fn default_spreading_activation_decay_lambda() -> UnitUpperClosed {
+    const { UnitUpperClosed::literal(0.85) }
 }
 
 fn default_spreading_activation_max_hops() -> u32 {
@@ -91,20 +92,20 @@ fn default_spreading_activation_recall_timeout_ms() -> u64 {
     1000
 }
 
-fn default_benna_alpha() -> f32 {
-    0.3
+fn default_benna_alpha() -> UnitClosed {
+    const { UnitClosed::literal(0.3) }
 }
 
-fn default_benna_fast_rate() -> f32 {
-    0.5
+fn default_benna_fast_rate() -> UnitUpperClosed {
+    const { UnitUpperClosed::literal(0.5) }
 }
 
-fn default_benna_slow_rate() -> f32 {
-    0.05
+fn default_benna_slow_rate() -> UnitUpperClosed {
+    const { UnitUpperClosed::literal(0.05) }
 }
 
-fn default_note_linking_similarity_threshold() -> f32 {
-    0.85
+fn default_note_linking_similarity_threshold() -> UnitClosed {
+    const { UnitClosed::literal(0.85) }
 }
 
 fn default_note_linking_top_k() -> usize {
@@ -152,8 +153,7 @@ pub struct SpreadingActivationConfig {
     /// Enable spreading activation (replaces BFS in graph recall when `true`). Default: `false`.
     pub enabled: bool,
     /// Per-hop activation decay factor. Range: `(0.0, 1.0]`. Default: `0.85`.
-    #[serde(deserialize_with = "crate::de_helpers::de_unit_open")]
-    pub decay_lambda: f32,
+    pub decay_lambda: UnitUpperClosed,
     /// Maximum propagation depth. Must be `>= 1`. Default: `3`.
     #[serde(deserialize_with = "validate_max_hops")]
     pub max_hops: u32,
@@ -178,27 +178,18 @@ pub struct SpreadingActivationConfig {
     ///
     /// `blended = alpha * confidence_fast + (1 - alpha) * confidence_slow`.
     /// Range: `[0.0, 1.0]`. Default: `0.3`.
-    #[serde(
-        default = "default_benna_alpha",
-        deserialize_with = "validate_benna_alpha"
-    )]
-    pub alpha: f32,
+    #[serde(default = "default_benna_alpha")]
+    pub alpha: UnitClosed,
     /// Benna-Fusi fast-variable learning rate applied on each confidence merge (#3709).
     ///
     /// `fast' = fast + eta_f * (c - fast)`. Range: `(0.0, 1.0]`. Default: `0.5`.
-    #[serde(
-        default = "default_benna_fast_rate",
-        deserialize_with = "validate_benna_rate"
-    )]
-    pub benna_fast_rate: f32,
+    #[serde(default = "default_benna_fast_rate")]
+    pub benna_fast_rate: UnitUpperClosed,
     /// Benna-Fusi slow-variable learning rate applied on each confidence merge (#3709).
     ///
     /// `slow' = slow + eta_s * (fast' - slow)`. Range: `(0.0, 1.0]`. Default: `0.05`.
-    #[serde(
-        default = "default_benna_slow_rate",
-        deserialize_with = "validate_benna_rate"
-    )]
-    pub benna_slow_rate: f32,
+    #[serde(default = "default_benna_slow_rate")]
+    pub benna_slow_rate: UnitUpperClosed,
 }
 
 fn validate_max_hops<'de, D>(deserializer: D) -> Result<u32, D::Error>
@@ -208,38 +199,6 @@ where
     let value = <u32 as serde::Deserialize>::deserialize(deserializer)?;
     if value == 0 {
         return Err(serde::de::Error::custom("max_hops must be >= 1"));
-    }
-    Ok(value)
-}
-
-fn validate_benna_alpha<'de, D>(deserializer: D) -> Result<f32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
-    if !value.is_finite() {
-        return Err(serde::de::Error::custom("alpha must be a finite number"));
-    }
-    if !(0.0..=1.0).contains(&value) {
-        return Err(serde::de::Error::custom("alpha must be in [0.0, 1.0]"));
-    }
-    Ok(value)
-}
-
-fn validate_benna_rate<'de, D>(deserializer: D) -> Result<f32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
-    if !value.is_finite() {
-        return Err(serde::de::Error::custom(
-            "benna_fast_rate/benna_slow_rate must be a finite number",
-        ));
-    }
-    if !(value > 0.0 && value <= 1.0) {
-        return Err(serde::de::Error::custom(
-            "benna_fast_rate/benna_slow_rate must be in (0.0, 1.0]",
-        ));
     }
     Ok(value)
 }
@@ -300,8 +259,7 @@ pub struct NoteLinkingConfig {
     /// Enable A-MEM note linking after graph extraction. Default: `false`.
     pub enabled: bool,
     /// Minimum cosine similarity score to create a `similar_to` edge. Default: `0.85`.
-    #[serde(deserialize_with = "crate::de_helpers::de_unit_closed")]
-    pub similarity_threshold: f32,
+    pub similarity_threshold: UnitClosed,
     /// Maximum number of similar entities to link per extracted entity. Default: `10`.
     pub top_k: usize,
     /// Timeout for the entire linking pass in seconds. Default: `5`.
@@ -563,11 +521,8 @@ pub struct GraphConfig {
     pub experience: ExperienceConfig,
     /// A-MEM link weight decay: multiplicative factor applied to `retrieval_count`
     /// for un-retrieved edges each decay pass. Range: `(0.0, 1.0]`. Default: `0.95`.
-    #[serde(
-        default = "default_link_weight_decay_lambda",
-        deserialize_with = "crate::de_helpers::de_unit_open"
-    )]
-    pub link_weight_decay_lambda: f64,
+    #[serde(default = "default_link_weight_decay_lambda")]
+    pub link_weight_decay_lambda: UnitUpperClosed64,
     /// Seconds between link weight decay passes. Default: `86400` (24 hours).
     #[serde(default = "default_link_weight_decay_interval_secs")]
     pub link_weight_decay_interval_secs: u64,
@@ -985,8 +940,8 @@ fn default_true() -> bool {
     true
 }
 
-fn default_link_weight_decay_lambda() -> f64 {
-    0.95
+fn default_link_weight_decay_lambda() -> UnitUpperClosed64 {
+    const { UnitUpperClosed64::literal(0.95) }
 }
 
 fn default_link_weight_decay_interval_secs() -> u64 {

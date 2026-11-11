@@ -604,7 +604,10 @@ impl<C: crate::channel::Channel> Agent<C> {
             let mut by_category: BTreeMap<&str, Vec<&zeph_skills::loader::SkillMeta>> =
                 BTreeMap::new();
             for meta in &all_meta {
-                let cat = meta.category.as_deref().unwrap_or("other");
+                let cat = meta
+                    .category
+                    .as_ref()
+                    .map_or("other", zeph_common::SkillCategory::as_str);
                 by_category.entry(cat).or_default().push(meta);
             }
             for (cat, skills) in &by_category {

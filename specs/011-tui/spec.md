@@ -194,6 +194,7 @@ Status messages: short, present continuous tense, no punctuation except `…`.
 - MCP child process stderr must be suppressed: `McpManager::with_suppress_stderr(true)`
 - Streaming output: `send_chunk` appends to current message buffer, `send` finalizes
 - Tool events (`send_tool_start`, `send_tool_output`) update the metrics panel, not the chat
+- Status clears arrive as a typed `Channel::clear_status` (`StatusUpdate::Clear`), not an empty string; `TuiChannel` overrides it, sending the typed `AgentEvent::ClearStatus` (`AgentEvent::Status("")` no longer clears: it sets an empty label), which removes the spinner/status text (`[[007-channels/spec]]` Typed Status Protocol, #6988). A tool `ToolEvent::Completed.success` is `!ToolStatus::is_failure()`, so a non-zero exit renders as failed and exit 0 with stderr output renders as success (`[[006-tools/spec]]`)
 
 ## Metrics Pipeline
 

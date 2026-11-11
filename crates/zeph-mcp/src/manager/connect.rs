@@ -12,6 +12,7 @@ use dashmap::DashMap;
 use rmcp::transport::auth::CredentialStore;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
+use zeph_llm::provider::StatusUpdate;
 
 use crate::client::{McpClient, OAuthConnectResult, ToolRefreshEvent};
 use crate::elicitation::ElicitationEvent;
@@ -742,8 +743,8 @@ async fn run_oauth_handshake(
                 server_id, pending.auth_url
             );
             if let Some(ref stx) = status_tx {
-                let _ = stx.send(format!("Waiting for OAuth: {server_id}"));
-                let _ = stx.send(auth_msg.clone());
+                let _ = stx.send(StatusUpdate::set(format!("Waiting for OAuth: {server_id}")));
+                let _ = stx.send(StatusUpdate::set(auth_msg.clone()));
             } else {
                 eprintln!("{auth_msg}");
             }
@@ -759,7 +760,7 @@ async fn run_oauth_handshake(
             match crate::oauth::await_oauth_callback(listener, callback_timeout, &server_id).await {
                 Ok((code, csrf_token)) => {
                     if let Some(ref stx) = status_tx {
-                        let _ = stx.send(String::new());
+                        let _ = stx.send(StatusUpdate::Clear);
                     }
                     McpClient::complete_oauth(pending, &code, &csrf_token)
                         .await
@@ -767,7 +768,7 @@ async fn run_oauth_handshake(
                 }
                 Err(e) => {
                     if let Some(ref stx) = status_tx {
-                        let _ = stx.send(String::new());
+                        let _ = stx.send(StatusUpdate::Clear);
                     }
                     tracing::warn!(server_id, "OAuth callback failed: {e:#}");
                     Err(format!("OAuth callback failed: {e:#}"))

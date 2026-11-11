@@ -1402,7 +1402,7 @@ impl Channel for TelegramChannel {
     /// Returns `Err` if the Telegram API call fails.
     #[tracing::instrument(name = "channels.telegram.send_status", skip_all)]
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
-        if text.is_empty() || self.guest_query_id.is_some() {
+        if self.guest_query_id.is_some() {
             return Ok(());
         }
         let Some(chat_id) = self.chat_id else {
@@ -1413,6 +1413,10 @@ impl Channel for TelegramChannel {
             .await
             .map_err(ChannelError::telegram)?;
         Ok(())
+    }
+
+    fn clear_status(&mut self) -> impl Future<Output = Result<(), ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 
     /// Send a yes/no confirmation prompt to Telegram and await the reply.
@@ -1948,16 +1952,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_status_noop_on_empty_text() {
+    async fn clear_status_is_noop() {
         let server = MockServer::start().await;
         let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
 
-        channel.send_status("").await.unwrap();
+        channel.clear_status().await.unwrap();
 
         let requests = server.received_requests().await.unwrap();
         assert!(
             requests.is_empty(),
-            "empty status text must not call the API"
+            "clearing the status must not call the API"
         );
     }
 

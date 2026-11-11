@@ -84,6 +84,7 @@ mod worktree_commands;
 use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::sync::Arc;
+use zeph_llm::provider::StatusUpdate;
 
 use parking_lot::RwLock;
 
@@ -1168,7 +1169,7 @@ impl<C: Channel> Agent<C> {
                 "trajectory sentinel alert"
             );
             if let Some(ref tx) = self.services.session.status_tx {
-                let _ = tx.send(msg);
+                let _ = tx.send(StatusUpdate::set(msg));
             }
         }
 
@@ -1619,7 +1620,7 @@ impl<C: Channel> Agent<C> {
                 .persistence
                 .conversation_id
                 .map(|id| id.0.to_string());
-            crate::agent::hooks_dispatch::insert_main_agent_ctx(&mut env, conv_id_str.as_deref());
+            zeph_subagent::HookAgentCtx::main(conv_id_str.as_deref()).insert_agent_vars(&mut env);
             let dispatch = self.mcp_dispatch();
             let _span = tracing::info_span!("core.agent.turn_hooks").entered();
             let _accepted = self.runtime.lifecycle.supervisor.spawn(

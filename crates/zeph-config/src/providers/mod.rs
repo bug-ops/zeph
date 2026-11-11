@@ -41,6 +41,8 @@ pub use router::{
 pub use thinking::{CacheTtl, GeminiThinkingLevel, ThinkingConfig, ThinkingEffort};
 pub use zeph_common::ProviderName;
 
+pub use llm::DEFAULT_SEMANTIC_CACHE_THRESHOLD;
+
 pub(crate) use llm::{
     get_default_embedding_model, get_default_response_cache_ttl_secs, get_default_router_ema_alpha,
     get_default_router_reorder_interval,

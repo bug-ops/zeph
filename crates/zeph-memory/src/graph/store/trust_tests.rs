@@ -6,6 +6,7 @@
 use super::*;
 use crate::graph::types::{EdgeType, GraphOrigin, GraphProvenance};
 use crate::store::SqliteStore;
+use crate::types::{EdgeId, EntityId};
 use zeph_llm::provider::TurnContextTrust as T;
 
 async fn setup() -> GraphStore {
@@ -30,7 +31,7 @@ async fn entity_trust(gs: &GraphStore, name: &str) -> Option<T> {
         .trust_level
 }
 
-async fn edge_trust(gs: &GraphStore, id: i64) -> Result<Option<T>, MemoryError> {
+async fn edge_trust(gs: &GraphStore, id: EdgeId) -> Result<Option<T>, MemoryError> {
     let raw = format!(
         "SELECT {} FROM graph_edges WHERE id = ?1",
         edge_select_cols("")
@@ -43,14 +44,18 @@ async fn edge_trust(gs: &GraphStore, id: i64) -> Result<Option<T>, MemoryError> 
     edge_from_row(row).map(|e| e.trust_level)
 }
 
-async fn concept(gs: &GraphStore, name: &str, provenance: Option<&GraphProvenance>) -> i64 {
+async fn concept(gs: &GraphStore, name: &str, provenance: Option<&GraphProvenance>) -> EntityId {
     gs.upsert_entity(name, name, EntityType::Concept, None, provenance)
         .await
         .unwrap()
-        .0
 }
 
-async fn edge(gs: &GraphStore, a: i64, b: i64, provenance: Option<&GraphProvenance>) -> i64 {
+async fn edge(
+    gs: &GraphStore,
+    a: EntityId,
+    b: EntityId,
+    provenance: Option<&GraphProvenance>,
+) -> EdgeId {
     gs.insert_edge(a, b, "rel", "fact", 0.5, None, provenance)
         .await
         .unwrap()

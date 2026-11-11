@@ -282,34 +282,10 @@ impl Config {
                 )));
             }
         }
-        if !self.memory.soft_compaction_threshold.is_finite()
-            || self.memory.soft_compaction_threshold <= 0.0
-            || self.memory.soft_compaction_threshold >= 1.0
-        {
-            return Err(ConfigError::Validation(format!(
-                "soft_compaction_threshold must be in (0.0, 1.0) exclusive, got {}",
-                self.memory.soft_compaction_threshold
-            )));
-        }
-        if !self.memory.hard_compaction_threshold.is_finite()
-            || self.memory.hard_compaction_threshold <= 0.0
-            || self.memory.hard_compaction_threshold >= 1.0
-        {
-            return Err(ConfigError::Validation(format!(
-                "hard_compaction_threshold must be in (0.0, 1.0) exclusive, got {}",
-                self.memory.hard_compaction_threshold
-            )));
-        }
         let turn_ratio = self.memory.turn_context_budget_ratio;
         if !turn_ratio.is_finite() || turn_ratio <= 0.0 || turn_ratio > 0.25 {
             return Err(ConfigError::Validation(format!(
                 "turn_context_budget_ratio must be in (0.0, 0.25], got {turn_ratio}"
-            )));
-        }
-        let watermark = self.memory.history_trim_watermark;
-        if !watermark.is_finite() || watermark <= 0.0 || watermark > 1.0 {
-            return Err(ConfigError::Validation(format!(
-                "history_trim_watermark must be in (0.0, 1.0], got {watermark}"
             )));
         }
         if self.memory.soft_compaction_threshold >= self.memory.hard_compaction_threshold {
@@ -333,22 +309,7 @@ impl Config {
         }
         if self.memory.compression.probe.enabled {
             let probe = &self.memory.compression.probe;
-            if !probe.threshold.is_finite() || probe.threshold <= 0.0 || probe.threshold > 1.0 {
-                return Err(ConfigError::Validation(format!(
-                    "memory.compression.probe.threshold must be in (0.0, 1.0], got {}",
-                    probe.threshold
-                )));
-            }
-            if !probe.hard_fail_threshold.is_finite()
-                || probe.hard_fail_threshold < 0.0
-                || probe.hard_fail_threshold >= 1.0
-            {
-                return Err(ConfigError::Validation(format!(
-                    "memory.compression.probe.hard_fail_threshold must be in [0.0, 1.0), got {}",
-                    probe.hard_fail_threshold
-                )));
-            }
-            if probe.hard_fail_threshold >= probe.threshold {
+            if probe.hard_fail_threshold.get() >= probe.threshold.get() {
                 return Err(ConfigError::Validation(format!(
                     "memory.compression.probe.hard_fail_threshold ({}) must be less than \
                      memory.compression.probe.threshold ({})",
@@ -408,12 +369,6 @@ impl Config {
                 "orchestration.max_tasks must be > 0".into(),
             ));
         }
-        let ct = self.orchestration.completeness_threshold;
-        if !ct.is_finite() || !(0.0..=1.0).contains(&ct) {
-            return Err(ConfigError::Validation(format!(
-                "orchestration.completeness_threshold must be in [0.0, 1.0], got {ct}"
-            )));
-        }
         // Ensemble member-list shape is only meaningful once the ensemble is actually wired
         // into a verification decision (`enabled && verify`) — an unused/staged config with
         // an invalid `members` list must not block startup (spec 073 FR-014).
@@ -432,22 +387,6 @@ impl Config {
                     "orchestration.ensemble.members contains a duplicate provider name".into(),
                 ));
             }
-            // Defense-in-depth (security P3): EnsembleTracker's EMA params are telemetry-only
-            // in PR-1 and never gate a verification/dispatch decision, but an out-of-range value
-            // would still produce a meaningless displayed score and could bias a future phase
-            // that wires EMA into member selection.
-            let alpha = ensemble.ema_alpha;
-            if !alpha.is_finite() || !(0.0..=1.0).contains(&alpha) {
-                return Err(ConfigError::Validation(format!(
-                    "orchestration.ensemble.ema_alpha must be in [0.0, 1.0], got {alpha}"
-                )));
-            }
-            let decay = ensemble.ema_decay;
-            if !decay.is_finite() || !(0.0..=1.0).contains(&decay) {
-                return Err(ConfigError::Validation(format!(
-                    "orchestration.ensemble.ema_decay must be in [0.0, 1.0], got {decay}"
-                )));
-            }
         }
         // Cascade chain threshold must not be 1 — that would abort on every single failure.
         if self.orchestration.cascade_chain_threshold == 1 {
@@ -456,12 +395,6 @@ impl Config {
                  use 0 to disable linear-chain cascade abort instead"
                     .into(),
             ));
-        }
-        let cfrat = self.orchestration.cascade_failure_rate_abort_threshold;
-        if !cfrat.is_finite() || !(0.0..=1.0).contains(&cfrat) {
-            return Err(ConfigError::Validation(format!(
-                "orchestration.cascade_failure_rate_abort_threshold must be in [0.0, 1.0], got {cfrat}"
-            )));
         }
         if self.orchestration.lineage_ttl_secs == 0 {
             return Err(ConfigError::Validation(
@@ -584,27 +517,11 @@ impl Config {
                 "memory.sidequest.interval_turns must be >= 1".into(),
             ));
         }
-        if !self.memory.sidequest.max_eviction_ratio.is_finite()
-            || self.memory.sidequest.max_eviction_ratio <= 0.0
-            || self.memory.sidequest.max_eviction_ratio > 1.0
-        {
-            return Err(ConfigError::Validation(format!(
-                "memory.sidequest.max_eviction_ratio must be in (0.0, 1.0], got {}",
-                self.memory.sidequest.max_eviction_ratio
-            )));
-        }
         Ok(())
     }
 
     /// Validate LLM semantic cache threshold and skill evaluation weight sum.
     fn validate_llm_and_skills(&self) -> Result<(), ConfigError> {
-        let sct = self.llm.semantic_cache_threshold;
-        if !(sct.is_finite() && (0.0..=1.0).contains(&sct)) {
-            return Err(ConfigError::Validation(format!(
-                "llm.semantic_cache_threshold must be in [0.0, 1.0], got {sct} \
-                 (override via ZEPH_LLM_SEMANTIC_CACHE_THRESHOLD env var)"
-            )));
-        }
         // MemCoT distill provider fast-tier soft-warn (#3574).
         if self.memory.memcot.enabled && !self.memory.memcot.distill_provider.is_empty() {
             self.llm.warn_non_fast_tier_provider(
@@ -899,10 +816,257 @@ mod tests {
     use super::*;
     use crate::channels::{McpOAuthConfig, McpPolicy, McpServerConfig, McpTrustLevel};
 
-    fn config_with_sct(threshold: f32) -> Config {
-        let mut cfg = Config::default();
-        cfg.llm.semantic_cache_threshold = threshold;
-        cfg
+    /// Round-trips the default config through TOML with float keys replaced under `path`.
+    fn config_with_floats(
+        path: &[&str],
+        values: &[(&str, f64)],
+    ) -> Result<Config, toml::de::Error> {
+        let mut doc = toml::Value::try_from(Config::default()).unwrap();
+        let mut table = &mut doc;
+        for segment in path {
+            table = &mut table[*segment];
+        }
+        for (key, value) in values {
+            table[*key] = toml::Value::Float(*value);
+        }
+        doc.try_into()
+    }
+
+    fn config_without(path: &[&str], key: &str) -> Config {
+        let mut doc = toml::Value::try_from(Config::default()).unwrap();
+        let mut table = &mut doc;
+        for segment in path {
+            table = &mut table[*segment];
+        }
+        table.as_table_mut().unwrap().remove(key);
+        doc.try_into().unwrap()
+    }
+
+    type FloatCase = (
+        &'static [&'static str],
+        &'static str,
+        fn(&Config) -> f64,
+        f64,
+    );
+
+    fn float_default_cases_0() -> Vec<FloatCase> {
+        vec![
+            (
+                &["memory", "graph", "spreading_activation"],
+                "decay_lambda",
+                |c| f64::from(c.memory.graph.spreading_activation.decay_lambda.get()),
+                f64::from(0.85_f32),
+            ),
+            (
+                &["memory", "graph", "spreading_activation"],
+                "alpha",
+                |c| f64::from(c.memory.graph.spreading_activation.alpha.get()),
+                f64::from(0.3_f32),
+            ),
+            (
+                &["memory", "graph", "spreading_activation"],
+                "benna_fast_rate",
+                |c| f64::from(c.memory.graph.spreading_activation.benna_fast_rate.get()),
+                f64::from(0.5_f32),
+            ),
+            (
+                &["memory", "graph", "spreading_activation"],
+                "benna_slow_rate",
+                |c| f64::from(c.memory.graph.spreading_activation.benna_slow_rate.get()),
+                f64::from(0.05_f32),
+            ),
+            (
+                &["memory", "graph", "note_linking"],
+                "similarity_threshold",
+                |c| f64::from(c.memory.graph.note_linking.similarity_threshold.get()),
+                f64::from(0.85_f32),
+            ),
+            (
+                &["memory", "graph"],
+                "link_weight_decay_lambda",
+                |c| c.memory.graph.link_weight_decay_lambda.get(),
+                0.95,
+            ),
+            (
+                &["memory", "graph", "write_gate"],
+                "min_edge_relevance",
+                |c| f64::from(c.memory.graph.write_gate.min_edge_relevance.get()),
+                f64::from(0.3_f32),
+            ),
+            (
+                &["memory", "graph", "conflict_recency"],
+                "recency_slow_threshold",
+                |c| f64::from(c.memory.graph.conflict_recency.recency_slow_threshold.get()),
+                f64::from(0.2_f32),
+            ),
+            (
+                &["memory", "graph", "belief_revision"],
+                "similarity_threshold",
+                |c| f64::from(c.memory.graph.belief_revision.similarity_threshold.get()),
+                f64::from(0.85_f32),
+            ),
+            (
+                &["memory", "graph", "rpe"],
+                "threshold",
+                |c| f64::from(c.memory.graph.rpe.threshold.get()),
+                f64::from(0.3_f32),
+            ),
+        ]
+    }
+
+    fn float_default_cases_1() -> Vec<FloatCase> {
+        vec![
+            (
+                &["memory", "admission"],
+                "threshold",
+                |c| f64::from(c.memory.admission.threshold.get()),
+                f64::from(0.40_f32),
+            ),
+            (
+                &["memory", "admission"],
+                "fast_path_margin",
+                |c| f64::from(c.memory.admission.fast_path_margin.get()),
+                f64::from(0.15_f32),
+            ),
+            (
+                &["skills", "learning"],
+                "judge_adaptive_low",
+                |c| f64::from(c.skills.learning.judge_adaptive_low.get()),
+                f64::from(0.5_f32),
+            ),
+            (
+                &["skills", "learning"],
+                "judge_adaptive_high",
+                |c| f64::from(c.skills.learning.judge_adaptive_high.get()),
+                f64::from(0.8_f32),
+            ),
+            (
+                &["skills", "learning"],
+                "correction_min_similarity",
+                |c| f64::from(c.skills.learning.correction_min_similarity.get()),
+                f64::from(0.75_f32),
+            ),
+            (
+                &["classifiers"],
+                "injection_threshold",
+                |c| f64::from(c.classifiers.injection_threshold.get()),
+                f64::from(0.95_f32),
+            ),
+            (
+                &["classifiers"],
+                "injection_threshold_soft",
+                |c| f64::from(c.classifiers.injection_threshold_soft.get()),
+                f64::from(0.5_f32),
+            ),
+            (
+                &["classifiers"],
+                "three_class_threshold",
+                |c| f64::from(c.classifiers.three_class_threshold.get()),
+                f64::from(0.7_f32),
+            ),
+            (
+                &["security", "content_isolation", "embedding_guard"],
+                "threshold",
+                |c| c.security.content_isolation.embedding_guard.threshold.get(),
+                0.35,
+            ),
+            (
+                &["security", "causal_ipi"],
+                "threshold",
+                |c| f64::from(c.security.causal_ipi.threshold.get()),
+                f64::from(0.7_f32),
+            ),
+        ]
+    }
+
+    fn float_default_cases_2() -> Vec<FloatCase> {
+        vec![
+            (
+                &["security", "causal_ipi", "shadow_memory"],
+                "drift_threshold",
+                |c| f64::from(c.security.causal_ipi.shadow_memory.drift_threshold.get()),
+                f64::from(0.6_f32),
+            ),
+            (
+                &["orchestration"],
+                "cascade_failure_rate_abort_threshold",
+                |c| f64::from(c.orchestration.cascade_failure_rate_abort_threshold.get()),
+                0.0,
+            ),
+            (
+                &["memory", "sidequest"],
+                "max_eviction_ratio",
+                |c| f64::from(c.memory.sidequest.max_eviction_ratio.get()),
+                f64::from(0.5_f32),
+            ),
+            (
+                &["llm"],
+                "semantic_cache_threshold",
+                |c| f64::from(c.llm.semantic_cache_threshold.get()),
+                f64::from(0.95_f32),
+            ),
+            (
+                &["memory"],
+                "history_trim_watermark",
+                |c| f64::from(c.memory.history_trim_watermark.get()),
+                f64::from(0.75_f32),
+            ),
+            (
+                &["memory"],
+                "soft_compaction_threshold",
+                |c| f64::from(c.memory.soft_compaction_threshold.get()),
+                f64::from(0.6_f32),
+            ),
+            (
+                &["memory"],
+                "hard_compaction_threshold",
+                |c| f64::from(c.memory.hard_compaction_threshold.get()),
+                f64::from(0.9_f32),
+            ),
+            (
+                &["memory", "compression", "probe"],
+                "threshold",
+                |c| f64::from(c.memory.compression.probe.threshold.get()),
+                f64::from(0.6_f32),
+            ),
+            (
+                &["memory", "compression", "probe"],
+                "hard_fail_threshold",
+                |c| f64::from(c.memory.compression.probe.hard_fail_threshold.get()),
+                f64::from(0.35_f32),
+            ),
+            (
+                &["skills", "learning"],
+                "correction_confidence_threshold",
+                |c| f64::from(c.skills.learning.correction_confidence_threshold.get()),
+                f64::from(0.6_f32),
+            ),
+        ]
+    }
+
+    /// Pins the value each unit-interval field takes when its key is omitted, so a field-level
+    /// `serde(default)` can never silently pick another field's default (cascade abort must stay
+    /// disabled at 0.0).
+    #[test]
+    fn omitted_unit_interval_keys_keep_their_defaults() {
+        let cases = [
+            float_default_cases_0(),
+            float_default_cases_1(),
+            float_default_cases_2(),
+        ]
+        .concat();
+        for (path, key, read, expected) in &cases {
+            let cfg = config_without(path, key);
+            assert_eq!(read(&cfg), *expected, "{}.{key}", path.join("."));
+        }
+    }
+
+    fn config_with_float(table: &str, key: &str, value: f64) -> Result<Config, toml::de::Error> {
+        config_with_floats(&[table], &[(key, value)])
+    }
+
+    fn parse_sct(value: &str) -> Result<Config, toml::de::Error> {
+        config_with_float("llm", "semantic_cache_threshold", value.parse().unwrap())
     }
 
     fn mcp_server(id: &str, oauth_enabled: bool) -> McpServerConfig {
@@ -956,42 +1120,42 @@ mod tests {
 
     #[test]
     fn semantic_cache_threshold_valid_zero() {
-        assert!(config_with_sct(0.0).validate().is_ok());
+        assert!(parse_sct("0.0").unwrap().validate().is_ok());
     }
 
     #[test]
     fn semantic_cache_threshold_valid_mid() {
-        assert!(config_with_sct(0.5).validate().is_ok());
+        assert!(parse_sct("0.5").unwrap().validate().is_ok());
     }
 
     #[test]
     fn semantic_cache_threshold_valid_one() {
-        assert!(config_with_sct(1.0).validate().is_ok());
+        assert!(parse_sct("1.0").unwrap().validate().is_ok());
     }
 
     #[test]
     fn semantic_cache_threshold_invalid_negative() {
-        let err = config_with_sct(-0.1).validate().unwrap_err();
+        let err = parse_sct("-0.1").unwrap_err();
         assert!(
-            err.to_string().contains("semantic_cache_threshold"),
+            err.to_string().contains("[0.0, 1.0]"),
             "unexpected error: {err}"
         );
     }
 
     #[test]
     fn semantic_cache_threshold_invalid_above_one() {
-        let err = config_with_sct(1.1).validate().unwrap_err();
+        let err = parse_sct("1.1").unwrap_err();
         assert!(
-            err.to_string().contains("semantic_cache_threshold"),
+            err.to_string().contains("[0.0, 1.0]"),
             "unexpected error: {err}"
         );
     }
 
     #[test]
     fn semantic_cache_threshold_invalid_nan() {
-        let err = config_with_sct(f32::NAN).validate().unwrap_err();
+        let err = parse_sct("nan").unwrap_err();
         assert!(
-            err.to_string().contains("semantic_cache_threshold"),
+            err.to_string().contains("[0.0, 1.0]"),
             "unexpected error: {err}"
         );
     }
@@ -1027,133 +1191,86 @@ mod tests {
 
     #[test]
     fn semantic_cache_threshold_invalid_infinity() {
-        let err = config_with_sct(f32::INFINITY).validate().unwrap_err();
-        assert!(
-            err.to_string().contains("semantic_cache_threshold"),
-            "unexpected error: {err}"
-        );
+        assert!(parse_sct("inf").is_err());
     }
 
     #[test]
     fn semantic_cache_threshold_invalid_neg_infinity() {
-        let err = config_with_sct(f32::NEG_INFINITY).validate().unwrap_err();
-        assert!(
-            err.to_string().contains("semantic_cache_threshold"),
-            "unexpected error: {err}"
-        );
+        assert!(parse_sct("-inf").is_err());
     }
 
-    fn probe_config(enabled: bool, threshold: f32, hard_fail_threshold: f32) -> Config {
-        let mut cfg = Config::default();
-        cfg.memory.compression.probe.enabled = enabled;
-        cfg.memory.compression.probe.threshold = threshold;
-        cfg.memory.compression.probe.hard_fail_threshold = hard_fail_threshold;
-        cfg
+    fn probe_config(
+        enabled: bool,
+        threshold: f64,
+        hard_fail_threshold: f64,
+    ) -> Result<Config, toml::de::Error> {
+        let mut doc = toml::Value::try_from(Config::default()).unwrap();
+        doc["memory"]["compression"]["probe"]["enabled"] = toml::Value::Boolean(enabled);
+        doc["memory"]["compression"]["probe"]["threshold"] = toml::Value::Float(threshold);
+        doc["memory"]["compression"]["probe"]["hard_fail_threshold"] =
+            toml::Value::Float(hard_fail_threshold);
+        doc.try_into()
     }
 
     #[test]
-    fn probe_disabled_skips_validation() {
-        // Invalid thresholds when probe is disabled must not cause errors.
-        let cfg = probe_config(false, 0.0, 1.0);
+    fn probe_disabled_skips_cross_field_validation() {
+        let cfg = probe_config(false, 0.3, 0.9).unwrap();
         assert!(cfg.validate().is_ok());
     }
 
     #[test]
     fn probe_valid_thresholds() {
-        let cfg = probe_config(true, 0.6, 0.35);
+        let cfg = probe_config(true, 0.6, 0.35).unwrap();
         assert!(cfg.validate().is_ok());
     }
 
     #[test]
     fn probe_threshold_zero_invalid() {
-        let err = probe_config(true, 0.0, 0.0).validate().unwrap_err();
+        let err = probe_config(true, 0.0, 0.0).unwrap_err();
         assert!(
-            err.to_string().contains("probe.threshold"),
+            err.to_string().contains("(0.0, 1.0]"),
             "unexpected error: {err}"
         );
     }
 
     #[test]
     fn probe_hard_fail_threshold_above_one_invalid() {
-        let err = probe_config(true, 0.6, 1.0).validate().unwrap_err();
+        let err = probe_config(true, 0.6, 1.0).unwrap_err();
         assert!(
-            err.to_string().contains("probe.hard_fail_threshold"),
+            err.to_string().contains("[0.0, 1.0)"),
             "unexpected error: {err}"
         );
     }
 
     #[test]
     fn probe_hard_fail_gte_threshold_invalid() {
-        let err = probe_config(true, 0.3, 0.9).validate().unwrap_err();
+        let err = probe_config(true, 0.3, 0.9)
+            .unwrap()
+            .validate()
+            .unwrap_err();
         assert!(
             err.to_string().contains("probe.hard_fail_threshold"),
             "unexpected error: {err}"
         );
     }
 
-    fn config_with_completeness_threshold(ct: f32) -> Config {
-        let mut cfg = Config::default();
-        cfg.orchestration.completeness_threshold = ct;
-        cfg
+    fn completeness(value: f64) -> Result<Config, toml::de::Error> {
+        config_with_float("orchestration", "completeness_threshold", value)
     }
 
     #[test]
-    fn completeness_threshold_valid_zero() {
-        assert!(config_with_completeness_threshold(0.0).validate().is_ok());
+    fn completeness_threshold_accepts_the_closed_unit_interval() {
+        for ok in [0.0, 0.7, 1.0] {
+            assert!(completeness(ok).unwrap().validate().is_ok(), "{ok}");
+        }
     }
 
     #[test]
-    fn completeness_threshold_valid_default() {
-        assert!(config_with_completeness_threshold(0.7).validate().is_ok());
-    }
-
-    #[test]
-    fn completeness_threshold_valid_one() {
-        assert!(config_with_completeness_threshold(1.0).validate().is_ok());
-    }
-
-    #[test]
-    fn completeness_threshold_invalid_negative() {
-        let err = config_with_completeness_threshold(-0.1)
-            .validate()
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("completeness_threshold"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn completeness_threshold_invalid_above_one() {
-        let err = config_with_completeness_threshold(1.1)
-            .validate()
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("completeness_threshold"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn completeness_threshold_invalid_nan() {
-        let err = config_with_completeness_threshold(f32::NAN)
-            .validate()
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("completeness_threshold"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn completeness_threshold_invalid_infinity() {
-        let err = config_with_completeness_threshold(f32::INFINITY)
-            .validate()
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("completeness_threshold"),
-            "unexpected error: {err}"
-        );
+    fn completeness_threshold_rejects_values_outside_the_interval() {
+        for bad in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
+            let err = completeness(bad).unwrap_err().to_string();
+            assert!(err.contains("[0.0, 1.0]"), "{bad}: {err}");
+        }
     }
 
     fn config_with_provider(name: &str) -> Config {
@@ -1644,14 +1761,13 @@ weight = 0.3
 
     #[test]
     fn validate_rejects_out_of_range_history_trim_watermark() {
-        for bad in [0.0, 1.01, f32::INFINITY] {
-            let mut cfg = Config::default();
-            cfg.memory.history_trim_watermark = bad;
-            let err = cfg.validate().unwrap_err().to_string();
-            assert!(err.contains("history_trim_watermark"), "got: {err}");
+        for bad in [0.0, 1.01, f64::INFINITY] {
+            let err = config_with_float("memory", "history_trim_watermark", bad)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("(0.0, 1.0]"), "got: {err}");
         }
-        let mut cfg = Config::default();
-        cfg.memory.history_trim_watermark = 1.0;
+        let cfg = config_with_float("memory", "history_trim_watermark", 1.0).unwrap();
         assert!(cfg.validate().is_ok());
     }
 
@@ -1941,74 +2057,27 @@ weight = 0.3
 
     // --- ema_alpha / ema_decay range validation (security P3) ---
 
-    #[test]
-    fn ensemble_active_ema_alpha_above_one_rejected() {
-        let mut cfg = config_with_ensemble(true, true, vec!["a", "b", "c"]);
-        cfg.orchestration.ensemble.ema_alpha = 1.5;
-        let err = cfg.validate().unwrap_err();
-        assert!(
-            err.to_string().contains("ema_alpha"),
-            "unexpected error: {err}"
-        );
+    fn ensemble_ema(key: &str, value: f64) -> Result<Config, toml::de::Error> {
+        config_with_floats(&["orchestration", "ensemble"], &[(key, value)])
     }
 
     #[test]
-    fn ensemble_active_ema_alpha_negative_rejected() {
-        let mut cfg = config_with_ensemble(true, true, vec!["a", "b", "c"]);
-        cfg.orchestration.ensemble.ema_alpha = -0.1;
-        let err = cfg.validate().unwrap_err();
-        assert!(
-            err.to_string().contains("ema_alpha"),
-            "unexpected error: {err}"
-        );
+    fn ema_params_outside_the_closed_interval_are_rejected_at_parse() {
+        for key in ["ema_alpha", "ema_decay"] {
+            for bad in [1.5, -0.1, f64::NAN] {
+                let err = ensemble_ema(key, bad).unwrap_err().to_string();
+                assert!(err.contains("[0.0, 1.0]"), "{key}={bad}: {err}");
+            }
+        }
     }
 
     #[test]
-    fn ensemble_active_ema_alpha_nan_rejected() {
-        let mut cfg = config_with_ensemble(true, true, vec!["a", "b", "c"]);
-        cfg.orchestration.ensemble.ema_alpha = f64::NAN;
-        let err = cfg.validate().unwrap_err();
-        assert!(
-            err.to_string().contains("ema_alpha"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn ensemble_active_ema_decay_above_one_rejected() {
-        let mut cfg = config_with_ensemble(true, true, vec!["a", "b", "c"]);
-        cfg.orchestration.ensemble.ema_decay = 1.1;
-        let err = cfg.validate().unwrap_err();
-        assert!(
-            err.to_string().contains("ema_decay"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn ensemble_active_ema_decay_negative_rejected() {
-        let mut cfg = config_with_ensemble(true, true, vec!["a", "b", "c"]);
-        cfg.orchestration.ensemble.ema_decay = -0.1;
-        let err = cfg.validate().unwrap_err();
-        assert!(
-            err.to_string().contains("ema_decay"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn ensemble_active_ema_boundaries_zero_and_one_accepted() {
-        let mut cfg = config_with_ensemble(true, true, vec!["a", "b", "c"]);
-        cfg.orchestration.ensemble.ema_alpha = 0.0;
-        cfg.orchestration.ensemble.ema_decay = 1.0;
-        assert!(cfg.validate().is_ok());
-    }
-
-    #[test]
-    fn ensemble_disabled_skips_ema_range_validation() {
-        // enabled=false: an out-of-range EMA param must not block startup.
-        let mut cfg = config_with_ensemble(false, false, vec![]);
-        cfg.orchestration.ensemble.ema_alpha = 5.0;
+    fn ema_boundaries_zero_and_one_accepted() {
+        let cfg = config_with_floats(
+            &["orchestration", "ensemble"],
+            &[("ema_alpha", 0.0), ("ema_decay", 1.0)],
+        )
+        .unwrap();
         assert!(cfg.validate().is_ok());
     }
 

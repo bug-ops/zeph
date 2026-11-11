@@ -349,7 +349,7 @@ impl<C: Channel> Agent<C> {
             .send_status_best_effort("Validating skill state patch\u{2026}")
             .await;
         let out = self.apply_skill_state_patch(input);
-        self.channel.send_status_best_effort("").await;
+        self.channel.clear_status_best_effort().await;
         out
     }
 
@@ -1194,12 +1194,12 @@ mod tests {
         let (tx, rx) = tokio::sync::watch::channel(crate::metrics::MetricsSnapshot::default());
         let mut a = active_agent().with_metrics(tx);
         a.runtime.config.channel_tool_allowlist = Some(vec!["shell".to_owned()]);
-        let before = a.tool_orchestrator.recent_tool_calls.len();
+        let before = a.tool_orchestrator.repeat.len();
         for i in 0..4 {
             let id: &'static str = ["p0", "p1", "p2", "p3"][i];
             run_real(&mut a, &[patch(id, serde_json::json!({"note": "same"}))]).await;
         }
-        assert_eq!(a.tool_orchestrator.recent_tool_calls.len(), before);
+        assert_eq!(a.tool_orchestrator.repeat.len(), before);
         assert!(
             !rx.borrow()
                 .security_events

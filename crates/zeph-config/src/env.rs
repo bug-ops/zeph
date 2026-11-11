@@ -4,8 +4,24 @@
 use std::num::NonZeroUsize;
 
 use crate::ProviderName;
+use crate::fraction::{Fraction, UnitBounds};
 use crate::providers::{ProviderEntry, SttConfig, default_stt_language};
 use crate::root::Config;
+
+/// Reads a unit-interval float override from the environment.
+///
+/// An unparsable or out-of-interval value is ignored with a warning, like every other invalid
+/// override in this module, so the configured value stays in effect.
+fn env_fraction<B: UnitBounds>(name: &str) -> Option<Fraction<B>> {
+    let raw = std::env::var(name).ok()?;
+    match raw.parse::<Fraction<B>>() {
+        Ok(f) => Some(f),
+        Err(e) => {
+            tracing::warn!("ignoring invalid {name}: {e}");
+            None
+        }
+    }
+}
 
 impl Config {
     pub fn apply_env_overrides(&mut self) {
@@ -77,14 +93,10 @@ impl Config {
         {
             self.memory.context_budget_tokens = tokens;
         }
-        if let Ok(v) = std::env::var("ZEPH_MEMORY_COMPACTION_THRESHOLD")
-            && let Ok(threshold) = v.parse::<f32>()
-        {
+        if let Some(threshold) = env_fraction("ZEPH_MEMORY_COMPACTION_THRESHOLD") {
             self.memory.hard_compaction_threshold = threshold;
         }
-        if let Ok(v) = std::env::var("ZEPH_MEMORY_SOFT_COMPACTION_THRESHOLD")
-            && let Ok(threshold) = v.parse::<f32>()
-        {
+        if let Some(threshold) = env_fraction("ZEPH_MEMORY_SOFT_COMPACTION_THRESHOLD") {
             self.memory.soft_compaction_threshold = threshold;
         }
         if let Ok(v) = std::env::var("ZEPH_MEMORY_COMPACTION_PRESERVE_TAIL")
@@ -305,9 +317,7 @@ impl Config {
         {
             self.llm.semantic_cache_enabled = enabled;
         }
-        if let Ok(v) = std::env::var("ZEPH_LLM_SEMANTIC_CACHE_THRESHOLD")
-            && let Ok(threshold) = v.parse::<f32>()
-        {
+        if let Some(threshold) = env_fraction("ZEPH_LLM_SEMANTIC_CACHE_THRESHOLD") {
             self.llm.semantic_cache_threshold = threshold;
         }
         if let Ok(v) = std::env::var("ZEPH_LLM_SEMANTIC_CACHE_MAX_CANDIDATES")

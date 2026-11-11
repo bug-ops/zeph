@@ -7,6 +7,7 @@
 //! and the `TrajectoryRiskAccumulator` signal-weighting model.
 
 use crate::defaults::default_true;
+use crate::fraction::UnitUpperClosed;
 use crate::providers::ProviderName;
 use serde::{Deserialize, Serialize};
 
@@ -14,8 +15,8 @@ fn default_sidequest_interval_turns() -> u32 {
     4
 }
 
-fn default_sidequest_max_eviction_ratio() -> f32 {
-    0.5
+fn default_sidequest_max_eviction_ratio() -> UnitUpperClosed {
+    const { UnitUpperClosed::literal(0.5) }
 }
 
 fn default_sidequest_max_cursors() -> usize {
@@ -37,7 +38,7 @@ pub struct SidequestConfig {
     pub interval_turns: u32,
     /// Maximum fraction of tool outputs to evict per pass. Default: `0.5`.
     #[serde(default = "default_sidequest_max_eviction_ratio")]
-    pub max_eviction_ratio: f32,
+    pub max_eviction_ratio: UnitUpperClosed,
     /// Maximum cursor entries in eviction prompt (largest outputs first). Default: `30`.
     #[serde(default = "default_sidequest_max_cursors")]
     pub max_cursors: usize,

@@ -288,7 +288,7 @@ where
     .with_context_layout(
         config.memory.context_layout,
         config.memory.turn_context_budget_ratio,
-        config.memory.history_trim_watermark,
+        config.memory.history_trim_watermark.get(),
     )
     .with_retrieval_config(config.memory.retrieval.context_format)
     .with_tiered_retrieval_providers(
@@ -1616,7 +1616,9 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // `status_rx` is consumed here; `tui_status_rx_for_params` is None when the early
     // forwarder owns the receiver, so `run_tui_agent` skips the duplicate spawn.
     #[cfg(feature = "tui")]
-    let tui_status_rx_for_params: Option<tokio::sync::mpsc::UnboundedReceiver<String>>;
+    let tui_status_rx_for_params: Option<
+        tokio::sync::mpsc::UnboundedReceiver<zeph_llm::provider::StatusUpdate>,
+    >;
     #[cfg(feature = "tui")]
     {
         if let Some(ref early) = early_tui_guard.0 {
@@ -1648,6 +1650,16 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         };
     }
 
+    // Macro to clear the early-TUI status (typed clear, never an empty `Status` text).
+    #[cfg(feature = "tui")]
+    macro_rules! tui_status_clear {
+        () => {
+            if let Some(ref early) = early_tui_guard.0 {
+                let _ = early.agent_tx.send(zeph_tui::AgentEvent::ClearStatus).await;
+            }
+        };
+    }
+
     // Macro to set a TUI status for the duration of an async block, clearing it on completion.
     // Status is cleared even if the block returns an error.
     #[cfg(feature = "tui")]
@@ -1655,7 +1667,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         ($msg:expr, $body:expr) => {{
             tui_status!($msg);
             let __result = $body;
-            tui_status!("");
+            tui_status_clear!();
             __result
         }};
     }
@@ -1754,7 +1766,9 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
             .unwrap_or("<unknown>");
-        let _ = agent_status_tx.send(format!("warning: skill '{name}' skipped: {reason}"));
+        let _ = agent_status_tx.send(zeph_llm::provider::StatusUpdate::set(format!(
+            "warning: skill '{name}' skipped: {reason}"
+        )));
     }
 
     // Populate trust DB for all loaded skills (#5920: extracted into a shared helper so
@@ -3713,7 +3727,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         let compaction_threshold = u32::try_from(budget_tokens).ok().map(|b| {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let threshold =
-                (f64::from(b) * f64::from(config.memory.soft_compaction_threshold)) as u32;
+                (f64::from(b) * f64::from(config.memory.soft_compaction_threshold.get())) as u32;
             threshold
         });
         zeph_core::metrics::StaticMetricsInit {
@@ -4074,7 +4088,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // EarlyTuiGuard handles cleanup for all prior ? operators automatically.
     agent.load_history().await?;
     #[cfg(feature = "tui")]
-    tui_status!("");
+    tui_status_clear!();
 
     // INV-TRUST: sanitize the deep-link prompt before enqueuing it.
     // ContentSourceKind::McpResponse maps to ExternalUntrusted, the same tier as any

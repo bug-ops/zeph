@@ -12,12 +12,13 @@ use crate::channel::TuiHandle;
 use zeph_core::channel::Channel;
 #[cfg(feature = "tui")]
 use zeph_llm::any::AnyProvider;
+use zeph_llm::provider::StatusUpdate;
 
 #[cfg(feature = "tui")]
 pub(crate) struct TuiRunParams<'a> {
     pub(crate) tui_handle: TuiHandle,
     pub(crate) config: &'a zeph_core::config::Config,
-    pub(crate) status_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+    pub(crate) status_rx: Option<tokio::sync::mpsc::UnboundedReceiver<StatusUpdate>>,
     pub(crate) tool_rx: Option<tokio::sync::mpsc::Receiver<zeph_tools::ToolEvent>>,
     pub(crate) metrics_rx:
         Option<tokio::sync::watch::Receiver<zeph_core::metrics::MetricsSnapshot>>,
@@ -177,7 +178,7 @@ async fn spawn_warmup_with_backfill_status(
         .await;
     let _ = warmup_tx.send(true);
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
+    let _ = tx.send(zeph_tui::AgentEvent::ClearStatus).await;
     // After init status clears, show backfill progress until it finishes.
     loop {
         let progress = *backfill_rx.borrow_and_update();
@@ -190,7 +191,7 @@ async fn spawn_warmup_with_backfill_status(
                 )))
                 .await;
         } else {
-            let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
+            let _ = tx.send(zeph_tui::AgentEvent::ClearStatus).await;
             break;
         }
         if backfill_rx.changed().await.is_err() {
@@ -471,12 +472,17 @@ async fn deep_link_notification_task(
         )))
         .await;
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
+    let _ = tx.send(zeph_tui::AgentEvent::ClearStatus).await;
 }
 
-pub(crate) async fn forward_status_to_stderr(mut rx: tokio::sync::mpsc::UnboundedReceiver<String>) {
+pub(crate) async fn forward_status_to_stderr(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<StatusUpdate>,
+) {
     while let Some(msg) = rx.recv().await {
-        eprintln!("[status] {msg}");
+        match msg {
+            StatusUpdate::Set(text) => eprintln!("[status] {text}"),
+            StatusUpdate::Clear => {}
+        }
     }
 }
 
@@ -575,11 +581,15 @@ pub(crate) async fn forward_tui_commands(
 
 #[cfg(feature = "tui")]
 pub(crate) async fn forward_status_to_tui(
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<StatusUpdate>,
     tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
 ) {
     while let Some(msg) = rx.recv().await {
-        if tx.send(zeph_tui::AgentEvent::Status(msg)).await.is_err() {
+        let event = match msg {
+            StatusUpdate::Set(text) => zeph_tui::AgentEvent::Status(text.into_owned()),
+            StatusUpdate::Clear => zeph_tui::AgentEvent::ClearStatus,
+        };
+        if tx.send(event).await.is_err() {
             break;
         }
     }
@@ -631,13 +641,15 @@ mod tests {
 
     #[tokio::test]
     async fn forward_status_to_tui_delivers_messages() {
-        let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<StatusUpdate>();
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(16);
 
         tokio::spawn(forward_status_to_tui(status_rx, agent_tx)); // EXEMPT(#5143): test-only spawn
 
-        status_tx.send("Connecting tools...".into()).unwrap();
-        status_tx.send("Memory ready".into()).unwrap();
+        status_tx
+            .send(StatusUpdate::set("Connecting tools..."))
+            .unwrap();
+        status_tx.send(StatusUpdate::set("Memory ready")).unwrap();
         drop(status_tx);
 
         let mut received = Vec::new();
@@ -653,8 +665,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forward_status_to_tui_maps_clear_to_typed_clear() {
+        let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<StatusUpdate>();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(16);
+
+        tokio::spawn(forward_status_to_tui(status_rx, agent_tx)); // EXEMPT(#5143): test-only spawn
+
+        status_tx.send(StatusUpdate::Clear).unwrap();
+        drop(status_tx);
+
+        assert!(matches!(
+            agent_rx.recv().await,
+            Some(zeph_tui::AgentEvent::ClearStatus)
+        ));
+    }
+
+    #[tokio::test]
     async fn forward_status_to_tui_stops_when_agent_rx_dropped() {
-        let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<StatusUpdate>();
         let (agent_tx, agent_rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(1);
 
         let handle = tokio::spawn(forward_status_to_tui(status_rx, agent_tx)); // EXEMPT(#5143): test-only spawn
@@ -662,7 +690,7 @@ mod tests {
         // Drop receiver — forwarder must exit cleanly when send fails.
         drop(agent_rx);
 
-        status_tx.send("some status".into()).unwrap();
+        status_tx.send(StatusUpdate::set("some status")).unwrap();
         // Give the forwarder a chance to detect the closed channel.
         handle.await.expect("forwarder panicked");
     }
@@ -854,7 +882,7 @@ pub(crate) async fn forward_index_progress_to_tui(
         Duration::from_millis(200)
     };
     tokio::time::sleep(delay).await;
-    let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
+    let _ = tx.send(zeph_tui::AgentEvent::ClearStatus).await;
 }
 
 /// Periodically poll the database for fleet session data and forward snapshots to the TUI.
@@ -898,12 +926,12 @@ pub(crate) async fn fleet_poll_task(
             Ok(s) => s,
             Err(e) => {
                 tracing::debug!(error = %e, "fleet poll: list_agent_sessions failed");
-                let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
+                let _ = tx.send(zeph_tui::AgentEvent::ClearStatus).await;
                 continue;
             }
         };
 
-        let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
+        let _ = tx.send(zeph_tui::AgentEvent::ClearStatus).await;
 
         let snapshot = zeph_tui::widgets::fleet::FleetSnapshot { sessions };
         if tx
@@ -996,12 +1024,12 @@ pub(crate) async fn durable_poll_task(
             Ok(r) => r,
             Err(e) => {
                 tracing::debug!(error = %e, "durable poll: list_executions failed");
-                let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
+                let _ = tx.send(zeph_tui::AgentEvent::ClearStatus).await;
                 continue;
             }
         };
 
-        let _ = tx.send(zeph_tui::AgentEvent::Status(String::new())).await;
+        let _ = tx.send(zeph_tui::AgentEvent::ClearStatus).await;
 
         let now_ms = chrono::Utc::now().timestamp_millis();
         let executions: Vec<DurableRow> = rows

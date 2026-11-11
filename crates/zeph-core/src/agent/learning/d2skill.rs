@@ -4,6 +4,7 @@
 use super::super::{Agent, Channel};
 use super::super::{Message, Role};
 use super::background::StemTaskArgs;
+use zeph_llm::provider::StatusUpdate;
 use zeph_llm::provider::{LlmProvider as _, MessageMetadata};
 
 impl<C: Channel> Agent<C> {
@@ -114,7 +115,7 @@ impl<C: Channel> Agent<C> {
         .to_string();
         let status_tx = self.services.session.status_tx.clone();
         if let Some(ref tx) = self.services.session.status_tx {
-            let _ = tx.send("Learning from patterns…".to_string());
+            let _ = tx.send(StatusUpdate::set("Learning from patterns…"));
         }
         let args = StemTaskArgs {
             provider: self.resolve_background_provider(config.stem_provider.as_str()),

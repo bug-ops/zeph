@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::fraction::UnitUpperClosed;
+
 fn default_classifier_timeout_ms() -> u64 {
     5000
 }
@@ -11,12 +13,12 @@ fn default_injection_model() -> String {
     "protectai/deberta-v3-small-prompt-injection-v2".into()
 }
 
-fn default_injection_threshold() -> f32 {
-    0.95
+fn default_injection_threshold() -> UnitUpperClosed {
+    const { UnitUpperClosed::literal(0.95) }
 }
 
-fn default_injection_threshold_soft() -> f32 {
-    0.5
+fn default_injection_threshold_soft() -> UnitUpperClosed {
+    const { UnitUpperClosed::literal(0.5) }
 }
 
 fn default_enforcement_mode() -> InjectionEnforcementMode {
@@ -49,8 +51,8 @@ fn default_pii_ner_allowlist() -> Vec<String> {
     ]
 }
 
-fn default_three_class_threshold() -> f32 {
-    0.7
+fn default_three_class_threshold() -> UnitUpperClosed {
+    const { UnitUpperClosed::literal(0.7) }
 }
 
 /// Enforcement mode for the injection classifier.
@@ -125,11 +127,8 @@ pub struct ClassifiersConfig {
     /// the suspicious-injection metric, but content is allowed through.
     ///
     /// Range: `(0.0, 1.0]`. Default `0.5`. Must be ≤ `injection_threshold`.
-    #[serde(
-        default = "default_injection_threshold_soft",
-        deserialize_with = "crate::de_helpers::de_unit_open"
-    )]
-    pub injection_threshold_soft: f32,
+    #[serde(default = "default_injection_threshold_soft")]
+    pub injection_threshold_soft: UnitUpperClosed,
 
     /// Hard threshold: classifier score at or above this blocks the content (in `block` mode)
     /// or emits WARN (in `warn` mode).
@@ -137,11 +136,8 @@ pub struct ClassifiersConfig {
     /// Range: `(0.0, 1.0]`. Conservative default of `0.95` minimises false positives.
     /// Real-world ML injection classifiers have 12–37% recall gaps at high thresholds —
     /// defense-in-depth via regex fallback and spotlighting is mandatory.
-    #[serde(
-        default = "default_injection_threshold",
-        deserialize_with = "crate::de_helpers::de_unit_open"
-    )]
-    pub injection_threshold: f32,
+    #[serde(default = "default_injection_threshold")]
+    pub injection_threshold: UnitUpperClosed,
 
     /// Optional SHA-256 hex digest of the injection model safetensors file.
     ///
@@ -163,11 +159,8 @@ pub struct ClassifiersConfig {
     ///
     /// Content is only kept as Suspicious/Blocked when the misaligned score meets this threshold.
     /// Range: `(0.0, 1.0]`. Default `0.7`.
-    #[serde(
-        default = "default_three_class_threshold",
-        deserialize_with = "crate::de_helpers::de_unit_open"
-    )]
-    pub three_class_threshold: f32,
+    #[serde(default = "default_three_class_threshold")]
+    pub three_class_threshold: UnitUpperClosed,
 
     /// Optional SHA-256 hex digest of the three-class model safetensors file.
     #[serde(default)]
@@ -295,11 +288,11 @@ mod tests {
             "protectai/deberta-v3-small-prompt-injection-v2"
         );
         assert_eq!(cfg.enforcement_mode, InjectionEnforcementMode::Warn);
-        assert!((cfg.injection_threshold_soft - 0.5).abs() < 1e-6);
-        assert!((cfg.injection_threshold - 0.95).abs() < 1e-6);
+        assert!((cfg.injection_threshold_soft.get() - 0.5).abs() < 1e-6);
+        assert!((cfg.injection_threshold.get() - 0.95).abs() < 1e-6);
         assert!(cfg.injection_model_sha256.is_none());
         assert!(cfg.three_class_model.is_none());
-        assert!((cfg.three_class_threshold - 0.7).abs() < 1e-6);
+        assert!((cfg.three_class_threshold.get() - 0.7).abs() < 1e-6);
         assert!(cfg.three_class_model_sha256.is_none());
         assert!(!cfg.pii_enabled);
         assert_eq!(
@@ -334,8 +327,8 @@ mod tests {
             cfg.injection_model,
             "protectai/deberta-v3-small-prompt-injection-v2"
         );
-        assert!((cfg.injection_threshold_soft - 0.5).abs() < 1e-6);
-        assert!((cfg.injection_threshold - 0.95).abs() < 1e-6);
+        assert!((cfg.injection_threshold_soft.get() - 0.5).abs() < 1e-6);
+        assert!((cfg.injection_threshold.get() - 0.95).abs() < 1e-6);
         assert!(!cfg.pii_enabled);
         assert!((cfg.pii_threshold - 0.75).abs() < 1e-6);
     }
@@ -354,8 +347,8 @@ mod tests {
         assert!(cfg.enabled);
         assert_eq!(cfg.timeout_ms, 2000);
         assert_eq!(cfg.injection_model, "custom/model-v1");
-        assert!((cfg.injection_threshold_soft - 0.5).abs() < 1e-6);
-        assert!((cfg.injection_threshold - 0.9).abs() < 1e-6);
+        assert!((cfg.injection_threshold_soft.get() - 0.5).abs() < 1e-6);
+        assert!((cfg.injection_threshold.get() - 0.9).abs() < 1e-6);
         assert!(cfg.pii_enabled);
         assert!((cfg.pii_threshold - 0.85).abs() < 1e-6);
     }
@@ -380,11 +373,11 @@ mod tests {
             scan_user_input: true,
             injection_model: "org/model".into(),
             enforcement_mode: InjectionEnforcementMode::Block,
-            injection_threshold_soft: 0.45,
-            injection_threshold: 0.75,
+            injection_threshold_soft: UnitUpperClosed::literal(0.45),
+            injection_threshold: UnitUpperClosed::literal(0.75),
             injection_model_sha256: Some("deadbeef".into()),
             three_class_model: Some("org/three-class".into()),
-            three_class_threshold: 0.65,
+            three_class_threshold: UnitUpperClosed::literal(0.65),
             three_class_model_sha256: Some("abc456".into()),
             pii_enabled: true,
             pii_model: "org/pii-model".into(),
@@ -406,16 +399,16 @@ mod tests {
             injection_threshold = 0.85
         ";
         let cfg: ClassifiersConfig = toml::from_str(toml).unwrap();
-        assert!((cfg.injection_threshold_soft - 0.4).abs() < 1e-6);
-        assert!((cfg.injection_threshold - 0.85).abs() < 1e-6);
+        assert!((cfg.injection_threshold_soft.get() - 0.4).abs() < 1e-6);
+        assert!((cfg.injection_threshold.get() - 0.85).abs() < 1e-6);
     }
 
     #[test]
     fn soft_threshold_defaults_when_only_hard_provided() {
         let toml = "injection_threshold = 0.9";
         let cfg: ClassifiersConfig = toml::from_str(toml).unwrap();
-        assert!((cfg.injection_threshold_soft - 0.5).abs() < 1e-6);
-        assert!((cfg.injection_threshold - 0.9).abs() < 1e-6);
+        assert!((cfg.injection_threshold_soft.get() - 0.5).abs() < 1e-6);
+        assert!((cfg.injection_threshold.get() - 0.9).abs() < 1e-6);
     }
 
     #[test]
@@ -428,8 +421,8 @@ mod tests {
             cfg.injection_model,
             "protectai/deberta-v3-small-prompt-injection-v2"
         );
-        assert!((cfg.injection_threshold_soft - 0.5).abs() < 1e-6);
-        assert!((cfg.injection_threshold - 0.95).abs() < 1e-6);
+        assert!((cfg.injection_threshold_soft.get() - 0.5).abs() < 1e-6);
+        assert!((cfg.injection_threshold.get() - 0.95).abs() < 1e-6);
     }
 
     #[test]
@@ -463,7 +456,7 @@ mod tests {
     #[test]
     fn threshold_validation_accepts_exactly_one() {
         let cfg: ClassifiersConfig = toml::from_str("injection_threshold = 1.0").unwrap();
-        assert!((cfg.injection_threshold - 1.0).abs() < 1e-6);
+        assert!((cfg.injection_threshold.get() - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -481,7 +474,7 @@ mod tests {
         "#;
         let cfg: ClassifiersConfig = toml::from_str(toml).unwrap();
         assert_eq!(cfg.three_class_model.as_deref(), Some("org/align-sentinel"));
-        assert!((cfg.three_class_threshold - 0.65).abs() < 1e-6);
+        assert!((cfg.three_class_threshold.get() - 0.65).abs() < 1e-6);
         assert_eq!(cfg.three_class_model_sha256.as_deref(), Some("aabbcc"));
     }
 

@@ -212,7 +212,7 @@ character.
 
 ## Claude Model Capabilities, Window Ceiling and Server Compaction (#6822, #6825)
 
-`ClaudeModel` (`claude/model.rs`) is a closed enum parsed once from the model id by `from_model_id`: provider prefixes (`anthropic.`, `us.anthropic.`), `@date` / `-v1:0` suffixes and `-YYYYMMDD` stamps are ignored, and the longest numeric version wins (`sonnet-5-5` is Sonnet 5.5, not Sonnet 5). `capabilities()` is one exhaustive match, so a new variant forces every capability to be decided. Variants: Haiku45, Haiku55, Sonnet46, Sonnet5, Sonnet55, Opus46, Opus47, Opus48, Opus5, Opus55, Fable5, Fable51, Mythos5, Mythos51, Legacy (anything older than 4.6 except Haiku 4.5), Unknown.
+`ClaudeModel` (`claude/model.rs`) is a closed enum parsed once from the model id by `from_model_id`: provider prefixes (`anthropic.`, `us.anthropic.`), `@date` / `-v1:0` suffixes and `-YYYYMMDD` stamps are ignored, and the longest numeric version wins (`sonnet-5-5` is Sonnet 5.5, not Sonnet 5). `capabilities()` is one exhaustive match, so a new variant forces every capability to be decided. Variants: Haiku45, Haiku55, Sonnet46, Sonnet5, Sonnet55, Opus46, Opus47, Opus48, Opus5, Opus55, Fable5, Fable51, Fable52, Mythos5, Mythos51, Legacy (anything older than 4.6 except Haiku 4.5), Unknown.
 
 | Capability | Models |
 |---|---|
@@ -220,14 +220,16 @@ character.
 | `rejects_prefill` | Sonnet46, Opus47+, all 5.x, Fable, Mythos, Haiku55, Unknown (Opus46 only while thinking is on) |
 | `rejects_sampling` (`temperature` is never sent) | Opus47+, all 5.x, Fable, Mythos, Haiku55, Unknown |
 | `thinking_always_on` (`max_tokens` is floored at 16 000 even without a thinking config) | Opus5, Opus55, Sonnet5, Sonnet55, Haiku55, Fable, Mythos |
-| `forbids_forced_tool_choice` | Opus55, Sonnet55, Fable51, Mythos51, Unknown |
-| `preserved_thinking` (`block_binding: drop_block`) | Fable51, Opus55, Sonnet55, Haiku55 |
+| `forbids_forced_tool_choice` | Opus55, Sonnet55, Fable51, Fable52, Mythos51, Unknown |
+| `preserved_thinking` (`block_binding: drop_block`) | Fable51, Fable52, Opus55, Sonnet55, Haiku55 |
 | `server_compaction` | every 4.6+ model, Fable, Mythos, Haiku55; not Haiku45, Legacy or Unknown |
 | `needs_interleaved_beta` (with `Extended` thinking and tools) | Sonnet46 |
 | `extended_ttl_beta` (`extended-cache-ttl-2025-04-25` with `prompt_cache_ttl = "1h"`) | Legacy, Haiku45 |
-| `structured_outputs` (`chat_typed` uses `output_config.format`) | Opus55, Sonnet55, Fable51, Mythos51 |
+| `structured_outputs` (`chat_typed` uses `output_config.format`) | Opus55, Sonnet55, Fable51, Fable52, Mythos51 |
 | `needs_1m_beta` (`context-1m-2025-08-07`) | Legacy only |
 | `native_window` | 1M for 4.6+, 5.x, Fable, Mythos, Haiku55; 200k for Haiku45 and Legacy (1M with `needs_1m_beta`); none for Unknown |
+
+**Fable 5.2 (`claude-fable-5-2`, #6980)**: `ClaudeModel::Fable52` shares the Fable 5.1 surface (same `GEN5_BOUND` arm as `Opus55 | Sonnet55 | Fable51`); parsed by `("fable", (Some(5), Some(2)))`, including dated, Vertex `@date` and Bedrock ids. Native 1M window. Pricing in `zeph-core/src/cost.rs` (cents per 1k tokens): input 0.8 ($8/M), output 4.0 ($40/M), cache read 0.02 ($0.20/M, ratio 0.025), cache write 1.25x input. A model id absent from the pricing table logs the existing one-shot unpriced WARN (`CostTracker::unpriced_models_warned`); `claude-mythos-5-2` is intentionally not added. A future `claude-fable-5-3` parses to `Unknown` until added.
 
 `Unknown` is conservative: no `budget_tokens`, prefill or sampling parameters, `tool_choice: auto`, no implicit thinking parameter, no beta header, no server compaction, no context window.
 
@@ -468,7 +470,7 @@ Three layers, plus one prevention primitive:
 ## Prefix Guard, Mid-Conversation System Directives and Typed Path (#6846, #6848)
 
 - `MessagePart::TurnContext` is rendered by every content branch through `Message::to_request_text`. Claude: `Retrieved` is a user text block before the user text; `Directives` is a wire `role:"system"` message only when the turn input is the last visible message or is directly followed by an assistant message, otherwise a user text block after the user text (an abandoned turn input coalesces with the next turn as plain text, so no thinking is at risk). Other providers render both blocks as user text
-- `ClaudeModel.mid_conversation_system` (Opus 5, Opus 5.5, Opus 4.8, Fable 5, Fable 5.1, Mythos 5/5.1, Sonnet 5.5) gates the system rendering; a 400 "not supported" latches the user-text fallback once, like the beta latches. `apply_cache_breakpoint` targets the last wire message that is not a mid-conversation system message
+- `ClaudeModel.mid_conversation_system` (Opus 5, Opus 5.5, Opus 4.8, Fable 5, Fable 5.1, Fable 5.2, Mythos 5/5.1, Sonnet 5.5) gates the system rendering; a 400 "not supported" latches the user-text fallback once, like the beta latches. `apply_cache_breakpoint` targets the last wire message that is not a mid-conversation system message
 - Prefix guard (only when `request_policy` is `Some`): after building a `chat_with_tools` or tool-stream request the provider hashes the wire projection (system blocks, tools, each wire message, `cache_control` removed) plus the wire-to-history index map and compares it with the fingerprint stored under the same `ConversationKey` (`prefix_fingerprints`: bounded `VecDeque`, capacity 16, oldest evicted, clones start empty). Divergence at wire index `k` (system or tools change means `k = 0`) drops thinking from `k` in the payload as a trailing run and reports `ThinkingReplay::Dropped { first_message_index: history_idx(k) }`, merged by minimum index with the server verdict (tool stream: a synthetic first `ToolSseEvent::ThinkingReplay`). The fingerprint is stored after the thinking drop and committed once the provider accepts the response (HTTP 200 for streams, before the stream is consumed); each internal retry recomputes it from the body it sends. One `llm.claude.prefix_guard{reason, wire_index, history_index}` span per divergence, none in steady state. One-shot `chat` calls do not touch the fingerprints
 - `LlmProvider::prefix_cache() -> PrefixCache { None, Prefix { ttl: Option<Duration> } }`: Claude is `Prefix` when `cache_user_messages`, with `ttl` from `prompt_cache_ttl` (`CacheTtl::duration`: `Ephemeral` 5 min, `OneHour` 1 h; unset means `Ephemeral`); Router and Triage are `Prefix` if any sub-provider is; two known TTLs keep the longer one and a known TTL next to an unknown one becomes unknown, so a router never reads a live cache as expired (`PrefixCache::or`; same aggregation as `thinking_binding`); Masked and Any delegate. `ttl()` is `None` when the provider cannot say, which callers treat as an unknown cache age
 - Streamed usage: `StreamUsage` merges `message_start` and `message_delta` into one `ApiUsage`, recorded through the shared `record_api_usage` after each (also calls `log_cache_usage`); compaction iterations count as auxiliary usage. `clear_response()` clears usage, cache, auxiliary and reasoning state but not `last_ttft`, so a stream failing before `message_start` leaves no stale values

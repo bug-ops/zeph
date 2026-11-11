@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::fraction::{UnitUpperClosed, UnitUpperClosed64};
 use crate::providers::ProviderName;
 use serde::{Deserialize, Serialize};
 
@@ -22,11 +23,8 @@ pub struct EmbeddingGuardConfig {
     #[serde(default)]
     pub enabled: bool,
     /// Cosine distance threshold above which outputs are flagged as anomalous.
-    #[serde(
-        default = "default_embedding_threshold",
-        deserialize_with = "crate::de_helpers::de_unit_open"
-    )]
-    pub threshold: f64,
+    #[serde(default = "default_embedding_threshold")]
+    pub threshold: UnitUpperClosed64,
     /// Minimum clean samples before centroid-based detection activates.
     /// Before this count, regex fallback is used instead.
     #[serde(
@@ -57,8 +55,8 @@ where
     Ok(value)
 }
 
-fn default_embedding_threshold() -> f64 {
-    0.35
+fn default_embedding_threshold() -> UnitUpperClosed64 {
+    const { UnitUpperClosed64::literal(0.35) }
 }
 
 fn default_embedding_min_samples() -> usize {
@@ -671,13 +669,13 @@ mod tests {
     #[test]
     fn threshold_valid() {
         let cfg = de_guard("threshold = 0.35\nmin_samples = 5").unwrap();
-        assert!((cfg.threshold - 0.35).abs() < f64::EPSILON);
+        assert!((cfg.threshold.get() - 0.35).abs() < f64::EPSILON);
     }
 
     #[test]
     fn threshold_one_valid() {
         let cfg = de_guard("threshold = 1.0\nmin_samples = 1").unwrap();
-        assert!((cfg.threshold - 1.0).abs() < f64::EPSILON);
+        assert!((cfg.threshold.get() - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -711,8 +709,8 @@ mod tests {
 // CausalIpiConfig
 // ---------------------------------------------------------------------------
 
-fn default_causal_threshold() -> f32 {
-    0.7
+fn default_causal_threshold() -> UnitUpperClosed {
+    UnitUpperClosed::literal(0.7)
 }
 
 fn default_probe_max_tokens() -> u32 {
@@ -740,11 +738,8 @@ pub struct CausalIpiConfig {
     ///
     /// Scores above this value trigger a WARN log, metric increment, and `SecurityEvent`.
     /// Content is never blocked — this is an observation layer only.
-    #[serde(
-        default = "default_causal_threshold",
-        deserialize_with = "crate::de_helpers::de_unit_open"
-    )]
-    pub threshold: f32,
+    #[serde(default = "default_causal_threshold")]
+    pub threshold: UnitUpperClosed,
 
     /// LLM provider name from `[[llm.providers]]` for probe calls.
     ///
@@ -795,8 +790,8 @@ fn default_shadow_max_events() -> usize {
     64
 }
 
-fn default_shadow_drift_threshold() -> f32 {
-    0.6
+fn default_shadow_drift_threshold() -> UnitUpperClosed {
+    UnitUpperClosed::literal(0.6)
 }
 
 fn validate_shadow_window<'de, D>(deserializer: D) -> Result<usize, D::Error>
@@ -862,11 +857,8 @@ pub struct ShadowMemoryConfig {
     pub max_events: usize,
 
     /// Goal drift score threshold for flagging. Range: (0.0, 1.0]. Default: 0.6.
-    #[serde(
-        default = "default_shadow_drift_threshold",
-        deserialize_with = "crate::de_helpers::de_unit_open"
-    )]
-    pub drift_threshold: f32,
+    #[serde(default = "default_shadow_drift_threshold")]
+    pub drift_threshold: UnitUpperClosed,
 }
 
 impl Default for ShadowMemoryConfig {
@@ -888,7 +880,7 @@ mod causal_ipi_tests {
     fn causal_ipi_defaults() {
         let cfg = CausalIpiConfig::default();
         assert!(!cfg.enabled);
-        assert!((cfg.threshold - 0.7).abs() < 1e-6);
+        assert!((cfg.threshold.get() - 0.7).abs() < 1e-6);
         assert!(cfg.provider.is_none());
         assert_eq!(cfg.probe_max_tokens, 100);
         assert_eq!(cfg.probe_timeout_ms, 3000);
@@ -905,7 +897,7 @@ mod causal_ipi_tests {
         "#;
         let cfg: CausalIpiConfig = toml::from_str(toml).unwrap();
         assert!(cfg.enabled);
-        assert!((cfg.threshold - 0.8).abs() < 1e-6);
+        assert!((cfg.threshold.get() - 0.8).abs() < 1e-6);
         assert_eq!(cfg.provider.as_deref(), Some("fast"));
         assert_eq!(cfg.probe_max_tokens, 150);
         assert_eq!(cfg.probe_timeout_ms, 5000);
@@ -926,7 +918,7 @@ mod causal_ipi_tests {
     #[test]
     fn causal_ipi_threshold_exactly_one_accepted() {
         let cfg: CausalIpiConfig = toml::from_str("threshold = 1.0").unwrap();
-        assert!((cfg.threshold - 1.0).abs() < 1e-6);
+        assert!((cfg.threshold.get() - 1.0).abs() < 1e-6);
     }
 }
 
@@ -940,7 +932,7 @@ mod shadow_memory_config_tests {
         assert!(!cfg.enabled);
         assert_eq!(cfg.window_size, 8);
         assert_eq!(cfg.max_events, 64);
-        assert!((cfg.drift_threshold - 0.6).abs() < 1e-6);
+        assert!((cfg.drift_threshold.get() - 0.6).abs() < 1e-6);
     }
 
     #[test]
@@ -970,7 +962,7 @@ mod shadow_memory_config_tests {
     #[test]
     fn shadow_memory_drift_threshold_exactly_one_accepted() {
         let cfg: ShadowMemoryConfig = toml::from_str("drift_threshold = 1.0").unwrap();
-        assert!((cfg.drift_threshold - 1.0).abs() < 1e-6);
+        assert!((cfg.drift_threshold.get() - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -985,6 +977,6 @@ mod shadow_memory_config_tests {
         assert!(cfg.enabled);
         assert_eq!(cfg.window_size, 4);
         assert_eq!(cfg.max_events, 32);
-        assert!((cfg.drift_threshold - 0.8).abs() < 1e-6);
+        assert!((cfg.drift_threshold.get() - 0.8).abs() < 1e-6);
     }
 }

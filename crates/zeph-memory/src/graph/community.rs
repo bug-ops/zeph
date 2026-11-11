@@ -18,6 +18,7 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{Message, Role};
 
 use crate::error::MemoryError;
+use crate::types::{EdgeId, EntityId};
 
 use super::store::GraphStore;
 use super::types::{Edge, Entity};
@@ -93,17 +94,17 @@ fn fold_edge(
     edge_id_map: &mut HashMap<(i64, i64), Vec<i64>>,
 ) {
     if let (Some(&src_idx), Some(&tgt_idx)) = (
-        node_map.get(&edge.source_entity_id),
-        node_map.get(&edge.target_entity_id),
+        node_map.get(&edge.source_entity_id.0),
+        node_map.get(&edge.target_entity_id.0),
     ) {
         graph.add_edge(src_idx, tgt_idx, ());
     }
-    let key = (edge.source_entity_id, edge.target_entity_id);
+    let key = (edge.source_entity_id.0, edge.target_entity_id.0);
     edge_facts_map
         .entry(key)
         .or_default()
         .push(edge.fact.clone());
-    edge_id_map.entry(key).or_default().push(edge.id);
+    edge_id_map.entry(key).or_default().push(edge.id.0);
 }
 
 async fn build_entity_graph_and_maps(
@@ -142,7 +143,7 @@ async fn build_entity_graph_and_maps(
         }
     } else {
         let limit = i64::try_from(edge_chunk_size).unwrap_or(i64::MAX);
-        let mut last_id: i64 = 0;
+        let mut last_id = EdgeId::new(0);
         loop {
             let chunk = store.edges_after_id(last_id, limit).await?;
             if chunk.is_empty() {
@@ -332,6 +333,7 @@ async fn summarize_and_upsert_communities(
 
     let mut count = 0usize;
     for (name, summary, entity_ids, fingerprint) in results {
+        let entity_ids: Vec<EntityId> = entity_ids.into_iter().map(EntityId).collect();
         store
             .upsert_community(&name, &summary, &entity_ids, Some(&fingerprint))
             .await?;
@@ -444,14 +446,14 @@ pub async fn detect_communities(
 /// Returns an error if `SQLite` queries fail.
 pub async fn assign_to_community(
     store: &GraphStore,
-    entity_id: i64,
+    entity_id: EntityId,
 ) -> Result<Option<i64>, MemoryError> {
     let edges = store.edges_for_entity(entity_id).await?;
     if edges.is_empty() {
         return Ok(None);
     }
 
-    let neighbor_ids: Vec<i64> = edges
+    let neighbor_ids: Vec<EntityId> = edges
         .iter()
         .map(|e| {
             if e.source_entity_id == entity_id {
@@ -486,11 +488,10 @@ pub async fn assign_to_community(
     };
 
     if let Some(mut target) = store.find_community_by_id(best_community_id).await? {
-        if !target.entity_ids.iter().any(|eid| eid.0 == entity_id) {
-            target.entity_ids.push(crate::types::EntityId(entity_id));
-            let raw_ids: Vec<i64> = target.entity_ids.iter().map(|eid| eid.0).collect();
+        if !target.entity_ids.contains(&entity_id) {
+            target.entity_ids.push(entity_id);
             store
-                .upsert_community(&target.name, &target.summary, &raw_ids, None)
+                .upsert_community(&target.name, &target.summary, &target.entity_ids, None)
                 .await?;
             // Clear fingerprint to invalidate cache — next detect_communities will re-summarize.
             store.clear_community_fingerprint(best_community_id).await?;
@@ -522,8 +523,8 @@ pub async fn cleanup_stale_entity_embeddings(
         return Ok(0);
     }
 
-    let qdrant_ids: Vec<i64> = pairs.iter().map(|(_, eid)| *eid).collect();
-    let live: std::collections::HashSet<i64> = store
+    let qdrant_ids: Vec<EntityId> = pairs.iter().map(|(_, eid)| EntityId(*eid)).collect();
+    let live: std::collections::HashSet<EntityId> = store
         .entity_ids_in(&qdrant_ids)
         .await?
         .into_iter()
@@ -531,7 +532,7 @@ pub async fn cleanup_stale_entity_embeddings(
 
     let stale_point_ids: Vec<String> = pairs
         .into_iter()
-        .filter_map(|(pid, eid)| (!live.contains(&eid)).then_some(pid))
+        .filter_map(|(pid, eid)| (!live.contains(&EntityId(eid))).then_some(pid))
         .collect();
 
     if stale_point_ids.is_empty() {
@@ -680,23 +681,19 @@ mod tests {
         let a = store
             .upsert_entity("A", "A", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("B", "B", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let c = store
             .upsert_entity("C", "C", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let iso = store
             .upsert_entity("Isolated", "Isolated", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
 
         store
             .insert_edge(a, b, "r", "A relates B", 1.0, None, None)
@@ -716,7 +713,7 @@ mod tests {
         let communities = store.all_communities().await.unwrap();
         assert_eq!(communities.len(), 1);
         assert!(
-            !communities[0].entity_ids.iter().any(|eid| eid.0 == iso),
+            !communities[0].entity_ids.contains(&iso),
             "isolated entity must not be in any community"
         );
     }
@@ -727,7 +724,7 @@ mod tests {
         let provider = mock_provider();
 
         // Create 4 clusters of 3 entities each (12 entities total), fully isolated.
-        let mut cluster_ids: Vec<Vec<i64>> = Vec::new();
+        let mut cluster_ids: Vec<Vec<EntityId>> = Vec::new();
         for cluster in 0..4_i64 {
             let mut ids = Vec::new();
             for node in 0..3_i64 {
@@ -735,8 +732,7 @@ mod tests {
                 let id = store
                     .upsert_entity(&name, &name, EntityType::Concept, None, None)
                     .await
-                    .unwrap()
-                    .0;
+                    .unwrap();
                 ids.push(id);
             }
             // Connect nodes within cluster (chain: 0-1-2).
@@ -765,7 +761,7 @@ mod tests {
                 .iter()
                 .filter(|c| {
                     ids.iter()
-                        .any(|id| c.entity_ids.iter().any(|eid| eid.0 == *id))
+                        .any(|id| c.entity_ids.iter().any(|eid| eid == id))
                 })
                 .count();
             assert_eq!(
@@ -808,13 +804,11 @@ mod tests {
         let a = store
             .upsert_entity("EA", "EA", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("EB", "EB", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let edge_id = store
             .insert_edge(a, b, "r", "f", 1.0, None, None)
             .await
@@ -841,8 +835,7 @@ mod tests {
         let iso = store
             .upsert_entity("Orphan", "Orphan", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
 
         // Set last_seen_at to far in the past.
         zeph_db::query(sql!(
@@ -884,8 +877,7 @@ mod tests {
         let entity_id = store
             .upsert_entity("Loner", "Loner", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
 
         let result = assign_to_community(&store, entity_id).await.unwrap();
         assert!(result.is_none());
@@ -1162,18 +1154,15 @@ mod tests {
         let a = store
             .upsert_entity("AA", "AA", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("BB", "BB", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let d = store
             .upsert_entity("DD", "DD", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
 
         store
             .upsert_community("test_community", "summary", &[a, b], None)
@@ -1200,7 +1189,7 @@ mod tests {
             .unwrap()
             .expect("returned community_id must reference an existing row");
         assert!(
-            community.entity_ids.iter().any(|eid| eid.0 == d),
+            community.entity_ids.contains(&d),
             "D should be added to the community"
         );
         // Fingerprint must be NULL after assign (cache invalidated for next detect run).
@@ -1219,13 +1208,11 @@ mod tests {
         let a = store
             .upsert_entity("X", "X", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("Y", "Y", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(a, b, "r", "X relates Y", 1.0, None, None)
             .await
@@ -1258,13 +1245,11 @@ mod tests {
         let a = store
             .upsert_entity("P", "P", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("Q", "Q", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(a, b, "r", "P relates Q", 1.0, None, None)
             .await
@@ -1301,13 +1286,11 @@ mod tests {
         let a = store
             .upsert_entity("M1", "M1", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("M2", "M2", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let edge_id = store
             .insert_edge(a, b, "r", "M1 relates M2", 1.0, None, None)
             .await
@@ -1340,13 +1323,11 @@ mod tests {
         let a = store
             .upsert_entity("C1A", "C1A", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("C1B", "C1B", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(a, b, "r", "f", 1.0, None, None)
             .await
@@ -1406,28 +1387,23 @@ mod tests {
         let node_alpha = store
             .upsert_entity("CA", "CA", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let node_beta = store
             .upsert_entity("CB", "CB", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let node_gamma = store
             .upsert_entity("CC", "CC", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let node_delta = store
             .upsert_entity("CD", "CD", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let node_epsilon = store
             .upsert_entity("CE", "CE", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
 
         store
             .insert_edge(node_alpha, node_beta, "r", "A-B fact", 1.0, None, None)
@@ -1460,12 +1436,12 @@ mod tests {
         let has_abc = communities.iter().any(|comm| {
             abc_ids
                 .iter()
-                .all(|id| comm.entity_ids.iter().any(|eid| eid.0 == *id))
+                .all(|id| comm.entity_ids.iter().any(|eid| eid == id))
         });
         let has_de = communities.iter().any(|comm| {
             de_ids
                 .iter()
-                .all(|id| comm.entity_ids.iter().any(|eid| eid.0 == *id))
+                .all(|id| comm.entity_ids.iter().any(|eid| eid == id))
         });
         assert!(has_abc, "cluster A-B-C must form a community");
         assert!(has_de, "cluster D-E must form a community");
@@ -1480,13 +1456,11 @@ mod tests {
         let x = store
             .upsert_entity("MX", "MX", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let y = store
             .upsert_entity("MY", "MY", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(x, y, "r", "X-Y fact", 1.0, None, None)
             .await
@@ -1507,13 +1481,11 @@ mod tests {
         let p = store
             .upsert_entity("ZP", "ZP", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let q = store
             .upsert_entity("ZQ", "ZQ", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(p, q, "r", "P-Q fact", 1.0, None, None)
             .await
@@ -1539,13 +1511,11 @@ mod tests {
         let a = store
             .upsert_entity("FA", "FA", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("FB", "FB", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(a, b, "r", "edge1 fact", 1.0, None, None)
             .await
@@ -1614,13 +1584,11 @@ mod tests {
         let live_id = graph_store
             .upsert_entity("Live", "live", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let stale_id = graph_store
             .upsert_entity("Stale", "stale", EntityType::Person, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
 
         // Store embeddings with `entity_id_str` for both.
         let live_payload = serde_json::json!({
@@ -1668,6 +1636,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].1, live_id);
+        assert_eq!(EntityId(remaining[0].1), live_id);
     }
 }

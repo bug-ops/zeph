@@ -12,7 +12,9 @@ use futures_core::Stream;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio_stream::StreamExt;
 use zeph_common::net::resolve_and_validate;
+use zeph_common::text::truncate_to_bytes;
 
+use crate::body_limit::{BodyLimit, cap_event_size, read_capped, read_prefix};
 use crate::error::A2aError;
 use crate::ibct::{Ibct, IbctKey, ibct_scope_origin};
 use crate::jsonrpc::{
@@ -20,6 +22,8 @@ use crate::jsonrpc::{
     METHOD_SEND_STREAMING_MESSAGE, SendMessageParams, TaskIdParams,
 };
 use crate::types::{Task, TaskArtifactUpdateEvent, TaskStatusUpdateEvent};
+
+const ERROR_BODY_SNIPPET_BYTES: usize = 256;
 
 /// A pinned, heap-allocated stream of [`TaskEvent`]s from a streaming A2A call.
 ///
@@ -360,20 +364,23 @@ impl A2aClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = tokio::time::timeout(Duration::from_secs(5), resp.text())
-                .await
-                .unwrap_or(Ok(String::new()))
-                .unwrap_or_default();
+            let raw = tokio::time::timeout(
+                Duration::from_secs(5),
+                read_prefix(resp, BodyLimit::ERROR_BODY),
+            )
+            .await
+            .unwrap_or_default();
+            let body = String::from_utf8_lossy(&raw);
             // Truncate body to avoid leaking large upstream error responses.
-            let truncated = if body.len() > 256 {
-                format!("{}…", &body[..256])
+            let truncated = if body.len() > ERROR_BODY_SNIPPET_BYTES {
+                format!("{}…", truncate_to_bytes(&body, ERROR_BODY_SNIPPET_BYTES))
             } else {
-                body
+                body.into_owned()
             };
             return Err(A2aError::Stream(format!("HTTP {status}: {truncated}")));
         }
 
-        let event_stream = resp.bytes_stream().eventsource();
+        let event_stream = cap_event_size(resp.bytes_stream(), BodyLimit::SSE_EVENT).eventsource();
         let mapped = event_stream.filter_map(|event| match event {
             Ok(event) => {
                 if event.data.is_empty() || event.data == "[DONE]" {
@@ -527,13 +534,13 @@ impl A2aClient {
         if let Some(ibct_header) = self.ibct_header_value(endpoint, task_id) {
             req = req.header("X-Zeph-IBCT", ibct_header);
         }
-        let rpc_response: JsonRpcResponse<R> = tokio::time::timeout(self.request_timeout, async {
+        let body = tokio::time::timeout(self.request_timeout, async {
             let resp = req.send().await?;
-            resp.json().await
+            read_capped(resp, BodyLimit::RPC_RESPONSE).await
         })
         .await
-        .map_err(|_| A2aError::Timeout(self.request_timeout))?
-        .map_err(A2aError::Http)?;
+        .map_err(|_| A2aError::Timeout(self.request_timeout))??;
+        let rpc_response: JsonRpcResponse<R> = serde_json::from_slice(&body)?;
         rpc_response.into_result().map_err(A2aError::from)
     }
 }
@@ -1501,5 +1508,70 @@ mod wiremock_tests {
             .await
             .unwrap();
         assert_eq!(task.id, "task-ibct");
+    }
+
+    fn stream_params() -> SendMessageParams {
+        SendMessageParams {
+            message: Message::user_text("hello"),
+            configuration: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn rpc_response_over_cap_is_rejected() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rpc"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b' '; 17 * 1024 * 1024]))
+            .mount(&server)
+            .await;
+
+        let client = A2aClient::new_insecure(reqwest::Client::new());
+        let result = client
+            .send_message(&format!("{}/rpc", server.uri()), stream_params(), None)
+            .await;
+        assert_matches!(result, Err(crate::A2aError::BodyTooLarge { .. }));
+    }
+
+    #[tokio::test]
+    async fn stream_error_body_with_multibyte_text_does_not_panic() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rpc"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("€".repeat(100)))
+            .mount(&server)
+            .await;
+
+        let client = A2aClient::new_insecure(reqwest::Client::new());
+        let Err(err) = client
+            .stream_message(&format!("{}/rpc", server.uri()), stream_params(), None)
+            .await
+        else {
+            panic!("expected an error for HTTP 500");
+        };
+        let text = err.to_string();
+        assert!(text.contains("HTTP 500"), "{text}");
+        assert!(text.ends_with('…'), "{text}");
+    }
+
+    #[tokio::test]
+    async fn oversized_sse_event_ends_the_stream_with_an_error() {
+        let server = MockServer::start().await;
+        let mut body = b"data: ".to_vec();
+        body.extend(std::iter::repeat_n(b'x', 5 * 1024 * 1024));
+        Mock::given(method("POST"))
+            .and(path("/rpc"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+            .mount(&server)
+            .await;
+
+        let client = A2aClient::new_insecure(reqwest::Client::new());
+        let mut stream = client
+            .stream_message(&format!("{}/rpc", server.uri()), stream_params(), None)
+            .await
+            .unwrap();
+        let first = stream.next().await.expect("one error item");
+        assert!(first.is_err());
+        assert!(stream.next().await.is_none());
     }
 }

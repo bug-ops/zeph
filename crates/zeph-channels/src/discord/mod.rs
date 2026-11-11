@@ -355,9 +355,6 @@ impl Channel for DiscordChannel {
     }
 
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
-        if text.is_empty() {
-            return Ok(());
-        }
         let Some(channel_id) = self.channel_id.as_deref() else {
             return Ok(());
         };
@@ -366,6 +363,10 @@ impl Channel for DiscordChannel {
             .await
             .map_err(ChannelError::other)?;
         Ok(())
+    }
+
+    fn clear_status(&mut self) -> impl Future<Output = Result<(), ChannelError>> + Send {
+        std::future::ready(Ok(()))
     }
 
     #[cfg_attr(

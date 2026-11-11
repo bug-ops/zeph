@@ -6,6 +6,7 @@
 //! Memory-augmented reasoning ([`ReasoningConfig`]), compaction probes, `MemCoT`
 //! semantic state, auto-dream consolidation, and magic-docs synthesis.
 
+use crate::fraction::{UnitLowerClosed, UnitUpperClosed};
 use crate::providers::ProviderName;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -187,9 +188,9 @@ pub struct CompactionProbeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probe_provider: Option<ProviderName>,
     /// Minimum score to pass without warnings. Default: `0.6`.
-    pub threshold: f32,
+    pub threshold: UnitUpperClosed,
     /// Score below this triggers `HardFail` (block compaction). Default: `0.35`.
-    pub hard_fail_threshold: f32,
+    pub hard_fail_threshold: UnitLowerClosed,
     /// Maximum number of probe questions to generate. Default: `5`.
     pub max_questions: usize,
     /// Timeout for the entire probe (both LLM calls) in seconds. Default: `15`.
@@ -204,8 +205,8 @@ impl Default for CompactionProbeConfig {
         Self {
             enabled: false,
             probe_provider: None,
-            threshold: 0.6,
-            hard_fail_threshold: 0.35,
+            threshold: const { UnitUpperClosed::literal(0.6) },
+            hard_fail_threshold: const { UnitLowerClosed::literal(0.35) },
             max_questions: 5,
             timeout_secs: 15,
             category_weights: None,

@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::fraction::UnitClosed;
+
 /// Reason a calibration curve was rejected; every variant carries the offending point index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum CalibrationError {
@@ -28,14 +30,9 @@ pub enum CalibrationError {
     CalibratedDecreasing(usize),
 }
 
-/// Reason a correction-confidence threshold was rejected.
-#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
-#[error("confidence threshold {0} must be finite and within 0.0..=1.0")]
-pub struct ConfidenceThresholdError(f32);
-
 /// Minimum calibrated confidence for an LLM-reported correction to be accepted.
 ///
-/// The value is checked at construction and at deserialization, so a `nan` or out-of-range
+/// A [`UnitClosed`]: checked at construction and at deserialization, so a `nan` or out-of-range
 /// `correction_confidence_threshold` fails config loading instead of silently disabling
 /// (`nan`) or suppressing (`> 1.0`) correction detection.
 ///
@@ -48,60 +45,10 @@ pub struct ConfidenceThresholdError(f32);
 /// assert!(ConfidenceThreshold::new(f32::NAN).is_err());
 /// assert!(ConfidenceThreshold::new(1.5).is_err());
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(try_from = "f32", into = "f32")]
-pub struct ConfidenceThreshold(f32);
+pub type ConfidenceThreshold = UnitClosed;
 
-impl ConfidenceThreshold {
-    /// Build a threshold from a value in `0.0..=1.0`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConfidenceThresholdError`] for NaN, infinite, or out-of-range input.
-    pub fn new(value: f32) -> Result<Self, ConfidenceThresholdError> {
-        if (0.0..=1.0).contains(&value) {
-            Ok(Self(value))
-        } else {
-            Err(ConfidenceThresholdError(value))
-        }
-    }
-
-    /// Compile-time constructor for literal defaults; panics (at compile time in `const`
-    /// contexts) when `value` is NaN or outside `0.0..=1.0`.
-    pub(crate) const fn literal(value: f32) -> Self {
-        assert!(
-            value >= 0.0 && value <= 1.0,
-            "threshold must be within 0.0..=1.0"
-        );
-        Self(value)
-    }
-
-    /// The raw threshold in `0.0..=1.0`.
-    #[must_use]
-    pub const fn get(self) -> f32 {
-        self.0
-    }
-}
-
-impl Default for ConfidenceThreshold {
-    fn default() -> Self {
-        Self::literal(0.6)
-    }
-}
-
-impl TryFrom<f32> for ConfidenceThreshold {
-    type Error = ConfidenceThresholdError;
-
-    fn try_from(value: f32) -> Result<Self, Self::Error> {
-        Self::new(value)
-    }
-}
-
-impl From<ConfidenceThreshold> for f32 {
-    fn from(t: ConfidenceThreshold) -> Self {
-        t.0
-    }
-}
+/// Default `correction_confidence_threshold`.
+pub const DEFAULT_CORRECTION_CONFIDENCE: ConfidenceThreshold = ConfidenceThreshold::literal(0.6);
 
 /// Monotone piecewise-linear map from a model's self-reported confidence to a calibrated one.
 ///

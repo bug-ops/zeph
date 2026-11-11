@@ -96,7 +96,8 @@ async fn connect_all_skips_failing_servers() {
 
 #[tokio::test]
 async fn connect_all_emits_status_messages() {
-    let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (status_tx, mut status_rx) =
+        tokio::sync::mpsc::unbounded_channel::<zeph_llm::provider::StatusUpdate>();
     let mgr = McpManager::new(
         vec![make_entry("my-mcp")],
         vec![],
@@ -113,7 +114,9 @@ async fn connect_all_emits_status_messages() {
         messages.push(msg);
     }
     assert!(
-        messages.iter().any(|m| m.contains("my-mcp")),
+        messages
+            .iter()
+            .any(|m| matches!(m, zeph_llm::provider::StatusUpdate::Set(t) if t.contains("my-mcp"))),
         "expected status message for my-mcp, got: {messages:?}"
     );
 }

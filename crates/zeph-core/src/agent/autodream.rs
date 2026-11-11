@@ -11,6 +11,7 @@
 //! follow-up improvement tracked in #2697.
 
 use std::time::{Duration, Instant as StdInstant};
+use zeph_llm::provider::StatusUpdate;
 
 use crate::channel::Channel;
 
@@ -108,7 +109,7 @@ impl<C: Channel> super::Agent<C> {
             .session
             .status_tx
             .as_ref()
-            .map(|tx| tx.send("Consolidating memories…".into()));
+            .map(|tx| tx.send(StatusUpdate::set("Consolidating memories…")));
 
         let provider = self.resolve_background_provider(cfg.consolidation_provider.as_str());
 

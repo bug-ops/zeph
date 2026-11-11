@@ -756,6 +756,7 @@ async fn complete_focus_strips_thinking_including_the_repushed_assistant_message
         "complete_focus",
         &serde_json::json!({"summary": "found the bug"}),
     );
+    let result = result.text;
 
     assert!(!result.starts_with("[error]"), "{result}");
     let last = agent.msg.messages.last().unwrap();
@@ -782,6 +783,7 @@ async fn complete_focus_rejects_an_empty_summary_without_touching_history() {
 
     for input in [serde_json::json!({"summary": "   "}), serde_json::json!({})] {
         let (result, _) = agent.handle_focus_tool("complete_focus", &input);
+        let result = result.text;
         assert!(result.starts_with("[error]"), "{result}");
     }
 
@@ -809,7 +811,7 @@ async fn compress_context_strips_thinking_through_the_knowledge_rebuild() {
     ));
     let mut agent = seam_agent(history);
 
-    let result = agent.handle_compress_context().await;
+    let result = agent.handle_compress_context().await.text;
 
     assert!(result.starts_with("Compressed"), "{result}");
     assert_eq!(thinking_count(&agent.msg.messages), 0);
@@ -1209,7 +1211,7 @@ async fn skipped_prerequisite_does_not_unlock_its_dependant() {
     ]);
     let executor = MockToolExecutor::new(vec![
         Ok(Some(zeph_tools::ToolOutput {
-            claim_source: Some(zeph_tools::ClaimSource::Synthetic),
+            status: zeph_tools::ToolStatus::Synthetic(zeph_tools::SyntheticKind::UtilitySkipped),
             ..output("read", "[skipped] by the utility gate")
         })),
         Ok(Some(output("write", "write ok"))),
@@ -1222,6 +1224,53 @@ async fn skipped_prerequisite_does_not_unlock_its_dependant() {
 
     assert!(agent.services.tool_state.completed_tool_ids.is_empty());
     let text = tool_result_text(&agent, "c2");
+    assert!(text.contains("[error] Tool call to"), "{text}");
+    assert!(!text.contains("write ok"), "{text}");
+}
+
+async fn run_read_then_write(read: zeph_tools::ToolOutput) -> String {
+    let (mock, _) = MockProvider::with_responses(vec![]).with_tool_use(vec![
+        ChatResponse::tool_use(None, vec![call("c1", "read")]),
+        ChatResponse::tool_use(None, vec![call("c2", "write")]),
+        ChatResponse::text("done"),
+    ]);
+    let executor =
+        MockToolExecutor::new(vec![Ok(Some(read)), Ok(Some(output("write", "write ok")))])
+            .with_definitions(vec![tool_def("read"), tool_def("write")]);
+    let mut agent = agent_with(mock, executor);
+    agent.services.tool_state.dependency_graph = Some(graph_write_requires_read());
+
+    agent.process_response().await.unwrap();
+
+    tool_result_text(&agent, "c2")
+}
+
+#[tokio::test]
+#[allow(clippy::large_futures)]
+async fn nonzero_exit_prerequisite_still_unlocks_its_dependant() {
+    let read = zeph_tools::ToolOutput {
+        status: zeph_tools::ToolStatus::from_exit_code(1),
+        ..output("read", "grep: no match")
+    };
+    let text = run_read_then_write(read).await;
+    assert!(text.contains("write ok"), "{text}");
+}
+
+#[tokio::test]
+#[allow(clippy::large_futures)]
+async fn error_marker_text_with_success_status_does_not_skip_dependant() {
+    let text = run_read_then_write(output("read", "[error] printed by the tool itself")).await;
+    assert!(text.contains("write ok"), "{text}");
+}
+
+#[tokio::test]
+#[allow(clippy::large_futures)]
+async fn failed_status_prerequisite_skips_its_dependant() {
+    let read = zeph_tools::ToolOutput {
+        status: zeph_tools::ToolStatus::Failed,
+        ..output("read", "could not read")
+    };
+    let text = run_read_then_write(read).await;
     assert!(text.contains("[error] Tool call to"), "{text}");
     assert!(!text.contains("write ok"), "{text}");
 }

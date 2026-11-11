@@ -72,7 +72,7 @@ pub enum CausalIpiError {
 ///
 /// let analyzer = TurnCausalAnalyzer::new(
 ///     AnyProvider::Mock(MockProvider::default()),
-///     &CausalIpiConfig { threshold: 0.5, ..Default::default() },
+///     &CausalIpiConfig { threshold: zeph_config::UnitUpperClosed::new(0.5).unwrap(), ..Default::default() },
 /// );
 ///
 /// // Identical probe responses produce near-zero deviation.
@@ -137,7 +137,7 @@ impl TurnCausalAnalyzer {
     pub fn new(provider: AnyProvider, config: &CausalIpiConfig) -> Self {
         Self {
             provider,
-            threshold: config.threshold,
+            threshold: config.threshold.get(),
             probe_timeout: Duration::from_millis(config.probe_timeout_ms),
             // 1 token ≈ 4 chars; multiply by 4 to get a conservative char limit.
             probe_max_chars: (config.probe_max_tokens as usize)
@@ -243,7 +243,7 @@ impl TurnCausalAnalyzer {
     ///
     /// let analyzer = TurnCausalAnalyzer::new(
     ///     AnyProvider::Mock(MockProvider::default()),
-    ///     &CausalIpiConfig { threshold: 0.4, ..Default::default() },
+    ///     &CausalIpiConfig { threshold: zeph_config::UnitUpperClosed::new(0.4).unwrap(), ..Default::default() },
     /// );
     ///
     /// let result = analyzer.analyze(
@@ -435,7 +435,7 @@ mod tests {
         let provider = AnyProvider::Mock(MockProvider::default());
         let config = CausalIpiConfig {
             enabled: true,
-            threshold: 0.3,
+            threshold: zeph_config::UnitUpperClosed::literal(0.3),
             ..CausalIpiConfig::default()
         };
         let analyzer = TurnCausalAnalyzer::new(provider, &config);
@@ -453,7 +453,7 @@ mod tests {
         let provider = AnyProvider::Mock(MockProvider::default());
         let config = CausalIpiConfig {
             enabled: true,
-            threshold: 0.7,
+            threshold: zeph_config::UnitUpperClosed::literal(0.7),
             ..CausalIpiConfig::default()
         };
         let analyzer = TurnCausalAnalyzer::new(provider, &config);

@@ -10,6 +10,8 @@
 use serde::{Deserialize, Serialize};
 use zeph_common::ProviderName;
 
+use crate::fraction::UnitClosed;
+
 use super::{
     CandleConfig, CoeConfig, ComplexityRoutingConfig, LlmRoutingStrategy, ProviderEntry,
     RouterConfig,
@@ -19,8 +21,11 @@ fn default_response_cache_ttl_secs() -> u64 {
     3600
 }
 
-fn default_semantic_cache_threshold() -> f32 {
-    0.95
+/// Default `semantic_cache_threshold`: cosine similarity at which a cached response is reused.
+pub const DEFAULT_SEMANTIC_CACHE_THRESHOLD: UnitClosed = UnitClosed::literal(0.95);
+
+fn default_semantic_cache_threshold() -> UnitClosed {
+    DEFAULT_SEMANTIC_CACHE_THRESHOLD
 }
 
 fn default_semantic_cache_max_candidates() -> u32 {
@@ -244,7 +249,7 @@ pub struct LlmConfig {
     /// Lower values produce more cache hits but risk returning less relevant responses.
     /// Recommended range: 0.92–0.98; default: 0.95.
     #[serde(default = "default_semantic_cache_threshold")]
-    pub semantic_cache_threshold: f32,
+    pub semantic_cache_threshold: UnitClosed,
     /// Maximum cached entries to examine per semantic lookup (SQL `LIMIT` clause in
     /// `ResponseCache::get_semantic()`). Controls the recall-vs-performance tradeoff:
     ///
