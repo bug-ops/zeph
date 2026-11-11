@@ -14,7 +14,7 @@
 
 use std::borrow::Cow;
 
-use zeph_common::secret_redact::{scrub_content, scrub_secrets};
+use zeph_common::secret_redact::scrub_secrets;
 use zeph_llm::provider::{Message, MessagePart, Role};
 
 /// Replace `text` with the scrubbed form when `scrub` changed it.
@@ -50,10 +50,9 @@ pub fn needs_scrub(msg: &Message) -> bool {
 
 /// Scrub one message in place and report whether anything changed.
 ///
-/// User and assistant text gets the full scrub (secrets, URL credentials, paths); tool results
-/// and tool outputs lose secrets and URL credentials only, because a path in a tool result is
-/// data the model needs. After a change to a structured message `content` is rebuilt from its
-/// parts.
+/// Every text-bearing part loses secrets and URL credentials only; paths are never masked on
+/// the provider-bound path because the model needs the real path to act on it (#6968). After a
+/// change to a structured message `content` is rebuilt from its parts.
 ///
 /// # Examples
 ///
@@ -75,18 +74,18 @@ pub fn needs_scrub(msg: &Message) -> bool {
 #[tracing::instrument(name = "context.scrub.message", skip_all, level = "trace")]
 pub fn scrub_message(msg: &mut Message) -> bool {
     if msg.parts.is_empty() {
-        return scrub_in_place(&mut msg.content, scrub_content);
+        return scrub_in_place(&mut msg.content, scrub_secrets);
     }
     let mut changed = false;
     for part in &mut msg.parts {
         changed |= match part {
-            MessagePart::Text { text } => scrub_in_place(text, scrub_content),
-            MessagePart::ToolResult { content, .. } => scrub_in_place(content, scrub_secrets),
-            MessagePart::ToolOutput { body, .. } => scrub_in_place(body, scrub_secrets),
-            MessagePart::Recall { text }
+            MessagePart::Text { text }
+            | MessagePart::Recall { text }
             | MessagePart::CodeContext { text }
             | MessagePart::Summary { text }
             | MessagePart::CrossSession { text } => scrub_in_place(text, scrub_secrets),
+            MessagePart::ToolResult { content, .. } => scrub_in_place(content, scrub_secrets),
+            MessagePart::ToolOutput { body, .. } => scrub_in_place(body, scrub_secrets),
             _ => false,
         };
     }
@@ -199,10 +198,65 @@ mod tests {
     }
 
     #[test]
-    fn plain_content_message_is_scrubbed_with_paths() {
+    fn plain_content_message_keeps_paths_but_loses_secrets() {
         let mut msg = Message::from_legacy(Role::User, format!("key {OPENAI_KEY} in /Users/a/b"));
         assert!(scrub_message(&mut msg));
-        assert!(!msg.content.contains(OPENAI_KEY) && !msg.content.contains("/Users/a"));
+        assert!(!msg.content.contains(OPENAI_KEY));
+        assert!(msg.content.contains("/Users/a/b"), "{}", msg.content);
+    }
+
+    fn path_history() -> Vec<Message> {
+        let mut user = Message::from_parts(
+            Role::User,
+            vec![MessagePart::Text {
+                text: format!("cat /Users/dev/project/.env and key {OPENAI_KEY}"),
+            }],
+        );
+        user.rebuild_content();
+        let mut assistant = Message::from_parts(
+            Role::Assistant,
+            vec![MessagePart::Text {
+                text: "reading /Users/dev/project/.env".into(),
+            }],
+        );
+        assistant.rebuild_content();
+        let mut messages = vec![
+            user,
+            assistant,
+            Message::from_legacy(Role::User, "again /Users/dev/project/src"),
+        ];
+        for msg in &mut messages {
+            scrub_message(msg);
+        }
+        messages
+    }
+
+    fn assert_paths_survive(json: &serde_json::Value) {
+        let wire = json.to_string();
+        assert!(
+            !wire.contains(OPENAI_KEY),
+            "api key reached the wire: {wire}"
+        );
+        assert!(
+            !wire.contains("[PATH]"),
+            "path mask reached the wire: {wire}"
+        );
+        assert!(
+            wire.contains("/Users/dev/project/.env"),
+            "path lost: {wire}"
+        );
+        assert!(wire.contains("/Users/dev/project/src"), "path lost: {wire}");
+    }
+
+    #[test]
+    fn claude_wire_keeps_user_and_assistant_paths() {
+        let provider = ClaudeProvider::new("k".into(), "claude-sonnet-5-5".into(), 1024);
+        assert_paths_survive(&provider.debug_request_json(&path_history(), &tools(), false));
+    }
+
+    #[test]
+    fn openai_wire_keeps_user_and_assistant_paths() {
+        assert_paths_survive(&openai().debug_request_json(&path_history(), &tools(), false));
     }
 
     #[test]

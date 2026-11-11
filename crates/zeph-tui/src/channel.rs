@@ -306,7 +306,7 @@ impl Channel for TuiChannel {
     async fn send_diff(
         &mut self,
         diff: zeph_core::DiffData,
-        tool_call_id: &str,
+        tool_call_id: &zeph_common::ToolExecutionId,
     ) -> Result<(), ChannelError> {
         // Substantive user-facing content: bounded send so the diff is displayed unless
         // the TUI is severely stalled (>100ms). On timeout, drop silently; on channel
@@ -315,7 +315,7 @@ impl Channel for TuiChannel {
             std::time::Duration::from_millis(100),
             self.agent_event_tx.send(AgentEvent::DiffReady {
                 diff,
-                tool_call_id: tool_call_id.to_owned(),
+                tool_call_id: tool_call_id.clone(),
             }),
         )
         .await
@@ -708,7 +708,7 @@ mod tests {
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
         ch.send_tool_start(ToolStartEvent {
             tool_name: "bash".into(),
-            tool_call_id: "id1".into(),
+            tool_call_id: zeph_common::ToolExecutionId::new("id1").unwrap(),
             params: Some(serde_json::json!({"command": "ls -la"})),
             parent_tool_use_id: None,
             started_at: std::time::Instant::now(),
@@ -732,7 +732,7 @@ mod tests {
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
         ch.send_tool_start(ToolStartEvent {
             tool_name: "memory_search".into(),
-            tool_call_id: "id2".into(),
+            tool_call_id: zeph_common::ToolExecutionId::new("id2").unwrap(),
             params: None,
             parent_tool_use_id: None,
             started_at: std::time::Instant::now(),
@@ -756,7 +756,7 @@ mod tests {
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
         ch.send_tool_start(ToolStartEvent {
             tool_name: "bash".into(),
-            tool_call_id: "uuid-abc-123".into(),
+            tool_call_id: zeph_common::ToolExecutionId::new("uuid-abc-123").unwrap(),
             params: Some(serde_json::json!({"command": "echo hi"})),
             parent_tool_use_id: None,
             started_at: std::time::Instant::now(),
@@ -769,7 +769,10 @@ mod tests {
         let evt = agent_rx.recv().await.unwrap();
         match evt {
             AgentEvent::ToolStart { tool_call_id, .. } => {
-                assert_eq!(tool_call_id, "uuid-abc-123");
+                assert_eq!(
+                    tool_call_id,
+                    zeph_common::ToolExecutionId::new("uuid-abc-123").unwrap()
+                );
             }
             other => panic!("expected ToolStart, got {other:?}"),
         }
@@ -791,7 +794,7 @@ mod tests {
             filter_stats: None,
             kept_lines: None,
             locations: None,
-            tool_call_id: String::new(),
+            tool_call_id: zeph_common::ToolExecutionId::generate(),
 
             terminal_id: None,
             is_error: false,
@@ -820,7 +823,7 @@ mod tests {
             filter_stats: None,
             kept_lines: None,
             locations: None,
-            tool_call_id: String::new(),
+            tool_call_id: zeph_common::ToolExecutionId::generate(),
 
             terminal_id: None,
             is_error: false,

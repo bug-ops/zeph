@@ -580,7 +580,7 @@ fn clear_utility_state_resets_per_turn_redundancy_tracking() {
         caller_id: None,
         context: None,
 
-        tool_call_id: String::new(),
+        tool_call_id: None,
         skill_name: None,
     };
     let ctx = UtilityContext {
@@ -984,7 +984,7 @@ fn test_tool_call(tool_id: &str) -> ToolCall {
         caller_id: None,
         context: None,
 
-        tool_call_id: String::new(),
+        tool_call_id: None,
         skill_name: None,
     }
 }
@@ -1277,7 +1277,10 @@ async fn stamp_and_send_tier_start_sets_is_mcp_from_mcp_tool_ids() {
         test_tool_use_request("github_search_issues"),
         test_tool_use_request("bash"),
     ];
-    let tool_call_ids = ["id-mcp".to_string(), "id-native".to_string()];
+    let tool_call_ids = [
+        zeph_common::ToolExecutionId::new("id-mcp").unwrap(),
+        zeph_common::ToolExecutionId::new("id-native").unwrap(),
+    ];
     let mut tool_started_ats = [Instant::now(), Instant::now()];
     let mcp_tool_ids: std::collections::HashSet<String> =
         std::iter::once("github_search_issues".to_string()).collect();
@@ -1304,4 +1307,57 @@ async fn stamp_and_send_tier_start_sets_is_mcp_from_mcp_tool_ids() {
         !starts[1].is_mcp,
         "non-MCP tool name must set is_mcp: false, not leak the prior call's value"
     );
+}
+
+/// The id generated once per call in the batch dispatch reaches both `ToolStart` and
+/// `ToolOutput` events unchanged, and distinct calls get distinct ids.
+#[tokio::test]
+async fn native_batch_start_and_output_events_share_one_id_per_call() {
+    use crate::channel::{LoopbackChannel, LoopbackEvent};
+
+    let ran = |name: &str| {
+        Ok(Some(zeph_tools::ToolOutput {
+            tool_name: ToolName::new(name),
+            summary: format!("ran-{name}"),
+            blocks_executed: 1,
+            ..Default::default()
+        }))
+    };
+    let (loopback, mut handle) = LoopbackChannel::pair(64);
+    let mut agent = Agent::new(
+        mock_provider(vec![]),
+        loopback,
+        create_test_registry(),
+        None,
+        5,
+        MockToolExecutor::new(vec![ran("a"), ran("b")]),
+    );
+
+    agent
+        .handle_native_tool_calls(
+            None,
+            &[test_tool_use_request("a"), test_tool_use_request("b")],
+        )
+        .await
+        .unwrap();
+    drop(agent);
+
+    let mut starts = Vec::new();
+    let mut outputs = Vec::new();
+    while let Ok(ev) = handle.output_rx.try_recv() {
+        match ev {
+            LoopbackEvent::ToolStart(d) => starts.push((d.tool_name, d.tool_call_id)),
+            LoopbackEvent::ToolOutput(d) => outputs.push((d.tool_name, d.tool_call_id)),
+            _ => {}
+        }
+    }
+    assert_eq!(starts.len(), 2, "starts: {starts:?}");
+    assert_eq!(outputs.len(), 2, "outputs: {outputs:?}");
+    for (name, id) in &starts {
+        assert!(
+            outputs.iter().any(|(n, i)| n == name && i == id),
+            "ToolOutput for {name} must carry the ToolStart id {id}; outputs: {outputs:?}"
+        );
+    }
+    assert_ne!(starts[0].1, starts[1].1);
 }

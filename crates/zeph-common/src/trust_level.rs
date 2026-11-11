@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Trust tier enum for skill execution permissions.
+//! Trust tier enums shared across Zeph crates.
 //!
-//! [`SkillTrustLevel`] is the single source of truth for trust-level semantics across all
-//! Zeph crates. It lives in `zeph-common` so both `zeph-skills` and `zeph-tools` can depend
-//! on it without introducing a circular dependency.
+//! [`SkillTrustLevel`] is the single source of truth for skill execution permissions.
+//! [`TurnContextTrust`] is the content-trust tier of per-turn context and of recalled graph
+//! facts. Both live in `zeph-common` so crates such as `zeph-skills`, `zeph-tools`,
+//! `zeph-llm` and `zeph-memory` can share them without circular dependencies.
 
 use std::fmt;
 use std::str::FromStr;
@@ -205,6 +206,94 @@ impl fmt::Display for SkillTrustLevel {
             Self::Verified => f.write_str("verified"),
             Self::Quarantined => f.write_str("quarantined"),
             Self::Blocked => f.write_str("blocked"),
+        }
+    }
+}
+
+/// Content-trust tier of a per-turn context block (the minimum over its sections) and of
+/// recalled graph facts.
+///
+/// Mirrors `zeph_sanitizer::ContentTrustLevel` (which this crate cannot depend on); the
+/// discriminants are identical so the two convert through `u8`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+#[repr(u8)]
+pub enum TurnContextTrust {
+    /// System-authored or direct user content.
+    Trusted = 0,
+    /// Output of local executors.
+    LocalUntrusted = 1,
+    /// External sources: web, MCP, A2A, memory retrieval.
+    ExternalUntrusted = 2,
+}
+
+impl TurnContextTrust {
+    /// The `u8` discriminant, identical to `zeph_sanitizer::ContentTrustLevel as u8`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::trust_level::TurnContextTrust;
+    ///
+    /// assert_eq!(TurnContextTrust::ExternalUntrusted.as_u8(), 2);
+    /// ```
+    #[must_use]
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// Inverse of [`as_u8`](Self::as_u8); `None` for an unknown discriminant.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::trust_level::TurnContextTrust;
+    ///
+    /// assert_eq!(TurnContextTrust::from_u8(1), Some(TurnContextTrust::LocalUntrusted));
+    /// assert_eq!(TurnContextTrust::from_u8(9), None);
+    /// ```
+    #[must_use]
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Trusted),
+            1 => Some(Self::LocalUntrusted),
+            2 => Some(Self::ExternalUntrusted),
+            _ => None,
+        }
+    }
+
+    /// Like [`from_u8`](Self::from_u8) but fails closed: an unknown discriminant is treated as
+    /// the least trusted tier, so it can never gain system authority.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::trust_level::TurnContextTrust;
+    ///
+    /// assert_eq!(TurnContextTrust::from_u8_or_untrusted(0), TurnContextTrust::Trusted);
+    /// assert_eq!(TurnContextTrust::from_u8_or_untrusted(200), TurnContextTrust::ExternalUntrusted);
+    /// ```
+    #[must_use]
+    pub fn from_u8_or_untrusted(value: u8) -> Self {
+        Self::from_u8(value).unwrap_or(Self::ExternalUntrusted)
+    }
+
+    /// Lowercase `snake_case` name, matching the serde representation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::trust_level::TurnContextTrust;
+    ///
+    /// assert_eq!(TurnContextTrust::LocalUntrusted.as_str(), "local_untrusted");
+    /// ```
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Trusted => "trusted",
+            Self::LocalUntrusted => "local_untrusted",
+            Self::ExternalUntrusted => "external_untrusted",
         }
     }
 }

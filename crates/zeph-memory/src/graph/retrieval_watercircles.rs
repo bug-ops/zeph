@@ -144,6 +144,7 @@ pub async fn graph_recall_watercircles(
                     edge_type: edge.edge_type,
                     retrieval_count: edge.retrieval_count,
                     edge_id: Some(edge.id),
+                    trust: edge.effective_trust(),
                 };
                 let fact_score = fact.score_with_decay(temporal_decay_rate, now_secs);
                 ring_facts.push((fact_score, fact));

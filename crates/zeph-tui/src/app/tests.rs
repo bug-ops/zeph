@@ -813,7 +813,7 @@ fn tool_output_without_prior_tool_start_creates_tool_message_with_diff() {
         diff: Some(diff),
         filter_stats: None,
         kept_lines: None,
-        tool_call_id: "call-1".into(),
+        tool_call_id: zeph_common::ToolExecutionId::new("call-1").unwrap(),
     });
 
     assert_eq!(app.messages().len(), 1);
@@ -834,7 +834,7 @@ fn tool_output_without_diff_does_not_create_spurious_message() {
         diff: None,
         filter_stats: None,
         kept_lines: None,
-        tool_call_id: "call-2".into(),
+        tool_call_id: zeph_common::ToolExecutionId::new("call-2").unwrap(),
     });
 
     // No prior ToolStart and no diff/filter_stats: nothing to display.
@@ -2508,7 +2508,7 @@ fn tool_output_with_prior_tool_start_no_chunks_appends_output() {
     app.handle_agent_event(AgentEvent::ToolStart {
         tool_name: "bash".into(),
         command: "ls -la".into(),
-        tool_call_id: "call-a".into(),
+        tool_call_id: zeph_common::ToolExecutionId::new("call-a").unwrap(),
         is_mcp: false,
     });
     // Path C: ToolOutput arrives with no prior chunks.
@@ -2520,7 +2520,7 @@ fn tool_output_with_prior_tool_start_no_chunks_appends_output() {
         diff: None,
         filter_stats: None,
         kept_lines: None,
-        tool_call_id: "call-a".into(),
+        tool_call_id: zeph_common::ToolExecutionId::new("call-a").unwrap(),
     });
 
     assert_eq!(app.messages().len(), 1);
@@ -2536,7 +2536,7 @@ fn tool_output_with_prior_tool_start_and_chunks_does_not_duplicate() {
     app.handle_agent_event(AgentEvent::ToolStart {
         tool_name: "bash".into(),
         command: "echo hello".into(),
-        tool_call_id: "call-b".into(),
+        tool_call_id: zeph_common::ToolExecutionId::new("call-b").unwrap(),
         is_mcp: false,
     });
     // Path B: streaming chunks arrive.
@@ -2544,7 +2544,7 @@ fn tool_output_with_prior_tool_start_and_chunks_does_not_duplicate() {
         tool_name: "bash".into(),
         command: "echo hello".into(),
         chunk: "hello\n".into(),
-        tool_call_id: "call-b".into(),
+        tool_call_id: Some(zeph_common::ToolExecutionId::new("call-b").unwrap()),
     });
     // Path C: ToolOutput with canonical body_display (same content as chunks).
     app.handle_agent_event(AgentEvent::ToolOutput {
@@ -2555,7 +2555,7 @@ fn tool_output_with_prior_tool_start_and_chunks_does_not_duplicate() {
         diff: None,
         filter_stats: None,
         kept_lines: None,
-        tool_call_id: "call-b".into(),
+        tool_call_id: zeph_common::ToolExecutionId::new("call-b").unwrap(),
     });
 
     assert_eq!(app.messages().len(), 1);

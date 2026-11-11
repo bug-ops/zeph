@@ -6,7 +6,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use zeph_llm::provider::TurnContextTrust;
+use zeph_common::trust_level::TurnContextTrust;
 
 use crate::sqlite_time::parse_sqlite_datetime_to_unix;
 use crate::types::{EntityId, MessageId};
@@ -183,6 +183,28 @@ pub struct Edge {
 }
 
 impl Edge {
+    /// Trust tier to apply to this edge at the recall boundary.
+    ///
+    /// `NULL` (`None`) means the edge was never ingest-classified, so it is treated as
+    /// [`TurnContextTrust::ExternalUntrusted`] rather than trusted.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::trust_level::TurnContextTrust;
+    /// use zeph_memory::graph::types::Edge;
+    ///
+    /// let mut edge = Edge::synthetic_anchor(1);
+    /// assert_eq!(edge.effective_trust(), TurnContextTrust::ExternalUntrusted);
+    /// edge.trust_level = Some(TurnContextTrust::Trusted);
+    /// assert_eq!(edge.effective_trust(), TurnContextTrust::Trusted);
+    /// ```
+    #[must_use]
+    pub fn effective_trust(&self) -> TurnContextTrust {
+        self.trust_level
+            .unwrap_or(TurnContextTrust::ExternalUntrusted)
+    }
+
     /// Create a synthetic marker edge for the isolated-anchor fallback in HL-F5 (#3346).
     ///
     /// Properties:
@@ -303,7 +325,7 @@ impl GraphOrigin {
 /// # Examples
 ///
 /// ```
-/// use zeph_llm::provider::TurnContextTrust;
+/// use zeph_common::trust_level::TurnContextTrust;
 /// use zeph_memory::graph::types::{GraphOrigin, GraphProvenance};
 ///
 /// let prov = GraphProvenance {
@@ -421,6 +443,11 @@ pub struct GraphFact {
     /// Populated by [`crate::graph::retrieval::graph_recall`] and used by
     /// [`crate::recall_view`] for Zoom-In provenance lookups.
     pub edge_id: Option<i64>,
+    /// Trust tier of the ingest source of the underlying edge (spec-067).
+    ///
+    /// A `NULL` edge tier resolves to [`TurnContextTrust::ExternalUntrusted`] (see
+    /// [`Edge::effective_trust`]), so a recalled fact never claims more trust than was assessed.
+    pub trust: TurnContextTrust,
 }
 
 /// Compute A-MEM evolved edge weight.
@@ -548,6 +575,7 @@ mod tests {
             retrieval_count: 0,
             edge_type: EdgeType::Semantic,
             edge_id: None,
+            trust: TurnContextTrust::ExternalUntrusted,
         };
         let causal = GraphFact {
             edge_type: EdgeType::Causal,
@@ -692,6 +720,7 @@ mod tests {
             edge_type: EdgeType::Semantic,
             retrieval_count: 0,
             edge_id: None,
+            trust: TurnContextTrust::ExternalUntrusted,
         };
         // retrieval_count=0 → evolved_weight = confidence = 1.0
         // 1.0 * (1/(1+0)) * 1.0 = 1.0
@@ -756,6 +785,7 @@ mod tests {
             edge_type: EdgeType::Semantic,
             retrieval_count: 0,
             edge_id: None,
+            trust: TurnContextTrust::ExternalUntrusted,
         };
         let retrieved_fact = GraphFact {
             retrieval_count: 5,
@@ -781,6 +811,7 @@ mod tests {
             edge_type: EdgeType::Semantic,
             retrieval_count: 0,
             edge_id: None,
+            trust: TurnContextTrust::ExternalUntrusted,
         };
         let base = fact.composite_score();
         let with_decay = fact.score_with_decay(0.0, 1_752_000_000);
@@ -804,6 +835,7 @@ mod tests {
             edge_type: EdgeType::Semantic,
             retrieval_count: 0,
             edge_id: None,
+            trust: TurnContextTrust::ExternalUntrusted,
         };
         let base = fact.composite_score();
         let boosted = fact.score_with_decay(0.01, now_secs);
@@ -886,6 +918,7 @@ mod tests {
             edge_type: et,
             retrieval_count: 0,
             edge_id: None,
+            trust: TurnContextTrust::ExternalUntrusted,
         };
         assert!((fact(EdgeType::Causal).composite_score() - 1.2).abs() < 1e-5);
         assert!((fact(EdgeType::Temporal).composite_score() - 0.9).abs() < 1e-5);
@@ -906,6 +939,7 @@ mod tests {
             edge_type: et,
             retrieval_count: 0,
             edge_id: None,
+            trust: TurnContextTrust::ExternalUntrusted,
         };
         let causal = fact(EdgeType::Causal).composite_score();
         let temporal = fact(EdgeType::Temporal).composite_score();

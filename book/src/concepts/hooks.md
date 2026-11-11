@@ -309,7 +309,7 @@ Each hook definition (`HookDef`) carries:
 
 Multiple hooks for the same event are executed in declaration order. If `fail_closed = true` on any hook, a failure in that hook stops execution of subsequent hooks for that event.
 
-For `pre_tool_use` in the main agent, a failing `fail_closed` hook also blocks the tool call: the tool is not executed and the model receives a `[blocked]` result. Each block counts against `hooks.hook_block_cap` (default `8`, `0` = unlimited, reset every turn); reaching the cap ends the turn. In subagents a failing `fail_closed` hook blocks the tool the same way; the model sees only a generic `[blocked] PreToolUse hook blocked tool <name>` message, without the hook command. The inline orchestration tool loop does not fire `PreToolUse` hooks yet (tracked in #6954).
+For `pre_tool_use` in the main agent, a failing `fail_closed` hook also blocks the tool call: the tool is not executed and the model receives a `[blocked]` result. Each block counts against `hooks.hook_block_cap` (default `8`, `0` = unlimited, reset every turn); reaching the cap ends the turn. In subagents a failing `fail_closed` hook blocks the tool the same way; the model sees only a generic `[blocked] PreToolUse hook blocked tool <name>` message, without the hook command. The inline orchestration tool loop fires both `pre_tool_use` (with the same `fail_closed` blocking) and `post_tool_use` hooks; its post hooks report `ZEPH_AGENT_TYPE=main`, and `ZEPH_TOOL_DURATION_MS` includes any time spent waiting on an MCP elicitation.
 
 ### `TurnComplete`
 

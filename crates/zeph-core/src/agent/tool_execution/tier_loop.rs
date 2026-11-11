@@ -19,7 +19,7 @@ use super::{
     strip_tafc_fields, tool_args_hash,
 };
 use crate::agent::Agent;
-use crate::agent::hooks_dispatch::{PreToolHookCall, make_tool_hook_env};
+use crate::agent::hooks_dispatch::{PostToolHookCall, PreToolHookCall};
 use crate::agent::speculative::{COMMIT_LIMIT, CommitOutcome};
 use crate::agent::turn_gate::{DisabledReason, DispatchGate, RequiresGate, TurnToolSet};
 use crate::channel::{Channel, StopHint, ToolStartEvent};
@@ -575,9 +575,9 @@ impl<C: Channel> Agent<C> {
             .task_execution_env
             .as_deref()
             .map(|name| ExecutionContext::default().with_name(name));
-        let tool_call_ids: Vec<String> = tool_calls
+        let tool_call_ids: Vec<zeph_common::ToolExecutionId> = tool_calls
             .iter()
-            .map(|_| uuid::Uuid::new_v4().to_string())
+            .map(|_| zeph_common::ToolExecutionId::generate())
             .collect();
 
         // S1: unmask-miss telemetry (#5437) — counts string leaves that still carry a
@@ -627,7 +627,7 @@ impl<C: Channel> Agent<C> {
                     params,
                     caller_id: None,
                     context: task_ctx.clone(),
-                    tool_call_id: tool_call_ids[idx].clone(),
+                    tool_call_id: Some(tool_call_ids[idx].clone()),
                     skill_name: self.skill_attribution(),
                 }
             })
@@ -786,7 +786,7 @@ impl<C: Channel> Agent<C> {
         mcp_tool_ids: &std::collections::HashSet<String>,
         max_parallel: usize,
         cancel: &tokio_util::sync::CancellationToken,
-        tool_call_ids: &[String],
+        tool_call_ids: &[zeph_common::ToolExecutionId],
         tool_started_ats: &mut [std::time::Instant],
     ) -> Result<TierLoopOutput, crate::agent::error::AgentError> {
         // Build a dependency DAG over tool_use_id references in call arguments. When the
@@ -950,7 +950,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         tier_indices: &[usize],
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
-        tool_call_ids: &[String],
+        tool_call_ids: &[zeph_common::ToolExecutionId],
         tool_started_ats: &mut [std::time::Instant],
         mcp_tool_ids: &std::collections::HashSet<String>,
         speculative: &std::collections::HashSet<usize>,
@@ -1721,8 +1721,8 @@ impl<C: Channel> Agent<C> {
             let sem = std::sync::Arc::clone(&semaphore);
             let tc = &tool_calls[idx];
             let call = &calls[idx];
-            let matched: Vec<&zeph_config::HookDef> =
-                zeph_subagent::matching_hooks(&post_hooks, tc.name.as_str());
+            let hook_call =
+                PostToolHookCall::prepare(&post_hooks, tc.name.as_str(), &tc.input, conv_id);
             async move {
                 let Ok(_permit) = sem.acquire().await else {
                     tracing::warn!(
@@ -1746,68 +1746,15 @@ impl<C: Channel> Agent<C> {
                 }
 
                 // Fire PostToolUse hooks after the tool result is available (fail-open).
-                if !matched.is_empty() {
-                    let mut env = make_tool_hook_env(tc.name.as_str(), &tc.input, conv_id);
-                    let duration_ms = u64::try_from(tool_started_ats[idx].elapsed().as_millis())
-                        .unwrap_or(u64::MAX);
-                    env.insert("ZEPH_TOOL_DURATION_MS".to_owned(), duration_ms.to_string());
-                    let owned: Vec<zeph_config::HookDef> = matched.into_iter().cloned().collect();
-
-                    // Build stdin JSON context for the hook process.
-                    let tool_output_text = match &result {
-                        Ok(Some(out)) => Some(out.summary.as_str()),
-                        _ => None,
-                    };
-                    let tool_error_text = match &result {
-                        Err(e) => Some(e.to_string()),
-                        _ => None,
-                    };
-                    let hook_input = zeph_subagent::PostToolUseHookInput {
-                        tool_name: tc.name.as_str(),
-                        tool_args: &tc.input,
-                        session_id: conv_id,
-                        duration_ms,
-                        tool_output: tool_output_text,
-                        tool_error: tool_error_text.as_deref(),
-                        agent_id: conv_id,
-                        agent_type: "main",
-                    };
-                    let stdin_bytes = serde_json::to_vec(&hook_input).ok();
-
-                    match zeph_subagent::hooks::fire_hooks(
-                        &owned,
-                        &env,
-                        mcp,
-                        stdin_bytes.as_deref(),
-                    )
-                    .instrument(tracing::info_span!(
-                        "core.hooks.post_tool_use",
-                        tool = %tc.name
-                    ))
-                    .await
-                    {
-                        Ok(run_result) => {
-                            if let Some(replacement) = run_result.output.updated_tool_output {
-                                // Apply hook-requested output substitution.
-                                if let Ok(Some(ref mut out)) = result {
-                                    tracing::debug!(
-                                        tool = %tc.name,
-                                        original_len = out.summary.len(),
-                                        replacement_len = replacement.len(),
-                                        "PostToolUse hook replaced tool output"
-                                    );
-                                    out.summary = replacement;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                tool = %tc.name,
-                                "PostToolUse hook failed"
-                            );
-                        }
-                    }
+                if let Some(hook_call) = &hook_call {
+                    hook_call
+                        .fire(
+                            tc.name.as_str(),
+                            tool_started_ats[idx].elapsed(),
+                            &mut result,
+                            mcp,
+                        )
+                        .await;
                 }
 
                 (idx, result)
@@ -1830,7 +1777,7 @@ impl<C: Channel> Agent<C> {
     async fn process_tool_result_batch(
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
-        tool_call_ids: &[String],
+        tool_call_ids: &[zeph_common::ToolExecutionId],
         tool_started_ats: &[std::time::Instant],
         mut tool_results: Vec<Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>>,
         causal_pre_response: Option<(String, String)>,
@@ -2544,6 +2491,7 @@ impl<C: Channel> Agent<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::hooks_dispatch::make_tool_hook_env;
     use zeph_subagent::TOOL_ARGS_JSON_LIMIT;
 
     fn json_val(s: &str) -> serde_json::Value {

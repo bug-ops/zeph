@@ -96,7 +96,7 @@ fn make_tool_use_request(id: &str, name: &str) -> zeph_llm::provider::ToolUseReq
 async fn call_process_one_tool_result<C: crate::channel::Channel>(
     agent: &mut crate::agent::Agent<C>,
     tc: &zeph_llm::provider::ToolUseRequest,
-    tool_call_id: &str,
+    tool_call_id: &zeph_common::ToolExecutionId,
     started_at: &std::time::Instant,
     tool_result: Result<Option<zeph_tools::executor::ToolOutput>, zeph_tools::executor::ToolError>,
 ) -> Vec<zeph_llm::provider::MessagePart> {
@@ -153,7 +153,7 @@ async fn process_one_tool_result_sends_output_when_streamed_true() {
     call_process_one_tool_result(
         &mut agent,
         &tc,
-        "id-streamed",
+        &zeph_common::ToolExecutionId::new("id-streamed").unwrap(),
         &std::time::Instant::now(),
         Ok(Some(output)),
     )
@@ -182,7 +182,7 @@ async fn process_one_tool_result_emits_tool_start_then_output_via_loopback() {
     // sent before the tool executes, then process_one_tool_result handles the result — the
     // two are separate production call sites, not a single legacy convenience wrapper.
     let tc = make_tool_use_request("call-grep", "grep");
-    let tool_call_id = "call-grep".to_owned();
+    let tool_call_id = zeph_common::ToolExecutionId::new("call-grep").unwrap();
     let mut started_ats = [std::time::Instant::now()];
     agent
         .stamp_and_send_tier_start(
@@ -227,11 +227,11 @@ async fn process_one_tool_result_emits_tool_start_then_output_via_loopback() {
 
     let tool_start_pos = events.iter().position(|e| {
         matches!(e, LoopbackEvent::ToolStart(data)
-            if data.tool_name == "grep" && !data.tool_call_id.is_empty())
+            if data.tool_name == "grep" && data.tool_call_id == tool_call_id)
     });
     let tool_output_pos = events.iter().position(|e| {
         matches!(e, LoopbackEvent::ToolOutput(data)
-            if data.tool_name == "grep" && !data.tool_call_id.is_empty())
+            if data.tool_name == "grep" && data.tool_call_id == tool_call_id)
     });
 
     assert!(
@@ -297,7 +297,7 @@ async fn process_one_tool_result_locations_propagated_to_loopback_event() {
     call_process_one_tool_result(
         &mut agent,
         &tc,
-        "id-locations",
+        &zeph_common::ToolExecutionId::new("id-locations").unwrap(),
         &std::time::Instant::now(),
         Ok(Some(output)),
     )
@@ -356,7 +356,7 @@ async fn process_one_tool_result_display_is_raw_body_not_markdown_wrapped() {
     call_process_one_tool_result(
         &mut agent,
         &tc,
-        "id-raw-body",
+        &zeph_common::ToolExecutionId::new("id-raw-body").unwrap(),
         &std::time::Instant::now(),
         Ok(Some(output)),
     )

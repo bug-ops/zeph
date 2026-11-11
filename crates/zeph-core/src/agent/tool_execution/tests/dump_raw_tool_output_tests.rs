@@ -92,7 +92,7 @@ async fn process_one_tool_result_writes_raw_dump_file_on_success() {
     agent
         .process_one_tool_result(
             &tc,
-            "id-dump-ok",
+            &zeph_common::ToolExecutionId::new("id-dump-ok").unwrap(),
             &std::time::Instant::now(),
             Ok(Some(ToolOutput {
                 tool_name: "bash".into(),
@@ -148,7 +148,7 @@ async fn process_one_tool_result_dump_captures_raw_output_before_truncation() {
     agent
         .process_one_tool_result(
             &tc,
-            "id-dump-raw",
+            &zeph_common::ToolExecutionId::new("id-dump-raw").unwrap(),
             &std::time::Instant::now(),
             Ok(Some(ToolOutput {
                 tool_name: "srv:big_tool".into(),
@@ -203,7 +203,7 @@ async fn process_one_tool_result_dump_scrubs_pii_when_filter_enabled() {
     agent
         .process_one_tool_result(
             &tc,
-            "id-pii-on",
+            &zeph_common::ToolExecutionId::new("id-pii-on").unwrap(),
             &std::time::Instant::now(),
             Ok(Some(ToolOutput {
                 tool_name: "bash".into(),
@@ -251,7 +251,7 @@ async fn process_one_tool_result_dump_keeps_content_when_pii_filter_disabled() {
     agent
         .process_one_tool_result(
             &tc,
-            "id-pii-off",
+            &zeph_common::ToolExecutionId::new("id-pii-off").unwrap(),
             &std::time::Instant::now(),
             Ok(Some(ToolOutput {
                 tool_name: "bash".into(),
@@ -293,7 +293,7 @@ async fn process_one_tool_result_skips_raw_dump_on_error() {
     agent
         .process_one_tool_result(
             &tc,
-            "id-err-dump",
+            &zeph_common::ToolExecutionId::new("id-err-dump").unwrap(),
             &std::time::Instant::now(),
             Err(err),
             &mut Vec::new(),
@@ -344,7 +344,7 @@ async fn process_one_tool_result_dump_is_noop_when_debug_dumps_disabled() {
     agent
         .process_one_tool_result(
             &tc,
-            "id-no-dump",
+            &zeph_common::ToolExecutionId::new("id-no-dump").unwrap(),
             &std::time::Instant::now(),
             Ok(Some(ToolOutput {
                 tool_name: "bash".into(),

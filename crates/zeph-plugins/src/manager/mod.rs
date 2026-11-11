@@ -37,10 +37,11 @@ pub struct AddResult {
     pub mcp_server_ids: Vec<String>,
     /// Non-fatal warnings produced at install time.
     ///
-    /// Currently populated when a plugin's `allowed_commands` overlay will
-    /// have no effect because the host's base `tools.shell.allowed_commands`
-    /// is empty (see issue #3149 — tighten-only semantics mean plugins
-    /// cannot widen an empty base allowlist). Callers should surface these
+    /// Populated when a plugin's `allowed_commands` overlay will have no effect because the
+    /// host's base `tools.shell.allowed_commands` is empty (see issue #3149 — tighten-only
+    /// semantics mean plugins cannot widen an empty base allowlist), on reputation matches, and
+    /// when the integrity registry could not record the plugin's digest (the plugin then
+    /// stays skipped or unverified until the registry is repaired). Callers should surface these
     /// to the user alongside the success message (`eprintln!` on the CLI,
     /// appended to the output string on the TUI).
     pub warnings: Vec<String>,
@@ -53,6 +54,9 @@ pub struct RemoveResult {
     pub removed_skills: Vec<String>,
     /// MCP server IDs that were declared (require agent restart).
     pub removed_mcp_ids: Vec<String>,
+    /// Non-fatal warnings, e.g. the integrity registry could not drop the removed plugin's
+    /// entry. Callers should surface these to the user.
+    pub warnings: Vec<String>,
 }
 
 /// Result of a successful `plugin disable` operation.
@@ -131,6 +135,9 @@ pub struct AutoUpdateResult {
     pub name: PluginName,
     /// Specific outcome for this plugin.
     pub status: AutoUpdateStatus,
+    /// Non-fatal warnings from a successful update, e.g. the integrity registry could not
+    /// record the new manifest digest. Callers should surface these to the user.
+    pub warnings: Vec<String>,
 }
 
 /// Status of an individual auto-update attempt.

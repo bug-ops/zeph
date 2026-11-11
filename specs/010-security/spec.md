@@ -186,8 +186,26 @@ follow-up issue filed with the #3077 PR.
 
 ## `unsafe_code = "deny"` Workspace-Wide
 
-- No `unsafe` blocks anywhere — enforced by compiler
-- No exceptions — new code requiring unsafe must use a safe wrapper crate
+- `unsafe_code = "deny"` is set workspace-wide and enforced by the compiler
+- The only exceptions are the scoped `#[allow(unsafe_code)]` sites listed in the registry below, each with a `// SAFETY:` comment on every `unsafe` block
+- Every new unsafe site requires a registry row plus an explicit architectural decision, and is allowed only where no maintained safe crate covers the API
+- Categories (a)-(c) are descriptive labels of the registered sites, not blanket permissions; category (d) is frozen to the file list below
+- Inventory: `rg -n 'allow\(unsafe_code\)' src crates`
+- Trait-signature note (#6964): `Channel::send_diff` takes `&ToolExecutionId` for `tool_call_id`; this is the only sanctioned change to the frozen `Channel` signatures
+
+### Unsafe registry
+
+| Category | Site | Reason |
+|----------|------|--------|
+| (a) Platform FFI module | `zeph_common::fs_secure::windows` (`#[cfg(windows)]`, windows-sys) | Owner-only DACL applied at file/dir creation; no maintained safe crate covers it (#6929) |
+| (b) Model-weight mmap | `zeph_llm::classifier::candle` (`candle.rs:222`, `load_inner`) | mmap of safetensors |
+| (b) Model-weight mmap | `zeph_llm::candle_whisper` (`candle_whisper.rs:52`) | mmap of safetensors |
+| (b) Model-weight mmap | `zeph_llm::candle_provider::embed` (`embed.rs:37`) | mmap of safetensors |
+| (b) Model-weight mmap | `zeph_llm::classifier::ner` (`ner.rs:256`) | mmap of safetensors |
+| (b) Model-weight mmap | `zeph_llm::classifier::three_class` (`three_class.rs:261`) | mmap of safetensors |
+| (b) Model-weight mmap | `zeph_llm::classifier::candle_pii` (`candle_pii.rs:127`) | mmap of safetensors |
+| (c) Test-only env mutation | `std::env::set_var`/`remove_var` in tests (edition 2024): zeph-tools `shell/tests.rs`, zeph-tui `theme/color_mode.rs`, zeph-vault `lib.rs`, zeph-acp `client/tests.rs` | Process env mutation is `unsafe` in edition 2024 |
+| (d) Binary-crate sites (frozen list, pending an audit) | `src/bootstrap/tests.rs`, `src/commands/{durable,registry_client,scheduler_daemon,skill,vault}.rs`, `src/execution_mode.rs`, `src/init/durable.rs`, `src/main.rs`, `src/runner.rs`, `src/url_scheme/register.rs` | Pre-date the registry; no new file may be added |
 
 ## SSRF Protection
 
@@ -219,7 +237,7 @@ auto-promotion and reload trust-assignment are out of scope for this default).
 - `ConstantTimeEq` is mandatory for all token/key comparisons — `==` is banned
 - Blocklist check cannot be bypassed by `TrustLevel` or `PermissionPolicy`
 - `ExfiltrationGuard` must run on all untrusted content before it can trigger memory writes or tool calls
-- `unsafe_code = "deny"` must never be lifted — no exceptions
+- `unsafe_code = "deny"` is never lifted workspace-wide; scoped exceptions only, per the §unsafe registry
 
 ---
 

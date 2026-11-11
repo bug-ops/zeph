@@ -320,10 +320,12 @@ impl PluginManager {
 
             stream::iter(candidates.into_iter().filter(|p| p.auto_update))
                 .map(|plugin| async move {
-                    let status = self.update_one_plugin(&plugin).await;
+                    let mut warnings = Vec::new();
+                    let status = self.update_one_plugin(&plugin, &mut warnings).await;
                     AutoUpdateResult {
                         name: plugin.name,
                         status,
+                        warnings,
                     }
                 })
                 .buffer_unordered(4)
@@ -334,9 +336,14 @@ impl PluginManager {
         .await
     }
 
-    /// Attempt to update a single plugin. Returns the update status without aborting on error.
+    /// Attempt to update a single plugin. Returns the update status without aborting on error;
+    /// non-fatal warnings from a successful swap are appended to `warnings`.
     #[tracing::instrument(name = "plugins.manager.update_one", skip_all, fields(plugin = %plugin.name))]
-    async fn update_one_plugin(&self, plugin: &InstalledPlugin) -> AutoUpdateStatus {
+    async fn update_one_plugin(
+        &self,
+        plugin: &InstalledPlugin,
+        warnings: &mut Vec<String>,
+    ) -> AutoUpdateStatus {
         let source_path = plugin.path.join(".plugin-source.toml");
         let Some(source) = read_plugin_source(&source_path).await else {
             return AutoUpdateStatus::NoSource;
@@ -422,7 +429,7 @@ impl PluginManager {
         .await;
 
         match result {
-            Ok(Ok(())) => {}
+            Ok(Ok(warning)) => warnings.extend(warning),
             Ok(Err(e)) => {
                 tracing::warn!(plugin = %plugin.name, error = %e, "auto-update: staged swap failed, original preserved");
                 return AutoUpdateStatus::Failed(e);
@@ -708,6 +715,7 @@ fn run_reputation_check(
 /// # Errors
 ///
 /// Returns a human-readable error string on any failure. The caller logs this as a warning.
+/// On success returns a warning when the integrity registry could not record the new digest.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_staged_update(
     bytes: &[u8],
@@ -723,7 +731,7 @@ pub(crate) fn apply_staged_update(
     base_allowed_commands: &[String],
     reputation: Option<&dyn ReputationSource>,
     reputation_enforcement: ReputationEnforcement,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     // Clean up any leftover staging/backup dirs from a previous interrupted attempt.
     let _ = std::fs::remove_dir_all(staging);
     let _ = std::fs::remove_dir_all(backup);
@@ -830,16 +838,12 @@ pub(crate) fn apply_staged_update(
 
     // Update integrity registry for the new manifest.
     let installed_manifest_path = dest.join(".plugin.toml");
-    if let Err(e) = crate::integrity::IntegrityRegistry::update(integrity_registry_path, |r| {
-        r.record(manifest.plugin.name.as_str(), &installed_manifest_path)
-    }) {
-        tracing::warn!(
-            plugin = %manifest.plugin.name,
-            error = %e,
-            "auto-update: failed to update integrity registry after swap"
-        );
-    }
+    let warning = crate::integrity::IntegrityRegistry::update_reporting(
+        integrity_registry_path,
+        "plugin recorded without a digest",
+        |r| r.record(manifest.plugin.name.as_str(), &installed_manifest_path),
+    );
 
     let _ = std::fs::remove_dir_all(backup);
-    Ok(())
+    Ok(warning)
 }

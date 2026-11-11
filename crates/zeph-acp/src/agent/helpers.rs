@@ -217,7 +217,7 @@ pub(super) fn build_config_options(
 
 fn tool_start_to_updates(data: zeph_core::ToolStartData) -> Vec<SessionUpdate> {
     let tool_name = data.tool_name;
-    let tool_call_id = data.tool_call_id;
+    let tool_call_id = data.tool_call_id.as_str().to_owned();
     let params = data.params;
     let parent_tool_use_id = data.parent_tool_use_id;
     let started_at = data.started_at;
@@ -405,7 +405,7 @@ fn tool_output_to_updates(data: zeph_core::ToolOutputData) -> Vec<SessionUpdate>
     let display = data.display;
     let diff = data.diff;
     let locations = data.locations;
-    let tool_call_id = data.tool_call_id;
+    let tool_call_id = data.tool_call_id.as_str().to_owned();
     let is_error = data.is_error;
     let terminal_id = data.terminal_id;
     let parent_tool_use_id = data.parent_tool_use_id;

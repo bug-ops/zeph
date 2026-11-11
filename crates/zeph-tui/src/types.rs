@@ -112,7 +112,7 @@ pub struct ChatMessage {
     ///
     /// Used to correlate `DiffReady` and `ToolOutputChunk` events with the
     /// correct `ChatMessage` when multiple tools run concurrently.
-    pub tool_call_id: Option<String>,
+    pub tool_call_id: Option<zeph_common::ToolExecutionId>,
     /// Whether the tool call succeeded. `None` while streaming, `Some(true)` on
     /// success, `Some(false)` on error.
     pub success: Option<bool>,
@@ -193,14 +193,15 @@ impl ChatMessage {
     /// # Examples
     ///
     /// ```rust
+    /// use zeph_common::ToolExecutionId;
     /// use zeph_tui::{ChatMessage, MessageRole};
     ///
-    /// let msg = ChatMessage::new(MessageRole::Tool, "")
-    ///     .with_tool_call_id("call-abc-123".to_owned());
-    /// assert_eq!(msg.tool_call_id.as_deref(), Some("call-abc-123"));
+    /// let id = ToolExecutionId::new("call-abc-123").unwrap();
+    /// let msg = ChatMessage::new(MessageRole::Tool, "").with_tool_call_id(id.clone());
+    /// assert_eq!(msg.tool_call_id, Some(id));
     /// ```
     #[must_use]
-    pub fn with_tool_call_id(mut self, id: String) -> Self {
+    pub fn with_tool_call_id(mut self, id: zeph_common::ToolExecutionId) -> Self {
         self.tool_call_id = Some(id);
         self
     }

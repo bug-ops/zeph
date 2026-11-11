@@ -20,6 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-tools`, `zeph-channels`, `zeph-core`, `zeph-tui`, `zeph-acp`: `ToolExecutionId` newtype (no `Default`) for agent-side tool-execution ids; `Channel::send_diff` takes `&ToolExecutionId` and the JSON event `id` is `null` when absent (breaking) (#PRNUM)
+- `zeph-context`, `zeph-agent-context`, `zeph-core`: nothing sent to the provider is path-masked, only secrets and URL credentials are redacted; debug dumps still show `[PATH]` (#PRNUM)
+- `zeph-memory`, `zeph-common`, `zeph-agent-context`: graph recall carries `trust_level` (`GraphFact.trust`, NULL is `ExternalUntrusted`) and labels untrusted facts per line; `TurnContextTrust` moves to `zeph-common` (breaking: `Entity`/`Edge`/`GraphFact` literals gain `trust`) (#PRNUM)
+- `docs`: the `unsafe` policy has a registry in spec 010 listing the only modules allowed to use `#[allow(unsafe_code)]` (#PRNUM)
 - `zeph-common`, `zeph-llm`, `zeph-context`, `zeph-core`, `zeph-subagent`, `zeph-acp`: `ToolCallId` newtype for model- and history-side tool-call ids (`ToolUseRequest.id`, `MessagePart::ToolUse.id`, `ToolResult.tool_use_id`); wire format unchanged (breaking) (#6969)
 - `zeph-agent-context`, `zeph-core`: remove the test-only `ContextService::{inject_semantic_recall_bare, inject_cross_session_context, inject_summaries}` (breaking) (#6969)
 - `zeph-memory`, `zeph-db`: graph entities and edges persist `trust_level` (migration 117, NULL for conversation origin; `Entity`/`Edge` gain a `trust_level` field) (breaking) (#6969)
@@ -44,6 +48,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-core`: the orchestration inline tool loop fires `post_tool_use` hooks (#PRNUM)
+- `zeph-plugins`: a corrupt integrity registry fails closed at load (plugins skipped with the repair step) and `plugin add`, `remove` and auto-update surface registry warnings (#PRNUM)
+- `zeph-common`: `fs_secure` creates files and directories with an owner-only DACL on Windows through a scoped `unsafe` module (#PRNUM)
+- `workspace`: remove the unused `libsqlite3-sys` workspace dependency entry (#PRNUM)
 - `zeph-core`: the orchestration inline tool loop fires `PreToolUse` hooks and honors `fail_closed` blocks (#6969)
 - `zeph-agent-context`: memory sanitization and truncation reach the wire for parts-based messages (#6969)
 - `zeph-plugins`: a corrupt or unreadable integrity registry is no longer overwritten on install, removal or update (the registry update aborts and callers warn with the repair step; a new plugin loads unverified until repaired), so stored digests are not dropped (#6969)

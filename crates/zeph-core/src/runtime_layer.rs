@@ -192,7 +192,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = layer.before_tool(&ctx, &call).await;
@@ -418,7 +418,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result: Result<Option<ToolOutput>, ToolError> = Ok(None);
@@ -457,7 +457,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result: Result<Option<ToolOutput>, zeph_tools::ToolError> = Ok(None);

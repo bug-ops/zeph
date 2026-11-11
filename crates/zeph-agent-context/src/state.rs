@@ -214,7 +214,8 @@ pub struct ContextAssemblyView<'a> {
     /// Function pointer for scrubbing credentials from message content.
     ///
     /// Passed as a function pointer so `zeph-agent-context` does not need to depend on
-    /// `zeph-core::redact`. The shim in `zeph-core` sets this to `crate::redact::scrub_content`.
+    /// `zeph-core::redact`. The shim in `zeph-core` sets this to `crate::redact::redact_secrets` (secrets only: nothing
+    /// sent to the provider is path-masked, #6968).
     /// When `redact_credentials = false` the service does not call this function.
     pub scrub: fn(&str) -> Cow<'_, str>,
 
@@ -417,7 +418,7 @@ pub struct ContextSummarizationView<'a> {
     // ── Credential scrubber ───────────────────────────────────────────────────
     /// Function pointer for scrubbing credentials from summary text.
     ///
-    /// Set to `crate::redact::scrub_content` by the `zeph-core` shim when
+    /// Set to `crate::redact::redact_secrets` (secrets only, no path masking; #6968) by the `zeph-core` shim when
     /// `redact_credentials = true`, or to a no-op identity function otherwise.
     pub scrub: fn(&str) -> Cow<'_, str>,
 

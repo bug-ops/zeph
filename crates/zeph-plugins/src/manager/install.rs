@@ -118,13 +118,13 @@ impl PluginManager {
         })?;
 
         // Record integrity digest. Crash between the write above and the save here leaves the
-        // plugin with no registry entry — it will load unverified until reinstalled (M4).
-        if let Err(e) =
-            crate::integrity::IntegrityRegistry::update(&self.integrity_registry_path, |r| {
-                r.record(manifest.plugin.name.as_str(), &installed_manifest_path)
-            })
-        {
-            tracing::warn!(plugin = %manifest.plugin.name, error = %e, "failed to update integrity registry after install");
+        // plugin with no registry entry — it will load unverified until reinstalled (M4); a registry failure is surfaced as a warning.
+        if let Some(msg) = crate::integrity::IntegrityRegistry::update_reporting(
+            &self.integrity_registry_path,
+            "plugin recorded without a digest",
+            |r| r.record(manifest.plugin.name.as_str(), &installed_manifest_path),
+        ) {
+            warnings.push(msg);
         }
 
         let mcp_server_ids: Vec<String> =
@@ -197,21 +197,24 @@ impl PluginManager {
             source: e,
         })?;
 
-        // Remove integrity entry; non-fatal if registry cannot be updated.
-        if let Err(e) =
-            crate::integrity::IntegrityRegistry::update(&self.integrity_registry_path, |r| {
+        // The directory is already gone, so a registry failure is surfaced as a warning.
+        let warnings = crate::integrity::IntegrityRegistry::update_reporting(
+            &self.integrity_registry_path,
+            "stale digest entry left in the integrity registry",
+            |r| {
                 r.remove(name);
                 Ok(())
-            })
-        {
-            tracing::warn!(plugin = %name, error = %e, "failed to update integrity registry after remove");
-        }
+            },
+        )
+        .into_iter()
+        .collect();
 
         tracing::info!(plugin = %name, "plugin removed");
 
         Ok(RemoveResult {
             removed_skills,
             removed_mcp_ids,
+            warnings,
         })
     }
 

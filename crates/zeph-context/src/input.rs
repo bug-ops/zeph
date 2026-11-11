@@ -135,8 +135,9 @@ pub struct ContextAssemblyInput<'a> {
     pub messages: &'a [zeph_llm::provider::Message],
     /// The user query for the current turn, used as the search query for all memory lookups.
     pub query: &'a str,
-    /// Content scrubber for PII removal. Passed as a function pointer to avoid a dependency
-    /// on `zeph-core`'s redact module.
+    /// Credential scrubber for text sent to the provider (secrets and URL credentials, never
+    /// paths; #6968). Passed as a function pointer to avoid a dependency on `zeph-core`'s redact
+    /// module.
     pub scrub: fn(&str) -> Cow<'_, str>,
     /// Compression tiers active for this turn, derived from the retrieval policy.
     ///

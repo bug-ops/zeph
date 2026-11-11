@@ -24,7 +24,7 @@ use crate::runtime_layer::{LayerContext, RuntimeLayer};
 /// and per-index correctness (every index seen exactly once).
 struct DelayRecordingLayer {
     delay: Duration,
-    seen: Arc<Mutex<Vec<String>>>,
+    seen: Arc<Mutex<Vec<Option<zeph_common::ToolExecutionId>>>>,
     /// Number of `after_tool` calls currently inside their sleep.
     in_flight: AtomicUsize,
     /// High-water mark of `in_flight`, i.e. the largest number of `after_tool` calls ever
@@ -66,7 +66,8 @@ fn make_tool_use_request(id: &str, name: &str) -> ToolUseRequest {
 async fn after_tool_hooks_run_concurrently_across_tier_indices() {
     let n = 5;
     let delay = Duration::from_millis(150);
-    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen: Arc<Mutex<Vec<Option<zeph_common::ToolExecutionId>>>> =
+        Arc::new(Mutex::new(Vec::new()));
     let layer = Arc::new(DelayRecordingLayer {
         delay,
         seen: Arc::clone(&seen),
@@ -98,7 +99,8 @@ async fn after_tool_hooks_run_concurrently_across_tier_indices() {
         n,
         "after_tool must run exactly once for every tool result in the tier"
     );
-    let unique: std::collections::HashSet<&String> = seen.iter().collect();
+    let unique: std::collections::HashSet<&Option<zeph_common::ToolExecutionId>> =
+        seen.iter().collect();
     assert_eq!(
         unique.len(),
         n,

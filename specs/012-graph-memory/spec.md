@@ -413,6 +413,7 @@ deployments sensitive to graph-recall latency/cost should benchmark before upgra
 - `NULL` means "never ingest-classified, trust unassessed" and MUST be treated as untrusted by any reader
 - A write that meets an existing row merges `trust_level` NULL-absorbing (entity upsert, edge dedup update, edge reassertion); an unassessed source can never be laundered by a later trusted write
 - A stored value outside 0..=2 is a decode error, never a default
+- Recall read side (#6967): `GraphFact.trust` is a non-optional `TurnContextTrust`; a `NULL` edge resolves to `ExternalUntrusted` (`Edge::effective_trust`). `fetch_graph_facts` appends a per-line `trust: <tier>` label for untrusted tiers (head and neighbor lines); the block hint and the taint are unchanged (spec 067 FR-005)
 - `origin` keeps the first writer, so the migration backfill never trusts it blindly: ingest entities get tier 0 only when never re-written (`last_seen_at = first_seen_at`), ingest edges stay `NULL` (spec 067 FR-005)
 
 ---

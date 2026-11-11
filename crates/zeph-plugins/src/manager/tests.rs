@@ -2903,3 +2903,119 @@ fn with_reputation_config_maps_block_enforcement_without_force() {
     assert!(mgr.reputation.is_some());
     assert_eq!(mgr.reputation_enforcement, ReputationEnforcement::Block);
 }
+
+// --- #6962: an unusable integrity registry is surfaced, never silently ignored ---
+
+fn manager_with_registry(tmp: &Path, registry_bytes: &[u8]) -> (PluginManager, std::path::PathBuf) {
+    let registry_path = tmp.join("registry.toml");
+    std::fs::write(&registry_path, registry_bytes).unwrap();
+    let mgr = PluginManager::new(tmp.join("plugins"), tmp.join("managed"), vec![], vec![])
+        .with_integrity_registry_path(registry_path.clone());
+    (mgr, registry_path)
+}
+
+#[test]
+fn add_with_corrupt_registry_succeeds_with_warning_and_leaves_registry_untouched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("src");
+    write_plugin(
+        &source,
+        "p1",
+        &simple_manifest("p1", "s1"),
+        &[("s1", "body")],
+    );
+    let (mgr, registry_path) = manager_with_registry(tmp.path(), b"not valid toml !!!");
+
+    let result = mgr.add(source.to_str().unwrap()).unwrap();
+
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|w| w.contains("plugin recorded without a digest")
+                && w.contains("integrity registry unusable")),
+        "warnings: {:?}",
+        result.warnings
+    );
+    assert_eq!(
+        std::fs::read(&registry_path).unwrap(),
+        b"not valid toml !!!"
+    );
+}
+
+#[test]
+fn remove_with_corrupt_registry_succeeds_with_warning() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("src");
+    write_plugin(
+        &source,
+        "p1",
+        &simple_manifest("p1", "s1"),
+        &[("s1", "body")],
+    );
+    let (mgr, registry_path) = manager_with_registry(tmp.path(), b"");
+    mgr.add(source.to_str().unwrap()).unwrap();
+    std::fs::write(&registry_path, b"bad = 5\n").unwrap();
+
+    let result = mgr.remove("p1").unwrap();
+
+    assert_eq!(result.warnings.len(), 1, "warnings: {:?}", result.warnings);
+    assert!(result.warnings[0].contains("integrity registry unusable"));
+    assert_eq!(std::fs::read(&registry_path).unwrap(), b"bad = 5\n");
+}
+
+#[test]
+fn add_and_remove_with_healthy_registry_have_no_registry_warnings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("src");
+    write_plugin(
+        &source,
+        "p1",
+        &simple_manifest("p1", "s1"),
+        &[("s1", "body")],
+    );
+    let (mgr, _) = manager_with_registry(tmp.path(), b"");
+
+    let added = mgr.add(source.to_str().unwrap()).unwrap();
+    assert_eq!(added.warnings, [] as [String; 0]);
+    assert_eq!(mgr.remove("p1").unwrap().warnings, [] as [String; 0]);
+}
+
+#[test]
+fn apply_staged_update_with_corrupt_registry_applies_and_returns_warning() {
+    use super::registry::apply_staged_update;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins_dir = tmp.path().join("plugins");
+    let managed_dir = tmp.path().join("managed");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+    let src = tmp.path().join("staged-src");
+    write_plugin(&src, "p1", &simple_manifest("p1", "s1"), &[("s1", "body")]);
+    let archive = build_tar_gz(&src);
+    let integrity_path = tmp.path().join("registry.toml");
+    std::fs::write(&integrity_path, b"not valid toml !!!").unwrap();
+
+    let warning = apply_staged_update(
+        &archive,
+        "https://example.com/p1.tar.gz",
+        &plugins_dir.join("p1"),
+        &plugins_dir.join(".staging-p1"),
+        &plugins_dir.join(".backup-p1"),
+        "p1",
+        &[],
+        &managed_dir,
+        &plugins_dir,
+        &integrity_path,
+        &[],
+        None,
+        ReputationEnforcement::Warn,
+    )
+    .unwrap();
+
+    assert!(warning.is_some_and(|w| w.contains("integrity registry unusable")));
+    assert!(plugins_dir.join("p1").join(".plugin.toml").is_file());
+    assert_eq!(
+        std::fs::read(&integrity_path).unwrap(),
+        b"not valid toml !!!"
+    );
+}

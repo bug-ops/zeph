@@ -1896,7 +1896,7 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         }
     }
@@ -2141,7 +2141,7 @@ mod tests {
             params,
             caller_id: None,
             context: None,
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         }
     }
@@ -2392,7 +2392,7 @@ mod tests {
                 params,
                 caller_id: None,
                 context: None,
-                tool_call_id: String::new(),
+                tool_call_id: None,
                 skill_name: None,
             })
             .await;
@@ -2459,7 +2459,7 @@ mod tests {
                 params,
                 caller_id: None,
                 context: None,
-                tool_call_id: String::new(),
+                tool_call_id: None,
                 skill_name: None,
             })
             .await;
@@ -2519,7 +2519,7 @@ mod tests {
             params,
             caller_id: None,
             context: None,
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = agent

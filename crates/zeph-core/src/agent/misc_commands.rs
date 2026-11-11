@@ -125,7 +125,7 @@ impl<C: Channel + Send + 'static> MiscAccess for Agent<C> {
                 params,
                 caller_id: None,
                 context: None,
-                tool_call_id: String::new(),
+                tool_call_id: None,
                 skill_name: None,
             };
             match executor.execute_tool_call_erased(&call).await {

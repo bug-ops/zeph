@@ -22,7 +22,7 @@ use crate::channel::Channel;
 use crate::goal::GoalAccounting;
 use crate::goal::autonomous::SupervisorVerdict;
 use crate::goal::supervisor::{GoalSupervisor, SupervisorError};
-use crate::redact::scrub_content;
+use crate::redact::redact_secrets;
 
 const CONDITION_MAX_CHARS: usize = 500;
 const RECENT_ACTIONS_MAX: usize = 10;
@@ -148,7 +148,7 @@ pub(super) fn recent_tool_actions(messages: &[Message]) -> Vec<String> {
         .filter_map(|p| match p {
             MessagePart::ToolUse { name, input, .. } => {
                 let args = input.to_string();
-                let args = scrub_content(&args);
+                let args = redact_secrets(&args);
                 Some(format!(
                     "{name}({})",
                     truncate_chars(&args, ACTION_ARGS_MAX_CHARS)
@@ -186,7 +186,7 @@ fn resolve_condition(
             .or_else(|| last_user.map(|t| (GoalConditionSource::LastUserMessage, t)))?,
     };
     // Scrub before truncating so a secret cut mid-token cannot escape the scrub.
-    let text = scrub_content(&text);
+    let text = redact_secrets(&text);
     Some((
         source,
         truncate_chars(&text, CONDITION_MAX_CHARS).to_owned(),

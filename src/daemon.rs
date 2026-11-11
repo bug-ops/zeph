@@ -1797,7 +1797,7 @@ mod tests {
             params,
             caller_id: None,
             context: None,
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = base_executor.execute_tool_call(&call).await;
@@ -1818,7 +1818,7 @@ mod tests {
             params,
             caller_id: None,
             context: None,
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         }
     }
@@ -1993,7 +1993,7 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = base_executor.execute_tool_call(&call).await;
@@ -2053,7 +2053,7 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         }
     }
@@ -2198,7 +2198,7 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = gated.execute_tool_call(&call).await;
@@ -2370,7 +2370,7 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = gated.execute_tool_call(&call).await;
@@ -2662,7 +2662,7 @@ mod tests {
             params,
             caller_id: None,
             context: None,
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let output = composite

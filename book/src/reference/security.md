@@ -87,6 +87,8 @@ Zeph records a sha256 digest of each installed plugin's `.plugin.toml` manifest 
 - Detects if a plugin manifest has been modified outside of Zeph's control (e.g., accidentally edited, maliciously replaced)
 - Missing entries from pre-feature installs are permitted with a debug-level log
 - Mismatches cause the plugin to be skipped with an "integrity mismatch" reason visible in `zeph plugin list --overlay`
+- A corrupt or unreadable registry fails closed: every plugin is skipped with an "integrity registry unusable" reason until you restore the file, or delete it and reinstall the plugins
+- `plugin add`, `plugin remove` and auto-update never overwrite a corrupt registry; they warn with the repair step instead (a newly added plugin then loads unverified until the registry is repaired)
 
 **To re-protect after a valid change:**
 ```bash
@@ -289,6 +291,8 @@ redact_credentials = true  # default: true
 ```
 
 The same scrubbing covers every memory-derived slot (System-role memory slots, summaries, cross-session recall, code context) and the inline scheduler tool loop, in both the `replace` and `append` context layouts. Spotlight wrapping of untrusted content is preserved after scrubbing.
+
+Only secrets and URL credentials are redacted from text sent to the provider; absolute filesystem paths are left intact so the model can act on them. Path masking (`[PATH]`) applies only to text written to memory stores and to displayed text such as debug dumps, so a request dump can show `[PATH]` where the wire carried the real path.
 
 URL credentials are redacted too: in `scheme://user:password@host`, the password may itself contain `@`, `?` or `#`, and an empty user (`scheme://:password@host`) is handled. Two known residuals: a password containing a raw `"` is not redacted, and a digit-only password followed by `?name=` is read as `host:port` and left intact.
 
@@ -536,7 +540,7 @@ All three layers are wired identically across every entry point — CLI, daemon 
 
 Rust-native memory safety guarantees:
 
-- **Workspace-level `unsafe` ban:** `unsafe_code = "deny"` is set in `[workspace.lints.rust]` in the root `Cargo.toml`, propagating the restriction to every crate in the workspace automatically. The single audited exception is an `#[allow(unsafe_code)]`-annotated block behind the `candle` feature flag for memory-mapped safetensors loading.
+- **Workspace-level `unsafe` ban:** `unsafe_code = "deny"` is set in `[workspace.lints.rust]` in the root `Cargo.toml`, propagating the restriction to every crate in the workspace automatically. The only exceptions are scoped `#[allow(unsafe_code)]` modules registered in the spec 010 unsafe registry: memory-mapped safetensors loading behind the `candle` feature flag, and the Windows owner-only DACL module in `zeph-common::fs_secure`.
 - **No panic in production:** `unwrap()` and `expect()` linted via clippy
 - **Reduced attack surface:** Unused database backends (MySQL) and transitive dependencies (RSA) are excluded from the build
 - **Secure dependencies:** All crates audited with `cargo-deny`

@@ -401,7 +401,7 @@ impl<C: Channel> Agent<C> {
     pub(super) async fn process_one_tool_result(
         &mut self,
         tc: &zeph_llm::provider::ToolUseRequest,
-        tool_call_id: &str,
+        tool_call_id: &zeph_common::ToolExecutionId,
         started_at: &std::time::Instant,
         tool_result: Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
         result_parts: &mut Vec<MessagePart>,
@@ -463,7 +463,7 @@ impl<C: Channel> Agent<C> {
                 filter_stats: inline_stats,
                 kept_lines,
                 locations,
-                tool_call_id: tool_call_id.to_owned(),
+                tool_call_id: tool_call_id.clone(),
                 is_error,
                 terminal_id: None,
                 parent_tool_use_id: self.services.session.parent_tool_use_id.clone(),

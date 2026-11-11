@@ -69,8 +69,8 @@ pub use text::format_tokens;
 pub use trust_level::SkillTrustLevel;
 pub use turn_trust_floor::TurnTrustFloor;
 pub use types::{
-    ProviderName, SessionId, SessionIdError, SkillName, SkillNameError, StopHint, SubgoalId,
-    ToolCallId, ToolDefinition, ToolName,
+    EmptyToolExecutionId, ProviderName, SessionId, SessionIdError, SkillName, SkillNameError,
+    StopHint, SubgoalId, ToolCallId, ToolDefinition, ToolExecutionId, ToolName,
 };
 
 #[cfg(feature = "treesitter")]

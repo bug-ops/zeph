@@ -527,7 +527,7 @@ pub trait Channel: Send {
     fn send_diff(
         &mut self,
         _diff: crate::DiffData,
-        _tool_call_id: &str,
+        _tool_call_id: &zeph_common::ToolExecutionId,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         async { Ok(()) }
     }
@@ -677,11 +677,11 @@ pub use zeph_common::StopHint;
 pub struct ToolStartEvent {
     /// Name of the tool being invoked.
     pub tool_name: zeph_common::ToolName,
-    /// Opaque tool call ID assigned by the LLM.
-    pub tool_call_id: String,
+    /// Agent-assigned execution id shared by this call's start and output events.
+    pub tool_call_id: zeph_common::ToolExecutionId,
     /// Raw input parameters passed to the tool (e.g. `{"command": "..."}` for bash).
     pub params: Option<serde_json::Value>,
-    /// Set when this tool call is made by a subagent; identifies the parent's `tool_call_id`.
+    /// Set when this tool call is made by a subagent; unvalidated ACP-peer input naming the parent call.
     pub parent_tool_use_id: Option<String>,
     /// Wall-clock instant when the tool call was initiated; used to compute elapsed time.
     pub started_at: std::time::Instant,
@@ -715,13 +715,13 @@ pub struct ToolOutputEvent {
     pub kept_lines: Option<Vec<usize>>,
     /// Source locations for code search results.
     pub locations: Option<Vec<String>>,
-    /// Opaque tool call ID matching the corresponding `ToolStartEvent`.
-    pub tool_call_id: String,
+    /// Execution id matching the corresponding `ToolStartEvent`.
+    pub tool_call_id: zeph_common::ToolExecutionId,
     /// Whether this output represents an error.
     pub is_error: bool,
     /// Terminal ID for shell tool calls routed through the IDE terminal.
     pub terminal_id: Option<String>,
-    /// Set when this tool output belongs to a subagent; identifies the parent's `tool_call_id`.
+    /// Set when this tool output belongs to a subagent; unvalidated ACP-peer input naming the parent call.
     pub parent_tool_use_id: Option<String>,
     /// Structured tool response payload for ACP intermediate `tool_call_update` notifications.
     pub raw_response: Option<serde_json::Value>,
@@ -1388,6 +1388,7 @@ mod tests {
     #[tokio::test]
     async fn loopback_send_tool_output() {
         let (mut channel, mut handle) = LoopbackChannel::pair(8);
+        let id = zeph_common::ToolExecutionId::generate();
         channel
             .send_tool_output(ToolOutputEvent {
                 tool_name: "bash".into(),
@@ -1396,7 +1397,7 @@ mod tests {
                 filter_stats: None,
                 kept_lines: None,
                 locations: None,
-                tool_call_id: String::new(),
+                tool_call_id: id.clone(),
                 terminal_id: None,
                 is_error: false,
                 parent_tool_use_id: None,
@@ -1414,7 +1415,7 @@ mod tests {
                 assert!(data.filter_stats.is_none());
                 assert!(data.kept_lines.is_none());
                 assert!(data.locations.is_none());
-                assert_eq!(data.tool_call_id, "");
+                assert_eq!(data.tool_call_id, id);
                 assert!(!data.is_error);
                 assert!(data.terminal_id.is_none());
                 assert!(data.parent_tool_use_id.is_none());
@@ -1545,7 +1546,7 @@ mod tests {
         channel
             .send_tool_start(ToolStartEvent {
                 tool_name: "shell".into(),
-                tool_call_id: "tc-001".into(),
+                tool_call_id: zeph_common::ToolExecutionId::new("tc-001").unwrap(),
                 params: Some(serde_json::json!({"command": "ls"})),
                 parent_tool_use_id: None,
                 started_at: std::time::Instant::now(),
@@ -1573,7 +1574,7 @@ mod tests {
         channel
             .send_tool_start(ToolStartEvent {
                 tool_name: "web".into(),
-                tool_call_id: "tc-002".into(),
+                tool_call_id: zeph_common::ToolExecutionId::new("tc-002").unwrap(),
                 params: None,
                 parent_tool_use_id: Some("parent-123".into()),
                 started_at: std::time::Instant::now(),
@@ -1597,7 +1598,7 @@ mod tests {
         let result = channel
             .send_tool_start(ToolStartEvent {
                 tool_name: "shell".into(),
-                tool_call_id: "tc-003".into(),
+                tool_call_id: zeph_common::ToolExecutionId::new("tc-003").unwrap(),
                 params: None,
                 parent_tool_use_id: None,
                 started_at: std::time::Instant::now(),
@@ -1620,7 +1621,7 @@ mod tests {
             filter_stats: None,
             kept_lines: None,
             locations: None,
-            tool_call_id: "id".into(),
+            tool_call_id: zeph_common::ToolExecutionId::new("id").unwrap(),
             terminal_id: None,
             is_error: false,
             parent_tool_use_id: None,

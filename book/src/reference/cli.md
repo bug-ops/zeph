@@ -205,7 +205,7 @@ zeph init                              # or use --migrate-config to add the [ski
 
 **Overlay flag note:** `--overlay` shows which plugins contributed to the active config and which were skipped (with reasons like "integrity mismatch", "invalid manifest", etc.). This is evaluated against the default config — use `--config <path>` in the agent to see the live intersection with your active config.
 
-**Integrity checks:** When you install a plugin, Zeph records a sha256 digest of its `.plugin.toml`. At startup and hot-reload, the digest is verified. If it doesn't match, the plugin is skipped and the mismatch is visible in `plugin list --overlay`. See [Plugin Manifest Integrity](security.md#plugin-manifest-integrity) for details.
+**Integrity checks:** When you install a plugin, Zeph records a sha256 digest of its `.plugin.toml`. At startup and hot-reload, the digest is verified. If it doesn't match, the plugin is skipped and the mismatch is visible in `plugin list --overlay`. A corrupt registry skips every plugin until repaired. See [Plugin Manifest Integrity](security.md#plugin-manifest-integrity) for details.
 
 **Ephemeral plugins (session-scoped):** Use the global `--plugin-url` flag to load plugins for a single session without permanent installation:
 

@@ -49,7 +49,10 @@ impl RuntimeLayer for JsonEventLayer {
         self.sink.emit(&JsonEvent::ToolCall {
             tool: call.tool_id.as_ref(),
             args: &args_value,
-            id: call.tool_call_id.as_str(),
+            id: call
+                .tool_call_id
+                .as_ref()
+                .map(zeph_common::ToolExecutionId::as_str),
         });
         Box::pin(std::future::ready(None))
     }
@@ -77,7 +80,10 @@ impl RuntimeLayer for JsonEventLayer {
         };
         self.sink.emit(&JsonEvent::ToolResult {
             tool: call.tool_id.as_ref(),
-            id: call.tool_call_id.as_str(),
+            id: call
+                .tool_call_id
+                .as_ref()
+                .map(zeph_common::ToolExecutionId::as_str),
             output,
             is_error,
         });
@@ -111,7 +117,7 @@ mod tests {
     fn make_call(tool_id: &str, tool_call_id: &str) -> ToolCall {
         ToolCall {
             tool_id: zeph_common::ToolName::new(tool_id),
-            tool_call_id: tool_call_id.to_owned(),
+            tool_call_id: Some(zeph_common::ToolExecutionId::new(tool_call_id).unwrap()),
             ..Default::default()
         }
     }
@@ -181,5 +187,35 @@ mod tests {
             .to_owned();
         let event: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(event["args"]["cmd"], "echo a\n[REDACTED] disk-usage");
+    }
+
+    #[tokio::test]
+    async fn missing_tool_call_id_emits_null_id() {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::new(JsonEventSink::with_writer(SharedBuffer(buf.clone())));
+        let layer = JsonEventLayer::new(sink);
+        let ctx = LayerContext {
+            conversation_id: None,
+            turn_number: 0,
+        };
+        let call = ToolCall {
+            tool_id: zeph_common::ToolName::new("shell"),
+            ..Default::default()
+        };
+        let ok_result: Result<Option<ToolOutput>, ToolError> = Ok(None);
+
+        layer.before_tool(&ctx, &call).await;
+        layer.after_tool(&ctx, &call, &ok_result).await;
+
+        let snapshot = buf.lock().unwrap().clone();
+        let events: Vec<serde_json::Value> = String::from_utf8_lossy(&snapshot)
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .filter(|v: &serde_json::Value| {
+                v["event"] == "tool_call" || v["event"] == "tool_result"
+            })
+            .collect();
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|v| v["id"].is_null()));
     }
 }

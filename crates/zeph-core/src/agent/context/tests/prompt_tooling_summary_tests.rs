@@ -541,6 +541,36 @@ async fn maybe_summarize_tool_pair_above_cutoff_stores_deferred_summary() {
     );
 }
 
+#[tokio::test]
+async fn deferred_summary_keeps_paths_and_loses_secrets() {
+    let key = "sk-proj-abc123def456ghi789";
+    let provider = mock_provider(vec![format!("edited /Users/dev/proj/main.rs with {key}")]);
+    let mut agent = Agent::new(
+        provider,
+        MockChannel::new(vec![]),
+        create_test_registry(),
+        None,
+        5,
+        MockToolExecutor::no_tools(),
+    )
+    .with_tool_call_cutoff(2);
+    agent.runtime.config.redact_credentials = true;
+    make_tool_pair(&mut agent, "bash");
+    make_tool_pair(&mut agent, "read_file");
+    make_tool_pair(&mut agent, "write_file");
+
+    agent.maybe_summarize_tool_pair().await;
+
+    let summary = agent.msg.messages[2]
+        .metadata
+        .deferred_summary
+        .as_deref()
+        .expect("deferred summary stored");
+    assert!(summary.contains("/Users/dev/proj/main.rs"), "{summary}");
+    assert!(!summary.contains("[PATH]"), "{summary}");
+    assert!(!summary.contains(key), "{summary}");
+}
+
 /// Regression test: resumed session with large backlog must drain all pairs above cutoff
 /// in a single `maybe_summarize_tool_pair()` call, before Tier 1 pruning can fire.
 #[tokio::test]

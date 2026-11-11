@@ -35,6 +35,7 @@ pub use zeph_common::memory::RecallView;
 ///     edge_type: EdgeType::Semantic,
 ///     retrieval_count: 1,
 ///     edge_id: None,
+///     trust: zeph_common::trust_level::TurnContextTrust::ExternalUntrusted,
 /// };
 /// let recalled = RecalledFact::from_graph_fact(base);
 /// assert!(recalled.activation_score.is_none());
@@ -96,6 +97,7 @@ impl RecalledFact {
             edge_type: edge.edge_type,
             retrieval_count: edge.retrieval_count,
             edge_id: Some(edge.id),
+            trust: edge.effective_trust(),
         };
         Self {
             fact,
@@ -126,6 +128,7 @@ mod tests {
             edge_type: EdgeType::Semantic,
             retrieval_count: 0,
             edge_id: None,
+            trust: zeph_common::trust_level::TurnContextTrust::ExternalUntrusted,
         }
     }
 
@@ -136,6 +139,27 @@ mod tests {
         assert!(rf.provenance_message_id.is_none());
         assert!(rf.provenance_snippet.is_none());
         assert_eq!(rf.neighbors.len(), 0);
+    }
+
+    #[test]
+    fn activated_fact_null_trust_edge_resolves_to_external_untrusted() {
+        use crate::graph::activation::ActivatedFact;
+        use zeph_common::trust_level::TurnContextTrust;
+
+        let mut edge = crate::graph::types::Edge::synthetic_anchor(1);
+        assert_eq!(edge.trust_level, None);
+        let af = |edge| ActivatedFact {
+            edge,
+            activation_score: 0.5,
+            is_implicit_conflict: false,
+            conflict_candidate_id: None,
+        };
+        let rf = RecalledFact::from_activated_fact(af(edge.clone()));
+        assert_eq!(rf.fact.trust, TurnContextTrust::ExternalUntrusted);
+
+        edge.trust_level = Some(TurnContextTrust::Trusted);
+        let rf = RecalledFact::from_activated_fact(af(edge));
+        assert_eq!(rf.fact.trust, TurnContextTrust::Trusted);
     }
 
     #[test]
@@ -158,6 +182,7 @@ mod tests {
             edge_type: EdgeType::Semantic,
             retrieval_count: 1,
             edge_id: Some(10),
+            trust: zeph_common::trust_level::TurnContextTrust::ExternalUntrusted,
         })
     }
 
@@ -190,6 +215,7 @@ mod tests {
             edge_type: EdgeType::Semantic,
             retrieval_count: 0,
             edge_id: Some(11),
+            trust: zeph_common::trust_level::TurnContextTrust::ExternalUntrusted,
         });
         insta::assert_debug_snapshot!("zoom_out_view", rf);
     }
@@ -210,6 +236,7 @@ mod tests {
                 edge_type: EdgeType::Semantic,
                 retrieval_count: 0,
                 edge_id: Some(55),
+                trust: zeph_common::trust_level::TurnContextTrust::ExternalUntrusted,
             },
             activation_score: Some(0.82),
             provenance_message_id: None,

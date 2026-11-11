@@ -159,7 +159,8 @@ THEN the same hex string is returned (deterministic)
 |--------|-------------|----------------|
 | `Secret` | Redacted, zeroized secret wrapper | `Zeroizing<String>` inner; no `Clone`; `expose() -> &str` |
 | `ToolName` | Strongly-typed tool name label | `Arc<str>` inner; `as_str()`, `PartialEq<str>` |
-| `ToolCallId` | Opaque provider-assigned tool-call id (model/history side) | `Arc<str>` inner; `#[serde(transparent)]`, wire bytes identical to `String`; tool-execution and channel-event layers keep `String`/`&str` and convert at the boundary |
+| `ToolCallId` | Opaque provider-assigned tool-call id (model/history side, `SessionEvent` ids) | `Arc<str>` inner; `#[serde(transparent)]`, wire bytes identical to `String` |
+| `ToolExecutionId` | Agent-generated UUID correlating one tool execution across the tool-execution, channel and TUI/ACP event layers (#6964) | `Arc<str>` inner; `generate()`; no `Default`, no `From<&str>`/`From<String>`; `new(..)` rejects empty input (ACP/TUI boundaries and tests); `#[serde(transparent)]`. ACP `parent_tool_use_id` is unvalidated peer input and stays `Option<String>` |
 | `SessionId` | Strongly-typed session identifier | UUID v4; `new()`, `Display` |
 | `ToolDefinition` | Shared tool schema struct | Name, description, JSON schema blob |
 | `SkillTrustLevel` | Trust gradient for skills | Enum: `Untrusted`, `Provisional`, `Trusted` |

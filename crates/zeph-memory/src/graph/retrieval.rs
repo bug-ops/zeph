@@ -136,6 +136,7 @@ pub async fn graph_recall(
                 edge_type: edge.edge_type,
                 retrieval_count: edge.retrieval_count,
                 edge_id: Some(edge.id),
+                trust: edge.effective_trust(),
             });
         }
 
@@ -603,6 +604,160 @@ mod tests {
         .unwrap();
         assert_ne!(result.len(), 0);
         assert_eq!(result[0].relation, "uses");
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Algo {
+        Bfs,
+        Beam,
+        AStar,
+        WaterCircles,
+        StoreNeighbors,
+    }
+
+    async fn seed_alice_uses_neovim(
+        stored: Option<zeph_common::trust_level::TurnContextTrust>,
+    ) -> (GraphStore, i64) {
+        let store = setup_store().await;
+        let a = store
+            .upsert_entity("Alice", "Alice", EntityType::Person, None, None)
+            .await
+            .unwrap()
+            .0;
+        let b = store
+            .upsert_entity("neovim", "neovim", EntityType::Tool, None, None)
+            .await
+            .unwrap()
+            .0;
+        let edge_id = store
+            .insert_edge(a, b, "uses", "Alice uses neovim", 0.9, None, None)
+            .await
+            .unwrap();
+        if let Some(t) = stored {
+            zeph_db::query(zeph_db::sql!(
+                "UPDATE graph_edges SET trust_level = ? WHERE id = ?"
+            ))
+            .bind(i16::from(t.as_u8()))
+            .bind(edge_id)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        }
+        (store, a)
+    }
+
+    async fn recalled_trust(
+        algo: Algo,
+        stored: Option<zeph_common::trust_level::TurnContextTrust>,
+    ) -> zeph_common::trust_level::TurnContextTrust {
+        use std::time::Duration;
+
+        let (store, a) = seed_alice_uses_neovim(stored).await;
+        let provider = mock_provider();
+        let timeout = Duration::from_secs(5);
+        let facts = match algo {
+            Algo::Bfs => {
+                graph_recall(
+                    &store,
+                    None,
+                    &provider,
+                    "Alice",
+                    10,
+                    2,
+                    None,
+                    0.0,
+                    &[],
+                    false,
+                    0.0,
+                    timeout,
+                )
+                .await
+            }
+            Algo::Beam => {
+                crate::graph::retrieval_beam::graph_recall_beam(
+                    &store,
+                    None,
+                    &provider,
+                    "Alice",
+                    10,
+                    5,
+                    2,
+                    &[],
+                    0.0,
+                    false,
+                    0.0,
+                    timeout,
+                )
+                .await
+            }
+            Algo::AStar => {
+                crate::graph::retrieval_astar::graph_recall_astar(
+                    &store,
+                    None,
+                    &provider,
+                    "Alice",
+                    10,
+                    2,
+                    &[],
+                    0.0,
+                    false,
+                    0.0,
+                    false,
+                    timeout,
+                )
+                .await
+            }
+            Algo::WaterCircles => {
+                crate::graph::retrieval_watercircles::graph_recall_watercircles(
+                    &store,
+                    None,
+                    &provider,
+                    "Alice",
+                    10,
+                    2,
+                    10,
+                    &[],
+                    0.0,
+                    false,
+                    0.0,
+                    timeout,
+                )
+                .await
+            }
+            Algo::StoreNeighbors => store
+                .bfs_edges_at_depth(a, 1, &[])
+                .await
+                .map(|v| v.into_iter().map(|rf| rf.fact).collect()),
+        }
+        .unwrap();
+        assert_eq!(facts.len(), 1, "{algo:?} must recall the single edge");
+        facts[0].trust
+    }
+
+    #[tokio::test]
+    async fn recalled_fact_trust_follows_stored_edge_tier_on_every_path() {
+        use zeph_common::trust_level::TurnContextTrust as T;
+
+        for algo in [
+            Algo::Bfs,
+            Algo::Beam,
+            Algo::AStar,
+            Algo::WaterCircles,
+            Algo::StoreNeighbors,
+        ] {
+            for (stored, expected) in [
+                (Some(T::Trusted), T::Trusted),
+                (Some(T::LocalUntrusted), T::LocalUntrusted),
+                (Some(T::ExternalUntrusted), T::ExternalUntrusted),
+                (None, T::ExternalUntrusted),
+            ] {
+                assert_eq!(
+                    recalled_trust(algo, stored).await,
+                    expected,
+                    "{algo:?} with stored tier {stored:?}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

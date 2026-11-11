@@ -826,7 +826,7 @@ fn session_event_to_updates(
             .collect(),
         zeph_session::SessionEvent::ToolCall { id, name, input } => {
             vec![acp::schema::v1::SessionUpdate::ToolCall(
-                acp::schema::v1::ToolCall::new(id, name).raw_input(input),
+                acp::schema::v1::ToolCall::new(id.as_str().to_owned(), name).raw_input(input),
             )]
         }
         zeph_session::SessionEvent::ToolResult {
@@ -842,7 +842,7 @@ fn session_event_to_updates(
             };
             vec![acp::schema::v1::SessionUpdate::ToolCallUpdate(
                 acp::schema::v1::ToolCallUpdate::new(
-                    id,
+                    id.as_str().to_owned(),
                     acp::schema::v1::ToolCallUpdateFields::new()
                         .status(status)
                         .content(vec![output.into()]),
@@ -1377,7 +1377,7 @@ mod session_event_replay_tests {
     #[test]
     fn tool_result_becomes_tool_call_update_with_status() {
         let updates = session_event_to_updates(zeph_session::SessionEvent::ToolResult {
-            id: "call_0".to_owned(),
+            id: "call_0".into(),
             name: "shell".to_owned(),
             output: "ok".to_owned(),
             is_error: false,
@@ -1396,7 +1396,7 @@ mod session_event_replay_tests {
     #[test]
     fn failed_tool_result_maps_to_failed_status() {
         let updates = session_event_to_updates(zeph_session::SessionEvent::ToolResult {
-            id: "call_0".to_owned(),
+            id: "call_0".into(),
             name: "shell".to_owned(),
             output: "boom".to_owned(),
             is_error: true,

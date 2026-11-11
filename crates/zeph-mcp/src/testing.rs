@@ -224,7 +224,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = mock.execute_tool_call(&call).await.unwrap();
@@ -241,7 +241,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = mock.execute_tool_call(&call).await.unwrap();
@@ -260,7 +260,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = mock.execute_tool_call(&call).await;
@@ -279,7 +279,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         mock.execute_tool_call(&call).await.unwrap();
@@ -301,7 +301,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
 

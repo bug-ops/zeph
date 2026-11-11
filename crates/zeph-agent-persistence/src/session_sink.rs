@@ -144,7 +144,7 @@ impl SessionSink {
                     None,
                     None,
                     SessionEvent::ToolResult {
-                        id: tool_use_id.to_string(),
+                        id: tool_use_id.clone(),
                         // Not available at this call site — only the flat `MessagePart` reaches
                         // `record_message`, not the originating `ToolUseRequest`. Every consumer
                         // of `SessionEvent::ToolResult` (replay, ACP session updates) keys off
