@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use zeph_llm::provider::StatusUpdate;
 
 use zeph_agent_context::helpers::BudgetHint;
 use zeph_llm::provider::LlmProvider;
@@ -324,7 +325,7 @@ impl<C: Channel> Agent<C> {
         let status_tx = self.services.session.status_tx.clone();
         let task_supervisor = Arc::clone(&self.runtime.lifecycle.task_supervisor);
         if let Some(tx) = &self.services.session.status_tx {
-            let _ = tx.send("Generating session digest...".to_string());
+            let _ = tx.send(StatusUpdate::set("Generating session digest..."));
         }
         let digest_future = async move {
             if let (Some(mem), Some(cid)) = (memory, conversation_id) {
@@ -340,7 +341,7 @@ impl<C: Channel> Agent<C> {
                 .await;
             }
             if let Some(tx) = status_tx {
-                let _ = tx.send(String::new());
+                let _ = tx.send(StatusUpdate::Clear);
             }
         };
         drop(
@@ -405,7 +406,7 @@ impl<C: Channel> Agent<C> {
 
         // --- Step 3: TUI status ---
         if let Some(ref tx) = self.services.session.status_tx {
-            let _ = tx.send("Resetting conversation...".to_string());
+            let _ = tx.send(StatusUpdate::set("Resetting conversation..."));
         }
 
         // --- Steps 4-9: reset session-scoped state shared with the conversation-swap path ---
@@ -433,7 +434,7 @@ impl<C: Channel> Agent<C> {
 
         // --- Step 11: clear TUI status ---
         if let Some(ref tx) = self.services.session.status_tx {
-            let _ = tx.send(String::new());
+            let _ = tx.send(StatusUpdate::Clear);
         }
 
         Ok((old_conversation_id, new_conversation_id))
@@ -525,7 +526,7 @@ impl<C: Channel> Agent<C> {
         .map_err(|e| super::super::error::AgentError::ContextError(e.to_string()))?;
 
         if let Some(ref tx) = self.services.session.status_tx {
-            let _ = tx.send("Replaying conversation...".to_string());
+            let _ = tx.send(StatusUpdate::set("Replaying conversation..."));
         }
 
         let old_conversation_id = self.services.memory.persistence.conversation_id;
@@ -595,7 +596,7 @@ impl<C: Channel> Agent<C> {
         }
 
         if let Some(ref tx) = self.services.session.status_tx {
-            let _ = tx.send(String::new());
+            let _ = tx.send(StatusUpdate::Clear);
         }
 
         Ok(())
@@ -816,7 +817,7 @@ impl<C: Channel> Agent<C> {
             .send_status_best_effort("recalling context...")
             .await;
         let result = svc.prepare_context(query, &mut window, &mut view).await;
-        self.channel.send_status_best_effort("").await;
+        self.channel.clear_status_best_effort().await;
         // `window` mutates `messages` through a borrowed view, so the non-system counter
         // (#6427) can't be updated inline at the mutation site — recompute it here.
         self.msg.recompute_non_system_count();
@@ -1723,7 +1724,7 @@ impl<C: Channel> Agent<C> {
                     (scored.iter().map(|s| s.index).collect(), false)
                 }
             };
-            self.channel.send_status_best_effort("").await;
+            self.channel.clear_status_best_effort().await;
             (indices, fallback)
         } else {
             tracing::warn!(
@@ -2243,7 +2244,7 @@ impl<C: Channel> Agent<C> {
                                 }
                             }
                         }
-                        self.channel.send_status_best_effort("").await;
+                        self.channel.clear_status_best_effort().await;
                     } else {
                         // Index not built (build failed at connect time).
                         tracing::warn!(
@@ -2418,7 +2419,7 @@ impl<C: Channel> Agent<C> {
                     self.services.tool_state.cached_filtered_tool_ids = Some(sticky);
                 }
             }
-            self.channel.send_status_best_effort("").await;
+            self.channel.clear_status_best_effort().await;
         }
     }
 

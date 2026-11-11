@@ -28,6 +28,7 @@ use zeph_llm::provider::LlmProvider as _;
 use crate::error::MemoryError;
 use crate::graph::string_similarity::levenshtein_distance;
 use crate::graph::types::{Edge, EdgeType};
+use crate::types::EdgeId;
 
 pub use zeph_common::config::memory::BeliefRevisionConfig;
 
@@ -104,7 +105,7 @@ pub async fn find_superseded_edges(
     provider: &AnyProvider,
     config: &BeliefRevisionConfig,
     embed_timeout: std::time::Duration,
-) -> Result<Vec<i64>, MemoryError> {
+) -> Result<Vec<EdgeId>, MemoryError> {
     // Filter to edges of the same type with a related relation domain.
     let candidates: Vec<&Edge> = existing_edges
         .iter()
@@ -125,7 +126,7 @@ pub async fn find_superseded_edges(
         let sim = cosine_similarity(new_fact_embedding, &existing_emb);
         if sim >= config.similarity_threshold {
             tracing::debug!(
-                edge_id = edge.id,
+                edge_id = %edge.id,
                 relation = %edge.relation,
                 similarity = sim,
                 "belief_revision: edge superseded"
@@ -229,9 +230,9 @@ mod tests {
         edge_type: crate::graph::types::EdgeType,
     ) -> crate::graph::types::Edge {
         crate::graph::types::Edge {
-            id,
-            source_entity_id: 1,
-            target_entity_id: 2,
+            id: crate::types::EdgeId::new(id),
+            source_entity_id: crate::types::EntityId(1),
+            target_entity_id: crate::types::EntityId(2),
             relation: relation.to_string(),
             fact: fact.to_string(),
             confidence: 1.0,
@@ -274,7 +275,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(result, [] as [i64; 0]);
+        assert_eq!(result, [] as [crate::types::EdgeId; 0]);
     }
 
     #[tokio::test]
@@ -373,7 +374,11 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(result, vec![99], "high-similarity edge must be superseded");
+        assert_eq!(
+            result,
+            vec![crate::types::EdgeId::new(99)],
+            "high-similarity edge must be superseded"
+        );
     }
 
     #[tokio::test]

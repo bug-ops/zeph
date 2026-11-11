@@ -4,23 +4,22 @@
 use super::super::{LlmProvider, Message, Role, SemanticMemory};
 use std::path::PathBuf;
 use zeph_llm::provider::MessageMetadata;
+use zeph_llm::provider::StatusUpdate;
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
 
 /// Drop guard that sends an empty string to `status_tx` when dropped, clearing the TUI spinner.
-pub(super) struct ClearStatusOnDrop(pub Option<tokio::sync::mpsc::UnboundedSender<String>>);
+pub(super) struct ClearStatusOnDrop(pub Option<zeph_llm::provider::StatusTx>);
 
 impl Drop for ClearStatusOnDrop {
     fn drop(&mut self) {
         if let Some(ref tx) = self.0 {
-            let _ = tx.send(String::new());
+            let _ = tx.send(StatusUpdate::Clear);
         }
     }
 }
 
-pub(super) fn defer_clear_status(
-    tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
-) -> ClearStatusOnDrop {
+pub(super) fn defer_clear_status(tx: Option<zeph_llm::provider::StatusTx>) -> ClearStatusOnDrop {
     ClearStatusOnDrop(tx)
 }
 
@@ -82,7 +81,7 @@ pub(super) struct AriseTaskArgs {
     pub auto_activate: bool,
     pub max_versions: u32,
     pub domain_success_gate: bool,
-    pub status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    pub status_tx: Option<zeph_llm::provider::StatusTx>,
 }
 
 #[tracing::instrument(name = "core.learning.arise_trace_task", skip_all, level = "debug")]
@@ -280,7 +279,7 @@ pub(super) struct StemTaskArgs {
     pub retention_days: u32,
     pub max_auto_sections: u32,
     pub skill_paths: Vec<PathBuf>,
-    pub status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    pub status_tx: Option<zeph_llm::provider::StatusTx>,
 }
 
 #[tracing::instrument(name = "core.learning.stem_detection_task", skip_all, level = "debug")]
@@ -407,7 +406,7 @@ pub(super) struct ErlTaskArgs {
     pub task_summary: String,
     pub tool_calls_str: String,
     pub dedup_threshold: f32,
-    pub status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    pub status_tx: Option<zeph_llm::provider::StatusTx>,
 }
 
 #[tracing::instrument(name = "core.learning.erl_reflection_task", skip_all, level = "debug")]

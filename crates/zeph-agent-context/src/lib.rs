@@ -47,7 +47,7 @@ pub use compaction::{
 };
 pub use error::ContextError;
 pub use helpers::BudgetHint;
-pub use service::{ContextService, SemanticRecallParams};
+pub use service::{ContextService, SemanticRecallParams, TxStatusSink};
 pub use state::{
     CompactionOutcome, CompactionPersistence, CompactionProbeCallback, ContextAssemblyView,
     ContextDelta, ContextSummarizationView, MessageWindowView, MetricsCallback, MetricsCounters,

@@ -119,6 +119,10 @@ Issues #3110 / #3118. `migrate-config --in-place` is fully idempotent: running i
 - `--in-place` reads the file, applies all migration transforms, and writes back only if content changed
 - A second invocation on an already-migrated file produces no output diff
 
+### Unit-Interval Values (#6989)
+
+Unit-interval config floats (thresholds, ratios, rates) are validated while the TOML is deserialized (`Fraction`, spec `[[037-config-schema/spec]]`), not in `Config::validate()`. An out-of-range value therefore fails at load with a parse error naming the field and interval, and an out-of-range `ZEPH_*` env override is ignored with a `warn!` and the configured value stays. An omitted key keeps its pre-change default via explicit per-field default functions.
+
 ### Key Invariants
 
 - NEVER write a key that already exists in the config — check presence before add

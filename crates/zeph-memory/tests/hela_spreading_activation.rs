@@ -22,6 +22,7 @@ use zeph_memory::graph::activation::{HelaSpreadParams, hela_spreading_recall};
 use zeph_memory::graph::types::EntityType;
 use zeph_memory::semantic::SemanticMemory;
 use zeph_memory::store::SqliteStore;
+use zeph_memory::{EdgeId, EntityId};
 
 const QDRANT_GRPC_PORT: ContainerPort = ContainerPort::Tcp(6334);
 const ENTITY_COLLECTION: &str = "zeph_graph_entities";
@@ -59,12 +60,11 @@ async fn seed_entity(
     embeddings: &EmbeddingStore,
     name: &str,
     vector: Vec<f32>,
-) -> (i64, String) {
+) -> (EntityId, String) {
     let entity_id = graph
         .upsert_entity(name, name, EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     let point_id = uuid::Uuid::new_v4().to_string();
     let payload = json!({
@@ -163,7 +163,11 @@ async fn hela_anchor_isolated_fallback() {
         1,
         "isolated anchor → exactly one synthetic fact"
     );
-    assert_eq!(results[0].edge.id, 0, "synthetic anchor edge id must be 0");
+    assert_eq!(
+        results[0].edge.id,
+        EdgeId::new(0),
+        "synthetic anchor edge id must be 0"
+    );
     assert!(results[0].score > 0.0, "anchor cosine must be positive");
 }
 

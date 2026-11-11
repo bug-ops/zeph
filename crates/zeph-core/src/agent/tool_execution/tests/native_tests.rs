@@ -39,6 +39,7 @@ fn call_focus_tool(
     input: &serde_json::Value,
 ) -> String {
     let (result, maybe_checkpoint) = agent.handle_focus_tool(tool_name, input);
+    let result = result.text;
     if let Some(cp) = maybe_checkpoint {
         agent.push_message(cp);
     }
@@ -95,6 +96,7 @@ fn start_focus_checkpoint_inserted_after_tool_result() {
     // Capture pending checkpoint WITHOUT flushing it yet
     let (result, maybe_checkpoint) =
         agent.handle_focus_tool("start_focus", &serde_json::json!({"scope": "test"}));
+    let result = result.text;
     assert!(!result.starts_with("[error]"));
     assert!(
         maybe_checkpoint.is_some(),
@@ -419,7 +421,7 @@ async fn compress_context_sanitizes_summary_before_storing_knowledge() {
             .push(Message::from_legacy(role, format!("message {i}")));
     }
 
-    let result = agent.handle_compress_context().await;
+    let result = agent.handle_compress_context().await.text;
     assert!(
         !result.starts_with("[error]"),
         "compress_context must not error: {result}"
@@ -482,7 +484,7 @@ async fn compress_context_keeps_context_trust_level_untrusted() {
         zeph_sanitizer::ContentTrustLevel::ExternalUntrusted
     );
 
-    let result = agent.handle_compress_context().await;
+    let result = agent.handle_compress_context().await.text;
     assert!(!result.starts_with("[error]"), "{result}");
 
     assert!(
@@ -1096,10 +1098,11 @@ async fn gate_rejection_discards_live_speculative_handle() {
         }),
         ("repeat", |agent| {
             let hash = crate::agent::tool_execution::tool_args_hash(&serde_json::Map::new());
-            for _ in 0..agent.tool_orchestrator.repeat_threshold {
+            for _ in 0..agent.tool_orchestrator.repeat.threshold {
                 agent
                     .tool_orchestrator
-                    .recent_tool_calls
+                    .repeat
+                    .calls
                     .push_back(("echo".to_owned(), hash));
             }
         }),

@@ -20,6 +20,7 @@ use crate::error::MemoryError;
 use crate::graph::extractor::ExtractionResult as ExtractorResult;
 use crate::graph::resolver::{MAX_RELATION_BYTES, sanitize_fact, sanitize_relation};
 use crate::graph::types::GraphProvenance;
+use crate::types::EntityId;
 use crate::vector_store::VectorFilter;
 
 use super::SemanticMemory;
@@ -235,7 +236,7 @@ async fn collect_note_link_work_items(
 ) -> Vec<EntityWorkItem> {
     let mut work_items: Vec<EntityWorkItem> = Vec::with_capacity(entity_ids.len());
     for &entity_id in entity_ids {
-        let entity = match store.find_entity_by_id(entity_id).await {
+        let entity = match store.find_entity_by_id(EntityId(entity_id)).await {
             Ok(Some(e)) => e,
             Ok(None) => {
                 tracing::debug!("note_linking: entity {entity_id} not found, skipping");
@@ -391,7 +392,15 @@ async fn insert_similarity_edges(
             let fact = format!("Semantically similar entities (score: {:.3})", point.score);
 
             match store
-                .insert_edge(src, tgt, "similar_to", &fact, point.score, None, None)
+                .insert_edge(
+                    EntityId(src),
+                    EntityId(tgt),
+                    "similar_to",
+                    &fact,
+                    point.score,
+                    None,
+                    None,
+                )
                 .await
             {
                 Ok(_) => stats.edges_created += 1,
@@ -452,7 +461,7 @@ async fn resolve_local_target_id(
 
     // Fast path: the payload id exists locally AND its canonical identity matches the
     // candidate — the expected, synced case.
-    match store.find_entity_by_id(payload_entity_id).await {
+    match store.find_entity_by_id(EntityId(payload_entity_id)).await {
         Ok(Some(entity))
             if entity.canonical_name == canonical_name && entity.entity_type == entity_type =>
         {
@@ -753,8 +762,8 @@ async fn insert_edges(
             match resolver
                 .graph_store()
                 .insert_or_supersede_with_turn_index_and_metrics(
-                    src_id,
-                    tgt_id,
+                    EntityId(src_id),
+                    EntityId(tgt_id),
                     &relation_display,
                     &canonical_relation,
                     &normalized_fact,
@@ -791,8 +800,8 @@ async fn insert_edges(
                     });
             match resolver
                 .resolve_edge_typed(
-                    src_id,
-                    tgt_id,
+                    EntityId(src_id),
+                    EntityId(tgt_id),
                     &edge.relation,
                     &edge.fact,
                     edge.confidence.unwrap_or(DEFAULT_EDGE_CONFIDENCE),
@@ -836,7 +845,10 @@ async fn link_episode(
     match store.ensure_episode(conv_id).await {
         Ok(episode_id) => {
             for &entity_id in entity_ids {
-                if let Err(e) = store.link_entity_to_episode(episode_id, entity_id).await {
+                if let Err(e) = store
+                    .link_entity_to_episode(episode_id, EntityId(entity_id))
+                    .await
+                {
                     tracing::debug!("episode linking skipped for entity {entity_id}: {e:#}");
                 }
             }
@@ -1893,15 +1905,13 @@ mod tests {
             .await
             .unwrap()
             .expect("entity 'alice' must exist")
-            .id
-            .0;
+            .id;
         let bob_id = gs
             .find_entity("bob", crate::graph::EntityType::Person)
             .await
             .unwrap()
             .expect("entity 'bob' must exist")
-            .id
-            .0;
+            .id;
         let edges = gs.edges_exact(alice_id, bob_id).await.unwrap();
         assert_eq!(edges.len(), 1, "exactly one edge expected");
         // canonical_relation is lowercased; relation field preserves original casing post-strip
@@ -2073,8 +2083,8 @@ mod tests {
 
             // Pass 1: INSERT — seeds confidence_fast = confidence_slow = 0.6.
             gs.insert_edge_typed(
-                alice_id.0,
-                bob_id.0,
+                alice_id,
+                bob_id,
                 "knows",
                 "Alice knows Bob",
                 0.6,
@@ -2088,8 +2098,8 @@ mod tests {
 
             // Pass 2: UPDATE — triggers Benna-Fusi merge with incoming confidence = 0.8.
             gs.insert_edge_typed(
-                alice_id.0,
-                bob_id.0,
+                alice_id,
+                bob_id,
                 "knows",
                 "Alice knows Bob",
                 0.8,
@@ -2101,7 +2111,7 @@ mod tests {
             .await
             .unwrap();
 
-            let mut edges = gs.edges_exact(alice_id.0, bob_id.0).await.unwrap();
+            let mut edges = gs.edges_exact(alice_id, bob_id).await.unwrap();
             assert_eq!(edges.len(), 1, "exactly one active edge expected");
             edges.remove(0)
         }
@@ -2171,20 +2181,18 @@ mod tests {
         assert_eq!(result.stats.edges_inserted, 1, "one edge must be inserted");
 
         let gs = GraphStore::new(pool);
-        let alice_id: i64 = gs
+        let alice_id = gs
             .find_entity("alice", EntityType::Person)
             .await
             .unwrap()
             .expect("alice must exist")
-            .id
-            .0;
-        let bob_id: i64 = gs
+            .id;
+        let bob_id = gs
             .find_entity("bob", EntityType::Person)
             .await
             .unwrap()
             .expect("bob must exist")
-            .id
-            .0;
+            .id;
 
         let mut edges = gs.edges_exact(alice_id, bob_id).await.unwrap();
         assert_eq!(edges.len(), 1, "exactly one active edge expected");
@@ -2241,20 +2249,18 @@ mod tests {
         assert_eq!(result.stats.edges_inserted, 1, "one edge must be inserted");
 
         let gs = GraphStore::new(pool);
-        let alice_id: i64 = gs
+        let alice_id = gs
             .find_entity("alice", EntityType::Person)
             .await
             .unwrap()
             .expect("alice must exist")
-            .id
-            .0;
-        let bob_id: i64 = gs
+            .id;
+        let bob_id = gs
             .find_entity("bob", EntityType::Person)
             .await
             .unwrap()
             .expect("bob must exist")
-            .id
-            .0;
+            .id;
 
         let mut edges = gs.edges_exact(alice_id, bob_id).await.unwrap();
         assert_eq!(edges.len(), 1, "exactly one active edge expected");
@@ -2316,20 +2322,18 @@ mod tests {
         assert_eq!(result.stats.edges_inserted, 1, "one edge must be inserted");
 
         let gs = GraphStore::new(pool);
-        let alice_id: i64 = gs
+        let alice_id = gs
             .find_entity("alice", EntityType::Person)
             .await
             .unwrap()
             .expect("alice must exist")
-            .id
-            .0;
-        let bob_id: i64 = gs
+            .id;
+        let bob_id = gs
             .find_entity("bob", EntityType::Person)
             .await
             .unwrap()
             .expect("bob must exist")
-            .id
-            .0;
+            .id;
 
         let mut edges = gs.edges_exact(alice_id, bob_id).await.unwrap();
         assert_eq!(edges.len(), 1, "exactly one active edge expected");
@@ -2391,20 +2395,18 @@ mod tests {
         assert_eq!(result.stats.edges_inserted, 1, "one edge must be inserted");
 
         let gs = GraphStore::new(pool);
-        let carol_id: i64 = gs
+        let carol_id = gs
             .find_entity("carol", EntityType::Person)
             .await
             .unwrap()
             .expect("carol must exist")
-            .id
-            .0;
-        let dave_id: i64 = gs
+            .id;
+        let dave_id = gs
             .find_entity("dave", EntityType::Person)
             .await
             .unwrap()
             .expect("dave must exist")
-            .id
-            .0;
+            .id;
 
         let mut edges = gs.edges_exact(carol_id, dave_id).await.unwrap();
         assert_eq!(edges.len(), 1, "exactly one active edge expected");

@@ -6,16 +6,17 @@
 //! Edge-weight plasticity ([`HebbianConfig`]), reward-prediction-error gating
 //! ([`RpeConfig`]), belief revision, write gating, and conflict-recency tuning.
 
+use crate::fraction::UnitClosed;
 use crate::providers::ProviderName;
 use serde::{Deserialize, Serialize};
 use zeph_common::memory::EdgeType;
 
-fn default_write_gate_min_edge_relevance() -> f32 {
-    0.3
+fn default_write_gate_min_edge_relevance() -> UnitClosed {
+    const { UnitClosed::literal(0.3) }
 }
 
-fn default_conflict_recency_slow_threshold() -> f32 {
-    0.2
+fn default_conflict_recency_slow_threshold() -> UnitClosed {
+    const { UnitClosed::literal(0.2) }
 }
 
 /// `MemORAI` write-gate prefilter configuration (#3709).
@@ -32,11 +33,8 @@ pub struct WriteGateConfig {
     /// Minimum edge confidence to pass the gate when the relation is low-signal. Default: `0.3`.
     ///
     /// Range: `[0.0, 1.0]`.
-    #[serde(
-        default = "default_write_gate_min_edge_relevance",
-        deserialize_with = "crate::de_helpers::de_unit_closed"
-    )]
-    pub min_edge_relevance: f32,
+    #[serde(default = "default_write_gate_min_edge_relevance")]
+    pub min_edge_relevance: UnitClosed,
 }
 
 impl Default for WriteGateConfig {
@@ -59,11 +57,8 @@ pub struct ConflictRecencyConfig {
     /// When two cardinality-1 heads conflict and recency is the resolution strategy,
     /// only edges with `confidence_slow >= recency_slow_threshold` are preferred by recency;
     /// edges below the threshold fall back to `valid_from` comparison. Range: `[0.0, 1.0]`.
-    #[serde(
-        default = "default_conflict_recency_slow_threshold",
-        deserialize_with = "crate::de_helpers::de_unit_closed"
-    )]
-    pub recency_slow_threshold: f32,
+    #[serde(default = "default_conflict_recency_slow_threshold")]
+    pub recency_slow_threshold: UnitClosed,
 }
 
 impl Default for ConflictRecencyConfig {
@@ -82,12 +77,11 @@ pub struct BeliefRevisionConfig {
     pub enabled: bool,
     /// Cosine similarity threshold for considering two facts as contradictory.
     /// Only edges with similarity >= this value are candidates for revision. Default: `0.85`.
-    #[serde(deserialize_with = "crate::de_helpers::de_unit_closed")]
-    pub similarity_threshold: f32,
+    pub similarity_threshold: UnitClosed,
 }
 
-fn default_belief_revision_similarity_threshold() -> f32 {
-    0.85
+fn default_belief_revision_similarity_threshold() -> UnitClosed {
+    const { UnitClosed::literal(0.85) }
 }
 
 impl Default for BeliefRevisionConfig {
@@ -107,14 +101,13 @@ pub struct RpeConfig {
     pub enabled: bool,
     /// RPE threshold. Turns with RPE < this value skip graph extraction. Range: `[0.0, 1.0]`.
     /// Default: `0.3`.
-    #[serde(deserialize_with = "crate::de_helpers::de_unit_closed")]
-    pub threshold: f32,
+    pub threshold: UnitClosed,
     /// Maximum consecutive turns to skip before forcing extraction (safety valve). Default: `5`.
     pub max_skip_turns: u32,
 }
 
-fn default_rpe_threshold() -> f32 {
-    0.3
+fn default_rpe_threshold() -> UnitClosed {
+    const { UnitClosed::literal(0.3) }
 }
 
 fn default_rpe_max_skip_turns() -> u32 {

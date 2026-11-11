@@ -404,6 +404,21 @@ deployments sensitive to graph-recall latency/cost should benchmark before upgra
 
 ---
 
+## Typed Graph Identifiers (#6991)
+
+`zeph_memory::types::{EntityId, EdgeId}` are distinct id newtypes; the public `GraphStore` API takes and returns them instead of raw `i64`, so an entity id can no longer be passed where an edge id is expected.
+
+- `EdgeId(pub(crate) i64)` with `sqlx(transparent)`, `EdgeId::new(raw)`, `get()`, `Display`; no value invariant (the type distinguishes id kinds). Typed fields: `Edge.{id, source_entity_id, target_entity_id, superseded_by, supersedes}`, `GraphFact.edge_id`, `ConflictCandidate` ids, `MemoryError::{SupersedeCycle, SupersedeDepthExceeded}`, and the public `GraphStore` methods (`insert_edge(EntityId, EntityId, ..) -> EdgeId`, `bfs*`, `edges_for_entity`, `merge_edge_trust(EdgeId, Option<TurnContextTrust>)`, ...). `EdgeRow.superseded_by` stays `Option<i32>` (Postgres INT4) and is converted in `edge_from_row`.
+- Provenance and trust columns are unpacked once by the crate-private `ProvenanceColumns { origin, batch_id, source_uri, trust }` (`trust_column() -> Option<i16>`), replacing the positional `provenance_parts` tuple.
+- Stop line (remainder tracked as follow-up): algorithm-internal maps (`community`, `belief*`, resolver entity API, `SemanticMemory` recall `goal_entity_id`) still key by `i64` and wrap/unwrap at the `GraphStore` boundary; `EntityId`'s field stays `pub`; `ActivatedFact.conflict_candidate_id` stays `i64` because it is an `implicit_conflict_candidates` row id, not an edge id.
+
+### Key Invariants
+
+- NEVER widen a new public `GraphStore` method to raw `i64` ids; use `EntityId` / `EdgeId`
+- `Edge::synthetic_anchor(EntityId)` and the `EdgeId(0)` sentinel stay inside `zeph-memory`
+
+---
+
 ## Source trust on graph rows (#6953)
 
 `graph_entities` and `graph_edges` carry `trust_level SMALLINT NULL` (migration 117); `Entity.trust_level` / `Edge.trust_level` are `Option<TurnContextTrust>`. Semantics, backfill and merge rules are normative in spec 067 (FR-005, FR-006).

@@ -42,8 +42,7 @@ async fn recall_graph_returns_facts_for_known_entity() {
             None,
         )
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     let tokio_id = store
         .upsert_entity(
             "tokio",
@@ -53,8 +52,7 @@ async fn recall_graph_returns_facts_for_known_entity() {
             None,
         )
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     store
         .insert_edge(
             rust_id,
@@ -85,18 +83,15 @@ async fn recall_graph_sorted_by_composite_score() {
     let a_id = store
         .upsert_entity("entity_a", "entity_a", EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     let b_id = store
         .upsert_entity("entity_b", "entity_b", EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     let c_id = store
         .upsert_entity("entity_c", "entity_c", EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     store
         .insert_edge(a_id, b_id, "relates", "a relates b", 0.9, None, None)
         .await
@@ -185,15 +180,13 @@ async fn recall_graph_truncates_to_limit() {
     let root_id = store
         .upsert_entity("root", "root", EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     for i in 0..5 {
         let name = format!("target_{i}");
         let tid = store
             .upsert_entity(&name, &name, EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(
                 root_id,
@@ -223,18 +216,15 @@ async fn recall_graph_multi_hop_traverses_two_hops() {
     let a_id = store
         .upsert_entity("a_entity", "a_entity", EntityType::Person, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     let b_id = store
         .upsert_entity("b_entity", "b_entity", EntityType::Person, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
     let c_id = store
         .upsert_entity("c_entity", "c_entity", EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     store
         .insert_edge(a_id, b_id, "knows", "a knows b", 0.9, None, None)
@@ -503,8 +493,7 @@ async fn seed_entity_with_zero_embedding(
     let id = store
         .upsert_entity(name, name, EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     let point_id = uuid::Uuid::new_v4().to_string();
     let payload = json!({
@@ -537,7 +526,7 @@ async fn seed_entity_with_zero_embedding(
     .await
     .unwrap();
 
-    id
+    id.0
 }
 
 /// Seed an entity with a zero embedding but WITHOUT writing `qdrant_point_id` back to `SQLite`.
@@ -555,8 +544,7 @@ async fn seed_entity_no_db_point_id(
     let id = store
         .upsert_entity(name, name, EntityType::Concept, None, None)
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     let point_id = uuid::Uuid::new_v4().to_string();
     let payload = json!({
@@ -578,7 +566,7 @@ async fn seed_entity_no_db_point_id(
 
     // Intentionally NOT writing qdrant_point_id to graph_entities.
     // The DB row keeps qdrant_point_id = NULL so the primary self-exclusion guard is inactive.
-    id
+    id.0
 }
 
 fn embedding_provider() -> AnyProvider {
@@ -649,11 +637,14 @@ async fn link_memory_notes_threshold_filters() {
     } else {
         (id_b, id_a)
     };
-    let edges = store.edges_for_entity(src).await.unwrap();
+    let edges = store
+        .edges_for_entity(crate::types::EntityId(src))
+        .await
+        .unwrap();
     let has_ab = edges.iter().any(|e| {
         e.relation == "similar_to"
-            && ((e.source_entity_id == src && e.target_entity_id == tgt)
-                || (e.source_entity_id == tgt && e.target_entity_id == src))
+            && ((e.source_entity_id.0 == src && e.target_entity_id.0 == tgt)
+                || (e.source_entity_id.0 == tgt && e.target_entity_id.0 == src))
     });
     assert!(has_ab, "A-B edge must exist above threshold");
 }
@@ -957,8 +948,7 @@ async fn link_memory_notes_id_collision_falls_through_to_slow_path() {
             None,
         )
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     // Phantom candidate: payload `entity_id` happens to equal `collided_id`, but its
     // `canonical_name` identifies a DIFFERENT entity — simulating the reset scenario where
@@ -1009,7 +999,7 @@ async fn link_memory_notes_id_collision_falls_through_to_slow_path() {
         .unwrap()
         .expect("a local entity must be created for the mismatched-identity candidate");
     assert_ne!(
-        correct_target.id.0, collided_id,
+        correct_target.id, collided_id,
         "the re-resolved entity must not be the unrelated collided row"
     );
 
@@ -1079,8 +1069,7 @@ async fn link_memory_notes_stale_id_resolves_existing_canonical_without_creating
             None,
         )
         .await
-        .unwrap()
-        .0;
+        .unwrap();
 
     // Phantom candidate: payload `entity_id` is stale (no local row), but `canonical_name`
     // matches the pre-existing "existing_target" row above.

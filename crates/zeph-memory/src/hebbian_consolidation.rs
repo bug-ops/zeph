@@ -27,6 +27,7 @@ use tokio_util::sync::CancellationToken;
 use zeph_common::config::memory::HebbianConsolidationConfig;
 use zeph_db::sql;
 use zeph_llm::any::AnyProvider;
+use zeph_llm::provider::StatusUpdate;
 use zeph_llm::provider::{LlmProvider as _, Message, Role};
 
 use crate::error::MemoryError;
@@ -37,12 +38,12 @@ use crate::store::SqliteStore;
 /// Drop guard that clears the TUI spinner by sending an empty string when dropped.
 ///
 /// Ensures the spinner is cleared on every exit path — success, error, or cancellation.
-struct ClearStatusOnDrop(Option<tokio::sync::mpsc::UnboundedSender<String>>);
+struct ClearStatusOnDrop(Option<zeph_llm::provider::StatusTx>);
 
 impl Drop for ClearStatusOnDrop {
     fn drop(&mut self) {
         if let Some(ref tx) = self.0 {
-            let _ = tx.send(String::new());
+            let _ = tx.send(StatusUpdate::Clear);
         }
     }
 }
@@ -333,14 +334,14 @@ pub async fn run_consolidation_sweep(
     store: &SqliteStore,
     config: &HebbianConsolidationConfig,
     provider: &AnyProvider,
-    status_tx: Option<&tokio::sync::mpsc::UnboundedSender<String>>,
+    status_tx: Option<&zeph_llm::provider::StatusTx>,
     cancel: &CancellationToken,
 ) -> Result<u32, MemoryError> {
     // Guard clears the spinner on every exit path (success, early return on error, cancellation).
     let _clear_status = ClearStatusOnDrop(status_tx.cloned());
 
     if let Some(tx) = status_tx {
-        let _ = tx.send("Consolidating memory clusters\u{2026}".to_owned());
+        let _ = tx.send(StatusUpdate::set("Consolidating memory clusters\u{2026}"));
     }
 
     let now = chrono::Utc::now().timestamp();
@@ -451,7 +452,7 @@ pub async fn spawn_consolidation_loop(
     store: Arc<SqliteStore>,
     config: HebbianConsolidationConfig,
     provider: AnyProvider,
-    status_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    status_tx: Option<zeph_llm::provider::StatusTx>,
     cancel: CancellationToken,
 ) {
     if config.consolidation_interval_secs == 0 {

@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use crate::calibration::{ConfidenceCalibration, ConfidenceThreshold};
+use crate::calibration::{
+    ConfidenceCalibration, ConfidenceThreshold, DEFAULT_CORRECTION_CONFIDENCE,
+};
 use crate::providers::ProviderName;
 use serde::{Deserialize, Serialize};
 
@@ -33,12 +35,16 @@ fn default_correction_detection() -> bool {
     true
 }
 
+fn default_correction_confidence_threshold() -> ConfidenceThreshold {
+    DEFAULT_CORRECTION_CONFIDENCE
+}
+
 fn default_judge_adaptive_low() -> ConfidenceThreshold {
-    ConfidenceThreshold::literal(0.5)
+    const { ConfidenceThreshold::literal(0.5) }
 }
 
 fn default_judge_adaptive_high() -> ConfidenceThreshold {
-    ConfidenceThreshold::literal(0.8)
+    const { ConfidenceThreshold::literal(0.8) }
 }
 
 fn default_judge_llm_timeout_secs() -> u64 {
@@ -50,7 +56,7 @@ fn default_correction_recall_limit() -> u32 {
 }
 
 fn default_correction_min_similarity() -> ConfidenceThreshold {
-    ConfidenceThreshold::literal(0.75)
+    const { ConfidenceThreshold::literal(0.75) }
 }
 
 fn default_auto_promote_min_uses() -> u32 {
@@ -219,7 +225,7 @@ pub struct LearningConfig {
     pub cooldown_minutes: u64,
     #[serde(default = "default_correction_detection")]
     pub correction_detection: bool,
-    #[serde(default)]
+    #[serde(default = "default_correction_confidence_threshold")]
     pub correction_confidence_threshold: ConfidenceThreshold,
     /// Piecewise-linear `[raw, calibrated]` curve applied to LLM-reported correction confidence
     /// before the threshold gate (`detector_mode = "judge"` / `"model"`). Empty = identity.
@@ -453,7 +459,7 @@ impl Default for LearningConfig {
             max_versions: default_max_versions(),
             cooldown_minutes: default_cooldown_minutes(),
             correction_detection: default_correction_detection(),
-            correction_confidence_threshold: ConfidenceThreshold::default(),
+            correction_confidence_threshold: DEFAULT_CORRECTION_CONFIDENCE,
             correction_confidence_calibration: ConfidenceCalibration::identity(),
             detector_mode: DetectorMode::default(),
             judge_model: String::new(),

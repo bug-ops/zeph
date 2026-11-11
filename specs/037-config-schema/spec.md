@@ -178,6 +178,7 @@ application. Violations return `ConfigError::Validation`.
 | Provider name | `providers[*].name` | unique, non-empty |
 | Gateway port | `gateway.port` | 1–65535 |
 | Cost budget | `cost.max_usd_per_session` | ≥ 0.0 (0 = unlimited) |
+| Unit-interval floats | thresholds, ratios, rates (see "Unit-Interval Floats") | enforced at parse time by `Fraction`, not in `validate()` |
 | Timeout values | `timeouts.*` | ≥ 0, 0 = disabled |
 
 ---
@@ -253,6 +254,23 @@ now produce a deserialization error at startup instead of a runtime `warn!` log 
 `ProviderName` is `Arc<str>` (migrated from `String` in #4230). This allows cheap cloning
 of provider references throughout the subsystem. All `*_provider` config fields use
 `Option<ProviderName>` or `ProviderName`.
+
+### Unit-Interval Floats: `Fraction` (#6989)
+
+`crates/zeph-config/src/fraction.rs`. Config floats that must lie in a unit interval are typed `Fraction<B, F = f32>` and checked at deserialization, so an out-of-range value is a parse error and an invalid config value is unrepresentable after load. The hand-written `de_unit_*` deserializers, `validate_benna_*`, the per-field float checks in `loader.rs` `validate()` and the wizard range closures are deleted (`de_helpers.rs` is removed).
+
+- `B: UnitBounds` is a sealed marker: `Closed` `[0,1]`, `Open` `(0,1)`, `LowerClosed` `[0,1)`, `UpperClosed` `(0,1]`; `F: UnitFloat` is `f32` or `f64`. Aliases `UnitClosed`, `UnitOpen`, `UnitLowerClosed`, `UnitUpperClosed` (f32) and `UnitClosed64`, `UnitUpperClosed64` (f64). `ConfidenceThreshold = UnitClosed`.
+- `Fraction::new(F) -> Result<Self, FractionError>` rejects NaN, infinities and out-of-interval values; `get()`; `Display`/`FromStr` (`ParseFractionError`); `const fn literal` asserts the bound and is used only to define named constants (`DEFAULT_CORRECTION_CONFIDENCE`, `DEFAULT_SEMANTIC_CACHE_THRESHOLD`, `DEFAULT_SOFT_COMPACTION_THRESHOLD`, `DEFAULT_HARD_COMPACTION_THRESHOLD`), so a bad literal fails at compile time. Serde goes through the checked constructor.
+- **`Fraction` has no `Default`** (deliberate): a blanket default would silently apply to every field with a bare `#[serde(default)]` (for example `orchestration.cascade_failure_rate_abort_threshold`, where `0.0` means "disabled"). Each migrated field with an omitted-key default uses an explicit `#[serde(default = "fn")]` returning the pre-change value; a table test deserializes a config with every migrated key omitted and pins each default (cascade threshold = 0.0).
+- JSON schema: manual `schemars::JsonSchema` impl, `type: number` with `minimum`/`exclusiveMinimum` 0 and `maximum`/`exclusiveMaximum` 1 taken from the bound.
+- Env overrides (`ZEPH_LLM_SEMANTIC_CACHE_THRESHOLD`, `ZEPH_MEMORY_COMPACTION_THRESHOLD`, `ZEPH_MEMORY_SOFT_COMPACTION_THRESHOLD`) go through `Fraction::new`; an unparsable or out-of-interval value is ignored with a `warn!`, consistent with the other env overrides (previously the value was applied and `validate()` failed).
+- Behavior changes: probe thresholds are range-checked at parse time even when the probe is disabled; invalid-value tests in `loader.rs` are parse-time errors. Kept in `validate()`: `turn_context_budget_ratio` `(0, 0.25]` and cross-field rules (for example soft < hard compaction).
+
+### Key Invariants
+
+- NEVER add `impl Default for Fraction` and NEVER rely on a bare `#[serde(default)]` for a `Fraction` field; use `default = "fn"`
+- A new unit-interval config float MUST use `Fraction` with the matching bound, not `f32`/`f64` plus a `validate()` check
+- Runtime (non-const) construction uses `Fraction::new(..)?`; non-test library code does not `expect`/`unwrap` it
 
 ### FleetEntry.state Migration
 

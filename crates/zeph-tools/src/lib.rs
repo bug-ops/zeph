@@ -121,9 +121,9 @@ pub use error_taxonomy::{
 pub use execution_context::ExecutionContext;
 pub use executor::{
     CheckpointActionResult, CheckpointEntryView, CheckpointListResult, ClaimSource, DiffData,
-    DynExecutor, ErasedToolExecutor, ErrorKind, FilterStats, MAX_TOOL_OUTPUT_CHARS,
+    DynExecutor, ErasedToolExecutor, ErrorKind, FilterStats, MAX_TOOL_OUTPUT_CHARS, SyntheticKind,
     TOOL_EVENT_CHANNEL_CAP, ToolCall, ToolError, ToolEvent, ToolEventRx, ToolEventTx, ToolExecutor,
-    ToolOutput, truncate_tool_output, truncate_tool_output_at,
+    ToolOutput, ToolStatus, truncate_tool_output, truncate_tool_output_at,
 };
 pub use file::FileExecutor;
 pub use filter::{

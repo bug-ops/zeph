@@ -13,7 +13,7 @@ use std::hash::Hash as _;
 
 use zeph_common::task_supervisor::BlockingHandle;
 use zeph_llm::any::AnyProvider;
-use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
+use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role, StatusUpdate};
 
 use crate::compaction::{SubgoalExtractionResult, SubgoalRegistry};
 use crate::state::ContextSummarizationView;
@@ -109,7 +109,7 @@ pub(crate) fn maybe_refresh_task_goal(summ: &mut ContextSummarizationView<'_>) {
     *summ.pending_task_goal = Some(handle);
     tracing::debug!("extract_task_goal: background task spawned");
     if let Some(ref tx) = summ.status_tx {
-        let _ = tx.send("Extracting task goal...".into());
+        let _ = tx.send(StatusUpdate::set("Extracting task goal..."));
     }
 }
 
@@ -164,7 +164,7 @@ pub(crate) fn maybe_refresh_subgoal(summ: &mut ContextSummarizationView<'_>) {
     *summ.pending_subgoal = Some(handle);
     tracing::debug!("subgoal_extraction: background task spawned");
     if let Some(ref tx) = summ.status_tx {
-        let _ = tx.send("Tracking subgoal...".into());
+        let _ = tx.send(StatusUpdate::set("Tracking subgoal..."));
     }
 }
 
@@ -190,7 +190,7 @@ fn apply_completed_task_goal(summ: &mut ContextSummarizationView<'_>) {
         }
         // Clear spinner on all completion paths.
         if let Some(ref tx) = summ.status_tx {
-            let _ = tx.send(String::new());
+            let _ = tx.send(StatusUpdate::Clear);
         }
     }
 }
@@ -215,7 +215,7 @@ fn apply_completed_subgoal(summ: &mut ContextSummarizationView<'_>, msg_len: usi
             }
         }
         if let Some(ref tx) = summ.status_tx {
-            let _ = tx.send(String::new());
+            let _ = tx.send(StatusUpdate::Clear);
         }
     }
 }

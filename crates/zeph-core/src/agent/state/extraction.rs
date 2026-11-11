@@ -57,7 +57,7 @@ impl MemoryExtractionState {
         }
         if config.rpe.enabled {
             self.rpe_router = Some(std::sync::Mutex::new(zeph_memory::RpeRouter::new(
-                config.rpe.threshold,
+                config.rpe.threshold.get(),
                 config.rpe.max_skip_turns,
             )));
         } else {

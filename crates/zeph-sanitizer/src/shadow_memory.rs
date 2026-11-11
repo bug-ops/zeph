@@ -266,7 +266,7 @@ impl ShadowMemory {
         };
 
         // 3. Deviation accumulation: fraction of events above half the drift threshold.
-        let half_threshold = self.config.drift_threshold * 0.5;
+        let half_threshold = self.config.drift_threshold.get() * 0.5;
         #[allow(clippy::cast_precision_loss)]
         let deviation_ratio = window
             .iter()
@@ -282,7 +282,7 @@ impl ShadowMemory {
 
         GoalDriftResult {
             score,
-            should_alert: score >= self.config.drift_threshold,
+            should_alert: score >= self.config.drift_threshold.get(),
         }
     }
 
@@ -605,7 +605,7 @@ mod tests {
     fn should_alert_true_above_threshold() {
         let config = ShadowMemoryConfig {
             enabled: true,
-            drift_threshold: 0.1, // very low threshold to trigger easily
+            drift_threshold: zeph_config::UnitUpperClosed::literal(0.1), // very low threshold to trigger easily
             ..Default::default()
         };
         let mut mem = ShadowMemory::new(&config).unwrap();
@@ -619,7 +619,7 @@ mod tests {
     fn should_alert_false_below_threshold() {
         let config = ShadowMemoryConfig {
             enabled: true,
-            drift_threshold: 0.99, // very high threshold
+            drift_threshold: zeph_config::UnitUpperClosed::literal(0.99), // very high threshold
             ..Default::default()
         };
         let mut mem = ShadowMemory::new(&config).unwrap();
@@ -637,7 +637,7 @@ mod tests {
     fn integration_record_to_goal_drift_security_event() {
         let config = ShadowMemoryConfig {
             enabled: true,
-            drift_threshold: 0.3, // low enough to trigger on diverging goals
+            drift_threshold: zeph_config::UnitUpperClosed::literal(0.3), // low enough to trigger on diverging goals
             ..Default::default()
         };
         let mut mem = ShadowMemory::new(&config).unwrap();

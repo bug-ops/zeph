@@ -1006,3 +1006,36 @@ makes cache initialisation and eviction latency visible in local Chrome JSON tra
 - `record_predicate_outcome` MUST set `graph_dirty` when an outcome is recorded
 - PlanCache span names follow the `<crate>.<subsystem>.<operation>` convention
 
+
+---
+
+## RunInline Tool Loop: Gates, Allowlist, Sanitizer and Trace Outcome (#6982, #6986)
+
+`Agent::run_inline_tool_loop(prompt, max_iterations, task_allowlist)` (`scheduler_loop.rs`) runs a `RunInline` task. It applies the same policy gates as the tier loop through `tool_execution/gates.rs` (span `core.tool.inline_gates`):
+
+- **Gates**: `apply_policy_gates` (exfiltration URL flagging, pre-execution verifiers, channel allowlist) and the session quota (`check_and_update_quota`, session-shared), then repeat detection. A refusal is a `GateRefusal { FailedDependency, QuotaExceeded { max }, PreExecutionBlocked, DispatchRejected { reason }, Repeated, NotInTaskAllowlist }`; `into_output(tool)` builds the `[error] ...` text as a `ToolOutput::synthetic(.., GateRefused)` shared with the tier loop.
+- **Repeat window**: one `RepeatWindow::new(threshold)` per `run_inline_tool_loop` invocation, created before the iteration loop and spanning all its iterations; it is not shared with the session window owned by `ToolOrchestrator` (tier loop) and is cancel-safe. The same call repeated across two iterations of one invocation is refused; a fresh invocation starts empty.
+- **Task allowlist**: the planner-emitted per-task allowlist (`intersect_task_tool_allowlist`) filters both the tool definitions sent to the model and the executed calls (`normalize_tool_id` comparison); a call outside it is `NotInTaskAllowlist`. Built-in tools are never executed by the inline loop (they yield `[error] built-in tool ... is not available`).
+- **Sanitizer**: executed output goes through `sanitize_tool_output` with `ToolOutputOrigin` from the typed result (`[[040-sanitizer/spec]]`); the user message is still credential-`redacted()` afterwards.
+- **No `permission_denied` hooks** fire on inline refusals (`[[028-hooks/spec]]`); parity with the tier loop is tracked in #6993.
+
+### Trace outcome and wire `is_error`
+
+For each call the loop emits a `ToolResult.is_error` (wire) and a `ToolCallSummary.ok` (trace, consumed by `all_tool_calls_failed`):
+
+| Result | wire `is_error` | trace `ok` |
+|---|---|---|
+| `Ok(Some)` with `Success` | false | true |
+| `Ok(Some)` with `NonZeroExit` | **true** (`is_failure()`) | **true** (does not abort dependants) |
+| `Ok(Some)` with `Failed` | true | false |
+| `Err(_)` | true | false |
+| gate refusal, built-in unavailable, `PreToolUse` block (`[blocked]`) | true | false |
+| `Ok(None)` | false | true |
+
+`ok` follows `!(Err || ToolStatus::aborts_dependants() || HookBlocked)`; the wire `is_error` follows `Err || is_failure() || HookBlocked`. This differs from the tier loop, whose wire `is_error` is `Err`-only, so for a non-zero exit the two loops disagree on `is_error` but agree on `ok` and on dependants (`[[006-tools/spec]]`, R9). Consequence: an inline task whose only mutating call exits non-zero (for example `cargo test` exit 101) still ends `Completed` and its downstream tasks are not skipped, the same as the spawn path.
+
+### Key Invariants
+
+- NEVER create the inline `RepeatWindow` per call or share it with the session window
+- NEVER set the inline trace `ok = false` for a plain non-zero exit (it would fail the DAG task through `all_tool_calls_failed` and skip its dependants)
+- NEVER execute an inline tool call outside the task allowlist or bypass the gates in `gates.rs`

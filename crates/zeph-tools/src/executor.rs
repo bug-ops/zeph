@@ -226,7 +226,7 @@ pub enum ClaimSource {
     WebScrape,
     /// Query-based web search (external search API). Audit-provenance only — the
     /// sanitizer trust bridge dispatches on the tool-name string, not this variant
-    /// (see `zeph-core::agent::tool_execution::sanitize::build_tool_output_source`).
+    /// (see `zeph_sanitizer::tool_output_source`).
     WebSearch,
     /// MCP server tool response.
     Mcp,
@@ -240,14 +240,103 @@ pub enum ClaimSource {
     Memory,
     /// Telegram moderation action (reaction deletion).
     Moderation,
-    /// Harness-authored placeholder for a call that was never executed (gate rejection,
-    /// utility-policy skip, quota stop). Never a real result: it must not satisfy a
-    /// prerequisite or enter the result cache.
-    Synthetic,
     /// Result of a context-management internal tool (`start_focus`, `complete_focus`,
     /// `compress_context`, `request_compaction`): the call did run, its text is authored by
     /// the harness, and it is a real result.
     ContextManagement,
+}
+
+/// Why a harness-authored placeholder result was produced instead of running a tool.
+///
+/// Closed set: every consumer matches exhaustively so a new kind forces a decision about
+/// whether it counts as a failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SyntheticKind {
+    /// A pre-dispatch gate refused the call (prerequisite, quota, verifier, dispatch, repeat,
+    /// allowlist). Counts as a failure and skips dependants.
+    GateRefused,
+    /// A `PreToolUse` hook blocked the call.
+    HookBlocked,
+    /// The call was rate limited.
+    RateLimited,
+    /// The utility policy skipped or stopped the call.
+    UtilitySkipped,
+}
+
+/// Typed outcome of a tool call, set once where the result is produced.
+///
+/// Replaces substring checks on the rendered output text. `Synthetic(_)` is the only marker
+/// for harness-authored results that never ran.
+///
+/// Two predicates split the consequences: [`ToolStatus::is_failure`] drives audit, UI, skill
+/// outcomes and anomaly tracking, while [`ToolStatus::aborts_dependants`] decides whether
+/// dependent tool calls are skipped. A plain non-zero exit is a failure but never skips
+/// dependants.
+///
+/// # Examples
+///
+/// ```
+/// use std::num::NonZeroI32;
+/// use zeph_tools::ToolStatus;
+///
+/// let status = ToolStatus::NonZeroExit(NonZeroI32::new(2).unwrap());
+/// assert!(status.is_failure());
+/// assert!(!status.aborts_dependants());
+/// assert!(!ToolStatus::Success.is_failure());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ToolStatus {
+    /// The tool ran and succeeded (shell: exit code 0).
+    #[default]
+    Success,
+    /// A process-backed tool ran and exited with a non-zero code.
+    NonZeroExit(std::num::NonZeroI32),
+    /// The tool ran but could not complete its job.
+    Failed,
+    /// Harness-authored result; the tool never ran.
+    Synthetic(SyntheticKind),
+}
+
+impl ToolStatus {
+    /// Maps a process exit code to a status: `0` is [`ToolStatus::Success`], anything else
+    /// [`ToolStatus::NonZeroExit`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_tools::ToolStatus;
+    ///
+    /// assert_eq!(ToolStatus::from_exit_code(0), ToolStatus::Success);
+    /// assert!(ToolStatus::from_exit_code(1).is_failure());
+    /// ```
+    #[must_use]
+    pub fn from_exit_code(exit_code: i32) -> Self {
+        std::num::NonZeroI32::new(exit_code).map_or(Self::Success, Self::NonZeroExit)
+    }
+
+    /// Whether this outcome counts as a failure for audit, UI, skill and anomaly consumers.
+    #[must_use]
+    pub const fn is_failure(self) -> bool {
+        matches!(
+            self,
+            Self::NonZeroExit(_) | Self::Failed | Self::Synthetic(SyntheticKind::GateRefused)
+        )
+    }
+
+    /// Whether dependent tool calls must be skipped because of this outcome.
+    #[must_use]
+    pub const fn aborts_dependants(self) -> bool {
+        matches!(
+            self,
+            Self::Failed | Self::Synthetic(SyntheticKind::GateRefused)
+        )
+    }
+
+    /// Whether this is a harness-authored placeholder that never ran.
+    #[must_use]
+    pub const fn is_synthetic(self) -> bool {
+        matches!(self, Self::Synthetic(_))
+    }
 }
 
 /// Structured result from tool execution.
@@ -301,6 +390,32 @@ pub struct ToolOutput {
     /// at truncation time. `None` for executors that don't emit the hint, or when the
     /// server-provided value was malformed (fail-closed to the global threshold).
     pub max_result_size_chars: Option<usize>,
+    /// Typed outcome of the call; the single source of truth for success/failure.
+    pub status: ToolStatus,
+}
+
+impl ToolOutput {
+    /// Builds a harness-authored placeholder for a call that was never executed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::ToolName;
+    /// use zeph_tools::{SyntheticKind, ToolOutput};
+    ///
+    /// let out = ToolOutput::synthetic(ToolName::new("shell"), "[blocked]", SyntheticKind::HookBlocked);
+    /// assert!(out.status.is_synthetic());
+    /// assert!(out.claim_source.is_none());
+    /// ```
+    #[must_use]
+    pub fn synthetic(tool_name: ToolName, summary: impl Into<String>, kind: SyntheticKind) -> Self {
+        Self {
+            tool_name,
+            summary: summary.into(),
+            status: ToolStatus::Synthetic(kind),
+            ..Self::default()
+        }
+    }
 }
 
 impl fmt::Display for ToolOutput {

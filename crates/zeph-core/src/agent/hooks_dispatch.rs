@@ -9,172 +9,10 @@
 
 use std::sync::Arc;
 
+use zeph_subagent::HookAgentCtx;
+
 use super::Agent;
 use crate::channel::Channel;
-
-/// Inject `ZEPH_AGENT_TYPE = "main"` and (when present) `ZEPH_AGENT_ID` into a hook
-/// environment map. Mirrors how `ZEPH_SESSION_ID` is conditionally inserted at each site.
-pub(crate) fn insert_main_agent_ctx(
-    env: &mut std::collections::HashMap<String, String>,
-    conv_id: Option<&str>,
-) {
-    env.insert("ZEPH_AGENT_TYPE".to_owned(), "main".to_owned());
-    if let Some(id) = conv_id {
-        env.insert("ZEPH_AGENT_ID".to_owned(), id.to_owned());
-    }
-}
-
-/// Build the environment passed to `PreToolUse`/`PostToolUse` hooks for one tool call.
-pub(crate) fn make_tool_hook_env(
-    tool_name: &str,
-    tool_input: &serde_json::Value,
-    session_id: Option<&str>,
-) -> std::collections::HashMap<String, String> {
-    let mut env = zeph_subagent::make_base_hook_env(tool_name, tool_input);
-    if let Some(sid) = session_id {
-        env.insert("ZEPH_SESSION_ID".to_owned(), sid.to_owned());
-    }
-    insert_main_agent_ctx(&mut env, session_id);
-    env
-}
-
-/// The `PreToolUse` hooks that match one tool call, with their environment, ready to fire.
-///
-/// Shared by the main tier loop (which fires many of these concurrently under a semaphore) and
-/// the inline orchestration loop (which fires one per call), so both build the same hook
-/// environment and run the same `core.hooks.pre_tool_use` span.
-pub(crate) struct PreToolHookCall {
-    hooks: Vec<zeph_config::HookDef>,
-    env: std::collections::HashMap<String, String>,
-}
-
-impl PreToolHookCall {
-    /// Select the hooks in `pre_hooks` matching `tool_name`; `None` when none match.
-    pub(crate) fn prepare(
-        pre_hooks: &[zeph_config::HookMatcher],
-        tool_name: &str,
-        tool_input: &serde_json::Value,
-        session_id: Option<&str>,
-    ) -> Option<Self> {
-        let hooks: Vec<zeph_config::HookDef> = zeph_subagent::matching_hooks(pre_hooks, tool_name)
-            .into_iter()
-            .cloned()
-            .collect();
-        if hooks.is_empty() {
-            return None;
-        }
-        Some(Self {
-            hooks,
-            env: make_tool_hook_env(tool_name, tool_input, session_id),
-        })
-    }
-
-    /// Fire the selected hooks.
-    ///
-    /// # Errors
-    ///
-    /// Returns the hook error only when a `fail_closed` hook fails; fail-open failures are
-    /// swallowed by `fire_hooks`.
-    pub(crate) async fn fire(
-        &self,
-        tool_name: &str,
-        mcp: Option<&dyn zeph_subagent::McpDispatch>,
-    ) -> Result<zeph_subagent::HookRunResult, zeph_subagent::HookError> {
-        use tracing::Instrument as _;
-        zeph_subagent::hooks::fire_hooks(&self.hooks, &self.env, mcp, None)
-            .instrument(tracing::info_span!("core.hooks.pre_tool_use", tool = %tool_name))
-            .await
-    }
-}
-
-/// The `PostToolUse` hooks that match one tool call, with their environment and stdin context.
-///
-/// Shared by the main tier loop and the inline orchestration loop so both report the same
-/// `agent_type = "main"` context, duration env, `core.hooks.post_tool_use` span and
-/// `updated_tool_output` replacement.
-pub(crate) struct PostToolHookCall {
-    hooks: Vec<zeph_config::HookDef>,
-    env: std::collections::HashMap<String, String>,
-    tool_input: serde_json::Value,
-    session_id: Option<String>,
-}
-
-impl PostToolHookCall {
-    /// Select the hooks in `post_hooks` matching `tool_name`; `None` when none match.
-    pub(crate) fn prepare(
-        post_hooks: &[zeph_config::HookMatcher],
-        tool_name: &str,
-        tool_input: &serde_json::Value,
-        session_id: Option<&str>,
-    ) -> Option<Self> {
-        let hooks: Vec<zeph_config::HookDef> = zeph_subagent::matching_hooks(post_hooks, tool_name)
-            .into_iter()
-            .cloned()
-            .collect();
-        if hooks.is_empty() {
-            return None;
-        }
-        Some(Self {
-            hooks,
-            env: make_tool_hook_env(tool_name, tool_input, session_id),
-            tool_input: tool_input.clone(),
-            session_id: session_id.map(str::to_owned),
-        })
-    }
-
-    /// Fire the selected hooks (fail-open) and apply an `updated_tool_output` replacement to
-    /// a successful `result`.
-    pub(crate) async fn fire(
-        &self,
-        tool_name: &str,
-        duration: std::time::Duration,
-        result: &mut Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
-        mcp: Option<&dyn zeph_subagent::McpDispatch>,
-    ) {
-        use tracing::Instrument as _;
-        let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
-        let mut env = self.env.clone();
-        env.insert("ZEPH_TOOL_DURATION_MS".to_owned(), duration_ms.to_string());
-
-        let tool_error_text = result.as_ref().err().map(ToString::to_string);
-        let hook_input = zeph_subagent::PostToolUseHookInput {
-            tool_name,
-            tool_args: &self.tool_input,
-            session_id: self.session_id.as_deref(),
-            duration_ms,
-            tool_output: match result {
-                Ok(Some(out)) => Some(out.summary.as_str()),
-                _ => None,
-            },
-            tool_error: tool_error_text.as_deref(),
-            agent_id: self.session_id.as_deref(),
-            agent_type: "main",
-        };
-        let stdin_bytes = serde_json::to_vec(&hook_input).ok();
-
-        match zeph_subagent::hooks::fire_hooks(&self.hooks, &env, mcp, stdin_bytes.as_deref())
-            .instrument(tracing::info_span!("core.hooks.post_tool_use", tool = %tool_name))
-            .await
-        {
-            Ok(run_result) => {
-                if let Some(replacement) = run_result.output.updated_tool_output
-                    && let Ok(Some(out)) = result
-                {
-                    tracing::debug!(
-                        tool = %tool_name,
-                        original_len = out.summary.len(),
-                        replacement_len = replacement.len(),
-                        "PostToolUse hook replaced tool output"
-                    );
-                    out.summary = replacement;
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, tool = %tool_name, "PostToolUse hook failed");
-            }
-        }
-    }
-}
 
 impl<C: Channel> Agent<C> {
     /// Return an `McpDispatch` adapter backed by the agent's MCP manager, if present.
@@ -212,8 +50,12 @@ impl<C: Channel> Agent<C> {
             return None;
         }
         let session_id = self.hook_session_id();
-        let call =
-            PreToolHookCall::prepare(pre_hooks, tool_name, tool_input, session_id.as_deref())?;
+        let call = zeph_subagent::PreToolHookCall::prepare(
+            pre_hooks,
+            tool_name,
+            tool_input,
+            HookAgentCtx::main(session_id.as_deref()),
+        )?;
         let dispatch = self.mcp_dispatch();
         let mcp = dispatch
             .as_ref()
@@ -247,9 +89,12 @@ impl<C: Channel> Agent<C> {
             return;
         }
         let session_id = self.hook_session_id();
-        let Some(call) =
-            PostToolHookCall::prepare(post_hooks, tool_name, tool_input, session_id.as_deref())
-        else {
+        let Some(call) = zeph_subagent::PostToolHookCall::prepare(
+            post_hooks,
+            tool_name,
+            tool_input,
+            HookAgentCtx::main(session_id.as_deref()),
+        ) else {
             return;
         };
         let dispatch = self.mcp_dispatch();
@@ -304,7 +149,7 @@ impl<C: Channel> Agent<C> {
                 .persistence
                 .conversation_id
                 .map(|id| id.0.to_string());
-            insert_main_agent_ctx(&mut env, conv_id_str.as_deref());
+            HookAgentCtx::main(conv_id_str.as_deref()).insert_agent_vars(&mut env);
             let dispatch = self.mcp_dispatch();
             let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
                 .as_ref()
@@ -339,7 +184,7 @@ impl<C: Channel> Agent<C> {
             self.reload_instructions().await;
         }
 
-        self.channel.send_status_best_effort("").await;
+        self.channel.clear_status_best_effort().await;
     }
     /// Handle a `FileChangedEvent` from the file watcher.
     #[tracing::instrument(name = "core.agent.handle_file_changed", skip_all, level = "debug")]
@@ -374,7 +219,7 @@ impl<C: Channel> Agent<C> {
                 .persistence
                 .conversation_id
                 .map(|id| id.0.to_string());
-            insert_main_agent_ctx(&mut env, conv_id_str.as_deref());
+            HookAgentCtx::main(conv_id_str.as_deref()).insert_agent_vars(&mut env);
             let dispatch = self.mcp_dispatch();
             let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
                 .as_ref()
@@ -386,7 +231,7 @@ impl<C: Channel> Agent<C> {
             }
         }
 
-        self.channel.send_status_best_effort("").await;
+        self.channel.clear_status_best_effort().await;
     }
 }
 
@@ -428,7 +273,7 @@ impl zeph_subagent::McpDispatch for McpManagerDispatch {
 mod tests {
     use std::collections::HashMap;
 
-    use super::insert_main_agent_ctx;
+    use super::HookAgentCtx;
     #[allow(clippy::wildcard_imports)]
     use crate::agent::agent_tests::*;
 
@@ -557,14 +402,14 @@ mod tests {
     #[test]
     fn insert_main_agent_ctx_always_sets_agent_type() {
         let mut env = HashMap::new();
-        insert_main_agent_ctx(&mut env, None);
+        HookAgentCtx::main(None).insert_agent_vars(&mut env);
         assert_eq!(env.get("ZEPH_AGENT_TYPE").map(String::as_str), Some("main"));
     }
 
     #[test]
     fn insert_main_agent_ctx_sets_agent_id_when_some() {
         let mut env = HashMap::new();
-        insert_main_agent_ctx(&mut env, Some("conv-abc"));
+        HookAgentCtx::main(Some("conv-abc")).insert_agent_vars(&mut env);
         assert_eq!(
             env.get("ZEPH_AGENT_ID").map(String::as_str),
             Some("conv-abc")
@@ -574,7 +419,7 @@ mod tests {
     #[test]
     fn insert_main_agent_ctx_omits_agent_id_when_none() {
         let mut env = HashMap::new();
-        insert_main_agent_ctx(&mut env, None);
+        HookAgentCtx::main(None).insert_agent_vars(&mut env);
         assert!(
             !env.contains_key("ZEPH_AGENT_ID"),
             "ZEPH_AGENT_ID must be absent when conv_id is None"

@@ -52,6 +52,13 @@ pub enum A2aError {
     #[error("security policy violation: {0}")]
     Security(String),
 
+    /// A peer response body (or one SSE event) exceeded the client's size cap.
+    #[error("peer response exceeded the {limit}-byte limit")]
+    BodyTooLarge {
+        /// The cap that was exceeded, in bytes.
+        limit: usize,
+    },
+
     /// A request or task processing operation exceeded its deadline.
     #[error("operation timed out after {0:?}")]
     Timeout(std::time::Duration),

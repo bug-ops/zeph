@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use zeph_llm::provider::StatusUpdate;
+
 use crate::attestation::ToolFingerprint;
 use crate::policy::check_data_flow;
 use crate::sanitize::{SanitizeResult, sanitize_tools};
@@ -260,7 +262,7 @@ fn apply_allowlist(
                 );
                 tracing::warn!(server_id, tool_count = tools.len(), "{msg}");
                 if let Some(tx) = status_tx {
-                    let _ = tx.send(msg);
+                    let _ = tx.send(StatusUpdate::set(msg));
                 }
                 tools
             }
@@ -272,7 +274,7 @@ fn apply_allowlist(
                 );
                 tracing::warn!(server_id, "{msg}");
                 if let Some(tx) = status_tx {
-                    let _ = tx.send(msg);
+                    let _ = tx.send(StatusUpdate::set(msg));
                 }
                 Vec::new()
             }

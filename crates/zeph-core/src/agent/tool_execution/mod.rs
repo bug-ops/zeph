@@ -7,6 +7,7 @@ mod doom_loop;
 mod exfiltration;
 mod focus;
 mod focus_compression;
+mod gates;
 mod layer_hooks;
 mod llm_dispatch;
 mod metrics_compact;
@@ -19,6 +20,8 @@ mod tier_loop;
 mod tool_call_dag;
 mod tool_result;
 
+#[cfg(feature = "scheduler")]
+pub(in crate::agent) use sanitize::ToolOutputOrigin;
 use zeph_common::text::truncate_to_bytes;
 use zeph_llm::provider::{LlmProvider, Message, MessageMetadata, Role, ToolDefinition};
 use zeph_tools::executor::ToolCall;
@@ -95,7 +98,7 @@ struct ToolDispatchContext {
 /// Returned by value so `process_one_tool_result` can unpack it without borrow issues.
 struct ToolResultClassification {
     output: String,
-    is_error: bool,
+    outcome: ToolResultKind,
     diff: Option<zeph_tools::DiffData>,
     inline_stats: Option<String>,
     kept_lines: Option<Vec<usize>>,
@@ -113,6 +116,30 @@ struct ToolResultClassification {
     max_result_size_chars: Option<usize>,
     /// Who authored `output`, computed here once and consumed by the sanitizer.
     origin: sanitize::ToolOutputOrigin,
+}
+
+/// How a tool call ended, as one value so an `Err` can never carry a stray status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolResultKind {
+    /// The executor returned `Err`.
+    Err,
+    /// The executor returned `Ok`; the tool's typed status.
+    Ok(zeph_tools::ToolStatus),
+}
+
+impl ToolResultKind {
+    /// Wire `is_error` of the tier loop: `Err`-only, a non-zero exit is not a wire error.
+    fn is_wire_error(self) -> bool {
+        matches!(self, Self::Err)
+    }
+
+    /// Whether the call counts as a failure for skills and learning.
+    fn is_failure(self) -> bool {
+        match self {
+            Self::Err => true,
+            Self::Ok(status) => status.is_failure(),
+        }
+    }
 }
 
 enum AnomalyOutcome {
@@ -399,7 +426,8 @@ impl<C: Channel> Agent<C> {
         skip_all,
         level = "debug"
     )]
-    async fn apply_guardrail_to_tool_output(&self, body: String, tool_name: &str) -> String {
+    // `&mut self` keeps the future `Send`: `Agent` is not `Sync` and the inline loop awaits this.
+    async fn apply_guardrail_to_tool_output(&mut self, body: String, tool_name: &str) -> String {
         self.services
             .security
             .check_guardrail(body, tool_name)

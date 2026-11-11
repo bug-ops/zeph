@@ -336,7 +336,7 @@ mod tests {
         .unwrap();
 
         // Insert a normal edge that must survive the sweep.
-        gs.insert_edge(e1.0, e2.0, "knows", "Alice knows Bob", 0.9, None, None)
+        gs.insert_edge(e1, e2, "knows", "Alice knows Bob", 0.9, None, None)
             .await
             .unwrap();
 

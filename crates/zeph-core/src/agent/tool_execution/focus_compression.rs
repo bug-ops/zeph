@@ -11,16 +11,18 @@
 
 use zeph_llm::provider::MessagePart;
 
+use super::focus::BuiltinReply;
 use crate::agent::Agent;
 use crate::channel::Channel;
 
 pub(super) fn context_management_output(
     tool_name: zeph_common::ToolName,
-    summary: String,
+    reply: BuiltinReply,
 ) -> zeph_tools::ToolOutput {
     zeph_tools::ToolOutput {
         tool_name,
-        summary,
+        summary: reply.text,
+        status: reply.status,
         blocks_executed: 1,
         claim_source: Some(zeph_tools::ClaimSource::ContextManagement),
         ..Default::default()
@@ -85,10 +87,12 @@ impl<C: Channel> Agent<C> {
                         .arc_config
                         .allow_agent_compaction =>
                 {
-                    "Error: request_compaction is disabled".to_owned()
+                    BuiltinReply::completed("Error: request_compaction is disabled")
                 }
                 BuiltinTool::RequestCompaction => self.handle_request_compaction(&tc.input).await,
-                BuiltinTool::SkillStatePatch => self.handle_skill_state_patch(&tc.input).await,
+                BuiltinTool::SkillStatePatch => {
+                    BuiltinReply::completed(self.handle_skill_state_patch(&tc.input).await)
+                }
                 BuiltinTool::Focus => {
                     let (text, maybe_checkpoint) =
                         self.handle_focus_tool(tc.name.as_str(), &tc.input);

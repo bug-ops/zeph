@@ -189,8 +189,8 @@ pub(crate) struct WizardState {
     pub(crate) mcp_remote_servers: Vec<McpServerConfig>,
     // LSP context injection
     pub(crate) lsp_context_enabled: bool,
-    pub(crate) soft_compaction_threshold: f32,
-    pub(crate) hard_compaction_threshold: f32,
+    pub(crate) soft_compaction_threshold: zeph_config::UnitOpen,
+    pub(crate) hard_compaction_threshold: zeph_config::UnitOpen,
     // Experiments
     pub(crate) experiments_enabled: bool,
     pub(crate) experiments_eval_provider: String,
@@ -248,12 +248,12 @@ pub(crate) struct WizardState {
     /// Deployment bundle selected in the mode step (e.g. "desktop", "ide", "server").
     pub(crate) deployment_bundle: Option<String>,
     pub(crate) semantic_cache_enabled: bool,
-    pub(crate) semantic_cache_threshold: f32,
+    pub(crate) semantic_cache_threshold: zeph_config::UnitClosed,
     // Compaction probe (#2048)
     pub(crate) probe_enabled: bool,
     pub(crate) probe_provider: Option<String>,
-    pub(crate) probe_threshold: f32,
-    pub(crate) probe_hard_fail_threshold: f32,
+    pub(crate) probe_threshold: zeph_config::UnitUpperClosed,
+    pub(crate) probe_hard_fail_threshold: zeph_config::UnitLowerClosed,
     // Tool retry config
     pub(crate) retry_max_attempts: usize,
     pub(crate) retry_parameter_reformat_provider: String,
@@ -511,8 +511,8 @@ impl Default for WizardState {
             lsp_context_enabled: false,
             // Valid sentinel values so WizardState is usable outside run() without
             // out-of-range values; run() initialises these to the same values explicitly.
-            soft_compaction_threshold: 0.60,
-            hard_compaction_threshold: 0.90,
+            soft_compaction_threshold: zeph_config::memory::DEFAULT_SOFT_COMPACTION_THRESHOLD,
+            hard_compaction_threshold: zeph_config::memory::DEFAULT_HARD_COMPACTION_THRESHOLD,
             experiments_enabled: false,
             experiments_eval_provider: String::new(),
             experiments_schedule_enabled: false,
@@ -557,11 +557,12 @@ impl Default for WizardState {
             utility_window: 0,
             deployment_bundle: None,
             semantic_cache_enabled: false,
-            semantic_cache_threshold: 0.95,
+            semantic_cache_threshold: zeph_config::DEFAULT_SEMANTIC_CACHE_THRESHOLD,
             probe_enabled: false,
             probe_provider: None,
-            probe_threshold: 0.6,
-            probe_hard_fail_threshold: 0.35,
+            probe_threshold: zeph_config::memory::CompactionProbeConfig::default().threshold,
+            probe_hard_fail_threshold: zeph_config::memory::CompactionProbeConfig::default()
+                .hard_fail_threshold,
             retry_max_attempts: 2,
             retry_parameter_reformat_provider: String::new(),
             digest_enabled: false,
@@ -677,8 +678,8 @@ pub fn run(output: Option<PathBuf>) -> anyhow::Result<()> {
         orchestration_max_parallel: 4,
         orchestration_confirm_before_execute: true,
         orchestration_failure_strategy: "abort".into(),
-        soft_compaction_threshold: 0.60,
-        hard_compaction_threshold: 0.90,
+        soft_compaction_threshold: zeph_config::memory::DEFAULT_SOFT_COMPACTION_THRESHOLD,
+        hard_compaction_threshold: zeph_config::memory::DEFAULT_HARD_COMPACTION_THRESHOLD,
         log_file: zeph_core::config::default_log_file_path(),
         log_level: "info".into(),
         log_rotation: "daily".into(),
@@ -3282,27 +3283,27 @@ mod tests {
     #[test]
     fn build_config_hard_compaction_threshold_custom() {
         let state = WizardState {
-            soft_compaction_threshold: 0.60,
-            hard_compaction_threshold: 0.85,
+            soft_compaction_threshold: zeph_config::UnitOpen::literal(0.60),
+            hard_compaction_threshold: zeph_config::UnitOpen::literal(0.85),
             vault_backend: "env".into(),
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert!((config.memory.soft_compaction_threshold - 0.60).abs() < f32::EPSILON);
-        assert!((config.memory.hard_compaction_threshold - 0.85).abs() < f32::EPSILON);
+        assert!((config.memory.soft_compaction_threshold.get() - 0.60).abs() < f32::EPSILON);
+        assert!((config.memory.hard_compaction_threshold.get() - 0.85).abs() < f32::EPSILON);
     }
 
     #[test]
     fn build_config_hard_compaction_threshold_default() {
         let state = WizardState {
-            soft_compaction_threshold: 0.70,
-            hard_compaction_threshold: 0.90,
+            soft_compaction_threshold: zeph_config::UnitOpen::literal(0.70),
+            hard_compaction_threshold: zeph_config::UnitOpen::literal(0.90),
             vault_backend: "env".into(),
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert!((config.memory.soft_compaction_threshold - 0.70).abs() < f32::EPSILON);
-        assert!((config.memory.hard_compaction_threshold - 0.90).abs() < f32::EPSILON);
+        assert!((config.memory.soft_compaction_threshold.get() - 0.70).abs() < f32::EPSILON);
+        assert!((config.memory.hard_compaction_threshold.get() - 0.90).abs() < f32::EPSILON);
     }
 
     // Documents that build_config() is a dumb mapper: cross-field validation (hard > soft)
@@ -3310,29 +3311,14 @@ mod tests {
     #[test]
     fn build_config_hard_below_soft_maps_verbatim() {
         let state = WizardState {
-            soft_compaction_threshold: 0.80,
-            hard_compaction_threshold: 0.60,
+            soft_compaction_threshold: zeph_config::UnitOpen::literal(0.80),
+            hard_compaction_threshold: zeph_config::UnitOpen::literal(0.60),
             vault_backend: "env".into(),
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert!((config.memory.soft_compaction_threshold - 0.80).abs() < f32::EPSILON);
-        assert!((config.memory.hard_compaction_threshold - 0.60).abs() < f32::EPSILON);
-    }
-
-    // Documents that boundary exclusion (hard < 1.0) lives in the wizard validator,
-    // not in build_config().
-    #[test]
-    fn build_config_hard_at_boundary() {
-        let state = WizardState {
-            soft_compaction_threshold: 0.70,
-            hard_compaction_threshold: 1.0,
-            vault_backend: "env".into(),
-            ..WizardState::default()
-        };
-        let config = build_config(&state);
-        assert!((config.memory.soft_compaction_threshold - 0.70).abs() < f32::EPSILON);
-        assert!((config.memory.hard_compaction_threshold - 1.0).abs() < f32::EPSILON);
+        assert!((config.memory.soft_compaction_threshold.get() - 0.80).abs() < f32::EPSILON);
+        assert!((config.memory.hard_compaction_threshold.get() - 0.60).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -3548,13 +3534,15 @@ mod tests {
         let state = WizardState {
             vault_backend: "env".into(),
             probe_enabled: true,
-            probe_threshold: 0.75,
-            probe_hard_fail_threshold: 0.25,
+            probe_threshold: zeph_config::UnitUpperClosed::literal(0.75),
+            probe_hard_fail_threshold: zeph_config::UnitLowerClosed::literal(0.25),
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert!((config.memory.compression.probe.threshold - 0.75).abs() < f32::EPSILON);
-        assert!((config.memory.compression.probe.hard_fail_threshold - 0.25).abs() < f32::EPSILON);
+        assert!((config.memory.compression.probe.threshold.get() - 0.75).abs() < f32::EPSILON);
+        assert!(
+            (config.memory.compression.probe.hard_fail_threshold.get() - 0.25).abs() < f32::EPSILON
+        );
     }
 
     #[test]
@@ -3565,17 +3553,15 @@ mod tests {
         let state = WizardState {
             vault_backend: "env".into(),
             probe_enabled: false,
-            probe_threshold: 0.99,
-            probe_hard_fail_threshold: 0.01,
+            probe_threshold: zeph_config::UnitUpperClosed::literal(0.99),
+            probe_hard_fail_threshold: zeph_config::UnitLowerClosed::literal(0.01),
             ..WizardState::default()
         };
         let config = build_config(&state);
-        assert!(
-            (config.memory.compression.probe.threshold - default_threshold).abs() < f32::EPSILON
-        );
-        assert!(
-            (config.memory.compression.probe.hard_fail_threshold - default_hard_fail).abs()
-                < f32::EPSILON
+        assert_eq!(config.memory.compression.probe.threshold, default_threshold);
+        assert_eq!(
+            config.memory.compression.probe.hard_fail_threshold,
+            default_hard_fail
         );
     }
 

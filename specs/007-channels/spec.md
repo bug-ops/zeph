@@ -416,3 +416,21 @@ now bounds `MAX_RETRY_SECS` to `[0.0, 3600.0]` (finite, non-negative, at most on
   `send_with_retry`
 - The compile-time guard is independent of, and complementary to, the runtime
   `valid_retry_secs()` validation above — one bounds the constant, the other bounds the input
+
+---
+
+## Typed Status Protocol (#6988)
+
+The empty-string convention for clearing a status indicator is replaced by an explicit protocol.
+
+- `zeph_llm::provider::StatusUpdate { Set(Cow<'static, str>), Clear }` and `StatusTx = UnboundedSender<StatusUpdate>`; every producer (providers, MCP, tools) sends `Set`/`Clear`, so a producer whose text happens to be empty can no longer clear the indicator by accident. The private `StatusTx` alias in `zeph-mcp` is removed in favor of the `zeph-llm` one.
+- `Channel` gains `clear_status()` and `clear_status_best_effort()`; existing signatures are unchanged (`[[001-system-invariants/spec]]` Channel exception). The default `clear_status` delegates to `send_status("")`, so channels without an override keep the old clear wire (CLI, `json_cli`, ACP, serve/loopback). `AnyChannel`, `AppChannel` and `GatewayChannel<C>` forward both methods explicitly. Overrides: `TuiChannel` sends the typed `AgentEvent::ClearStatus`; Telegram, Slack and Discord override `clear_status` as a no-op (the former empty-text guard in `send_status` moved there), so a direct `send_status("")` on those adapters now posts an empty message (API error, logged) instead of a silent no-op: producers must not send empty text.
+- Tests: `AppChannel(Tui)` forwards both clears to the TUI's typed event; `AnyChannel` has no TUI variant, so its only test is the `json_cli` wire pin (empty `message`); a separate ACP test pins "no client update on clear".
+- `StatusSink` gains `clear_status`; the duplicate `TxStatusSink` is merged into the `zeph-agent-context` one (`pub`, `new`), and the core `CollectStatusSink` collects `StatusUpdate`.
+- **Wire output is unchanged**: `json_cli` still emits `Status { message: "" }` on clear; serve/ACP keep `LoopbackEvent::Status("")` internally, and ACP still sends NO client update on clear. Only the CLI stderr forwarder stops printing a blank `[status] ` line (`[[047-cli-modes/spec]]`).
+- Not done here (follow-up): removing the `""` sentinel from `LoopbackEvent::Status` and a bounded/`watch` status channel (`StatusSource`).
+
+### Key Invariants
+
+- NEVER clear a status by sending an empty `Set`; use `StatusUpdate::Clear` / `clear_status`
+- NEVER add a status-related `Channel` method without forwarding it in `AnyChannel`, `AppChannel` and `GatewayChannel`

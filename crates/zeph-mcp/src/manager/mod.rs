@@ -12,7 +12,7 @@ use dashmap::DashMap;
 use tokio::sync::RwLock;
 use tokio::sync::{mpsc, watch};
 
-type StatusTx = mpsc::UnboundedSender<String>;
+use zeph_llm::provider::StatusTx;
 /// Per-server trust config: (`trust_level`, `tool_allowlist`, `expected_tools`,
 /// `allow_untrusted_without_allowlist`).
 type ServerTrust = Arc<

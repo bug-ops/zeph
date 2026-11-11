@@ -552,3 +552,24 @@ pub(super) fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<SessionUpda
         _ => vec![],
     }
 }
+
+#[cfg(test)]
+mod status_wire_tests {
+    use super::*;
+
+    #[test]
+    fn status_clear_sends_no_client_update() {
+        assert_eq!(
+            loopback_event_to_updates(LoopbackEvent::Status(String::new())).len(),
+            0
+        );
+    }
+
+    #[test]
+    fn status_text_sends_client_updates() {
+        assert_eq!(
+            loopback_event_to_updates(LoopbackEvent::Status("working".to_owned())).len(),
+            2
+        );
+    }
+}

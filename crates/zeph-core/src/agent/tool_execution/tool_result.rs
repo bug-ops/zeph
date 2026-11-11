@@ -6,10 +6,20 @@ use zeph_sanitizer::{ContentSource, ContentSourceKind};
 use zeph_skills::evolution::FailureKind;
 
 use super::sanitize::ToolOutputOrigin;
-use super::{AnomalyOutcome, ToolResultClassification, truncate_utf8};
+use super::{AnomalyOutcome, ToolResultClassification, ToolResultKind, truncate_utf8};
 use crate::agent::Agent;
 use crate::channel::{Channel, ToolOutputEvent};
 use crate::overflow_tools::OverflowToolExecutor;
+
+/// Skill failure kind for an `Ok` result, derived from the typed status and never from text.
+fn failure_kind_for_status(status: zeph_tools::ToolStatus) -> FailureKind {
+    match status {
+        zeph_tools::ToolStatus::NonZeroExit(_) => FailureKind::ExitNonzero,
+        zeph_tools::ToolStatus::Success
+        | zeph_tools::ToolStatus::Failed
+        | zeph_tools::ToolStatus::Synthetic(_) => FailureKind::Unknown,
+    }
+}
 
 impl<C: Channel> Agent<C> {
     fn fire_vigil_audit_entry(
@@ -222,16 +232,20 @@ impl<C: Channel> Agent<C> {
     fn handle_tool_failure_outcomes(
         &mut self,
         output: &str,
-        is_error: bool,
+        outcome: ToolResultKind,
         tool_err_category: &mut Option<zeph_tools::error_taxonomy::ToolErrorCategory>,
         is_quality_failure: bool,
         pending_outcomes: &mut Vec<crate::agent::learning::PendingSkillOutcome>,
         pending_reflection: &mut Option<String>,
     ) -> bool {
-        if is_error || output.contains("[error]") || output.contains("[exit code") {
-            let kind = tool_err_category
-                .take()
-                .map_or_else(|| FailureKind::from_error(output), FailureKind::from);
+        if outcome.is_failure() {
+            let kind = tool_err_category.take().map_or_else(
+                || match outcome {
+                    ToolResultKind::Err => FailureKind::from_error(output),
+                    ToolResultKind::Ok(status) => failure_kind_for_status(status),
+                },
+                FailureKind::from,
+            );
             pending_outcomes.push(crate::agent::learning::PendingSkillOutcome {
                 outcome: "tool_failure".into(),
                 error_context: Some(output.to_owned()),
@@ -292,13 +306,12 @@ impl<C: Channel> Agent<C> {
     ) -> ToolResultClassification {
         match tool_result {
             Ok(Some(out)) => {
-                let origin = ToolOutputOrigin::from_claim_source(out.claim_source);
-                let anomaly_outcome =
-                    if out.summary.contains("[error]") || out.summary.contains("[stderr]") {
-                        AnomalyOutcome::Error
-                    } else {
-                        AnomalyOutcome::Success
-                    };
+                let origin = ToolOutputOrigin::from_output(&out);
+                let anomaly_outcome = if out.status.is_failure() {
+                    AnomalyOutcome::Error
+                } else {
+                    AnomalyOutcome::Success
+                };
                 if let Some(ref fs) = out.filter_stats {
                     self.record_filter_metrics(fs);
                 }
@@ -311,7 +324,7 @@ impl<C: Channel> Agent<C> {
                     .and_then(|fs| (!fs.kept_lines.is_empty()).then(|| fs.kept_lines.clone()));
                 ToolResultClassification {
                     output: out.summary,
-                    is_error: false,
+                    outcome: ToolResultKind::Ok(out.status),
                     diff: out.diff,
                     inline_stats,
                     kept_lines,
@@ -326,7 +339,7 @@ impl<C: Channel> Agent<C> {
             }
             Ok(None) => ToolResultClassification {
                 output: "(no output)".to_owned(),
-                is_error: false,
+                outcome: ToolResultKind::Ok(zeph_tools::ToolStatus::Success),
                 diff: None,
                 inline_stats: None,
                 kept_lines: None,
@@ -374,7 +387,7 @@ impl<C: Channel> Agent<C> {
                 };
                 ToolResultClassification {
                     output: feedback.format_for_llm(),
-                    is_error: true,
+                    outcome: ToolResultKind::Err,
                     diff: None,
                     inline_stats: None,
                     kept_lines: None,
@@ -415,7 +428,7 @@ impl<C: Channel> Agent<C> {
     ) -> Result<(), crate::agent::error::AgentError> {
         let ToolResultClassification {
             output,
-            mut is_error,
+            outcome,
             diff,
             inline_stats,
             kept_lines,
@@ -428,12 +441,13 @@ impl<C: Channel> Agent<C> {
             origin,
         } = self.classify_tool_result(tc, tool_result);
 
+        let mut is_error = outcome.is_wire_error();
         self.record_tool_execution_telemetry(tc.name.as_str(), started_at, is_error, &output);
         self.record_gate_feedback(tc.name.as_str(), tool_err_category);
 
         let tool_succeeded = self.handle_tool_failure_outcomes(
             &output,
-            is_error,
+            outcome,
             &mut tool_err_category,
             is_quality_failure,
             pending_outcomes,
@@ -593,7 +607,7 @@ impl<C: Channel> Agent<C> {
             // Mandatory TUI status indicator (CLAUDE.md "TUI Rules") — surfaces which MCP
             // server contributed an image attached to the outgoing LLM request. Deliberately
             // NOT self-cleared: with zero work between a set and a clear on the last-write-wins
-            // `StatusTx` slot, an immediate `send_status_best_effort("")` would blank the label
+            // `StatusTx` slot, an immediate `clear_status_best_effort()` would blank the label
             // before the render loop ever has a chance to pick it up, making it invisible. Left
             // set so the next natural status update (following tool call, LLM response) replaces
             // it once real work actually happens.

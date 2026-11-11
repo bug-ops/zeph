@@ -670,7 +670,7 @@ mod tests {
             valid_from: None,
             edge_type: EdgeType::Semantic,
             retrieval_count: 1,
-            edge_id: Some(10),
+            edge_id: Some(zeph_memory::EdgeId::new(10)),
             trust: TurnContextTrust::Trusted,
         }
     }
@@ -680,7 +680,7 @@ mod tests {
             edge: zeph_memory::graph::types::Edge {
                 fact: "Rust uses LLVM".to_owned(),
                 confidence: 0.95,
-                ..zeph_memory::graph::types::Edge::synthetic_anchor(1)
+                ..zeph_memory::graph::types::Edge::synthetic_anchor(zeph_memory::EntityId(1))
             },
             activation_score,
             is_implicit_conflict: false,
@@ -960,8 +960,7 @@ mod tests {
                 None,
             )
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let strong_id = graph_store
             .upsert_entity(
                 "strong",
@@ -971,13 +970,11 @@ mod tests {
                 None,
             )
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let weak_id = graph_store
             .upsert_entity("weak", "weak", zeph_memory::EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let hidden_id = graph_store
             .upsert_entity(
                 "hidden",
@@ -987,8 +984,7 @@ mod tests {
                 None,
             )
             .await
-            .unwrap()
-            .0;
+            .unwrap();
 
         graph_store
             .insert_edge(
@@ -1122,18 +1118,15 @@ mod tests {
                 None,
             )
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let near_id = graph_store
             .upsert_entity("near", "near", zeph_memory::EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let far_id = graph_store
             .upsert_entity("far", "far", zeph_memory::EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
 
         graph_store
             .insert_edge(
@@ -1267,8 +1260,7 @@ mod tests {
                 None,
             )
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let strong_id = graph_store
             .upsert_entity(
                 "strong",
@@ -1278,13 +1270,11 @@ mod tests {
                 None,
             )
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let weak_id = graph_store
             .upsert_entity("weak", "weak", zeph_memory::EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
 
         graph_store
             .insert_edge(
@@ -1530,8 +1520,7 @@ mod tests {
                 None,
             )
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let target_id = graph_store
             .upsert_entity(
                 "zoomintarget",
@@ -1541,8 +1530,7 @@ mod tests {
                 None,
             )
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         graph_store
             .insert_edge(
                 seed_id,
@@ -1631,8 +1619,7 @@ mod tests {
                 None,
             )
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let head_id = graph_store
             .upsert_entity(
                 "zoomouthead",
@@ -1642,8 +1629,7 @@ mod tests {
                 None,
             )
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let neighbor_id = graph_store
             .upsert_entity(
                 "zoomoutneighbor",
@@ -1653,8 +1639,7 @@ mod tests {
                 None,
             )
             .await
-            .unwrap()
-            .0;
+            .unwrap();
 
         graph_store
             .insert_edge(

@@ -190,9 +190,11 @@ Issues #2207, #2224. Skill evolution uses typed `FaultCategory` signals, not str
 
 `FaultCategory` enum path is wired in both `native.rs` and `legacy.rs` to ensure precise skill evolution signals in all execution paths.
 
+For an `Ok` tool result the failure kind comes from `ToolOutput.status`, never from output text (#6986): `NonZeroExit -> ExitNonzero`, `Failed` and `Synthetic(GateRefused) -> Unknown`; `FailureKind::from_error` is used only for an `Err` without a `ToolErrorCategory`. A plain non-zero exit (exit code != 0, e.g. `grep` with no match, a failing test run) now records `PendingSkillOutcome { outcome: "tool_failure", outcome_detail: "exit_nonzero" }`; exit 0 with stderr output or `[error]`-looking text records success. Consequences for active skills in that turn: `check_rollback` per active skill, RL head update and STEM detection run with `"tool_failure"`, ARISE/ERL are skipped, and Wilson re-ranking (`[[015-self-learning/spec]]`) counts the failure. No quality failure or reflection is triggered (`is_quality_failure` is category-based and `NonZeroExit` has none).
+
 ### Key Invariants
 
-- NEVER use string matching on error messages for `FailureKind` classification — use `ToolErrorCategory`
+- NEVER use string matching on error messages for `FailureKind` classification — use `ToolErrorCategory` (for `Err`) or `ToolStatus` (for `Ok`)
 - Both `native.rs` and `legacy.rs` must wire `FaultCategory` — single-path wiring is incomplete
 
 ---
@@ -344,6 +346,8 @@ confusability_threshold = 0.0   # 0.0 disables confusability reporting
 ### Key Invariants
 
 - `category` is optional — uncategorised skills are always in the matching pool
+- `SkillMeta.category` is `Option<zeph_common::SkillCategory>` (validated newtype: 1-32 bytes of `[a-z0-9-]`, no leading, trailing or doubled hyphen; same rules as `SkillName` via the shared private `check_kebab_id`). An invalid `category:` value logs a `warn!` and is dropped to `None`; it never rejects the skill (#6990)
+- `GeneratedSkill` has no free `name` field: `name() -> &SkillName` reads the parsed frontmatter name, so generated skill name and directory cannot diverge. `heuristic_promotion::build_generated_skill` returns `None` with a `warn!` when the generated content's frontmatter name differs from the requested name (previously the quarantine directory could be written under a name different from `meta.name`)
 - `two_stage_matching` applies to matching only — skill injection, trust, and governance are unaffected
 - Confusability report is O(n²) — NEVER compute it on the hot path; use `spawn_blocking`
 - Bundled skills provisioned before the `.bundled` marker system are re-provisioned on upgrade to restore `category` without overwriting user-modified skills

@@ -615,7 +615,7 @@ async fn process_one_tool_result_whitespace_only_output_is_still_success() {
 }
 
 #[tokio::test]
-async fn process_one_tool_result_error_prefix_records_tool_failure_outcome() {
+async fn process_one_tool_result_failing_status_records_tool_failure_outcome() {
     use crate::agent::agent_tests::{
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
@@ -631,7 +631,8 @@ async fn process_one_tool_result_error_prefix_records_tool_failure_outcome() {
     let tc = make_tool_use_request("id-error-prefix", "bash");
     let output = ToolOutput {
         tool_name: "bash".into(),
-        summary: "[error] spawn failed".into(),
+        summary: "spawn failed".into(),
+        status: zeph_tools::ToolStatus::from_exit_code(1),
         blocks_executed: 1,
         diff: None,
         filter_stats: None,
@@ -663,7 +664,7 @@ async fn process_one_tool_result_error_prefix_records_tool_failure_outcome() {
 
     assert!(
         pending_outcomes.iter().any(|o| o.outcome == "tool_failure"),
-        "output containing [error] must be recorded as a tool_failure skill outcome"
+        "a failing status must be recorded as a tool_failure skill outcome"
     );
 }
 

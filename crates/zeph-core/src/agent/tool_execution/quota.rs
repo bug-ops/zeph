@@ -10,7 +10,7 @@ use crate::agent::Agent;
 use crate::channel::Channel;
 
 impl<C: Channel> Agent<C> {
-    pub(super) fn check_and_update_quota(&mut self, batch_len: usize) -> bool {
+    pub(in crate::agent) fn check_and_update_quota(&mut self, batch_len: usize) -> bool {
         if let Some(max) = self.tool_orchestrator.check_quota() {
             tracing::warn!(
                 max,

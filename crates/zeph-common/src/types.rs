@@ -412,6 +412,38 @@ impl ProviderName {
     }
 }
 
+// ── kebab-case identifiers ───────────────────────────────────────────────────
+
+/// Rule violated by a string rejected as a kebab-case identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KebabRule {
+    Length,
+    Charset,
+    EdgeHyphen,
+    DoubleHyphen,
+}
+
+/// Check that `s` is 1..=`max_len` bytes of `[a-z0-9-]` with no leading, trailing or
+/// doubled hyphen. Shared by [`SkillName`] and [`SkillCategory`].
+fn check_kebab_id(s: &str, max_len: usize) -> Result<(), KebabRule> {
+    if s.is_empty() || s.len() > max_len {
+        return Err(KebabRule::Length);
+    }
+    if !s
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err(KebabRule::Charset);
+    }
+    if s.starts_with('-') || s.ends_with('-') {
+        return Err(KebabRule::EdgeHyphen);
+    }
+    if s.contains("--") {
+        return Err(KebabRule::DoubleHyphen);
+    }
+    Ok(())
+}
+
 // ── SkillName ────────────────────────────────────────────────────────────────
 
 /// Reason a string was rejected as a [`SkillName`].
@@ -457,6 +489,9 @@ pub enum SkillNameError {
 pub struct SkillName(Arc<str>);
 
 impl SkillName {
+    /// Maximum length of a skill name in bytes.
+    pub const MAX_LEN: usize = 64;
+
     /// Validate `s` and build a `SkillName`.
     ///
     /// # Errors
@@ -473,21 +508,12 @@ impl SkillName {
     /// assert_eq!(SkillName::parse("a--b"), Err(SkillNameError::DoubleHyphen("a--b".into())));
     /// ```
     pub fn parse(s: &str) -> Result<Self, SkillNameError> {
-        if s.is_empty() || s.len() > 64 {
-            return Err(SkillNameError::Length(s.len()));
-        }
-        if !s
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        {
-            return Err(SkillNameError::Charset(s.to_owned()));
-        }
-        if s.starts_with('-') || s.ends_with('-') {
-            return Err(SkillNameError::EdgeHyphen(s.to_owned()));
-        }
-        if s.contains("--") {
-            return Err(SkillNameError::DoubleHyphen(s.to_owned()));
-        }
+        check_kebab_id(s, SkillName::MAX_LEN).map_err(|rule| match rule {
+            KebabRule::Length => SkillNameError::Length(s.len()),
+            KebabRule::Charset => SkillNameError::Charset(s.to_owned()),
+            KebabRule::EdgeHyphen => SkillNameError::EdgeHyphen(s.to_owned()),
+            KebabRule::DoubleHyphen => SkillNameError::DoubleHyphen(s.to_owned()),
+        })?;
         Ok(Self(Arc::from(s)))
     }
 
@@ -581,6 +607,146 @@ impl PartialEq<SkillName> for str {
 impl PartialEq<SkillName> for String {
     fn eq(&self, other: &SkillName) -> bool {
         self.as_str() == other.0.as_ref()
+    }
+}
+
+// ── SkillCategory ────────────────────────────────────────────────────────────
+
+/// Reason a string was rejected as a [`SkillCategory`].
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum SkillCategoryError {
+    /// Length is not within 1..=32 bytes.
+    #[error("category must be 1-32 characters, got {0}")]
+    Length(usize),
+    /// Contains a character outside `[a-z0-9-]`.
+    #[error("category must contain only lowercase letters, digits, and hyphens: {0}")]
+    Charset(String),
+    /// Starts or ends with a hyphen.
+    #[error("category must not start or end with hyphen: {0}")]
+    EdgeHyphen(String),
+    /// Contains two consecutive hyphens.
+    #[error("category must not contain consecutive hyphens: {0}")]
+    DoubleHyphen(String),
+}
+
+/// Validated skill category, the optional `category:` frontmatter value.
+///
+/// 1-32 bytes of `[a-z0-9-]` with no leading, trailing or doubled hyphen; the same
+/// rules as [`SkillName`] with a shorter length limit. Categories group skills for
+/// hierarchical matching.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::SkillCategory;
+///
+/// let c = SkillCategory::parse("data-v2").unwrap();
+/// assert_eq!(c.as_str(), "data-v2");
+/// assert!(SkillCategory::parse("Web").is_err());
+/// assert!(SkillCategory::parse(&"a".repeat(33)).is_err());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct SkillCategory(Arc<str>);
+
+impl SkillCategory {
+    /// Maximum length of a category in bytes.
+    pub const MAX_LEN: usize = 32;
+
+    /// Validate `s` and build a `SkillCategory`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SkillCategoryError`] when `s` is empty, longer than 32 bytes, contains
+    /// characters outside `[a-z0-9-]`, or has a leading, trailing or doubled hyphen.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::{SkillCategory, SkillCategoryError};
+    ///
+    /// assert!(SkillCategory::parse("web").is_ok());
+    /// assert_eq!(
+    ///     SkillCategory::parse("-web"),
+    ///     Err(SkillCategoryError::EdgeHyphen("-web".into()))
+    /// );
+    /// ```
+    pub fn parse(s: &str) -> Result<Self, SkillCategoryError> {
+        check_kebab_id(s, Self::MAX_LEN).map_err(|rule| match rule {
+            KebabRule::Length => SkillCategoryError::Length(s.len()),
+            KebabRule::Charset => SkillCategoryError::Charset(s.to_owned()),
+            KebabRule::EdgeHyphen => SkillCategoryError::EdgeHyphen(s.to_owned()),
+            KebabRule::DoubleHyphen => SkillCategoryError::DoubleHyphen(s.to_owned()),
+        })?;
+        Ok(Self(Arc::from(s)))
+    }
+
+    /// Return the inner string slice.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::SkillCategory;
+    ///
+    /// assert_eq!(SkillCategory::parse("web").unwrap().as_str(), "web");
+    /// ```
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for SkillCategory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for SkillCategory {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for SkillCategory {
+    type Error = SkillCategoryError;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        Self::parse(s)
+    }
+}
+
+impl TryFrom<String> for SkillCategory {
+    type Error = SkillCategoryError;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::parse(&s)
+    }
+}
+
+impl From<SkillCategory> for String {
+    fn from(c: SkillCategory) -> Self {
+        c.0.as_ref().to_owned()
+    }
+}
+
+impl FromStr for SkillCategory {
+    type Err = SkillCategoryError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
+impl PartialEq<str> for SkillCategory {
+    fn eq(&self, other: &str) -> bool {
+        self.0.as_ref() == other
+    }
+}
+
+impl PartialEq<&str> for SkillCategory {
+    fn eq(&self, other: &&str) -> bool {
+        self.0.as_ref() == *other
     }
 }
 

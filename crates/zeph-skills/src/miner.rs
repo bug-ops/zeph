@@ -239,7 +239,7 @@ impl SkillMiner {
             MergeDecision::Discard => {
                 tracing::info!(
                     repo = %repo.full_name,
-                    skill = %skill.name,
+                    skill = %skill.name(),
                     similarity = nearest_sim,
                     "skipping duplicate skill"
                 );
@@ -249,7 +249,7 @@ impl SkillMiner {
                 if is_dry_run {
                     tracing::info!(
                         repo = %repo.full_name,
-                        skill = %skill.name,
+                        skill = %skill.name(),
                         "dry-run: would write skill"
                     );
                     return Ok(Some(MinedSkill {
@@ -272,7 +272,7 @@ impl SkillMiner {
                 if is_dry_run {
                     tracing::info!(
                         repo = %repo.full_name,
-                        skill = %skill.name,
+                        skill = %skill.name(),
                         nearest = nearest_name,
                         "dry-run: would merge skill"
                     );
@@ -288,7 +288,7 @@ impl SkillMiner {
                     .clone();
                 tracing::debug!(
                     repo = %repo.full_name,
-                    skill = %skill.name,
+                    skill = %skill.name(),
                     nearest = nearest_name,
                     similarity = nearest_sim,
                     next_version = nearest_version + 1,
@@ -306,7 +306,7 @@ impl SkillMiner {
                     Err(e) => {
                         tracing::warn!(
                             repo = %repo.full_name,
-                            skill = %skill.name,
+                            skill = %skill.name(),
                             error = %e,
                             "miner: merge failed, discarding candidate"
                         );
@@ -330,7 +330,7 @@ impl SkillMiner {
     /// Returns `SkillError::Other` on timeout or provider failure.
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "skills.miner.embed_candidate", skip(self, skill), fields(candidate = %skill.name))
+        tracing::instrument(name = "skills.miner.embed_candidate", skip(self, skill), fields(candidate = %skill.name()))
     )]
     async fn embed_candidate(&self, skill: &GeneratedSkill) -> Result<SkillEmbedding, SkillError> {
         tokio::time::timeout(
@@ -595,7 +595,7 @@ impl SkillMiner {
     /// Returns `SkillError::Other` if the embedding call fails.
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "skills.miner.is_novel", skip(self, candidate, existing_embeddings), fields(candidate_name = %candidate.name, existing_count = existing_embeddings.len()))
+        tracing::instrument(name = "skills.miner.is_novel", skip(self, candidate, existing_embeddings), fields(candidate_name = %candidate.name(), existing_count = existing_embeddings.len()))
     )]
     pub async fn is_novel(
         &self,
@@ -706,7 +706,6 @@ mod tests {
             "---\nname: test-skill\ndescription: A test skill.\n---\n\n## Usage\n\nDo stuff.\n";
         let (meta, _) = load_skill_meta_from_str(content).unwrap();
         GeneratedSkill {
-            name: "test-skill".into(),
             content: content.into(),
             meta,
             warnings: vec![],
@@ -826,7 +825,7 @@ mod tests {
 
         // The mock LLM may or may not produce a valid SKILL.md (depends on MockProvider output).
         // What we assert is: even if a skill was produced, the skill directory was NOT created.
-        let skill_dir = dir.path().join(&skill.name);
+        let skill_dir = dir.path().join(skill.name().as_str());
         assert!(
             !skill_dir.exists(),
             "dry-run must not write skill directory to disk"

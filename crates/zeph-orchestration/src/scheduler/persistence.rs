@@ -654,7 +654,7 @@ mod tests {
     #[test]
     fn completeness_threshold_returns_config_value() {
         let mut config = make_config();
-        config.completeness_threshold = 0.85;
+        config.completeness_threshold = zeph_config::UnitClosed::literal(0.85);
         let graph = graph_from_nodes(vec![make_node(0, &[])]);
         let scheduler = DagScheduler::new(
             graph,

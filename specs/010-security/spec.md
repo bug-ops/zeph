@@ -238,6 +238,10 @@ auto-promotion and reload trust-assignment are out of scope for this default).
 - Blocklist check cannot be bypassed by `TrustLevel` or `PermissionPolicy`
 - `ExfiltrationGuard` must run on all untrusted content before it can trigger memory writes or tool calls
 - `unsafe_code = "deny"` is never lifted workspace-wide; scoped exceptions only, per the §unsafe registry
+- Tool success/failure is read from the typed `ToolOutput.status`, never from output text; attacker-controlled output (`[error]`, `[stderr]`) cannot flip audit, anomaly or skill-outcome classification (`[[006-tools/spec]]`, #6986)
+- The inline orchestration tool loop (`RunInline`) enforces the same pre-dispatch gates as the tier loop (exfiltration flagging, verifiers, channel allowlist, session quota), a per-invocation repeat window, the per-task tool allowlist and the content sanitizer (`[[009-orchestration/spec]]`, #6982)
+- Sub-agent tool results are masked, credential-scrubbed (`CredentialScrub::Enabled` by default) and sanitized before entering history (`[[044-subagent-lifecycle/spec]]`, #6981)
+- A2A client reads are size-bounded (see `[[014-a2a/spec]]`, #6984)
 
 ---
 

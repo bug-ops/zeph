@@ -245,7 +245,7 @@ impl<C: Channel> Agent<C> {
         }];
 
         let Some(structured) = self.call_llm_for_session_summary(&chat_messages).await else {
-            self.channel.send_status_best_effort("").await;
+            self.channel.clear_status_best_effort().await;
             return;
         };
 
@@ -261,7 +261,7 @@ impl<C: Channel> Agent<C> {
             );
         }
 
-        self.channel.send_status_best_effort("").await;
+        self.channel.clear_status_best_effort().await;
     }
     /// Gracefully shut down the agent and persist state.
     ///

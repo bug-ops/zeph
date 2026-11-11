@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
 
+use crate::body_limit::{BodyLimit, read_capped};
 use crate::card_signing::{SignatureVerification, TrustedKey, verify_card_signatures};
 use crate::error::A2aError;
 use crate::types::AgentCard;
@@ -278,10 +279,16 @@ impl AgentRegistry {
                     });
                 }
 
-                let bytes = resp.bytes().await.map_err(|e| A2aError::Discovery {
-                    url: url.clone(),
-                    reason: e.to_string(),
-                })?;
+                let bytes =
+                    read_capped(resp, BodyLimit::AGENT_CARD)
+                        .await
+                        .map_err(|e| match e {
+                            e @ A2aError::BodyTooLarge { .. } => e,
+                            e => A2aError::Discovery {
+                                url: url.clone(),
+                                reason: e.to_string(),
+                            },
+                        })?;
                 // Keep the raw JSON `Value` around (not just the typed `AgentCard`):
                 // signature verification must canonicalize the bytes as received, never a
                 // re-serialization of the typed struct — see `card_signing` module docs (S1).
@@ -982,5 +989,19 @@ mod wiremock_tests {
             .with_trust(crate::discovery::CardTrustPolicy::Prefer, vec![]);
         let card = registry.discover(&base_url).await.unwrap();
         assert_eq!(card.name, "spoofed-peer");
+    }
+
+    #[tokio::test]
+    async fn discover_card_over_cap_is_rejected() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/agent.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b' '; 300 * 1024]))
+            .mount(&server)
+            .await;
+
+        let registry = AgentRegistry::new(reqwest::Client::new(), Duration::from_mins(1));
+        let result = registry.discover(&server.uri()).await;
+        assert_matches!(result, Err(A2aError::BodyTooLarge { .. }));
     }
 }

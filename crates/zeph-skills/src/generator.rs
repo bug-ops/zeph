@@ -82,8 +82,6 @@ pub struct SkillGenerationRequest {
 /// Returned by [`SkillGenerator::generate`]. Call [`SkillGenerator::approve_and_save`]
 /// after the user reviews the content to persist it to disk.
 pub struct GeneratedSkill {
-    /// Derived skill name (lowercase-hyphen, validated by the loader).
-    pub name: String,
     /// Full SKILL.md content (frontmatter + body) as produced by the LLM.
     pub content: String,
     /// Parsed and validated frontmatter metadata.
@@ -93,6 +91,14 @@ pub struct GeneratedSkill {
     /// `true` when [`crate::scanner::scan_skill_body`] detected at least one injection pattern
     /// in the generated content. The caller should present a prominent warning to the user.
     pub has_injection_patterns: bool,
+}
+
+impl GeneratedSkill {
+    /// Validated skill name, the same value as `meta.name`.
+    #[must_use]
+    pub fn name(&self) -> &zeph_common::SkillName {
+        &self.meta.name
+    }
 }
 
 /// Orchestrates the NL-to-SKILL.md generation pipeline.
@@ -114,7 +120,7 @@ pub struct GeneratedSkill {
 ///         allowed_tools: vec!["bash".into()],
 ///     };
 ///     let skill = skill_gen.generate(request).await?;
-///     println!("generated: {}", skill.name);
+///     println!("generated: {}", skill.name());
 ///     if !skill.has_injection_patterns {
 ///         skill_gen.approve_and_save(&skill).await?;
 ///     }
@@ -251,16 +257,13 @@ impl SkillGenerator {
     /// Returns `SkillError::Io` on filesystem errors.
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "skills.generator.approve_and_save", skip(self, skill), fields(skill_name = %skill.name))
+        tracing::instrument(name = "skills.generator.approve_and_save", skip(self, skill), fields(skill_name = %skill.meta.name))
     )]
     pub async fn approve_and_save(&self, skill: &GeneratedSkill) -> Result<PathBuf, SkillError> {
-        // Validate name (paranoia — already validated during generation).
-        validate_generated_name(&skill.name)?;
-
         // Evaluator gate (Feature B, #3319).
         if let Some(ref evaluator) = self.evaluator {
             let req = SkillEvaluationRequest {
-                name: &skill.name,
+                name: skill.meta.name.as_str(),
                 description: &skill.meta.description,
                 body: &skill.content,
                 original_intent: &skill.meta.description,
@@ -268,41 +271,41 @@ impl SkillGenerator {
             match evaluator.evaluate(&req).await? {
                 SkillVerdict::Accept(score) => {
                     tracing::debug!(
-                        name = %skill.name,
+                        name = %skill.meta.name,
                         composite = %(score.composite(&self.eval_weights)),
                         "evaluator accepted skill"
                     );
                 }
                 SkillVerdict::AcceptOnEvalError(reason) => {
                     tracing::info!(
-                        name = %skill.name,
+                        name = %skill.meta.name,
                         %reason,
                         "evaluator error (fail-open): proceeding with skill write"
                     );
                 }
                 SkillVerdict::Reject { score, reason } => {
                     tracing::info!(
-                        name = %skill.name,
+                        name = %skill.meta.name,
                         composite = %(score.composite(&self.eval_weights)),
                         %reason,
                         "evaluator rejected skill"
                     );
                     return Err(SkillError::Invalid(format!(
                         "skill '{name}' rejected by evaluator: {reason}",
-                        name = skill.name
+                        name = skill.meta.name
                     )));
                 }
             }
         }
 
-        let skill_dir = self.output_dir.join(&skill.name);
+        let skill_dir = self.output_dir.join(skill.meta.name.as_str());
         if skill_dir.exists() {
-            return Err(SkillError::AlreadyExists(skill.name.clone()));
+            return Err(SkillError::AlreadyExists(skill.meta.name.to_string()));
         }
         tokio::fs::create_dir_all(&skill_dir).await?;
         let skill_path = skill_dir.join("SKILL.md");
         tokio::fs::write(&skill_path, &skill.content).await?;
-        tracing::info!(name = %skill.name, path = %skill_path.display(), "skill written to disk");
+        tracing::info!(name = %skill.meta.name, path = %skill_path.display(), "skill written to disk");
         Ok(skill_path)
     }
 }
@@ -323,7 +326,6 @@ impl SkillGenerator {
     ///
     /// # Errors
     ///
-    /// Returns `SkillError::Invalid` if the name fails validation.
     /// Returns `SkillError::Io` on filesystem errors.
     ///
     /// # Examples
@@ -339,56 +341,23 @@ impl SkillGenerator {
     /// ```
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "skills.generator.write_quarantined", skip(self, skill), fields(skill_name = %skill.name))
+        tracing::instrument(name = "skills.generator.write_quarantined", skip(self, skill), fields(skill_name = %skill.meta.name))
     )]
     pub async fn write_quarantined(&self, skill: &GeneratedSkill) -> Result<PathBuf, SkillError> {
-        validate_generated_name(&skill.name)?;
-        let quarantine_dir = self.output_dir.join("_quarantine").join(&skill.name);
+        let quarantine_dir = self
+            .output_dir
+            .join("_quarantine")
+            .join(skill.meta.name.as_str());
         tokio::fs::create_dir_all(&quarantine_dir).await?;
         let skill_path = quarantine_dir.join("SKILL.md");
         tokio::fs::write(&skill_path, &skill.content).await?;
         tracing::info!(
-            name = %skill.name,
+            name = %skill.meta.name,
             path = %skill_path.display(),
             "skill written to quarantine"
         );
         Ok(skill_path)
     }
-}
-
-/// Validate that `name` is a safe lowercase-hyphen identifier (no path separators).
-fn validate_generated_name(name: &str) -> Result<(), SkillError> {
-    if name.is_empty() || name.len() > 64 {
-        return Err(SkillError::Invalid(format!(
-            "skill name must be 1-64 characters, got {}",
-            name.len()
-        )));
-    }
-    if !name
-        .bytes()
-        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-    {
-        return Err(SkillError::Invalid(format!(
-            "skill name must contain only lowercase letters, digits, and hyphens: {name}"
-        )));
-    }
-    if name.starts_with('-') || name.ends_with('-') {
-        return Err(SkillError::Invalid(format!(
-            "skill name must not start or end with hyphen: {name}"
-        )));
-    }
-    if name.contains("--") {
-        return Err(SkillError::Invalid(format!(
-            "skill name must not contain consecutive hyphens: {name}"
-        )));
-    }
-    // Reject path traversal attempts in name.
-    if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return Err(SkillError::Invalid(format!(
-            "skill name must not contain path separators: {name}"
-        )));
-    }
-    Ok(())
 }
 
 /// Build the user-facing generation prompt.
@@ -435,8 +404,6 @@ fn extract_skill_md(raw: &str) -> String {
 /// Parse the LLM output as SKILL.md and run all validations.
 fn parse_and_validate(content: &str) -> Result<GeneratedSkill, SkillError> {
     let (meta, body) = load_skill_meta_from_str(content)?;
-
-    validate_generated_name(meta.name.as_str())?;
 
     let mut warnings: Vec<String> = Vec::new();
 
@@ -486,7 +453,6 @@ fn parse_and_validate(content: &str) -> Result<GeneratedSkill, SkillError> {
 
     let has_injection_patterns = fm_scan.has_matches() || body_scan.has_matches();
     Ok(GeneratedSkill {
-        name: meta.name.to_string(),
         content: content.to_string(),
         meta,
         warnings,
@@ -503,35 +469,6 @@ mod tests {
         format!(
             "---\nname: {name}\ndescription: Test skill for {name}.\nallowed-tools: bash\n---\n\n## Usage\n\nRun commands.\n"
         )
-    }
-
-    #[test]
-    fn validate_generated_name_valid() {
-        assert!(validate_generated_name("my-skill").is_ok());
-        assert!(validate_generated_name("abc123").is_ok());
-        assert!(validate_generated_name("a").is_ok());
-    }
-
-    #[test]
-    fn validate_generated_name_rejects_traversal() {
-        assert!(validate_generated_name("../evil").is_err());
-        assert!(validate_generated_name("foo/bar").is_err());
-        assert!(validate_generated_name("foo\\bar").is_err());
-    }
-
-    #[test]
-    fn validate_generated_name_rejects_uppercase() {
-        assert!(validate_generated_name("MySkill").is_err());
-    }
-
-    #[test]
-    fn validate_generated_name_rejects_consecutive_hyphens() {
-        assert!(validate_generated_name("my--skill").is_err());
-    }
-
-    #[test]
-    fn validate_generated_name_rejects_leading_hyphen() {
-        assert!(validate_generated_name("-skill").is_err());
     }
 
     #[test]
@@ -552,7 +489,7 @@ mod tests {
     fn parse_and_validate_valid_skill() {
         let content = mock_skill_md("test-skill");
         let result = parse_and_validate(&content).unwrap();
-        assert_eq!(result.name, "test-skill");
+        assert_eq!(result.name(), "test-skill");
         assert_eq!(result.warnings, [] as [String; 0]);
     }
 
@@ -612,7 +549,6 @@ mod tests {
         let content = mock_skill_md("save-skill");
         let (meta, _) = load_skill_meta_from_str(&content).unwrap();
         let skill = GeneratedSkill {
-            name: "save-skill".into(),
             content: content.clone(),
             meta,
             warnings: vec![],
@@ -639,7 +575,6 @@ mod tests {
         let content = mock_skill_md("dup-skill");
         let (meta, _) = load_skill_meta_from_str(&content).unwrap();
         let skill = GeneratedSkill {
-            name: "dup-skill".into(),
             content,
             meta,
             warnings: vec![],
@@ -647,6 +582,24 @@ mod tests {
         };
         let err = generator.approve_and_save(&skill).await.unwrap_err();
         assert_matches!(err, SkillError::AlreadyExists(_));
+    }
+
+    #[test]
+    fn parse_and_validate_rejects_invalid_names() {
+        for name in [
+            "../evil",
+            "foo/bar",
+            "MySkill",
+            "my--skill",
+            "-skill",
+            "skill-",
+        ] {
+            let content = format!("---\nname: {name}\ndescription: Desc.\n---\n\n## Usage\n\nx\n");
+            assert!(
+                parse_and_validate(&content).is_err(),
+                "{name} must be rejected"
+            );
+        }
     }
 
     #[test]
@@ -675,22 +628,6 @@ mod tests {
         let result = extract_skill_md(raw);
         assert!(result.starts_with("---"));
         assert!(!result.contains("```"));
-    }
-
-    #[test]
-    fn validate_generated_name_rejects_trailing_hyphen() {
-        assert!(validate_generated_name("skill-").is_err());
-    }
-
-    #[test]
-    fn validate_generated_name_rejects_empty() {
-        assert!(validate_generated_name("").is_err());
-    }
-
-    #[test]
-    fn validate_generated_name_rejects_too_long() {
-        let name = "a".repeat(65);
-        assert!(validate_generated_name(&name).is_err());
     }
 
     fn timeout_test_request() -> SkillGenerationRequest {

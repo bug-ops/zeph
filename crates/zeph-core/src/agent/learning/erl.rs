@@ -3,6 +3,7 @@
 
 use super::super::{Agent, Channel};
 use super::background::{ErlTaskArgs, erl_reflection_task};
+use zeph_llm::provider::StatusUpdate;
 
 impl<C: Channel> Agent<C> {
     /// Build a heuristics suffix to append to the skills prompt.
@@ -79,7 +80,7 @@ impl<C: Channel> Agent<C> {
             .unwrap_or_default();
         let status_tx = self.services.session.status_tx.clone();
         if let Some(ref tx) = self.services.session.status_tx {
-            let _ = tx.send("Reflecting on experience…".to_string());
+            let _ = tx.send(StatusUpdate::set("Reflecting on experience…"));
         }
         let args = ErlTaskArgs {
             provider: self.resolve_background_provider(config.erl_extract_provider.as_str()),

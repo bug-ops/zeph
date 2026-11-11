@@ -164,6 +164,14 @@ impl Channel for AnyChannel {
         dispatch_channel!(self, send_status, text)
     }
 
+    async fn clear_status(&mut self) -> Result<(), ChannelError> {
+        dispatch_channel!(self, clear_status)
+    }
+
+    async fn clear_status_best_effort(&mut self) {
+        dispatch_channel!(self, clear_status_best_effort);
+    }
+
     async fn send_skill_catalog(&mut self, items: &[SkillCatalogItem]) -> Result<(), ChannelError> {
         dispatch_channel!(self, send_skill_catalog, items)
     }

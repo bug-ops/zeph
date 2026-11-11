@@ -234,6 +234,7 @@ All events are single-line JSON objects:
 | `-y` and MCP elicitation with type=password | Emit a WARN log; auto-approve the prompt but mark the elicitation response with `warned=true` |
 | `response_end` without chunks (MARCH marker race) | Suppressed by `pending_chunks` guard; no duplicate `response_end` emitted |
 | `/loop` user enters empty string | Treated as "n" (stop); clean exit |
+| Status indicator cleared (CLI, no TUI) | The stderr forwarder (`forward_status_to_stderr`, `src/tui_bridge.rs`) prints nothing on `StatusUpdate::Clear`; it no longer emits a blank `[status] ` line (#6988). `--json` keeps emitting `Status { message: "" }` on clear, and ACP/serve wire clears are unchanged |
 | `--bare` combined with `--json` and `forward_transcript = true` | Unsupported: the forwarded live-transcript JSON lines (FR-013) and the `--json` event schema (§5) interleave on the same stdout stream with no line-level discriminator; use `--bare` without `--json` for scripted live-transcript consumption |
 
 ---

@@ -87,34 +87,20 @@ pub(super) fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
         .with_prompt(
             "Soft compaction threshold: prune tool outputs + apply deferred summaries \
              when context usage exceeds this fraction \
-             (0.0-1.0, recommended: below 0.90 — the default hard threshold)",
+             (0.0-1.0 exclusive, recommended: below 0.90 — the default hard threshold)",
         )
         .default(state.soft_compaction_threshold)
-        .validate_with(|v: &f32| {
-            if v.is_finite() && *v > 0.0 && *v < 1.0 {
-                Ok(())
-            } else {
-                Err("must be between 0.0 and 1.0 exclusive")
-            }
-        })
         .interact_text()?;
-    // Loop required for cross-field validation (hard > soft): dialoguer's validate_with
-    // closure only sees the parsed value, not external state, so we handle the constraint here.
+    // Loop required for cross-field validation (hard > soft): the prompt only sees the parsed
+    // value, not external state, so we handle the constraint here.
     loop {
         let soft = state.soft_compaction_threshold;
-        let val: f32 = Input::new()
+        let val: zeph_config::UnitOpen = Input::new()
             .with_prompt(format!(
                 "Hard compaction threshold: full LLM summarization when context usage exceeds \
-                 this fraction (0.0-1.0, must be above soft threshold {soft})"
+                 this fraction (0.0-1.0 exclusive, must be above soft threshold {soft})"
             ))
             .default(state.hard_compaction_threshold)
-            .validate_with(|v: &f32| {
-                if v.is_finite() && *v > 0.0 && *v < 1.0 {
-                    Ok(())
-                } else {
-                    Err("must be between 0.0 and 1.0 exclusive")
-                }
-            })
             .interact_text()?;
         if val > soft {
             state.hard_compaction_threshold = val;
@@ -403,32 +389,18 @@ pub(super) fn step_context_compression(state: &mut WizardState) -> anyhow::Resul
         state.probe_threshold = Input::new()
             .with_prompt("Probe pass threshold (0.0-1.0, scores below this trigger warnings)")
             .default(state.probe_threshold)
-            .validate_with(|v: &f32| {
-                if v.is_finite() && *v > 0.0 && *v <= 1.0 {
-                    Ok(())
-                } else {
-                    Err("must be in (0.0, 1.0]")
-                }
-            })
             .interact_text()?;
 
         loop {
             let threshold = state.probe_threshold;
-            let val: f32 = Input::new()
+            let val: zeph_config::UnitLowerClosed = Input::new()
                 .with_prompt(format!(
                     "Probe hard-fail threshold (0.0-1.0, scores below this block compaction, \
                      must be below {threshold})"
                 ))
                 .default(state.probe_hard_fail_threshold)
-                .validate_with(|v: &f32| {
-                    if v.is_finite() && *v >= 0.0 && *v < 1.0 {
-                        Ok(())
-                    } else {
-                        Err("must be in [0.0, 1.0)")
-                    }
-                })
                 .interact_text()?;
-            if val < threshold {
+            if val.get() < threshold.get() {
                 state.probe_hard_fail_threshold = val;
                 break;
             }

@@ -76,7 +76,6 @@ pub mod channels;
 pub mod classifiers;
 pub mod cli;
 pub mod cocoon;
-mod de_helpers;
 pub mod deep_link;
 pub mod defaults;
 pub mod dump_format;
@@ -87,6 +86,7 @@ pub mod execution;
 pub mod experiment;
 pub mod features;
 pub mod fidelity;
+pub mod fraction;
 pub mod hooks;
 pub mod integrity;
 pub mod knowledge;
@@ -120,7 +120,7 @@ pub use agent::{
     TaskSupervisorConfig, ToolFilterConfig,
 };
 pub use calibration::{
-    CalibrationError, ConfidenceCalibration, ConfidenceThreshold, ConfidenceThresholdError,
+    CalibrationError, ConfidenceCalibration, ConfidenceThreshold, DEFAULT_CORRECTION_CONFIDENCE,
 };
 pub use channels::{
     A2aClientConfig, A2aServerConfig, CardTrustPolicy, ChannelSkillsConfig, DiscordConfig,
@@ -153,6 +153,11 @@ pub use features::{
     default_subagent_skill_token_budget,
 };
 pub use fidelity::FidelityConfig;
+pub use fraction::{
+    Closed, Fraction, FractionError, LowerClosed, Open, ParseFractionError, UnitBounds, UnitClosed,
+    UnitClosed64, UnitFloat, UnitLowerClosed, UnitOpen, UnitUpperClosed, UnitUpperClosed64,
+    UpperClosed,
+};
 pub use hooks::{FileChangedConfig, HooksConfig};
 pub use integrity::{AnchorMode, IntegrityConfig};
 pub use knowledge::KnowledgeConfig;
@@ -176,6 +181,7 @@ pub use memory::{
 pub use metrics::MetricsConfig;
 pub use notifications::NotificationsConfig;
 pub use plugins::{PluginsConfig, ReputationConfig, ReputationEnforcement};
+pub use providers::DEFAULT_SEMANTIC_CACHE_THRESHOLD;
 pub use providers::default_stt_language;
 pub use providers::{
     BanditConfig, CacheTtl, CandleConfig, CandleDevice, CandleInlineConfig, CandleSource,

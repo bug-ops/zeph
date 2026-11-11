@@ -84,6 +84,9 @@ wilson_lower = mean - 1.645 × std_err    ← clamped to [0.0, 1.0]
 
 **Never change**: α=+1, β=+1, z=1.645 — all skill rankings depend on this formula.
 
+> [!warning] Failure inputs include non-zero exits (#6986)
+> `failures` now includes every tool result with `ToolStatus::is_failure()`, in particular a plain non-zero process exit (`NonZeroExit`), not only `Err` results. Skills whose commands routinely exit non-zero (grep, test runners) lose Wilson weight faster than before; exit 0 with stderr output no longer counts as a failure. The same signal gates the turn's learning hooks: `check_rollback` per active skill, RL head update, STEM detection run on any failure, and ARISE and ERL are skipped for that turn (`[[006-tools/spec]]`, `[[005-skills/spec]]`).
+
 ## Skill Re-ranking
 
 ```
@@ -127,6 +130,7 @@ Per-provider EMA (exponential moving average) latency:
 ## Key Invariants
 
 - Wilson score formula (α+1, β+1, z=1.645) must never change — all rankings depend on it
+- Success/failure fed to Wilson, ARISE, ERL, STEM and `check_rollback` is derived from `ToolOutput.status` (`is_failure()`), never from output text
 - Confidence thresholds per kind are fixed: ExplicitRejection=0.85, SelfCorrection=0.80, Repetition=0.75, AlternativeRequest=0.70
 - Self-correction checked first — prevents "actually" false-positive in AlternativeRequest
 - Jaccard token overlap > 0.8 for repetition — changing threshold causes false positives/negatives

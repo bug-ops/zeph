@@ -82,12 +82,13 @@ pub use fleet::{FleetRegistry, FleetSessionInfo, FleetSessionStatus, SharedFleet
 pub use forward::ForwardSurfaces;
 pub use grants::{Grant, GrantKind, GrantedSecret, PermissionGrants, SecretRequest};
 pub use hooks::{
-    HookAction, HookDef, HookError, HookMatcher, HookOutput, HookRunResult, McpDispatch,
-    PostToolUseHookInput, SubagentHooks, TOOL_ARGS_JSON_LIMIT, fire_hooks, hook_if_matches,
-    make_base_hook_env, matching_hooks, pre_tool_block_message,
+    HookAction, HookAgentCtx, HookAgentType, HookDef, HookError, HookMatcher, HookOutput,
+    HookRunResult, McpDispatch, PostToolHookCall, PostToolUseHookInput, PreToolHookCall,
+    SubagentHooks, TOOL_ARGS_JSON_LIMIT, fire_hooks, hook_if_matches, make_base_hook_env,
+    matching_hooks, pre_tool_block_message,
 };
 pub use manager::{
-    SpawnContext, SpawnOrigin, SubAgentHandle, SubAgentManager, SubAgentStatus,
+    CredentialScrub, SpawnContext, SpawnOrigin, SubAgentHandle, SubAgentManager, SubAgentStatus,
     intersect_allowlists,
 };
 pub use memory::{ensure_memory_dir, load_memory_content};

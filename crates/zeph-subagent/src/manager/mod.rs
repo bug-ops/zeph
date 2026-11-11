@@ -66,6 +66,38 @@ impl Default for SpawnOrigin {
     }
 }
 
+/// Whether secret-shaped substrings (API keys, URL credentials, private-key blocks) are
+/// redacted from sub-agent tool results before they reach the provider and transcript.
+///
+/// Mirrors the parent's `redact_credentials` switch. The default is [`Enabled`](Self::Enabled):
+/// a context built without an explicit choice must never leak credentials.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_subagent::manager::CredentialScrub;
+///
+/// assert_eq!(CredentialScrub::default(), CredentialScrub::Enabled);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CredentialScrub {
+    /// Redact credential-shaped content (secure default).
+    #[default]
+    Enabled,
+    /// Pass tool results through unscrubbed.
+    Disabled,
+}
+
+impl From<bool> for CredentialScrub {
+    fn from(redact_credentials: bool) -> Self {
+        if redact_credentials {
+            Self::Enabled
+        } else {
+            Self::Disabled
+        }
+    }
+}
+
 /// Parent-derived state propagated to a spawned sub-agent at spawn time.
 ///
 /// All fields default to empty/`None`, preserving existing behavior when callers
@@ -117,6 +149,8 @@ pub struct SpawnContext {
     /// Parent's content isolation config, propagated so the subagent loop can run the
     /// same sanitizer settings on hook-replaced tool output.
     pub content_isolation: ContentIsolationConfig,
+    /// Parent's `redact_credentials` switch, applied to every sub-agent tool result.
+    pub credential_scrub: CredentialScrub,
     /// Name of the orchestrator that spawned this subagent.
     ///
     /// When set, the subagent's system prompt includes an identity header naming the

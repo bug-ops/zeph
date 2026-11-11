@@ -66,10 +66,10 @@ impl<C: Channel> Agent<C> {
         self.channel.send_status_best_effort("reflecting...").await;
         // Box::pin to break async recursion cycle (process_response -> attempt_self_reflection -> process_response)
         if let Err(e) = Box::pin(self.process_response()).await {
-            self.channel.send_status_best_effort("").await;
+            self.channel.clear_status_best_effort().await;
             return Err(e);
         }
-        self.channel.send_status_best_effort("").await;
+        self.channel.clear_status_best_effort().await;
         let retry_succeeded = self.msg.messages.len() > messages_before;
         if !retry_succeeded && self.msg.messages.len() == messages_before {
             // No reply was added (refusal, timeout): drop the dangling reflection prompt so the

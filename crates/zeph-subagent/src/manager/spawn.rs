@@ -26,12 +26,12 @@ use crate::error::SubAgentError;
 use crate::filter::{self, FilteredToolExecutor, NetworkDenyToolExecutor, PlanModeExecutor};
 use crate::fleet::{FleetSessionInfo, FleetSessionStatus};
 use crate::grants::{GrantedSecret, PermissionGrants, SecretRequest};
+use crate::hooks::HookAgentCtx;
 use crate::hooks::fire_hooks;
-use crate::manager::secrets::make_hook_env;
 use crate::memory::{ensure_memory_dir, escape_memory_content, load_memory_content};
 use crate::state::SubAgentState;
 
-use super::SpawnContext;
+use super::{CredentialScrub, SpawnContext};
 use crate::durable::{DurableResolverSeat, resolve_durable_promise};
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -917,6 +917,7 @@ impl SubAgentManager {
             spawn_depth: spawn_depth + 1,
             mcp_tool_names,
             content_isolation: ctx.content_isolation,
+            credential_scrub: ctx.credential_scrub,
             llm_timeout: std::time::Duration::from_secs(config.llm_timeout_secs),
             progress_at: ctx.progress_at,
             debug_dump_sink: ctx.debug_dump_sink,
@@ -1067,7 +1068,7 @@ impl SubAgentManager {
         }
         if !config.hooks.start.is_empty() {
             let start_hooks = config.hooks.start.clone();
-            let start_env = make_hook_env(task_id, def_name, "");
+            let start_env = HookAgentCtx::subagent(task_id, def_name).lifecycle_env();
             self.spawn_hook_task(async move {
                 if let Err(e) = fire_hooks(&start_hooks, &start_env, None, None).await {
                     tracing::warn!(error = %e, "SubagentStart hook failed");
@@ -1121,7 +1122,7 @@ impl SubAgentManager {
 
         if !self.stop_hooks.is_empty() {
             let stop_hooks = self.stop_hooks.clone();
-            let stop_env = make_hook_env(task_id, &def_name, "");
+            let stop_env = HookAgentCtx::subagent(task_id, &def_name).lifecycle_env();
             self.spawn_hook_task(async move {
                 if let Err(e) = fire_hooks(&stop_hooks, &stop_env, None, None).await {
                     tracing::warn!(error = %e, "SubagentStop hook failed");
@@ -1429,6 +1430,8 @@ impl SubAgentManager {
         // Resume never propagates the original session's `content_isolation` (matches the
         // existing `ContentIsolationConfig::default()` below); the drain's sanitizer must use
         // the same default, captured here before the closure moves `agent_name_clone` (P-new-4).
+        let resumed_credential_scrub =
+            spawn_context.map_or_else(CredentialScrub::default, |c| c.credential_scrub);
         let forward_content_isolation = ContentIsolationConfig::default();
         let forward_sender = self.maybe_spawn_forward(
             &new_task_id,
@@ -1462,6 +1465,7 @@ impl SubAgentManager {
                 spawn_depth: 0,
                 mcp_tool_names: resumed_mcp_tool_names,
                 content_isolation: ContentIsolationConfig::default(),
+                credential_scrub: resumed_credential_scrub,
                 llm_timeout,
                 // `resume()` is the standalone `/agent resume` command path, never tracked
                 // by a `DagScheduler` — no progress handle to reattach to.
@@ -1513,7 +1517,7 @@ impl SubAgentManager {
         if !config.hooks.start.is_empty() {
             let start_hooks = config.hooks.start.clone();
             let def_name = meta.def_name.clone();
-            let start_env = make_hook_env(&new_task_id, &def_name, "");
+            let start_env = HookAgentCtx::subagent(&new_task_id, &def_name).lifecycle_env();
             self.spawn_hook_task(async move {
                 if let Err(e) = fire_hooks(&start_hooks, &start_env, None, None).await {
                     tracing::warn!(error = %e, "SubagentStart hook failed");

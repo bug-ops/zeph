@@ -12,6 +12,7 @@ use crate::channel::Channel;
 use crate::config::Config;
 use crate::context::ContextBudget;
 use zeph_llm::provider::LlmProvider as _;
+use zeph_llm::provider::StatusUpdate;
 
 impl<C: Channel> Agent<C> {
     #[allow(clippy::too_many_lines)]
@@ -101,7 +102,7 @@ impl<C: Channel> Agent<C> {
                 if self.services.memory.extraction.rpe_router.is_none() {
                     self.services.memory.extraction.rpe_router =
                         Some(std::sync::Mutex::new(zeph_memory::RpeRouter::new(
-                            graph_cfg.rpe.threshold,
+                            graph_cfg.rpe.threshold.get(),
                             graph_cfg.rpe.max_skip_turns,
                         )));
                 }
@@ -116,10 +117,12 @@ impl<C: Channel> Agent<C> {
             let compaction = &mut self.services.memory.compaction;
             compaction.context_layout = config.memory.context_layout;
             compaction.turn_context_budget_ratio = config.memory.turn_context_budget_ratio;
-            compaction.history_trim_watermark = config.memory.history_trim_watermark;
+            compaction.history_trim_watermark = config.memory.history_trim_watermark.get();
         }
-        self.context_manager.soft_compaction_threshold = config.memory.soft_compaction_threshold;
-        self.context_manager.hard_compaction_threshold = config.memory.hard_compaction_threshold;
+        self.context_manager.soft_compaction_threshold =
+            config.memory.soft_compaction_threshold.get();
+        self.context_manager.hard_compaction_threshold =
+            config.memory.hard_compaction_threshold.get();
         self.context_manager.compaction_preserve_tail = config.memory.compaction_preserve_tail;
         self.context_manager
             .set_compaction_cooldown_turns(config.memory.compaction_cooldown_turns);
@@ -292,7 +295,7 @@ impl<C: Channel> Agent<C> {
                  for sandbox path recomputation (blocked_commands was rebuilt live)";
             tracing::warn!("{msg}");
             if let Some(ref tx) = self.services.session.status_tx {
-                let _ = tx.send(msg.to_owned());
+                let _ = tx.send(StatusUpdate::set(msg.to_owned()));
             }
         }
 

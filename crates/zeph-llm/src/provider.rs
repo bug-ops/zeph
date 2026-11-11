@@ -735,12 +735,42 @@ pub type EmbedFuture = LlmFuture<Vec<f32>>;
 /// The closure captures an `Arc`-wrapped provider clone, so it is cheap to clone.
 pub type EmbedFn = Box<dyn Fn(&str) -> EmbedFuture + Send + Sync>;
 
-/// Sender for emitting human-readable status events (retries, fallbacks) to the UI layer.
+/// A status-indicator message: show some text, or clear the indicator.
 ///
-/// When set on a provider, the provider sends short strings such as
+/// Replaces the former convention of sending an empty string to clear, so that a
+/// producer building text from data that happens to be empty can no longer clear the
+/// indicator by accident.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::provider::StatusUpdate;
+///
+/// let set = StatusUpdate::set("Retrying after rate limit…");
+/// assert_ne!(set, StatusUpdate::Clear);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StatusUpdate {
+    /// Show the given text on the status indicator.
+    Set(std::borrow::Cow<'static, str>),
+    /// Clear the status indicator.
+    Clear,
+}
+
+impl StatusUpdate {
+    /// Build a [`StatusUpdate::Set`] from a static or owned string.
+    #[must_use]
+    pub fn set(text: impl Into<std::borrow::Cow<'static, str>>) -> Self {
+        Self::Set(text.into())
+    }
+}
+
+/// Sender for emitting typed status events (retries, fallbacks) to the UI layer.
+///
+/// When set on a provider, the provider sends [`StatusUpdate::Set`] with short text such as
 /// `"Retrying after rate limit…"` or `"Falling back to secondary provider"`.
 /// The TUI consumes these to show real-time activity spinners.
-pub type StatusTx = tokio::sync::mpsc::UnboundedSender<String>;
+pub type StatusTx = tokio::sync::mpsc::UnboundedSender<StatusUpdate>;
 
 /// Best-effort fallback for debug dump request payloads when a provider does not expose
 /// its concrete API request body.

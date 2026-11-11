@@ -538,9 +538,9 @@ async fn run_probe(
         config.category_weights.as_ref(),
     );
 
-    let verdict = if score >= config.threshold {
+    let verdict = if score >= config.threshold.get() {
         ProbeVerdict::Pass
-    } else if score >= config.hard_fail_threshold {
+    } else if score >= config.hard_fail_threshold.get() {
         ProbeVerdict::SoftFail
     } else {
         ProbeVerdict::HardFail
@@ -555,8 +555,8 @@ async fn run_probe(
         answers,
         per_question_scores,
         verdict,
-        threshold: config.threshold,
-        hard_fail_threshold: config.hard_fail_threshold,
+        threshold: config.threshold.get(),
+        hard_fail_threshold: config.hard_fail_threshold.get(),
         model,
         duration_ms: 0, // filled in by validate_compaction
     }))
@@ -690,9 +690,9 @@ mod tests {
 
         // Pass >= 0.6
         let score = 0.7_f32;
-        let verdict = if score >= config.threshold {
+        let verdict = if score >= config.threshold.get() {
             ProbeVerdict::Pass
-        } else if score >= config.hard_fail_threshold {
+        } else if score >= config.hard_fail_threshold.get() {
             ProbeVerdict::SoftFail
         } else {
             ProbeVerdict::HardFail
@@ -701,9 +701,9 @@ mod tests {
 
         // SoftFail [0.35, 0.6)
         let score = 0.5_f32;
-        let verdict = if score >= config.threshold {
+        let verdict = if score >= config.threshold.get() {
             ProbeVerdict::Pass
-        } else if score >= config.hard_fail_threshold {
+        } else if score >= config.hard_fail_threshold.get() {
             ProbeVerdict::SoftFail
         } else {
             ProbeVerdict::HardFail
@@ -712,9 +712,9 @@ mod tests {
 
         // HardFail < 0.35
         let score = 0.2_f32;
-        let verdict = if score >= config.threshold {
+        let verdict = if score >= config.threshold.get() {
             ProbeVerdict::Pass
-        } else if score >= config.hard_fail_threshold {
+        } else if score >= config.hard_fail_threshold.get() {
             ProbeVerdict::SoftFail
         } else {
             ProbeVerdict::HardFail
@@ -729,8 +729,8 @@ mod tests {
         let c = CompactionProbeConfig::default();
         assert!(!c.enabled);
         assert!(c.probe_provider.is_none());
-        assert!((c.threshold - 0.6).abs() < 0.001);
-        assert!((c.hard_fail_threshold - 0.35).abs() < 0.001);
+        assert!((c.threshold.get() - 0.6).abs() < 0.001);
+        assert!((c.hard_fail_threshold.get() - 0.35).abs() < 0.001);
         assert_eq!(c.max_questions, 5);
         assert_eq!(c.timeout_secs, 15);
         assert!(c.category_weights.is_none());
@@ -743,8 +743,8 @@ mod tests {
         let original = CompactionProbeConfig {
             enabled: true,
             probe_provider: Some(zeph_config::ProviderName::new("fast")),
-            threshold: 0.65,
-            hard_fail_threshold: 0.4,
+            threshold: zeph_config::UnitUpperClosed::literal(0.65),
+            hard_fail_threshold: zeph_config::UnitLowerClosed::literal(0.4),
             max_questions: 5,
             timeout_secs: 20,
             category_weights: None,
@@ -759,7 +759,7 @@ mod tests {
                 .map(zeph_config::ProviderName::as_str),
             Some("fast")
         );
-        assert!((restored.threshold - 0.65).abs() < 0.001);
+        assert!((restored.threshold.get() - 0.65).abs() < 0.001);
     }
 
     #[test]
@@ -856,10 +856,10 @@ mod tests {
         let config = CompactionProbeConfig::default();
 
         // Exactly at pass threshold → Pass.
-        let score = config.threshold;
-        let verdict = if score >= config.threshold {
+        let score = config.threshold.get();
+        let verdict = if score >= config.threshold.get() {
             ProbeVerdict::Pass
-        } else if score >= config.hard_fail_threshold {
+        } else if score >= config.hard_fail_threshold.get() {
             ProbeVerdict::SoftFail
         } else {
             ProbeVerdict::HardFail
@@ -867,10 +867,10 @@ mod tests {
         assert_eq!(verdict, ProbeVerdict::Pass);
 
         // One ULP below pass threshold, above hard-fail → SoftFail.
-        let score = config.threshold - f32::EPSILON;
-        let verdict = if score >= config.threshold {
+        let score = config.threshold.get() - f32::EPSILON;
+        let verdict = if score >= config.threshold.get() {
             ProbeVerdict::Pass
-        } else if score >= config.hard_fail_threshold {
+        } else if score >= config.hard_fail_threshold.get() {
             ProbeVerdict::SoftFail
         } else {
             ProbeVerdict::HardFail
@@ -878,10 +878,10 @@ mod tests {
         assert_eq!(verdict, ProbeVerdict::SoftFail);
 
         // Exactly at hard-fail threshold → SoftFail (boundary is inclusive).
-        let score = config.hard_fail_threshold;
-        let verdict = if score >= config.threshold {
+        let score = config.hard_fail_threshold.get();
+        let verdict = if score >= config.threshold.get() {
             ProbeVerdict::Pass
-        } else if score >= config.hard_fail_threshold {
+        } else if score >= config.hard_fail_threshold.get() {
             ProbeVerdict::SoftFail
         } else {
             ProbeVerdict::HardFail
@@ -889,10 +889,10 @@ mod tests {
         assert_eq!(verdict, ProbeVerdict::SoftFail);
 
         // One ULP below hard-fail threshold → HardFail.
-        let score = config.hard_fail_threshold - f32::EPSILON;
-        let verdict = if score >= config.threshold {
+        let score = config.hard_fail_threshold.get() - f32::EPSILON;
+        let verdict = if score >= config.threshold.get() {
             ProbeVerdict::Pass
-        } else if score >= config.hard_fail_threshold {
+        } else if score >= config.hard_fail_threshold.get() {
             ProbeVerdict::SoftFail
         } else {
             ProbeVerdict::HardFail
@@ -910,8 +910,8 @@ mod tests {
             serde_json::from_str(json).expect("deserialize partial json");
         assert!(c.enabled);
         assert!(c.probe_provider.is_none());
-        assert!((c.threshold - 0.6).abs() < 0.001);
-        assert!((c.hard_fail_threshold - 0.35).abs() < 0.001);
+        assert!((c.threshold.get() - 0.6).abs() < 0.001);
+        assert!((c.hard_fail_threshold.get() - 0.35).abs() < 0.001);
         assert_eq!(c.max_questions, 5);
         assert_eq!(c.timeout_secs, 15);
     }

@@ -8,16 +8,44 @@ use zeph_sanitizer::{ContentSource, ContentSourceKind};
 use crate::agent::Agent;
 use crate::channel::Channel;
 
+/// Reply of an agent-answered built-in tool: the text for the model and its typed outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BuiltinReply {
+    pub(crate) text: String,
+    pub(crate) status: zeph_tools::ToolStatus,
+}
+
+impl BuiltinReply {
+    /// The tool ran and produced `text`.
+    pub(crate) fn completed(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            status: zeph_tools::ToolStatus::Success,
+        }
+    }
+
+    /// The tool ran but could not do its job; `text` explains why.
+    pub(crate) fn failed(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            status: zeph_tools::ToolStatus::Failed,
+        }
+    }
+}
+
 impl<C: Channel> Agent<C> {
     pub(crate) fn handle_focus_tool(
         &mut self,
         tool_name: &str,
         input: &serde_json::Value,
-    ) -> (String, Option<zeph_llm::provider::Message>) {
+    ) -> (BuiltinReply, Option<zeph_llm::provider::Message>) {
         match tool_name {
             "start_focus" => self.start_focus_tool(input),
             "complete_focus" => self.complete_focus_tool(input),
-            other => (format!("[error] Unknown focus tool: {other}"), None),
+            other => (
+                BuiltinReply::failed(format!("[error] Unknown focus tool: {other}")),
+                None,
+            ),
         }
     }
 
@@ -25,7 +53,7 @@ impl<C: Channel> Agent<C> {
     fn start_focus_tool(
         &mut self,
         input: &serde_json::Value,
-    ) -> (String, Option<zeph_llm::provider::Message>) {
+    ) -> (BuiltinReply, Option<zeph_llm::provider::Message>) {
         let scope = input
             .get("scope")
             .and_then(|v| v.as_str())
@@ -34,7 +62,9 @@ impl<C: Channel> Agent<C> {
 
         if self.services.focus.is_active() {
             return (
-                "[error] A focus session is already active. Call complete_focus first.".to_string(),
+                BuiltinReply::failed(
+                    "[error] A focus session is already active. Call complete_focus first.",
+                ),
                 None,
             );
         }
@@ -58,7 +88,9 @@ impl<C: Channel> Agent<C> {
         };
 
         (
-            format!("Focus session started. Checkpoint ID: {marker}. Scope: {scope}"),
+            BuiltinReply::completed(format!(
+                "Focus session started. Checkpoint ID: {marker}. Scope: {scope}"
+            )),
             Some(checkpoint_msg),
         )
     }
@@ -81,13 +113,13 @@ impl<C: Channel> Agent<C> {
     fn complete_focus_tool(
         &mut self,
         input: &serde_json::Value,
-    ) -> (String, Option<zeph_llm::provider::Message>) {
+    ) -> (BuiltinReply, Option<zeph_llm::provider::Message>) {
         let raw_summary = input.get("summary").and_then(|v| v.as_str()).unwrap_or("");
 
         // S4: verify focus session is active.
         if !self.services.focus.is_active() {
             return (
-                "[error] No active focus session. Call start_focus first.".to_string(),
+                BuiltinReply::failed("[error] No active focus session. Call start_focus first."),
                 None,
             );
         }
@@ -96,14 +128,14 @@ impl<C: Channel> Agent<C> {
         // tagged Knowledge block behind, so context trust would silently fall back to Trusted.
         let Some(summary) = visible_summary(raw_summary) else {
             return (
-                "[error] complete_focus requires a non-empty summary.".to_string(),
+                BuiltinReply::failed("[error] complete_focus requires a non-empty summary."),
                 None,
             );
         };
 
         let Some(marker) = self.services.focus.active_marker else {
             return (
-                "[error] Internal error: active_marker is None.".to_string(),
+                BuiltinReply::failed("[error] Internal error: active_marker is None."),
                 None,
             );
         };
@@ -116,10 +148,10 @@ impl<C: Channel> Agent<C> {
             .position(|m| m.metadata.focus_marker_id == Some(marker));
         let Some(checkpoint_pos) = checkpoint_pos else {
             return (
-                format!(
+                BuiltinReply::failed(format!(
                     "[error] Checkpoint marker {marker} not found in message history. \
                      The focus session may have been evicted by compaction."
-                ),
+                )),
                 None,
             );
         };
@@ -130,7 +162,9 @@ impl<C: Channel> Agent<C> {
         // thinking, so nothing is removed unless it was stored.
         if !self.services.focus.append_llm_knowledge(sanitized_summary) {
             return (
-                "[error] The summary was rejected; the focus session stays open.".to_string(),
+                BuiltinReply::failed(
+                    "[error] The summary was rejected; the focus session stays open.",
+                ),
                 None,
             );
         }
@@ -190,7 +224,7 @@ impl<C: Channel> Agent<C> {
         self.rebuild_knowledge_block();
 
         (
-            "Focus session complete. Knowledge block updated.".to_string(),
+            BuiltinReply::completed("Focus session complete. Knowledge block updated."),
             None,
         )
     }
@@ -253,14 +287,15 @@ impl<C: Channel> Agent<C> {
     /// - Returns error if a focus session is active (would interfere with focus boundaries).
     /// - Returns error if a compression is already in progress (concurrency guard).
     #[tracing::instrument(name = "core.tool.handle_compress_context", skip_all, level = "debug")]
-    pub(crate) async fn handle_compress_context(&mut self) -> String {
+    pub(crate) async fn handle_compress_context(&mut self) -> BuiltinReply {
         if self.services.focus.is_active() {
-            return "[error] Cannot compress context while a focus session is active. \
-                    Call complete_focus first."
-                .to_string();
+            return BuiltinReply::failed(
+                "[error] Cannot compress context while a focus session is active. \
+                 Call complete_focus first.",
+            );
         }
         if !self.services.focus.try_acquire_compression() {
-            return "[error] A context compression is already in progress.".to_string();
+            return BuiltinReply::failed("[error] A context compression is already in progress.");
         }
 
         let preserve_tail = self.context_manager.compaction_preserve_tail;
@@ -269,10 +304,10 @@ impl<C: Channel> Agent<C> {
                 Ok(pair) => pair,
                 Err(total) => {
                     self.services.focus.release_compression();
-                    return format!(
+                    return BuiltinReply::completed(format!(
                         "Not enough messages to compress (found {total}, need at least {}).",
                         preserve_tail + 4
-                    );
+                    ));
                 }
             };
 
@@ -296,17 +331,17 @@ impl<C: Channel> Agent<C> {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {
                 self.services.focus.release_compression();
-                return format!("[error] Compression LLM call failed: {e}");
+                return BuiltinReply::failed(format!("[error] Compression LLM call failed: {e}"));
             }
             Err(_) => {
                 self.services.focus.release_compression();
-                return "[error] Compression LLM call timed out.".to_string();
+                return BuiltinReply::failed("[error] Compression LLM call timed out.");
             }
         };
 
         let Some(summary) = visible_summary(&summary) else {
             self.services.focus.release_compression();
-            return "[error] Compression produced an empty summary.".to_string();
+            return BuiltinReply::failed("[error] Compression produced an empty summary.");
         };
 
         let tokens_freed = to_compress
@@ -318,7 +353,9 @@ impl<C: Channel> Agent<C> {
 
         if !self.services.focus.append_llm_knowledge(sanitized_summary) {
             self.services.focus.release_compression();
-            return "[error] The summary was rejected; nothing was compressed.".to_string();
+            return BuiltinReply::failed(
+                "[error] The summary was rejected; nothing was compressed.",
+            );
         }
         self.apply_compression_removals(to_remove_indices);
 
@@ -327,10 +364,10 @@ impl<C: Channel> Agent<C> {
         );
         self.services.focus.release_compression();
 
-        format!(
+        BuiltinReply::completed(format!(
             "Compressed {compress_total} messages into a summary (~{tokens_freed} tokens freed). \
              Knowledge block updated."
-        )
+        ))
     }
 
     /// Collect the set of message indices and cloned messages eligible for compression.
@@ -498,7 +535,10 @@ impl<C: Channel> Agent<C> {
     /// - Minimum context threshold: only fires when above the soft compaction threshold.
     /// - Reason is truncated to 256 chars before logging (critic note N5).
     #[tracing::instrument(name = "agent.request_compaction", skip_all, level = "info")]
-    pub(crate) async fn handle_request_compaction(&mut self, input: &serde_json::Value) -> String {
+    pub(crate) async fn handle_request_compaction(
+        &mut self,
+        input: &serde_json::Value,
+    ) -> BuiltinReply {
         let raw_reason = input
             .get("reason")
             .and_then(|v| v.as_str())
@@ -513,18 +553,19 @@ impl<C: Channel> Agent<C> {
             .compaction_state()
             .is_compacted_this_turn()
         {
-            return "[error] Compaction already performed this turn. Try again next turn."
-                .to_string();
+            return BuiltinReply::failed(
+                "[error] Compaction already performed this turn. Try again next turn.",
+            );
         }
 
         // Only compact when context usage is above the soft threshold.
         let cached = self.runtime.providers.cached_prompt_tokens;
         let tier = self.context_manager.compaction_tier(cached);
         if matches!(tier, zeph_context::manager::CompactionTier::None) {
-            return format!(
+            return BuiltinReply::completed(format!(
                 "Context usage is below the compaction threshold. \
                  No compaction needed at this time ({cached} tokens cached)."
-            );
+            ));
         }
 
         tracing::info!(reason, "agent requested compaction (ARC)");
@@ -682,6 +723,7 @@ mod tests {
         ];
 
         let (reply, _) = agent.complete_focus_tool(&serde_json::json!({"summary": "done"}));
+        let reply = reply.text;
 
         assert!(reply.starts_with("Focus session complete"), "{reply}");
         assert!(agent.msg.messages.iter().any(|m| {
@@ -738,6 +780,7 @@ mod tests {
 
         for blank in ["\u{200B}\u{FEFF}", "  \u{0007} \n", ""] {
             let (reply, _) = agent.complete_focus_tool(&serde_json::json!({ "summary": blank }));
+            let reply = reply.text;
             assert!(reply.starts_with("[error]"), "{reply}");
         }
 
@@ -751,6 +794,7 @@ mod tests {
         let mut agent = focus_agent();
 
         let (reply, _) = agent.complete_focus_tool(&serde_json::json!({ "summary": "done" }));
+        let reply = reply.text;
 
         assert!(reply.starts_with("Focus session complete"), "{reply}");
         let block = agent
@@ -771,7 +815,7 @@ mod tests {
     fn context_management_tool_results_carry_their_own_claim_source() {
         let out = super::super::focus_compression::context_management_output(
             "complete_focus".to_owned().into(),
-            "Focus session complete.".to_owned(),
+            super::BuiltinReply::completed("Focus session complete."),
         );
         assert_eq!(
             out.claim_source,

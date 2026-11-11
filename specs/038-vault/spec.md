@@ -437,6 +437,9 @@ the normal first-time "Vault initialized:" success message.
   resolution, and durable key-material loading (§9.1)
 - `zeph vault init` never silently overwrites an existing vault — requires `--force` (§9.2)
 
+### Always (doctor, #6994)
+- `zeph doctor` key/vault file-mode failures carry the real file path in the `chmod 600 <path>` fix hint, appended after `scrub_content` (the path is the user's own; masking it would leave an unusable `chmod 600 [PATH]`), in both text and JSON output
+
 ### Ask First
 - Using `backend = "env"` in a persistent config (should be `age` or explicit CI handling)
 - Sharing the age private key across machines (use different keys per environment)

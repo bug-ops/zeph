@@ -135,6 +135,8 @@ Hooks receive context via environment variables injected into the shell command:
 | `ZEPH_TOOL_ARGS_JSON` | `pre_tool_use`, `post_tool_use` | JSON-serialized tool arguments, truncated to 64 KiB at a valid UTF-8 char boundary |
 | `ZEPH_SESSION_ID` | `pre_tool_use`, `post_tool_use` | Session identifier (main agent path only; absent in subagent path) |
 | `ZEPH_TOOL_DURATION_MS` | `post_tool_use` | Wall-clock duration of the tool call in milliseconds |
+| `ZEPH_AGENT_TYPE` | `pre_tool_use`, `post_tool_use`, subagent lifecycle | `"main"` or `"subagent"` (`HookAgentType::as_str`) |
+| `ZEPH_AGENT_ID`, `ZEPH_AGENT_NAME` | same | Sub-agent id and definition name; absent for the main agent |
 
 > [!note] `turn_complete` gate
 > When a `[notifications]` notifier is configured, `turn_complete` shares its `should_fire`
@@ -249,6 +251,7 @@ replacement is substituted into the tool result before it enters the LLM context
 
 ### Output Replacement Invariants
 
+- Replacement applies only to an `Ok(Some(output))` result, on every dispatch path. The sub-agent loop previously also replaced error and empty content; it now matches the main path (#6987). The replaced text then goes through the sub-agent result pipeline (mask, scrub, sanitize, `[tool output:]` fence, see `[[044-subagent-lifecycle/spec]]`)
 - Replacement applies to the tool result only — system prompt and chat messages are never modified by hook output
 - An empty `updatedToolOutput` string IS a valid replacement — the tool result becomes empty
 - A null `updatedToolOutput` is treated as "no replacement" — prior output unchanged
@@ -302,6 +305,8 @@ inline. The `[hooks]` section is optional; absent section = empty hook lists = z
 - Main agent: a failing `pre_tool_use` hook with `fail_closed = true` blocks the tool call (the model receives a `[blocked]` result); a failing hook with `fail_closed = false` is logged and the tool runs. Each block increments `hook_block_count`; reaching `hooks.hook_block_cap` (default 8, `0` = unlimited, reset per turn) ends the turn (#6920)
 - Subagents: a failing `pre_tool_use` hook with `fail_closed = true` blocks the tool call (the model receives a `[blocked]` result), same as the main agent; a fail-open failure is logged and the tool runs (#6920)
 - Inline orchestration loop (`run_inline_tool_loop`, scheduler `RunInline`): fires matching `pre_tool_use` hooks before each non-builtin call through the shared `PreToolHookCall` (same env builder and `core.hooks.pre_tool_use` span as the tier loop). A `fail_closed` failure blocks the call: the model receives an `is_error` `[blocked]` result and the trace entry is `ok = false`; there is no per-turn `hook_block_cap` in this loop. `post_tool_use` hooks fire after each non-builtin call through the shared `PostToolHookCall` with `agent_type = "main"`; the duration is measured from the call start and includes any elicitation wait, and an `updated_tool_output` replacement is applied before the credential scrub; failures are fail-open (#6954, #6965)
+- Hook dispatch is one implementation shared by the tier loop, the inline orchestration loop, the sub-agent loop and sub-agent lifecycle hooks (#6987): `HookAgentType { Main, Subagent }`, `HookAgentCtx` (sole builder of the agent-context env: `tool_env`, `lifecycle_env`; replaces `manager/secrets.rs::make_hook_env`), `PreToolHookCall` and `PostToolHookCall` live in `zeph_subagent::hooks`. `PostToolUseHookInput.agent_type` is the typed `HookAgentType`; a stdin serialization failure is logged at `warn` and the hook runs without stdin. Span names stay `core.hooks.pre_tool_use` / `core.hooks.post_tool_use` with an `agent_type` field
+- Inline loop refusals (built-in unavailable, policy gates, task allowlist, see `[[009-orchestration/spec]]`) do NOT fire `permission_denied` hooks, unlike the tier loop; parity is tracked separately (#6993). The inline `[blocked]` result is a `HookBlocked` synthetic outcome: wire `is_error = true`, trace `ok = false`
 - `post_tool_use` failures never block anything
 - NEVER inject hook stdout into the agent's conversation context
 - NEVER run hooks with elevated privileges — they inherit the agent process permissions only

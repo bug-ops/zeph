@@ -8,6 +8,7 @@
 //! filesystem watcher signals a change.
 
 use std::collections::HashSet;
+use zeph_llm::provider::StatusUpdate;
 
 use super::Agent;
 use crate::channel::Channel;
@@ -221,7 +222,7 @@ impl<C: Channel> Agent<C> {
                     |tx| -> Box<dyn Fn(usize, usize) + Send> {
                         Box::new(move |completed, total| {
                             let msg = format!("Syncing skills: {completed}/{total}");
-                            let _ = tx.send(msg);
+                            let _ = tx.send(StatusUpdate::set(msg));
                         })
                     },
                 );
@@ -378,7 +379,7 @@ impl<C: Channel> Agent<C> {
             tracing::warn!("failed to re-emit skill catalog after reload: {e}");
         }
 
-        self.channel.send_status_best_effort("").await;
+        self.channel.clear_status_best_effort().await;
         tracing::info!(
             "reloaded {} skill(s)",
             self.services.skill.registry.read().all_meta().len()

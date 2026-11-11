@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use zeph_common::secret::Secret;
@@ -10,20 +9,6 @@ use zeph_sanitizer::secret_mask::SecretCategory;
 use super::SubAgentManager;
 use crate::error::SubAgentError;
 use crate::grants::{GrantKind, GrantedSecret, SecretRequest};
-
-/// Build the standard hook environment for a sub-agent lifecycle event.
-pub(crate) fn make_hook_env(
-    task_id: &str,
-    agent_name: &str,
-    tool_name: &str,
-) -> HashMap<String, String> {
-    let mut env = HashMap::new();
-    env.insert("ZEPH_AGENT_ID".to_owned(), task_id.to_owned());
-    env.insert("ZEPH_AGENT_NAME".to_owned(), agent_name.to_owned());
-    env.insert("ZEPH_AGENT_TYPE".to_owned(), "subagent".to_owned());
-    env.insert("ZEPH_TOOL_NAME".to_owned(), tool_name.to_owned());
-    env
-}
 
 impl SubAgentManager {
     /// Approve a secret request for a running sub-agent.
@@ -185,9 +170,9 @@ mod tests {
     use zeph_common::secret::Secret;
     use zeph_sanitizer::secret_mask::SecretMaskRegistry;
 
-    use super::make_hook_env;
     use crate::def::SubAgentDef;
     use crate::grants::{GrantedSecret, PermissionGrants};
+    use crate::hooks::HookAgentCtx;
     use crate::manager::{SubAgentHandle, SubAgentManager, SubAgentStatus};
     use crate::state::SubAgentState;
 
@@ -233,7 +218,7 @@ mod tests {
 
     #[test]
     fn make_hook_env_sets_agent_type_subagent() {
-        let env = make_hook_env("task-42", "my-agent", "Shell");
+        let env = HookAgentCtx::subagent("task-42", "my-agent").lifecycle_env();
         assert_eq!(
             env.get("ZEPH_AGENT_TYPE").map(String::as_str),
             Some("subagent")
@@ -246,7 +231,7 @@ mod tests {
             env.get("ZEPH_AGENT_NAME").map(String::as_str),
             Some("my-agent")
         );
-        assert_eq!(env.get("ZEPH_TOOL_NAME").map(String::as_str), Some("Shell"));
+        assert_eq!(env.get("ZEPH_TOOL_NAME").map(String::as_str), Some(""));
     }
 
     // --- #6492: deliver_secret registers into the shared secret-mask registry ---

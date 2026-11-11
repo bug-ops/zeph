@@ -228,6 +228,13 @@ impl Channel for TuiChannel {
         Ok(())
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
+    async fn clear_status(&mut self) -> Result<(), ChannelError> {
+        // Non-critical: informational status text.
+        let _ = self.agent_event_tx.try_send(AgentEvent::ClearStatus);
+        Ok(())
+    }
+
     #[cfg_attr(
         feature = "profiling",
         tracing::instrument(name = "tui.channel.send_queue_count", skip_all)
@@ -627,6 +634,13 @@ mod tests {
         ch.send_status("summarizing...").await.unwrap();
         let evt = agent_rx.recv().await.unwrap();
         assert_matches!(evt, AgentEvent::Status(t) if t == "summarizing...");
+    }
+
+    #[tokio::test]
+    async fn clear_status_sends_typed_clear_event() {
+        let (mut ch, _user_tx, mut agent_rx) = make_channel();
+        ch.clear_status().await.unwrap();
+        assert_matches!(agent_rx.recv().await.unwrap(), AgentEvent::ClearStatus);
     }
 
     #[test]

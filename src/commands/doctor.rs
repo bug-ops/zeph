@@ -103,11 +103,17 @@ impl CheckResult {
         Self::new(CheckStatus::Fail, name, detail, elapsed_ms)
     }
 
+    /// Attaches the owner-only remediation and appends its `chmod` hint to the detail.
+    ///
+    /// The hint is appended after `scrub_content` on purpose: the path is the user's own, printed
+    /// to their own terminal, and masking it would leave an unusable `chmod 600 [PATH]`.
     #[cfg(unix)]
     fn with_fix(mut self, path: &str) -> Self {
-        self.fix = Some(PermissionFix {
+        let fix = PermissionFix {
             path: PathBuf::from(path),
-        });
+        };
+        self.detail = format!("{} — fix: chmod 600 {}", self.detail, fix.path.display());
+        self.fix = Some(fix);
         self
     }
 }
@@ -440,9 +446,7 @@ fn check_vault_key_mode(key_path: &str) -> CheckResult {
             if mode & 0o077 != 0 {
                 CheckResult::fail(
                     "vault.key_mode",
-                    format!(
-                        "key file has group/world permissions (mode {mode:#o}) — fix: chmod 600 {key_path}"
-                    ),
+                    format!("key file has group/world permissions (mode {mode:#o})"),
                     elapsed_ms(start),
                 )
                 .with_fix(key_path)
@@ -473,9 +477,7 @@ fn check_vault_file_mode(vault_path: &str, check_name: &str) -> CheckResult {
             if mode & 0o077 != 0 {
                 CheckResult::fail(
                     check_name,
-                    format!(
-                        "vault file has group/world permissions (mode {mode:#o}) — fix: chmod 600 {vault_path}"
-                    ),
+                    format!("vault file has group/world permissions (mode {mode:#o})"),
                     elapsed_ms(start),
                 )
                 .with_fix(vault_path)
@@ -1494,8 +1496,10 @@ mod tests {
             "group-readable key must FAIL"
         );
         assert!(
-            result.detail.contains("chmod 600"),
-            "FAIL message must include remediation command, got: {}",
+            result
+                .detail
+                .ends_with(&format!("fix: chmod 600 {}", key_path.display())),
+            "FAIL message must include the unmasked remediation command, got: {}",
             result.detail
         );
     }
@@ -1523,8 +1527,10 @@ mod tests {
         let result = check_vault_file_mode(vault_path.to_str().unwrap(), "vault.file_mode");
         assert_eq!(result.status, CheckStatus::Fail);
         assert!(
-            result.detail.contains("chmod 600"),
-            "FAIL message must include remediation command, got: {}",
+            result
+                .detail
+                .ends_with(&format!("fix: chmod 600 {}", vault_path.display())),
+            "FAIL message must include the unmasked remediation command, got: {}",
             result.detail
         );
     }

@@ -514,7 +514,7 @@ async fn compute_contradiction_risk(
     let canonical_predicate = extract_predicate_token(&content_lower);
 
     // Load all active edges where this entity is the source.
-    let Ok(edges) = store.edges_for_entity(subject_entity.id.0).await else {
+    let Ok(edges) = store.edges_for_entity(subject_entity.id).await else {
         return 0.0;
     };
 
@@ -522,7 +522,7 @@ async fn compute_contradiction_risk(
     let relevant_edges: Vec<_> = edges
         .iter()
         .filter(|e| {
-            e.source_entity_id == subject_entity.id.0
+            e.source_entity_id == subject_entity.id
                 && canonical_predicate
                     .as_ref()
                     .is_none_or(|p| e.relation == *p)

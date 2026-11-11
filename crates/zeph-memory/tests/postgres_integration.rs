@@ -149,8 +149,7 @@ mod pg {
                 None,
             )
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let source_point_id = uuid::Uuid::new_v4().to_string();
         let source_payload = serde_json::json!({
             "entity_id": source_id,
@@ -204,8 +203,14 @@ mod pg {
             timeout_secs: 10,
         };
 
-        let stats =
-            link_memory_notes(&[source_id], pool.clone(), embedding_store, provider, &cfg).await;
+        let stats = link_memory_notes(
+            &[source_id.0],
+            pool.clone(),
+            embedding_store,
+            provider,
+            &cfg,
+        )
+        .await;
 
         assert_eq!(
             stats.edges_created, 1,
@@ -247,9 +252,9 @@ mod pg {
             .await
             .unwrap();
 
-        graph.add_alias(entity_id.0, "vi").await.unwrap();
+        graph.add_alias(entity_id, "vi").await.unwrap();
         // Calling add_alias twice must stay idempotent (UNIQUE + INSERT_IGNORE).
-        graph.add_alias(entity_id.0, "vi").await.unwrap();
+        graph.add_alias(entity_id, "vi").await.unwrap();
 
         let found = graph
             .find_entity_by_alias("vi", EntityType::Tool)
@@ -261,7 +266,7 @@ mod pg {
             "alias lookup must resolve to the same entity id"
         );
 
-        let aliases = graph.aliases_for_entity(entity_id.0).await.unwrap();
+        let aliases = graph.aliases_for_entity(entity_id).await.unwrap();
         assert_eq!(
             aliases.len(),
             1,
@@ -285,11 +290,11 @@ mod pg {
             .unwrap();
 
         graph
-            .insert_edge(alice.0, vim.0, "uses", "Alice uses Vim", 0.9, None, None)
+            .insert_edge(alice, vim, "uses", "Alice uses Vim", 0.9, None, None)
             .await
             .unwrap();
 
-        let (entities, edges) = graph.bfs(alice.0, 2).await.unwrap();
+        let (entities, edges) = graph.bfs(alice, 2).await.unwrap();
         assert_eq!(edges.len(), 1, "BFS must traverse the single edge");
         assert!(entities.iter().any(|e| e.id == vim));
     }
@@ -309,7 +314,7 @@ mod pg {
             .await
             .unwrap();
         let edge_id = graph
-            .insert_edge(a.0, b.0, "relates_to", "A relates to B", 0.8, None, None)
+            .insert_edge(a, b, "relates_to", "A relates to B", 0.8, None, None)
             .await
             .unwrap();
 
@@ -362,22 +367,14 @@ mod pg {
             .unwrap();
 
         let first_id = graph
-            .insert_edge(a.0, b.0, "knows", "Alice knows Bob", 0.5, None, None)
+            .insert_edge(a, b, "knows", "Alice knows Bob", 0.5, None, None)
             .await
             .unwrap();
 
         // Re-assert the same fact with higher confidence — must hit the UPDATE/dedup branch,
         // not crash, and not insert a second row.
         let second_id = graph
-            .insert_edge(
-                a.0,
-                b.0,
-                "knows",
-                "Alice knows Bob (again)",
-                0.9,
-                None,
-                None,
-            )
+            .insert_edge(a, b, "knows", "Alice knows Bob (again)", 0.9, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -451,8 +448,8 @@ mod pg {
 
         let first_id = graph
             .insert_or_supersede(
-                a.0,
-                b.0,
+                a,
+                b,
                 "manages",
                 "manages",
                 "Carol manages Dave",
@@ -468,8 +465,8 @@ mod pg {
         // hit `record_reassertion`, not crash, and not create a second row.
         let second_id = graph
             .insert_or_supersede(
-                a.0,
-                b.0,
+                a,
+                b,
                 "manages",
                 "manages",
                 "Carol manages Dave",
@@ -962,11 +959,11 @@ mod pg {
             .await
             .unwrap();
         let edge_a = graph
-            .insert_edge(a.0, b.0, "relates_to", "X relates to Y", 0.8, None, None)
+            .insert_edge(a, b, "relates_to", "X relates to Y", 0.8, None, None)
             .await
             .unwrap();
         let edge_b = graph
-            .insert_edge(b.0, a.0, "relates_to", "Y relates to X", 0.8, None, None)
+            .insert_edge(b, a, "relates_to", "Y relates to X", 0.8, None, None)
             .await
             .unwrap();
 
@@ -1012,10 +1009,10 @@ mod pg {
 
     /// Minimal placeholder `Edge` for tests that only need `edge.id` populated
     /// (the only field `annotate_conflicts` reads from `ActivatedFact`).
-    fn dummy_edge(id: i64) -> zeph_memory::graph::types::Edge {
+    fn dummy_edge(id: zeph_memory::EdgeId) -> zeph_memory::graph::types::Edge {
         zeph_memory::graph::types::Edge {
             id,
-            ..zeph_memory::graph::types::Edge::synthetic_anchor(0)
+            ..zeph_memory::graph::types::Edge::synthetic_anchor(zeph_memory::EntityId(0))
         }
     }
 
@@ -1536,14 +1533,17 @@ mod pg {
             .await
             .unwrap();
         let edge_id = graph
-            .insert_edge(a.0, b.0, "knows", "Ivy knows Jack", 0.9, None, None)
+            .insert_edge(a, b, "knows", "Ivy knows Jack", 0.9, None, None)
             .await
             .unwrap();
 
         let found = graph.source_entity_id_for_edge(edge_id).await.unwrap();
-        assert_eq!(found, Some(a.0));
+        assert_eq!(found, Some(a));
 
-        let missing = graph.source_entity_id_for_edge(999_999_999).await.unwrap();
+        let missing = graph
+            .source_entity_id_for_edge(zeph_memory::EdgeId::new(999_999_999))
+            .await
+            .unwrap();
         assert_eq!(missing, None);
     }
 
@@ -1571,8 +1571,8 @@ mod pg {
 
         let first_id = graph
             .insert_or_supersede_with_conflict_detection(
-                a.0,
-                b.0,
+                a,
+                b,
                 "manages",
                 "manages",
                 "Eve manages Frank",
@@ -1592,8 +1592,8 @@ mod pg {
         // since the detector is enabled, the conflict-candidate raw query.
         let second_id = graph
             .insert_or_supersede_with_conflict_detection(
-                a.0,
-                b.0,
+                a,
+                b,
                 "manages",
                 "manages",
                 "Eve no longer manages Frank",
@@ -1622,7 +1622,7 @@ mod pg {
         .unwrap();
         assert_eq!(
             supersedes,
-            Some(first_id),
+            Some(first_id.get()),
             "second edge must record the first as superseded"
         );
     }
@@ -1642,11 +1642,11 @@ mod pg {
             .await
             .unwrap();
         let edge_a = graph
-            .insert_edge(a.0, b.0, "relates_to", "G relates to H", 0.8, None, None)
+            .insert_edge(a, b, "relates_to", "G relates to H", 0.8, None, None)
             .await
             .unwrap();
         let edge_b = graph
-            .insert_edge(b.0, a.0, "relates_to", "H relates to G", 0.8, None, None)
+            .insert_edge(b, a, "relates_to", "H relates to G", 0.8, None, None)
             .await
             .unwrap();
 
@@ -1681,8 +1681,8 @@ mod pg {
         .await
         .unwrap();
 
-        assert_eq!(row.0, edge_a);
-        assert_eq!(row.1, edge_b);
+        assert_eq!(row.0, edge_a.get());
+        assert_eq!(row.1, edge_b.get());
         assert_eq!(row.2, "levenshtein");
         assert_eq!(row.3, "pending");
     }
@@ -1986,8 +1986,8 @@ mod pg {
         // embedded the SQLite-only unixepoch() before this fix.
         let committed_edge_id = graph
             .insert_edge(
-                source.0,
-                target.0,
+                source,
+                target,
                 "provides",
                 "Rust provides memory safety",
                 belief.prob,
@@ -1998,7 +1998,7 @@ mod pg {
             .unwrap();
 
         belief_store
-            .mark_promoted(belief.id, committed_edge_id)
+            .mark_promoted(belief.id, committed_edge_id.get())
             .await
             .unwrap();
 
@@ -2013,7 +2013,7 @@ mod pg {
             promoted_at.is_some(),
             "mark_promoted must set promoted_at via the EPOCH_NOW-based UPDATE"
         );
-        assert_eq!(promoted_edge_id, Some(committed_edge_id));
+        assert_eq!(promoted_edge_id, Some(committed_edge_id.get()));
     }
 
     #[tokio::test]
@@ -2163,14 +2163,14 @@ mod pg {
             .await
             .unwrap();
         graph
-            .insert_edge(a.0, b.0, "knows", "Alice knows Bob", 0.5, None, None)
+            .insert_edge(a, b, "knows", "Alice knows Bob", 0.5, None, None)
             .await
             .unwrap();
 
         // A future timestamp must still find the still-active edge (valid_to IS NULL),
         // exercising both the `TIMESTAMPTZ_CAST` bind and the `EdgeRow` decode together.
         let edges = graph
-            .edges_at_timestamp(a.0, "2099-01-01 00:00:00")
+            .edges_at_timestamp(a, "2099-01-01 00:00:00")
             .await
             .unwrap();
         assert_eq!(
@@ -2186,7 +2186,7 @@ mod pg {
 
         // A timestamp before the edge existed must find nothing.
         let edges_before = graph
-            .edges_at_timestamp(a.0, "2000-01-01 00:00:00")
+            .edges_at_timestamp(a, "2000-01-01 00:00:00")
             .await
             .unwrap();
         assert!(
@@ -2206,7 +2206,7 @@ mod pg {
             .await
             .unwrap();
         let community_id = graph
-            .upsert_community("team-a", "Alice's team", &[a.0], None)
+            .upsert_community("team-a", "Alice's team", &[a], None)
             .await
             .unwrap();
 
@@ -2467,7 +2467,6 @@ mod pg {
                     .upsert_entity(name, name, EntityType::Concept, None, p.as_ref())
                     .await
                     .unwrap()
-                    .0
             }
         };
         let trust_of = |name: &'static str| {

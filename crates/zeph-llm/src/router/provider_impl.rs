@@ -17,7 +17,8 @@ use super::{RouterProvider, RouterStrategy, messages_contain_image, strip_image_
 use crate::embed::owned_strs;
 use crate::error::LlmError;
 use crate::provider::{
-    ChatResponse, ChatStream, LlmFuture, LlmProvider, Message, StatusTx, ToolDefinition,
+    ChatResponse, ChatStream, LlmFuture, LlmProvider, Message, StatusTx, StatusUpdate,
+    ToolDefinition,
 };
 use zeph_common::math::cosine_similarity;
 
@@ -41,7 +42,9 @@ fn record_fallback_error(
         router.record_availability(provider_name, false, 0);
     }
     if let Some(tx) = status_tx {
-        let _ = tx.send(format!("router: {provider_name} failed, falling back"));
+        let _ = tx.send(StatusUpdate::set(format!(
+            "router: {provider_name} failed, falling back"
+        )));
     }
     tracing::warn!(provider = provider_name, error = %error, "{}", log_msg);
 }
@@ -432,10 +435,10 @@ impl LlmProvider for RouterProvider {
                                 u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                             );
                             if let Some(ref tx) = status_tx {
-                                let _ = tx.send(format!(
+                                let _ = tx.send(StatusUpdate::set(format!(
                                     "router: {} embed failed, falling back",
                                     p.name()
-                                ));
+                                )));
                             }
                             tracing::warn!(provider = p.name(), error = %e, "router embed fallback");
                             last_err = Some(e);
@@ -447,10 +450,10 @@ impl LlmProvider for RouterProvider {
                 if matches!(last_err, Some(ref e) if e.is_rate_limited()) {
                     router.record_availability(p.name(), false, 0);
                     if let Some(ref tx) = status_tx {
-                        let _ = tx.send(format!(
+                        let _ = tx.send(StatusUpdate::set(format!(
                             "router: {} embed rate limited, falling back",
                             p.name()
-                        ));
+                        )));
                     }
                     tracing::warn!(
                         provider = p.name(),
@@ -555,10 +558,10 @@ impl LlmProvider for RouterProvider {
                                 u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                             );
                             if let Some(ref tx) = status_tx {
-                                let _ = tx.send(format!(
+                                let _ = tx.send(StatusUpdate::set(format!(
                                     "router: {} embed_batch failed, falling back",
                                     p.name()
-                                ));
+                                )));
                             }
                             tracing::warn!(
                                 provider = p.name(),
@@ -574,10 +577,10 @@ impl LlmProvider for RouterProvider {
                 if matches!(last_err, Some(ref e) if e.is_rate_limited()) {
                     router.record_availability(p.name(), false, 0);
                     if let Some(ref tx) = status_tx {
-                        let _ = tx.send(format!(
+                        let _ = tx.send(StatusUpdate::set(format!(
                             "router: {} embed_batch rate limited, falling back",
                             p.name()
-                        ));
+                        )));
                     }
                     tracing::warn!(
                         provider = p.name(),
@@ -775,10 +778,10 @@ impl LlmProvider for RouterProvider {
                             router.record_availability(p.name(), false, 0);
                         }
                         if let Some(ref tx) = status_tx {
-                            let _ = tx.send(format!(
+                            let _ = tx.send(StatusUpdate::set(format!(
                                 "router: {} tool call failed, falling back",
                                 p.name()
-                            ));
+                            )));
                         }
                         tracing::warn!(provider = p.name(), error = %e, "router tool fallback");
                         last_err = Some(e);

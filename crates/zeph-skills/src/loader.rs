@@ -104,7 +104,7 @@ pub struct SkillMeta {
     /// Upstream git commit hash at install time (from `x-git-hash` frontmatter field).
     pub git_hash: Option<String>,
     /// Optional category grouping (from `category` frontmatter field, e.g. "web", "data", "dev", "system").
-    pub category: Option<String>,
+    pub category: Option<zeph_common::SkillCategory>,
     /// Optional trigger phrases for embedding-based matching (`triggers` frontmatter field).
     ///
     /// Each phrase is embedded at `SkillMatcher` construction time. During matching, the
@@ -246,44 +246,10 @@ struct RawFrontmatter {
     deprecated_requires_secrets: bool,
     source_url: Option<String>,
     git_hash: Option<String>,
-    category: Option<String>,
+    category: Option<zeph_common::SkillCategory>,
     triggers: Vec<String>,
     parent_skill: Option<String>,
     proactive_domain: Option<String>,
-}
-
-/// Validate a skill category name.
-///
-/// Rules (consistent with skill name validation, minus directory-match and length requirements):
-/// - 1–32 characters
-/// - Lowercase ASCII letters, digits, and hyphens only
-/// - No leading, trailing, or consecutive hyphens
-fn validate_category(category: &str) -> Result<(), SkillError> {
-    if category.is_empty() || category.len() > 32 {
-        return Err(SkillError::Invalid(format!(
-            "category must be 1-32 characters, got {}",
-            category.len()
-        )));
-    }
-    if !category
-        .bytes()
-        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-    {
-        return Err(SkillError::Invalid(format!(
-            "category must contain only lowercase letters, digits, and hyphens: {category}"
-        )));
-    }
-    if category.starts_with('-') || category.ends_with('-') {
-        return Err(SkillError::Invalid(format!(
-            "category must not start or end with hyphen: {category}"
-        )));
-    }
-    if category.contains("--") {
-        return Err(SkillError::Invalid(format!(
-            "category must not contain consecutive hyphens: {category}"
-        )));
-    }
-    Ok(())
 }
 
 /// Detect whether `value` is a YAML block scalar indicator (`>` or `|`),
@@ -462,8 +428,8 @@ fn apply_field(raw: &mut RawFrontmatter, key: &str, value: String) {
         }
         "category" => {
             if !value.is_empty() {
-                match validate_category(&value) {
-                    Ok(()) => raw.category = Some(value),
+                match zeph_common::SkillCategory::parse(&value) {
+                    Ok(category) => raw.category = Some(category),
                     Err(e) => tracing::warn!("frontmatter key 'category': {e}"),
                 }
             }
@@ -701,10 +667,6 @@ pub fn load_skill_meta_from_str(content: &str) -> Result<(SkillMeta, String), Sk
             "compatibility exceeds 500 characters ({})",
             c.len()
         )));
-    }
-
-    if let Some(ref cat) = raw.category {
-        validate_category(cat)?;
     }
 
     if raw.deprecated_requires_secrets {
@@ -1693,13 +1655,23 @@ mod tests {
     #[test]
     fn category_valid_stored_on_meta() {
         let raw = parse_frontmatter("category: web\n");
-        assert_eq!(raw.category.as_deref(), Some("web"));
+        assert_eq!(
+            raw.category
+                .as_ref()
+                .map(zeph_common::SkillCategory::as_str),
+            Some("web")
+        );
     }
 
     #[test]
     fn category_with_digits_and_hyphens_valid() {
         let raw = parse_frontmatter("category: data-v2\n");
-        assert_eq!(raw.category.as_deref(), Some("data-v2"));
+        assert_eq!(
+            raw.category
+                .as_ref()
+                .map(zeph_common::SkillCategory::as_str),
+            Some("data-v2")
+        );
     }
 
     #[test]
@@ -1757,7 +1729,12 @@ mod tests {
             "---\nname: my-skill\ndescription: A test skill.\ncategory: dev\n---\nbody",
         );
         let meta = load_skill_meta(&path).unwrap();
-        assert_eq!(meta.category.as_deref(), Some("dev"));
+        assert_eq!(
+            meta.category
+                .as_ref()
+                .map(zeph_common::SkillCategory::as_str),
+            Some("dev")
+        );
     }
 
     // --- A5: trigger parsing tests ---
@@ -1917,7 +1894,12 @@ body
         );
         let meta = load_skill_meta(&path).unwrap();
         assert!(meta.extensions.is_none());
-        assert_eq!(meta.category.as_deref(), Some("dev"));
+        assert_eq!(
+            meta.category
+                .as_ref()
+                .map(zeph_common::SkillCategory::as_str),
+            Some("dev")
+        );
     }
 
     #[test]

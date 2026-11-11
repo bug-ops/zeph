@@ -13,6 +13,7 @@ use super::Agent;
 use super::error;
 use super::shutdown_signal;
 use super::tool_execution;
+use super::tool_orchestrator::RepeatWindow;
 
 /// Upper bound on a single cross-thread-store I/O call from the Command-handoff seam
 /// (spec-080, GitHub #6363), per this project's Await Discipline rule (every external
@@ -967,8 +968,10 @@ impl<C: crate::channel::Channel> Agent<C> {
         // defer it to.
         let handoff_ctx = self.command_handoff_context();
         let graph_id = scheduler.graph().id.clone();
+        let task_allowlist =
+            self.intersect_task_tool_allowlist(scheduler.graph().tasks.get(task_id.index()), None);
         let outcome = tokio::select! {
-            result = self.run_inline_tool_loop(&prompt, max_iter) => {
+            result = self.run_inline_tool_loop(&prompt, max_iter, task_allowlist.as_ref()) => {
                 match result {
                     Ok(InlineLoopOutcome { text, tool_trace }) => {
                         // Live borrow, not a clone: RunInline runs synchronously in this
@@ -1261,7 +1264,8 @@ impl<C: crate::channel::Channel> Agent<C> {
                             .services
                             .orchestration
                             .orchestration_config
-                            .completeness_threshold;
+                            .completeness_threshold
+                            .get();
                         let sanitizer: std::sync::Arc<dyn zeph_common::OutputSanitizer> =
                             std::sync::Arc::new(self.services.security.sanitizer.clone());
 
@@ -1326,8 +1330,8 @@ impl<C: crate::channel::Channel> Agent<C> {
                                         self.services.orchestration.ensemble_members.clone(),
                                         std::time::Duration::from_secs(member_timeout_secs),
                                         EnsembleTracker::new(
-                                            ensemble_cfg.ema_alpha,
-                                            ensemble_cfg.ema_decay,
+                                            ensemble_cfg.ema_alpha.get(),
+                                            ensemble_cfg.ema_decay.get(),
                                             ensemble_cfg.min_observations,
                                         ),
                                     )
@@ -1681,15 +1685,22 @@ impl<C: crate::channel::Channel> Agent<C> {
 
     /// Run a tool-aware LLM loop for an inline scheduled task.
     ///
-    /// Unlike [`process_response_native_tools`], this is intentionally stripped of all
+    /// Unlike [`process_response_native_tools`], this is intentionally stripped of the
     /// interactive-session machinery (channel sends, doom-loop detection, summarization,
-    /// learning engine, sanitizer, metrics). Inline tasks are short-lived orchestration
-    /// sub-tasks that run synchronously inside the scheduler tick loop.
+    /// learning engine, metrics). Inline tasks are short-lived orchestration sub-tasks that
+    /// run synchronously inside the scheduler tick loop. The security gates are not stripped:
+    /// each call passes the channel and task allowlists, the pre-execution verifiers, the
+    /// session quota and a loop-local repeat window, and every result goes through the tool
+    /// output sanitizer.
+    ///
+    /// `task_allowlist` is the planner-emitted per-task allowlist (normalized tool ids); tools
+    /// outside it are neither offered to the model nor dispatched.
     #[allow(clippy::too_many_lines)] // per-iteration secret masking (#5437) crossed the 100-line limit
     pub(super) async fn run_inline_tool_loop(
         &mut self,
         prompt: &str,
         max_iterations: usize,
+        task_allowlist: Option<&std::collections::HashSet<String>>,
     ) -> Result<InlineLoopOutcome, zeph_llm::LlmError> {
         use zeph_llm::provider::{ChatResponse, Message, MessagePart, Role, ToolDefinition};
         use zeph_orchestration::ToolCallSummary;
@@ -1702,6 +1713,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             self.tool_executor
                 .tool_definitions_erased()
                 .iter()
+                .filter(|def| self.inline_tool_permitted(def.id.as_ref(), task_allowlist))
                 .map(tool_execution::tool_def_to_definition)
                 .collect()
         } else {
@@ -1714,6 +1726,8 @@ impl<C: crate::channel::Channel> Agent<C> {
             tool_count = tool_defs.len(),
             "inline tool loop: starting"
         );
+
+        let mut repeat_window = RepeatWindow::new(self.tool_orchestrator.repeat.threshold);
 
         let mut messages: Vec<Message> = vec![redacted(
             Message::from_legacy(Role::User, prompt),
@@ -1761,8 +1775,34 @@ impl<C: crate::channel::Channel> Agent<C> {
                     }
                     messages.push(Message::from_parts(Role::Assistant, parts));
 
+                    let calls: Vec<ToolCall> = tool_calls
+                        .iter()
+                        .map(|tc| ToolCall {
+                            tool_id: tc.name.clone(),
+                            params: match &tc.input {
+                                serde_json::Value::Object(map) => map.clone(),
+                                _ => serde_json::Map::new(),
+                            },
+                            caller_id: None,
+                            context: None,
+                            tool_call_id: None,
+                            skill_name: None,
+                        })
+                        .collect();
+                    let refusals = {
+                        let _span =
+                            tracing::info_span!("core.tool.inline_gates", calls = calls.len())
+                                .entered();
+                        self.inline_gate_refusals(
+                            &tool_calls,
+                            &calls,
+                            task_allowlist,
+                            &mut repeat_window,
+                        )
+                    };
+
                     let mut result_parts: Vec<MessagePart> = Vec::new();
-                    for tc in &tool_calls {
+                    for ((tc, call), refusal) in tool_calls.iter().zip(&calls).zip(refusals) {
                         // Built-ins are answered by the main loop, never the executor: an MCP
                         // `sanitized_id` can collide with a built-in name and must not bypass hooks.
                         let blocked = if self.builtin_tool(tc.name.as_str()).is_some() {
@@ -1770,6 +1810,13 @@ impl<C: crate::channel::Channel> Agent<C> {
                                 "[error] built-in tool `{}` is not available in the inline loop",
                                 tc.name
                             ))
+                        } else if let Some(refusal) = refusal {
+                            tracing::warn!(
+                                tool = %tc.name,
+                                reason = %refusal.reason(tc.name.as_str()),
+                                "inline tool loop: call refused by gate"
+                            );
+                            Some(refusal.into_output(tc.name.clone()).summary)
                         } else {
                             self.fire_pre_tool_hooks(tc.name.as_str(), &tc.input).await
                         };
@@ -1789,21 +1836,10 @@ impl<C: crate::channel::Channel> Agent<C> {
                             });
                             continue;
                         }
-                        let call = ToolCall {
-                            tool_id: tc.name.clone(),
-                            params: match &tc.input {
-                                serde_json::Value::Object(map) => map.clone(),
-                                _ => serde_json::Map::new(),
-                            },
-                            caller_id: None,
-                            context: None,
-                            tool_call_id: None,
-                            skill_name: None,
-                        };
                         let started = std::time::Instant::now();
                         let mut result = loop {
                             tokio::select! {
-                                result = self.tool_executor.execute_tool_call_erased(&call) => {
+                                result = self.tool_executor.execute_tool_call_erased(call) => {
                                     break result;
                                 }
                                 Some(event) = async {
@@ -1823,16 +1859,35 @@ impl<C: crate::channel::Channel> Agent<C> {
                             &mut result,
                         )
                         .await;
-                        let output = match result {
-                            Ok(Some(out)) => out.summary,
-                            Ok(None) => "(no output)".to_owned(),
-                            Err(e) => format!("[error] {e}"),
+                        // A non-zero exit is a wire error but keeps `ok`: only a status that
+                        // aborts dependants fails the inline task (spec 009).
+                        let (raw_output, origin, is_error, ok) = match result {
+                            Ok(Some(out)) => (
+                                out.summary.clone(),
+                                tool_execution::ToolOutputOrigin::from_output(&out),
+                                out.status.is_failure(),
+                                !out.status.aborts_dependants(),
+                            ),
+                            Ok(None) => (
+                                "(no output)".to_owned(),
+                                tool_execution::ToolOutputOrigin::Executed(None),
+                                false,
+                                true,
+                            ),
+                            Err(e) => (
+                                format!("[error] {e}"),
+                                tool_execution::ToolOutputOrigin::from_error(&e),
+                                true,
+                                false,
+                            ),
                         };
-                        let is_error = output.starts_with("[error]");
+                        let (output, ..) = self
+                            .sanitize_tool_output(&raw_output, tc.name.as_str(), origin)
+                            .await;
                         tool_trace.push(ToolCallSummary {
                             tool: tc.name.to_string(),
                             args_summary: tool_execution::summarize_tool_input(&tc.input),
-                            ok: !is_error,
+                            ok,
                             is_read_only: zeph_common::tool_classification::is_readonly_tool(
                                 tc.name.as_str(),
                             ),
@@ -4345,7 +4400,7 @@ mod tests {
             .with_tools_enabled(false);
 
         let outcome = agent
-            .run_inline_tool_loop("do something", 3)
+            .run_inline_tool_loop("do something", 3, None)
             .await
             .expect("inline loop must succeed on a plain-text response");
         assert_eq!(outcome.text, "done");
@@ -4383,7 +4438,7 @@ mod tests {
         let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
 
         let outcome = agent
-            .run_inline_tool_loop("do something", 3)
+            .run_inline_tool_loop("do something", 3, None)
             .await
             .expect("inline loop must succeed on a plain-text response");
         assert_eq!(outcome.text, "done");
@@ -4484,7 +4539,7 @@ mod tests {
         }
 
         let trace = agent
-            .run_inline_tool_loop("run the tool", 3)
+            .run_inline_tool_loop("run the tool", 3, None)
             .await
             .expect("inline loop must complete")
             .tool_trace;
@@ -4569,7 +4624,11 @@ mod tests {
         ))
         .await;
         assert_eq!(run.executor_calls, 1);
-        assert_eq!(run.result_content, "EXECUTED");
+        assert!(
+            run.result_content.contains("EXECUTED"),
+            "{}",
+            run.result_content
+        );
         let env_line = std::fs::read_to_string(&out).expect("post hook must have run");
         let (agent_type, duration) = env_line.split_once('|').unwrap();
         assert_eq!(agent_type, "main");
@@ -4593,7 +4652,11 @@ mod tests {
             Some(("test_tool", command)),
         ))
         .await;
-        assert_eq!(run.result_content, "REPLACED");
+        assert!(
+            run.result_content.contains("REPLACED"),
+            "{}",
+            run.result_content
+        );
         assert!(!run.result_is_error);
     }
 
@@ -4611,7 +4674,11 @@ mod tests {
         ))
         .await;
         assert!(marker.exists(), "the failing hook must have run");
-        assert_eq!(run.result_content, "EXECUTED");
+        assert!(
+            run.result_content.contains("EXECUTED"),
+            "{}",
+            run.result_content
+        );
         assert!(!run.result_is_error);
     }
 
@@ -4629,6 +4696,10 @@ mod tests {
         ))
         .await;
         assert!(!marker.exists(), "non-matching hook must not run");
-        assert_eq!(run.result_content, "EXECUTED");
+        assert!(
+            run.result_content.contains("EXECUTED"),
+            "{}",
+            run.result_content
+        );
     }
 }

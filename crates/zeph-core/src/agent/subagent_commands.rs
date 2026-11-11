@@ -1006,6 +1006,7 @@ impl<C: Channel> Agent<C> {
                 if score > 0.0 { Some(score) } else { None }
             },
             content_isolation: self.runtime.config.security.content_isolation.clone(),
+            credential_scrub: self.runtime.config.redact_credentials.into(),
             // Spec 046 FR-012/NFR-007: the sub-agent's PeerToolExecutor constructs its own
             // ExfiltrationGuard from this, mirroring the parent's own exfiltration_guard so
             // peer message bodies are scanned to the same policy as parent-turn LLM output.

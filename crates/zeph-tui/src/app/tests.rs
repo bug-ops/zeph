@@ -17,6 +17,16 @@ fn make_app() -> (App, mpsc::Receiver<String>, mpsc::Sender<AgentEvent>) {
 }
 
 #[test]
+fn clear_status_event_leaves_agent_idle() {
+    let (mut app, _user_rx, _agent_tx) = make_app();
+    app.handle_agent_event(AgentEvent::Status("Loading memory...".into()));
+    assert!(app.is_agent_busy());
+    app.handle_agent_event(AgentEvent::ClearStatus);
+    assert!(app.sessions.current().status_label.is_none());
+    assert!(!app.is_agent_busy());
+}
+
+#[test]
 fn initial_state() {
     let (app, _rx, _tx) = make_app();
     assert_eq!(app.input().len(), 0);

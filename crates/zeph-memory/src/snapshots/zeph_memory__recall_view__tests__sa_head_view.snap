@@ -17,7 +17,9 @@ RecalledFact {
         edge_type: Semantic,
         retrieval_count: 0,
         edge_id: Some(
-            55,
+            EdgeId(
+                55,
+            ),
         ),
         trust: ExternalUntrusted,
     },

@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use zeph_common::memory::EdgeType;
 
 use crate::graph::GraphStore;
+use crate::types::EntityId;
 
 /// Causal distance computer backed by MAGMA graph BFS.
 ///
@@ -22,7 +23,7 @@ pub struct CausalDistanceComputer {
     max_depth: u32,
     neutral_distance: u32,
     /// Last BFS result: `(goal_entity_id, depth_map)`.
-    cache: Mutex<Option<(i64, HashMap<i64, u32>)>>,
+    cache: Mutex<Option<(EntityId, HashMap<EntityId, u32>)>>,
 }
 
 impl CausalDistanceComputer {
@@ -67,9 +68,9 @@ impl CausalDistanceComputer {
     )]
     pub async fn compute(
         &self,
-        goal_entity_id: Option<i64>,
-        entity_ids: &[i64],
-    ) -> Result<HashMap<i64, u32>, crate::error::MemoryError> {
+        goal_entity_id: Option<EntityId>,
+        entity_ids: &[EntityId],
+    ) -> Result<HashMap<EntityId, u32>, crate::error::MemoryError> {
         tracing::debug!("five_signal: computing causal distances");
 
         let Some(goal_id) = goal_entity_id else {
@@ -87,7 +88,7 @@ impl CausalDistanceComputer {
                         entity_ids
                             .iter()
                             .map(|&eid| (eid, map.get(&eid).copied().unwrap_or(neutral)))
-                            .collect::<HashMap<i64, u32>>(),
+                            .collect::<HashMap<EntityId, u32>>(),
                     )
                 } else {
                     None
@@ -189,7 +190,7 @@ mod tests {
         let computer = CausalDistanceComputer::new(graph_store, 10, 5);
 
         let result = computer
-            .compute(None, &[1, 2, 3])
+            .compute(None, &[EntityId(1), EntityId(2), EntityId(3)])
             .await
             .expect("None goal must not fail");
         assert!(

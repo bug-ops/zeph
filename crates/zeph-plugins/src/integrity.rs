@@ -191,40 +191,30 @@ impl IntegrityRegistry {
         self.entries.remove(plugin_name);
     }
 
-    /// Verify `toml_path` against the recorded digest for `plugin_name`.
+    /// Verify `bytes` against the recorded digest for `plugin_name`.
     ///
-    /// - Missing entry → `Ok(true)` with a `debug!` log (pre-integrity install).
-    /// - Digest match → `Ok(true)`.
-    /// - Digest mismatch → `Ok(false)` with the expected and actual hex strings.
-    /// - File unreadable → `Err(...)`.
+    /// Takes the buffer the caller parsed, not a path, so the digest covers exactly the content
+    /// that gets used (no second read, no TOCTOU window).
     ///
-    /// # Errors
-    ///
-    /// Returns an error if `toml_path` cannot be read.
-    pub(crate) fn verify(
-        &self,
-        plugin_name: &str,
-        toml_path: &Path,
-    ) -> Result<VerifyResult, PluginError> {
+    /// - Missing entry → [`VerifyResult::Missing`] with a `debug!` log (pre-integrity install).
+    /// - Digest match → [`VerifyResult::Match`].
+    /// - Digest mismatch → [`VerifyResult::Mismatch`] with the expected and actual hex strings.
+    pub(crate) fn verify_bytes(&self, plugin_name: &str, bytes: &[u8]) -> VerifyResult {
         let Some(expected) = self.entries.get(plugin_name) else {
             tracing::debug!(
                 plugin = %plugin_name,
                 "no integrity record; manifest not verified (pre-feature install or interrupted install)"
             );
-            return Ok(VerifyResult::Missing);
+            return VerifyResult::Missing;
         };
-        let bytes = std::fs::read(toml_path).map_err(|source| PluginError::Io {
-            path: toml_path.to_owned(),
-            source,
-        })?;
-        let actual = sha256_hex(&bytes);
+        let actual = sha256_hex(bytes);
         if &actual == expected {
-            Ok(VerifyResult::Match)
+            VerifyResult::Match
         } else {
-            Ok(VerifyResult::Mismatch {
+            VerifyResult::Mismatch {
                 expected: expected.clone(),
                 actual,
-            })
+            }
         }
     }
 }
@@ -352,7 +342,7 @@ mod tests {
 
         let reg2 = IntegrityRegistry::load_strict(&reg_path).unwrap();
         assert_matches!(
-            reg2.verify("test-plugin", &toml_path).unwrap(),
+            reg2.verify_bytes("test-plugin", &std::fs::read(&toml_path).unwrap()),
             VerifyResult::Match
         );
     }
@@ -373,8 +363,28 @@ mod tests {
 
         let reg2 = IntegrityRegistry::load_strict(&reg_path).unwrap();
         assert_matches!(
-            reg2.verify("test-plugin", &toml_path).unwrap(),
+            reg2.verify_bytes("test-plugin", &std::fs::read(&toml_path).unwrap()),
             VerifyResult::Mismatch { .. }
+        );
+    }
+
+    #[test]
+    fn verify_bytes_hashes_the_given_buffer_not_the_file_on_disk() {
+        let dir = TempDir::new().unwrap();
+        let reg_path = tmp_registry(&dir);
+        let toml_path = dir.path().join("plugin.toml");
+        std::fs::write(&toml_path, b"[plugin]\nname = \"original\"\n").unwrap();
+
+        let mut reg = IntegrityRegistry::load_strict(&reg_path).unwrap();
+        reg.record("test-plugin", &toml_path).unwrap();
+
+        assert_matches!(
+            reg.verify_bytes("test-plugin", b"[plugin]\nname = \"swapped\"\n"),
+            VerifyResult::Mismatch { .. }
+        );
+        assert_matches!(
+            reg.verify_bytes("test-plugin", b"[plugin]\nname = \"original\"\n"),
+            VerifyResult::Match
         );
     }
 
@@ -388,7 +398,7 @@ mod tests {
         let reg = IntegrityRegistry::load_strict(&reg_path).unwrap();
         // No entry recorded — should be allowed.
         assert_matches!(
-            reg.verify("unknown-plugin", &toml_path).unwrap(),
+            reg.verify_bytes("unknown-plugin", b"[plugin]\nname = \"test\"\n"),
             VerifyResult::Missing
         );
     }

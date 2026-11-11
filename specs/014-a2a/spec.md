@@ -243,6 +243,26 @@ The DNS-resolve-then-validate loop lives in `zeph_common::net::resolve_and_valid
 loop in a new call site; add a caller that maps `zeph_common::net::ResolveError` into the local
 error type instead.
 
+### Response body size caps (#6984, #6983)
+
+`crates/zeph-a2a/src/body_limit.rs`. Every peer response read in `zeph-a2a` is bounded; a hostile or broken peer can no longer make the client buffer an unbounded body. `BodyLimit(NonZeroUsize)` constants (no config knob):
+
+| Limit | Bytes | Applied at |
+|---|---|---|
+| `AGENT_CARD` | 256 KiB | agent-card fetch (`discovery.rs`) |
+| `RPC_RESPONSE` | 16 MiB | JSON-RPC response (`rpc_call`) |
+| `SSE_EVENT` | 4 MiB | one SSE event of `stream_message` (`cap_event_size`, applied before `.eventsource()`) |
+| `ERROR_BODY` | 4 KiB | error-response prefix |
+
+- `read_capped(resp, limit)` checks `Content-Length` first, then accumulates chunks; exceeding the limit returns `A2aError::BodyTooLarge { limit }`. Span `a2a.client.read_capped`.
+- `read_prefix(resp, limit)` never fails: it returns up to `limit` bytes, used for error bodies, which are then decoded lossily and cut to 256 bytes at a char boundary with `zeph_common::text::truncate_to_bytes`.
+- `cap_event_size(stream, limit)` counts bytes since the last blank line (LF, CRLF or CR; chunk-split safe); on overflow the stream yields one `BodyTooLarge` and ends.
+
+### Key Invariants
+
+- NEVER read a peer response with an unbounded `.bytes()`/`.text()`/`.json()`; use `read_capped` or `read_prefix`
+- NEVER feed a raw `bytes_stream()` to `.eventsource()` without `cap_event_size`
+
 ---
 
 ## IBCT: Invocation-Bound Capability Tokens

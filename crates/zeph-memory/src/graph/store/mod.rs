@@ -8,6 +8,7 @@
 //! the MAGMA / GAAMA graph subsystem.
 
 use std::collections::HashMap;
+use zeph_common::trust_level::TurnContextTrust;
 #[allow(unused_imports)]
 use zeph_db::sql;
 
@@ -17,11 +18,11 @@ use zeph_db::{ActiveDialect, DbPool, numbered_placeholder, placeholder_list};
 
 use crate::error::MemoryError;
 use crate::graph::conflict::{ApexMetrics, SUPERSEDE_DEPTH_CAP};
-use crate::types::{EntityId, MessageId};
+use crate::types::{EdgeId, EntityId, MessageId};
 
 use super::types::{
-    Community, Edge, EdgeType, Entity, EntityAlias, EntityType, GraphProvenance,
-    decode_trust_level, provenance_parts,
+    Community, Edge, EdgeType, Entity, EntityAlias, EntityType, GraphProvenance, ProvenanceColumns,
+    decode_trust_level, trust_to_column,
 };
 
 /// SQL expression merging a stored `trust_level` with an incoming one.
@@ -127,7 +128,7 @@ impl GraphStore {
         provenance: Option<&GraphProvenance>,
     ) -> Result<EntityId, MemoryError> {
         let type_str = entity_type.as_str();
-        let (origin, batch_id, _source_uri, trust) = provenance_parts(provenance);
+        let prov = ProvenanceColumns::new(provenance);
         let merged_trust = trust_merge_sql("graph_entities.trust_level", "excluded.trust_level");
         let raw = format!(
             "INSERT INTO graph_entities \
@@ -146,9 +147,9 @@ impl GraphStore {
                 .bind(canonical_name)
                 .bind(type_str)
                 .bind(summary)
-                .bind(origin)
-                .bind(batch_id)
-                .bind(trust)
+                .bind(prov.origin)
+                .bind(prov.batch_id)
+                .bind(prov.trust_column())
                 .fetch_one(&self.pool)
                 .await?;
         Ok(EntityId(id))
@@ -185,7 +186,10 @@ impl GraphStore {
     ///
     /// Returns an error if the database query fails.
     #[tracing::instrument(name = "memory.graph.store.find_entity_by_id", skip_all)]
-    pub async fn find_entity_by_id(&self, entity_id: i64) -> Result<Option<Entity>, MemoryError> {
+    pub async fn find_entity_by_id(
+        &self,
+        entity_id: EntityId,
+    ) -> Result<Option<Entity>, MemoryError> {
         let raw = format!(
             "SELECT {} FROM graph_entities WHERE id = ?",
             entity_select_cols()
@@ -210,9 +214,9 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.resolve_entity_names", skip_all, fields(count = ids.len()))]
     pub async fn resolve_entity_names(
         &self,
-        ids: &[i64],
-    ) -> Result<HashMap<i64, String>, MemoryError> {
-        let mut result: HashMap<i64, String> = HashMap::with_capacity(ids.len());
+        ids: &[EntityId],
+    ) -> Result<HashMap<EntityId, String>, MemoryError> {
+        let mut result: HashMap<EntityId, String> = HashMap::with_capacity(ids.len());
         if ids.is_empty() {
             return Ok(result);
         }
@@ -227,7 +231,7 @@ impl GraphStore {
             }
             let rows: Vec<(i64, String)> = q.fetch_all(&self.pool).await?;
             for (id, name) in rows {
-                result.insert(id, name);
+                result.insert(EntityId(id), name);
             }
         }
         Ok(result)
@@ -241,7 +245,7 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.set_entity_qdrant_point_id", skip_all)]
     pub async fn set_entity_qdrant_point_id(
         &self,
-        entity_id: i64,
+        entity_id: EntityId,
         point_id: &str,
     ) -> Result<(), MemoryError> {
         zeph_db::query(sql!(
@@ -389,7 +393,11 @@ impl GraphStore {
     ///
     /// Returns an error if the database query fails.
     #[tracing::instrument(name = "memory.graph.store.add_alias", skip_all)]
-    pub async fn add_alias(&self, entity_id: i64, alias_name: &str) -> Result<(), MemoryError> {
+    pub async fn add_alias(
+        &self,
+        entity_id: EntityId,
+        alias_name: &str,
+    ) -> Result<(), MemoryError> {
         let insert_alias_sql = zeph_db::rewrite_placeholders(&format!(
             "{} INTO graph_entity_aliases (entity_id, alias_name) VALUES (?, ?){}",
             <ActiveDialect as zeph_db::dialect::Dialect>::INSERT_IGNORE,
@@ -449,7 +457,7 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.aliases_for_entity", skip_all)]
     pub async fn aliases_for_entity(
         &self,
-        entity_id: i64,
+        entity_id: EntityId,
     ) -> Result<Vec<EntityAlias>, MemoryError> {
         let sql = zeph_db::rewrite_placeholders(&format!(
             "SELECT {} FROM graph_entity_aliases WHERE entity_id = ? ORDER BY id ASC",
@@ -507,14 +515,14 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.insert_edge", skip_all)]
     pub async fn insert_edge(
         &self,
-        source_entity_id: i64,
-        target_entity_id: i64,
+        source_entity_id: EntityId,
+        target_entity_id: EntityId,
         relation: &str,
         fact: &str,
         confidence: f32,
         episode_id: Option<MessageId>,
         provenance: Option<&GraphProvenance>,
-    ) -> Result<i64, MemoryError> {
+    ) -> Result<EdgeId, MemoryError> {
         self.insert_edge_typed(
             source_entity_id,
             target_entity_id,
@@ -550,8 +558,8 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.insert_edge_typed", skip_all)]
     pub async fn insert_edge_typed(
         &self,
-        source_entity_id: i64,
-        target_entity_id: i64,
+        source_entity_id: EntityId,
+        target_entity_id: EntityId,
         relation: &str,
         fact: &str,
         confidence: f32,
@@ -559,7 +567,7 @@ impl GraphStore {
         edge_type: EdgeType,
         turn_index: Option<u32>,
         provenance: Option<&GraphProvenance>,
-    ) -> Result<i64, MemoryError> {
+    ) -> Result<EdgeId, MemoryError> {
         if source_entity_id == target_entity_id {
             return Err(MemoryError::InvalidInput(format!(
                 "self-loop edge rejected: source and target are the same entity (id={source_entity_id})"
@@ -567,7 +575,7 @@ impl GraphStore {
         }
         let confidence = confidence.clamp(0.0, 1.0);
         let edge_type_str = edge_type.as_str();
-        let (origin, batch_id, source_uri, trust) = provenance_parts(provenance);
+        let prov = ProvenanceColumns::new(provenance);
 
         // Wrap SELECT + INSERT/UPDATE in a single transaction to eliminate the race window
         // between existence check and write. The unique partial index uq_graph_edges_active
@@ -592,7 +600,8 @@ impl GraphStore {
         .fetch_optional(&mut *tx)
         .await?;
 
-        if let Some((existing_id, stored_conf, stored_fast, stored_slow)) = existing {
+        if let Some((existing_raw, stored_conf, stored_fast, stored_slow)) = existing {
+            let existing_id = EdgeId(existing_raw);
             let updated_conf = f64::from(confidence).max(stored_conf);
             // Benna-Fusi multi-timescale update (#3709):
             // fast tracks incoming confidence at high plasticity; slow integrates fast at high retention.
@@ -613,14 +622,14 @@ impl GraphStore {
             .bind(existing_id)
             .execute(&mut *tx)
             .await?;
-            merge_edge_trust(&mut tx, existing_id, trust).await?;
+            merge_edge_trust(&mut tx, existing_id, prov.trust).await?;
             tx.commit().await?;
             return Ok(existing_id);
         }
 
         let episode_raw: Option<i64> = episode_id.map(|m| m.0);
         let turn_index_raw: Option<i64> = turn_index.map(i64::from);
-        let id: i64 = zeph_db::query_scalar(sql!(
+        let id: EdgeId = zeph_db::query_scalar(sql!(
             "INSERT INTO graph_edges
              (source_entity_id, target_entity_id, relation, fact, confidence,
               confidence_fast, confidence_slow, episode_id, edge_type, turn_index,
@@ -638,10 +647,10 @@ impl GraphStore {
         .bind(episode_raw)
         .bind(edge_type_str)
         .bind(turn_index_raw)
-        .bind(origin)
-        .bind(batch_id)
-        .bind(source_uri)
-        .bind(trust)
+        .bind(prov.origin)
+        .bind(prov.batch_id)
+        .bind(prov.source_uri)
+        .bind(prov.trust_column())
         .fetch_one(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -654,7 +663,7 @@ impl GraphStore {
     ///
     /// Returns an error if the database update fails.
     #[tracing::instrument(name = "memory.graph.store.invalidate_edge", skip_all)]
-    pub async fn invalidate_edge(&self, edge_id: i64) -> Result<(), MemoryError> {
+    pub async fn invalidate_edge(&self, edge_id: EdgeId) -> Result<(), MemoryError> {
         zeph_db::query(sql!(
             "UPDATE graph_edges SET valid_to = CURRENT_TIMESTAMP, expired_at = CURRENT_TIMESTAMP
              WHERE id = ?"
@@ -678,8 +687,8 @@ impl GraphStore {
     )]
     pub async fn invalidate_edge_with_supersession(
         &self,
-        old_edge_id: i64,
-        new_edge_id: i64,
+        old_edge_id: EdgeId,
+        new_edge_id: EdgeId,
     ) -> Result<(), MemoryError> {
         zeph_db::query(sql!(
             "UPDATE graph_edges
@@ -714,7 +723,7 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.edges_for_entities", skip_all, fields(count = entity_ids.len()))]
     pub async fn edges_for_entities(
         &self,
-        entity_ids: &[i64],
+        entity_ids: &[EntityId],
         edge_types: &[super::types::EdgeType],
     ) -> Result<Vec<Edge>, MemoryError> {
         let mut all_edges: Vec<Edge> = Vec::new();
@@ -737,7 +746,7 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.query_batch_edges", skip_all)]
     async fn query_batch_edges(
         &self,
-        entity_ids: &[i64],
+        entity_ids: &[EntityId],
         edge_types: &[super::types::EdgeType],
     ) -> Result<Vec<Edge>, MemoryError> {
         if entity_ids.is_empty() {
@@ -812,7 +821,7 @@ impl GraphStore {
     ///
     /// Returns an error if the database query fails.
     #[tracing::instrument(name = "memory.graph.store.edges_for_entity", skip_all)]
-    pub async fn edges_for_entity(&self, entity_id: i64) -> Result<Vec<Edge>, MemoryError> {
+    pub async fn edges_for_entity(&self, entity_id: EntityId) -> Result<Vec<Edge>, MemoryError> {
         let origin_filter = if self.recall_include_imported {
             ""
         } else {
@@ -844,7 +853,7 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.edge_history_for_entity", skip_all)]
     pub async fn edge_history_for_entity(
         &self,
-        entity_id: i64,
+        entity_id: EntityId,
         limit: usize,
     ) -> Result<Vec<Edge>, MemoryError> {
         let limit = i64::try_from(limit)?;
@@ -875,8 +884,8 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.edges_between", skip_all)]
     pub async fn edges_between(
         &self,
-        entity_a: i64,
-        entity_b: i64,
+        entity_a: EntityId,
+        entity_b: EntityId,
     ) -> Result<Vec<Edge>, MemoryError> {
         let raw = format!(
             "SELECT {} \
@@ -906,8 +915,8 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.edges_exact", skip_all)]
     pub async fn edges_exact(
         &self,
-        source_entity_id: i64,
-        target_entity_id: i64,
+        source_entity_id: EntityId,
+        target_entity_id: EntityId,
     ) -> Result<Vec<Edge>, MemoryError> {
         let raw = format!(
             "SELECT {} \
@@ -972,7 +981,7 @@ impl GraphStore {
         &self,
         name: &str,
         summary: &str,
-        entity_ids: &[i64],
+        entity_ids: &[EntityId],
         fingerprint: Option<&str>,
     ) -> Result<i64, MemoryError> {
         let entity_ids_json = serde_json::to_string(entity_ids)?;
@@ -1055,7 +1064,7 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.community_for_entity", skip_all)]
     pub async fn community_for_entity(
         &self,
-        entity_id: i64,
+        entity_id: EntityId,
     ) -> Result<Option<Community>, MemoryError> {
         // NOTE: `json_each()` is `SQLite`-only syntax; this query is not yet dialect-gated for
         // Postgres (see `community_ids_sql` for the established sqlite/postgres split pattern
@@ -1185,7 +1194,7 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.edges_after_id", skip_all)]
     pub async fn edges_after_id(
         &self,
-        after_id: i64,
+        after_id: EdgeId,
         limit: i64,
     ) -> Result<Vec<Edge>, MemoryError> {
         let raw = format!(
@@ -1296,8 +1305,8 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.entity_structural_scores", skip_all, fields(count = entity_ids.len()))]
     pub async fn entity_structural_scores(
         &self,
-        entity_ids: &[i64],
-    ) -> Result<HashMap<i64, f32>, MemoryError> {
+        entity_ids: &[EntityId],
+    ) -> Result<HashMap<EntityId, f32>, MemoryError> {
         // Each query binds entity_ids three times (three IN clauses).
         // Stay safely under SQLite 999-variable limit: 999 / 3 = 333, use 163 for headroom.
         const MAX_BATCH: usize = 163;
@@ -1306,7 +1315,7 @@ impl GraphStore {
             return Ok(HashMap::new());
         }
 
-        let mut all_rows: Vec<(i64, i64, i64)> = Vec::new();
+        let mut all_rows: Vec<(EntityId, i64, i64)> = Vec::new();
         for chunk in entity_ids.chunks(MAX_BATCH) {
             let n = chunk.len();
             // Three copies of chunk IDs: positions 1..n, n+1..2n, 2n+1..3n
@@ -1332,7 +1341,7 @@ impl GraphStore {
                  GROUP BY entity_id"
             );
 
-            let mut query = zeph_db::query_as::<_, (i64, i64, i64)>(sqlx::AssertSqlSafe(sql));
+            let mut query = zeph_db::query_as::<_, (EntityId, i64, i64)>(sqlx::AssertSqlSafe(sql));
             // Bind chunk three times (three IN clauses)
             for id in chunk {
                 query = query.bind(*id);
@@ -1344,7 +1353,7 @@ impl GraphStore {
                 query = query.bind(*id);
             }
 
-            let chunk_rows: Vec<(i64, i64, i64)> = query.fetch_all(&self.pool).await?;
+            let chunk_rows: Vec<(EntityId, i64, i64)> = query.fetch_all(&self.pool).await?;
             all_rows.extend(chunk_rows);
         }
 
@@ -1359,7 +1368,8 @@ impl GraphStore {
             .unwrap_or(1)
             .max(1);
 
-        let mut scores: HashMap<i64, f32> = entity_ids.iter().map(|&id| (id, 0.0_f32)).collect();
+        let mut scores: HashMap<EntityId, f32> =
+            entity_ids.iter().map(|&id| (id, 0.0_f32)).collect();
         for (entity_id, degree, type_diversity) in all_rows {
             #[allow(clippy::cast_precision_loss)]
             let norm_degree = degree as f32 / max_degree as f32;
@@ -1384,23 +1394,24 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.entity_community_ids", skip_all, fields(count = entity_ids.len()))]
     pub async fn entity_community_ids(
         &self,
-        entity_ids: &[i64],
-    ) -> Result<HashMap<i64, i64>, MemoryError> {
+        entity_ids: &[EntityId],
+    ) -> Result<HashMap<EntityId, i64>, MemoryError> {
         if entity_ids.is_empty() {
             return Ok(HashMap::new());
         }
 
-        let mut result: HashMap<i64, i64> = HashMap::new();
+        let mut result: HashMap<EntityId, i64> = HashMap::new();
         for chunk in entity_ids.chunks(SQLITE_BATCH_LIMIT_2X) {
             let placeholders = placeholder_list(1, chunk.len());
 
             let community_sql = community_ids_sql(&placeholders);
-            let mut query = zeph_db::query_as::<_, (i64, i64)>(sqlx::AssertSqlSafe(community_sql));
+            let mut query =
+                zeph_db::query_as::<_, (EntityId, i64)>(sqlx::AssertSqlSafe(community_sql));
             for id in chunk {
                 query = query.bind(*id);
             }
 
-            let rows: Vec<(i64, i64)> = query.fetch_all(&self.pool).await?;
+            let rows: Vec<(EntityId, i64)> = query.fetch_all(&self.pool).await?;
             result.extend(rows);
         }
 
@@ -1419,7 +1430,7 @@ impl GraphStore {
     ///
     /// Returns an error if the database query fails or a chunk write times out.
     #[tracing::instrument(name = "memory.graph.store.record_edge_retrieval", skip_all, fields(count = edge_ids.len()))]
-    pub async fn record_edge_retrieval(&self, edge_ids: &[i64]) -> Result<(), MemoryError> {
+    pub async fn record_edge_retrieval(&self, edge_ids: &[EdgeId]) -> Result<(), MemoryError> {
         let epoch_now = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
         for chunk in edge_ids.chunks(SQLITE_BATCH_LIMIT_2X) {
             let edge_placeholders = placeholder_list(1, chunk.len());
@@ -1466,7 +1477,7 @@ impl GraphStore {
     )]
     pub async fn apply_hebbian_increment(
         &self,
-        edge_ids: &[i64],
+        edge_ids: &[EdgeId],
         delta: f32,
     ) -> Result<(), MemoryError> {
         // SQLITE_BATCH_LIMIT_2X chosen to stay under SQLite's 999 host-parameter limit
@@ -1508,7 +1519,7 @@ impl GraphStore {
     ///
     /// Returns an error if the database query fails.
     #[tracing::instrument(name = "memory.graph.store.entity_ids_in", skip_all, fields(count = ids.len()))]
-    pub async fn entity_ids_in(&self, ids: &[i64]) -> Result<Vec<i64>, MemoryError> {
+    pub async fn entity_ids_in(&self, ids: &[EntityId]) -> Result<Vec<EntityId>, MemoryError> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -1516,7 +1527,7 @@ impl GraphStore {
         for chunk in ids.chunks(SQLITE_BATCH_LIMIT_2X) {
             let placeholders = zeph_db::placeholder_list(1, chunk.len());
             let sql = format!("SELECT id FROM graph_entities WHERE id IN ({placeholders})");
-            let mut q = zeph_db::query_as::<_, (i64,)>(sqlx::AssertSqlSafe(sql));
+            let mut q = zeph_db::query_as::<_, (EntityId,)>(sqlx::AssertSqlSafe(sql));
             for id in chunk {
                 q = q.bind(*id);
             }
@@ -1538,13 +1549,13 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.qdrant_point_ids_for_entities", skip_all, fields(count = entity_ids.len()))]
     pub async fn qdrant_point_ids_for_entities(
         &self,
-        entity_ids: &[i64],
-    ) -> Result<HashMap<i64, String>, MemoryError> {
+        entity_ids: &[EntityId],
+    ) -> Result<HashMap<EntityId, String>, MemoryError> {
         // Chunk to stay under SQLite variable limit.
         if entity_ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let mut result: HashMap<i64, String> = HashMap::with_capacity(entity_ids.len());
+        let mut result: HashMap<EntityId, String> = HashMap::with_capacity(entity_ids.len());
         for chunk in entity_ids.chunks(SQLITE_BATCH_LIMIT_2X) {
             let placeholders = zeph_db::placeholder_list(1, chunk.len());
             let sql = format!(
@@ -1553,7 +1564,7 @@ impl GraphStore {
                  WHERE id IN ({placeholders}) \
                    AND qdrant_point_id IS NOT NULL"
             );
-            let mut q = zeph_db::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(sql));
+            let mut q = zeph_db::query_as::<_, (EntityId, String)>(sqlx::AssertSqlSafe(sql));
             for id in chunk {
                 q = q.bind(*id);
             }
@@ -1561,7 +1572,7 @@ impl GraphStore {
             // stuck pool turns into a typed MemoryError::Timeout instead of an indefinite
             // hang, so callers (e.g. hela_spreading_recall's per-step circuit breaker) can
             // fail fast and proceed.
-            let rows: Vec<(i64, String)> = tokio::time::timeout(
+            let rows: Vec<(EntityId, String)> = tokio::time::timeout(
                 std::time::Duration::from_millis(500),
                 q.fetch_all(&self.pool),
             )
@@ -1791,7 +1802,7 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.edges_at_timestamp", skip_all)]
     pub async fn edges_at_timestamp(
         &self,
-        entity_id: i64,
+        entity_id: EntityId,
         timestamp: &str,
     ) -> Result<Vec<Edge>, MemoryError> {
         // Split into two UNIONed branches to leverage the partial indexes from migration 030:
@@ -1843,7 +1854,7 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.edge_history", skip_all)]
     pub async fn edge_history(
         &self,
-        source_entity_id: i64,
+        source_entity_id: EntityId,
         predicate: &str,
         relation: Option<&str>,
         limit: usize,
@@ -1913,7 +1924,7 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.bfs", skip_all)]
     pub async fn bfs(
         &self,
-        start_entity_id: i64,
+        start_entity_id: EntityId,
         max_hops: u32,
     ) -> Result<(Vec<Entity>, Vec<Edge>), MemoryError> {
         self.bfs_with_depth(start_entity_id, max_hops)
@@ -1935,9 +1946,16 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.bfs_with_depth", skip_all)]
     pub async fn bfs_with_depth(
         &self,
-        start_entity_id: i64,
+        start_entity_id: EntityId,
         max_hops: u32,
-    ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
+    ) -> Result<
+        (
+            Vec<Entity>,
+            Vec<Edge>,
+            std::collections::HashMap<EntityId, u32>,
+        ),
+        MemoryError,
+    > {
         self.bfs_core(start_entity_id, max_hops, None, &[]).await
     }
 
@@ -1955,10 +1973,17 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.bfs_at_timestamp", skip_all)]
     pub async fn bfs_at_timestamp(
         &self,
-        start_entity_id: i64,
+        start_entity_id: EntityId,
         max_hops: u32,
         timestamp: &str,
-    ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
+    ) -> Result<
+        (
+            Vec<Entity>,
+            Vec<Edge>,
+            std::collections::HashMap<EntityId, u32>,
+        ),
+        MemoryError,
+    > {
         self.bfs_core(start_entity_id, max_hops, Some(timestamp), &[])
             .await
     }
@@ -1982,10 +2007,17 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.bfs_typed", skip_all)]
     pub async fn bfs_typed(
         &self,
-        start_entity_id: i64,
+        start_entity_id: EntityId,
         max_hops: u32,
         edge_types: &[EdgeType],
-    ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
+    ) -> Result<
+        (
+            Vec<Entity>,
+            Vec<Edge>,
+            std::collections::HashMap<EntityId, u32>,
+        ),
+        MemoryError,
+    > {
         self.bfs_core(start_entity_id, max_hops, None, edge_types)
             .await
     }
@@ -2004,11 +2036,18 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.bfs_core", skip_all)]
     async fn bfs_core(
         &self,
-        start_entity_id: i64,
+        start_entity_id: EntityId,
         max_hops: u32,
         at_timestamp: Option<&str>,
         edge_types: &[EdgeType],
-    ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
+    ) -> Result<
+        (
+            Vec<Entity>,
+            Vec<Edge>,
+            std::collections::HashMap<EntityId, u32>,
+        ),
+        MemoryError,
+    > {
         use std::collections::HashMap;
 
         // SQLite binds frontier IDs 3× per hop; at >333 IDs the IN clause exceeds
@@ -2021,8 +2060,8 @@ impl GraphStore {
         let type_in = (n_types > 0).then(|| placeholder_list(1, n_types));
         let id_start = n_types + 1;
 
-        let mut depth_map: HashMap<i64, u32> = HashMap::new();
-        let mut frontier: Vec<i64> = vec![start_entity_id];
+        let mut depth_map: HashMap<EntityId, u32> = HashMap::new();
+        let mut frontier: Vec<EntityId> = vec![start_entity_id];
         depth_map.insert(start_entity_id, 0);
 
         for hop in 0..max_hops {
@@ -2060,7 +2099,7 @@ impl GraphStore {
                  WHERE {edge_filter}
                    AND (source_entity_id IN ({fp2}) OR target_entity_id IN ({fp3}))"
             );
-            let mut q = zeph_db::query_scalar::<_, i64>(sqlx::AssertSqlSafe(neighbour_sql));
+            let mut q = zeph_db::query_scalar::<_, EntityId>(sqlx::AssertSqlSafe(neighbour_sql));
             for t in &type_strs {
                 q = q.bind(*t);
             }
@@ -2076,8 +2115,8 @@ impl GraphStore {
             if let Some(ts) = at_timestamp {
                 q = q.bind(ts);
             }
-            let neighbours: Vec<i64> = q.fetch_all(&self.pool).await?;
-            let mut next_frontier: Vec<i64> = Vec::new();
+            let neighbours: Vec<EntityId> = q.fetch_all(&self.pool).await?;
+            let mut next_frontier: Vec<EntityId> = Vec::new();
             for nbr in neighbours {
                 if let std::collections::hash_map::Entry::Vacant(e) = depth_map.entry(nbr) {
                     e.insert(hop + 1);
@@ -2101,11 +2140,18 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.bfs_fetch_results", skip_all)]
     async fn bfs_fetch_results(
         &self,
-        depth_map: std::collections::HashMap<i64, u32>,
+        depth_map: std::collections::HashMap<EntityId, u32>,
         at_timestamp: Option<&str>,
         type_strs: &[&str],
-    ) -> Result<(Vec<Entity>, Vec<Edge>, std::collections::HashMap<i64, u32>), MemoryError> {
-        let mut visited_ids: Vec<i64> = depth_map.keys().copied().collect();
+    ) -> Result<
+        (
+            Vec<Entity>,
+            Vec<Edge>,
+            std::collections::HashMap<EntityId, u32>,
+        ),
+        MemoryError,
+    > {
+        let mut visited_ids: Vec<EntityId> = depth_map.keys().copied().collect();
         if visited_ids.is_empty() {
             return Ok((Vec::new(), Vec::new(), depth_map));
         }
@@ -2374,7 +2420,7 @@ fn entity_from_row(row: EntityRow) -> Result<Entity, MemoryError> {
 #[derive(zeph_db::FromRow)]
 struct AliasRow {
     id: i64,
-    entity_id: i64,
+    entity_id: EntityId,
     alias_name: String,
     created_at: String,
 }
@@ -2390,7 +2436,7 @@ fn alias_select_cols() -> String {
 fn alias_from_row(row: AliasRow) -> EntityAlias {
     EntityAlias {
         id: row.id,
-        entity_id: EntityId(row.entity_id),
+        entity_id: row.entity_id,
         alias_name: row.alias_name,
         created_at: row.created_at,
     }
@@ -2399,8 +2445,8 @@ fn alias_from_row(row: AliasRow) -> EntityAlias {
 #[derive(zeph_db::FromRow)]
 struct EdgeRow {
     id: i64,
-    source_entity_id: i64,
-    target_entity_id: i64,
+    source_entity_id: EntityId,
+    target_entity_id: EntityId,
     relation: String,
     fact: String,
     confidence: f64,
@@ -2475,7 +2521,7 @@ fn edge_from_row(row: EdgeRow) -> Result<Edge, MemoryError> {
         .canonical_relation
         .unwrap_or_else(|| row.relation.clone());
     Ok(Edge {
-        id: row.id,
+        id: EdgeId(row.id),
         source_entity_id: row.source_entity_id,
         target_entity_id: row.target_entity_id,
         canonical_relation,
@@ -2492,8 +2538,8 @@ fn edge_from_row(row: EdgeRow) -> Result<Edge, MemoryError> {
         edge_type,
         retrieval_count: row.retrieval_count,
         last_retrieved_at: row.last_retrieved_at,
-        superseded_by: row.superseded_by.map(i64::from),
-        supersedes: row.supersedes,
+        superseded_by: row.superseded_by.map(|v| EdgeId(i64::from(v))),
+        supersedes: row.supersedes.map(EdgeId),
         #[allow(clippy::cast_possible_truncation)]
         weight: row.weight as f32,
         #[allow(clippy::cast_possible_truncation)]
@@ -2595,7 +2641,7 @@ impl GraphStore {
     pub async fn link_entity_to_episode(
         &self,
         episode_id: i64,
-        entity_id: i64,
+        entity_id: EntityId,
     ) -> Result<(), MemoryError> {
         zeph_db::query(sql!(
             "INSERT INTO graph_episode_entities (episode_id, entity_id)
@@ -2617,7 +2663,7 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.episodes_for_entity", skip_all)]
     pub async fn episodes_for_entity(
         &self,
-        entity_id: i64,
+        entity_id: EntityId,
     ) -> Result<Vec<super::types::Episode>, MemoryError> {
         #[derive(zeph_db::FromRow)]
         struct EpisodeRow {
@@ -2681,8 +2727,8 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.insert_or_supersede", skip_all)]
     pub async fn insert_or_supersede_with_metrics(
         &self,
-        source_entity_id: i64,
-        target_entity_id: i64,
+        source_entity_id: EntityId,
+        target_entity_id: EntityId,
         relation: &str,
         canonical_relation: &str,
         fact: &str,
@@ -2691,7 +2737,7 @@ impl GraphStore {
         edge_type: EdgeType,
         set_supersedes: bool,
         metrics: Option<&ApexMetrics>,
-    ) -> Result<i64, MemoryError> {
+    ) -> Result<EdgeId, MemoryError> {
         self.insert_or_supersede_with_turn_index_and_metrics(
             source_entity_id,
             target_entity_id,
@@ -2724,8 +2770,8 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.insert_or_supersede", skip_all)]
     pub async fn insert_or_supersede_with_turn_index_and_metrics(
         &self,
-        source_entity_id: i64,
-        target_entity_id: i64,
+        source_entity_id: EntityId,
+        target_entity_id: EntityId,
         relation: &str,
         canonical_relation: &str,
         fact: &str,
@@ -2736,7 +2782,7 @@ impl GraphStore {
         metrics: Option<&ApexMetrics>,
         turn_index: Option<u32>,
         provenance: Option<&GraphProvenance>,
-    ) -> Result<i64, MemoryError> {
+    ) -> Result<EdgeId, MemoryError> {
         if source_entity_id == target_entity_id {
             return Err(MemoryError::InvalidInput(format!(
                 "self-loop edge rejected: source and target are the same entity (id={source_entity_id})"
@@ -2767,7 +2813,12 @@ impl GraphStore {
                 self.benna_slow_rate,
             )
             .await?;
-            merge_edge_trust(&mut tx, existing_id, provenance_parts(provenance).3).await?;
+            merge_edge_trust(
+                &mut tx,
+                existing_id,
+                ProvenanceColumns::new(provenance).trust,
+            )
+            .await?;
             tx.commit().await?;
             return Ok(existing_id);
         }
@@ -2789,9 +2840,9 @@ impl GraphStore {
             expire_prior_head(&mut tx, head_id).await?;
         }
 
-        let supersedes_val: Option<i64> = if set_supersedes { prior_head } else { None };
+        let supersedes_val: Option<EdgeId> = if set_supersedes { prior_head } else { None };
         let turn_index_raw: Option<i64> = turn_index.map(i64::from);
-        let (prov_origin, prov_batch, prov_uri, prov_trust) = provenance_parts(provenance);
+        let prov = ProvenanceColumns::new(provenance);
         let new_id = insert_new_edge(
             &mut tx,
             source_entity_id,
@@ -2804,10 +2855,7 @@ impl GraphStore {
             edge_type_str,
             supersedes_val,
             turn_index_raw,
-            prov_origin,
-            prov_batch,
-            prov_uri,
-            prov_trust,
+            &prov,
         )
         .await?;
 
@@ -2833,8 +2881,8 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.insert_or_supersede", skip_all)]
     pub async fn insert_or_supersede(
         &self,
-        source_entity_id: i64,
-        target_entity_id: i64,
+        source_entity_id: EntityId,
+        target_entity_id: EntityId,
         relation: &str,
         canonical_relation: &str,
         fact: &str,
@@ -2842,7 +2890,7 @@ impl GraphStore {
         episode_id: Option<MessageId>,
         edge_type: EdgeType,
         set_supersedes: bool,
-    ) -> Result<i64, MemoryError> {
+    ) -> Result<EdgeId, MemoryError> {
         self.insert_or_supersede_with_metrics(
             source_entity_id,
             target_entity_id,
@@ -2874,8 +2922,8 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.insert_or_supersede_conflict", skip_all)]
     pub async fn insert_or_supersede_with_conflict_detection(
         &self,
-        source_entity_id: i64,
-        target_entity_id: i64,
+        source_entity_id: EntityId,
+        target_entity_id: EntityId,
         relation: &str,
         canonical_relation: &str,
         fact: &str,
@@ -2886,7 +2934,7 @@ impl GraphStore {
         metrics: Option<&ApexMetrics>,
         detector: Option<&crate::graph::implicit_conflict::ImplicitConflictDetector>,
         ontology: Option<&crate::graph::ontology::OntologyTable>,
-    ) -> Result<i64, MemoryError> {
+    ) -> Result<EdgeId, MemoryError> {
         let new_id = self
             .insert_or_supersede_with_metrics(
                 source_entity_id,
@@ -2923,15 +2971,15 @@ impl GraphStore {
             match existing_raw {
                 Ok(rows) => {
                     use sqlx::Row as _;
-                    let existing: Vec<(i64, String)> = rows
+                    let existing: Vec<(EdgeId, String)> = rows
                         .into_iter()
                         .map(|r| {
-                            let id: i64 = r.try_get("id").unwrap_or(0);
+                            let id: EdgeId = r.try_get("id").unwrap_or(EdgeId(0));
                             let rel: String = r.try_get("canonical_relation").unwrap_or_default();
                             (id, rel)
                         })
                         .collect();
-                    let existing_refs: Vec<(i64, &str)> = existing
+                    let existing_refs: Vec<(EdgeId, &str)> = existing
                         .iter()
                         .map(|(id, rel)| (*id, rel.as_str()))
                         .collect();
@@ -2995,14 +3043,14 @@ impl GraphStore {
     /// Returns [`MemoryError::SupersedeCycle`] when the CTE detects a cycle (depth exceeds cap
     /// but the chain has not terminated), or a database error on query failure.
     #[tracing::instrument(name = "memory.graph.store.check_supersede_depth", skip_all)]
-    pub async fn check_supersede_depth(&self, head_id: i64) -> Result<usize, MemoryError> {
+    pub async fn check_supersede_depth(&self, head_id: EdgeId) -> Result<usize, MemoryError> {
         Self::check_supersede_depth_with_pool(&self.pool, head_id).await
     }
 
     #[tracing::instrument(name = "memory.graph.store.check_supersede_depth_pool", skip_all)]
     async fn check_supersede_depth_with_pool(
         pool: &zeph_db::DbPool,
-        head_id: i64,
+        head_id: EdgeId,
     ) -> Result<usize, MemoryError> {
         let cap = i64::try_from(SUPERSEDE_DEPTH_CAP + 1).unwrap_or(i64::MAX);
         // CTE walks the supersedes chain starting at head_id (depth=0).
@@ -3044,8 +3092,8 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.source_message_ids_for_edges", skip_all, fields(count = edge_ids.len()))]
     pub async fn source_message_ids_for_edges(
         &self,
-        edge_ids: &[i64],
-    ) -> Result<Vec<(i64, crate::types::MessageId)>, crate::error::MemoryError> {
+        edge_ids: &[EdgeId],
+    ) -> Result<Vec<(EdgeId, crate::types::MessageId)>, crate::error::MemoryError> {
         if edge_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -3055,7 +3103,7 @@ impl GraphStore {
              WHERE id IN ({placeholders}) AND episode_id IS NOT NULL"
         );
         let mut q =
-            zeph_db::query_as::<_, (i64, crate::types::MessageId)>(sqlx::AssertSqlSafe(sql));
+            zeph_db::query_as::<_, (EdgeId, crate::types::MessageId)>(sqlx::AssertSqlSafe(sql));
         for &eid in edge_ids {
             q = q.bind(eid);
         }
@@ -3073,9 +3121,9 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.source_entity_id_for_edge", skip_all)]
     pub async fn source_entity_id_for_edge(
         &self,
-        edge_id: i64,
-    ) -> Result<Option<i64>, crate::error::MemoryError> {
-        let row: Option<i64> = zeph_db::query_scalar(sql!(
+        edge_id: EdgeId,
+    ) -> Result<Option<EntityId>, crate::error::MemoryError> {
+        let row: Option<EntityId> = zeph_db::query_scalar(sql!(
             "SELECT source_entity_id FROM graph_edges WHERE id = ? AND valid_to IS NULL LIMIT 1"
         ))
         .bind(edge_id)
@@ -3095,7 +3143,7 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.bfs_edges_at_depth", skip_all)]
     pub async fn bfs_edges_at_depth(
         &self,
-        entity_id: i64,
+        entity_id: EntityId,
         _depth: u32,
         edge_types: &[crate::graph::types::EdgeType],
     ) -> Result<Vec<crate::recall_view::RecalledFact>, crate::error::MemoryError> {
@@ -3130,19 +3178,20 @@ impl GraphStore {
         let rows = q.fetch_all(&self.pool).await?;
 
         // Resolve entity names from ids.
-        let all_ids: Vec<i64> = rows
+        let all_ids: Vec<EntityId> = rows
             .iter()
             .flat_map(|r| [r.source_entity_id, r.target_entity_id])
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
 
-        let mut name_map: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+        let mut name_map: std::collections::HashMap<EntityId, String> =
+            std::collections::HashMap::new();
         for chunk in all_ids.chunks(SQLITE_BATCH_LIMIT_2X) {
             let ph2 = placeholder_list(1, chunk.len());
             let name_sql =
                 format!("SELECT id, canonical_name FROM graph_entities WHERE id IN ({ph2})");
-            let mut nq = zeph_db::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(name_sql));
+            let mut nq = zeph_db::query_as::<_, (EntityId, String)>(sqlx::AssertSqlSafe(name_sql));
             for &id in chunk {
                 nq = nq.bind(id);
             }
@@ -3201,12 +3250,12 @@ type Tx<'a> = zeph_db::DbTransaction<'a>;
 #[tracing::instrument(name = "memory.graph.store.find_identical_active_edge", skip_all)]
 async fn find_identical_active_edge(
     tx: &mut Tx<'_>,
-    src: i64,
-    tgt: i64,
+    src: EntityId,
+    tgt: EntityId,
     canon: &str,
     edge_type_str: &str,
     fact: &str,
-) -> Result<Option<i64>, MemoryError> {
+) -> Result<Option<EdgeId>, MemoryError> {
     Ok(zeph_db::query_scalar(sql!(
         "SELECT id FROM graph_edges
          WHERE source_entity_id = ?
@@ -3235,7 +3284,7 @@ async fn find_identical_active_edge(
 #[tracing::instrument(name = "memory.graph.store.record_reassertion", skip_all)]
 async fn record_reassertion(
     tx: &mut Tx<'_>,
-    head_id: i64,
+    head_id: EdgeId,
     episode_raw: Option<i64>,
     confidence: f32,
     benna_fast_rate: f32,
@@ -3290,10 +3339,10 @@ async fn record_reassertion(
 #[tracing::instrument(name = "memory.graph.store.find_prior_active_head", skip_all)]
 async fn find_prior_active_head(
     tx: &mut Tx<'_>,
-    src: i64,
+    src: EntityId,
     canon: &str,
     edge_type_str: &str,
-) -> Result<Option<i64>, MemoryError> {
+) -> Result<Option<EdgeId>, MemoryError> {
     Ok(zeph_db::query_scalar(sql!(
         "SELECT id FROM graph_edges
          WHERE source_entity_id = ?
@@ -3315,7 +3364,7 @@ async fn find_prior_active_head(
 ///
 /// Returns `Err(MemoryError::SupersedeDepthExceeded)` when the cap would be exceeded.
 #[tracing::instrument(name = "memory.graph.store.check_supersede_depth_in_tx", skip_all)]
-async fn check_supersede_depth_in_tx(tx: &mut Tx<'_>, head_id: i64) -> Result<(), MemoryError> {
+async fn check_supersede_depth_in_tx(tx: &mut Tx<'_>, head_id: EdgeId) -> Result<(), MemoryError> {
     let cap = i64::try_from(SUPERSEDE_DEPTH_CAP + 1).unwrap_or(i64::MAX);
     let depth: Option<i64> = zeph_db::query_scalar(sql!(
         "WITH RECURSIVE chain(id, depth) AS (
@@ -3344,9 +3393,10 @@ async fn check_supersede_depth_in_tx(tx: &mut Tx<'_>, head_id: i64) -> Result<()
 #[tracing::instrument(name = "memory.graph.store.merge_edge_trust", skip_all)]
 async fn merge_edge_trust(
     tx: &mut Tx<'_>,
-    edge_id: i64,
-    trust_level: Option<i16>,
+    edge_id: EdgeId,
+    trust: Option<TurnContextTrust>,
 ) -> Result<(), MemoryError> {
+    let trust_level = trust_to_column(trust);
     let merged = trust_merge_sql("trust_level", "CAST(? AS SMALLINT)");
     let raw = format!("UPDATE graph_edges SET trust_level = {merged} WHERE id = ?");
     zeph_db::query(sqlx::AssertSqlSafe(zeph_db::rewrite_placeholders(&raw)))
@@ -3363,21 +3413,18 @@ async fn merge_edge_trust(
 #[tracing::instrument(name = "memory.graph.store.insert_new_edge", skip_all)]
 async fn insert_new_edge(
     tx: &mut Tx<'_>,
-    src: i64,
-    tgt: i64,
+    src: EntityId,
+    tgt: EntityId,
     relation: &str,
     canonical_relation: &str,
     fact: &str,
     confidence: f32,
     episode_raw: Option<i64>,
     edge_type_str: &str,
-    supersedes_val: Option<i64>,
+    supersedes_val: Option<EdgeId>,
     turn_index: Option<i64>,
-    origin: &str,
-    import_batch_id: Option<&str>,
-    source_uri: Option<&str>,
-    trust_level: Option<i16>,
-) -> Result<i64, MemoryError> {
+    prov: &ProvenanceColumns<'_>,
+) -> Result<EdgeId, MemoryError> {
     Ok(zeph_db::query_scalar(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, canonical_relation, fact,
@@ -3398,10 +3445,10 @@ async fn insert_new_edge(
     .bind(edge_type_str)
     .bind(supersedes_val)
     .bind(turn_index)
-    .bind(origin)
-    .bind(import_batch_id)
-    .bind(source_uri)
-    .bind(trust_level)
+    .bind(prov.origin)
+    .bind(prov.batch_id)
+    .bind(prov.source_uri)
+    .bind(prov.trust_column())
     .fetch_one(&mut **tx)
     .await?)
 }
@@ -3410,7 +3457,7 @@ async fn insert_new_edge(
 /// unset. Must be called **before** inserting the new row to avoid violating
 /// `uq_graph_edges_active_head` — the unique index is enforced at statement level, not at commit.
 #[tracing::instrument(name = "memory.graph.store.expire_prior_head", skip_all)]
-async fn expire_prior_head(tx: &mut Tx<'_>, head_id: i64) -> Result<(), MemoryError> {
+async fn expire_prior_head(tx: &mut Tx<'_>, head_id: EdgeId) -> Result<(), MemoryError> {
     zeph_db::query(sql!(
         "UPDATE graph_edges
          SET valid_to = CURRENT_TIMESTAMP,
@@ -3426,7 +3473,11 @@ async fn expire_prior_head(tx: &mut Tx<'_>, head_id: i64) -> Result<(), MemoryEr
 /// Back-fill `superseded_by` on the already-expired prior head after the new row has been
 /// inserted and its ID is known.
 #[tracing::instrument(name = "memory.graph.store.set_superseded_by", skip_all)]
-async fn set_superseded_by(tx: &mut Tx<'_>, head_id: i64, new_id: i64) -> Result<(), MemoryError> {
+async fn set_superseded_by(
+    tx: &mut Tx<'_>,
+    head_id: EdgeId,
+    new_id: EdgeId,
+) -> Result<(), MemoryError> {
     zeph_db::query(sql!(
         "UPDATE graph_edges SET superseded_by = ? WHERE id = ?"
     ))

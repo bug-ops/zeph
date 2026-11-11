@@ -395,6 +395,17 @@ pub trait Channel: Send {
         async { Ok(()) }
     }
 
+    /// Clear the status indicator. By default delegates to [`send_status`](Channel::send_status)
+    /// with an empty text, which is the clear wire convention of channels that do not
+    /// override it; channels with a typed clear (TUI, chat adapters) override this.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn clear_status(&mut self) -> impl Future<Output = Result<(), ChannelError>> + Send {
+        async move { self.send_status("").await }
+    }
+
     /// Send the full skill catalog (name + description), delivered once at agent
     /// startup and re-emitted on skill hot-reload (spec 084 §6, issue #6648). No-op by
     /// default — most channels have no discovery UI to populate. `TuiChannel` overrides
@@ -466,6 +477,21 @@ pub trait Channel: Send {
                     text,
                     timeout_secs = STATUS_SEND_TIMEOUT.as_secs(),
                     "channel status send timed out"
+                ),
+            }
+        }
+    }
+
+    /// Best-effort variant of [`clear_status`](Channel::clear_status), bounded and logged
+    /// the same way as [`send_status_best_effort`](Channel::send_status_best_effort).
+    fn clear_status_best_effort(&mut self) -> impl Future<Output = ()> + Send {
+        async move {
+            match tokio::time::timeout(STATUS_SEND_TIMEOUT, self.clear_status()).await {
+                Ok(Ok(())) => tracing::debug!("channel status cleared"),
+                Ok(Err(error)) => tracing::warn!(%error, "channel status clear failed"),
+                Err(_) => tracing::warn!(
+                    timeout_secs = STATUS_SEND_TIMEOUT.as_secs(),
+                    "channel status clear timed out"
                 ),
             }
         }

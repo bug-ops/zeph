@@ -19,6 +19,7 @@
 //! - **Min token filter**: outputs smaller than `min_cursor_tokens` are not included.
 
 use std::fmt::Write as _;
+use zeph_llm::provider::StatusUpdate;
 
 use serde::{Deserialize, Serialize};
 use zeph_llm::provider::{LlmProvider, Message, MessagePart};
@@ -358,25 +359,27 @@ impl<C: Channel> Agent<C> {
                         d.dump_sidequest_eviction(&cursors_snapshot, &evicted_indices, freed);
                     }
                     if let Some(ref tx) = self.services.session.status_tx {
-                        let _ = tx.send(format!("SideQuest evicted {freed} tokens"));
+                        let _ = tx.send(StatusUpdate::set(format!(
+                            "SideQuest evicted {freed} tokens"
+                        )));
                     }
                 } else {
                     // apply_eviction returned 0 — clear spinner so it doesn't dangle.
                     if let Some(ref tx) = self.services.session.status_tx {
-                        let _ = tx.send(String::new());
+                        let _ = tx.send(StatusUpdate::Clear);
                     }
                 }
             }
             Ok(None | Some(_)) => {
                 tracing::debug!("sidequest: pending result: no cursors to evict");
                 if let Some(ref tx) = self.services.session.status_tx {
-                    let _ = tx.send(String::new());
+                    let _ = tx.send(StatusUpdate::Clear);
                 }
             }
             Err(e) => {
                 tracing::debug!("sidequest: background task error: {e}");
                 if let Some(ref tx) = self.services.session.status_tx {
-                    let _ = tx.send(String::new());
+                    let _ = tx.send(StatusUpdate::Clear);
                 }
             }
         }
@@ -394,7 +397,7 @@ impl<C: Channel> Agent<C> {
         }
 
         let prompt = self.services.sidequest.build_eviction_prompt();
-        let max_eviction_ratio = self.services.sidequest.config.max_eviction_ratio;
+        let max_eviction_ratio = self.services.sidequest.config.max_eviction_ratio.get();
         let n_cursors = self.services.sidequest.tool_output_cursors.len();
         // Clone the provider so the spawn closure owns it without borrowing self. PAAC secret
         // masking (#5437) is structural at the provider boundary — this clone is already masked.
@@ -452,7 +455,7 @@ impl<C: Channel> Agent<C> {
         self.services.compression.pending_sidequest_result = Some(handle);
         tracing::debug!("sidequest: background LLM eviction task spawned");
         if let Some(ref tx) = self.services.session.status_tx {
-            let _ = tx.send("SideQuest: scoring tool outputs...".into());
+            let _ = tx.send(StatusUpdate::set("SideQuest: scoring tool outputs..."));
         }
     }
 }
@@ -465,7 +468,7 @@ mod tests {
         SidequestConfig {
             enabled: true,
             interval_turns: 4,
-            max_eviction_ratio: 0.5,
+            max_eviction_ratio: zeph_config::UnitUpperClosed::literal(0.5),
             max_cursors: 30,
             min_cursor_tokens: 10,
         }

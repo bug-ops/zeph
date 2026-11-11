@@ -16,6 +16,7 @@ use crate::error::MemoryError;
 use crate::graph::retrieval::find_seed_entities;
 use crate::graph::store::GraphStore;
 use crate::graph::types::{EdgeType, GraphFact};
+use crate::types::{EdgeId, EntityId};
 
 const DEFAULT_STRUCTURAL_WEIGHT: f32 = 0.4;
 const DEFAULT_COMMUNITY_CAP: usize = 3;
@@ -94,12 +95,12 @@ pub async fn graph_recall_watercircles(
                 store.bfs_typed(seed_id, hop, edge_types).await?
             };
 
-            let name_map: HashMap<i64, &str> = entities
+            let name_map: HashMap<EntityId, &str> = entities
                 .iter()
-                .map(|e| (e.id.0, e.canonical_name.as_str()))
+                .map(|e| (e.id, e.canonical_name.as_str()))
                 .collect();
 
-            let traversed_ids: Vec<i64> = edges.iter().map(|e| e.id).collect();
+            let traversed_ids: Vec<EdgeId> = edges.iter().map(|e| e.id).collect();
 
             for edge in &edges {
                 // An edge's ring is determined by its farther endpoint from the seed: `bfs_fetch_results`
@@ -267,8 +268,7 @@ mod tests {
         let root = store
             .upsert_entity("Root", "root", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         for i in 0..10usize {
             let target = store
                 .upsert_entity(
@@ -279,8 +279,7 @@ mod tests {
                     None,
                 )
                 .await
-                .unwrap()
-                .0;
+                .unwrap();
             store
                 .insert_edge(
                     root,
@@ -324,18 +323,15 @@ mod tests {
         let root = store
             .upsert_entity("Root", "root", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let a = store
             .upsert_entity("A", "A", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         let b = store
             .upsert_entity("B", "B", EntityType::Concept, None, None)
             .await
-            .unwrap()
-            .0;
+            .unwrap();
         store
             .insert_edge(root, a, "has", "Root has A", 0.9, None, None)
             .await

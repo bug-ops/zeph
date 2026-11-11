@@ -42,7 +42,8 @@ use crate::audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
 use crate::config::ShellConfig;
 use crate::execution_context::ExecutionContext;
 use crate::executor::{
-    ClaimSource, FilterStats, ToolCall, ToolError, ToolEvent, ToolEventTx, ToolExecutor, ToolOutput,
+    ClaimSource, FilterStats, ToolCall, ToolError, ToolEvent, ToolEventTx, ToolExecutor,
+    ToolOutput, ToolStatus,
 };
 use crate::filter::{OutputFilterRegistry, sanitize_output};
 use crate::permissions::{PermissionAction, PermissionPolicy};
@@ -876,12 +877,24 @@ impl ShellExecutor {
         let mut outputs = Vec::with_capacity(blocks.len());
         let mut cumulative_filter_stats: Option<FilterStats> = None;
         let mut last_envelope: Option<ShellOutputEnvelope> = None;
+        let mut overall = ToolStatus::Success;
         #[allow(clippy::cast_possible_truncation)]
         let blocks_executed = blocks.len() as u32;
 
         for block in &blocks {
-            let (output_line, per_block_stats, envelope) =
-                self.execute_block(block, skip_confirm, &resolved).await?;
+            let BlockResult {
+                output_line,
+                filter_stats: per_block_stats,
+                envelope,
+                status: block_status,
+            } = self.execute_block(block, skip_confirm, &resolved).await?;
+            // The envelope and the status come from the same block: the first failing one,
+            // else the latest.
+            let first_failure =
+                overall == ToolStatus::Success && block_status != ToolStatus::Success;
+            if first_failure {
+                overall = block_status;
+            }
             if let Some(fs) = per_block_stats {
                 let stats = cumulative_filter_stats.get_or_insert_with(FilterStats::default);
                 stats.raw_chars += fs.raw_chars;
@@ -901,7 +914,9 @@ impl ShellExecutor {
                     stats.kept_lines = fs.kept_lines;
                 }
             }
-            last_envelope = Some(envelope);
+            if first_failure || overall == ToolStatus::Success {
+                last_envelope = Some(envelope);
+            }
             outputs.push(output_line);
         }
 
@@ -920,6 +935,7 @@ impl ShellExecutor {
             locations: None,
             raw_response,
             claim_source: Some(ClaimSource::Shell),
+            status: overall,
             ..Default::default()
         }))
     }
@@ -929,7 +945,7 @@ impl ShellExecutor {
         block: &str,
         skip_confirm: bool,
         resolved: &ResolvedContext,
-    ) -> Result<(String, Option<FilterStats>, ShellOutputEnvelope), ToolError> {
+    ) -> Result<BlockResult, ToolError> {
         self.check_permissions(block, skip_confirm).await?;
         self.validate_sandbox_with_cwd(block, &resolved.cwd)?;
 
@@ -956,7 +972,11 @@ impl ShellExecutor {
             .as_ref()
             .zip(self.sandbox_policy.as_ref())
             .map(|(sb, pol)| (sb.as_ref(), pol));
-        let (mut envelope, out) = execute_bash_with_context(
+        let BashRun {
+            mut envelope,
+            out,
+            termination,
+        } = execute_bash_with_context(
             block,
             self.timeout,
             self.tool_event_tx.as_ref(),
@@ -967,12 +987,7 @@ impl ShellExecutor {
         )
         .await;
         let exit_code = envelope.exit_code;
-        if exit_code == 130
-            && self
-                .cancel_token
-                .as_ref()
-                .is_some_and(CancellationToken::is_cancelled)
-        {
+        if self.is_cancelled_exit(exit_code, termination) {
             return Err(ToolError::Cancelled);
         }
         #[allow(clippy::cast_possible_truncation)]
@@ -988,19 +1003,20 @@ impl ShellExecutor {
         }
 
         if let Some(err) = self
-            .classify_and_audit(block, &out, exit_code, duration_ms)
+            .classify_and_audit(block, &out, termination, exit_code, duration_ms)
             .await
         {
             self.emit_completed(block, &out, false, None, None).await;
             return Err(err);
         }
 
+        let status = ToolStatus::from_exit_code(exit_code);
         let (filtered, per_block_stats) = self.apply_output_filter(block, &out, exit_code);
 
         self.emit_completed(
             block,
             &out,
-            !out.contains("[error]"),
+            !status.is_failure(),
             per_block_stats.clone(),
             None,
         )
@@ -1009,16 +1025,9 @@ impl ShellExecutor {
         // Mark truncated if output was shortened during filtering.
         envelope.truncated = filtered.len() < out.len();
 
-        let audit_result = if out.contains("[error]") || out.contains("[stderr]") {
-            AuditResult::Error {
-                message: out.clone(),
-            }
-        } else {
-            AuditResult::Success
-        };
         self.log_audit_with_context(
             block,
-            audit_result,
+            audit_result_for(status, &out),
             duration_ms,
             None,
             Some(exit_code),
@@ -1031,7 +1040,12 @@ impl ShellExecutor {
             Some(warn) => format!("{warn}\n$ {block}\n{filtered}"),
             None => format!("$ {block}\n{filtered}"),
         };
-        Ok((output_line, per_block_stats, envelope))
+        Ok(BlockResult {
+            output_line,
+            filter_stats: per_block_stats,
+            envelope,
+            status,
+        })
     }
 
     /// Execute `command` using a pre-resolved [`ResolvedContext`] (from `resolve_context`).
@@ -1073,7 +1087,11 @@ impl ShellExecutor {
             .as_ref()
             .zip(self.sandbox_policy.as_ref())
             .map(|(sb, pol)| (sb.as_ref(), pol));
-        let (mut envelope, out) = execute_bash_with_context(
+        let BashRun {
+            mut envelope,
+            out,
+            termination,
+        } = execute_bash_with_context(
             command,
             self.timeout,
             self.tool_event_tx.as_ref(),
@@ -1084,12 +1102,7 @@ impl ShellExecutor {
         )
         .await;
         let exit_code = envelope.exit_code;
-        if exit_code == 130
-            && self
-                .cancel_token
-                .as_ref()
-                .is_some_and(CancellationToken::is_cancelled)
-        {
+        if self.is_cancelled_exit(exit_code, termination) {
             return Err(ToolError::Cancelled);
         }
         #[allow(clippy::cast_possible_truncation)]
@@ -1105,36 +1118,30 @@ impl ShellExecutor {
         }
 
         if let Some(err) = self
-            .classify_and_audit(command, &out, exit_code, duration_ms)
+            .classify_and_audit(command, &out, termination, exit_code, duration_ms)
             .await
         {
             self.emit_completed(command, &out, false, None, None).await;
             return Err(err);
         }
 
-        let (filtered, per_block_stats) = self.apply_output_filter(command, &out, exit_code);
+        let status = ToolStatus::from_exit_code(exit_code);
+        let (filtered, per_command_stats) = self.apply_output_filter(command, &out, exit_code);
 
         self.emit_completed(
             command,
             &out,
-            !out.contains("[error]"),
-            per_block_stats.clone(),
+            !status.is_failure(),
+            per_command_stats.clone(),
             None,
         )
         .await;
 
         envelope.truncated = filtered.len() < out.len();
 
-        let audit_result = if out.contains("[error]") || out.contains("[stderr]") {
-            AuditResult::Error {
-                message: out.clone(),
-            }
-        } else {
-            AuditResult::Success
-        };
         self.log_audit_with_context(
             command,
-            audit_result,
+            audit_result_for(status, &out),
             duration_ms,
             None,
             Some(exit_code),
@@ -1151,13 +1158,14 @@ impl ShellExecutor {
             tool_name: ToolName::new("bash"),
             summary: output_line,
             blocks_executed: 1,
-            filter_stats: per_block_stats,
+            filter_stats: per_command_stats,
             diff: None,
             streamed: false,
             terminal_id: None,
             locations: None,
             raw_response: None,
             claim_source: Some(ClaimSource::Shell),
+            status,
             ..Default::default()
         }))
     }
@@ -1325,37 +1333,66 @@ impl ShellExecutor {
         });
     }
 
+    fn is_cancelled_exit(&self, exit_code: i32, termination: BashTermination) -> bool {
+        termination == BashTermination::Cancelled
+            || (exit_code == 130
+                && self
+                    .cancel_token
+                    .as_ref()
+                    .is_some_and(CancellationToken::is_cancelled))
+    }
+
     async fn classify_and_audit(
         &self,
         block: &str,
         out: &str,
+        termination: BashTermination,
         exit_code: i32,
         duration_ms: u64,
     ) -> Option<ToolError> {
-        if out.contains("[error] command timed out") {
-            self.log_audit(
-                block,
-                AuditResult::Timeout,
-                duration_ms,
-                None,
-                Some(exit_code),
-                false,
-            )
-            .await;
-            return Some(ToolError::Timeout {
-                timeout_secs: self.timeout.as_secs(),
-            });
+        let message = || out.lines().take(3).collect::<Vec<_>>().join("; ");
+        match termination {
+            BashTermination::TimedOut => {
+                self.log_audit(
+                    block,
+                    AuditResult::Timeout,
+                    duration_ms,
+                    None,
+                    Some(exit_code),
+                    false,
+                )
+                .await;
+                Some(ToolError::Timeout {
+                    timeout_secs: self.timeout.as_secs(),
+                })
+            }
+            BashTermination::Cancelled => Some(ToolError::Cancelled),
+            BashTermination::LaunchFailed => {
+                self.log_audit(
+                    block,
+                    AuditResult::Error {
+                        message: out.to_owned(),
+                    },
+                    duration_ms,
+                    None,
+                    Some(exit_code),
+                    false,
+                )
+                .await;
+                Some(ToolError::Shell {
+                    exit_code,
+                    category: crate::error_taxonomy::ToolErrorCategory::PermanentFailure,
+                    message: message(),
+                })
+            }
+            BashTermination::Exited => {
+                classify_shell_exit(exit_code, out).map(|category| ToolError::Shell {
+                    exit_code,
+                    category,
+                    message: message(),
+                })
+            }
         }
-
-        if let Some(category) = classify_shell_exit(exit_code, out) {
-            return Some(ToolError::Shell {
-                exit_code,
-                category,
-                message: out.lines().take(3).collect::<Vec<_>>().join("; "),
-            });
-        }
-
-        None
     }
 
     fn apply_output_filter(
@@ -2223,7 +2260,7 @@ async fn run_background_task_with_env(
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(ref e) => {
-            let (_, out) = spawn_error_envelope(e);
+            let out = spawn_error_run(e).out;
             background_runs.lock().remove(&run_id);
             emit_completed(tool_event_tx.as_ref(), &command, out.clone(), false, run_id).await;
             if let Some(ref tx) = background_completion_tx {
@@ -2258,7 +2295,7 @@ async fn run_background_task_with_env(
     let deadline = tokio::time::Instant::now() + timeout;
     let timeout_secs = timeout.as_secs();
 
-    let (_, out) = match run_bash_stream(
+    let outcome = run_bash_stream(
         &command,
         deadline,
         Some(&abort),
@@ -2270,35 +2307,25 @@ async fn run_background_task_with_env(
         &mut stderr_buf,
         &mut child,
     )
-    .await
-    {
-        BashLoopOutcome::TimedOut => (
-            ShellOutputEnvelope {
-                stdout: stdout_buf,
-                stderr: format!("{stderr_buf}command timed out after {timeout_secs}s"),
-                exit_code: 1,
-                truncated: false,
-            },
-            format!("[error] command timed out after {timeout_secs}s"),
-        ),
-        BashLoopOutcome::Cancelled => (
-            ShellOutputEnvelope {
-                stdout: stdout_buf,
-                stderr: stderr_buf,
-                exit_code: 130,
-                truncated: false,
-            },
-            "[cancelled] operation aborted".to_string(),
-        ),
-        BashLoopOutcome::StreamClosed => {
-            finalize_envelope(&mut child, combined, stdout_buf, stderr_buf).await
-        }
-    };
+    .await;
+    let BashRun {
+        envelope,
+        out,
+        termination,
+    } = finish_bash_run(
+        outcome,
+        timeout_secs,
+        &mut child,
+        combined,
+        stdout_buf,
+        stderr_buf,
+    )
+    .await;
 
     #[allow(clippy::cast_possible_truncation)]
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
-    let success = !out.contains("[error]");
-    let exit_code = i32::from(!success);
+    let exit_code = envelope.exit_code;
+    let success = termination == BashTermination::Exited && exit_code == 0;
     let truncated = crate::executor::truncate_tool_output_at(&out, 4096);
 
     background_runs.lock().remove(&run_id);
@@ -2662,10 +2689,11 @@ fn is_relative_path_token(token: &str) -> bool {
         .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Classify shell exit codes and stderr patterns into `ToolErrorCategory`.
+/// Classify non-zero shell exits and stderr patterns into `ToolErrorCategory`.
 ///
 /// Returns `Some(category)` only for well-known failure modes that benefit from
-/// structured feedback (exit 126/127, recognisable stderr patterns). All other
+/// structured feedback (exit 126/127, recognisable stderr patterns on a non-zero exit); exit
+/// `0` always yields `None`. All other
 /// non-zero exits are left as `Ok` output so they surface verbatim to the LLM.
 fn classify_shell_exit(
     exit_code: i32,
@@ -2673,6 +2701,8 @@ fn classify_shell_exit(
 ) -> Option<crate::error_taxonomy::ToolErrorCategory> {
     use crate::error_taxonomy::ToolErrorCategory;
     match exit_code {
+        // A successful exit never becomes an error, whatever the output text says.
+        0 => None,
         // exit 126: command found but not executable (OS-level permission/policy)
         126 => Some(ToolErrorCategory::PolicyBlocked),
         // exit 127: command not found in PATH
@@ -2818,70 +2848,18 @@ async fn execute_bash(
     sandbox: Option<(&dyn Sandbox, &SandboxPolicy)>,
     tool_call_id: Option<&zeph_common::ToolExecutionId>,
 ) -> (ShellOutputEnvelope, String) {
-    use std::process::Stdio;
-
-    let timeout_secs = timeout.as_secs();
-    let mut cmd = build_bash_command(code, extra_env, env_blocklist);
-
-    if let Err(envelope_err) = apply_sandbox(&mut cmd, sandbox) {
-        return envelope_err;
-    }
-
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(ref e) => return spawn_error_envelope(e),
-    };
-
-    let stdout = child.stdout.take().expect("stdout piped");
-    let stderr = child.stderr.take().expect("stderr piped");
-    let (mut line_rx, _reader_tasks) = spawn_output_readers(stdout, stderr);
-
-    let mut combined = String::new();
-    let mut stdout_buf = String::new();
-    let mut stderr_buf = String::new();
-    let deadline = tokio::time::Instant::now() + timeout;
-
-    match run_bash_stream(
+    let cmd = build_bash_command(code, extra_env, env_blocklist);
+    run_bash_command(
+        cmd,
         code,
-        deadline,
-        cancel_token,
+        timeout,
         event_tx,
+        cancel_token,
         tool_call_id,
-        &mut line_rx,
-        &mut combined,
-        &mut stdout_buf,
-        &mut stderr_buf,
-        &mut child,
+        sandbox,
     )
     .await
-    {
-        BashLoopOutcome::TimedOut => {
-            let msg = format!("[error] command timed out after {timeout_secs}s");
-            (
-                ShellOutputEnvelope {
-                    stdout: stdout_buf,
-                    stderr: format!("{stderr_buf}command timed out after {timeout_secs}s"),
-                    exit_code: 1,
-                    truncated: false,
-                },
-                msg,
-            )
-        }
-        BashLoopOutcome::Cancelled => (
-            ShellOutputEnvelope {
-                stdout: stdout_buf,
-                stderr: format!("{stderr_buf}operation aborted"),
-                exit_code: 130,
-                truncated: false,
-            },
-            "[cancelled] operation aborted".to_string(),
-        ),
-        BashLoopOutcome::StreamClosed => {
-            finalize_envelope(&mut child, combined, stdout_buf, stderr_buf).await
-        }
-    }
+    .into_pair()
 }
 
 fn build_bash_command(
@@ -2934,21 +2912,41 @@ async fn execute_bash_with_context(
     cancel_token: Option<&CancellationToken>,
     resolved: &ResolvedContext,
     sandbox: Option<(&dyn Sandbox, &SandboxPolicy)>,
-) -> (ShellOutputEnvelope, String) {
+) -> BashRun {
+    let cmd = build_bash_command_with_context(code, &resolved.env, &resolved.cwd);
+    run_bash_command(
+        cmd,
+        code,
+        timeout,
+        event_tx,
+        cancel_token,
+        tool_call_id,
+        sandbox,
+    )
+    .await
+}
+
+/// Sandbox, spawn and stream `cmd` to completion, recording how it terminated.
+async fn run_bash_command(
+    mut cmd: Command,
+    code: &str,
+    timeout: Duration,
+    event_tx: Option<&ToolEventTx>,
+    cancel_token: Option<&CancellationToken>,
+    tool_call_id: Option<&zeph_common::ToolExecutionId>,
+    sandbox: Option<(&dyn Sandbox, &SandboxPolicy)>,
+) -> BashRun {
     use std::process::Stdio;
 
-    let timeout_secs = timeout.as_secs();
-    let mut cmd = build_bash_command_with_context(code, &resolved.env, &resolved.cwd);
-
-    if let Err(envelope_err) = apply_sandbox(&mut cmd, sandbox) {
-        return envelope_err;
+    if let Err(run) = apply_sandbox(&mut cmd, sandbox) {
+        return run;
     }
 
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(ref e) => return spawn_error_envelope(e),
+        Err(ref e) => return spawn_error_run(e),
     };
 
     let stdout = child.stdout.take().expect("stdout piped");
@@ -2960,7 +2958,7 @@ async fn execute_bash_with_context(
     let mut stderr_buf = String::new();
     let deadline = tokio::time::Instant::now() + timeout;
 
-    match run_bash_stream(
+    let outcome = run_bash_stream(
         code,
         deadline,
         cancel_token,
@@ -2972,68 +2970,89 @@ async fn execute_bash_with_context(
         &mut stderr_buf,
         &mut child,
     )
+    .await;
+    finish_bash_run(
+        outcome,
+        timeout.as_secs(),
+        &mut child,
+        combined,
+        stdout_buf,
+        stderr_buf,
+    )
     .await
-    {
-        BashLoopOutcome::TimedOut => {
-            let msg = format!("[error] command timed out after {timeout_secs}s");
-            (
-                ShellOutputEnvelope {
-                    stdout: stdout_buf,
-                    stderr: format!("{stderr_buf}command timed out after {timeout_secs}s"),
-                    exit_code: 1,
-                    truncated: false,
-                },
-                msg,
-            )
+}
+
+/// Audit result for a completed (not timed-out, not launch-failed) shell run.
+fn audit_result_for(status: ToolStatus, out: &str) -> AuditResult {
+    if status.is_failure() {
+        AuditResult::Error {
+            message: out.to_owned(),
         }
-        BashLoopOutcome::Cancelled => (
-            ShellOutputEnvelope {
-                stdout: stdout_buf,
-                stderr: format!("{stderr_buf}operation aborted"),
-                exit_code: 130,
+    } else {
+        AuditResult::Success
+    }
+}
+
+/// Outcome of one executed fenced bash block.
+struct BlockResult {
+    output_line: String,
+    filter_stats: Option<FilterStats>,
+    envelope: ShellOutputEnvelope,
+    status: ToolStatus,
+}
+
+/// How a bash invocation ended, independent of the rendered output text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BashTermination {
+    Exited,
+    TimedOut,
+    Cancelled,
+    LaunchFailed,
+}
+
+/// Result of one bash invocation: the structured envelope, the rendered text and how it ended.
+struct BashRun {
+    envelope: ShellOutputEnvelope,
+    out: String,
+    termination: BashTermination,
+}
+
+impl BashRun {
+    fn launch_failed(msg: String) -> Self {
+        Self {
+            envelope: ShellOutputEnvelope {
+                stdout: String::new(),
+                stderr: msg.clone(),
+                exit_code: 1,
                 truncated: false,
             },
-            "[cancelled] operation aborted".to_string(),
-        ),
-        BashLoopOutcome::StreamClosed => {
-            finalize_envelope(&mut child, combined, stdout_buf, stderr_buf).await
+            out: msg,
+            termination: BashTermination::LaunchFailed,
         }
+    }
+
+    fn into_pair(self) -> (ShellOutputEnvelope, String) {
+        (self.envelope, self.out)
     }
 }
 
 fn apply_sandbox(
     cmd: &mut Command,
     sandbox: Option<(&dyn Sandbox, &SandboxPolicy)>,
-) -> Result<(), (ShellOutputEnvelope, String)> {
+) -> Result<(), BashRun> {
     // Apply OS sandbox before setting stdio so the rewritten program is sandboxed.
     if let Some((sb, policy)) = sandbox
         && let Err(err) = sb.wrap(cmd, policy)
     {
-        let msg = format!("[error] sandbox setup failed: {err}");
-        return Err((
-            ShellOutputEnvelope {
-                stdout: String::new(),
-                stderr: msg.clone(),
-                exit_code: 1,
-                truncated: false,
-            },
-            msg,
-        ));
+        return Err(BashRun::launch_failed(format!(
+            "[error] sandbox setup failed: {err}"
+        )));
     }
     Ok(())
 }
 
-fn spawn_error_envelope(e: &std::io::Error) -> (ShellOutputEnvelope, String) {
-    let msg = format!("[error] {e}");
-    (
-        ShellOutputEnvelope {
-            stdout: String::new(),
-            stderr: msg.clone(),
-            exit_code: 1,
-            truncated: false,
-        },
-        msg,
-    )
+fn spawn_error_run(e: &std::io::Error) -> BashRun {
+    BashRun::launch_failed(format!("[error] {e}"))
 }
 
 // Channel carries (is_stderr, line) so we can accumulate separate buffers
@@ -3145,16 +3164,51 @@ async fn run_bash_stream(
     }
 }
 
+async fn finish_bash_run(
+    outcome: BashLoopOutcome,
+    timeout_secs: u64,
+    child: &mut tokio::process::Child,
+    combined: String,
+    stdout_buf: String,
+    stderr_buf: String,
+) -> BashRun {
+    match outcome {
+        BashLoopOutcome::TimedOut => BashRun {
+            envelope: ShellOutputEnvelope {
+                stdout: stdout_buf,
+                stderr: format!("{stderr_buf}command timed out after {timeout_secs}s"),
+                exit_code: 1,
+                truncated: false,
+            },
+            out: format!("[error] command timed out after {timeout_secs}s"),
+            termination: BashTermination::TimedOut,
+        },
+        BashLoopOutcome::Cancelled => BashRun {
+            envelope: ShellOutputEnvelope {
+                stdout: stdout_buf,
+                stderr: format!("{stderr_buf}operation aborted"),
+                exit_code: 130,
+                truncated: false,
+            },
+            out: "[cancelled] operation aborted".to_string(),
+            termination: BashTermination::Cancelled,
+        },
+        BashLoopOutcome::StreamClosed => {
+            finalize_envelope(child, combined, stdout_buf, stderr_buf).await
+        }
+    }
+}
+
 async fn finalize_envelope(
     child: &mut tokio::process::Child,
     combined: String,
     stdout_buf: String,
     stderr_buf: String,
-) -> (ShellOutputEnvelope, String) {
+) -> BashRun {
     let status = child.wait().await;
     let exit_code = status.ok().and_then(|s| s.code()).unwrap_or(1);
 
-    if combined.is_empty() {
+    let (envelope, out) = if combined.is_empty() {
         (
             ShellOutputEnvelope {
                 stdout: String::new(),
@@ -3174,6 +3228,11 @@ async fn finalize_envelope(
             },
             combined,
         )
+    };
+    BashRun {
+        envelope,
+        out,
+        termination: BashTermination::Exited,
     }
 }
 

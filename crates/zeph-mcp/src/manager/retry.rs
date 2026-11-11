@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use dashmap::DashMap;
 use tokio::sync::mpsc;
+use zeph_llm::provider::StatusUpdate;
 
 use crate::client::{EnvPolicy, McpClient, StderrPolicy, ToolRefreshEvent};
 use crate::error::McpError;
@@ -123,7 +124,7 @@ where
                     "Reconnecting to MCP server {server_id} (attempt {attempt}/{max_attempts})..."
                 )
             };
-            let _ = stx.send(msg);
+            let _ = stx.send(StatusUpdate::set(msg));
         }
 
         match attempt_fn(attempt).await {

@@ -107,7 +107,7 @@ impl<C: Channel> Agent<C> {
                                 return Ok(true);
                             }
                         }
-                        self.channel.send_status_best_effort("").await;
+                        self.channel.clear_status_best_effort().await;
                         // NOTE: retry re-executions are NOT recorded in repeat-detection (CRIT-3).
                     }
                     result => break result,
@@ -173,7 +173,7 @@ impl<C: Channel> Agent<C> {
             let new_result = self
                 .reformat_tool_call(&calls[idx], tc, &error_message, cancel)
                 .await;
-            self.channel.send_status_best_effort("").await;
+            self.channel.clear_status_best_effort().await;
 
             if cancel.is_cancelled() {
                 self.cancel_tool_batch(tool_calls, "parameter reformat phase cancelled by user")

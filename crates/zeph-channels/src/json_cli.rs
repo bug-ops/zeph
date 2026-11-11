@@ -454,6 +454,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clear_status_keeps_empty_status_wire_line() {
+        let (sink, read) = make_test_sink();
+        let mut ch = crate::any::AnyChannel::JsonCli(JsonCliChannel::new(Arc::clone(&sink), false));
+        ch.clear_status().await.unwrap();
+        let lines = read();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(event_field(&lines[0], "event"), "status");
+        assert!(lines[0].contains("\"message\":\"\""), "{}", lines[0]);
+    }
+
+    #[tokio::test]
     async fn send_notice_emits_status_not_response_chunk() {
         let (sink, read) = make_test_sink();
         let mut ch = JsonCliChannel::new(Arc::clone(&sink), false);

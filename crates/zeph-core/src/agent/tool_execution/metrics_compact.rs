@@ -172,7 +172,7 @@ impl<C: Channel> Agent<C> {
                 result.strip_thinking();
             }
             self.update_metrics(|m| m.server_compaction_events += 1);
-            self.channel.send_status_best_effort("").await;
+            self.channel.clear_status_best_effort().await;
         }
 
         Ok(())

@@ -193,11 +193,11 @@ impl AgentSessionConfig {
             model_name: config.llm.effective_model().to_owned(),
             embed_model: config.llm.stable_skill_embedding_model(),
             semantic_cache_enabled: config.llm.semantic_cache_enabled,
-            semantic_cache_threshold: config.llm.semantic_cache_threshold,
+            semantic_cache_threshold: config.llm.semantic_cache_threshold.get(),
             semantic_cache_max_candidates: config.llm.semantic_cache_max_candidates,
             budget_tokens,
-            soft_compaction_threshold: config.memory.soft_compaction_threshold,
-            hard_compaction_threshold: config.memory.hard_compaction_threshold,
+            soft_compaction_threshold: config.memory.soft_compaction_threshold.get(),
+            hard_compaction_threshold: config.memory.hard_compaction_threshold.get(),
             compaction_preserve_tail: config.memory.compaction_preserve_tail,
             compaction_cooldown_turns: config.memory.compaction_cooldown_turns,
             prune_protect_tokens: config.memory.prune_protect_tokens,
@@ -290,7 +290,7 @@ mod tests {
         assert_eq!(sc.embed_model, config.llm.stable_skill_embedding_model());
         assert_eq!(sc.semantic_cache_enabled, config.llm.semantic_cache_enabled);
         assert!(
-            (sc.semantic_cache_threshold - config.llm.semantic_cache_threshold).abs()
+            (sc.semantic_cache_threshold - config.llm.semantic_cache_threshold.get()).abs()
                 < f32::EPSILON
         );
         assert_eq!(
@@ -299,11 +299,11 @@ mod tests {
         );
         assert_eq!(sc.budget_tokens, budget);
         assert!(
-            (sc.soft_compaction_threshold - config.memory.soft_compaction_threshold).abs()
+            (sc.soft_compaction_threshold - config.memory.soft_compaction_threshold.get()).abs()
                 < f32::EPSILON
         );
         assert!(
-            (sc.hard_compaction_threshold - config.memory.hard_compaction_threshold).abs()
+            (sc.hard_compaction_threshold - config.memory.hard_compaction_threshold.get()).abs()
                 < f32::EPSILON
         );
         assert_eq!(

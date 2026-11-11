@@ -358,14 +358,15 @@ impl AppBuilder {
     ) -> Result<
         (
             AnyProvider,
-            tokio::sync::mpsc::UnboundedSender<String>,
-            tokio::sync::mpsc::UnboundedReceiver<String>,
+            zeph_llm::provider::StatusTx,
+            tokio::sync::mpsc::UnboundedReceiver<zeph_llm::provider::StatusUpdate>,
         ),
         BootstrapError,
     > {
         let mut provider = create_provider(&self.config)?;
 
-        let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (status_tx, status_rx) =
+            tokio::sync::mpsc::unbounded_channel::<zeph_llm::provider::StatusUpdate>();
         let status_tx_clone = status_tx.clone();
         provider.set_status_tx(status_tx);
 
@@ -634,12 +635,14 @@ impl AppBuilder {
                     .memory
                     .graph
                     .spreading_activation
-                    .benna_fast_rate,
+                    .benna_fast_rate
+                    .get(),
                 self.config
                     .memory
                     .graph
                     .spreading_activation
-                    .benna_slow_rate,
+                    .benna_slow_rate
+                    .get(),
             ),
         );
         let mut memory = memory.with_graph_store(store);
@@ -892,8 +895,8 @@ impl AppBuilder {
             goal_utility: w.goal_utility,
         };
         let mut control = zeph_memory::AdmissionControl::new(
-            self.config.memory.admission.threshold,
-            self.config.memory.admission.fast_path_margin,
+            self.config.memory.admission.threshold.get(),
+            self.config.memory.admission.fast_path_margin.get(),
             weights,
         )
         .with_embed_timeout(self.config.memory.semantic.embed_timeout_secs);
@@ -967,7 +970,7 @@ impl AppBuilder {
         }
 
         tracing::info!(
-            threshold = self.config.memory.admission.threshold,
+            threshold = self.config.memory.admission.threshold.get(),
             "A-MAC admission control enabled"
         );
         control

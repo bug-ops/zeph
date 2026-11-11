@@ -113,7 +113,7 @@ impl RecalledFact {
 mod tests {
     use super::*;
     use crate::graph::types::{EdgeType, GraphFact};
-    use crate::types::MessageId;
+    use crate::types::{EdgeId, EntityId, MessageId};
 
     fn make_fact() -> GraphFact {
         GraphFact {
@@ -146,7 +146,7 @@ mod tests {
         use crate::graph::activation::ActivatedFact;
         use zeph_common::trust_level::TurnContextTrust;
 
-        let mut edge = crate::graph::types::Edge::synthetic_anchor(1);
+        let mut edge = crate::graph::types::Edge::synthetic_anchor(EntityId(1));
         assert_eq!(edge.trust_level, None);
         let af = |edge| ActivatedFact {
             edge,
@@ -181,7 +181,7 @@ mod tests {
             valid_from: Some("2026-01-01".to_string()),
             edge_type: EdgeType::Semantic,
             retrieval_count: 1,
-            edge_id: Some(10),
+            edge_id: Some(EdgeId::new(10)),
             trust: zeph_common::trust_level::TurnContextTrust::ExternalUntrusted,
         })
     }
@@ -214,7 +214,7 @@ mod tests {
             valid_from: None,
             edge_type: EdgeType::Semantic,
             retrieval_count: 0,
-            edge_id: Some(11),
+            edge_id: Some(EdgeId::new(11)),
             trust: zeph_common::trust_level::TurnContextTrust::ExternalUntrusted,
         });
         insta::assert_debug_snapshot!("zoom_out_view", rf);
@@ -235,7 +235,7 @@ mod tests {
                 valid_from: Some("2026-01-01".to_string()),
                 edge_type: EdgeType::Semantic,
                 retrieval_count: 0,
-                edge_id: Some(55),
+                edge_id: Some(EdgeId::new(55)),
                 trust: zeph_common::trust_level::TurnContextTrust::ExternalUntrusted,
             },
             activation_score: Some(0.82),

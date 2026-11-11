@@ -10,6 +10,7 @@
 
 use tokio::sync::oneshot::{self, error::RecvError, error::TryRecvError};
 use tracing::Instrument as _;
+use zeph_llm::provider::StatusUpdate;
 
 use super::Agent;
 use super::agent_supervisor::TaskClass;
@@ -92,9 +93,9 @@ impl GoalAutoCheckState {
 }
 
 impl<C: Channel> Agent<C> {
-    fn set_goal_check_status(&self, text: &str) {
+    fn set_goal_check_status(&self, update: StatusUpdate) {
         if let Some(tx) = &self.services.session.status_tx
-            && tx.send(text.to_owned()).is_err()
+            && tx.send(update).is_err()
         {
             tracing::debug!("goal auto-check: status receiver closed");
         }
@@ -148,7 +149,7 @@ impl<C: Channel> Agent<C> {
             return;
         }
         if self.services.goal_auto_check.reap_finished() {
-            self.set_goal_check_status("");
+            self.set_goal_check_status(StatusUpdate::Clear);
         }
         let goal_text = match self.goal_auto_check_target(origin, turn_had_error) {
             Ok(text) => text,
@@ -186,13 +187,13 @@ impl<C: Channel> Agent<C> {
         );
         if accepted {
             self.services.goal_auto_check.track(rx);
-            self.set_goal_check_status(STATUS_VERIFYING);
+            self.set_goal_check_status(StatusUpdate::set(STATUS_VERIFYING));
         }
     }
 
     /// Deliver a resolved auto-check: clear the status, then send the report if still current.
     pub(super) async fn handle_goal_auto_check_done(&mut self, resolution: Resolution) {
-        self.set_goal_check_status("");
+        self.set_goal_check_status(StatusUpdate::Clear);
         match resolution.outcome {
             Ok(GoalCheckOutcome::Report(report)) if resolution.current => {
                 if let Err(e) = self.channel.send(&report).await {
@@ -273,7 +274,7 @@ mod tests {
 
         agent.maybe_spawn_goal_auto_check(TurnOrigin::User, false);
         assert!(spawned(&agent));
-        assert_eq!(rx.recv().await.as_deref(), Some(STATUS_VERIFYING));
+        assert_eq!(rx.recv().await, Some(StatusUpdate::set(STATUS_VERIFYING)));
 
         let resolution = agent.services.goal_auto_check.resolved().await;
         agent.handle_goal_auto_check_done(resolution).await;
@@ -286,7 +287,7 @@ mod tests {
             sent[0]
         );
         assert!(sent[0].contains("[active goal]"), "{}", sent[0]);
-        assert_eq!(rx.recv().await.as_deref(), Some(""));
+        assert_eq!(rx.recv().await, Some(StatusUpdate::Clear));
         assert!(!spawned(&agent));
     }
 
@@ -367,8 +368,8 @@ mod tests {
         agent.handle_goal_auto_check_done(resolution).await;
 
         assert_eq!(sent.lock().unwrap().clone(), [] as [String; 0]);
-        assert_eq!(rx.recv().await.as_deref(), Some(STATUS_VERIFYING));
-        assert_eq!(rx.recv().await.as_deref(), Some(""));
+        assert_eq!(rx.recv().await, Some(StatusUpdate::set(STATUS_VERIFYING)));
+        assert_eq!(rx.recv().await, Some(StatusUpdate::Clear));
     }
 
     #[tokio::test]
@@ -414,8 +415,15 @@ mod tests {
 
         assert!(spawned(&agent));
         assert_eq!(enrichment_spawned(&agent), 2);
-        let statuses: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
-        assert_eq!(statuses, [STATUS_VERIFYING, "", STATUS_VERIFYING]);
+        let statuses: Vec<StatusUpdate> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert_eq!(
+            statuses,
+            [
+                StatusUpdate::set(STATUS_VERIFYING),
+                StatusUpdate::Clear,
+                StatusUpdate::set(STATUS_VERIFYING)
+            ]
+        );
     }
 
     #[tokio::test]

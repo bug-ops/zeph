@@ -3042,7 +3042,7 @@ impl<C: Channel> Agent<C> {
     /// The sender must be cloned from the provider's `StatusTx` before
     /// `provider.set_status_tx()` consumes it.
     #[must_use]
-    pub fn with_status_tx(mut self, tx: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
+    pub fn with_status_tx(mut self, tx: zeph_llm::provider::StatusTx) -> Self {
         self.services.session.status_tx = Some(tx);
         self
     }

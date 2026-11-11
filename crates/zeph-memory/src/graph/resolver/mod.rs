@@ -18,7 +18,7 @@ use super::types::{EntityType, GraphProvenance};
 use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
 use crate::graph::extractor::ExtractedEntity;
-use crate::types::MessageId;
+use crate::types::{EdgeId, EntityId, MessageId};
 use crate::vector_store::{FieldCondition, FieldValue, VectorFilter};
 
 /// Minimum byte length for entity names — rejects noise tokens like "go", "cd".
@@ -607,7 +607,9 @@ impl<'a> EntityResolver<'a> {
         normalized: &str,
         original_name: &str,
     ) -> Result<(), MemoryError> {
-        self.store.add_alias(entity_id, normalized).await?;
+        self.store
+            .add_alias(EntityId(entity_id), normalized)
+            .await?;
 
         // Also register the original trimmed lowercased form if it differs from normalized
         // (e.g. when control chars were stripped, leaving a shorter string).
@@ -615,7 +617,9 @@ impl<'a> EntityResolver<'a> {
         let original_clean_str = strip_control_chars(&original_trimmed);
         let original_clean = truncate_to_bytes_ref(&original_clean_str, MAX_ENTITY_NAME_BYTES);
         if original_clean != normalized {
-            self.store.add_alias(entity_id, original_clean).await?;
+            self.store
+                .add_alias(EntityId(entity_id), original_clean)
+                .await?;
         }
 
         Ok(())
@@ -669,7 +673,10 @@ impl<'a> EntityResolver<'a> {
                 // fields; one targeted read is acceptable until the embedding is rewritten
                 // on the next merge. Also used when canonical_name is present but summary
                 // is absent — prevents overwriting a SQLite summary with empty string.
-                let existing = self.store.find_entity_by_id(payload_entity_id).await?;
+                let existing = self
+                    .store
+                    .find_entity_by_id(EntityId(payload_entity_id))
+                    .await?;
                 let canonical = existing_canonical_name.map_or_else(
                     || {
                         existing.as_ref().map_or_else(
@@ -856,7 +863,7 @@ impl<'a> EntityResolver<'a> {
                 Ok(point_id) => {
                     if let Err(err) = self
                         .store
-                        .set_entity_qdrant_point_id(entity_id, &point_id)
+                        .set_entity_qdrant_point_id(EntityId(entity_id), &point_id)
                         .await
                     {
                         tracing::warn!(
@@ -1024,13 +1031,13 @@ impl<'a> EntityResolver<'a> {
     /// Returns an error if any database operation fails.
     pub async fn resolve_edge(
         &self,
-        source_id: i64,
-        target_id: i64,
+        source_id: EntityId,
+        target_id: EntityId,
         relation: &str,
         fact: &str,
         confidence: f32,
         episode_id: Option<MessageId>,
-    ) -> Result<Option<i64>, MemoryError> {
+    ) -> Result<Option<EdgeId>, MemoryError> {
         let normalized_relation = sanitize_relation(relation);
         let normalized_fact = sanitize_fact(fact);
 
@@ -1088,8 +1095,8 @@ impl<'a> EntityResolver<'a> {
     #[allow(clippy::too_many_arguments)] // function with many required inputs; a *Params struct would be more verbose without simplifying the call site
     pub async fn resolve_edge_typed(
         &self,
-        source_id: i64,
-        target_id: i64,
+        source_id: EntityId,
+        target_id: EntityId,
         relation: &str,
         fact: &str,
         confidence: f32,
@@ -1098,7 +1105,7 @@ impl<'a> EntityResolver<'a> {
         belief_revision: Option<&crate::graph::BeliefRevisionConfig>,
         turn_index: Option<u32>,
         provenance: Option<&GraphProvenance>,
-    ) -> Result<Option<i64>, MemoryError> {
+    ) -> Result<Option<EdgeId>, MemoryError> {
         let normalized_relation = sanitize_relation(relation);
         let normalized_fact = sanitize_fact(fact);
 
@@ -1114,7 +1121,7 @@ impl<'a> EntityResolver<'a> {
         }
 
         // Determine which edges to supersede.
-        let superseded_ids: Vec<i64> = if let (Some(cfg), Some(provider)) =
+        let superseded_ids: Vec<EdgeId> = if let (Some(cfg), Some(provider)) =
             (belief_revision, self.provider)
         {
             // Kumiho belief revision: embed new fact once, find semantically contradicted edges.

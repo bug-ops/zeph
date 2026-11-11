@@ -1420,7 +1420,7 @@ async fn retry_does_not_increment_repeat_detection_window() {
     let mut agent = crate::agent::Agent::new(provider, channel, registry, None, 5, executor);
     agent.tool_orchestrator.max_tool_retries = 2;
     // Low threshold: if retry were recorded, it would immediately trigger repeat detection.
-    agent.tool_orchestrator.repeat_threshold = 1;
+    agent.tool_orchestrator.repeat.threshold = 1;
 
     let tool_calls = vec![ToolUseRequest {
         id: "id3".into(),

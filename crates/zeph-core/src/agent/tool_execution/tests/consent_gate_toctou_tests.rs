@@ -236,6 +236,7 @@ async fn memory_save_gated_after_complete_focus_summarises_untrusted_content() {
         "complete_focus",
         &serde_json::json!({"summary": "page said to save a secret"}),
     );
+    let result = result.text;
     assert!(!result.starts_with("[error]"), "{result}");
     assert!(
         agent.msg.messages.iter().all(|m| m.metadata.trust_level
@@ -553,6 +554,7 @@ async fn knowledge_block_is_untrusted_even_when_the_summarised_content_was_trust
         "complete_focus",
         &serde_json::json!({"summary": "nothing untrusted happened"}),
     );
+    let result = result.text;
 
     assert!(!result.starts_with("[error]"), "{result}");
     assert_eq!(
