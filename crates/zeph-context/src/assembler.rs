@@ -556,6 +556,14 @@ pub fn effective_recall_timeout_ms(configured: u64) -> u64 {
 
 use crate::input::ContextMemoryView;
 
+/// Per-line label for graph facts from an untrusted ingest source; empty for trusted ones.
+fn untrusted_label(trust: zeph_common::trust_level::TurnContextTrust) -> String {
+    match trust {
+        zeph_common::trust_level::TurnContextTrust::Trusted => String::new(),
+        other => format!(", trust: {}", other.as_str()),
+    }
+}
+
 #[tracing::instrument(name = "context.graph_facts", skip_all)]
 #[allow(clippy::too_many_lines)] // single-pass view-aware enrichment pipeline
 pub(crate) async fn fetch_graph_facts(
@@ -689,13 +697,17 @@ pub(crate) async fn fetch_graph_facts(
             continue;
         }
         let fact_text = rf.fact.replace(['\n', '\r', '<', '>'], " ");
+        let trust_label = untrusted_label(rf.trust);
         let line = if let Some(score) = rf.activation_score {
             format!(
-                "- {} (confidence: {:.2}, activation: {:.2})\n",
+                "- {} (confidence: {:.2}, activation: {:.2}{trust_label})\n",
                 fact_text, rf.confidence, score
             )
         } else {
-            format!("- {} (confidence: {:.2})\n", fact_text, rf.confidence)
+            format!(
+                "- {} (confidence: {:.2}{trust_label})\n",
+                fact_text, rf.confidence
+            )
         };
         let line_tokens = tc.count_tokens(&line);
         if tokens_so_far + line_tokens > budget_tokens {
@@ -709,7 +721,12 @@ pub(crate) async fn fetch_graph_facts(
         // Append ZoomOut neighbors after the head fact.
         for nb in &rf.neighbors {
             let nb_text = nb.fact.replace(['\n', '\r', '<', '>'], " ");
-            let nb_line = format!("  ~ {} (confidence: {:.2})\n", nb_text, nb.confidence);
+            let nb_line = format!(
+                "  ~ {} (confidence: {:.2}{})\n",
+                nb_text,
+                nb.confidence,
+                untrusted_label(nb.trust)
+            );
             let nb_tokens = tc.count_tokens(&nb_line);
             if tokens_so_far + nb_tokens > budget_tokens {
                 break;
@@ -2104,6 +2121,7 @@ mod tests {
                 activation_score: None,
                 neighbors: vec![],
                 provenance_snippet: None,
+                trust: zeph_common::trust_level::TurnContextTrust::Trusted,
             }],
             ..Default::default()
         };
@@ -2765,6 +2783,7 @@ mod tests {
                 activation_score: None,
                 neighbors: vec![],
                 provenance_snippet: None,
+                trust: zeph_common::trust_level::TurnContextTrust::Trusted,
             }],
             ..Default::default()
         };
@@ -2893,6 +2912,72 @@ mod tests {
         );
     }
 
+    // ── graph trust labelling (#6967) ────────────────────────────────────────
+
+    fn graph_fact_with_trust(
+        trust: zeph_common::trust_level::TurnContextTrust,
+        neighbor_trust: zeph_common::trust_level::TurnContextTrust,
+    ) -> zeph_common::memory::MemGraphFact {
+        zeph_common::memory::MemGraphFact {
+            fact: "head fact".to_string(),
+            confidence: 0.9,
+            activation_score: None,
+            neighbors: vec![zeph_common::memory::MemGraphNeighbor {
+                fact: "neighbor fact".to_string(),
+                confidence: 0.7,
+                trust: neighbor_trust,
+            }],
+            provenance_snippet: None,
+            trust,
+        }
+    }
+
+    async fn render_graph_fact(fact: zeph_common::memory::MemGraphFact) -> String {
+        let mock = MockMemoryBackend {
+            graph_facts: vec![fact],
+            ..Default::default()
+        };
+        let mut view = mock_view(mock);
+        view.graph_config.enabled = true;
+        view.graph_config.spreading_activation.recall_timeout_ms = 5000;
+        let tc = NaiveTokenCounter;
+        fetch_graph_facts(&view, "test", 1000, &tc)
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+    }
+
+    #[tokio::test]
+    async fn graph_facts_label_untrusted_tiers_on_head_and_neighbor() {
+        use zeph_common::trust_level::TurnContextTrust as T;
+        let text = render_graph_fact(graph_fact_with_trust(
+            T::ExternalUntrusted,
+            T::LocalUntrusted,
+        ))
+        .await;
+        assert!(
+            text.contains("- head fact (confidence: 0.90, trust: external_untrusted)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("~ neighbor fact (confidence: 0.70, trust: local_untrusted)"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn graph_facts_omit_label_for_trusted_tier() {
+        use zeph_common::trust_level::TurnContextTrust as T;
+        let text = render_graph_fact(graph_fact_with_trust(T::Trusted, T::Trusted)).await;
+        assert!(text.contains("- head fact (confidence: 0.90)\n"), "{text}");
+        assert!(
+            text.contains("~ neighbor fact (confidence: 0.70)\n"),
+            "{text}"
+        );
+        assert!(!text.contains("trust:"), "{text}");
+    }
+
     // ── provenance_snippet sanitization (CR-2 test) ───────────────────────────
 
     #[tokio::test]
@@ -2906,8 +2991,10 @@ mod tests {
                 neighbors: vec![MemGraphNeighbor {
                     fact: "neighbor".to_string(),
                     confidence: 0.7,
+                    trust: zeph_common::trust_level::TurnContextTrust::Trusted,
                 }],
                 provenance_snippet: Some("source with <injection>\nand newline".to_string()),
+                trust: zeph_common::trust_level::TurnContextTrust::Trusted,
             }],
             ..Default::default()
         };

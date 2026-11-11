@@ -236,7 +236,7 @@ impl Channel for JsonCliChannel {
     fn send_diff(
         &mut self,
         _diff: DiffData,
-        _tool_call_id: &str,
+        _tool_call_id: &zeph_common::ToolExecutionId,
     ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
         // v1: diffs are not emitted as JSON events.
         std::future::ready(Ok(()))
@@ -457,7 +457,7 @@ mod tests {
         assert!(
             ch.send_tool_start(ToolStartEvent {
                 tool_name: "shell".into(),
-                tool_call_id: "x".into(),
+                tool_call_id: zeph_common::ToolExecutionId::new("x").unwrap(),
                 params: None,
                 parent_tool_use_id: None,
                 started_at: std::time::Instant::now(),
@@ -476,7 +476,7 @@ mod tests {
                 filter_stats: None,
                 kept_lines: None,
                 locations: None,
-                tool_call_id: "x".into(),
+                tool_call_id: zeph_common::ToolExecutionId::new("x").unwrap(),
                 is_error: false,
                 terminal_id: None,
                 parent_tool_use_id: None,

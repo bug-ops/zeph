@@ -98,7 +98,12 @@ fn resolve_overlays(
         return Ok(out);
     }
 
-    let registry = crate::integrity::IntegrityRegistry::load(integrity_registry_path);
+    // Fail closed: an unreadable registry must not downgrade every plugin to "unverified".
+    let registry = crate::integrity::IntegrityRegistry::load_strict(integrity_registry_path)
+        .map_err(|e| {
+            tracing::warn!(error = %e, "integrity registry unusable; skipping all plugin overlays");
+            crate::integrity::damage_reason(&e)
+        });
 
     // M1: sort entries deterministically so log ordering and `source_plugins` are
     // platform-independent (ext4 inode order, APFS insertion order, etc. vary).
@@ -118,7 +123,7 @@ fn resolve_overlays(
     for entry in entries {
         process_plugin_entry(
             &entry.path(),
-            &registry,
+            registry.as_ref(),
             &mut out,
             &mut blocked_set,
             &mut allowed_accum,
@@ -134,7 +139,7 @@ fn resolve_overlays(
 
 fn process_plugin_entry(
     path: &std::path::Path,
-    registry: &crate::integrity::IntegrityRegistry,
+    registry: Result<&crate::integrity::IntegrityRegistry, &String>,
     out: &mut ResolvedOverlay,
     blocked_set: &mut BTreeSet<String>,
     allowed_accum: &mut Option<BTreeSet<String>>,
@@ -195,6 +200,15 @@ fn process_plugin_entry(
         .and_then(|s| s.to_str())
         .unwrap_or("?")
         .to_owned();
+    let registry = match registry {
+        Ok(r) => r,
+        Err(reason) => {
+            out.skipped_plugins.push(format!(
+                "{plugin_dir_name}: integrity registry unusable ({reason}): restore it, or delete it and reinstall every plugin before the next agent start; until then no plugin overlay is applied"
+            ));
+            return;
+        }
+    };
     match registry.verify(&plugin_dir_name, &manifest_path) {
         Ok(crate::integrity::VerifyResult::Match | crate::integrity::VerifyResult::Missing) => {}
         Ok(crate::integrity::VerifyResult::Mismatch { expected, actual }) => {
@@ -850,7 +864,8 @@ mod tests {
         let toml_path = plugins_dir.join("myplugin").join(".plugin.toml");
 
         // Record digest of original manifest.
-        let mut registry = crate::integrity::IntegrityRegistry::load(&registry_path);
+        let mut registry =
+            crate::integrity::IntegrityRegistry::load_strict(&registry_path).unwrap();
         registry.record("myplugin", &toml_path).unwrap();
         registry.save(&registry_path).unwrap();
 
@@ -875,6 +890,41 @@ mod tests {
             "expected integrity mismatch in skipped_plugins; got: {:?}",
             overlay.skipped_plugins
         );
+    }
+
+    // A damaged registry fails closed: every plugin is skipped, none contributes.
+    #[test]
+    fn corrupt_registry_skips_every_plugin_with_reason() {
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = dir.path();
+        let registry_path = dir.path().join("registry.toml");
+        fs::write(&registry_path, b"not valid toml !!!").unwrap();
+
+        for name in ["alpha", "beta"] {
+            write_plugin_overlay(
+                plugins_dir,
+                name,
+                "[config.tools]\nblocked_commands = [\"curl\"]",
+            );
+        }
+
+        let mut cfg = base_config();
+        let overlay =
+            apply_plugin_config_overlays_with_registry(&mut cfg, plugins_dir, &registry_path)
+                .unwrap();
+
+        assert_eq!(cfg.tools.shell.blocked_commands, [] as [String; 0]);
+        assert_eq!(overlay.source_plugins, [] as [String; 0]);
+        assert_eq!(
+            overlay.skipped_plugins.len(),
+            2,
+            "{:?}",
+            overlay.skipped_plugins
+        );
+        for skipped in &overlay.skipped_plugins {
+            assert!(skipped.contains("integrity registry unusable (invalid TOML"));
+            assert!(skipped.contains("no plugin overlay is applied"));
+        }
     }
 
     // Plugin with no registry entry (pre-integrity install) loads without errors.

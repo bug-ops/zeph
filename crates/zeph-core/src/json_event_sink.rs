@@ -50,12 +50,12 @@ pub enum JsonEvent<'a> {
     ToolCall {
         tool: &'a str,
         args: &'a serde_json::Value,
-        id: &'a str,
+        id: Option<&'a str>,
     },
     /// A tool returned a result.
     ToolResult {
         tool: &'a str,
-        id: &'a str,
+        id: Option<&'a str>,
         output: &'a str,
         is_error: bool,
     },

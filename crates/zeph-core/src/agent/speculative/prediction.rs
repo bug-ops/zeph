@@ -50,7 +50,7 @@ impl Prediction {
             params: self.args.clone(),
             caller_id: Some(call_id.into()),
             context: None,
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         }
     }

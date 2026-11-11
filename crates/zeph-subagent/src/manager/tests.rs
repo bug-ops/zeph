@@ -4246,7 +4246,7 @@ fn make_write_call(path: &str, content: &str) -> ToolCall {
         params,
         caller_id: None,
         context: None,
-        tool_call_id: String::new(),
+        tool_call_id: None,
         skill_name: None,
     }
 }

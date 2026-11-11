@@ -206,7 +206,7 @@ Feature flags (`Cargo.toml [features]`):
 
 ## 10. Concurrency & Safety Contract
 
-- `unsafe_code = "deny"` workspace-wide — zero exceptions
+- `unsafe_code = "deny"` workspace-wide; the only exceptions are the `#[allow(unsafe_code)]` sites listed in the specs/010-security §unsafe registry, each with a `// SAFETY:` comment; a new site needs a registry row plus an explicit architectural decision, and is allowed only where no maintained safe crate covers the API
 - Agent loop is **single-threaded async** — no parallel threads per session
 - Shared mutable state: `parking_lot::RwLock<T>` (readers-preferred) or `parking_lot::Mutex<T>` (exclusive access) — no poison handling needed
 - No blocking I/O inside async hot paths — use `tokio::task::spawn_blocking` if unavoidable
@@ -294,7 +294,7 @@ Every new feature MUST be wired at all applicable integration points:
 ## Agent Boundaries
 
 ### Always (without asking)
-- Preserve all trait method signatures exactly
+- Preserve all trait method signatures exactly, except `Channel::send_diff`, whose `tool_call_id` parameter becomes `&ToolExecutionId` (#6964)
 - Only add features to `default` that gate real optional deps AND have `Tested` coverage status (per spec 029 §2 + §3.1)
 - Maintain `kind` discriminator in `MessagePart` serde
 - Enforce `max_active_skills` limit in skill injection
@@ -316,7 +316,7 @@ Every new feature MUST be wired at all applicable integration points:
 - Make `LlmProvider` methods `&mut self`
 - Use `Box<dyn Channel>` or `Arc<dyn Channel>`
 - Delete messages from conversation history
-- Use `unsafe` blocks
+- Use `unsafe` blocks outside a site listed in the specs/010-security §unsafe registry
 - Commit secrets to source files
 - Skip `--features full` in pre-merge checks
 - Enable `sqlite` and `postgres` features simultaneously

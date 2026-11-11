@@ -130,6 +130,9 @@ pub(crate) async fn handle_plugin_command(
                     result.removed_mcp_ids.join(", ")
                 );
             }
+            for w in &result.warnings {
+                eprintln!("warning: {w}");
+            }
         }
 
         PluginCommand::Search { query } => {

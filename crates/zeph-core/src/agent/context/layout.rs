@@ -919,6 +919,14 @@ mod agent_tests {
         layout: ContextLayout,
         budget: usize,
     ) -> Agent<MockChannel> {
+        agent_with_summary_text(layout, budget, "earlier work on project x").await
+    }
+
+    async fn agent_with_summary_text(
+        layout: ContextLayout,
+        budget: usize,
+        summary: &str,
+    ) -> Agent<MockChannel> {
         use zeph_memory::semantic::SemanticMemory;
 
         let memory = SemanticMemory::new(
@@ -933,7 +941,7 @@ mod agent_tests {
         let cid = memory.sqlite().create_conversation().await.unwrap();
         memory
             .sqlite()
-            .save_summary(cid, "earlier work on project x", None, None, 5)
+            .save_summary(cid, summary, None, None, 5)
             .await
             .unwrap();
         let mut agent = agent_with(layout)
@@ -1254,5 +1262,152 @@ mod agent_tests {
             again.is_some_and(|b| b.text.contains("earlier work on project x")),
             "the item must be fetched again after the trim removed its carrier"
         );
+    }
+
+    const WIRE_KEY: &str = "sk-proj-abc123def456ghi789";
+
+    #[test]
+    fn user_paths_reach_the_request_unmasked_in_both_layouts() {
+        for layout in [ContextLayout::Append, ContextLayout::Replace] {
+            let mut agent = agent_with(layout);
+            agent.runtime.config.redact_credentials = true;
+            agent.ensure_layout_pinned();
+            agent.msg.messages.push(Message::from_parts(
+                Role::User,
+                vec![MessagePart::Text {
+                    text: format!("cat /Users/dev/a.env with key {WIRE_KEY}"),
+                }],
+            ));
+            agent.prepare_request_state();
+            let content = &agent.msg.messages[1].content;
+            assert!(
+                content.contains("/Users/dev/a.env"),
+                "{layout:?}: {content}"
+            );
+            assert!(!content.contains("[PATH]"), "{layout:?}: {content}");
+            assert!(!content.contains(WIRE_KEY), "{layout:?}: {content}");
+        }
+    }
+
+    #[tokio::test]
+    async fn recalled_section_keeps_paths_and_loses_secrets_in_both_layouts() {
+        for layout in [ContextLayout::Append, ContextLayout::Replace] {
+            let summary = format!("edited /Users/dev/proj/main.rs using {WIRE_KEY}");
+            let mut agent = agent_with_summary_text(layout, 10_000, &summary).await;
+            agent.runtime.config.redact_credentials = true;
+            agent
+                .msg
+                .messages
+                .push(Message::from_legacy(Role::User, "proj"));
+            agent.prepare_context("proj").await.unwrap();
+            let sent: String = match layout {
+                ContextLayout::Append => agent.msg.pending_preamble.retrieved.take().unwrap().text,
+                _ => agent
+                    .msg
+                    .messages
+                    .iter()
+                    .map(|m| m.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            };
+            assert!(
+                sent.contains("/Users/dev/proj/main.rs"),
+                "{layout:?}: {sent}"
+            );
+            assert!(!sent.contains("[PATH]"), "{layout:?}: {sent}");
+            assert!(!sent.contains(WIRE_KEY), "{layout:?}: {sent}");
+        }
+    }
+
+    // `scrub_message` skips `TurnContext` parts (`_ => false`), so the directive keeps its real
+    // working directory whatever the scrub does to text parts; this pins that on the wire message.
+    #[tokio::test]
+    async fn directive_keeps_the_real_working_directory_on_the_request() {
+        let mut agent = agent_with(ContextLayout::Append).with_working_dir("/Users/dev/project");
+        agent.runtime.config.redact_credentials = true;
+        agent.ensure_layout_pinned();
+        agent.rebuild_system_prompt("q").await;
+        agent.prepare_context("q").await.unwrap();
+        let preamble = std::mem::take(&mut agent.msg.pending_preamble);
+        let turn = agent.build_user_message("q", vec![], preamble);
+        agent.msg.messages.push(turn);
+        agent.prepare_request_state();
+        let blocks: Vec<&str> = agent
+            .msg
+            .messages
+            .iter()
+            .flat_map(|m| &m.parts)
+            .filter_map(|p| match p {
+                MessagePart::TurnContext(b) => Some(b.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            blocks
+                .iter()
+                .any(|t| t.contains("working_directory: /Users/dev/project")),
+            "{blocks:?}"
+        );
+        assert!(blocks.iter().all(|t| !t.contains("[PATH]")), "{blocks:?}");
+    }
+
+    #[tokio::test]
+    async fn recalled_correction_keeps_paths_and_loses_secrets_in_both_layouts() {
+        use zeph_memory::semantic::SemanticMemory;
+
+        for layout in [ContextLayout::Append, ContextLayout::Replace] {
+            let provider = AnyProvider::Mock(
+                MockProvider::with_responses(vec![]).with_embedding(vec![1.0, 0.0, 0.0]),
+            );
+            let memory = SemanticMemory::with_sqlite_backend(":memory:", provider, "m", 0.7, 0.3)
+                .await
+                .unwrap();
+            let cid = memory.sqlite().create_conversation().await.unwrap();
+            let text = format!("do not edit /Users/dev/proj/main.rs, key {WIRE_KEY}");
+            let id = memory
+                .sqlite()
+                .store_user_correction(Some(cid.0), "out", &text, None, "explicit_rejection")
+                .await
+                .unwrap();
+            memory.store_correction_embedding(id, &text).await.unwrap();
+
+            let mut agent = agent_with(layout)
+                .with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100)
+                .with_context_budget(10_000, 0.20, 0.80, 4, 0);
+            agent.services.learning_engine.config = Some(zeph_config::LearningConfig {
+                correction_detection: true,
+                ..Default::default()
+            });
+            agent.runtime.config.redact_credentials = true;
+            agent.ensure_layout_pinned();
+            agent
+                .msg
+                .messages
+                .push(Message::from_legacy(Role::User, "proj"));
+            agent.prepare_context("proj").await.unwrap();
+            let sent: String = match layout {
+                ContextLayout::Append => agent
+                    .msg
+                    .pending_preamble
+                    .retrieved
+                    .take()
+                    .map(|b| b.text)
+                    .unwrap_or_default(),
+                _ => agent
+                    .msg
+                    .messages
+                    .iter()
+                    .map(|m| m.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            };
+            assert!(sent.contains("past corrections"), "{layout:?}: {sent}");
+            assert!(
+                sent.contains("/Users/dev/proj/main.rs"),
+                "{layout:?}: {sent}"
+            );
+            assert!(!sent.contains("[PATH]"), "{layout:?}: {sent}");
+            assert!(!sent.contains(WIRE_KEY), "{layout:?}: {sent}");
+        }
     }
 }

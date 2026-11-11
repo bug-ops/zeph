@@ -65,6 +65,16 @@ zeroize = { workspace = true, features = ["alloc", "derive", "serde"] }
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs", "process", "std"] }
 
+# Owner-only DACL on file/dir creation (`fs_secure::windows`); Windows only.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 metrics-util = { workspace = true, features = ["debugging"] }
 proptest.workspace = true

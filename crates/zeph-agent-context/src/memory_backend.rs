@@ -93,9 +93,11 @@ fn map_graph_fact(rf: RecalledFact) -> MemGraphFact {
             .map(|n| MemGraphNeighbor {
                 fact: n.fact,
                 confidence: n.confidence,
+                trust: n.trust,
             })
             .collect(),
         provenance_snippet: rf.provenance_snippet,
+        trust: rf.fact.trust,
     }
 }
 
@@ -555,6 +557,7 @@ pub fn build_memory_router(
 
 #[cfg(test)]
 mod tests {
+    use zeph_common::trust_level::TurnContextTrust;
     use zeph_llm::provider::{Message, Role};
     use zeph_memory::graph::types::{EdgeType, GraphFact};
     use zeph_memory::semantic::{SessionSummaryResult, Summary};
@@ -668,6 +671,7 @@ mod tests {
             edge_type: EdgeType::Semantic,
             retrieval_count: 1,
             edge_id: Some(10),
+            trust: TurnContextTrust::Trusted,
         }
     }
 
@@ -831,11 +835,33 @@ mod tests {
             edge_type: EdgeType::Semantic,
             retrieval_count: 0,
             edge_id: None,
+            trust: TurnContextTrust::LocalUntrusted,
         });
         let dto = map_graph_fact(rf);
         assert_eq!(dto.neighbors.len(), 1);
+        assert_eq!(dto.neighbors[0].trust, TurnContextTrust::LocalUntrusted);
+        assert_eq!(dto.trust, TurnContextTrust::Trusted);
         assert_eq!(dto.neighbors[0].fact, "LLVM supports WebAssembly");
         assert!((dto.neighbors[0].confidence - 0.8).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn graph_fact_maps_every_trust_tier_to_head_and_neighbor() {
+        for tier in [
+            TurnContextTrust::Trusted,
+            TurnContextTrust::LocalUntrusted,
+            TurnContextTrust::ExternalUntrusted,
+        ] {
+            let mut head = make_graph_fact();
+            head.trust = tier;
+            let mut neighbor = make_graph_fact();
+            neighbor.trust = tier;
+            let mut rf = RecalledFact::from_graph_fact(head);
+            rf.neighbors.push(neighbor);
+            let dto = map_graph_fact(rf);
+            assert_eq!(dto.trust, tier);
+            assert_eq!(dto.neighbors[0].trust, tier);
+        }
     }
 
     #[test]

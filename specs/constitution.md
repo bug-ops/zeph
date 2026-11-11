@@ -53,7 +53,7 @@ related:
 - Error handling: `thiserror` in library crates, `anyhow` in application code
 - Config: TOML with `ZEPH_*` env overrides; secrets via VaultProvider
 - TLS: rustls everywhere; openssl-sys is banned
-- Unsafe: `unsafe_code = "deny"` workspace-wide — no exceptions
+- Unsafe: `unsafe_code = "deny"` workspace-wide; the only exceptions are the `#[allow(unsafe_code)]` sites listed in the specs/010-security §unsafe registry, each with a `// SAFETY:` comment; a new site needs a registry row plus an explicit architectural decision, and is allowed only where no maintained safe crate covers the API
 
 ## III. Testing (NON-NEGOTIABLE)
 
@@ -83,7 +83,7 @@ related:
 
 ## V. Security
 
-- `unsafe_code = "deny"` workspace-wide — no exceptions
+- `unsafe_code = "deny"` workspace-wide; the only exceptions are the `#[allow(unsafe_code)]` sites listed in the specs/010-security §unsafe registry, each with a `// SAFETY:` comment; a new site needs a registry row plus an explicit architectural decision, and is allowed only where no maintained safe crate covers the API
 - Vault secrets must be zeroized on drop (`zeroize` crate)
 - All user / external input must be validated and sanitized at system boundaries
 - Bearer token comparison via BLAKE3 + `ConstantTimeEq` (subtle crate)
@@ -139,7 +139,7 @@ related:
 ### Never
 - Commit secrets, API keys, or credentials
 - Use `openssl-sys` or `serde_yaml` / `serde_yml`
-- Use `unsafe` blocks
+- Use `unsafe` blocks outside a site listed in the specs/010-security §unsafe registry
 - Create git worktrees with `git worktree add` directly
 - Add emoji to code, commits, or documentation
 - Skip `--features full` in pre-merge checks

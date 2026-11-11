@@ -228,7 +228,7 @@ impl<C: Channel> Agent<C> {
             subgoal_user_msg_hash: &mut self.services.compression.subgoal_user_msg_hash,
             status_tx: self.services.session.status_tx.clone(),
             scrub: if redact {
-                crate::redact::scrub_content
+                crate::redact::redact_secrets
             } else {
                 |s| std::borrow::Cow::Borrowed(s)
             },
@@ -767,7 +767,7 @@ impl<C: Channel> Agent<C> {
             cached_prompt_tokens: cached_prompt_tokens_snapshot,
             redact_credentials: self.runtime.config.redact_credentials,
             channel_skills: &self.runtime.config.channel_skills.allowed,
-            scrub: crate::redact::scrub_content,
+            scrub: crate::redact::redact_secrets,
             #[cfg(feature = "index")]
             index: Some(&self.services.index as &dyn zeph_context::input::IndexAccess),
             tiered_retrieval_config: self

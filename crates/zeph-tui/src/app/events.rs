@@ -154,19 +154,13 @@ impl App {
                 ..
             } => {
                 self.last_progress_at = Instant::now();
-                let pos = if tool_call_id.is_empty() {
-                    // Shell tool chunks arrive without a tool_call_id; fall back to the last
-                    // streaming Tool message (there is at most one active at a time).
-                    self.sessions
+                let pos = if let Some(tool_call_id) = tool_call_id {
+                    let found = self
+                        .sessions
                         .current()
                         .messages
                         .iter()
-                        .rposition(|m| m.role == MessageRole::Tool && m.streaming)
-                } else {
-                    let found =
-                        self.sessions.current().messages.iter().rposition(|m| {
-                            m.tool_call_id.as_deref() == Some(tool_call_id.as_str())
-                        });
+                        .rposition(|m| m.tool_call_id.as_ref() == Some(&tool_call_id));
                     if found.is_none() {
                         tracing::warn!(
                             %tool_call_id,
@@ -174,6 +168,14 @@ impl App {
                         );
                     }
                     found
+                } else {
+                    // Shell tool chunks may arrive without an id; fall back to the last
+                    // streaming Tool message (there is at most one active at a time).
+                    self.sessions
+                        .current()
+                        .messages
+                        .iter()
+                        .rposition(|m| m.role == MessageRole::Tool && m.streaming)
                 };
                 if let Some(pos) = pos {
                     self.sessions.current_mut().messages[pos]
@@ -327,16 +329,18 @@ impl App {
         }
     }
 
-    fn handle_diff_ready(&mut self, diff: zeph_core::DiffData, tool_call_id: &str) {
+    fn handle_diff_ready(
+        &mut self,
+        diff: zeph_core::DiffData,
+        tool_call_id: &zeph_common::ToolExecutionId,
+    ) {
         if let Some(msg) = self
             .sessions
             .current_mut()
             .messages
             .iter_mut()
             .rev()
-            .find(|m| {
-                m.role == MessageRole::Tool && m.tool_call_id.as_deref() == Some(tool_call_id)
-            })
+            .find(|m| m.role == MessageRole::Tool && m.tool_call_id.as_ref() == Some(tool_call_id))
         {
             msg.diff_data = Some(diff);
         }
@@ -351,7 +355,7 @@ impl App {
         filter_stats: Option<String>,
         kept_lines: Option<Vec<usize>>,
         success: bool,
-        tool_call_id: String,
+        tool_call_id: zeph_common::ToolExecutionId,
     ) {
         debug!(
             %tool_name,
@@ -361,39 +365,31 @@ impl App {
             "TUI ToolOutput event received"
         );
         // Try id-based lookup first; fall back to streaming-flag lookup for
-        // cases where ToolStart was not emitted (legacy path, empty tool_call_id).
-        let pos = if tool_call_id.is_empty() {
-            self.sessions
-                .current()
-                .messages
-                .iter()
-                .rposition(|m| m.role == MessageRole::Tool && m.streaming)
-        } else {
-            let found = self
-                .sessions
-                .current()
-                .messages
-                .iter()
-                .rposition(|m| {
-                    m.role == MessageRole::Tool
-                        && m.streaming
-                        && m.tool_call_id.as_deref() == Some(tool_call_id.as_str())
-                })
-                .or_else(|| {
-                    self.sessions
-                        .current()
-                        .messages
-                        .iter()
-                        .rposition(|m| m.role == MessageRole::Tool && m.streaming)
-                });
-            if found.is_none() {
-                tracing::warn!(
-                    tool_call_id = %tool_call_id,
-                    "ToolOutput: no streaming Tool message found — skipping finalization"
-                );
-            }
-            found
-        };
+        // cases where ToolStart was not emitted (legacy path).
+        let found = self
+            .sessions
+            .current()
+            .messages
+            .iter()
+            .rposition(|m| {
+                m.role == MessageRole::Tool
+                    && m.streaming
+                    && m.tool_call_id.as_ref() == Some(&tool_call_id)
+            })
+            .or_else(|| {
+                self.sessions
+                    .current()
+                    .messages
+                    .iter()
+                    .rposition(|m| m.role == MessageRole::Tool && m.streaming)
+            });
+        if found.is_none() {
+            tracing::warn!(
+                tool_call_id = %tool_call_id,
+                "ToolOutput: no streaming Tool message found — skipping finalization"
+            );
+        }
+        let pos = found;
 
         if let Some(pos) = pos {
             // Finalize existing streaming tool message (shell or native path with ToolStart).
@@ -527,14 +523,14 @@ mod tests {
     fn push_tool_msg(app: &mut App, id: &str) {
         let msg = ChatMessage::new(MessageRole::Tool, format!("$ cmd_{id}\n"))
             .streaming()
-            .with_tool_call_id(id.to_owned());
+            .with_tool_call_id(zeph_common::ToolExecutionId::new(id).unwrap());
         app.sessions.current_mut().messages.push(msg);
     }
 
     fn tool_msg(id: &str) -> ChatMessage {
         ChatMessage::new(MessageRole::Tool, "$ cmd\n".to_owned())
             .with_tool("bash".into())
-            .with_tool_call_id(id.to_owned())
+            .with_tool_call_id(zeph_common::ToolExecutionId::new(id).unwrap())
     }
 
     fn diff() -> DiffData {
@@ -564,7 +560,7 @@ mod tests {
                 tool_name: "bash".into(),
                 command: String::new(),
                 chunk: chunk.to_owned(),
-                tool_call_id: id.to_owned(),
+                tool_call_id: Some(zeph_common::ToolExecutionId::new(id).unwrap()),
             });
         }
 
@@ -586,7 +582,7 @@ mod tests {
             tool_name: "bash".into(),
             command: String::new(),
             chunk: "should-not-appear".to_owned(),
-            tool_call_id: "unknown-xyz".to_owned(),
+            tool_call_id: Some(zeph_common::ToolExecutionId::new("unknown-xyz").unwrap()),
         });
 
         // The known message must be unchanged.
@@ -609,7 +605,7 @@ mod tests {
             diff: None,
             filter_stats: None,
             kept_lines: None,
-            tool_call_id: "t1".to_owned(),
+            tool_call_id: zeph_common::ToolExecutionId::new("t1").unwrap(),
         });
 
         let msgs = app.messages();
@@ -630,7 +626,7 @@ mod tests {
 
         app.handle_agent_event(AgentEvent::DiffReady {
             diff: diff(),
-            tool_call_id: "call-2".into(),
+            tool_call_id: zeph_common::ToolExecutionId::new("call-2").unwrap(),
         });
 
         assert!(app.sessions.current().messages[0].diff_data.is_none());
@@ -644,7 +640,7 @@ mod tests {
 
         app.handle_agent_event(AgentEvent::DiffReady {
             diff: diff(),
-            tool_call_id: "call-99".into(),
+            tool_call_id: zeph_common::ToolExecutionId::new("call-99").unwrap(),
         });
 
         assert!(app.sessions.current().messages[0].diff_data.is_none());
@@ -657,7 +653,7 @@ mod tests {
 
         app.handle_agent_event(AgentEvent::DiffReady {
             diff: diff(),
-            tool_call_id: String::new(),
+            tool_call_id: zeph_common::ToolExecutionId::generate(),
         });
 
         assert!(app.sessions.current().messages[0].diff_data.is_none());
@@ -684,11 +680,11 @@ mod tests {
         // Deliver out of order: B first, then A
         app.handle_agent_event(AgentEvent::DiffReady {
             diff: diff_b,
-            tool_call_id: "call-B".into(),
+            tool_call_id: zeph_common::ToolExecutionId::new("call-B").unwrap(),
         });
         app.handle_agent_event(AgentEvent::DiffReady {
             diff: diff_a,
-            tool_call_id: "call-A".into(),
+            tool_call_id: zeph_common::ToolExecutionId::new("call-A").unwrap(),
         });
 
         let msgs = &app.sessions.current().messages;

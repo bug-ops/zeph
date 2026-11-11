@@ -7,15 +7,16 @@
 //! router state, transcript sidecars) must be created through one of these helpers so
 //! that the permission guarantee is auditable in a single location.
 //!
-//! # Unix vs non-Unix
+//! # Platforms
 //!
-//! On Unix the helpers set mode `0o600` via `OpenOptionsExt::mode`. On non-Unix
-//! platforms (Windows) the helpers fall back to plain [`OpenOptions`] without extra
-//! permissions — Windows uses ACLs rather than mode bits, and proper ACL hardening
-//! requires additional platform-specific code (TODO(#6929): Windows ACL hardening).
-//! The Windows fallback is **not atomic** for [`atomic_write_private`]: `std::fs::rename`
-//! fails with `ERROR_ALREADY_EXISTS` when the destination already exists, unlike the
-//! POSIX atomic-replace semantics.
+//! On Unix the helpers set mode `0o600` via `OpenOptionsExt::mode`. On Windows they create
+//! files and directories with a protected DACL that grants access only to `LocalSystem` and
+//! the current user (see the `windows` submodule); as with the Unix mode, it applies only
+//! when an object is created, never to an existing one. Other targets fall back to plain
+//! [`std::fs::OpenOptions`] without extra permissions.
+//!
+//! [`atomic_write_private`] replaces an existing destination on every platform:
+//! `std::fs::rename` uses `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` on Windows.
 //!
 //! # Residual risks
 //!
@@ -26,16 +27,23 @@
 //!   pool opens and inherit the process umask. There is no way to prevent this without
 //!   upstream sqlx support; see `zeph-db` for best-effort post-open chmod.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
+#[cfg(not(windows))]
+use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::Path;
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod windows;
 
 /// Create or truncate `path` with owner-read/write-only permissions on Unix (0o600).
 ///
 /// Returns a writable [`File`] handle. The caller is responsible for writing content
 /// and flushing. Use [`write_private`] for a one-shot write convenience.
 ///
-/// On non-Unix platforms falls back to standard `OpenOptions` without extra permissions.
+/// On Windows the file is created with an owner-only DACL; other platforms fall back to
+/// standard `OpenOptions` without extra permissions.
 ///
 /// # Errors
 ///
@@ -63,7 +71,11 @@ pub fn open_private_truncate(path: &Path) -> io::Result<File> {
             .mode(0o600)
             .open(path)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        windows::open_private(path, windows::Disposition::TruncateOrCreate)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         OpenOptions::new()
             .write(true)
@@ -73,7 +85,7 @@ pub fn open_private_truncate(path: &Path) -> io::Result<File> {
     }
 }
 
-/// Open `path` in append mode, creating it with mode 0o600 on Unix if it does not exist.
+/// Open `path` in append mode, creating it with mode 0o600 on Unix (owner-only DACL on Windows) if it does not exist.
 ///
 /// Subsequent opens of an existing file do not change its permissions. Use this helper
 /// for JSONL log files (audit, transcript) that grow across multiple process invocations.
@@ -102,13 +114,17 @@ pub fn append_private(path: &Path) -> io::Result<File> {
             .mode(0o600)
             .open(path)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        windows::open_private(path, windows::Disposition::AppendOrCreate)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         OpenOptions::new().create(true).append(true).open(path)
     }
 }
 
-/// Write `data` to `path`, creating or truncating the file with mode 0o600 on Unix.
+/// Write `data` to `path`, creating or truncating the file with mode 0o600 on Unix (owner-only DACL on Windows).
 ///
 /// This is a one-shot convenience wrapper around [`open_private_truncate`] that handles
 /// `write_all` and `flush`. For streaming writes use [`open_private_truncate`] directly.
@@ -132,8 +148,8 @@ pub fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
     f.flush()
 }
 
-/// Write `data` to `path` via a crash-safe replace: write to `<path>.tmp` (0o600 on
-/// Unix), fsync the tmp file, rename it over the target, then fsync the parent directory.
+/// Write `data` to `path` via a crash-safe replace: write to `<path>.tmp` (owner-only on
+/// Unix and Windows), fsync the tmp file, rename it over the target, then fsync the parent directory.
 ///
 /// Using [`Path::with_added_extension`] preserves the original extension:
 /// `secrets.age` → `secrets.age.tmp` (not `secrets.tmp`).
@@ -190,7 +206,8 @@ pub fn atomic_write_private(path: &Path, data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// Create `path` exclusively (`O_EXCL` / `create_new`) with 0o600 on Unix.
+/// Create `path` exclusively (`O_EXCL` / `create_new`) with 0o600 on Unix and an owner-only DACL
+/// on Windows.
 ///
 /// Used internally by [`atomic_write_private`] for the `.tmp` file so that a
 /// pre-existing leftover or attacker-placed symlink is never silently followed.
@@ -204,7 +221,11 @@ fn open_private_exclusive(path: &Path) -> io::Result<File> {
             .mode(0o600)
             .open(path)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        windows::open_private(path, windows::Disposition::CreateNew)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         OpenOptions::new().write(true).create_new(true).open(path)
     }
@@ -265,10 +286,11 @@ pub fn restrict_to_owner(path: &Path) -> io::Result<u32> {
     Ok(raw)
 }
 
-/// Create `path` and any missing parent directories with mode 0o700 on Unix.
+/// Create `path` and any missing parent directories with mode 0o700 on Unix, or an owner-only
+/// inheritable DACL on Windows.
 ///
-/// Only components that do not exist yet are created; existing directories keep their mode, so a
-/// user-chosen parent such as `~` or `/var/log` is never tightened by accident. On non-Unix
+/// Only components that do not exist yet are created; existing directories keep their mode or
+/// ACL, so a user-chosen parent such as `~` or `/var/log` is never tightened by accident. On other
 /// platforms this is [`std::fs::create_dir_all`].
 ///
 /// # Errors
@@ -292,7 +314,11 @@ pub fn create_private_dir_all(path: &Path) -> io::Result<()> {
             .mode(0o700)
             .create(path)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        windows::create_private_dir_all(path)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         std::fs::create_dir_all(path)
     }
@@ -348,6 +374,7 @@ pub fn restrict_dir_to_owner(path: &Path) -> io::Result<u32> {
     }
     #[cfg(not(unix))]
     {
+        // TODO(#6970): harden an existing directory's DACL on Windows (needs a handle-relative walk)
         let _ = path;
         Ok(0)
     }

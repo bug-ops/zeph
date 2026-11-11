@@ -162,8 +162,8 @@ pub enum AgentEvent {
         tool_name: zeph_common::ToolName,
         /// The primary command or argument string shown in the status bar.
         command: String,
-        /// Opaque tool-call identifier for correlating subsequent events.
-        tool_call_id: String,
+        /// Execution id for correlating subsequent events.
+        tool_call_id: zeph_common::ToolExecutionId,
         /// True when this tool call originates from an MCP server rather than a native tool.
         is_mcp: bool,
     },
@@ -175,8 +175,8 @@ pub enum AgentEvent {
         command: String,
         /// The chunk text to append.
         chunk: String,
-        /// Opaque tool-call identifier for id-based message lookup.
-        tool_call_id: String,
+        /// Execution id for id-based message lookup; `None` when the executor has no id.
+        tool_call_id: Option<zeph_common::ToolExecutionId>,
     },
     /// Final tool output, replacing any in-progress chunks for this call.
     ToolOutput {
@@ -194,8 +194,8 @@ pub enum AgentEvent {
         filter_stats: Option<String>,
         /// Indices of lines retained by the filter.
         kept_lines: Option<Vec<usize>>,
-        /// Opaque tool-call identifier for id-based message lookup.
-        tool_call_id: String,
+        /// Execution id for id-based message lookup.
+        tool_call_id: zeph_common::ToolExecutionId,
     },
     /// The agent requests a boolean confirmation from the user.
     ConfirmRequest {
@@ -218,7 +218,7 @@ pub enum AgentEvent {
         /// The diff payload to attach to the corresponding tool message.
         diff: zeph_core::DiffData,
         /// Identifies which tool call produced this diff.
-        tool_call_id: String,
+        tool_call_id: zeph_common::ToolExecutionId,
     },
     /// Result from a slash-command dispatched to the agent.
     CommandResult {

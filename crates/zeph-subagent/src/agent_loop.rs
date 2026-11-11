@@ -967,7 +967,7 @@ async fn handle_tool_step(
                     params,
                     caller_id: None,
                     context: exec_ctx,
-                    tool_call_id: String::new(),
+                    tool_call_id: None,
                     skill_name: None,
                 };
                 let tool_start = Instant::now();

@@ -51,7 +51,7 @@ struct TierLoopData {
 /// alongside the canonical call list so the tier execution loop has a single, coherent view.
 struct ToolDispatchContext {
     calls: Vec<ToolCall>,
-    tool_call_ids: Vec<String>,
+    tool_call_ids: Vec<zeph_common::ToolExecutionId>,
     tool_started_ats: Vec<std::time::Instant>,
     pre_exec_blocked: Vec<bool>,
     utility_actions: Vec<zeph_tools::UtilityAction>,

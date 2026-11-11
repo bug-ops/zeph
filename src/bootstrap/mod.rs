@@ -2198,6 +2198,9 @@ async fn run_plugin_auto_updates(config: &zeph_core::config::Config) {
     };
 
     for result in &results {
+        for warning in &result.warnings {
+            tracing::warn!(plugin = %result.name, %warning, "plugin auto-update warning");
+        }
         match &result.status {
             AutoUpdateStatus::Updated {
                 old_version,

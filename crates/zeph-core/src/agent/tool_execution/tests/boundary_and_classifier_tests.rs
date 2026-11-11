@@ -1853,7 +1853,7 @@ mod reasoning_amplification_call_site {
             agent
                 .process_one_tool_result(
                     &tc,
-                    "id-reasoning",
+                    &zeph_common::ToolExecutionId::new("id-reasoning").unwrap(),
                     &std::time::Instant::now(),
                     Err(err),
                     &mut Vec::new(),
@@ -1906,7 +1906,7 @@ mod reasoning_amplification_call_site {
             agent
                 .process_one_tool_result(
                     &tc,
-                    "id-name-only",
+                    &zeph_common::ToolExecutionId::new("id-name-only").unwrap(),
                     &std::time::Instant::now(),
                     Err(err),
                     &mut Vec::new(),
@@ -1978,7 +1978,7 @@ mod reasoning_amplification_call_site {
             agent
                 .process_one_tool_result(
                     &tc,
-                    "id-router-reasoning",
+                    &zeph_common::ToolExecutionId::new("id-router-reasoning").unwrap(),
                     &std::time::Instant::now(),
                     Err(err),
                     &mut Vec::new(),
@@ -2040,7 +2040,7 @@ mod reasoning_amplification_call_site {
             agent
                 .process_one_tool_result(
                     &tc,
-                    "id-router-non-reasoning",
+                    &zeph_common::ToolExecutionId::new("id-router-non-reasoning").unwrap(),
                     &std::time::Instant::now(),
                     Err(err),
                     &mut Vec::new(),
@@ -2108,7 +2108,7 @@ mod reasoning_amplification_call_site {
             agent
                 .process_one_tool_result(
                     &tc,
-                    "id-triage-reasoning",
+                    &zeph_common::ToolExecutionId::new("id-triage-reasoning").unwrap(),
                     &std::time::Instant::now(),
                     Err(err),
                     &mut Vec::new(),
@@ -2177,7 +2177,7 @@ mod reasoning_amplification_call_site {
         agent
             .process_one_tool_result(
                 &tc,
-                "id-media-ok",
+                &zeph_common::ToolExecutionId::new("id-media-ok").unwrap(),
                 &std::time::Instant::now(),
                 Ok(Some(tool_output_with_media(1))),
                 &mut result_parts,
@@ -2230,7 +2230,7 @@ mod reasoning_amplification_call_site {
         agent
             .process_one_tool_result(
                 &tc,
-                "id-media-status",
+                &zeph_common::ToolExecutionId::new("id-media-status").unwrap(),
                 &std::time::Instant::now(),
                 Ok(Some(tool_output_with_media(1))),
                 &mut result_parts,
@@ -2283,7 +2283,7 @@ mod reasoning_amplification_call_site {
         agent
             .process_one_tool_result(
                 &tc,
-                "id-media-novision",
+                &zeph_common::ToolExecutionId::new("id-media-novision").unwrap(),
                 &std::time::Instant::now(),
                 Ok(Some(tool_output_with_media(1))),
                 &mut result_parts,
@@ -2331,7 +2331,7 @@ mod reasoning_amplification_call_site {
         agent
             .process_one_tool_result(
                 &tc,
-                "id-media-err",
+                &zeph_common::ToolExecutionId::new("id-media-err").unwrap(),
                 &std::time::Instant::now(),
                 Err(err),
                 &mut result_parts,
@@ -2387,7 +2387,7 @@ mod reasoning_amplification_call_site {
         agent
             .process_one_tool_result(
                 &tc,
-                "id-media-quarantine",
+                &zeph_common::ToolExecutionId::new("id-media-quarantine").unwrap(),
                 &std::time::Instant::now(),
                 Ok(Some(output)),
                 &mut result_parts,
@@ -2436,7 +2436,7 @@ mod reasoning_amplification_call_site {
         agent
             .process_one_tool_result(
                 &tc1,
-                "id-media-cap-1",
+                &zeph_common::ToolExecutionId::new("id-media-cap-1").unwrap(),
                 &std::time::Instant::now(),
                 Ok(Some(tool_output_with_media(2))),
                 &mut result_parts,
@@ -2457,7 +2457,7 @@ mod reasoning_amplification_call_site {
         agent
             .process_one_tool_result(
                 &tc2,
-                "id-media-cap-2",
+                &zeph_common::ToolExecutionId::new("id-media-cap-2").unwrap(),
                 &std::time::Instant::now(),
                 Ok(Some(tool_output_with_media(2))),
                 &mut result_parts,
@@ -2553,7 +2553,7 @@ mod per_call_result_size_override_tests {
         agent
             .process_one_tool_result(
                 &tc,
-                "id-ovr-within",
+                &zeph_common::ToolExecutionId::new("id-ovr-within").unwrap(),
                 &std::time::Instant::now(),
                 Ok(Some(ToolOutput {
                     tool_name: "srv:big_tool".into(),
@@ -2605,7 +2605,7 @@ mod per_call_result_size_override_tests {
         agent
             .process_one_tool_result(
                 &tc,
-                "id-ovr-above",
+                &zeph_common::ToolExecutionId::new("id-ovr-above").unwrap(),
                 &std::time::Instant::now(),
                 Ok(Some(ToolOutput {
                     tool_name: "srv:big_tool".into(),
@@ -2657,7 +2657,7 @@ mod per_call_result_size_override_tests {
         agent
             .process_one_tool_result(
                 &tc,
-                "id-no-ovr",
+                &zeph_common::ToolExecutionId::new("id-no-ovr").unwrap(),
                 &std::time::Instant::now(),
                 Ok(Some(ToolOutput {
                     tool_name: "srv:big_tool".into(),
@@ -2723,7 +2723,7 @@ mod batch_source_kind_tests {
         agent
             .process_one_tool_result(
                 &tc,
-                "call-id",
+                &zeph_common::ToolExecutionId::new("call-id").unwrap(),
                 &std::time::Instant::now(),
                 Ok(Some(ToolOutput {
                     tool_name: tool_name.into(),

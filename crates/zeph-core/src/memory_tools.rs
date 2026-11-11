@@ -557,7 +557,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
@@ -579,7 +579,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
@@ -610,7 +610,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await.unwrap();
@@ -632,7 +632,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
@@ -654,7 +654,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
@@ -678,7 +678,7 @@ mod tests {
             params,
             caller_id: None,
             context: None,
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let output = executor.execute_tool_call(&call).await.unwrap().unwrap();
@@ -702,7 +702,7 @@ mod tests {
             params,
             caller_id: None,
             context: None,
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         }
     }

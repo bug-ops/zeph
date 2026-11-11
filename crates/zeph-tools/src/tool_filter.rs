@@ -174,7 +174,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = filter.execute_tool_call(&call).await.unwrap();
@@ -190,7 +190,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = filter.execute_tool_call(&call).await.unwrap();
@@ -291,7 +291,7 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         }
     }

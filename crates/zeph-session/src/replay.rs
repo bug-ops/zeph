@@ -150,11 +150,7 @@ fn fold_step(
                 messages,
                 origin_seqs,
                 seq,
-                MessagePart::ToolUse {
-                    id: id.into(),
-                    name,
-                    input,
-                },
+                MessagePart::ToolUse { id, name, input },
             );
         }
         SessionEvent::ToolResult {
@@ -168,7 +164,7 @@ fn fold_step(
                 origin_seqs,
                 seq,
                 MessagePart::ToolResult {
-                    tool_use_id: id.into(),
+                    tool_use_id: id,
                     content: output,
                     is_error,
                 },
@@ -385,7 +381,7 @@ mod tests {
             envelope(
                 1,
                 SessionEvent::ToolCall {
-                    id: "tc1".to_owned(),
+                    id: "tc1".into(),
                     name: "shell".to_owned(),
                     input: serde_json::json!({"cmd": "ls"}),
                 },
@@ -393,7 +389,7 @@ mod tests {
             envelope(
                 2,
                 SessionEvent::ToolResult {
-                    id: "tc1".to_owned(),
+                    id: "tc1".into(),
                     name: "shell".to_owned(),
                     output: "file.txt".to_owned(),
                     is_error: false,
@@ -451,7 +447,7 @@ mod tests {
             envelope(
                 1,
                 SessionEvent::ToolResult {
-                    id: "tc1".to_owned(),
+                    id: "tc1".into(),
                     name: "shell".to_owned(),
                     output: "a".to_owned(),
                     is_error: false,
@@ -461,7 +457,7 @@ mod tests {
             envelope(
                 2,
                 SessionEvent::ToolResult {
-                    id: "tc2".to_owned(),
+                    id: "tc2".into(),
                     name: "shell".to_owned(),
                     output: "b".to_owned(),
                     is_error: false,
@@ -491,7 +487,7 @@ mod tests {
             envelope(
                 1,
                 SessionEvent::ToolResult {
-                    id: "tc1".to_owned(),
+                    id: "tc1".into(),
                     name: "shell".to_owned(),
                     output: "a".to_owned(),
                     is_error: false,
@@ -643,7 +639,7 @@ mod tests {
                     Some(turn),
                     None,
                     SessionEvent::ToolCall {
-                        id: format!("tc-{turn}"),
+                        id: format!("tc-{turn}").into(),
                         name: "shell".to_owned(),
                         input: serde_json::json!({"cmd": "ls"}),
                     },
@@ -654,7 +650,7 @@ mod tests {
                     Some(turn),
                     None,
                     SessionEvent::ToolResult {
-                        id: format!("tc-{turn}"),
+                        id: format!("tc-{turn}").into(),
                         name: "shell".to_owned(),
                         output: format!("output-{turn}"),
                         is_error: false,

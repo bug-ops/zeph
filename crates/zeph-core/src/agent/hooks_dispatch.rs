@@ -87,6 +87,95 @@ impl PreToolHookCall {
     }
 }
 
+/// The `PostToolUse` hooks that match one tool call, with their environment and stdin context.
+///
+/// Shared by the main tier loop and the inline orchestration loop so both report the same
+/// `agent_type = "main"` context, duration env, `core.hooks.post_tool_use` span and
+/// `updated_tool_output` replacement.
+pub(crate) struct PostToolHookCall {
+    hooks: Vec<zeph_config::HookDef>,
+    env: std::collections::HashMap<String, String>,
+    tool_input: serde_json::Value,
+    session_id: Option<String>,
+}
+
+impl PostToolHookCall {
+    /// Select the hooks in `post_hooks` matching `tool_name`; `None` when none match.
+    pub(crate) fn prepare(
+        post_hooks: &[zeph_config::HookMatcher],
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+        session_id: Option<&str>,
+    ) -> Option<Self> {
+        let hooks: Vec<zeph_config::HookDef> = zeph_subagent::matching_hooks(post_hooks, tool_name)
+            .into_iter()
+            .cloned()
+            .collect();
+        if hooks.is_empty() {
+            return None;
+        }
+        Some(Self {
+            hooks,
+            env: make_tool_hook_env(tool_name, tool_input, session_id),
+            tool_input: tool_input.clone(),
+            session_id: session_id.map(str::to_owned),
+        })
+    }
+
+    /// Fire the selected hooks (fail-open) and apply an `updated_tool_output` replacement to
+    /// a successful `result`.
+    pub(crate) async fn fire(
+        &self,
+        tool_name: &str,
+        duration: std::time::Duration,
+        result: &mut Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+        mcp: Option<&dyn zeph_subagent::McpDispatch>,
+    ) {
+        use tracing::Instrument as _;
+        let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+        let mut env = self.env.clone();
+        env.insert("ZEPH_TOOL_DURATION_MS".to_owned(), duration_ms.to_string());
+
+        let tool_error_text = result.as_ref().err().map(ToString::to_string);
+        let hook_input = zeph_subagent::PostToolUseHookInput {
+            tool_name,
+            tool_args: &self.tool_input,
+            session_id: self.session_id.as_deref(),
+            duration_ms,
+            tool_output: match result {
+                Ok(Some(out)) => Some(out.summary.as_str()),
+                _ => None,
+            },
+            tool_error: tool_error_text.as_deref(),
+            agent_id: self.session_id.as_deref(),
+            agent_type: "main",
+        };
+        let stdin_bytes = serde_json::to_vec(&hook_input).ok();
+
+        match zeph_subagent::hooks::fire_hooks(&self.hooks, &env, mcp, stdin_bytes.as_deref())
+            .instrument(tracing::info_span!("core.hooks.post_tool_use", tool = %tool_name))
+            .await
+        {
+            Ok(run_result) => {
+                if let Some(replacement) = run_result.output.updated_tool_output
+                    && let Ok(Some(out)) = result
+                {
+                    tracing::debug!(
+                        tool = %tool_name,
+                        original_len = out.summary.len(),
+                        replacement_len = replacement.len(),
+                        "PostToolUse hook replaced tool output"
+                    );
+                    out.summary = replacement;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, tool = %tool_name, "PostToolUse hook failed");
+            }
+        }
+    }
+}
+
 impl<C: Channel> Agent<C> {
     /// Return an `McpDispatch` adapter backed by the agent's MCP manager, if present.
     pub(super) fn mcp_dispatch(&self) -> Option<McpManagerDispatch> {
@@ -136,6 +225,38 @@ impl<C: Channel> Agent<C> {
                 Some(zeph_subagent::pre_tool_block_message(tool_name))
             }
         }
+    }
+
+    /// Fire matching `PostToolUse` hooks for a tool call executed outside the main tier loop.
+    ///
+    /// `started` is taken before execution, so the reported duration includes any elicitation
+    /// wait. A hook may replace the output of a successful result; failures are fail-open.
+    /// Built-in tools never reach hooks (same rule as the tier loop).
+    ///
+    /// Takes `&mut self` only so the future stays `Send`: `Agent` is not `Sync`.
+    #[cfg(feature = "scheduler")]
+    pub(super) async fn fire_post_tool_hooks(
+        &mut self,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+        started: std::time::Instant,
+        result: &mut Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>,
+    ) {
+        let post_hooks = &self.services.session.hooks_config.post_tool_use;
+        if post_hooks.is_empty() || self.builtin_tool(tool_name).is_some() {
+            return;
+        }
+        let session_id = self.hook_session_id();
+        let Some(call) =
+            PostToolHookCall::prepare(post_hooks, tool_name, tool_input, session_id.as_deref())
+        else {
+            return;
+        };
+        let dispatch = self.mcp_dispatch();
+        let mcp = dispatch
+            .as_ref()
+            .map(|d| d as &dyn zeph_subagent::McpDispatch);
+        call.fire(tool_name, started.elapsed(), result, mcp).await;
     }
 
     /// Check if the process cwd has changed since last call and fire `CwdChanged` hooks.

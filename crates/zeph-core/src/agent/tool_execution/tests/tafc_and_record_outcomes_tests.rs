@@ -568,7 +568,7 @@ async fn skipped_output_processing_does_not_reset_cross_iteration_utility_window
         agent
             .process_one_tool_result(
                 &tc,
-                "id-skip",
+                &zeph_common::ToolExecutionId::new("id-skip").unwrap(),
                 &std::time::Instant::now(),
                 Ok(Some(skipped.clone())),
                 &mut Vec::new(),

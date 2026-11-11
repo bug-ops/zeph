@@ -422,7 +422,7 @@ mod tests {
             params: params.as_object().cloned().unwrap_or_default(),
             caller_id: None,
             context: None,
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         }
     }

@@ -247,6 +247,73 @@ arc_str_newtype!(
     /// it, and an empty id is never valid on the wire.
 );
 
+/// Error returned by [`ToolExecutionId::new`] when the supplied id is empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("tool execution id must not be empty")]
+pub struct EmptyToolExecutionId;
+
+/// Agent-assigned correlation id for one tool execution.
+///
+/// Unlike [`ToolCallId`] (assigned by the LLM provider), this id is generated once by the
+/// agent per tool call and carried through start, output and diff events so that channels
+/// (TUI, ACP) can correlate them. It is never empty: the only constructors are
+/// [`ToolExecutionId::generate`] and the validating [`ToolExecutionId::new`], and there is
+/// no `Default` or infallible `From<&str>`. Serialization is transparent.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::ToolExecutionId;
+///
+/// let id = ToolExecutionId::generate();
+/// assert!(!id.as_str().is_empty());
+/// assert!(ToolExecutionId::new("").is_err());
+/// assert_eq!(ToolExecutionId::new("exec_1").unwrap().as_str(), "exec_1");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct ToolExecutionId(Arc<str>);
+
+impl ToolExecutionId {
+    /// Generate a fresh random id (UUID v4).
+    #[must_use]
+    pub fn generate() -> Self {
+        Self(Arc::from(uuid::Uuid::new_v4().to_string()))
+    }
+
+    /// Wrap an externally supplied id (ACP/TUI boundaries, tests).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmptyToolExecutionId`] when the id is empty.
+    pub fn new(id: impl Into<Arc<str>>) -> Result<Self, EmptyToolExecutionId> {
+        let id = id.into();
+        if id.is_empty() {
+            Err(EmptyToolExecutionId)
+        } else {
+            Ok(Self(id))
+        }
+    }
+
+    /// Return the inner string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ToolExecutionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for ToolExecutionId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
 // ── ProviderName ─────────────────────────────────────────────────────────────
 
 arc_str_newtype!(
@@ -1137,5 +1204,17 @@ mod tests {
         assert_eq!(back, name);
         assert!(serde_json::from_str::<SkillName>(r#""Not Valid""#).is_err());
         assert!(serde_json::from_str::<SkillName>(r#""""#).is_err());
+    }
+
+    #[test]
+    fn tool_execution_id_serializes_as_plain_string() {
+        let id = ToolExecutionId::new("exec-1").unwrap();
+        assert_eq!(serde_json::to_string(&id).unwrap(), "\"exec-1\"");
+    }
+
+    #[test]
+    fn tool_execution_id_rejects_empty_and_generates_unique() {
+        assert_eq!(ToolExecutionId::new(""), Err(EmptyToolExecutionId));
+        assert_ne!(ToolExecutionId::generate(), ToolExecutionId::generate());
     }
 }

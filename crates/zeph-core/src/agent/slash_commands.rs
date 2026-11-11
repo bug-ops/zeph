@@ -532,6 +532,9 @@ impl<C: crate::channel::Channel> Agent<C> {
                             let _ =
                                 write!(out, "\n  Removed skills: {}", r.removed_skills.join(", "));
                         }
+                        for w in &r.warnings {
+                            let _ = write!(out, "\n  warning: {w}");
+                        }
                         out
                     }
                     Err(e) => format!("plugin remove failed: {e}"),

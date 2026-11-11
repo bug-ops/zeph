@@ -72,9 +72,10 @@ pub enum PluginError {
 
     /// The integrity registry exists but cannot be read or parsed.
     ///
-    /// Raised by mutations so that damaged digests are never overwritten.
+    /// Raised by mutations so that damaged digests are never overwritten, and by the overlay
+    /// verify path, which then skips every plugin rather than loading them unverified.
     #[error(
-        "plugin integrity registry {path} is unusable ({reason}); repair the file or delete it to start a fresh registry (installed plugins then load unverified until reinstalled)"
+        "plugin integrity registry {path} is unusable ({reason}); restore the file, or delete it and run plugin add for each installed plugin"
     )]
     IntegrityRegistryCorrupt {
         /// Registry file that failed to load.

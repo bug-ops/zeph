@@ -112,14 +112,14 @@ pub enum SessionEvent {
     AssistantMessage { parts: Vec<MessagePart> },
     /// A model-initiated tool invocation.
     ToolCall {
-        id: String,
+        id: zeph_common::ToolCallId,
         name: String,
         input: serde_json::Value,
     },
     /// The result of a [`SessionEvent::ToolCall`]. Replay never re-executes tools; it folds this
     /// recorded output.
     ToolResult {
-        id: String,
+        id: zeph_common::ToolCallId,
         name: String,
         output: String,
         is_error: bool,
@@ -180,7 +180,7 @@ mod tests {
             Some(2),
             None,
             SessionEvent::ToolResult {
-                id: "t1".to_owned(),
+                id: "t1".into(),
                 name: "shell".to_owned(),
                 output: "ok".to_owned(),
                 is_error: false,

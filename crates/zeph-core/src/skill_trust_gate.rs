@@ -627,7 +627,7 @@ mod tests {
             params: serde_json::Map::new(),
             caller_id: None,
             context: None,
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         assert!(

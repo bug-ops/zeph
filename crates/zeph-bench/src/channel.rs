@@ -470,7 +470,7 @@ mod tests {
             filter_stats: None,
             kept_lines: None,
             locations: None,
-            tool_call_id: "tc-1".into(),
+            tool_call_id: zeph_common::ToolExecutionId::new("tc-1").unwrap(),
             terminal_id: None,
             is_error: false,
             parent_tool_use_id: None,

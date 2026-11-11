@@ -313,12 +313,12 @@ AND the registry treats all plugin skills as hub-installed (non-bundled)
 | Plugin directory already installed | Overwrite with fresh copy (idempotent re-install) |
 | Remote download returns 404 | `PluginError::DownloadFailed` |
 | Archive SHA-256 mismatch | `PluginError::IntegrityCheckFailed`; archive not extracted |
-| Integrity registry corrupt or unreadable during a mutation | `update` returns `PluginError::IntegrityRegistryCorrupt`; registry file untouched; the calling operation logs a warning and continues (the plugin is not recorded until the user repairs or deletes the registry) (#6955). Load-time verification stays lenient: a damaged registry makes plugins load unverified |
+| Integrity registry corrupt or unreadable during a mutation | `update` returns `PluginError::IntegrityRegistryCorrupt`; registry file untouched; the calling operation (add, remove, auto-update) succeeds and reports a warning in its result (`AddResult`/`RemoveResult`/`AutoUpdateResult.warnings`); the plugin is not recorded until the user repairs or deletes the registry (#6955, #6962). Load-time verification fails closed: a corrupt or unreadable registry makes `resolve_overlays` skip every plugin with repair text in `skipped_plugins` (#6962) |
 | `.plugin.toml` write fails after copy | Integrity registry not updated; plugin loads unverified next time (M4 fault tolerance) |
 | Overlay resolve encounters missing `.plugin.toml` | Plugin is silently skipped; overlay merge continues with others |
 | Overlay resolve encounters unreadable directory | Logged at DEBUG; plugin skipped |
 | List enumerates symlink to plugin directory | Symlink is ignored (only real directories from `PluginManager::add` are valid) |
-| User modifies `.plugin.toml` after install | Integrity verification fails; logged at WARN; overlay still applied (assume user intention) |
+| User modifies `.plugin.toml` after install | Integrity verification fails (digest mismatch); the plugin is skipped and reported in `skipped_plugins` (#6962) |
 | Empty `skills` or `mcp.servers` list | Valid; plugin may provide only config overlays |
 | Large plugin (>1 GB) | Copied as-is (no size limit at plugin level) |
 | Plugin removes itself during load | Graceful; next agent restart will not find it |

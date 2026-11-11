@@ -681,21 +681,21 @@ async fn test_prepare_context_scrubs_secrets_when_redact_enabled() {
         "secret must be redacted"
     );
     assert!(
-        !user_msg.content.contains("/Users/dev/"),
-        "path must be redacted"
+        user_msg.content.contains("/Users/dev/config.toml"),
+        "path must reach the provider unmasked"
     );
     assert!(
         user_msg.content.contains("[REDACTED]"),
         "secret replaced with [REDACTED]"
     );
     assert!(
-        user_msg.content.contains("[PATH]"),
-        "path replaced with [PATH]"
+        !user_msg.content.contains("[PATH]"),
+        "provider-bound text is never path-masked"
     );
 }
 
 #[tokio::test]
-async fn test_prepare_context_preserves_system_prompt_paths() {
+async fn test_prepare_context_keeps_user_paths_with_working_dir_set() {
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);
     let registry = create_test_registry();
@@ -721,23 +721,6 @@ async fn test_prepare_context_preserves_system_prompt_paths() {
         .await
         .unwrap();
 
-    let system_msg = agent
-        .msg
-        .messages
-        .first()
-        .expect("system prompt must exist");
-    assert_eq!(system_msg.role, Role::System);
-    assert!(
-        system_msg
-            .content
-            .contains("working_directory: /Users/dev/project"),
-        "system prompt must keep the real working directory"
-    );
-    assert!(
-        !system_msg.content.contains("[PATH]"),
-        "system prompt must not leak placeholder paths into tool instructions"
-    );
-
     let user_msg = agent
         .msg
         .messages
@@ -745,12 +728,12 @@ async fn test_prepare_context_preserves_system_prompt_paths() {
         .find(|m| m.role == Role::User)
         .expect("user message must exist");
     assert!(
-        user_msg.content.contains("[PATH]"),
-        "user history should still be scrubbed"
+        !user_msg.content.contains("[PATH]"),
+        "user history is never path-masked"
     );
     assert!(
-        !user_msg.content.contains("/Users/dev/project"),
-        "user history must not keep the absolute path"
+        user_msg.content.contains("/Users/dev/project/src/main.rs"),
+        "user history keeps the real path"
     );
 }
 

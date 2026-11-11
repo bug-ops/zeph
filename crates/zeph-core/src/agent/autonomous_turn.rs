@@ -307,7 +307,7 @@ impl<C: Channel> Agent<C> {
             .take(20)
             .map(|m| {
                 // Scrub before truncating so a credential cut mid-token cannot escape the scrub.
-                let content = crate::redact::scrub_content(&m.content);
+                let content = crate::redact::redact_secrets(&m.content);
                 format!(
                     "{:?}: {}",
                     m.role,

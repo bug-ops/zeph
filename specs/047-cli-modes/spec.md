@@ -175,7 +175,7 @@ All events are single-line JSON objects:
 // Turn complete
 {"type": "response_end", "schema": 1}
 
-// Tool invocation
+// Tool invocation (the "id" of tool_call and tool_result is null when no execution id is present)
 {"type": "tool_call", "tool": "shell", "input": {...}, "id": "...", "schema": 1}
 
 // Tool result

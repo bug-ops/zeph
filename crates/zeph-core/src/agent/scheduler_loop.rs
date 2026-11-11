@@ -1797,17 +1797,14 @@ impl<C: crate::channel::Channel> Agent<C> {
                             },
                             caller_id: None,
                             context: None,
-                            tool_call_id: String::new(),
+                            tool_call_id: None,
                             skill_name: None,
                         };
-                        let output = loop {
+                        let started = std::time::Instant::now();
+                        let mut result = loop {
                             tokio::select! {
                                 result = self.tool_executor.execute_tool_call_erased(&call) => {
-                                    break match result {
-                                        Ok(Some(out)) => out.summary,
-                                        Ok(None) => "(no output)".to_owned(),
-                                        Err(e) => format!("[error] {e}"),
-                                    };
+                                    break result;
                                 }
                                 Some(event) = async {
                                     match self.services.mcp.elicitation_rx.as_mut() {
@@ -1818,6 +1815,18 @@ impl<C: crate::channel::Channel> Agent<C> {
                                     self.handle_elicitation_event(event).await;
                                 }
                             }
+                        };
+                        self.fire_post_tool_hooks(
+                            tc.name.as_str(),
+                            &tc.input,
+                            started,
+                            &mut result,
+                        )
+                        .await;
+                        let output = match result {
+                            Ok(Some(out)) => out.summary,
+                            Ok(None) => "(no output)".to_owned(),
+                            Err(e) => format!("[error] {e}"),
                         };
                         let is_error = output.starts_with("[error]");
                         tool_trace.push(ToolCallSummary {
@@ -4398,6 +4407,8 @@ mod tests {
         executor_calls: usize,
         /// `is_error` of the `ToolResult` the model received on its second request.
         result_is_error: bool,
+        /// `content` of that `ToolResult`.
+        result_content: String,
     }
 
     /// Run the inline loop once with a model that calls `tool`; `fail_closed` configures a
@@ -4405,6 +4416,15 @@ mod tests {
     async fn run_inline_with_pre_hook(
         tool: &'static str,
         fail_closed: Option<bool>,
+    ) -> InlineHookRun {
+        Box::pin(run_inline_with_hooks(tool, fail_closed, None)).await
+    }
+
+    /// Like [`run_inline_with_pre_hook`], plus an optional `PostToolUse` shell command on `tool`.
+    async fn run_inline_with_hooks(
+        tool: &'static str,
+        fail_closed: Option<bool>,
+        post_hook: Option<(&str, &str)>,
     ) -> InlineHookRun {
         use crate::agent::agent_tests::*;
         use std::sync::atomic::Ordering;
@@ -4449,20 +4469,35 @@ mod tests {
                 }],
             }];
         }
+        if let Some((matcher, command)) = post_hook {
+            agent.services.session.hooks_config.post_tool_use = vec![HookMatcher {
+                matcher: matcher.to_owned(),
+                hooks: vec![HookDef {
+                    action: HookAction::Command {
+                        command: command.to_owned(),
+                    },
+                    timeout_secs: 5,
+                    fail_closed: false,
+                    r#if: None,
+                }],
+            }];
+        }
 
         let trace = agent
             .run_inline_tool_loop("run the tool", 3)
             .await
             .expect("inline loop must complete")
             .tool_trace;
-        let result_is_error = recorded
+        let (result_is_error, result_content) = recorded
             .lock()
             .unwrap()
             .get(1)
             .and_then(|msgs| msgs.last())
             .and_then(|m| {
                 m.parts.iter().find_map(|p| match p {
-                    MessagePart::ToolResult { is_error, .. } => Some(*is_error),
+                    MessagePart::ToolResult {
+                        is_error, content, ..
+                    } => Some((*is_error, content.clone())),
                     _ => None,
                 })
             })
@@ -4471,6 +4506,7 @@ mod tests {
             trace,
             executor_calls: executor_calls.load(Ordering::SeqCst),
             result_is_error,
+            result_content,
         }
     }
 
@@ -4512,5 +4548,87 @@ mod tests {
         assert!(!run.trace[0].ok);
         assert_eq!(run.executor_calls, 0);
         assert!(run.result_is_error);
+    }
+
+    /// #6965: a `PostToolUse` hook fires for a non-builtin tool in the inline loop with the
+    /// main-loop context (`ZEPH_AGENT_TYPE`, duration env, stdin `agent_type`).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_inline_tool_loop_fires_post_tool_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("hook.out");
+        let command = format!(
+            "cat > {stdin}; printf '%s|%s' \"$ZEPH_AGENT_TYPE\" \"$ZEPH_TOOL_DURATION_MS\" > {out}",
+            stdin = dir.path().join("hook.stdin").display(),
+            out = out.display()
+        );
+        let run = Box::pin(run_inline_with_hooks(
+            "test_tool",
+            None,
+            Some(("test_tool", &command)),
+        ))
+        .await;
+        assert_eq!(run.executor_calls, 1);
+        assert_eq!(run.result_content, "EXECUTED");
+        let env_line = std::fs::read_to_string(&out).expect("post hook must have run");
+        let (agent_type, duration) = env_line.split_once('|').unwrap();
+        assert_eq!(agent_type, "main");
+        assert!(duration.parse::<u64>().is_ok(), "duration env: {duration}");
+        let stdin: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("hook.stdin")).unwrap())
+                .unwrap();
+        assert_eq!(stdin["tool_name"], "test_tool");
+        assert_eq!(stdin["agent_type"], "main");
+        assert_eq!(stdin["tool_output"], "EXECUTED");
+    }
+
+    /// #6965: `updatedToolOutput` from a `PostToolUse` hook replaces the result the model sees.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_inline_tool_loop_post_hook_replaces_output() {
+        let command = r#"printf '{"hookSpecificOutput":{"updatedToolOutput":"REPLACED"}}'"#;
+        let run = Box::pin(run_inline_with_hooks(
+            "test_tool",
+            None,
+            Some(("test_tool", command)),
+        ))
+        .await;
+        assert_eq!(run.result_content, "REPLACED");
+        assert!(!run.result_is_error);
+    }
+
+    /// #6965: a failing `PostToolUse` hook is fail-open and leaves the output untouched.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_inline_tool_loop_failing_post_hook_is_fail_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let command = format!("touch {}; exit 1", marker.display());
+        let run = Box::pin(run_inline_with_hooks(
+            "test_tool",
+            None,
+            Some(("test_tool", &command)),
+        ))
+        .await;
+        assert!(marker.exists(), "the failing hook must have run");
+        assert_eq!(run.result_content, "EXECUTED");
+        assert!(!run.result_is_error);
+    }
+
+    /// #6965: a `PostToolUse` hook whose matcher does not match the tool is not fired.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_inline_tool_loop_post_hook_skipped_for_non_matching_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let command = format!("touch {}", marker.display());
+        let run = Box::pin(run_inline_with_hooks(
+            "test_tool",
+            None,
+            Some(("other_tool", &command)),
+        ))
+        .await;
+        assert!(!marker.exists(), "non-matching hook must not run");
+        assert_eq!(run.result_content, "EXECUTED");
     }
 }

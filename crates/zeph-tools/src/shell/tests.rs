@@ -81,7 +81,7 @@ async fn execute_simple_command() {
         None,
         &[],
         None,
-        "",
+        None,
     )
     .await;
     assert!(result.contains("hello"));
@@ -99,7 +99,7 @@ async fn execute_stderr_output() {
         None,
         &[],
         None,
-        "",
+        None,
     )
     .await;
     assert!(result.contains("[stderr]"));
@@ -118,7 +118,7 @@ async fn execute_stdout_and_stderr_combined() {
         None,
         &[],
         None,
-        "",
+        None,
     )
     .await;
     assert!(result.contains("out"));
@@ -140,7 +140,7 @@ async fn execute_empty_output() {
         None,
         &[],
         None,
-        "",
+        None,
     )
     .await;
     assert_eq!(result, "(no output)");
@@ -858,7 +858,7 @@ async fn dyn_executor_forwards_remaining_cross_cutting_methods() {
         params: serde_json::Map::new(),
         caller_id: None,
         context: None,
-        tool_call_id: String::new(),
+        tool_call_id: None,
         skill_name: None,
     };
 
@@ -1092,7 +1092,7 @@ async fn execute_bash_injects_extra_env() {
         Some(&env),
         &[],
         None,
-        "",
+        None,
     )
     .await;
     assert_eq!(envelope.exit_code, 0);
@@ -1134,7 +1134,7 @@ async fn execute_bash_error_handling() {
         None,
         &[],
         None,
-        "",
+        None,
     )
     .await;
     assert_eq!(result, "(no output)");
@@ -1152,7 +1152,7 @@ async fn execute_bash_command_not_found() {
         None,
         &[],
         None,
-        "",
+        None,
     )
     .await;
     assert!(result.contains("[stderr]") || result.contains("[error]"));
@@ -1306,7 +1306,7 @@ async fn cancel_token_kills_child_process() {
         None,
         &[],
         None,
-        "",
+        None,
     )
     .await;
     assert_eq!(envelope.exit_code, 130);
@@ -1324,7 +1324,7 @@ async fn cancel_token_none_does_not_cancel() {
         None,
         &[],
         None,
-        "",
+        None,
     )
     .await;
     assert_eq!(envelope.exit_code, 0);
@@ -1351,7 +1351,7 @@ async fn cancel_kills_child_process_group() {
         None,
         &[],
         None,
-        "",
+        None,
     )
     .await;
     assert_eq!(envelope.exit_code, 130);
@@ -1391,7 +1391,7 @@ async fn execute_tool_call_valid_command() {
         caller_id: None,
         context: None,
 
-        tool_call_id: String::new(),
+        tool_call_id: None,
         skill_name: None,
     };
     let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
@@ -1407,7 +1407,7 @@ async fn execute_tool_call_missing_command_returns_invalid_params() {
         caller_id: None,
         context: None,
 
-        tool_call_id: String::new(),
+        tool_call_id: None,
         skill_name: None,
     };
     let result = executor.execute_tool_call(&call).await;
@@ -1425,7 +1425,7 @@ async fn execute_tool_call_empty_command_returns_none() {
         caller_id: None,
         context: None,
 
-        tool_call_id: String::new(),
+        tool_call_id: None,
         skill_name: None,
     };
     let result = executor.execute_tool_call(&call).await.unwrap();
@@ -2033,7 +2033,7 @@ async fn env_blocklist_strips_sensitive_vars() {
         None,
         &blocklist,
         None,
-        "",
+        None,
     )
     .await;
     unsafe { std::env::remove_var("ZEPH_SECRET_TEST_VAR") };
@@ -2057,7 +2057,7 @@ async fn env_blocklist_preserves_safe_vars() {
         None,
         &blocklist,
         None,
-        "",
+        None,
     )
     .await;
     assert_eq!(envelope.exit_code, 0);
@@ -2082,7 +2082,7 @@ async fn env_blocklist_extra_env_still_injected() {
         Some(&extra),
         &blocklist,
         None,
-        "",
+        None,
     )
     .await;
     assert_eq!(envelope.exit_code, 0);
@@ -2109,7 +2109,7 @@ async fn env_blocklist_multiple_prefixes() {
         None,
         &blocklist,
         None,
-        "",
+        None,
     )
     .await;
     unsafe {
@@ -2140,7 +2140,7 @@ async fn empty_env_blocklist_passes_all_vars() {
         None,
         &[],
         None,
-        "",
+        None,
     )
     .await;
     unsafe { std::env::remove_var("ZEPH_EMPTY_BLOCKLIST_TEST") };
@@ -2692,7 +2692,7 @@ async fn shell_output_envelope_separates_streams() {
         None,
         &[],
         None,
-        "",
+        None,
     )
     .await;
     assert!(
@@ -2753,7 +2753,7 @@ async fn shell_output_envelope_nonzero_exit_code() {
         None,
         &[],
         None,
-        "",
+        None,
     )
     .await;
     assert_eq!(
@@ -2911,7 +2911,7 @@ async fn execute_tool_call_with_background_true() {
         caller_id: None,
         context: None,
 
-        tool_call_id: String::new(),
+        tool_call_id: None,
         skill_name: None,
     };
     let result = executor.execute_tool_call(&call).await.unwrap().unwrap();
@@ -3477,7 +3477,7 @@ mod resolve_context {
             caller_id: None,
             context: Some(ctx),
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let output = executor.execute_tool_call(&call).await.unwrap().unwrap();
@@ -3519,7 +3519,7 @@ mod resolve_context {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let output = executor.execute_tool_call(&call).await.unwrap().unwrap();
@@ -3869,4 +3869,31 @@ async fn checkpoint_captures_new_file_under_symlinked_allowed_path() {
         !file_path.exists(),
         "undo must delete the newly-created file"
     );
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
+async fn output_chunks_carry_the_call_execution_id() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let executor = ShellExecutor::new(&default_config()).with_tool_event_tx(tx);
+    let id = zeph_common::ToolExecutionId::generate();
+    let call = ToolCall {
+        tool_id: ToolName::new("bash"),
+        params: [("command".to_owned(), serde_json::json!("echo hi"))]
+            .into_iter()
+            .collect(),
+        tool_call_id: Some(id.clone()),
+        ..Default::default()
+    };
+    executor.execute_tool_call(&call).await.unwrap().unwrap();
+    drop(executor);
+
+    let mut chunk_ids = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        if let ToolEvent::OutputChunk { tool_call_id, .. } = ev {
+            chunk_ids.push(tool_call_id);
+        }
+    }
+    assert!(!chunk_ids.is_empty(), "expected at least one OutputChunk");
+    assert!(chunk_ids.iter().all(|c| c.as_ref() == Some(&id)));
 }

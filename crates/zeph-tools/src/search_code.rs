@@ -929,7 +929,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let err = exec.execute_tool_call(&call).await.unwrap_err();
@@ -951,7 +951,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let out = exec.execute_tool_call(&call).await.unwrap().unwrap();
@@ -975,7 +975,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let out = exec.execute_tool_call(&call).await.unwrap().unwrap();
@@ -1015,7 +1015,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let out = tokio::time::timeout(
@@ -1057,7 +1057,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let out = tokio::time::timeout(Duration::from_secs(10), exec.execute_tool_call(&call))
@@ -1124,7 +1124,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let out = tokio::time::timeout(Duration::from_secs(10), exec.execute_tool_call(&call))
@@ -1161,7 +1161,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let out = tokio::time::timeout(Duration::from_secs(10), exec.execute_tool_call(&call))
@@ -1198,7 +1198,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let out = tokio::time::timeout(Duration::from_secs(10), exec.execute_tool_call(&call))
@@ -1235,7 +1235,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let out = tokio::time::timeout(Duration::from_secs(10), exec.execute_tool_call(&call))

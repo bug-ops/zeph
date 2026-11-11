@@ -149,7 +149,7 @@ impl ExtractMode {
 ///     },
 ///     caller_id: None,
 ///     context: None,
-///     tool_call_id: String::new(),
+///     tool_call_id: None,
 ///     skill_name: None,
 /// };
 /// let _ = executor.execute_tool_call(&call).await;
@@ -2045,7 +2045,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
@@ -2069,7 +2069,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
@@ -2093,7 +2093,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
@@ -2110,7 +2110,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
@@ -2342,7 +2342,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
@@ -2460,7 +2460,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = executor.execute_tool_call(&call).await;
@@ -2493,7 +2493,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         // Must not panic even without an audit logger

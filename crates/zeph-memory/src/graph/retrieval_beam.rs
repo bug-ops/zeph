@@ -190,6 +190,7 @@ pub async fn graph_recall_beam(
                 edge_type: edge.edge_type,
                 retrieval_count: edge.retrieval_count,
                 edge_id: Some(edge.id),
+                trust: edge.effective_trust(),
             });
         }
     }

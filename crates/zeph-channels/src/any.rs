@@ -171,7 +171,7 @@ impl Channel for AnyChannel {
     async fn send_diff(
         &mut self,
         diff: zeph_core::DiffData,
-        tool_call_id: &str,
+        tool_call_id: &zeph_common::ToolExecutionId,
     ) -> Result<(), ChannelError> {
         dispatch_channel!(self, send_diff, diff, tool_call_id)
     }
@@ -309,7 +309,7 @@ mod tests {
         assert!(
             ch.send_tool_start(ToolStartEvent {
                 tool_name: "shell".into(),
-                tool_call_id: "tc-001".into(),
+                tool_call_id: zeph_common::ToolExecutionId::new("tc-001").unwrap(),
                 params: None,
                 parent_tool_use_id: None,
                 started_at: std::time::Instant::now(),
@@ -361,14 +361,14 @@ mod tests {
                 old_content: String::new(),
                 new_content: String::new(),
             },
-            "test-call-id",
+            &zeph_common::ToolExecutionId::new("test-call-id").unwrap(),
         )
         .await
         .unwrap();
         // 13. send_tool_start
         ch.send_tool_start(ToolStartEvent {
             tool_name: "bash".into(),
-            tool_call_id: "x".into(),
+            tool_call_id: zeph_common::ToolExecutionId::new("x").unwrap(),
             params: None,
             parent_tool_use_id: None,
             started_at: std::time::Instant::now(),
@@ -386,7 +386,7 @@ mod tests {
             filter_stats: None,
             kept_lines: None,
             locations: None,
-            tool_call_id: "x".into(),
+            tool_call_id: zeph_common::ToolExecutionId::new("x").unwrap(),
 
             terminal_id: None,
             is_error: false,

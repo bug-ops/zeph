@@ -600,6 +600,9 @@ pub struct MemGraphNeighbor {
     pub fact: String,
     /// Confidence score in `[0, 1]`.
     pub confidence: f32,
+    /// Trust tier of the neighbor's source edge; a `NULL` stored tier arrives as
+    /// [`TurnContextTrust::ExternalUntrusted`](crate::trust_level::TurnContextTrust).
+    pub trust: crate::trust_level::TurnContextTrust,
 }
 
 /// A graph fact projection used by context assembly.
@@ -615,6 +618,9 @@ pub struct MemGraphFact {
     pub neighbors: Vec<MemGraphNeighbor>,
     /// `ZoomIn` provenance snippet, if view-aware provenance was requested.
     pub provenance_snippet: Option<String>,
+    /// Trust tier of the fact's source edge; a `NULL` stored tier arrives as
+    /// [`TurnContextTrust::ExternalUntrusted`](crate::trust_level::TurnContextTrust).
+    pub trust: crate::trust_level::TurnContextTrust,
 }
 
 /// A cross-session summary search result used by context assembly.

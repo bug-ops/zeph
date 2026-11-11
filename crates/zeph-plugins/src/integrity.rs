@@ -54,40 +54,12 @@ impl IntegrityRegistry {
         zeph_config::default_integrity_registry_path()
     }
 
-    /// Load the registry from `path`, tolerating damage.
-    ///
-    /// Missing file, unreadable or unparseable content is treated as an empty registry, and
-    /// non-string values are skipped (forward-compat with pre-integrity installs). Used for
-    /// verification only; a mutation must use [`Self::load_strict`] so damage is never
-    /// persisted over the stored digests.
-    pub(crate) fn load(path: &Path) -> Self {
-        match read_table(path) {
-            Ok(None) => Self::default(),
-            Ok(Some(table)) => Self {
-                entries: table
-                    .into_iter()
-                    .filter_map(|(k, v)| match v {
-                        toml::Value::String(s) => Some((k, s)),
-                        _ => None,
-                    })
-                    .collect(),
-            },
-            Err(TableError::Read(e)) => {
-                tracing::debug!(path = %path.display(), error = %e, "integrity registry read failed; treating as empty");
-                Self::default()
-            }
-            Err(TableError::Content(reason)) => {
-                tracing::warn!(path = %path.display(), %reason, "integrity registry unusable; treating as empty");
-                Self::default()
-            }
-        }
-    }
-
     /// Load the registry from `path`, failing on any damage.
     ///
     /// A missing file is an empty registry (first install). Every other problem (read error,
     /// invalid UTF-8, invalid TOML, a non-string value) is an error, so a read-modify-write
-    /// never overwrites digests it could not read.
+    /// never overwrites digests it could not read and verification never treats damage as
+    /// "nothing recorded".
     ///
     /// # Errors
     ///
@@ -161,6 +133,21 @@ impl IntegrityRegistry {
         f: impl FnOnce(&mut Self) -> Result<(), PluginError>,
     ) -> Result<(), PluginError> {
         Self::update_with_timeout(path, LOCK_TIMEOUT, f)
+    }
+
+    /// Like [`Self::update`], but turns a failure into a user-facing warning instead of an error.
+    ///
+    /// For callers whose filesystem change has already happened and cannot be rolled back
+    /// (add, remove, auto-update swap): the failure is logged and returned as `Some(text)` for
+    /// the caller to surface. `effect` states what the failure leaves behind.
+    pub(crate) fn update_reporting(
+        path: &Path,
+        effect: &str,
+        f: impl FnOnce(&mut Self) -> Result<(), PluginError>,
+    ) -> Option<String> {
+        let e = Self::update(path, f).err()?;
+        tracing::warn!(error = %e, effect, "failed to update integrity registry");
+        Some(warning_text(effect, &e))
     }
 
     fn update_with_timeout(
@@ -242,13 +229,35 @@ impl IntegrityRegistry {
     }
 }
 
-/// Why [`read_table`] failed; kept apart so the lenient load can log read errors at debug.
+/// Why [`read_table`] failed.
 #[derive(Debug, thiserror::Error)]
 enum TableError {
     #[error("read failed: {0}")]
     Read(std::io::Error),
     #[error("{0}")]
     Content(String),
+}
+
+/// User-facing warning for a failed registry update. Only a damaged registry gets repair advice;
+/// a lock timeout or I/O failure is transient, so the advice there is to retry, never to delete.
+fn warning_text(effect: &str, e: &PluginError) -> String {
+    match e {
+        PluginError::IntegrityRegistryCorrupt { reason, .. } => format!(
+            "{effect}: integrity registry unusable ({reason}); restore it, or delete it and run plugin add for each installed plugin before restarting"
+        ),
+        other => format!(
+            "{effect}: integrity registry could not be updated ({other}); fix the cause and run plugin add again for this plugin"
+        ),
+    }
+}
+
+/// Reason text for `e`: the inner reason for a corrupt registry (the variant's own message
+/// carries repair advice that callers would duplicate), the full message otherwise.
+pub(crate) fn damage_reason(e: &PluginError) -> String {
+    match e {
+        PluginError::IntegrityRegistryCorrupt { reason, .. } => reason.clone(),
+        other => other.to_string(),
+    }
 }
 
 /// Read `path` as a TOML table. `Ok(None)` means the file does not exist.
@@ -337,11 +346,11 @@ mod tests {
         let toml_path = dir.path().join("plugin.toml");
         std::fs::write(&toml_path, b"[plugin]\nname = \"test\"\n").unwrap();
 
-        let mut reg = IntegrityRegistry::load(&reg_path);
+        let mut reg = IntegrityRegistry::load_strict(&reg_path).unwrap();
         reg.record("test-plugin", &toml_path).unwrap();
         reg.save(&reg_path).unwrap();
 
-        let reg2 = IntegrityRegistry::load(&reg_path);
+        let reg2 = IntegrityRegistry::load_strict(&reg_path).unwrap();
         assert_matches!(
             reg2.verify("test-plugin", &toml_path).unwrap(),
             VerifyResult::Match
@@ -355,14 +364,14 @@ mod tests {
         let toml_path = dir.path().join("plugin.toml");
         std::fs::write(&toml_path, b"[plugin]\nname = \"original\"\n").unwrap();
 
-        let mut reg = IntegrityRegistry::load(&reg_path);
+        let mut reg = IntegrityRegistry::load_strict(&reg_path).unwrap();
         reg.record("test-plugin", &toml_path).unwrap();
         reg.save(&reg_path).unwrap();
 
         // Tamper the manifest.
         std::fs::write(&toml_path, b"[plugin]\nname = \"tampered\"\n").unwrap();
 
-        let reg2 = IntegrityRegistry::load(&reg_path);
+        let reg2 = IntegrityRegistry::load_strict(&reg_path).unwrap();
         assert_matches!(
             reg2.verify("test-plugin", &toml_path).unwrap(),
             VerifyResult::Mismatch { .. }
@@ -376,7 +385,7 @@ mod tests {
         let toml_path = dir.path().join("plugin.toml");
         std::fs::write(&toml_path, b"[plugin]\nname = \"test\"\n").unwrap();
 
-        let reg = IntegrityRegistry::load(&reg_path);
+        let reg = IntegrityRegistry::load_strict(&reg_path).unwrap();
         // No entry recorded — should be allowed.
         assert_matches!(
             reg.verify("unknown-plugin", &toml_path).unwrap(),
@@ -385,12 +394,61 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_integrity_registry_load_is_lenient() {
+    fn corrupt_integrity_registry_load_errors() {
         let dir = TempDir::new().unwrap();
         let reg_path = tmp_registry(&dir);
         std::fs::write(&reg_path, b"not valid toml !!!").unwrap();
 
-        assert!(IntegrityRegistry::load(&reg_path).entries.is_empty());
+        assert_matches!(
+            IntegrityRegistry::load_strict(&reg_path),
+            Err(PluginError::IntegrityRegistryCorrupt { .. })
+        );
+    }
+
+    #[test]
+    fn warning_text_for_transient_failures_never_advises_deleting() {
+        let lock = PluginError::LockTimeout {
+            path: PathBuf::from("r.lock"),
+            waited: Duration::from_secs(10),
+        };
+        let io = PluginError::Io {
+            path: PathBuf::from("r"),
+            source: std::io::Error::other("disk"),
+        };
+        for e in [lock, io] {
+            let text = warning_text("effect", &e);
+            assert!(text.contains("could not be updated"), "{text}");
+            assert!(!text.contains("delete"), "{text}");
+            assert!(!text.contains("unusable"), "{text}");
+        }
+    }
+
+    #[test]
+    fn update_reporting_warns_when_registry_path_is_a_directory() {
+        let dir = TempDir::new().unwrap();
+        let reg_path = tmp_registry(&dir);
+        std::fs::create_dir(&reg_path).unwrap();
+
+        let warning = IntegrityRegistry::update_reporting(&reg_path, "effect", |_| Ok(()))
+            .expect("unreadable registry must produce a warning");
+        assert!(warning.starts_with("effect: "), "{warning}");
+        assert!(reg_path.is_dir());
+    }
+
+    #[test]
+    fn update_reporting_warns_on_corrupt_registry_and_is_silent_on_success() {
+        let dir = TempDir::new().unwrap();
+        let reg_path = tmp_registry(&dir);
+        assert!(IntegrityRegistry::update_reporting(&reg_path, "effect", |_| Ok(())).is_none());
+
+        std::fs::write(&reg_path, b"not valid toml !!!").unwrap();
+        let warning = IntegrityRegistry::update_reporting(&reg_path, "effect", |_| Ok(()))
+            .expect("corrupt registry must produce a warning");
+        assert!(warning.starts_with("effect: integrity registry unusable (invalid TOML"));
+        assert!(
+            !warning.contains("is unusable"),
+            "inner reason only: {warning}"
+        );
     }
 
     #[test]
@@ -446,15 +504,15 @@ mod tests {
         let toml_path = dir.path().join("plugin.toml");
         std::fs::write(&toml_path, b"[plugin]\nname = \"test\"\n").unwrap();
 
-        let mut reg = IntegrityRegistry::load(&reg_path);
+        let mut reg = IntegrityRegistry::load_strict(&reg_path).unwrap();
         reg.record("test-plugin", &toml_path).unwrap();
         reg.save(&reg_path).unwrap();
 
-        let mut reg2 = IntegrityRegistry::load(&reg_path);
+        let mut reg2 = IntegrityRegistry::load_strict(&reg_path).unwrap();
         reg2.remove("test-plugin");
         reg2.save(&reg_path).unwrap();
 
-        let reg3 = IntegrityRegistry::load(&reg_path);
+        let reg3 = IntegrityRegistry::load_strict(&reg_path).unwrap();
         assert!(reg3.entries.is_empty());
     }
 
@@ -483,7 +541,13 @@ mod tests {
         drop(held);
         rx.recv_timeout(Duration::from_secs(5)).unwrap();
         worker.join().unwrap().unwrap();
-        assert_eq!(IntegrityRegistry::load(&reg_path).entries.len(), 1);
+        assert_eq!(
+            IntegrityRegistry::load_strict(&reg_path)
+                .unwrap()
+                .entries
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -549,7 +613,12 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        assert!(IntegrityRegistry::load(&reg_path).entries.is_empty());
+        assert!(
+            IntegrityRegistry::load_strict(&reg_path)
+                .unwrap()
+                .entries
+                .is_empty()
+        );
     }
 
     #[cfg(unix)]

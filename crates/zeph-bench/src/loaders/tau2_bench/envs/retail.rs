@@ -200,7 +200,7 @@ impl RetailEnv {
                 params: action.arguments.clone(),
                 caller_id: None,
                 context: None,
-                tool_call_id: String::new(),
+                tool_call_id: None,
                 skill_name: None,
             };
             self.execute_tool_call(&call).await.map_err(|e| {
@@ -799,7 +799,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         }
     }

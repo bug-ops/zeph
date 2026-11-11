@@ -256,7 +256,7 @@ mod tests {
             None,
             None,
             SessionEvent::ToolCall {
-                id: "t1".to_owned(),
+                id: "t1".into(),
                 name: "shell".to_owned(),
                 input: serde_json::json!({}),
             },
@@ -301,7 +301,7 @@ mod tests {
             None,
             None,
             SessionEvent::ToolCall {
-                id: "t1".to_owned(),
+                id: "t1".into(),
                 name: "shell".to_owned(),
                 input: serde_json::json!({}),
             },

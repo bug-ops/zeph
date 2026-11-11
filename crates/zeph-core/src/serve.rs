@@ -84,8 +84,8 @@ pub enum SessionOutput {
     ToolCall {
         /// Name of the tool being invoked.
         tool_name: String,
-        /// Opaque tool call ID assigned by the LLM.
-        tool_call_id: String,
+        /// Agent-assigned execution id for this tool call.
+        tool_call_id: zeph_common::ToolExecutionId,
     },
     /// A tool call produced output.
     ToolResult {

@@ -115,7 +115,7 @@ fn make_calls(n: usize) -> Vec<ToolCall> {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         })
         .collect()
@@ -322,7 +322,7 @@ async fn process_one_tool_result_blocked_is_error_with_policy_message() {
     agent
         .process_one_tool_result(
             &tc,
-            "id-blocked",
+            &zeph_common::ToolExecutionId::new("id-blocked").unwrap(),
             &Instant::now(),
             Err(zeph_tools::ToolError::Blocked {
                 command: "rm -rf /".into(),
@@ -371,7 +371,7 @@ async fn process_one_tool_result_cancelled_is_error() {
     agent
         .process_one_tool_result(
             &tc,
-            "id-cancel",
+            &zeph_common::ToolExecutionId::new("id-cancel").unwrap(),
             &Instant::now(),
             Err(zeph_tools::ToolError::Cancelled),
             &mut result_parts,
@@ -413,7 +413,7 @@ async fn process_one_tool_result_sandbox_violation_is_error_with_sandbox_message
     agent
         .process_one_tool_result(
             &tc,
-            "id-sandbox",
+            &zeph_common::ToolExecutionId::new("id-sandbox").unwrap(),
             &Instant::now(),
             Err(zeph_tools::ToolError::SandboxViolation {
                 path: "/etc/passwd".into(),
@@ -465,7 +465,7 @@ async fn process_one_tool_result_ok_none_is_success_with_no_output_marker() {
     agent
         .process_one_tool_result(
             &tc,
-            "id-none",
+            &zeph_common::ToolExecutionId::new("id-none").unwrap(),
             &Instant::now(),
             Ok(None),
             &mut result_parts,
@@ -527,7 +527,7 @@ async fn process_one_tool_result_with_output_pushes_success_tool_result() {
     agent
         .process_one_tool_result(
             &tc,
-            "id-out",
+            &zeph_common::ToolExecutionId::new("id-out").unwrap(),
             &Instant::now(),
             Ok(Some(output)),
             &mut result_parts,
@@ -590,7 +590,7 @@ async fn process_one_tool_result_whitespace_only_output_is_still_success() {
     agent
         .process_one_tool_result(
             &tc,
-            "id-empty",
+            &zeph_common::ToolExecutionId::new("id-empty").unwrap(),
             &Instant::now(),
             Ok(Some(output)),
             &mut result_parts,
@@ -646,7 +646,7 @@ async fn process_one_tool_result_error_prefix_records_tool_failure_outcome() {
     agent
         .process_one_tool_result(
             &tc,
-            "id-error-prefix",
+            &zeph_common::ToolExecutionId::new("id-error-prefix").unwrap(),
             &Instant::now(),
             Ok(Some(output)),
             &mut Vec::new(),

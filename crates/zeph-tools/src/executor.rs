@@ -41,7 +41,7 @@ pub struct DiffData {
 ///     },
 ///     caller_id: Some("user-42".to_owned()),
 ///     context: Some(ExecutionContext::new().with_name("repo")),
-///     tool_call_id: String::new(),
+///     tool_call_id: None,
 ///     skill_name: None,
 /// };
 /// assert_eq!(call.tool_id, "bash");
@@ -58,9 +58,9 @@ pub struct ToolCall {
     /// Per-turn execution environment. `None` means use the executor default (process CWD
     /// and inherited env), which is identical to the behaviour before this field existed.
     pub context: Option<crate::ExecutionContext>,
-    /// Opaque tool call ID used to correlate [`ToolEvent::OutputChunk`] events with
-    /// their originating tool call in the TUI. Empty when not set by the agent loop.
-    pub tool_call_id: String,
+    /// Agent-assigned execution id used to correlate [`ToolEvent::OutputChunk`] events with
+    /// their originating tool call in the TUI. `None` for calls not issued by the agent loop.
+    pub tool_call_id: Option<zeph_common::ToolExecutionId>,
     /// Names of skills active in the turn that issued this tool call (turn-level attribution).
     ///
     /// This is a best-effort, turn-scoped field: it lists the skills injected into the
@@ -390,9 +390,9 @@ pub enum ToolEvent {
         tool_name: ToolName,
         command: String,
         chunk: String,
-        /// Opaque tool call ID matching the corresponding [`ToolEvent::Started`] event.
-        /// Empty string when the executor does not have access to the call ID.
-        tool_call_id: String,
+        /// Execution id matching the corresponding [`ToolEvent::Started`] event.
+        /// `None` when the executor does not have access to the call ID.
+        tool_call_id: Option<zeph_common::ToolExecutionId>,
         /// Skills active in the turn that triggered this tool call (turn-level attribution).
         skill_name: Option<Vec<String>>,
     },
@@ -1538,7 +1538,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
@@ -1695,7 +1695,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         };
         let result = exec.execute_tool_call(&call).await.unwrap();
@@ -2071,7 +2071,7 @@ mod tests {
             caller_id: None,
             context: None,
 
-            tool_call_id: String::new(),
+            tool_call_id: None,
             skill_name: None,
         }
     }
