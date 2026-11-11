@@ -347,6 +347,19 @@ pub trait Channel: Send {
     /// Returns an error if the underlying I/O fails.
     fn send(&mut self, text: &str) -> impl Future<Output = Result<(), ChannelError>> + Send;
 
+    /// Send a visible in-turn disclosure notice (e.g. the memory-write disclosure, spec 083).
+    ///
+    /// Defaults to [`send`](Channel::send), so human-facing channels show the notice as a
+    /// regular message. Machine-readable channels override it to emit a non-response event
+    /// so the notice never appears as assistant output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying I/O fails.
+    fn send_notice(&mut self, text: &str) -> impl Future<Output = Result<(), ChannelError>> + Send {
+        self.send(text)
+    }
+
     /// Send a partial chunk of streaming response.
     ///
     /// # Errors

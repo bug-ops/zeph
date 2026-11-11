@@ -973,7 +973,7 @@ pub(crate) fn tool_def_to_definition_with_tafc(
 impl<C: Channel> Agent<C> {
     /// Run the VIGIL gate on `body` and return `(body_after, outcome)`.
     ///
-    /// Returns `(body, None)` immediately for subagent sessions or when the gate is absent.
+    /// Returns `(body, None)` immediately when the gate is absent (subagent sessions never get one).
     /// On `Sanitize`: emits `VigilFlag` event, bumps `vigil_flags_total`.
     /// On `Block`: emits `VigilFlag` event, bumps both counters; caller skips `ContentSanitizer`.
     pub(super) fn run_vigil_gate(
@@ -981,10 +981,7 @@ impl<C: Channel> Agent<C> {
         tool_name: &str,
         body: String,
     ) -> (String, Option<VigilOutcome>) {
-        // Subagent exemption (FR-009): skip VIGIL entirely.
-        if self.services.session.parent_tool_use_id.is_some() {
-            return (body, None);
-        }
+        // Subagent exemption (FR-009) is structural: spawned subagents never receive a gate.
         let Some(ref gate) = self.services.security.vigil else {
             return (body, None);
         };

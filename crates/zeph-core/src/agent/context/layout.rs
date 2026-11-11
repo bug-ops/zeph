@@ -1319,8 +1319,8 @@ mod agent_tests {
         }
     }
 
-    // `scrub_message` skips `TurnContext` parts (`_ => false`), so the directive keeps its real
-    // working directory whatever the scrub does to text parts; this pins that on the wire message.
+    // `scrub_message` strips only secrets from `TurnContext` blocks (no path masking), so the
+    // directive keeps its real working directory; this pins that on the wire message.
     #[tokio::test]
     async fn directive_keeps_the_real_working_directory_on_the_request() {
         let mut agent = agent_with(ContextLayout::Append).with_working_dir("/Users/dev/project");

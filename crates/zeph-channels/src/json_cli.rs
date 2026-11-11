@@ -220,6 +220,12 @@ impl Channel for JsonCliChannel {
     }
 
     #[allow(clippy::unused_async_trait_impl)]
+    async fn send_notice(&mut self, text: &str) -> Result<(), ChannelError> {
+        self.sink.emit(&JsonEvent::Status { message: text });
+        Ok(())
+    }
+
+    #[allow(clippy::unused_async_trait_impl)]
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
         self.sink.emit(&JsonEvent::Status { message: text });
         Ok(())
@@ -445,6 +451,19 @@ mod tests {
         let (sink, _read) = make_test_sink();
         let mut ch = JsonCliChannel::new(Arc::clone(&sink), false);
         assert!(ch.send_status("working…").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn send_notice_emits_status_not_response_chunk() {
+        let (sink, read) = make_test_sink();
+        let mut ch = JsonCliChannel::new(Arc::clone(&sink), false);
+        ch.send_notice("Saved to memory — source: x (y)")
+            .await
+            .unwrap();
+        let lines = read();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(event_field(&lines[0], "event"), "status");
+        assert!(!lines.iter().any(|l| l.contains("response_chunk")));
     }
 
     #[tokio::test]

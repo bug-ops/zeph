@@ -113,6 +113,10 @@ impl<C: zeph_core::channel::Channel> zeph_core::channel::Channel for GatewayChan
         self.inner.send_typing().await
     }
 
+    async fn send_notice(&mut self, text: &str) -> Result<(), zeph_core::channel::ChannelError> {
+        self.inner.send_notice(text).await
+    }
+
     async fn send_status(&mut self, text: &str) -> Result<(), zeph_core::channel::ChannelError> {
         self.inner.send_status(text).await
     }
