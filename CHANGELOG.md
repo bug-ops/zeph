@@ -20,10 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `zeph-common`, `zeph-llm`, `zeph-context`, `zeph-core`, `zeph-subagent`, `zeph-acp`: `ToolCallId` newtype for model- and history-side tool-call ids (`ToolUseRequest.id`, `MessagePart::ToolUse.id`, `ToolResult.tool_use_id`); wire format unchanged (breaking) (#PR)
-- `zeph-agent-context`, `zeph-core`: remove the test-only `ContextService::{inject_semantic_recall_bare, inject_cross_session_context, inject_summaries}` (breaking) (#PR)
-- `zeph-memory`, `zeph-db`: graph entities and edges persist `trust_level` (migration 117, NULL for conversation origin; `Entity`/`Edge` gain a `trust_level` field) (breaking) (#PR)
-- `zeph-a2a`: agent-card signing canonicalization mirrors a2a-python `_clean_empty` (drops null, empty string, `[]` and `{}`; keeps `false` and `0`), verified against `a2a-sdk` 1.3.0 vectors (#PR)
+- `zeph-common`, `zeph-llm`, `zeph-context`, `zeph-core`, `zeph-subagent`, `zeph-acp`: `ToolCallId` newtype for model- and history-side tool-call ids (`ToolUseRequest.id`, `MessagePart::ToolUse.id`, `ToolResult.tool_use_id`); wire format unchanged (breaking) (#6969)
+- `zeph-agent-context`, `zeph-core`: remove the test-only `ContextService::{inject_semantic_recall_bare, inject_cross_session_context, inject_summaries}` (breaking) (#6969)
+- `zeph-memory`, `zeph-db`: graph entities and edges persist `trust_level` (migration 117, NULL for conversation origin; `Entity`/`Edge` gain a `trust_level` field) (breaking) (#6969)
+- `zeph-a2a`: agent-card signing canonicalization mirrors a2a-python `_clean_empty` (drops null, empty string, `[]` and `{}`; keeps `false` and `0`), verified against `a2a-sdk` 1.3.0 vectors (#6969)
 - `workspace`: clean clippy on rustc 1.99 (assert_is_empty, approx_constant, doc_markdown) while staying clean on the pinned 1.98 (#6926)
 - `deps`: bump `rmcp` to 3.9.0 (RUSTSEC-2026-0462) and ignore RUSTSEC-2026-0459 for `libsqlite3-sys` pinned below 0.38 by `sqlx-sqlite` (#6885)
 - `deps`: bump `crypto-bigint` 0.7 and `ctutils` to patched versions and ignore RUSTSEC-2026-0387 for `crypto-bigint` 0.5 pinned by `age` (#6870)
@@ -44,10 +44,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `zeph-core`: the orchestration inline tool loop fires `PreToolUse` hooks and honors `fail_closed` blocks (#PR)
-- `zeph-agent-context`: memory sanitization and truncation reach the wire for parts-based messages (#PR)
-- `zeph-plugins`: a corrupt or unreadable integrity registry is no longer overwritten on install, removal or update (the registry update aborts and callers warn with the repair step; a new plugin loads unverified until repaired), so stored digests are not dropped (#PR)
-- `zeph-llm`: the Gonka provider clears its usage tracker per chat call, so a stream no longer reports the previous call's usage (#PR)
+- `zeph-core`: the orchestration inline tool loop fires `PreToolUse` hooks and honors `fail_closed` blocks (#6969)
+- `zeph-agent-context`: memory sanitization and truncation reach the wire for parts-based messages (#6969)
+- `zeph-plugins`: a corrupt or unreadable integrity registry is no longer overwritten on install, removal or update (the registry update aborts and callers warn with the repair step; a new plugin loads unverified until repaired), so stored digests are not dropped (#6969)
+- `zeph-llm`: the Gonka provider clears its usage tracker per chat call, so a stream no longer reports the previous call's usage (#6969)
 - `zeph-subagent`, `zeph-core`: a failing `fail_closed` PreToolUse hook blocks the tool in the subagent loop; the block message no longer shows the hook command (#6937) (#6961)
 - `zeph-subagent`: a sub-agent can reply to any ancestor and the ancestor walk has a cycle guard (#6933) (#6961)
 - `zeph-context`, `zeph-agent-context`, `zeph-core`: memory and recall context is credential-scrubbed before sanitizing in both layouts, including the inline orchestration tool loop, tiered recall and Summary, CrossSession and CodeContext parts (#6951) (#6961)
