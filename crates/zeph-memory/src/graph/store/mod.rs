@@ -20,8 +20,21 @@ use crate::graph::conflict::{ApexMetrics, SUPERSEDE_DEPTH_CAP};
 use crate::types::{EntityId, MessageId};
 
 use super::types::{
-    Community, Edge, EdgeType, Entity, EntityAlias, EntityType, GraphProvenance, provenance_parts,
+    Community, Edge, EdgeType, Entity, EntityAlias, EntityType, GraphProvenance,
+    decode_trust_level, provenance_parts,
 };
+
+/// SQL expression merging a stored `trust_level` with an incoming one.
+///
+/// `NULL` (never ingest-classified) absorbs: an unassessed source taints the row as unassessed
+/// and the taint stays sticky. Otherwise the least trusted (highest) tier wins.
+fn trust_merge_sql(stored: &str, incoming: &str) -> String {
+    format!(
+        "CASE WHEN {stored} IS NULL OR {incoming} IS NULL THEN NULL \
+         ELSE {greatest}({stored}, {incoming}) END",
+        greatest = <ActiveDialect as zeph_db::dialect::Dialect>::GREATEST_FN
+    )
+}
 
 /// SQLite-backed persistence layer for the knowledge graph.
 ///
@@ -114,24 +127,30 @@ impl GraphStore {
         provenance: Option<&GraphProvenance>,
     ) -> Result<EntityId, MemoryError> {
         let type_str = entity_type.as_str();
-        let (origin, batch_id, _source_uri) = provenance_parts(provenance);
-        let id: i64 = zeph_db::query_scalar(sql!(
-            "INSERT INTO graph_entities (name, canonical_name, entity_type, summary, origin, import_batch_id)
-             VALUES (?, ?, ?, ?, ?, ?)
-             ON CONFLICT(canonical_name, entity_type) DO UPDATE SET
-               name = excluded.name,
-               summary = COALESCE(excluded.summary, graph_entities.summary),
-               last_seen_at = CURRENT_TIMESTAMP
+        let (origin, batch_id, _source_uri, trust) = provenance_parts(provenance);
+        let merged_trust = trust_merge_sql("graph_entities.trust_level", "excluded.trust_level");
+        let raw = format!(
+            "INSERT INTO graph_entities \
+               (name, canonical_name, entity_type, summary, origin, import_batch_id, trust_level) \
+             VALUES (?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(canonical_name, entity_type) DO UPDATE SET \
+               name = excluded.name, \
+               summary = COALESCE(excluded.summary, graph_entities.summary), \
+               trust_level = {merged_trust}, \
+               last_seen_at = CURRENT_TIMESTAMP \
              RETURNING id"
-        ))
-        .bind(surface_name)
-        .bind(canonical_name)
-        .bind(type_str)
-        .bind(summary)
-        .bind(origin)
-        .bind(batch_id)
-        .fetch_one(&self.pool)
-        .await?;
+        );
+        let id: i64 =
+            zeph_db::query_scalar(sqlx::AssertSqlSafe(zeph_db::rewrite_placeholders(&raw)))
+                .bind(surface_name)
+                .bind(canonical_name)
+                .bind(type_str)
+                .bind(summary)
+                .bind(origin)
+                .bind(batch_id)
+                .bind(trust)
+                .fetch_one(&self.pool)
+                .await?;
         Ok(EntityId(id))
     }
 
@@ -287,13 +306,13 @@ impl GraphStore {
         // bm25() returns negative values; ORDER BY ASC puts best matches first.
         let search_sql = format!(
             "SELECT DISTINCT e.id, e.name, e.canonical_name, e.entity_type, e.summary, \
-                    e.first_seen_at, e.last_seen_at, e.qdrant_point_id \
+                    e.first_seen_at, e.last_seen_at, e.qdrant_point_id, e.trust_level \
              FROM graph_entities_fts fts \
              JOIN graph_entities e ON e.id = fts.rowid \
              WHERE graph_entities_fts MATCH ? \
              UNION \
              SELECT e.id, e.name, e.canonical_name, e.entity_type, e.summary, \
-                    e.first_seen_at, e.last_seen_at, e.qdrant_point_id \
+                    e.first_seen_at, e.last_seen_at, e.qdrant_point_id, e.trust_level \
              FROM graph_entity_aliases a \
              JOIN graph_entities e ON e.id = a.entity_id \
              WHERE a.alias_name LIKE ? ESCAPE '\\' {} \
@@ -405,7 +424,7 @@ impl GraphStore {
         let alias_typed_sql = zeph_db::rewrite_placeholders(&format!(
             "SELECT e.id, e.name, e.canonical_name, e.entity_type, e.summary, \
                     {first_seen_sel} AS first_seen_at, {last_seen_sel} AS last_seen_at, \
-                    e.qdrant_point_id \
+                    e.qdrant_point_id, e.trust_level \
              FROM graph_entity_aliases a \
              JOIN graph_entities e ON e.id = a.entity_id \
              WHERE a.alias_name = ? {} \
@@ -548,7 +567,7 @@ impl GraphStore {
         }
         let confidence = confidence.clamp(0.0, 1.0);
         let edge_type_str = edge_type.as_str();
-        let (origin, batch_id, source_uri) = provenance_parts(provenance);
+        let (origin, batch_id, source_uri, trust) = provenance_parts(provenance);
 
         // Wrap SELECT + INSERT/UPDATE in a single transaction to eliminate the race window
         // between existence check and write. The unique partial index uq_graph_edges_active
@@ -594,6 +613,7 @@ impl GraphStore {
             .bind(existing_id)
             .execute(&mut *tx)
             .await?;
+            merge_edge_trust(&mut tx, existing_id, trust).await?;
             tx.commit().await?;
             return Ok(existing_id);
         }
@@ -604,8 +624,8 @@ impl GraphStore {
             "INSERT INTO graph_edges
              (source_entity_id, target_entity_id, relation, fact, confidence,
               confidence_fast, confidence_slow, episode_id, edge_type, turn_index,
-              origin, import_batch_id, source_uri)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              origin, import_batch_id, source_uri, trust_level)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              RETURNING id"
         ))
         .bind(source_entity_id)
@@ -621,6 +641,7 @@ impl GraphStore {
         .bind(origin)
         .bind(batch_id)
         .bind(source_uri)
+        .bind(trust)
         .fetch_one(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -780,7 +801,7 @@ impl GraphStore {
         )
         .await
         .map_err(|_| MemoryError::Timeout("graph pool acquire timed out after 500ms".into()))??;
-        Ok(rows.into_iter().map(edge_from_row).collect())
+        rows.into_iter().map(edge_from_row).collect()
     }
 
     /// Get all active edges where entity is source or target.
@@ -810,7 +831,7 @@ impl GraphStore {
             .bind(entity_id)
             .fetch_all(&self.pool)
             .await?;
-        Ok(rows.into_iter().map(edge_from_row).collect())
+        rows.into_iter().map(edge_from_row).collect()
     }
 
     /// Get all edges (active and expired) where entity is source or target, ordered by
@@ -842,7 +863,7 @@ impl GraphStore {
             .bind(limit)
             .fetch_all(&self.pool)
             .await?;
-        Ok(rows.into_iter().map(edge_from_row).collect())
+        rows.into_iter().map(edge_from_row).collect()
     }
 
     /// Get all active edges between two entities (both directions).
@@ -873,7 +894,7 @@ impl GraphStore {
             .bind(entity_a)
             .fetch_all(&self.pool)
             .await?;
-        Ok(rows.into_iter().map(edge_from_row).collect())
+        rows.into_iter().map(edge_from_row).collect()
     }
 
     /// Get active edges from `source` to `target` in the exact direction (no reverse).
@@ -902,7 +923,7 @@ impl GraphStore {
             .bind(target_entity_id)
             .fetch_all(&self.pool)
             .await?;
-        Ok(rows.into_iter().map(edge_from_row).collect())
+        rows.into_iter().map(edge_from_row).collect()
     }
 
     /// Count active (non-invalidated) edges.
@@ -1142,7 +1163,7 @@ impl GraphStore {
         );
         zeph_db::query_as::<_, EdgeRow>(sqlx::AssertSqlSafe(raw))
             .fetch(&self.pool)
-            .map(|r| r.map_err(MemoryError::from).map(edge_from_row))
+            .map(|r| r.map_err(MemoryError::from).and_then(edge_from_row))
     }
 
     /// Fetch a chunk of active edges using keyset pagination.
@@ -1181,7 +1202,7 @@ impl GraphStore {
             .bind(limit)
             .fetch_all(&self.pool)
             .await?;
-        Ok(rows.into_iter().map(edge_from_row).collect())
+        rows.into_iter().map(edge_from_row).collect()
     }
 
     /// Find a community by its primary key.
@@ -1260,7 +1281,7 @@ impl GraphStore {
             return Ok(vec![]);
         }
 
-        Ok(normalize_and_dedup(rows))
+        normalize_and_dedup(rows)
     }
 
     /// Compute structural scores (degree + edge type diversity) for a batch of entity IDs.
@@ -1808,7 +1829,7 @@ impl GraphStore {
             .bind(entity_id)
             .fetch_all(&self.pool)
             .await?;
-        Ok(rows.into_iter().map(edge_from_row).collect())
+        rows.into_iter().map(edge_from_row).collect()
     }
 
     /// Return all edge versions (active and expired) for the given `(source, predicate)` pair.
@@ -1870,7 +1891,7 @@ impl GraphStore {
                 .fetch_all(&self.pool)
                 .await?
         };
-        Ok(rows.into_iter().map(edge_from_row).collect())
+        rows.into_iter().map(edge_from_row).collect()
     }
 
     // ── BFS Traversal ─────────────────────────────────────────────────────────
@@ -2160,7 +2181,10 @@ impl GraphStore {
             .into_iter()
             .map(entity_from_row)
             .collect::<Result<Vec<_>, _>>()?;
-        let edges: Vec<Edge> = edge_rows.into_iter().map(edge_from_row).collect();
+        let edges: Vec<Edge> = edge_rows
+            .into_iter()
+            .map(edge_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok((entities, edges, depth_map))
     }
@@ -2310,6 +2334,7 @@ struct EntityRow {
     first_seen_at: String,
     last_seen_at: String,
     qdrant_point_id: Option<String>,
+    trust_level: Option<i16>,
 }
 
 /// `graph_entities` projection for [`EntityRow`], dialect-cast for `TIMESTAMPTZ` columns.
@@ -2324,7 +2349,7 @@ fn entity_select_cols() -> String {
         <ActiveDialect as zeph_db::dialect::Dialect>::select_as_text("last_seen_at");
     format!(
         "id, name, canonical_name, entity_type, summary, \
-         {first_seen_sel} AS first_seen_at, {last_seen_sel} AS last_seen_at, qdrant_point_id"
+         {first_seen_sel} AS first_seen_at, {last_seen_sel} AS last_seen_at, qdrant_point_id, trust_level"
     )
 }
 
@@ -2342,6 +2367,7 @@ fn entity_from_row(row: EntityRow) -> Result<Entity, MemoryError> {
         first_seen_at: row.first_seen_at,
         last_seen_at: row.last_seen_at,
         qdrant_point_id: row.qdrant_point_id,
+        trust_level: decode_trust_level(row.trust_level)?,
     })
 }
 
@@ -2399,6 +2425,7 @@ struct EdgeRow {
     confidence_slow: f64,
     // `INTEGER` (`INT4`) on Postgres, so it decodes as `Option<i32>`, not `Option<i64>`.
     turn_index: Option<i32>,
+    trust_level: Option<i16>,
 }
 
 /// `graph_edges` projection for [`EdgeRow`], dialect-cast for `TIMESTAMPTZ` columns.
@@ -2433,11 +2460,13 @@ fn edge_select_cols(table_prefix: &str) -> String {
          CAST({table_prefix}weight AS DOUBLE PRECISION) AS weight, \
          CAST({table_prefix}confidence_fast AS DOUBLE PRECISION) AS confidence_fast, \
          CAST({table_prefix}confidence_slow AS DOUBLE PRECISION) AS confidence_slow, \
-         {table_prefix}turn_index"
+         {table_prefix}turn_index, {table_prefix}trust_level"
     )
 }
 
-fn edge_from_row(row: EdgeRow) -> Edge {
+/// Fails on an out-of-range `trust_level` so corruption is never read back as a trusted edge;
+/// the lenient recall-facts path skips such rows with a warning instead of failing the query.
+fn edge_from_row(row: EdgeRow) -> Result<Edge, MemoryError> {
     let edge_type = row
         .edge_type
         .parse::<EdgeType>()
@@ -2445,7 +2474,7 @@ fn edge_from_row(row: EdgeRow) -> Edge {
     let canonical_relation = row
         .canonical_relation
         .unwrap_or_else(|| row.relation.clone());
-    Edge {
+    Ok(Edge {
         id: row.id,
         source_entity_id: row.source_entity_id,
         target_entity_id: row.target_entity_id,
@@ -2473,7 +2502,8 @@ fn edge_from_row(row: EdgeRow) -> Edge {
         confidence_slow: row.confidence_slow as f32,
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         turn_index: row.turn_index.map(|v| v as u32),
-    }
+        trust_level: decode_trust_level(row.trust_level)?,
+    })
 }
 
 #[derive(zeph_db::FromRow)]
@@ -2737,6 +2767,7 @@ impl GraphStore {
                 self.benna_slow_rate,
             )
             .await?;
+            merge_edge_trust(&mut tx, existing_id, provenance_parts(provenance).3).await?;
             tx.commit().await?;
             return Ok(existing_id);
         }
@@ -2760,7 +2791,7 @@ impl GraphStore {
 
         let supersedes_val: Option<i64> = if set_supersedes { prior_head } else { None };
         let turn_index_raw: Option<i64> = turn_index.map(i64::from);
-        let (prov_origin, prov_batch, prov_uri) = provenance_parts(provenance);
+        let (prov_origin, prov_batch, prov_uri, prov_trust) = provenance_parts(provenance);
         let new_id = insert_new_edge(
             &mut tx,
             source_entity_id,
@@ -2776,6 +2807,7 @@ impl GraphStore {
             prov_origin,
             prov_batch,
             prov_uri,
+            prov_trust,
         )
         .await?;
 
@@ -3123,7 +3155,9 @@ impl GraphStore {
         let facts: Vec<crate::recall_view::RecalledFact> = rows
             .into_iter()
             .filter_map(|row| {
-                let edge = edge_from_row(row);
+                let edge = edge_from_row(row)
+                    .inspect_err(|e| tracing::warn!(error = %e, "skipping undecodable edge row"))
+                    .ok()?;
                 let entity_name = name_map.get(&edge.source_entity_id).cloned()?;
                 let target_name = name_map.get(&edge.target_entity_id).cloned()?;
                 if entity_name.is_empty() || target_name.is_empty() {
@@ -3304,6 +3338,25 @@ async fn check_supersede_depth_in_tx(tx: &mut Tx<'_>, head_id: i64) -> Result<()
     Ok(())
 }
 
+/// Fold the trust of a re-encountered edge into the stored row (NULL-absorbing, see
+/// [`trust_merge_sql`]), so a later write can never launder an untrusted edge.
+#[tracing::instrument(name = "memory.graph.store.merge_edge_trust", skip_all)]
+async fn merge_edge_trust(
+    tx: &mut Tx<'_>,
+    edge_id: i64,
+    trust_level: Option<i16>,
+) -> Result<(), MemoryError> {
+    let merged = trust_merge_sql("trust_level", "CAST(? AS SMALLINT)");
+    let raw = format!("UPDATE graph_edges SET trust_level = {merged} WHERE id = ?");
+    zeph_db::query(sqlx::AssertSqlSafe(zeph_db::rewrite_placeholders(&raw)))
+        .bind(trust_level)
+        .bind(trust_level)
+        .bind(edge_id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 /// Insert a new edge row and return its generated ID.
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(name = "memory.graph.store.insert_new_edge", skip_all)]
@@ -3322,13 +3375,14 @@ async fn insert_new_edge(
     origin: &str,
     import_batch_id: Option<&str>,
     source_uri: Option<&str>,
+    trust_level: Option<i16>,
 ) -> Result<i64, MemoryError> {
     Ok(zeph_db::query_scalar(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, canonical_relation, fact,
           confidence, confidence_fast, confidence_slow, episode_id, edge_type, supersedes, turn_index,
-          origin, import_batch_id, source_uri)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          origin, import_batch_id, source_uri, trust_level)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          RETURNING id"
     ))
     .bind(src)
@@ -3346,6 +3400,7 @@ async fn insert_new_edge(
     .bind(origin)
     .bind(import_batch_id)
     .bind(source_uri)
+    .bind(trust_level)
     .fetch_one(&mut **tx)
     .await?)
 }
@@ -3393,6 +3448,7 @@ type EntityFtsRow = (
     String,
     String,
     Option<String>,
+    Option<i16>,
     f64,
 );
 
@@ -3427,14 +3483,14 @@ fn build_ranked_fts_sql() -> String {
     format!(
         "SELECT * FROM ( \
              SELECT e.id, e.name, e.canonical_name, e.entity_type, e.summary, \
-                    e.first_seen_at, e.last_seen_at, e.qdrant_point_id, \
+                    e.first_seen_at, e.last_seen_at, e.qdrant_point_id, e.trust_level, \
                     -bm25(graph_entities_fts, 10.0, 1.0) AS fts_rank \
              FROM graph_entities_fts fts \
              JOIN graph_entities e ON e.id = fts.rowid \
              WHERE graph_entities_fts MATCH ? \
              UNION ALL \
              SELECT e.id, e.name, e.canonical_name, e.entity_type, e.summary, \
-                    e.first_seen_at, e.last_seen_at, e.qdrant_point_id, \
+                    e.first_seen_at, e.last_seen_at, e.qdrant_point_id, e.trust_level, \
                     0.5 AS fts_rank \
              FROM graph_entity_aliases a \
              JOIN graph_entities e ON e.id = a.entity_id \
@@ -3449,9 +3505,9 @@ fn build_ranked_fts_sql() -> String {
 /// Normalize FTS scores to `[0, 1]` and deduplicate by entity ID.
 ///
 /// Deduplication keeps the first (highest-ranked) occurrence of each entity ID.
-fn normalize_and_dedup(rows: Vec<EntityFtsRow>) -> Vec<(Entity, f32)> {
+fn normalize_and_dedup(rows: Vec<EntityFtsRow>) -> Result<Vec<(Entity, f32)>, MemoryError> {
     // Guard against div-by-zero when all scores are 0.
-    let max_score: f64 = rows.iter().map(|r| r.8).fold(0.0_f64, f64::max);
+    let max_score: f64 = rows.iter().map(|r| r.9).fold(0.0_f64, f64::max);
     let max_score = if max_score <= 0.0 { 1.0 } else { max_score };
 
     let mut seen_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
@@ -3465,6 +3521,7 @@ fn normalize_and_dedup(rows: Vec<EntityFtsRow>) -> Vec<(Entity, f32)> {
         first_seen_at,
         last_seen_at,
         qdrant_point_id,
+        trust_level,
         raw_score,
     ) in rows
     {
@@ -3483,15 +3540,19 @@ fn normalize_and_dedup(rows: Vec<EntityFtsRow>) -> Vec<(Entity, f32)> {
             first_seen_at,
             last_seen_at,
             qdrant_point_id,
+            trust_level: decode_trust_level(trust_level)?,
         };
         #[allow(clippy::cast_possible_truncation)]
         let normalized = (raw_score / max_score).clamp(0.0, 1.0) as f32;
         result.push((entity, normalized));
     }
-    result
+    Ok(result)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod trust_tests;

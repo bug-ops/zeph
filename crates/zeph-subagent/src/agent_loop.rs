@@ -1472,7 +1472,7 @@ mod trim_message_history_tests {
 
     fn tool_use_part(id: &str) -> MessagePart {
         MessagePart::ToolUse {
-            id: id.to_owned(),
+            id: id.to_owned().into(),
             name: "some_tool".to_owned(),
             input: serde_json::json!({}),
         }
@@ -1480,7 +1480,7 @@ mod trim_message_history_tests {
 
     fn tool_result_part(id: &str, content: &str) -> MessagePart {
         MessagePart::ToolResult {
-            tool_use_id: id.to_owned(),
+            tool_use_id: id.to_owned().into(),
             content: content.to_owned(),
             is_error: false,
         }

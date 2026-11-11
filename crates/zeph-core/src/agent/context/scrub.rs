@@ -117,7 +117,7 @@ mod tests {
         Message::from_parts(
             Role::User,
             vec![MessagePart::ToolResult {
-                tool_use_id: id.to_owned(),
+                tool_use_id: id.to_owned().into(),
                 content: content.to_owned(),
                 is_error: false,
             }],

@@ -103,6 +103,11 @@ pub struct Entity {
     pub last_seen_at: String,
     /// Qdrant point ID for the entity's embedding, if stored.
     pub qdrant_point_id: Option<String>,
+    /// Trust tier of the ingest source the row was extracted from (spec-067).
+    ///
+    /// `None` means the row was never ingest-classified (conversation origin, or written before
+    /// migration 117): its trust was not assessed, so callers must treat it as untrusted.
+    pub trust_level: Option<TurnContextTrust>,
 }
 
 /// An alternative name or spelling for an [`Entity`].
@@ -170,6 +175,11 @@ pub struct Edge {
     ///
     /// `None` for edges inserted before migration 096 (best-effort provenance).
     pub turn_index: Option<u32>,
+    /// Trust tier of the ingest source the edge was extracted from (spec-067).
+    ///
+    /// `None` means the edge was never ingest-classified (conversation origin, or written before
+    /// migration 117): its trust was not assessed, so callers must treat it as untrusted.
+    pub trust_level: Option<TurnContextTrust>,
 }
 
 impl Edge {
@@ -206,6 +216,7 @@ impl Edge {
             confidence_fast: 1.0,
             confidence_slow: 1.0,
             turn_index: None,
+            trust_level: None,
         }
     }
 }
@@ -313,27 +324,46 @@ pub struct GraphProvenance {
     pub source_uri: Option<String>,
     /// Trust tier of the source the row was extracted from (spec-067 §3 D1).
     ///
-    /// Held in memory only; it is not yet persisted with the row.
+    /// Persisted in the `trust_level` column; rows written without provenance store `NULL`.
     pub trust: TurnContextTrust,
 }
 
-/// Unpack `Option<&GraphProvenance>` into the three SQL-bind values for `origin`,
-/// `import_batch_id`, and `source_uri`.
+/// Unpack `Option<&GraphProvenance>` into the SQL-bind values for `origin`,
+/// `import_batch_id`, `source_uri`, and `trust_level`.
 ///
-/// Callers that pass `None` get the default conversation values; callers that pass
-/// `Some(prov)` get the ingest-origin values.
+/// Callers that pass `None` get the default conversation values (`trust_level = NULL`: never
+/// ingest-classified); callers that pass `Some(prov)` get the ingest-origin values.
 #[must_use]
 pub(crate) fn provenance_parts(
     prov: Option<&GraphProvenance>,
-) -> (&'static str, Option<&str>, Option<&str>) {
+) -> (&'static str, Option<&str>, Option<&str>, Option<i16>) {
     match prov {
-        None => ("conversation", None, None),
+        None => ("conversation", None, None, None),
         Some(p) => (
             p.origin.as_str(),
             Some(p.import_batch_id.as_str()),
             p.source_uri.as_deref(),
+            Some(i16::from(p.trust.as_u8())),
         ),
     }
+}
+
+/// Decode a stored `trust_level` column value.
+///
+/// `NULL` decodes to `None`; a value outside the [`TurnContextTrust`] discriminants is a decode
+/// error rather than a silent default, so corruption cannot be read back as a trusted row.
+pub(crate) fn decode_trust_level(
+    raw: Option<i16>,
+) -> Result<Option<TurnContextTrust>, crate::error::MemoryError> {
+    raw.map(|v| {
+        u8::try_from(v)
+            .ok()
+            .and_then(TurnContextTrust::from_u8)
+            .ok_or_else(|| {
+                crate::error::MemoryError::GraphStore(format!("invalid trust_level value: {v}"))
+            })
+    })
+    .transpose()
 }
 
 /// A GAAMA episode node — one per conversation.

@@ -892,7 +892,7 @@ mod graph_extraction_guards {
             role: Role::User,
             content: "[tool_result: abc]\nprovider_type = \"openai\"".to_owned(),
             parts: vec![MessagePart::ToolResult {
-                tool_use_id: "abc".to_owned(),
+                tool_use_id: "abc".to_owned().into(),
                 content: "provider_type = \"openai\"".to_owned(),
                 is_error: false,
             }],
@@ -1225,7 +1225,7 @@ async fn persist_message_saves_correct_tool_use_parts() {
     );
 
     let parts = vec![MessagePart::ToolUse {
-        id: "call_abc123".to_string(),
+        id: "call_abc123".to_string().into(),
         name: "read_file".to_string(),
         input: serde_json::json!({"path": "/tmp/test.txt"}),
     }];
@@ -1289,7 +1289,7 @@ async fn persist_message_saves_correct_tool_result_parts() {
     );
 
     let parts = vec![MessagePart::ToolResult {
-        tool_use_id: "call_abc123".to_string(),
+        tool_use_id: "call_abc123".to_string().into(),
         content: "file contents here".to_string(),
         is_error: false,
     }];
@@ -1359,7 +1359,7 @@ async fn persist_message_roundtrip_preserves_role_part_alignment() {
 
     // Persist assistant message with ToolUse parts
     let assistant_parts = vec![MessagePart::ToolUse {
-        id: "id_1".to_string(),
+        id: "id_1".to_string().into(),
         name: "list_dir".to_string(),
         input: serde_json::json!({"path": "/tmp"}),
     }];
@@ -1374,7 +1374,7 @@ async fn persist_message_roundtrip_preserves_role_part_alignment() {
 
     // Persist user message with ToolResult parts
     let user_parts = vec![MessagePart::ToolResult {
-        tool_use_id: "id_1".to_string(),
+        tool_use_id: "id_1".to_string().into(),
         content: "file1.txt\nfile2.txt".to_string(),
         is_error: false,
     }];
@@ -1521,7 +1521,7 @@ async fn load_history_removes_trailing_orphan_tool_use() {
 
     // assistant message with ToolUse parts — no following tool_result (orphan)
     let parts = serde_json::to_string(&[MessagePart::ToolUse {
-        id: "call_orphan".to_string(),
+        id: "call_orphan".to_string().into(),
         name: "shell".to_string(),
         input: serde_json::json!({"command": "ls"}),
     }])
@@ -1566,7 +1566,7 @@ async fn load_history_removes_leading_orphan_tool_result() {
 
     // Leading orphan: user message with ToolResult but no preceding tool_use
     let result_parts = serde_json::to_string(&[MessagePart::ToolResult {
-        tool_use_id: "call_missing".to_string(),
+        tool_use_id: "call_missing".to_string().into(),
         content: "result data".to_string(),
         is_error: false,
     }])
@@ -1622,7 +1622,7 @@ async fn load_history_preserves_complete_tool_pairs() {
 
     // Complete tool_use / tool_result pair
     let use_parts = serde_json::to_string(&[MessagePart::ToolUse {
-        id: "call_ok".to_string(),
+        id: "call_ok".to_string().into(),
         name: "shell".to_string(),
         input: serde_json::json!({"command": "pwd"}),
     }])
@@ -1633,7 +1633,7 @@ async fn load_history_preserves_complete_tool_pairs() {
         .unwrap();
 
     let result_parts = serde_json::to_string(&[MessagePart::ToolResult {
-        tool_use_id: "call_ok".to_string(),
+        tool_use_id: "call_ok".to_string().into(),
         content: "/home/user".to_string(),
         is_error: false,
     }])
@@ -1687,7 +1687,7 @@ async fn load_history_handles_multiple_trailing_orphans() {
 
     // First orphaned tool_use
     let parts1 = serde_json::to_string(&[MessagePart::ToolUse {
-        id: "call_1".to_string(),
+        id: "call_1".to_string().into(),
         name: "shell".to_string(),
         input: serde_json::json!({}),
     }])
@@ -1699,7 +1699,7 @@ async fn load_history_handles_multiple_trailing_orphans() {
 
     // Second orphaned tool_use (consecutive, no tool_result between them)
     let parts2 = serde_json::to_string(&[MessagePart::ToolUse {
-        id: "call_2".to_string(),
+        id: "call_2".to_string().into(),
         name: "read_file".to_string(),
         input: serde_json::json!({}),
     }])
@@ -1784,7 +1784,7 @@ async fn load_history_removes_both_leading_and_trailing_orphans() {
 
     // Leading orphan: user message with ToolResult, no preceding tool_use
     let result_parts = serde_json::to_string(&[MessagePart::ToolResult {
-        tool_use_id: "call_leading".to_string(),
+        tool_use_id: "call_leading".to_string().into(),
         content: "orphaned result".to_string(),
         is_error: false,
     }])
@@ -1808,7 +1808,7 @@ async fn load_history_removes_both_leading_and_trailing_orphans() {
 
     // Trailing orphan: assistant message with ToolUse, no following tool_result
     let use_parts = serde_json::to_string(&[MessagePart::ToolUse {
-        id: "call_trailing".to_string(),
+        id: "call_trailing".to_string().into(),
         name: "shell".to_string(),
         input: serde_json::json!({"command": "date"}),
     }])
@@ -1881,7 +1881,7 @@ async fn sanitize_tool_pairs_strips_mid_history_orphan_tool_use() {
     // user[ToolResult] but left the assistant[ToolUse] visible.
     let use_parts = serde_json::to_string(&[
         MessagePart::ToolUse {
-            id: "call_mid_1".to_string(),
+            id: "call_mid_1".to_string().into(),
             name: "shell".to_string(),
             input: serde_json::json!({"command": "ls"}),
         },
@@ -1963,7 +1963,7 @@ async fn load_history_keeps_tool_only_user_message() {
 
     // Assistant sends a ToolUse.
     let use_parts = serde_json::to_string(&[MessagePart::ToolUse {
-        id: "call_rc3".to_string(),
+        id: "call_rc3".to_string().into(),
         name: "memory_save".to_string(),
         input: serde_json::json!({"content": "something"}),
     }])
@@ -1975,7 +1975,7 @@ async fn load_history_keeps_tool_only_user_message() {
 
     // User message has empty text content but carries ToolResult in parts — native tool pattern.
     let result_parts = serde_json::to_string(&[MessagePart::ToolResult {
-        tool_use_id: "call_rc3".to_string(),
+        tool_use_id: "call_rc3".to_string().into(),
         content: "saved".to_string(),
         is_error: false,
     }])
@@ -2045,7 +2045,7 @@ async fn strip_orphans_removes_orphaned_tool_result() {
 
     // User message references a tool_use_id that was never sent by the preceding assistant.
     let orphan_result_parts = serde_json::to_string(&[MessagePart::ToolResult {
-        tool_use_id: "call_nonexistent".to_string(),
+        tool_use_id: "call_nonexistent".to_string().into(),
         content: "stale result".to_string(),
         is_error: false,
     }])
@@ -2107,7 +2107,7 @@ async fn strip_orphans_keeps_complete_pair() {
     let sqlite = memory.sqlite();
 
     let use_parts = serde_json::to_string(&[MessagePart::ToolUse {
-        id: "call_valid".to_string(),
+        id: "call_valid".to_string().into(),
         name: "shell".to_string(),
         input: serde_json::json!({"command": "ls"}),
     }])
@@ -2118,7 +2118,7 @@ async fn strip_orphans_keeps_complete_pair() {
         .unwrap();
 
     let result_parts = serde_json::to_string(&[MessagePart::ToolResult {
-        tool_use_id: "call_valid".to_string(),
+        tool_use_id: "call_valid".to_string().into(),
         content: "file.rs".to_string(),
         is_error: false,
     }])
@@ -2172,7 +2172,7 @@ async fn strip_orphans_mixed_history() {
 
     // First: complete tool_use / tool_result pair.
     let use_parts_ok = serde_json::to_string(&[MessagePart::ToolUse {
-        id: "call_good".to_string(),
+        id: "call_good".to_string().into(),
         name: "shell".to_string(),
         input: serde_json::json!({"command": "pwd"}),
     }])
@@ -2183,7 +2183,7 @@ async fn strip_orphans_mixed_history() {
         .unwrap();
 
     let result_parts_ok = serde_json::to_string(&[MessagePart::ToolResult {
-        tool_use_id: "call_good".to_string(),
+        tool_use_id: "call_good".to_string().into(),
         content: "/home".to_string(),
         is_error: false,
     }])
@@ -2200,7 +2200,7 @@ async fn strip_orphans_mixed_history() {
         .unwrap();
 
     let orphan_parts = serde_json::to_string(&[MessagePart::ToolResult {
-        tool_use_id: "call_ghost".to_string(),
+        tool_use_id: "call_ghost".to_string().into(),
         content: "ghost result".to_string(),
         is_error: false,
     }])
@@ -2283,7 +2283,7 @@ async fn sanitize_tool_pairs_preserves_matched_tool_pair() {
 
     // Assistant sends a ToolUse.
     let use_parts = serde_json::to_string(&[MessagePart::ToolUse {
-        id: "call_ok".to_string(),
+        id: "call_ok".to_string().into(),
         name: "shell".to_string(),
         input: serde_json::json!({"command": "echo hi"}),
     }])
@@ -2295,7 +2295,7 @@ async fn sanitize_tool_pairs_preserves_matched_tool_pair() {
 
     // Matching user ToolResult follows.
     let result_parts = serde_json::to_string(&[MessagePart::ToolResult {
-        tool_use_id: "call_ok".to_string(),
+        tool_use_id: "call_ok".to_string().into(),
         content: "hi".to_string(),
         is_error: false,
     }])
@@ -2360,12 +2360,12 @@ async fn persist_cancelled_tool_results_pairs_tool_use() {
     // Simulate: assistant message with two ToolUse parts already persisted.
     let tool_calls = vec![
         zeph_llm::provider::ToolUseRequest {
-            id: "cancel_id_1".to_string(),
+            id: "cancel_id_1".to_string().into(),
             name: "shell".to_string().into(),
             input: serde_json::json!({}),
         },
         zeph_llm::provider::ToolUseRequest {
-            id: "cancel_id_2".to_string(),
+            id: "cancel_id_2".to_string().into(),
             name: "read_file".to_string().into(),
             input: serde_json::json!({}),
         },
@@ -2437,7 +2437,7 @@ async fn issue_2529_orphaned_legacy_content_pair_is_soft_deleted() {
     // Orphaned assistant[ToolUse]: content is ONLY a legacy tool tag — no matching
     // ToolResult follows. This is the exact pattern that triggered #2529.
     let use_parts = serde_json::to_string(&[MessagePart::ToolUse {
-        id: "call_2529".to_string(),
+        id: "call_2529".to_string().into(),
         name: "memory_save".to_string(),
         input: serde_json::json!({"content": "save this"}),
     }])
@@ -2462,7 +2462,7 @@ async fn issue_2529_orphaned_legacy_content_pair_is_soft_deleted() {
         .unwrap();
 
     let result_parts = serde_json::to_string(&[MessagePart::ToolResult {
-        tool_use_id: "call_2529".to_string(),
+        tool_use_id: "call_2529".to_string().into(),
         content: "saved".to_string(),
         is_error: false,
     }])
@@ -2540,7 +2540,7 @@ async fn issue_2529_soft_delete_is_idempotent_across_sessions() {
 
     // Orphaned assistant[ToolUse] with legacy-only content.
     let use_parts = serde_json::to_string(&[MessagePart::ToolUse {
-        id: "call_idem".to_string(),
+        id: "call_idem".to_string().into(),
         name: "shell".to_string(),
         input: serde_json::json!({"command": "ls"}),
     }])
@@ -2558,7 +2558,7 @@ async fn issue_2529_soft_delete_is_idempotent_across_sessions() {
 
     // Orphaned user[ToolResult] with legacy-only content.
     let result_parts = serde_json::to_string(&[MessagePart::ToolResult {
-        tool_use_id: "call_idem".to_string(),
+        tool_use_id: "call_idem".to_string().into(),
         content: "output".to_string(),
         is_error: false,
     }])
@@ -2639,7 +2639,7 @@ async fn issue_2529_message_with_text_and_tool_tag_is_kept_after_part_strip() {
     // Assistant message: has BOTH meaningful text AND a ToolUse part.
     // Content contains real prose + legacy tag — has_meaningful_content must return true.
     let use_parts = serde_json::to_string(&[MessagePart::ToolUse {
-        id: "call_mixed".to_string(),
+        id: "call_mixed".to_string().into(),
         name: "shell".to_string(),
         input: serde_json::json!({"command": "ls"}),
     }])
@@ -2881,7 +2881,7 @@ async fn regression_3168_complete_tool_pair_survives_round_trip() {
     let sqlite = memory.sqlite();
 
     let use_parts = serde_json::to_string(&[MessagePart::ToolUse {
-        id: "r3168_call".to_string(),
+        id: "r3168_call".to_string().into(),
         name: "shell".to_string(),
         input: serde_json::json!({"command": "echo hi"}),
     }])
@@ -2897,7 +2897,7 @@ async fn regression_3168_complete_tool_pair_survives_round_trip() {
         .unwrap();
 
     let result_parts = serde_json::to_string(&[MessagePart::ToolResult {
-        tool_use_id: "r3168_call".to_string(),
+        tool_use_id: "r3168_call".to_string().into(),
         content: "[skipped]".to_string(),
         is_error: false,
     }])
@@ -2978,7 +2978,7 @@ async fn regression_3168_corrupt_parts_row_skipped_on_load() {
 
     // User message with the matching tool_result stored correctly.
     let result_parts = serde_json::to_string(&[MessagePart::ToolResult {
-        tool_use_id: "corrupt".to_string(),
+        tool_use_id: "corrupt".to_string().into(),
         content: "result".to_string(),
         is_error: false,
     }])
@@ -3053,7 +3053,7 @@ mod image_persistence_strip {
 
         let parts = vec![
             MessagePart::ToolResult {
-                tool_use_id: "call_img_1".to_owned(),
+                tool_use_id: "call_img_1".to_owned().into(),
                 content: "see attached image".to_owned(),
                 is_error: false,
             },

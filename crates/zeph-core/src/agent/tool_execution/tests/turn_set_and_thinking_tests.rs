@@ -549,7 +549,7 @@ fn tool_step(index: usize, with_output_part: bool) -> [Message; 2] {
         }
     } else {
         MessagePart::ToolResult {
-            tool_use_id: id.clone(),
+            tool_use_id: id.clone().into(),
             content: "r".into(),
             is_error: false,
         }
@@ -560,7 +560,7 @@ fn tool_step(index: usize, with_output_part: bool) -> [Message; 2] {
             vec![
                 thinking_part(&format!("t{index}")),
                 MessagePart::ToolUse {
-                    id,
+                    id: id.into(),
                     name: "bash".into(),
                     input: serde_json::json!({}),
                 },

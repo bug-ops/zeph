@@ -814,7 +814,7 @@ fn session_event_to_updates(
             .filter_map(|part| match part {
                 zeph_llm::provider::MessagePart::ToolUse { id, name, input } => {
                     Some(acp::schema::v1::SessionUpdate::ToolCall(
-                        acp::schema::v1::ToolCall::new(id, name).raw_input(input),
+                        acp::schema::v1::ToolCall::new(id.to_string(), name).raw_input(input),
                     ))
                 }
                 other => other.as_plain_text().map(|text| {
@@ -1337,7 +1337,7 @@ mod session_event_replay_tests {
     fn assistant_tool_use_part_becomes_tool_call() {
         let updates = session_event_to_updates(zeph_session::SessionEvent::AssistantMessage {
             parts: vec![zeph_llm::provider::MessagePart::ToolUse {
-                id: "call_0".to_owned(),
+                id: "call_0".to_owned().into(),
                 name: "shell".to_owned(),
                 input: serde_json::json!({"cmd": "ls"}),
             }],
@@ -1354,7 +1354,7 @@ mod session_event_replay_tests {
         let updates = session_event_to_updates(zeph_session::SessionEvent::AssistantMessage {
             parts: vec![
                 zeph_llm::provider::MessagePart::ToolUse {
-                    id: "call_0".to_owned(),
+                    id: "call_0".to_owned().into(),
                     name: "shell".to_owned(),
                     input: serde_json::json!({}),
                 },

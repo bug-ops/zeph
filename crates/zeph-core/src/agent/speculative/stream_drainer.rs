@@ -92,7 +92,7 @@ impl SpeculativeStreamDrainer {
         let mut replay = ThinkingReplay::Intact;
         let mut compaction: Option<String> = None;
         // Map from tool index → (id, name) collected from ToolCallComplete.
-        let mut tool_meta: HashMap<usize, (String, String)> = HashMap::new();
+        let mut tool_meta: HashMap<usize, (zeph_common::ToolCallId, String)> = HashMap::new();
         // Track which tool indices have had their speculation fired.
         let mut dispatched: std::collections::HashSet<usize> = std::collections::HashSet::new();
         let drive_start = std::time::Instant::now();

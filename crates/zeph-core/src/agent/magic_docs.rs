@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use zeph_common::ToolCallId;
 use zeph_llm::provider::{LlmProvider as _, Message, MessagePart, Role};
 
 use crate::channel::Channel;
@@ -89,7 +90,7 @@ impl<C: Channel> super::Agent<C> {
 
         // Phase 1: collect ToolUse metadata indexed by id (for ToolResult) and by name (for
         // ToolOutput). The queue preserves declaration order for name-based pairing.
-        let mut id_map: HashMap<String, (String, Option<String>)> = HashMap::new();
+        let mut id_map: HashMap<ToolCallId, (String, Option<String>)> = HashMap::new();
         let mut use_queue: std::collections::VecDeque<(String, Option<String>)> =
             std::collections::VecDeque::new();
 
@@ -539,7 +540,7 @@ mod tests {
         ];
 
         // Simulate phase-1 id_map build.
-        let mut id_map: HashMap<String, (String, Option<String>)> = HashMap::new();
+        let mut id_map: HashMap<ToolCallId, (String, Option<String>)> = HashMap::new();
         for msg in &messages {
             if msg.role == Role::Assistant {
                 for part in &msg.parts {
@@ -591,7 +592,7 @@ mod tests {
             }],
         )];
 
-        let id_map: HashMap<String, (String, Option<String>)> = HashMap::new();
+        let id_map: HashMap<ToolCallId, (String, Option<String>)> = HashMap::new();
         let mut detected: Vec<PathBuf> = Vec::new();
 
         for msg in &messages {

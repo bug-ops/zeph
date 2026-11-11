@@ -404,6 +404,19 @@ deployments sensitive to graph-recall latency/cost should benchmark before upgra
 
 ---
 
+## Source trust on graph rows (#6953)
+
+`graph_entities` and `graph_edges` carry `trust_level SMALLINT NULL` (migration 117); `Entity.trust_level` / `Edge.trust_level` are `Option<TurnContextTrust>`. Semantics, backfill and merge rules are normative in spec 067 (FR-005, FR-006).
+
+### Key Invariants
+
+- `NULL` means "never ingest-classified, trust unassessed" and MUST be treated as untrusted by any reader
+- A write that meets an existing row merges `trust_level` NULL-absorbing (entity upsert, edge dedup update, edge reassertion); an unassessed source can never be laundered by a later trusted write
+- A stored value outside 0..=2 is a decode error, never a default
+- `origin` keeps the first writer, so the migration backfill never trusts it blindly: ingest entities get tier 0 only when never re-written (`last_seen_at = first_seen_at`), ingest edges stay `NULL` (spec 067 FR-005)
+
+---
+
 ## WaterCircles: Concentric Ring BFS. `crates/zeph-memory/src/graph/retrieval_watercircles.rs`.
 
 ### Overview

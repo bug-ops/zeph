@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn should_not_embed_skipped_tool_result() {
         let parts = vec![MessagePart::ToolResult {
-            tool_use_id: "abc".to_owned(),
+            tool_use_id: "abc".to_owned().into(),
             content: "[skipped] tool was blocked".to_owned(),
             is_error: false,
         }];

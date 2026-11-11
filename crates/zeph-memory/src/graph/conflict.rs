@@ -335,6 +335,7 @@ mod tests {
             confidence_fast: confidence,
             confidence_slow: confidence,
             turn_index: None,
+            trust_level: None,
         }
     }
 

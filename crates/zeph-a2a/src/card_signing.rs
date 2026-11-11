@@ -10,10 +10,9 @@
 //!
 //! # Trust model
 //!
-//! `jku`/JWKS auto-fetch is not implemented.
-//!
-//! // TODO(#6931): jku/JWKS fetch deferred — SSRF risk on attacker-controlled URL;
-//! // out-of-band key store is the trust anchor (#5928 follow-up).
+//! `jku`/JWKS auto-fetch is not implemented, by decision (#6931): fetching a key set from a
+//! card-supplied URL is an SSRF risk, and `jku` is ignored when resolving keys. Any future
+//! support needs an explicit allowlist and an SSRF-safe fetch.
 //!
 //! An attacker who can forge an entire card can also point a `jku` at a JWKS they
 //! control and self-sign; only a pre-shared, operator-configured [`TrustedKey`] store
@@ -34,23 +33,22 @@
 //! [`SignatureVerification::FeatureDisabled`] and `sign_card` does not exist at all
 //! (it has no meaningful behavior to fall back to — signing requires the crypto crates).
 //!
-//! # Known limitation — unvalidated against a real peer
+//! # Canonicalization
 //!
-//! The JCS canonicalization and signing-input construction below were implemented from
-//! the A2A 1.0.0 spec text (§8.4.1–§8.4.3) retrieved verbatim during design review, not
-//! from a real signed-card test vector produced by a reference implementation (e.g. the
-//! Python/JS `a2a-sdk`). `canonical_payload` (private, used by both [`verify_card_signatures`]
-//! and `sign_card`) strips proto3-default-valued fields (empty
-//! string, `false`, `0`, empty array/object, recursively through nested objects) before
-//! JCS, matching the spec text's canonicalization rules — this closes the specific
-//! divergence a compliant signer that strips defaults before signing would otherwise
-//! trigger against our verifier canonicalizing the full transmitted card (#6201; see
-//! `signature_over_default_stripped_payload_verifies_against_full_transmitted_card`
-//! below). This, `self_signed_round_trip_verifies`, and
-//! `raw_json_canonicalization_differs_from_typed_struct_reserialization` prove internal
-//! self-consistency and guard the bug classes this module exists to avoid, but none of
-//! them prove interoperability with a real A2A peer's signer. Treat `require` as unproven
-//! until a real vector is obtained and checked in.
+//! `canonical_payload` (private, shared by [`verify_card_signatures`] and `sign_card`) mirrors
+//! the a2a-python reference signer (`_clean_empty` followed by JCS): after removing
+//! `signatures`, it recursively drops `null`, `""`, `[]` and `{}` (as object values and as
+//! array elements, including containers that become empty), and keeps `false` and `0`.
+//! Byte-for-byte agreement with `a2a-sdk` 1.3.0 is asserted against the committed vectors in
+//! `tests/fixtures/card_signing_a2a_python_1_3_0.json`.
+//!
+//! # Known limitation
+//!
+//! The Python verifier first parses the card into a protobuf message, which drops a
+//! non-presence field explicitly set to `false` (e.g. `AgentExtension.required`,
+//! `pkceRequired`) before canonicalizing. This module canonicalizes the raw JSON and keeps
+//! such a `false`, so a card from a non-Python peer that transmits one explicitly can mismatch
+//! a Python verifier's view. Schema-aware stripping is intentionally not implemented.
 
 #[cfg(feature = "card-signing")]
 use base64::Engine as _;
@@ -293,78 +291,58 @@ pub fn sign_card(
     })
 }
 
-/// RFC 8785 JCS canonicalization of `raw_card` with the `signatures` key removed and
-/// proto3-default-valued fields stripped (#6201).
+/// Maximum container nesting accepted when canonicalizing, equal to a2a-python's limit.
+#[cfg(feature = "card-signing")]
+const MAX_DEPTH: usize = 128;
+
+/// RFC 8785 JCS canonicalization of `raw_card` with the `signatures` key removed and empty
+/// values dropped exactly as the a2a-python reference signer does (see [`clean_empty`]).
 ///
 /// Operates on the raw received [`Value`] — never on a re-serialization of the typed
-/// [`AgentCard`](crate::AgentCard) struct. See module docs.
-///
-/// A compliant signer may drop proto3-default-valued fields (empty string, `false`, `0`,
-/// empty array/object) from the card JSON before canonicalizing and signing, per the A2A
-/// spec text, while the transmitted card still carries them explicitly. Stripping the same
-/// fields here — recursively, bottom-up so an object that becomes empty after its own
-/// fields are stripped is itself dropped from its parent — normalizes both shapes to the
-/// same canonical bytes, so a signature computed over either verifies against the other.
+/// [`AgentCard`](crate::AgentCard) struct. See module docs. A card that cleans down to nothing
+/// canonicalizes as `null`, like the reference.
 #[cfg(feature = "card-signing")]
 fn canonical_payload(raw_card: &Value) -> Result<Vec<u8>, String> {
     let mut card = raw_card.clone();
     if let Value::Object(map) = &mut card {
         map.remove("signatures");
     }
-    strip_proto3_defaults(&mut card);
-    serde_json_canonicalizer::to_vec(&card).map_err(|e| e.to_string())
+    let cleaned = clean_empty(card, 1)?.unwrap_or(Value::Null);
+    serde_json_canonicalizer::to_vec(&cleaned).map_err(|e| e.to_string())
 }
 
-/// `true` when `value` is a proto3 default: empty string, `false`, `0` (integer or
-/// float), an empty array, or an empty object. `null` is not a proto3 JSON-mapping
-/// default value and is left untouched.
-// TODO(#6931): the `{}` (empty object) and `0` (number) cases are the highest-risk,
-// unvalidated part of this heuristic (S2, #6201 follow-up). Proto3 JSON mapping has
-// *message presence*: a message field explicitly **set** to an empty message serializes
-// to `{}` and is distinct from a field left **unset** (which is omitted entirely) — a
-// real signer that emits `{}` for a deliberately-set-but-empty message would sign
-// *with* that key present, while this function strips it, reproducing the exact
-// canonical-bytes divergence #6201 exists to eliminate. The same shape applies to a
-// semantically meaningful `0`. This is invisible to every in-tree test because
-// `canonical_payload` is applied symmetrically to both `sign_card` and
-// `verify_card_signatures` (see module docs' "unvalidated against a real peer"
-// section) — it only bites against a real external `a2a-sdk` signer. If a real vector
-// ever mismatches specifically on an empty-object or zero-valued field, narrow this
-// function (e.g. drop the `{}`/`0` arms, keeping only string/bool/array) rather than
-// assuming the JCS library itself is at fault.
+/// Mirror of a2a-python `_clean_empty`: returns `None` for `null`, `""`, and for arrays and
+/// objects that are empty after cleaning their children; `false` and `0` are kept.
+/// `depth` counts open containers on the path (outermost is 1); exceeding [`MAX_DEPTH`] is an
+/// error, which also bounds recursion on hostile input.
 #[cfg(feature = "card-signing")]
-fn is_proto3_default(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(b) => !b,
-        Value::Number(n) => n.as_f64() == Some(0.0),
-        Value::String(s) => s.is_empty(),
-        Value::Array(a) => a.is_empty(),
-        Value::Object(o) => o.is_empty(),
+fn clean_empty(value: Value, depth: usize) -> Result<Option<Value>, String> {
+    if matches!(value, Value::Object(_) | Value::Array(_)) && depth > MAX_DEPTH {
+        return Err(format!("nesting exceeds the maximum depth of {MAX_DEPTH}"));
     }
-}
-
-/// Recursively drops object keys whose value is a proto3 default (see
-/// [`is_proto3_default`]), processing children first so a nested object that becomes
-/// empty only after its own defaults are stripped is also removed from its parent.
-/// Array elements are recursed into but never removed — a repeated field's cardinality
-/// is significant and unlike a struct field has no "default value" to omit.
-#[cfg(feature = "card-signing")]
-fn strip_proto3_defaults(value: &mut Value) {
-    match value {
+    Ok(match value {
+        Value::Null => None,
+        Value::String(s) if s.is_empty() => None,
         Value::Object(map) => {
-            map.retain(|_, v| {
-                strip_proto3_defaults(v);
-                !is_proto3_default(v)
-            });
-        }
-        Value::Array(arr) => {
-            for v in arr.iter_mut() {
-                strip_proto3_defaults(v);
+            let mut cleaned = serde_json::Map::new();
+            for (k, v) in map {
+                if let Some(v) = clean_empty(v, depth + 1)? {
+                    cleaned.insert(k, v);
+                }
             }
+            (!cleaned.is_empty()).then_some(Value::Object(cleaned))
         }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
-    }
+        Value::Array(items) => {
+            let mut cleaned = Vec::with_capacity(items.len());
+            for v in items {
+                if let Some(v) = clean_empty(v, depth + 1)? {
+                    cleaned.push(v);
+                }
+            }
+            (!cleaned.is_empty()).then_some(Value::Array(cleaned))
+        }
+        other @ (Value::Bool(_) | Value::Number(_) | Value::String(_)) => Some(other),
+    })
 }
 
 #[cfg(feature = "card-signing")]
@@ -630,12 +608,6 @@ mod tests {
         /// catch-all field) — canonicalizing the typed struct's re-serialization instead of
         /// the raw bytes would make a genuinely valid signature fail verification whenever a
         /// peer's card carries a vendor extension field the schema doesn't model.
-        ///
-        /// Before #6201's proto3-default-stripping fix, this test's premise was a *different*
-        /// divergence source (proto3-default fields the raw JSON omitted but the typed
-        /// struct's `Serialize` impl always re-materializes) — that source is now normalized
-        /// away by [`canonical_payload`]'s stripping, so the test uses an irreducible
-        /// divergence (an unknown field) that stripping cannot close.
         #[test]
         fn raw_json_canonicalization_differs_from_typed_struct_reserialization() {
             let raw_json = serde_json::json!({
@@ -665,79 +637,76 @@ mod tests {
             );
         }
 
-        /// Regression test for #6201: a compliant A2A signer may strip proto3-default-valued
-        /// fields (empty string/`false`/`0`/empty array/object) from the card JSON before JCS
-        /// canonicalization and signing (A2A spec §8.4.1), while the transmitted card still
-        /// carries those defaults explicitly. Before this fix, `canonical_payload` canonicalized
-        /// the raw received JSON verbatim (`signatures` removed only), so a signature computed
-        /// over the signer's default-stripped payload would fail to verify against the full
-        /// transmitted card — a fail-closed availability bug rejecting a genuinely valid,
-        /// untampered card.
+        const VECTORS: &str = include_str!("../tests/fixtures/card_signing_a2a_python_1_3_0.json");
+
+        fn vectors() -> serde_json::Value {
+            serde_json::from_str(VECTORS).expect("fixture parses")
+        }
+
+        /// Every `_clean_empty` case from a2a-sdk 1.3.0 canonicalizes to the same bytes here.
         #[test]
-        fn signature_over_default_stripped_payload_verifies_against_full_transmitted_card() {
-            let signing_key = SigningKey::from_bytes(&[44u8; 32].into()).unwrap();
+        fn clean_empty_cases_match_python_reference_bytes() {
+            for case in vectors()["clean_empty_cases"].as_array().unwrap() {
+                let got = canonical_payload(&case["input"]).unwrap();
+                assert_eq!(
+                    String::from_utf8(got).unwrap(),
+                    case["canonical"].as_str().unwrap(),
+                    "input: {}",
+                    case["input"]
+                );
+            }
+        }
 
-            // What a compliant signer canonicalizes and signs: proto3-default fields
-            // (`description`, `defaultInputModes`, `pushNotifications`, ...) are absent.
-            let signer_payload = serde_json::json!({
-                "name": "peer-agent",
-                "url": "http://peer.example.com",
-                "version": "0.1.0",
-                "protocolVersion": "0.2.1",
-                "capabilities": {"streaming": true},
-            });
-            let sig = sign_card(&signer_payload, "key-1", &signing_key).unwrap();
-
-            // What actually arrives over the wire: the same card with every proto3-default
-            // field present and explicit.
-            let transmitted_card = serde_json::json!({
-                "name": "peer-agent",
-                "description": "",
-                "url": "http://peer.example.com",
-                "version": "0.1.0",
-                "protocolVersion": "0.2.1",
-                "capabilities": {
-                    "streaming": true,
-                    "pushNotifications": false,
-                    "stateTransitionHistory": false,
-                    "images": false,
-                    "audio": false,
-                    "files": false
-                },
-                "defaultInputModes": [],
-                "defaultOutputModes": [],
-                "skills": [],
-                "signatures": [&sig],
-            });
-
-            let trusted = vec![trusted_key_for("key-1", &signing_key)];
-            let result = verify_card_signatures(&transmitted_card, &[sig], &trusted);
+        /// A card served and signed by a2a-sdk 1.3.0 canonicalizes byte-for-byte to the Python
+        /// payload and its ES256 signature verifies against the signer's JWK.
+        #[test]
+        fn python_signed_card_matches_canonical_payload_and_verifies() {
+            let v = vectors();
+            let card = &v["served_card"];
+            let got = canonical_payload(card).unwrap();
             assert_eq!(
-                result,
-                SignatureVerification::Verified,
-                "verification must succeed even when the signer stripped proto3-default \
-                 fields before signing but the transmitted card carries them explicitly"
+                String::from_utf8(got).unwrap(),
+                v["canonical_payload"].as_str().unwrap()
+            );
+
+            let sigs: Vec<AgentCardSignature> =
+                serde_json::from_value(card["signatures"].clone()).unwrap();
+            let trusted = vec![TrustedKey {
+                kid: v["kid"].as_str().unwrap().to_owned(),
+                alg: SigAlg::Es256,
+                key_material: v["jwk"].to_string(),
+            }];
+            assert_eq!(
+                verify_card_signatures(card, &sigs, &trusted),
+                SignatureVerification::Verified
             );
         }
 
         #[test]
-        fn strip_proto3_defaults_removes_nested_object_that_becomes_empty() {
-            let mut value = serde_json::json!({
-                "name": "peer",
-                "capabilities": {"streaming": false, "images": false},
-                "skills": [{"id": "s1", "tags": []}],
-            });
-            strip_proto3_defaults(&mut value);
+        fn explicit_false_and_zero_are_kept() {
+            let card =
+                serde_json::json!({"name": "p", "capabilities": {"streaming": false}, "n": 0});
+            let got = String::from_utf8(canonical_payload(&card).unwrap()).unwrap();
             assert_eq!(
-                value,
-                serde_json::json!({
-                    "name": "peer",
-                    "skills": [{"id": "s1"}],
-                }),
-                "an object whose fields are all proto3 defaults must itself be dropped from \
-                 its parent, and array elements must be recursed into (never removed from \
-                 the array itself)"
+                got,
+                r#"{"capabilities":{"streaming":false},"n":0,"name":"p"}"#
             );
+        }
+
+        #[test]
+        fn null_params_value_and_empty_list_elements_are_dropped() {
+            let card = serde_json::json!({"p": {"a": null, "b": 0}, "l": ["", [], {}, null, "x"]});
+            let got = String::from_utf8(canonical_payload(&card).unwrap()).unwrap();
+            assert_eq!(got, r#"{"l":["x"],"p":{"b":0}}"#);
+        }
+
+        #[test]
+        fn nesting_beyond_max_depth_is_rejected() {
+            let mut v = serde_json::json!("x");
+            for _ in 0..=MAX_DEPTH {
+                v = serde_json::json!([v]);
+            }
+            assert!(canonical_payload(&v).is_err());
         }
     }
 }

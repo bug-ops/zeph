@@ -237,19 +237,14 @@ impl AgentRegistry {
     /// ```
     #[must_use]
     pub fn with_trust(mut self, policy: CardTrustPolicy, trusted_keys: Vec<TrustedKey>) -> Self {
-        // Breadcrumb for operators enabling enforcement (S3, restored after #6200/#6201
-        // review): card-signature interop with a real A2A peer is still unvalidated — the
-        // JCS canonicalization (including #6201's proto3-default stripping) is implemented
-        // per the A2A spec text only, never checked against a real `a2a-sdk`-produced
-        // signed card (see `crate::card_signing` module docs). This condition doesn't
-        // change based on which gap is currently open, so it's logged here rather than
-        // only in a doc comment an operator flipping the knob at runtime will never read.
+        // Breadcrumb for operators enabling enforcement: canonicalization is verified against
+        // a2a-sdk 1.3.0 vectors only; other signers may still diverge (see `crate::card_signing`
+        // known limitation), and this condition does not change at runtime.
         if policy != CardTrustPolicy::Ignore {
             tracing::warn!(
                 policy = ?policy,
-                "a2a discovery: card signature interop is unvalidated against a real A2A peer \
-                 (#5928/#6201) — canonicalization is implemented per spec text only; `require` \
-                 may reject genuinely valid signed peers"
+                "a2a discovery: card signature canonicalization is validated against a2a-sdk \
+                 1.3.0 only (#6931); `require` may reject valid cards from other signers"
             );
         }
         self.trust = TrustConfig {

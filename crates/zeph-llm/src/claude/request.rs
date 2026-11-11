@@ -4,6 +4,7 @@
 //! Message conversion and request building utilities for the Claude provider.
 
 use std::collections::HashSet;
+use zeph_common::ToolCallId;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 
@@ -590,12 +591,12 @@ fn with_compaction(mut response: ChatResponse, summary: Option<String>) -> ChatR
 
 fn push_tool_use_block(
     blocks: &mut Vec<AnthropicContentBlock>,
-    id: &str,
+    id: &ToolCallId,
     name: &str,
     input: &serde_json::Value,
     orphaned_tool_use_ids: &HashSet<&str>,
 ) {
-    if orphaned_tool_use_ids.contains(id) {
+    if orphaned_tool_use_ids.contains(id.as_str()) {
         tracing::warn!(
             tool_use_id = %id,
             tool_name = %name,
@@ -607,7 +608,7 @@ fn push_tool_use_block(
         });
     } else {
         blocks.push(AnthropicContentBlock::ToolUse {
-            id: id.to_owned(),
+            id: id.clone(),
             name: name.to_owned(),
             input: input.clone(),
         });
@@ -616,12 +617,12 @@ fn push_tool_use_block(
 
 fn push_tool_result_block(
     blocks: &mut Vec<AnthropicContentBlock>,
-    tool_use_id: &str,
+    tool_use_id: &ToolCallId,
     content: &str,
     is_error: bool,
     orphaned_tool_result_ids: &HashSet<&str>,
 ) {
-    if orphaned_tool_result_ids.contains(tool_use_id) {
+    if orphaned_tool_result_ids.contains(tool_use_id.as_str()) {
         tracing::warn!(
             tool_use_id = %tool_use_id,
             "downgrading orphaned tool_result to text in API request"
@@ -630,12 +631,12 @@ fn push_tool_result_block(
         // message survives as the window's leading `user` anchor rather than being dropped
         // entirely by the empty-blocks guard.
         blocks.push(AnthropicContentBlock::Text {
-            text: downgraded_tool_result_text(tool_use_id, content),
+            text: downgraded_tool_result_text(tool_use_id.as_str(), content),
             cache_control: None,
         });
     } else {
         blocks.push(AnthropicContentBlock::ToolResult {
-            tool_use_id: tool_use_id.to_owned(),
+            tool_use_id: tool_use_id.clone(),
             content: content.to_owned(),
             is_error,
             cache_control: None,

@@ -18,7 +18,7 @@ fn make_tool_pair_with_output(agent: &mut Agent<MockChannel>, tool_name: &str) {
     agent.msg.messages.push(Message::from_parts(
         Role::Assistant,
         vec![MessagePart::ToolUse {
-            id: format!("id_{tool_name}"),
+            id: format!("id_{tool_name}").into(),
             name: tool_name.to_owned(),
             input: serde_json::json!({"cmd": "echo hello"}),
         }],

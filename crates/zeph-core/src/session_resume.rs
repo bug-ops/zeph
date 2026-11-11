@@ -152,13 +152,13 @@ mod tests {
     fn mid_tool_loop_interruption_is_still_resume() {
         let mut tool_use_only = msg(Role::Assistant, "");
         tool_use_only.parts.push(MessagePart::ToolUse {
-            id: "toolu_1".to_owned(),
+            id: "toolu_1".to_owned().into(),
             name: "bash".to_owned(),
             input: serde_json::json!({"command": "ls"}),
         });
         let mut tool_result = msg(Role::User, "");
         tool_result.parts.push(MessagePart::ToolResult {
-            tool_use_id: "toolu_1".to_owned(),
+            tool_use_id: "toolu_1".to_owned().into(),
             content: "file.txt".to_owned(),
             is_error: false,
         });

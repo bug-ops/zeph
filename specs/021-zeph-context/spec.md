@@ -350,6 +350,15 @@ summary_max_chars = 600  # default
 
 ---
 
+### Memory injection sanitization (#6958, #6957)
+
+- `sanitize_memory_content` writes the final body (sanitized, quarantined or blocked fallback) into `Message.content` AND into the message's memory part (`Recall`/`Summary`/`CrossSession`/`CodeContext`), because providers render `parts` when present; unsanitized text MUST NOT reach the wire through either field
+- A message with no parts only updates `content`; several memory parts are collapsed into one of the first kind (fail-closed, `debug_assert!`); non-memory parts are replaced by a single text part
+- Scrub-then-sanitize order is fixed: `scrub_message` rebuilds `content` from parts and would discard spotlighting
+- `ContextService::inject_semantic_recall_bare`, `inject_cross_session_context` and `inject_summaries` were removed (BREAKING, test-only callers that bypassed sanitize, scrub and the trust ratchet); every injection goes through `sanitize_memory_message`
+
+---
+
 ## 12. Open Questions
 
 None.

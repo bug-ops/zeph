@@ -915,7 +915,7 @@ mod tests {
             role: Role::User,
             content: String::new(),
             parts: vec![MessagePart::ToolResult {
-                tool_use_id: "id1".to_string(),
+                tool_use_id: "id1".to_string().into(),
                 content: big_content.clone(),
                 is_error: false,
             }],
@@ -937,7 +937,7 @@ mod tests {
             role: Role::Assistant,
             content: "reply".to_string(),
             parts: vec![MessagePart::ToolResult {
-                tool_use_id: "id3".to_string(),
+                tool_use_id: "id3".to_string().into(),
                 content: big_content.clone(),
                 is_error: false,
             }],
@@ -948,7 +948,7 @@ mod tests {
             role: Role::User,
             content: "last".to_string(),
             parts: vec![MessagePart::ToolResult {
-                tool_use_id: "id4".to_string(),
+                tool_use_id: "id4".to_string().into(),
                 content: big_content.clone(),
                 is_error: false,
             }],
@@ -1007,7 +1007,7 @@ mod tests {
             role: Role::User,
             content: String::new(),
             parts: vec![MessagePart::ToolResult {
-                tool_use_id: "id".to_string(),
+                tool_use_id: "id".to_string().into(),
                 content: big.clone(),
                 is_error: false,
             }],
@@ -1017,7 +1017,7 @@ mod tests {
             role: Role::Assistant,
             content: "ok".to_string(),
             parts: vec![MessagePart::ToolResult {
-                tool_use_id: "id2".to_string(),
+                tool_use_id: "id2".to_string().into(),
                 content: big.clone(),
                 is_error: false,
             }],

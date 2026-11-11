@@ -1,0 +1,113 @@
+{
+  "generator": "a2a-sdk==1.3.0 via uv run --with 'a2a-sdk[signing]==1.3.0'; _clean_empty + _canonicalize_agent_card",
+  "jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "9osd4PXOaGGS9L0P00Fjhj8uidOF-Lz7hZeVM6V6ybA",
+    "y": "TwIqtrCWyL9CgE2OZ9OLP4iGaYDMkD9o_enS4UPZMmc"
+  },
+  "kid": "py-key",
+  "served_card": {
+    "name": "py-peer",
+    "supportedInterfaces": [
+      {
+        "url": "http://py.example.com",
+        "protocolBinding": "JSONRPC",
+        "protocolVersion": "1.0"
+      }
+    ],
+    "version": "1.0.0",
+    "capabilities": {
+      "streaming": false,
+      "pushNotifications": true,
+      "extensions": [
+        {
+          "uri": "urn:x",
+          "params": {
+            "l": [
+              "",
+              "a",
+              [],
+              {},
+              null,
+              0.0,
+              false
+            ],
+            "e": {},
+            "f": false,
+            "n": 0.0,
+            "z": null
+          }
+        }
+      ]
+    },
+    "defaultInputModes": [
+      "text/plain"
+    ],
+    "signatures": [
+      {
+        "protected": "eyJhbGciOiJFUzI1NiIsImprdSI6bnVsbCwia2lkIjoicHkta2V5In0",
+        "signature": "m24lr-c4cl3f8NWn4b2Z3oWgXXYCrP4i2ZQStjvkfoO39QQOI9FUyXeclcsncDEAud-q1DITlqhLh_caNwabQw"
+      }
+    ]
+  },
+  "canonical_payload": "{\"capabilities\":{\"extensions\":[{\"params\":{\"f\":false,\"l\":[\"a\",0,false],\"n\":0},\"uri\":\"urn:x\"}],\"pushNotifications\":true,\"streaming\":false},\"defaultInputModes\":[\"text/plain\"],\"name\":\"py-peer\",\"supportedInterfaces\":[{\"protocolBinding\":\"JSONRPC\",\"protocolVersion\":\"1.0\",\"url\":\"http://py.example.com\"}],\"version\":\"1.0.0\"}",
+  "clean_empty_cases": [
+    {
+      "input": {
+        "a": "",
+        "b": [],
+        "c": {},
+        "d": null,
+        "e": 0,
+        "f": false,
+        "g": "x"
+      },
+      "canonical": "{\"e\":0,\"f\":false,\"g\":\"x\"}"
+    },
+    {
+      "input": {
+        "l": [
+          "",
+          "a",
+          [],
+          {},
+          null,
+          0,
+          false
+        ]
+      },
+      "canonical": "{\"l\":[\"a\",0,false]}"
+    },
+    {
+      "input": {
+        "p": {
+          "q": {
+            "r": [],
+            "s": ""
+          }
+        },
+        "k": 1
+      },
+      "canonical": "{\"k\":1}"
+    },
+    {
+      "input": {
+        "params": {
+          "n": 0,
+          "e": {},
+          "z": null
+        }
+      },
+      "canonical": "{\"params\":{\"n\":0}}"
+    },
+    {
+      "input": {
+        "only": {
+          "empty": {}
+        }
+      },
+      "canonical": "null"
+    }
+  ]
+}

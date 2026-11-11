@@ -101,7 +101,7 @@ mod tests {
     #[test]
     fn trailing_orphan_tool_use_removed() {
         let tool_use = MessagePart::ToolUse {
-            id: "abc".to_owned(),
+            id: "abc".to_owned().into(),
             name: "bash".to_owned(),
             input: serde_json::json!({}),
         };
@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn single_leading_orphan_tool_result_removed() {
         let tool_result = MessagePart::ToolResult {
-            tool_use_id: "x1".to_owned(),
+            tool_use_id: "x1".to_owned().into(),
             content: "output".to_owned(),
             is_error: false,
         };
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn multiple_consecutive_leading_orphans_removed() {
         let tr = |id: &str| MessagePart::ToolResult {
-            tool_use_id: id.to_owned(),
+            tool_use_id: id.to_owned().into(),
             content: "out".to_owned(),
             is_error: false,
         };
@@ -155,7 +155,7 @@ mod tests {
     #[test]
     fn trailing_orphan_does_not_remove_leading_clean_messages() {
         let tool_use = MessagePart::ToolUse {
-            id: "t1".to_owned(),
+            id: "t1".to_owned().into(),
             name: "bash".to_owned(),
             input: serde_json::json!({}),
         };
@@ -185,7 +185,7 @@ mod tests {
                         text: "thinking out loud".to_owned(),
                     },
                     MessagePart::ToolUse {
-                        id: "abc".to_owned(),
+                        id: "abc".to_owned().into(),
                         name: "bash".to_owned(),
                         input: serde_json::json!({}),
                     },
@@ -229,7 +229,7 @@ mod tests {
                         signature: "sig".to_owned(),
                     },
                     MessagePart::ToolUse {
-                        id: "orphan".to_owned(),
+                        id: "orphan".to_owned().into(),
                         name: "bash".to_owned(),
                         input: serde_json::json!({}),
                     },
@@ -270,12 +270,12 @@ mod tests {
     #[test]
     fn tool_result_after_id_reopened_by_new_tool_use_is_not_a_duplicate() {
         let tool_use = |id: &str| MessagePart::ToolUse {
-            id: id.to_owned(),
+            id: id.to_owned().into(),
             name: "bash".to_owned(),
             input: serde_json::json!({}),
         };
         let tool_result = |id: &str, content: &str| MessagePart::ToolResult {
-            tool_use_id: id.to_owned(),
+            tool_use_id: id.to_owned().into(),
             content: content.to_owned(),
             is_error: false,
         };
@@ -341,12 +341,12 @@ mod tests {
     #[test]
     fn legitimate_id_reuse_across_turns_ollama_style_must_not_be_stripped() {
         let tool_use = |id: &str| MessagePart::ToolUse {
-            id: id.to_owned(),
+            id: id.to_owned().into(),
             name: "bash".to_owned(),
             input: serde_json::json!({}),
         };
         let tool_result = |id: &str, content: &str| MessagePart::ToolResult {
-            tool_use_id: id.to_owned(),
+            tool_use_id: id.to_owned().into(),
             content: content.to_owned(),
             is_error: false,
         };
@@ -412,12 +412,12 @@ mod tests {
     #[test]
     fn duplicate_tool_result_several_messages_downstream_is_stripped() {
         let tool_use = |id: &str| MessagePart::ToolUse {
-            id: id.to_owned(),
+            id: id.to_owned().into(),
             name: "bash".to_owned(),
             input: serde_json::json!({}),
         };
         let tool_result = |id: &str, content: &str| MessagePart::ToolResult {
-            tool_use_id: id.to_owned(),
+            tool_use_id: id.to_owned().into(),
             content: content.to_owned(),
             is_error: false,
         };
@@ -471,12 +471,12 @@ mod tests {
     #[test]
     fn leading_orphan_result_id_recurring_later_does_not_confuse_the_later_legitimate_pair() {
         let tool_use = |id: &str| MessagePart::ToolUse {
-            id: id.to_owned(),
+            id: id.to_owned().into(),
             name: "bash".to_owned(),
             input: serde_json::json!({}),
         };
         let tool_result = |id: &str, content: &str| MessagePart::ToolResult {
-            tool_use_id: id.to_owned(),
+            tool_use_id: id.to_owned().into(),
             content: content.to_owned(),
             is_error: false,
         };

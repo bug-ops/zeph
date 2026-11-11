@@ -19,6 +19,7 @@ use super::{
     strip_tafc_fields, tool_args_hash,
 };
 use crate::agent::Agent;
+use crate::agent::hooks_dispatch::{PreToolHookCall, make_tool_hook_env};
 use crate::agent::speculative::{COMMIT_LIMIT, CommitOutcome};
 use crate::agent::turn_gate::{DisabledReason, DispatchGate, RequiresGate, TurnToolSet};
 use crate::channel::{Channel, StopHint, ToolStartEvent};
@@ -52,19 +53,6 @@ fn build_mage_bypass_tier_data(
         pending_focus_checkpoint: None,
         pending_system_hints: Vec::new(),
     })
-}
-
-fn make_tool_hook_env(
-    tool_name: &str,
-    tool_input: &serde_json::Value,
-    session_id: Option<&str>,
-) -> std::collections::HashMap<String, String> {
-    let mut env = zeph_subagent::make_base_hook_env(tool_name, tool_input);
-    if let Some(sid) = session_id {
-        env.insert("ZEPH_SESSION_ID".to_owned(), sid.to_owned());
-    }
-    crate::agent::hooks_dispatch::insert_main_agent_ctx(&mut env, session_id);
-    env
 }
 
 impl<C: Channel> Agent<C> {
@@ -836,7 +824,8 @@ impl<C: Channel> Agent<C> {
         // dependent calls in later tiers receive a synthetic error instead of executing.
         // IMP-02: ConfirmationRequired is treated as a failure for dependency propagation —
         // a dependent tool must not proceed when its prerequisite is awaiting user approval.
-        let mut failed_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut failed_ids: std::collections::HashSet<zeph_common::ToolCallId> =
+            std::collections::HashSet::new();
         // Utility gate hints (Retrieve/Verify) are deferred so they are pushed after
         // User(tool_results), maintaining valid OpenAI message ordering (#2615).
         let mut pending_system_hints: Vec<String> = Vec::new();
@@ -1321,7 +1310,7 @@ impl<C: Channel> Agent<C> {
         calls: &[ToolCall],
         tier_indices: &[usize],
         dag: &super::tool_call_dag::ToolCallDag,
-        failed_ids: &std::collections::HashSet<String>,
+        failed_ids: &std::collections::HashSet<zeph_common::ToolCallId>,
         quota_blocked: bool,
         pre_exec_blocked: &[bool],
         utility_actions: &[zeph_tools::UtilityAction],
@@ -1354,12 +1343,7 @@ impl<C: Channel> Agent<C> {
         let mut pre_hook_blocked: std::collections::HashMap<usize, String> =
             std::collections::HashMap::new();
         if !pre_hooks.is_empty() {
-            let conv_id_str = self
-                .services
-                .memory
-                .persistence
-                .conversation_id
-                .map(|id| id.0.to_string());
+            let conv_id_str = self.hook_session_id();
             let dispatch = self.mcp_dispatch();
             let mcp: Option<&dyn zeph_subagent::McpDispatch> = dispatch
                 .as_ref()
@@ -1370,13 +1354,12 @@ impl<C: Channel> Agent<C> {
                 if self.builtin_tool(tc.name.as_str()).is_some() {
                     return None;
                 }
-                let matched: Vec<&zeph_config::HookDef> =
-                    zeph_subagent::matching_hooks(&pre_hooks, tc.name.as_str());
-                if matched.is_empty() {
-                    return None;
-                }
-                let owned: Vec<zeph_config::HookDef> = matched.into_iter().cloned().collect();
-                let env = make_tool_hook_env(tc.name.as_str(), &tc.input, conv_id_str.as_deref());
+                let call = PreToolHookCall::prepare(
+                    &pre_hooks,
+                    tc.name.as_str(),
+                    &tc.input,
+                    conv_id_str.as_deref(),
+                )?;
                 let sem = std::sync::Arc::clone(semaphore);
                 let tool_name = tc.name.clone();
                 Some(async move {
@@ -1388,13 +1371,7 @@ impl<C: Channel> Agent<C> {
                         );
                         return (idx, None);
                     };
-                    let result = zeph_subagent::hooks::fire_hooks(&owned, &env, mcp, None)
-                        .instrument(tracing::info_span!(
-                            "core.hooks.pre_tool_use",
-                            tool = %tool_name
-                        ))
-                        .await;
-                    (idx, Some(result))
+                    (idx, Some(call.fire(tool_name.as_str(), mcp).await))
                 })
             });
 
@@ -1447,7 +1424,7 @@ impl<C: Channel> Agent<C> {
             let has_failed_dep = dag
                 .string_values_for(idx)
                 .iter()
-                .any(|v| failed_ids.contains(v));
+                .any(|v| failed_ids.contains(v.as_str()));
             if let Some((fut, reason)) = self
                 .check_call_gates(
                     idx,
@@ -1643,7 +1620,7 @@ impl<C: Channel> Agent<C> {
         args_hashes: &[u64],
         tool_started_ats: &[std::time::Instant],
         max_parallel: usize,
-        failed_ids: &mut std::collections::HashSet<String>,
+        failed_ids: &mut std::collections::HashSet<zeph_common::ToolCallId>,
         tool_results: &mut [Result<Option<zeph_tools::ToolOutput>, zeph_tools::ToolError>],
     ) {
         // Phase 1: sequential bookkeeping (dependency-graph, result cache, failed_ids). Cheap,
@@ -2575,7 +2552,7 @@ mod tests {
 
     fn make_tool_req(name: &str) -> zeph_llm::provider::ToolUseRequest {
         zeph_llm::provider::ToolUseRequest {
-            id: format!("id_{name}"),
+            id: format!("id_{name}").into(),
             name: name.into(),
             input: serde_json::Value::Null,
         }
@@ -3151,12 +3128,12 @@ mod tests {
 
             let tool_calls = vec![
                 zeph_llm::provider::ToolUseRequest {
-                    id: "id-1".to_owned(),
+                    id: "id-1".to_owned().into(),
                     name: "bash".to_owned().into(),
                     input: serde_json::json!({}),
                 },
                 zeph_llm::provider::ToolUseRequest {
-                    id: "id-2".to_owned(),
+                    id: "id-2".to_owned().into(),
                     name: "bash".to_owned().into(),
                     input: serde_json::json!({}),
                 },
@@ -3222,7 +3199,7 @@ mod tests {
             agent.tool_orchestrator.max_retry_duration_secs = 0;
 
             let tool_calls = vec![zeph_llm::provider::ToolUseRequest {
-                id: "id-retry".to_owned(),
+                id: "id-retry".to_owned().into(),
                 name: "bash".to_owned().into(),
                 input: serde_json::json!({}),
             }];
@@ -3280,7 +3257,7 @@ mod tests {
             agent.tool_orchestrator.max_retry_duration_secs = 0;
 
             let tool_calls = vec![zeph_llm::provider::ToolUseRequest {
-                id: "id-e2e".to_owned(),
+                id: "id-e2e".to_owned().into(),
                 name: "bash".to_owned().into(),
                 input: serde_json::json!({"command": "echo hi"}),
             }];
@@ -3341,7 +3318,7 @@ mod tests {
             let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
             let tool_calls = vec![zeph_llm::provider::ToolUseRequest {
-                id: "id-cancel".to_owned(),
+                id: "id-cancel".to_owned().into(),
                 name: "bash".to_owned().into(),
                 input: serde_json::json!({}),
             }];
@@ -3403,7 +3380,7 @@ mod tests {
 
             let args = serde_json::json!({"pattern": "*.rs"});
             let round1 = vec![zeph_llm::provider::ToolUseRequest {
-                id: "call-1".to_owned(),
+                id: "call-1".to_owned().into(),
                 name: "find_path".to_owned().into(),
                 input: args.clone(),
             }];
@@ -3419,7 +3396,7 @@ mod tests {
             // Second round: identical tool name + args under a fresh tool_use_id, as a real LLM
             // would assign, mimicking compliance with the injected "you MUST call it again" hint.
             let round2 = vec![zeph_llm::provider::ToolUseRequest {
-                id: "call-2".to_owned(),
+                id: "call-2".to_owned().into(),
                 name: "find_path".to_owned().into(),
                 input: args,
             }];
@@ -3457,7 +3434,7 @@ mod tests {
 
             let args = serde_json::json!({"pattern": "*.rs"});
             let round1 = vec![zeph_llm::provider::ToolUseRequest {
-                id: "call-1".to_owned(),
+                id: "call-1".to_owned().into(),
                 name: "find_path".to_owned().into(),
                 input: args.clone(),
             }];
@@ -3533,7 +3510,7 @@ mod tests {
 
             // Round 1: LLM calls `list_directory` (gain 0.65, uncertainty ~1.0) -> Retrieve.
             let round1 = vec![zeph_llm::provider::ToolUseRequest {
-                id: "call-1".to_owned(),
+                id: "call-1".to_owned().into(),
                 name: "list_directory".to_owned().into(),
                 input: serde_json::json!({"path": "."}),
             }];
@@ -3549,7 +3526,7 @@ mod tests {
             // for real), fails with ConfirmationRequired, MockChannel auto-confirms, and the
             // confirmed re-execution also fails with ConfirmationRequired.
             let round2 = vec![zeph_llm::provider::ToolUseRequest {
-                id: "call-2".to_owned(),
+                id: "call-2".to_owned().into(),
                 name: "memory_search".to_owned().into(),
                 input: serde_json::json!({"query": "somefile.txt"}),
             }];
@@ -3571,7 +3548,7 @@ mod tests {
             // in practice) that would normally also trigger Retrieve. It must dispatch directly
             // instead of mandating yet another memory_search detour.
             let round3 = vec![zeph_llm::provider::ToolUseRequest {
-                id: "call-3".to_owned(),
+                id: "call-3".to_owned().into(),
                 name: "grep".to_owned().into(),
                 input: serde_json::json!({"pattern": "foo"}),
             }];
@@ -3646,7 +3623,7 @@ mod tests {
             for (i, tool) in mandate_tools.iter().enumerate() {
                 let call_id = format!("call-mandate-{i}");
                 let round = vec![zeph_llm::provider::ToolUseRequest {
-                    id: call_id.clone(),
+                    id: call_id.clone().into(),
                     name: (*tool).to_owned().into(),
                     input: serde_json::json!({"path": "."}),
                 }];
@@ -3660,7 +3637,7 @@ mod tests {
 
                 let search_id = format!("call-search-{i}");
                 let search_round = vec![zeph_llm::provider::ToolUseRequest {
-                    id: search_id.clone(),
+                    id: search_id.clone().into(),
                     name: "memory_search".to_owned().into(),
                     input: serde_json::json!({"query": mandate_queries[i]}),
                 }];
@@ -3686,7 +3663,7 @@ mod tests {
             // A 4th distinct tool: the circuit breaker (not the confirmation-outcome bypass,
             // which self-healed away 3 rounds ago) must now let it dispatch directly.
             let round_final = vec![zeph_llm::provider::ToolUseRequest {
-                id: "call-final".to_owned(),
+                id: "call-final".to_owned().into(),
                 name: "find_path".to_owned().into(),
                 input: serde_json::json!({"pattern": "*.rs"}),
             }];

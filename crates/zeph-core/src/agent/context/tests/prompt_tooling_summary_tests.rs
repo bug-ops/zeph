@@ -19,7 +19,7 @@ fn make_tool_pair(agent: &mut Agent<MockChannel>, tool_name: &str) {
     agent.msg.messages.push(Message::from_parts(
         Role::Assistant,
         vec![MessagePart::ToolUse {
-            id: format!("id_{tool_name}"),
+            id: format!("id_{tool_name}").into(),
             name: tool_name.to_owned(),
             input: serde_json::json!({"cmd": "echo hello"}),
         }],
@@ -27,7 +27,7 @@ fn make_tool_pair(agent: &mut Agent<MockChannel>, tool_name: &str) {
     agent.msg.messages.push(Message::from_parts(
         Role::User,
         vec![MessagePart::ToolResult {
-            tool_use_id: format!("id_{tool_name}"),
+            tool_use_id: format!("id_{tool_name}").into(),
             content: format!("output of {tool_name}"),
             is_error: false,
         }],
@@ -39,7 +39,7 @@ fn make_tool_pair_with_output(agent: &mut Agent<MockChannel>, tool_name: &str) {
     agent.msg.messages.push(Message::from_parts(
         Role::Assistant,
         vec![MessagePart::ToolUse {
-            id: format!("id_{tool_name}"),
+            id: format!("id_{tool_name}").into(),
             name: tool_name.to_owned(),
             input: serde_json::json!({"cmd": "echo hello"}),
         }],
@@ -366,7 +366,7 @@ fn remove_tool_responses_all_tiers_progressive() {
         Message::from_parts(
             Role::User,
             vec![MessagePart::ToolResult {
-                tool_use_id: format!("t{i}"),
+                tool_use_id: format!("t{i}").into(),
                 content: format!("result_{i}"),
                 is_error: false,
             }],

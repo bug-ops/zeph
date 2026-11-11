@@ -1763,6 +1763,32 @@ impl<C: crate::channel::Channel> Agent<C> {
 
                     let mut result_parts: Vec<MessagePart> = Vec::new();
                     for tc in &tool_calls {
+                        // Built-ins are answered by the main loop, never the executor: an MCP
+                        // `sanitized_id` can collide with a built-in name and must not bypass hooks.
+                        let blocked = if self.builtin_tool(tc.name.as_str()).is_some() {
+                            Some(format!(
+                                "[error] built-in tool `{}` is not available in the inline loop",
+                                tc.name
+                            ))
+                        } else {
+                            self.fire_pre_tool_hooks(tc.name.as_str(), &tc.input).await
+                        };
+                        if let Some(blocked) = blocked {
+                            tool_trace.push(ToolCallSummary {
+                                tool: tc.name.to_string(),
+                                args_summary: tool_execution::summarize_tool_input(&tc.input),
+                                ok: false,
+                                is_read_only: zeph_common::tool_classification::is_readonly_tool(
+                                    tc.name.as_str(),
+                                ),
+                            });
+                            result_parts.push(MessagePart::ToolResult {
+                                tool_use_id: tc.id.clone(),
+                                content: blocked,
+                                is_error: true,
+                            });
+                            continue;
+                        }
                         let call = ToolCall {
                             tool_id: tc.name.clone(),
                             params: match &tc.input {
@@ -4365,5 +4391,126 @@ mod tests {
              the LLM; got: {:?}",
             calls[0].iter().map(|t| &t.name).collect::<Vec<_>>()
         );
+    }
+
+    struct InlineHookRun {
+        trace: Vec<zeph_orchestration::ToolCallSummary>,
+        executor_calls: usize,
+        /// `is_error` of the `ToolResult` the model received on its second request.
+        result_is_error: bool,
+    }
+
+    /// Run the inline loop once with a model that calls `tool`; `fail_closed` configures a
+    /// failing `PreToolUse` hook on `tool`, `None` configures no hook at all.
+    async fn run_inline_with_pre_hook(
+        tool: &'static str,
+        fail_closed: Option<bool>,
+    ) -> InlineHookRun {
+        use crate::agent::agent_tests::*;
+        use std::sync::atomic::Ordering;
+        use zeph_config::{HookAction, HookDef, HookMatcher};
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+        use zeph_llm::provider::{ChatResponse, MessagePart, ToolUseRequest};
+
+        let call = ToolUseRequest {
+            id: "call_1".into(),
+            name: tool.into(),
+            input: serde_json::json!({}),
+        };
+        let (mock, recorded) = MockProvider::with_responses(vec![])
+            .with_tool_use(vec![
+                ChatResponse::tool_use(None, vec![call]),
+                ChatResponse::text("done"),
+            ])
+            .0
+            .with_recording();
+        let executor = MockToolExecutor::with_output(tool, "EXECUTED")
+            .with_definitions(vec![inline_loop_test_tool_def()]);
+        let executor_calls = std::sync::Arc::clone(&executor.call_count);
+        let mut agent = crate::agent::Agent::new(
+            AnyProvider::Mock(mock),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            executor,
+        );
+        if let Some(fail_closed) = fail_closed {
+            agent.services.session.hooks_config.pre_tool_use = vec![HookMatcher {
+                matcher: tool.to_owned(),
+                hooks: vec![HookDef {
+                    action: HookAction::Command {
+                        command: "exit 1".to_owned(),
+                    },
+                    timeout_secs: 5,
+                    fail_closed,
+                    r#if: None,
+                }],
+            }];
+        }
+
+        let trace = agent
+            .run_inline_tool_loop("run the tool", 3)
+            .await
+            .expect("inline loop must complete")
+            .tool_trace;
+        let result_is_error = recorded
+            .lock()
+            .unwrap()
+            .get(1)
+            .and_then(|msgs| msgs.last())
+            .and_then(|m| {
+                m.parts.iter().find_map(|p| match p {
+                    MessagePart::ToolResult { is_error, .. } => Some(*is_error),
+                    _ => None,
+                })
+            })
+            .expect("second request must carry the ToolResult");
+        InlineHookRun {
+            trace,
+            executor_calls: executor_calls.load(Ordering::SeqCst),
+            result_is_error,
+        }
+    }
+
+    /// #6954: a `fail_closed` `PreToolUse` hook failure must block the tool in the inline loop.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_inline_tool_loop_fail_closed_pre_hook_blocks_tool() {
+        let run = Box::pin(run_inline_with_pre_hook("test_tool", Some(true))).await;
+        assert_eq!(run.trace.len(), 1);
+        assert!(!run.trace[0].ok, "blocked call must be recorded as not ok");
+        assert_eq!(
+            run.executor_calls, 0,
+            "blocked tool must not reach the executor"
+        );
+        assert!(
+            run.result_is_error,
+            "the model must receive an is_error ToolResult"
+        );
+    }
+
+    /// #6954: a fail-open hook failure must not stop the inline loop from running the tool.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_inline_tool_loop_fail_open_pre_hook_runs_tool() {
+        let run = Box::pin(run_inline_with_pre_hook("test_tool", Some(false))).await;
+        assert!(
+            run.trace[0].ok,
+            "fail-open hook failure must not block the tool"
+        );
+        assert_eq!(run.executor_calls, 1);
+        assert!(!run.result_is_error);
+    }
+
+    /// #6954: a call whose name collides with a built-in (e.g. an MCP `sanitized_id`) is answered
+    /// with an error and never reaches the executor, so it cannot bypass `fail_closed` hooks.
+    #[tokio::test]
+    async fn run_inline_tool_loop_builtin_named_call_never_reaches_executor() {
+        let run = Box::pin(run_inline_with_pre_hook("compress_context", None)).await;
+        assert!(!run.trace[0].ok);
+        assert_eq!(run.executor_calls, 0);
+        assert!(run.result_is_error);
     }
 }

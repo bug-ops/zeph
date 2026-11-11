@@ -901,7 +901,7 @@ fn parse_placeholder_importance(content: &str) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeph_common::ProviderName;
+    use zeph_common::{ProviderName, ToolCallId};
     use zeph_llm::provider::{ChatStream, Message, MessageMetadata, MessagePart, Role};
 
     /// Deterministic embedding mock shared by fidelity semantic-scoring tests.
@@ -1094,7 +1094,7 @@ mod tests {
             ..make_cfg()
         };
         let tc = FixedTc(4);
-        let tool_use_id = "abc123".to_string();
+        let tool_use_id = ToolCallId::new("abc123");
         let mut tool_use_msg = make_msg(Role::Assistant, "calling tool");
         tool_use_msg.parts = vec![MessagePart::ToolUse {
             id: tool_use_id.clone(),
@@ -1832,7 +1832,7 @@ mod tests {
             ..make_cfg()
         };
         let tc = FixedTc(4);
-        let tool_id = "tool-42".to_string();
+        let tool_id = ToolCallId::new("tool-42");
 
         let mut tool_use_msg = make_msg_with_fidelity(Role::Assistant, "call tool", None);
         tool_use_msg.parts = vec![MessagePart::ToolUse {

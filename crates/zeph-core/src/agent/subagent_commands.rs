@@ -1292,13 +1292,13 @@ pub(crate) fn estimate_parts_size(m: &zeph_llm::provider::Message) -> usize {
             MessagePart::TurnContext(block) => block.text.len(),
             MessagePart::ToolOutput { body, .. } => body.len(),
             MessagePart::ToolUse { id, name, input } => {
-                50 + id.len() + name.len() + input.to_string().len()
+                50 + id.as_str().len() + name.len() + input.to_string().len()
             }
             MessagePart::ToolResult {
                 tool_use_id,
                 content,
                 ..
-            } => 50 + tool_use_id.len() + content.len(),
+            } => 50 + tool_use_id.as_str().len() + content.len(),
             MessagePart::Image(img) => img.data.len() * 4 / 3,
             MessagePart::ThinkingBlock {
                 thinking,

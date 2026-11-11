@@ -19,7 +19,7 @@ fn tool_use_msg(id: &str, name: &str) -> Message {
     Message::from_parts(
         Role::Assistant,
         vec![MessagePart::ToolUse {
-            id: id.to_owned(),
+            id: id.to_owned().into(),
             name: name.to_owned(),
             input: json!({}),
         }],
@@ -30,7 +30,7 @@ fn tool_result_msg(tool_use_id: &str, content: &str) -> Message {
     Message::from_parts(
         Role::User,
         vec![MessagePart::ToolResult {
-            tool_use_id: tool_use_id.to_owned(),
+            tool_use_id: tool_use_id.to_owned().into(),
             content: content.to_owned(),
             is_error: false,
         }],
@@ -108,7 +108,7 @@ fn non_annihilating_window_still_deletes_not_downgrades() {
         Message::from_parts(
             Role::User,
             vec![MessagePart::ToolResult {
-                tool_use_id: "tu_A".to_owned(),
+                tool_use_id: "tu_A".to_owned().into(),
                 content: "result".to_owned(),
                 is_error: false,
             }],
@@ -142,7 +142,7 @@ fn trim_parent_messages_budget_uses_structured_size() {
     let assistant_msg = Message::from_parts(
         Role::Assistant,
         vec![MessagePart::ToolUse {
-            id: "tu_x".to_owned(),
+            id: "tu_x".to_owned().into(),
             name: "shell".to_owned(),
             input: large_input,
         }],
@@ -176,7 +176,7 @@ fn leading_orphan_only_window_is_downgraded_not_annihilated() {
         Message::from_parts(
             Role::User,
             vec![MessagePart::ToolResult {
-                tool_use_id: "tu_orphan".to_owned(),
+                tool_use_id: "tu_orphan".to_owned().into(),
                 content: "result".to_owned(),
                 is_error: false,
             }],
@@ -223,7 +223,7 @@ fn orphan_pruning_preserves_thinking_block() {
                 text: "answer".to_owned(),
             },
             MessagePart::ToolUse {
-                id: "tu_matched".to_owned(),
+                id: "tu_matched".to_owned().into(),
                 name: "shell".to_owned(),
                 input: json!({}),
             },
@@ -238,7 +238,7 @@ fn orphan_pruning_preserves_thinking_block() {
         Message::from_parts(
             Role::User,
             vec![MessagePart::ToolResult {
-                tool_use_id: "tu_matched".to_owned(),
+                tool_use_id: "tu_matched".to_owned().into(),
                 content: "ok".to_owned(),
                 is_error: false,
             }],
@@ -301,7 +301,7 @@ fn trim_parent_messages_partial_prune_keeps_text() {
             Role::User,
             vec![
                 MessagePart::ToolResult {
-                    tool_use_id: "tu_gone".to_owned(),
+                    tool_use_id: "tu_gone".to_owned().into(),
                     content: "old result".to_owned(),
                     is_error: false,
                 },

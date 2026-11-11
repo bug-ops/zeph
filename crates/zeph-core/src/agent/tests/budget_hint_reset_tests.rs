@@ -39,7 +39,7 @@ fn tool_use_batch(n: usize) -> ChatResponse {
         None,
         (0..n)
             .map(|i| ToolUseRequest {
-                id: format!("call-{i}"),
+                id: format!("call-{i}").into(),
                 name: format!("tool_{i}").into(),
                 input: serde_json::json!({"arg": i}),
             })

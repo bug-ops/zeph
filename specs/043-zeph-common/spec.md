@@ -32,7 +32,7 @@ related:
 
 Multiple crates in the workspace needed the same utility functions (text manipulation,
 network helpers, hash utilities), security primitives (`Secret` with zeroize-on-drop,
-trust levels, sanitization helpers), and strongly-typed identifiers (`ToolName`, `SessionId`,
+trust levels, sanitization helpers), and strongly-typed identifiers (`ToolName`, `ToolCallId`, `SessionId`,
 `ToolDefinition`). Without a shared crate, these were duplicated or forced awkward
 dependencies through higher-level crates.
 
@@ -159,6 +159,7 @@ THEN the same hex string is returned (deterministic)
 |--------|-------------|----------------|
 | `Secret` | Redacted, zeroized secret wrapper | `Zeroizing<String>` inner; no `Clone`; `expose() -> &str` |
 | `ToolName` | Strongly-typed tool name label | `Arc<str>` inner; `as_str()`, `PartialEq<str>` |
+| `ToolCallId` | Opaque provider-assigned tool-call id (model/history side) | `Arc<str>` inner; `#[serde(transparent)]`, wire bytes identical to `String`; tool-execution and channel-event layers keep `String`/`&str` and convert at the boundary |
 | `SessionId` | Strongly-typed session identifier | UUID v4; `new()`, `Display` |
 | `ToolDefinition` | Shared tool schema struct | Name, description, JSON schema blob |
 | `SkillTrustLevel` | Trust gradient for skills | Enum: `Untrusted`, `Provisional`, `Trusted` |

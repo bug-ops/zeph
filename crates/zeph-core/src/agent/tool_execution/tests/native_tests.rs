@@ -85,7 +85,7 @@ fn start_focus_checkpoint_inserted_after_tool_result() {
         role: Role::Assistant,
         content: String::new(),
         parts: vec![MessagePart::ToolUse {
-            id: "call_test_1".to_string(),
+            id: "call_test_1".to_string().into(),
             name: "start_focus".to_string(),
             input: serde_json::json!({"scope": "test"}),
         }],
@@ -106,7 +106,7 @@ fn start_focus_checkpoint_inserted_after_tool_result() {
         role: Role::User,
         content: String::new(),
         parts: vec![MessagePart::ToolResult {
-            tool_use_id: "call_test_1".to_string(),
+            tool_use_id: "call_test_1".to_string().into(),
             content: result.clone(),
             is_error: false,
         }],
@@ -324,12 +324,12 @@ fn complete_focus_in_batch_preserves_current_turn_assistant_message() {
         Role::Assistant,
         vec![
             MessagePart::ToolUse {
-                id: "call-1".to_string(),
+                id: "call-1".to_string().into(),
                 name: "read".to_string(),
                 input: serde_json::json!({"path": "/tmp/x"}),
             },
             MessagePart::ToolUse {
-                id: "call-2".to_string(),
+                id: "call-2".to_string().into(),
                 name: "complete_focus".to_string(),
                 input: serde_json::json!({"summary": "done"}),
             },
@@ -991,7 +991,7 @@ fn test_tool_call(tool_id: &str) -> ToolCall {
 
 fn test_tool_use_request(name: &str) -> ToolUseRequest {
     ToolUseRequest {
-        id: format!("id-{name}"),
+        id: format!("id-{name}").into(),
         name: ToolName::new(name),
         input: serde_json::Value::Object(serde_json::Map::new()),
     }

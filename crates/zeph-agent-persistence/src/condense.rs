@@ -476,7 +476,7 @@ mod tests {
             None,
             SessionEvent::AssistantMessage {
                 parts: vec![MessagePart::ToolUse {
-                    id: "call_1".to_owned(),
+                    id: "call_1".to_owned().into(),
                     name: "bash".to_owned(),
                     input: serde_json::json!({}),
                 }],

@@ -110,7 +110,7 @@ fn select_messages_for_compression_excludes_pinned() {
 
 fn tool_use_request(id: &str) -> ToolUseRequest {
     ToolUseRequest {
-        id: id.to_owned(),
+        id: id.to_owned().into(),
         name: "bash".to_owned().into(),
         input: serde_json::json!({}),
     }
@@ -120,7 +120,7 @@ fn push_assistant_tool_use(agent: &mut Agent<MockChannel>, ids: &[&str]) {
     let parts: Vec<MessagePart> = ids
         .iter()
         .map(|id| MessagePart::ToolUse {
-            id: (*id).to_owned(),
+            id: (*id).to_owned().into(),
             name: "bash".to_owned(),
             input: serde_json::json!({}),
         })
@@ -135,7 +135,7 @@ fn push_assistant_tool_use(agent: &mut Agent<MockChannel>, ids: &[&str]) {
 
 fn push_tool_result(agent: &mut Agent<MockChannel>, id: &str, content: &str, is_error: bool) {
     let part = MessagePart::ToolResult {
-        tool_use_id: id.to_owned(),
+        tool_use_id: id.to_owned().into(),
         content: content.to_owned(),
         is_error,
     };
@@ -294,7 +294,7 @@ async fn persist_cancelled_tool_results_writes_tombstone_for_id_reused_in_a_new_
         role: Role::Assistant,
         content: "[tool_use: bash(call_0)]".to_owned(),
         parts: vec![MessagePart::ToolUse {
-            id: "call_0".to_owned(),
+            id: "call_0".to_owned().into(),
             name: "bash".to_owned(),
             input: serde_json::json!({}),
         }],
@@ -331,7 +331,7 @@ async fn persist_cancelled_tool_results_some_index_inserts_at_that_position() {
         role: Role::Assistant,
         content: "[tool_use]".to_owned(),
         parts: vec![MessagePart::ToolUse {
-            id: "call-1".to_owned(),
+            id: "call-1".to_owned().into(),
             name: "bash".to_owned(),
             input: serde_json::json!({}),
         }],

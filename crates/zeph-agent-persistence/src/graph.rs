@@ -201,7 +201,7 @@ mod tests {
             role: Role::User,
             content: String::new(),
             parts: vec![MessagePart::ToolResult {
-                tool_use_id: "abc".to_owned(),
+                tool_use_id: "abc".to_owned().into(),
                 content: "output".to_owned(),
                 is_error: false,
             }],

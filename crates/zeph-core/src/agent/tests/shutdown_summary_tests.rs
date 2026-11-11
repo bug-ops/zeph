@@ -283,7 +283,7 @@ async fn doom_loop_agent_breaks_on_identical_native_tool_outputs() {
             ChatResponse::tool_use(
                 None,
                 vec![ToolUseRequest {
-                    id: format!("toolu_{i:06}"),
+                    id: format!("toolu_{i:06}").into(),
                     name: "stub_tool".to_owned().into(),
                     // Vary the input so args_hash differs each iteration → no repeat-detect
                     input: serde_json::json!({ "iteration": i }),
@@ -377,7 +377,7 @@ async fn filter_stats_metrics_increment_on_normal_native_tool_path() {
         ChatResponse::tool_use(
             None,
             vec![ToolUseRequest {
-                id: "call-1".to_owned(),
+                id: "call-1".to_owned().into(),
                 name: "shell".to_owned().into(),
                 input: serde_json::json!({"cmd": "ls"}),
             }],
@@ -504,12 +504,12 @@ async fn filter_stats_metrics_recorded_in_self_reflection_remaining_tools_loop()
             None,
             vec![
                 ToolUseRequest {
-                    id: "tool_a_id".to_owned(),
+                    id: "tool_a_id".to_owned().into(),
                     name: "tool_a".to_owned().into(),
                     input: serde_json::json!({}),
                 },
                 ToolUseRequest {
-                    id: "tool_b_id".to_owned(),
+                    id: "tool_b_id".to_owned().into(),
                     name: "tool_b".to_owned().into(),
                     input: serde_json::json!({}),
                 },

@@ -1013,7 +1013,7 @@ mod tests {
             Message::from_parts(
                 Role::Assistant,
                 vec![MessagePart::ToolUse {
-                    id: id.to_owned(),
+                    id: id.to_owned().into(),
                     name: "shell".to_owned(),
                     input: serde_json::json!({}),
                 }],
@@ -1024,7 +1024,7 @@ mod tests {
             Message::from_parts(
                 Role::User,
                 vec![MessagePart::ToolResult {
-                    tool_use_id: id.to_owned(),
+                    tool_use_id: id.to_owned().into(),
                     content: "ok".to_owned(),
                     is_error: false,
                 }],

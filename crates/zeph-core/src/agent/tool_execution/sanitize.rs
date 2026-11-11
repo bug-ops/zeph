@@ -789,7 +789,7 @@ mod consent_gate_dispatch_tests {
 
     fn call(name: &str) -> ToolUseRequest {
         ToolUseRequest {
-            id: format!("id-{name}"),
+            id: format!("id-{name}").into(),
             name: name.to_owned().into(),
             input: serde_json::json!({}),
         }

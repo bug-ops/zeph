@@ -70,6 +70,19 @@ pub enum PluginError {
         waited: std::time::Duration,
     },
 
+    /// The integrity registry exists but cannot be read or parsed.
+    ///
+    /// Raised by mutations so that damaged digests are never overwritten.
+    #[error(
+        "plugin integrity registry {path} is unusable ({reason}); repair the file or delete it to start a fresh registry (installed plugins then load unverified until reinstalled)"
+    )]
+    IntegrityRegistryCorrupt {
+        /// Registry file that failed to load.
+        path: PathBuf,
+        /// What was wrong with it.
+        reason: String,
+    },
+
     /// TOML serialization/deserialization error.
     #[error("TOML error: {0}")]
     Toml(#[from] toml::de::Error),
