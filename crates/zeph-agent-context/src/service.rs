@@ -9,7 +9,6 @@ use zeph_context::budget::{AllocationMode, ContextBudget};
 use zeph_context::fidelity::FidelityScorer;
 use zeph_context::input::ItemKeys;
 use zeph_llm::LlmProvider;
-use zeph_llm::provider::StatusUpdate;
 use zeph_llm::provider::{
     Message, MessagePart, RetrievalKey, Role, TurnContextBlock, TurnContextKind, TurnContextTrust,
     context_floor, insert_at_context_floor,
@@ -751,7 +750,7 @@ impl ContextService {
         {
             use tracing::Instrument as _;
             if let Some(ref tx) = view.status_tx {
-                let _ = tx.send(StatusUpdate::set("Scoring context fidelity\u{2026}"));
+                let _ = tx.set("Scoring context fidelity\u{2026}");
             }
             let (embed_provider, compress_provider) = fidelity_provider_pair(
                 view.fidelity_semantic_provider.as_ref(),
@@ -780,7 +779,7 @@ impl ContextService {
             persist_fidelity_tags(window.messages, view.memory.as_deref()).await;
             recompute_prompt_tokens(window);
             if let Some(ref tx) = view.status_tx {
-                let _ = tx.send(StatusUpdate::Clear);
+                let _ = tx.clear();
             }
         }
 
@@ -1820,7 +1819,7 @@ impl ContextService {
 
 // ── StatusSink adapters ───────────────────────────────────────────────────────
 
-/// `StatusSink` adapter over an optional [`zeph_llm::provider::StatusTx`].
+/// `StatusSink` adapter over an optional [`zeph_llm::status::StatusSender`].
 ///
 /// Sends typed status updates when the sender is present; silently drops them otherwise.
 ///
@@ -1828,23 +1827,23 @@ impl ContextService {
 ///
 /// ```
 /// use zeph_agent_context::{StatusSink, TxStatusSink};
-/// use zeph_llm::provider::StatusUpdate;
+/// use zeph_llm::status::{StatusSource, StatusText, StatusUpdate, status_channel};
 ///
 /// # tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
-/// let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+/// let (tx, mut rx) = status_channel(StatusSource::Agent);
 /// let sink = TxStatusSink::new(Some(tx));
 /// sink.send_status("working").await;
+/// assert_eq!(rx.next().await, Some(StatusUpdate::Set(StatusText::new("working").unwrap())));
 /// sink.clear_status().await;
-/// assert_eq!(rx.try_recv().unwrap(), StatusUpdate::set("working"));
-/// assert_eq!(rx.try_recv().unwrap(), StatusUpdate::Clear);
+/// assert_eq!(rx.next().await, Some(StatusUpdate::Clear));
 /// # });
 /// ```
-pub struct TxStatusSink(Option<zeph_llm::provider::StatusTx>);
+pub struct TxStatusSink(Option<zeph_llm::status::StatusSender>);
 
 impl TxStatusSink {
     /// Wrap an optional status sender.
     #[must_use]
-    pub fn new(tx: Option<zeph_llm::provider::StatusTx>) -> Self {
+    pub fn new(tx: Option<zeph_llm::status::StatusSender>) -> Self {
         Self(tx)
     }
 }
@@ -1852,14 +1851,14 @@ impl TxStatusSink {
 impl StatusSink for TxStatusSink {
     fn send_status(&self, msg: &str) -> impl std::future::Future<Output = ()> + Send + '_ {
         if let Some(ref tx) = self.0 {
-            let _ = tx.send(StatusUpdate::set(msg.to_owned()));
+            let _ = tx.set(msg.to_owned());
         }
         std::future::ready(())
     }
 
     fn clear_status(&self) -> impl std::future::Future<Output = ()> + Send + '_ {
         if let Some(ref tx) = self.0 {
-            let _ = tx.send(StatusUpdate::Clear);
+            let _ = tx.clear();
         }
         std::future::ready(())
     }

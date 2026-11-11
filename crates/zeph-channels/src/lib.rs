@@ -38,6 +38,8 @@
 //! [`auth::require_configured_allowlist`]) rather than silently accepting
 //! messages from any sender.
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 mod any;
 pub mod auth;
 pub mod cli;

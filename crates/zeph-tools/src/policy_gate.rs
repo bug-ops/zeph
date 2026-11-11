@@ -325,6 +325,10 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
         if let Ok(Some(ref output)) = result
             && let Some(colon) = output.tool_name.as_str().find(':')
         {
+            #[expect(
+                clippy::string_slice,
+                reason = "colon comes from find on the same string"
+            )]
             let server_id = output.tool_name.as_str()[..colon].to_owned();
             if let Some(audit) = &self.audit {
                 let entry = AuditEntry {

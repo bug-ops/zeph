@@ -130,7 +130,7 @@ async fn resolve_creates_new_entity() {
         .resolve("alice", "person", Some("a person"), None)
         .await
         .unwrap();
-    assert!(id > 0);
+    assert!(id.get() > 0);
     assert_eq!(outcome, ResolutionOutcome::Created);
 }
 
@@ -165,7 +165,7 @@ async fn resolve_unknown_type_falls_back_to_concept() {
         .resolve("my_thing", "unknown_type", None, None)
         .await
         .unwrap();
-    assert!(id > 0);
+    assert!(id.get() > 0);
 
     // Verify it was stored as Concept
     let entity = gs
@@ -396,7 +396,7 @@ async fn resolve_entity_type_uppercase_parsed_correctly() {
         .resolve("test_entity", "Person", None, None)
         .await
         .unwrap();
-    assert!(id > 0);
+    assert!(id.get() > 0);
 
     let entity = gs
         .find_entity("test_entity", EntityType::Person)
@@ -414,7 +414,7 @@ async fn resolve_entity_type_all_caps_parsed_correctly() {
         .resolve("my_lang", "LANGUAGE", None, None)
         .await
         .unwrap();
-    assert!(id > 0);
+    assert!(id.get() > 0);
 
     let entity = gs
         .find_entity("my_lang", EntityType::Language)
@@ -435,7 +435,7 @@ async fn resolve_truncates_long_entity_name() {
         .resolve(&long_name, "concept", None, None)
         .await
         .unwrap();
-    assert!(id > 0);
+    assert!(id.get() > 0);
 
     // Entity should exist with a truncated name (512 bytes)
     let entity = gs
@@ -458,7 +458,7 @@ async fn resolve_strips_control_chars_from_name() {
         .resolve(name_with_ctrl, "language", None, None)
         .await
         .unwrap();
-    assert!(id > 0);
+    assert!(id.get() > 0);
 
     // Stored name should have control chars removed
     let entity = gs
@@ -482,7 +482,7 @@ async fn resolve_strips_bidi_overrides_from_name() {
         .resolve(name_with_bidi, "language", None, None)
         .await
         .unwrap();
-    assert!(id > 0);
+    assert!(id.get() > 0);
 
     let entity = gs
         .find_entity("rustlang", EntityType::Language)
@@ -598,11 +598,7 @@ async fn resolve_with_embedding_store_score_above_threshold_merges() {
         .await
         .unwrap();
 
-    assert_eq!(
-        EntityId(id),
-        existing_id,
-        "should return existing entity ID on merge"
-    );
+    assert_eq!(id, existing_id, "should return existing entity ID on merge");
     assert!(
         matches!(outcome, ResolutionOutcome::EmbeddingMatch { score } if score > 0.85),
         "outcome should be EmbeddingMatch with score > 0.85, got {outcome:?}"
@@ -652,11 +648,7 @@ async fn resolve_with_embedding_store_score_below_ambiguous_creates_new() {
         .await
         .unwrap();
 
-    assert_ne!(
-        EntityId(id),
-        existing_id,
-        "orthogonal entity should create new"
-    );
+    assert_ne!(id, existing_id, "orthogonal entity should create new");
     assert_eq!(outcome, ResolutionOutcome::Created);
 }
 
@@ -682,7 +674,7 @@ async fn resolve_with_embedding_failure_falls_back_to_create() {
         .resolve("testentity", "concept", Some("summary"), None)
         .await
         .unwrap();
-    assert!(id > 0);
+    assert!(id.get() > 0);
     assert_eq!(outcome, ResolutionOutcome::Created);
 }
 
@@ -740,7 +732,7 @@ async fn resolve_batch_processes_multiple_entities() {
     let results = resolver.resolve_batch(&entities).await.unwrap();
     assert_eq!(results.len(), 3);
     for (id, outcome) in &results {
-        assert!(*id > 0);
+        assert!(id.get() > 0);
         assert_eq!(*outcome, ResolutionOutcome::Created);
     }
 }
@@ -802,7 +794,7 @@ async fn merge_combines_summaries() {
         .await
         .unwrap();
 
-    assert_eq!(EntityId(id), existing_id);
+    assert_eq!(id, existing_id);
     assert_matches!(outcome, ResolutionOutcome::EmbeddingMatch { .. });
 
     // Verify the merged summary was updated on the existing entity
@@ -861,8 +853,7 @@ async fn merge_preserves_older_entity_id() {
         .unwrap();
 
     assert_eq!(
-        EntityId(returned_id),
-        existing_id,
+        returned_id, existing_id,
         "older entity ID should be preserved on merge"
     );
 }
@@ -911,14 +902,12 @@ async fn merge_corrects_stale_cross_db_entity_id() {
 
     assert_matches!(outcome, ResolutionOutcome::EmbeddingMatch { .. });
     assert_ne!(
-        returned_id, STALE_CROSS_DB_ID,
+        returned_id.get(),
+        STALE_CROSS_DB_ID,
         "resolve() must not return the stale Qdrant-payload entity id verbatim"
     );
     assert!(
-        gs.find_entity_by_id(EntityId(returned_id))
-            .await
-            .unwrap()
-            .is_some(),
+        gs.find_entity_by_id(returned_id).await.unwrap().is_some(),
         "returned entity id must reference a row that actually exists in the local SQLite database"
     );
     assert!(
@@ -985,14 +974,12 @@ async fn resolve_ambiguous_llm_disambiguated_corrects_stale_cross_db_id() {
 
     assert_eq!(outcome, ResolutionOutcome::LlmDisambiguated);
     assert_ne!(
-        returned_id, STALE_CROSS_DB_ID,
+        returned_id.get(),
+        STALE_CROSS_DB_ID,
         "resolve() must not return the stale Qdrant-payload entity id verbatim"
     );
     assert!(
-        gs.find_entity_by_id(EntityId(returned_id))
-            .await
-            .unwrap()
-            .is_some(),
+        gs.find_entity_by_id(returned_id).await.unwrap().is_some(),
         "returned entity id must reference a row that actually exists in the local SQLite database"
     );
     assert!(
@@ -1048,8 +1035,7 @@ async fn entity_type_filter_prevents_cross_type_merge() {
     // The entity_type filter should prevent merging person "python" with language "python"
     // Check: either created new or an exact match was found under language type
     assert_ne!(
-        EntityId(lang_id),
-        person_id,
+        lang_id, person_id,
         "language entity should not merge with person entity"
     );
     // The entity_type filter causes no embedding candidate to survive the type filter,
@@ -1103,7 +1089,7 @@ async fn custom_thresholds_respected() {
         .await
         .unwrap();
 
-    assert_ne!(EntityId(id), existing_id);
+    assert_ne!(id, existing_id);
     assert_eq!(outcome, ResolutionOutcome::Created);
 }
 
@@ -1155,7 +1141,7 @@ async fn seed_entity_with_vector(
     entity_type: EntityType,
     summary: &str,
     vector: Vec<f32>,
-) -> i64 {
+) -> EntityId {
     let id = gs
         .upsert_entity(name, name, entity_type, Some(summary), None)
         .await
@@ -1174,7 +1160,7 @@ async fn seed_entity_with_vector(
         .await
         .unwrap();
     gs.set_entity_qdrant_point_id(id, &point_id).await.unwrap();
-    id.0
+    id
 }
 
 // ── GAP-1: ambiguous score + LLM says same_entity=true → LlmDisambiguated ─
@@ -1413,7 +1399,7 @@ async fn resolve_creates_entity_with_canonical_name() {
         .resolve("Rust", "language", None, None)
         .await
         .unwrap();
-    assert!(id > 0);
+    assert!(id.get() > 0);
     let entity = gs
         .find_entity("rust", EntityType::Language)
         .await
@@ -1430,7 +1416,7 @@ async fn resolve_adds_alias_on_create() {
         .resolve("Rust", "language", None, None)
         .await
         .unwrap();
-    let aliases = gs.aliases_for_entity(EntityId(id)).await.unwrap();
+    let aliases = gs.aliases_for_entity(id).await.unwrap();
     assert!(
         !aliases.is_empty(),
         "new entity should have at least one alias"
@@ -1448,7 +1434,7 @@ async fn resolve_reuses_entity_by_alias() {
         .resolve("rust", "language", None, None)
         .await
         .unwrap();
-    gs.add_alias(EntityId(id1), "rust-lang").await.unwrap();
+    gs.add_alias(id1, "rust-lang").await.unwrap();
 
     // Resolve using the alias — should return the same entity
     let (id2, _) = resolver
@@ -1492,14 +1478,14 @@ async fn resolve_preserves_existing_aliases() {
         .resolve("rust", "language", None, None)
         .await
         .unwrap();
-    gs.add_alias(EntityId(id), "rust-lang").await.unwrap();
+    gs.add_alias(id, "rust-lang").await.unwrap();
 
     // Upserting same entity should not remove prior aliases
     resolver
         .resolve("rust", "language", Some("updated"), None)
         .await
         .unwrap();
-    let aliases = gs.aliases_for_entity(EntityId(id)).await.unwrap();
+    let aliases = gs.aliases_for_entity(id).await.unwrap();
     assert!(
         aliases.iter().any(|a| a.alias_name == "rust-lang"),
         "prior alias must be preserved"
@@ -1517,7 +1503,7 @@ async fn resolve_original_form_registered_as_alias() {
         .resolve("  Rust  ", "language", None, None)
         .await
         .unwrap();
-    let aliases = gs.aliases_for_entity(EntityId(id)).await.unwrap();
+    let aliases = gs.aliases_for_entity(id).await.unwrap();
     assert!(aliases.iter().any(|a| a.alias_name == "rust"));
 }
 

@@ -12,13 +12,13 @@ use crate::channel::TuiHandle;
 use zeph_core::channel::Channel;
 #[cfg(feature = "tui")]
 use zeph_llm::any::AnyProvider;
-use zeph_llm::provider::StatusUpdate;
+use zeph_llm::status::{StatusReceiver, StatusUpdate};
 
 #[cfg(feature = "tui")]
 pub(crate) struct TuiRunParams<'a> {
     pub(crate) tui_handle: TuiHandle,
     pub(crate) config: &'a zeph_core::config::Config,
-    pub(crate) status_rx: Option<tokio::sync::mpsc::UnboundedReceiver<StatusUpdate>>,
+    pub(crate) status_rx: Option<StatusReceiver>,
     pub(crate) tool_rx: Option<tokio::sync::mpsc::Receiver<zeph_tools::ToolEvent>>,
     pub(crate) metrics_rx:
         Option<tokio::sync::watch::Receiver<zeph_core::metrics::MetricsSnapshot>>,
@@ -475,10 +475,8 @@ async fn deep_link_notification_task(
     let _ = tx.send(zeph_tui::AgentEvent::ClearStatus).await;
 }
 
-pub(crate) async fn forward_status_to_stderr(
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<StatusUpdate>,
-) {
-    while let Some(msg) = rx.recv().await {
+pub(crate) async fn forward_status_to_stderr(mut rx: StatusReceiver) {
+    while let Some(msg) = rx.next().await {
         match msg {
             StatusUpdate::Set(text) => eprintln!("[status] {text}"),
             StatusUpdate::Clear => {}
@@ -581,12 +579,12 @@ pub(crate) async fn forward_tui_commands(
 
 #[cfg(feature = "tui")]
 pub(crate) async fn forward_status_to_tui(
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<StatusUpdate>,
+    mut rx: StatusReceiver,
     tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
 ) {
-    while let Some(msg) = rx.recv().await {
+    while let Some(msg) = rx.next().await {
         let event = match msg {
-            StatusUpdate::Set(text) => zeph_tui::AgentEvent::Status(text.into_owned()),
+            StatusUpdate::Set(text) => zeph_tui::AgentEvent::Status(text.into_string()),
             StatusUpdate::Clear => zeph_tui::AgentEvent::ClearStatus,
         };
         if tx.send(event).await.is_err() {
@@ -641,48 +639,80 @@ mod tests {
 
     #[tokio::test]
     async fn forward_status_to_tui_delivers_messages() {
-        let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<StatusUpdate>();
+        let (status_tx, status_rx) =
+            zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Agent);
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(16);
 
         tokio::spawn(forward_status_to_tui(status_rx, agent_tx)); // EXEMPT(#5143): test-only spawn
 
-        status_tx
-            .send(StatusUpdate::set("Connecting tools..."))
-            .unwrap();
-        status_tx.send(StatusUpdate::set("Memory ready")).unwrap();
+        status_tx.set("Connecting tools...").unwrap();
+        // Latest wins, so wait for each update before sending the next.
+        let first = agent_rx.recv().await.unwrap();
+        assert!(matches!(&first, zeph_tui::AgentEvent::Status(s) if s == "Connecting tools..."));
+
+        status_tx.set("Memory ready").unwrap();
+        let second = agent_rx.recv().await.unwrap();
+        assert!(matches!(&second, zeph_tui::AgentEvent::Status(s) if s == "Memory ready"));
+
         drop(status_tx);
-
-        let mut received = Vec::new();
-        while let Some(ev) = agent_rx.recv().await {
-            received.push(ev);
-        }
-
-        assert_eq!(received.len(), 2);
-        assert!(
-            matches!(&received[0], zeph_tui::AgentEvent::Status(s) if s == "Connecting tools...")
-        );
-        assert!(matches!(&received[1], zeph_tui::AgentEvent::Status(s) if s == "Memory ready"));
+        assert!(agent_rx.recv().await.is_none());
     }
 
     #[tokio::test]
     async fn forward_status_to_tui_maps_clear_to_typed_clear() {
-        let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<StatusUpdate>();
+        let (status_tx, status_rx) =
+            zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Agent);
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(16);
 
         tokio::spawn(forward_status_to_tui(status_rx, agent_tx)); // EXEMPT(#5143): test-only spawn
 
-        status_tx.send(StatusUpdate::Clear).unwrap();
-        drop(status_tx);
-
+        status_tx.set("busy").unwrap();
+        assert!(matches!(
+            agent_rx.recv().await,
+            Some(zeph_tui::AgentEvent::Status(_))
+        ));
+        status_tx.clear().unwrap();
         assert!(matches!(
             agent_rx.recv().await,
             Some(zeph_tui::AgentEvent::ClearStatus)
         ));
     }
 
+    // Two status lanes (spec 007): a turn-lane clear hides the indicator whatever the background
+    // lane set; the pending background entry shows again on that producer's next update.
+    #[tokio::test]
+    async fn turn_lane_clear_then_background_update_shows_background_text_again() {
+        use zeph_core::channel::Channel as _;
+
+        let (status_tx, status_rx) =
+            zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Mcp);
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(16);
+        let (_user_tx, user_rx) = tokio::sync::mpsc::channel(1);
+        let mut tui_channel = zeph_tui::TuiChannel::new(user_rx, agent_tx.clone());
+
+        tokio::spawn(forward_status_to_tui(status_rx, agent_tx)); // EXEMPT(#5143): test-only spawn
+
+        status_tx.set("Connecting...").unwrap();
+        assert!(
+            matches!(agent_rx.recv().await, Some(zeph_tui::AgentEvent::Status(s)) if s == "Connecting...")
+        );
+
+        tui_channel.clear_status().await.unwrap();
+        assert!(matches!(
+            agent_rx.recv().await,
+            Some(zeph_tui::AgentEvent::ClearStatus)
+        ));
+
+        status_tx.set("Connecting...").unwrap();
+        assert!(
+            matches!(agent_rx.recv().await, Some(zeph_tui::AgentEvent::Status(s)) if s == "Connecting...")
+        );
+    }
+
     #[tokio::test]
     async fn forward_status_to_tui_stops_when_agent_rx_dropped() {
-        let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<StatusUpdate>();
+        let (status_tx, status_rx) =
+            zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Agent);
         let (agent_tx, agent_rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(1);
 
         let handle = tokio::spawn(forward_status_to_tui(status_rx, agent_tx)); // EXEMPT(#5143): test-only spawn
@@ -690,7 +720,7 @@ mod tests {
         // Drop receiver — forwarder must exit cleanly when send fails.
         drop(agent_rx);
 
-        status_tx.send(StatusUpdate::set("some status")).unwrap();
+        status_tx.set("some status").unwrap();
         // Give the forwarder a chance to detect the closed channel.
         handle.await.expect("forwarder panicked");
     }

@@ -19,7 +19,7 @@ use crate::prober::DefaultMcpProber;
 use crate::tool::ToolSecurityMeta;
 use crate::trust_score::TrustScoreStore;
 
-use super::{McpManager, ServerEntry, StatusTx};
+use super::{McpManager, ServerEntry, StatusSender};
 
 impl McpManager {
     /// Create a new `McpManager` with default settings.
@@ -171,7 +171,7 @@ impl McpManager {
     /// When set, the OAuth authorization URL is sent as a status message so the
     /// TUI can display it in the status panel. In CLI mode this is not required.
     #[must_use]
-    pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
+    pub fn with_status_tx(mut self, tx: StatusSender) -> Self {
         self.status_tx = Some(tx);
         self
     }

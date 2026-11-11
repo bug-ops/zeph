@@ -728,7 +728,7 @@ impl<C: Channel> Agent<C> {
             if s.len() <= MAX_CHARS {
                 s.to_owned()
             } else {
-                s[..s.floor_char_boundary(MAX_CHARS)].to_owned()
+                zeph_common::text::truncate_to_bytes_ref(s, MAX_CHARS).to_owned()
             }
         };
 
@@ -959,8 +959,8 @@ pub(crate) const TAFC_FIELD_PREFIX: &str = "_tafc_think";
 /// Returns true when `key` matches the TAFC field prefix, case-insensitively.
 /// Case-insensitive matching prevents bypass via `_TAFC_THINK` or mixed-case variants (SEC-01).
 fn is_tafc_key(key: &str) -> bool {
-    key.len() >= TAFC_FIELD_PREFIX.len()
-        && key[..TAFC_FIELD_PREFIX.len()].eq_ignore_ascii_case(TAFC_FIELD_PREFIX)
+    key.get(..TAFC_FIELD_PREFIX.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(TAFC_FIELD_PREFIX))
 }
 
 pub(crate) fn strip_tafc_fields(

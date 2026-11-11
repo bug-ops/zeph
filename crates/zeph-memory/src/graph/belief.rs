@@ -28,6 +28,7 @@ use zeph_db::{ActiveDialect, DbPool, sql};
 
 use crate::error::MemoryError;
 use crate::graph::types::EdgeType;
+use crate::types::{EdgeId, EntityId};
 
 // ── Pure functions ────────────────────────────────────────────────────────────
 
@@ -98,9 +99,9 @@ pub struct PendingBelief {
     /// Unique row identifier.
     pub id: i64,
     /// Source entity (`graph_entities.id`).
-    pub source_entity_id: i64,
+    pub source_entity_id: EntityId,
     /// Target entity (`graph_entities.id`).
-    pub target_entity_id: i64,
+    pub target_entity_id: EntityId,
     /// Original relation verb as extracted from the message.
     pub relation: String,
     /// Normalised relation used for deduplication and indexing.
@@ -240,8 +241,8 @@ impl BeliefStore {
     )]
     pub async fn record_evidence(
         &self,
-        source_entity_id: i64,
-        target_entity_id: i64,
+        source_entity_id: EntityId,
+        target_entity_id: EntityId,
         relation: &str,
         canonical_relation: &str,
         fact: &str,
@@ -318,7 +319,7 @@ impl BeliefStore {
     )]
     pub async fn retrieve_candidates(
         &self,
-        source_entity_id: i64,
+        source_entity_id: EntityId,
         canonical_relation: &str,
         top_k: Option<usize>,
     ) -> Result<Vec<PendingBelief>, MemoryError> {
@@ -360,7 +361,7 @@ impl BeliefStore {
     pub async fn mark_promoted(
         &self,
         belief_id: i64,
-        committed_edge_id: i64,
+        committed_edge_id: EdgeId,
     ) -> Result<(), MemoryError> {
         let epoch_now = <ActiveDialect as zeph_db::dialect::Dialect>::EPOCH_NOW;
         let raw = format!(
@@ -388,7 +389,7 @@ impl BeliefStore {
     /// Returns [`MemoryError`] for database failures.
     pub async fn evict_stale(
         &self,
-        source_entity_id: i64,
+        source_entity_id: EntityId,
         canonical_relation: &str,
     ) -> Result<usize, MemoryError> {
         #[allow(clippy::cast_possible_wrap)]
@@ -429,8 +430,8 @@ impl BeliefStore {
 
     async fn find_existing(
         &self,
-        source_entity_id: i64,
-        target_entity_id: i64,
+        source_entity_id: EntityId,
+        target_entity_id: EntityId,
         canonical_relation: &str,
         edge_type_str: &str,
     ) -> Result<Option<BeliefRow>, MemoryError> {
@@ -513,8 +514,8 @@ impl BeliefStore {
     #[allow(clippy::too_many_arguments)]
     async fn insert_new_belief(
         &self,
-        source_entity_id: i64,
-        target_entity_id: i64,
+        source_entity_id: EntityId,
+        target_entity_id: EntityId,
         relation: &str,
         canonical_relation: &str,
         fact: &str,
@@ -575,8 +576,8 @@ impl BeliefStore {
 #[derive(sqlx::FromRow)]
 struct BeliefRow {
     id: i64,
-    source_entity_id: i64,
-    target_entity_id: i64,
+    source_entity_id: EntityId,
+    target_entity_id: EntityId,
     relation: String,
     canonical_relation: String,
     fact: String,

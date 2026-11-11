@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use zeph_core::DiffData;
 use zeph_core::channel::{
-    Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse, StopHint,
-    ToolOutputEvent, ToolStartEvent,
+    Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse, StatusText,
+    StopHint, ToolOutputEvent, ToolStartEvent,
 };
 use zeph_core::json_event_sink::{JsonEvent, JsonEventSink};
 
@@ -226,8 +226,16 @@ impl Channel for JsonCliChannel {
     }
 
     #[allow(clippy::unused_async_trait_impl)]
-    async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
-        self.sink.emit(&JsonEvent::Status { message: text });
+    async fn send_status(&mut self, text: &StatusText) -> Result<(), ChannelError> {
+        self.sink.emit(&JsonEvent::Status {
+            message: text.as_str(),
+        });
+        Ok(())
+    }
+
+    #[allow(clippy::unused_async_trait_impl)]
+    async fn clear_status(&mut self) -> Result<(), ChannelError> {
+        self.sink.emit(&JsonEvent::Status { message: "" });
         Ok(())
     }
 
@@ -450,7 +458,11 @@ mod tests {
     async fn send_status_ok() {
         let (sink, _read) = make_test_sink();
         let mut ch = JsonCliChannel::new(Arc::clone(&sink), false);
-        assert!(ch.send_status("working…").await.is_ok());
+        assert!(
+            ch.send_status(&StatusText::new("working…").unwrap())
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]

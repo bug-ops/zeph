@@ -15,7 +15,6 @@
 
 use std::path::PathBuf;
 use std::time::Duration;
-use zeph_llm::provider::StatusUpdate;
 
 use tracing::Instrument as _;
 use zeph_llm::any::AnyProvider;
@@ -132,7 +131,7 @@ async fn run_promotion_loop(
     merge_threshold: f32,
     dedup_threshold: f32,
     merge_enabled: bool,
-    status_tx: Option<zeph_llm::provider::StatusTx>,
+    status_tx: Option<zeph_llm::status::StatusSender>,
 ) {
     // Delay startup to let the agent finish initialization.
     tokio::time::sleep(Duration::from_secs(INITIAL_DELAY_SECS)).await;
@@ -170,7 +169,7 @@ async fn run_promotion_scan(
     merge_threshold: f32,
     dedup_threshold: f32,
     merge_enabled: bool,
-    status_tx: Option<&zeph_llm::provider::StatusTx>,
+    status_tx: Option<&zeph_llm::status::StatusSender>,
 ) {
     let Some(pool) = db_pool else {
         tracing::debug!("heuristic_promotion: no DB pool, skipping scan");
@@ -228,7 +227,7 @@ async fn run_promotion_scan(
         let msg = format!("Heuristic promotion: {promoted_count} draft(s) queued for review");
         tracing::info!("{msg}");
         if let Some(tx) = status_tx {
-            let _ = tx.send(StatusUpdate::set(msg));
+            let _ = tx.set(msg);
         }
     }
 }
@@ -609,6 +608,10 @@ fn patch_frontmatter(skill_md: &str, source: &str, parent_skill: &str) -> String
 }
 
 /// Replace or insert the `version:` field in SKILL.md frontmatter.
+#[expect(
+    clippy::string_slice,
+    reason = "close_pos comes from find on the same string"
+)]
 fn patch_version(skill_md: &str, new_version: u32) -> String {
     // Only modify the frontmatter block (between the first pair of `---` delimiters).
     if let Some(after_open) = skill_md.strip_prefix("---")

@@ -4,22 +4,21 @@
 use super::super::{LlmProvider, Message, Role, SemanticMemory};
 use std::path::PathBuf;
 use zeph_llm::provider::MessageMetadata;
-use zeph_llm::provider::StatusUpdate;
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
 
 /// Drop guard that sends an empty string to `status_tx` when dropped, clearing the TUI spinner.
-pub(super) struct ClearStatusOnDrop(pub Option<zeph_llm::provider::StatusTx>);
+pub(super) struct ClearStatusOnDrop(pub Option<zeph_llm::status::StatusSender>);
 
 impl Drop for ClearStatusOnDrop {
     fn drop(&mut self) {
         if let Some(ref tx) = self.0 {
-            let _ = tx.send(StatusUpdate::Clear);
+            let _ = tx.clear();
         }
     }
 }
 
-pub(super) fn defer_clear_status(tx: Option<zeph_llm::provider::StatusTx>) -> ClearStatusOnDrop {
+pub(super) fn defer_clear_status(tx: Option<zeph_llm::status::StatusSender>) -> ClearStatusOnDrop {
     ClearStatusOnDrop(tx)
 }
 
@@ -81,7 +80,7 @@ pub(super) struct AriseTaskArgs {
     pub auto_activate: bool,
     pub max_versions: u32,
     pub domain_success_gate: bool,
-    pub status_tx: Option<zeph_llm::provider::StatusTx>,
+    pub status_tx: Option<zeph_llm::status::StatusSender>,
 }
 
 #[tracing::instrument(name = "core.learning.arise_trace_task", skip_all, level = "debug")]
@@ -279,7 +278,7 @@ pub(super) struct StemTaskArgs {
     pub retention_days: u32,
     pub max_auto_sections: u32,
     pub skill_paths: Vec<PathBuf>,
-    pub status_tx: Option<zeph_llm::provider::StatusTx>,
+    pub status_tx: Option<zeph_llm::status::StatusSender>,
 }
 
 #[tracing::instrument(name = "core.learning.stem_detection_task", skip_all, level = "debug")]
@@ -372,7 +371,10 @@ async fn stem_generate_skill(
         tracing::warn!("STEM: generated body rejected for pattern '{seq}'");
         return;
     }
-    let skill_name = format!("stem-{}", pattern.sequence_hash[..8].to_lowercase());
+    let skill_name = format!(
+        "stem-{}",
+        zeph_common::text::truncate_to_bytes_ref(&pattern.sequence_hash, 8).to_lowercase()
+    );
     let description = format!("Auto-generated from tool pattern: {seq}");
     let Some(skill_dir) = args.skill_paths.first() else {
         return;
@@ -406,7 +408,7 @@ pub(super) struct ErlTaskArgs {
     pub task_summary: String,
     pub tool_calls_str: String,
     pub dedup_threshold: f32,
-    pub status_tx: Option<zeph_llm::provider::StatusTx>,
+    pub status_tx: Option<zeph_llm::status::StatusSender>,
 }
 
 #[tracing::instrument(name = "core.learning.erl_reflection_task", skip_all, level = "debug")]

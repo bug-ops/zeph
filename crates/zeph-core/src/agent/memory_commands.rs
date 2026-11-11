@@ -212,8 +212,10 @@ impl<C: Channel + Send + 'static> MemoryAccess for Agent<C> {
                     .unwrap_or((0, String::new()));
 
                 let (body, truncated) = if text.len() > MAX_DISPLAY_CHARS {
-                    let end = text.floor_char_boundary(MAX_DISPLAY_CHARS);
-                    (&text[..end], true)
+                    (
+                        zeph_common::text::truncate_to_bytes_ref(&text, MAX_DISPLAY_CHARS),
+                        true,
+                    )
                 } else {
                     (text.as_str(), false)
                 };

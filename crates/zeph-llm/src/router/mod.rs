@@ -76,7 +76,7 @@ use reputation::ReputationTracker;
 use thompson::ThompsonState;
 
 use crate::ema::EmaTracker;
-use crate::provider::StatusTx;
+use crate::status::StatusSender;
 
 /// Rate-limits the ASI coherence WARN to at most once per 60 seconds process-wide.
 static ASI_WARN_LAST_SECS: AtomicU64 = AtomicU64::new(0);
@@ -150,7 +150,7 @@ pub struct RouterProvider {
     ///
     /// All fields inside are `Arc`-wrapped; clone is O(1).
     pub(crate) state: RouterState,
-    status_tx: Option<StatusTx>,
+    status_tx: Option<StatusSender>,
     ema: Option<EmaTracker>,
     strategy: RouterStrategy,
     thompson: Option<Arc<Mutex<ThompsonState>>>,

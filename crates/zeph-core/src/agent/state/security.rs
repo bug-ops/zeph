@@ -170,8 +170,7 @@ impl SecurityState {
 
         let timeout_ms = self.pii_ner_timeout_ms;
         let ner_input = if text.len() > self.pii_ner_max_chars {
-            let boundary = text.floor_char_boundary(self.pii_ner_max_chars);
-            &text[..boundary]
+            zeph_common::text::truncate_to_bytes_ref(text, self.pii_ner_max_chars)
         } else {
             text
         };

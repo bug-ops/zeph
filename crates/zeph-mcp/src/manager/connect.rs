@@ -12,7 +12,6 @@ use dashmap::DashMap;
 use rmcp::transport::auth::CredentialStore;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use zeph_llm::provider::StatusUpdate;
 
 use crate::client::{McpClient, OAuthConnectResult, ToolRefreshEvent};
 use crate::elicitation::ElicitationEvent;
@@ -23,7 +22,7 @@ use super::ingest::{apply_injection_penalties, ingest_tools};
 use super::retry::connect_with_retry;
 use super::{
     ConnectOutput, IngestConfig, IngestLimits, McpManager, McpTransport, McpTrustLevel,
-    ServerConnectOutcome, ServerEntry, StatusTx,
+    ServerConnectOutcome, ServerEntry, StatusSender,
 };
 
 impl McpManager {
@@ -711,7 +710,7 @@ async fn run_oauth_handshake(
     last_refresh: Arc<DashMap<String, Instant>>,
     timeout: Duration,
     handler_cfg: crate::client::HandlerConfig,
-    status_tx: Option<StatusTx>,
+    status_tx: Option<StatusSender>,
 ) -> (String, Result<McpClient, String>) {
     let connect_result = McpClient::connect_url_oauth(
         &server_id,
@@ -732,22 +731,12 @@ async fn run_oauth_handshake(
         Ok(OAuthConnectResult::Connected(client)) => Ok(client),
         Ok(OAuthConnectResult::AuthorizationRequired(pending_box)) => {
             let mut pending = *pending_box;
-            tracing::info!(
-                server_id,
-                auth_url = pending.auth_url,
-                callback_port = pending.actual_port,
-                "OAuth authorization required — open this URL to authorize"
+            announce_oauth_url(
+                &server_id,
+                &pending.auth_url,
+                pending.actual_port,
+                status_tx.as_ref(),
             );
-            let auth_msg = format!(
-                "MCP OAuth: Open this URL to authorize '{}': {}",
-                server_id, pending.auth_url
-            );
-            if let Some(ref stx) = status_tx {
-                let _ = stx.send(StatusUpdate::set(format!("Waiting for OAuth: {server_id}")));
-                let _ = stx.send(StatusUpdate::set(auth_msg.clone()));
-            } else {
-                eprintln!("{auth_msg}");
-            }
             // open::that_in_background spawns an OS thread; ignore the handle —
             // we don't need to wait for the browser to open.
             let _ = open::that_in_background(pending.auth_url.clone());
@@ -760,7 +749,7 @@ async fn run_oauth_handshake(
             match crate::oauth::await_oauth_callback(listener, callback_timeout, &server_id).await {
                 Ok((code, csrf_token)) => {
                     if let Some(ref stx) = status_tx {
-                        let _ = stx.send(StatusUpdate::Clear);
+                        let _ = stx.clear();
                     }
                     McpClient::complete_oauth(pending, &code, &csrf_token)
                         .await
@@ -768,7 +757,7 @@ async fn run_oauth_handshake(
                 }
                 Err(e) => {
                     if let Some(ref stx) = status_tx {
-                        let _ = stx.send(StatusUpdate::Clear);
+                        let _ = stx.clear();
                     }
                     tracing::warn!(server_id, "OAuth callback failed: {e:#}");
                     Err(format!("OAuth callback failed: {e:#}"))
@@ -782,6 +771,32 @@ async fn run_oauth_handshake(
     };
 
     (server_id, client_result)
+}
+
+/// Announce an OAuth authorization URL the user must open.
+///
+/// The URL is load-bearing, so it is logged at `warn` (non-collapsing, survives a `warn`
+/// filter) in addition to the status line, which is latest-wins and may be replaced by a
+/// concurrent handshake. Without a status channel it is printed to stderr.
+pub(super) fn announce_oauth_url(
+    server_id: &str,
+    auth_url: &str,
+    callback_port: u16,
+    status_tx: Option<&StatusSender>,
+) {
+    tracing::warn!(
+        server_id,
+        auth_url,
+        callback_port,
+        "OAuth authorization required — open this URL to authorize"
+    );
+    let auth_msg = format!("MCP OAuth: Open this URL to authorize '{server_id}': {auth_url}");
+    if let Some(stx) = status_tx {
+        let _ = stx.set(format!("Waiting for OAuth: {server_id}"));
+        let _ = stx.set(auth_msg);
+    } else {
+        eprintln!("{auth_msg}");
+    }
 }
 
 #[tracing::instrument(name = "mcp.manager.drain_connect_results", skip_all)]

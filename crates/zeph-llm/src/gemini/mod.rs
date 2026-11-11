@@ -13,10 +13,11 @@ use crate::error::LlmError;
 use crate::provider::ResponseUsage;
 use crate::provider::{
     AgentVisible, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart,
-    Role, StatusTx, ToolDefinition, ToolUseRequest, TurnContextKind,
+    Role, ToolDefinition, ToolUseRequest, TurnContextKind,
 };
 use crate::retry::send_with_retry;
 use crate::sse::gemini_sse_to_stream;
+use crate::status::StatusSender;
 use crate::tool_pairing::{
     downgraded_tool_result_text, downgraded_tool_use_text, unmatched_tool_result_ids,
     unmatched_tool_use_ids,
@@ -37,7 +38,7 @@ pub struct GeminiProvider {
     embedding_model: Option<String>,
     usage: UsageTracker,
     generation_overrides: Option<GenerationOverrides>,
-    status_tx: Option<StatusTx>,
+    status_tx: Option<StatusSender>,
     thinking_level: Option<ThinkingLevel>,
     thinking_budget: Option<i32>,
     include_thoughts: Option<bool>,
@@ -211,12 +212,12 @@ impl GeminiProvider {
     }
 
     #[must_use]
-    pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
+    pub fn with_status_tx(mut self, tx: StatusSender) -> Self {
         self.status_tx = Some(tx);
         self
     }
 
-    pub fn set_status_tx(&mut self, tx: StatusTx) {
+    pub fn set_status_tx(&mut self, tx: StatusSender) {
         self.status_tx = Some(tx);
     }
 

@@ -912,7 +912,7 @@ fn image_marker(mime_type: &str, data: &[u8]) -> String {
     format!(
         "<redacted image: {mime_type}, {} bytes, blake3:{}>",
         data.len(),
-        &hash[..16]
+        zeph_common::text::truncate_to_bytes_ref(&hash, 16)
     )
 }
 

@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+/// Validated status text accepted by [`Channel::send_status`] and the typed status update
+/// carried by [`LoopbackEvent::Status`], re-exported so channel adapters need no direct
+/// `zeph-llm` dependency.
+pub use zeph_llm::status::{StatusText, StatusUpdate};
+
 /// A single field in an elicitation form request.
 ///
 /// Created by the MCP layer when a server sends an elicitation request; passed to
@@ -385,25 +390,26 @@ pub trait Channel: Send {
 
     /// Send a status label (shown as spinner text in TUI). No-op by default.
     ///
+    /// The text is a validated [`StatusText`], so it is never empty.
+    ///
     /// # Errors
     ///
     /// Returns an error if the underlying I/O fails.
     fn send_status(
         &mut self,
-        _text: &str,
+        _text: &StatusText,
     ) -> impl Future<Output = Result<(), ChannelError>> + Send {
         async { Ok(()) }
     }
 
-    /// Clear the status indicator. By default delegates to [`send_status`](Channel::send_status)
-    /// with an empty text, which is the clear wire convention of channels that do not
-    /// override it; channels with a typed clear (TUI, chat adapters) override this.
+    /// Clear the status indicator. No-op by default; channels with a visible indicator
+    /// (TUI, loopback, `--json`) override this to emit their own clear.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying I/O fails.
     fn clear_status(&mut self) -> impl Future<Output = Result<(), ChannelError>> + Send {
-        async move { self.send_status("").await }
+        async { Ok(()) }
     }
 
     /// Send the full skill catalog (name + description), delivered once at agent
@@ -468,9 +474,16 @@ pub trait Channel: Send {
     /// that used to write `let _ = channel.send_status(...).await;` should call this instead:
     /// failures become visible in logs, and a slow/rate-limited channel (see #6094) can no
     /// longer stall the agent turn loop.
+    ///
+    /// Takes `&str` and validates it once: empty or whitespace-only text is logged at debug
+    /// level and nothing is sent.
     fn send_status_best_effort(&mut self, text: &str) -> impl Future<Output = ()> + Send {
         async move {
-            match tokio::time::timeout(STATUS_SEND_TIMEOUT, self.send_status(text)).await {
+            let Some(status) = StatusText::new(text.to_owned()) else {
+                tracing::debug!("empty channel status ignored");
+                return;
+            };
+            match tokio::time::timeout(STATUS_SEND_TIMEOUT, self.send_status(&status)).await {
                 Ok(Ok(())) => tracing::debug!(text, "channel status sent"),
                 Ok(Err(error)) => tracing::warn!(%error, text, "channel status send failed"),
                 Err(_) => tracing::warn!(
@@ -785,7 +798,8 @@ pub enum LoopbackEvent {
     Chunk(String),
     Flush,
     FullMessage(String),
-    Status(String),
+    /// Status indicator update. Typed so a clear is explicit; never serialized.
+    Status(zeph_llm::status::StatusUpdate),
     /// Emitted immediately before tool execution begins.
     ToolStart(Box<ToolStartEvent>),
     ToolOutput(Box<ToolOutputEvent>),
@@ -897,9 +911,18 @@ impl Channel for LoopbackChannel {
             .map_err(|_| ChannelError::ChannelClosed)
     }
 
-    async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
+    async fn send_status(&mut self, text: &StatusText) -> Result<(), ChannelError> {
         self.output_tx
-            .send(LoopbackEvent::Status(text.to_owned()))
+            .send(LoopbackEvent::Status(zeph_llm::status::StatusUpdate::Set(
+                text.clone(),
+            )))
+            .await
+            .map_err(|_| ChannelError::ChannelClosed)
+    }
+
+    async fn clear_status(&mut self) -> Result<(), ChannelError> {
+        self.output_tx
+            .send(LoopbackEvent::Status(zeph_llm::status::StatusUpdate::Clear))
             .await
             .map_err(|_| ChannelError::ChannelClosed)
     }
@@ -1155,7 +1178,7 @@ mod tests {
 
         fn send_status(
             &mut self,
-            _text: &str,
+            _text: &StatusText,
         ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
             std::future::ready(Err(ChannelError::ChannelClosed))
         }
@@ -1224,7 +1247,7 @@ mod tests {
             std::future::ready(Ok(()))
         }
 
-        async fn send_status(&mut self, _text: &str) -> Result<(), ChannelError> {
+        async fn send_status(&mut self, _text: &StatusText) -> Result<(), ChannelError> {
             std::future::pending().await
         }
     }
@@ -1499,9 +1522,32 @@ mod tests {
     #[tokio::test]
     async fn loopback_send_status_event() {
         let (mut channel, mut handle) = LoopbackChannel::pair(8);
-        channel.send_status("working...").await.unwrap();
+        let text = StatusText::new("working...").unwrap();
+        channel.send_status(&text).await.unwrap();
         let event = handle.output_rx.recv().await.unwrap();
-        assert_matches!(event, LoopbackEvent::Status(s) if s == "working...");
+        assert_matches!(
+            event,
+            LoopbackEvent::Status(zeph_llm::status::StatusUpdate::Set(s)) if s.as_str() == "working..."
+        );
+    }
+
+    #[tokio::test]
+    async fn loopback_clear_status_sends_typed_clear() {
+        let (mut channel, mut handle) = LoopbackChannel::pair(8);
+        channel.clear_status().await.unwrap();
+        let event = handle.output_rx.recv().await.unwrap();
+        assert_matches!(
+            event,
+            LoopbackEvent::Status(zeph_llm::status::StatusUpdate::Clear)
+        );
+    }
+
+    #[tokio::test]
+    async fn send_status_best_effort_skips_empty_text() {
+        let (mut channel, mut handle) = LoopbackChannel::pair(8);
+        channel.send_status_best_effort("").await;
+        channel.send_status_best_effort("  ").await;
+        assert!(handle.output_rx.try_recv().is_err());
     }
 
     #[tokio::test]

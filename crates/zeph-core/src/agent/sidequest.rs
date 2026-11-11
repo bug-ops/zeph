@@ -19,7 +19,6 @@
 //! - **Min token filter**: outputs smaller than `min_cursor_tokens` are not included.
 
 use std::fmt::Write as _;
-use zeph_llm::provider::StatusUpdate;
 
 use serde::{Deserialize, Serialize};
 use zeph_llm::provider::{LlmProvider, Message, MessagePart};
@@ -359,27 +358,25 @@ impl<C: Channel> Agent<C> {
                         d.dump_sidequest_eviction(&cursors_snapshot, &evicted_indices, freed);
                     }
                     if let Some(ref tx) = self.services.session.status_tx {
-                        let _ = tx.send(StatusUpdate::set(format!(
-                            "SideQuest evicted {freed} tokens"
-                        )));
+                        let _ = tx.set(format!("SideQuest evicted {freed} tokens"));
                     }
                 } else {
                     // apply_eviction returned 0 — clear spinner so it doesn't dangle.
                     if let Some(ref tx) = self.services.session.status_tx {
-                        let _ = tx.send(StatusUpdate::Clear);
+                        let _ = tx.clear();
                     }
                 }
             }
             Ok(None | Some(_)) => {
                 tracing::debug!("sidequest: pending result: no cursors to evict");
                 if let Some(ref tx) = self.services.session.status_tx {
-                    let _ = tx.send(StatusUpdate::Clear);
+                    let _ = tx.clear();
                 }
             }
             Err(e) => {
                 tracing::debug!("sidequest: background task error: {e}");
                 if let Some(ref tx) = self.services.session.status_tx {
-                    let _ = tx.send(StatusUpdate::Clear);
+                    let _ = tx.clear();
                 }
             }
         }
@@ -430,6 +427,10 @@ impl<C: Channel> Agent<C> {
             if start > end {
                 return None;
             }
+            #[expect(
+                clippy::string_slice,
+                reason = "start and end come from find and rfind on the same string"
+            )]
             let json_slice = &response[start..=end];
             let parsed: EvictionResponse = serde_json::from_str(json_slice).ok()?;
             let mut valid: Vec<usize> = parsed
@@ -455,7 +456,7 @@ impl<C: Channel> Agent<C> {
         self.services.compression.pending_sidequest_result = Some(handle);
         tracing::debug!("sidequest: background LLM eviction task spawned");
         if let Some(ref tx) = self.services.session.status_tx {
-            let _ = tx.send(StatusUpdate::set("SideQuest: scoring tool outputs..."));
+            let _ = tx.set("SideQuest: scoring tool outputs...");
         }
     }
 }

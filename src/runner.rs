@@ -1616,9 +1616,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // `status_rx` is consumed here; `tui_status_rx_for_params` is None when the early
     // forwarder owns the receiver, so `run_tui_agent` skips the duplicate spawn.
     #[cfg(feature = "tui")]
-    let tui_status_rx_for_params: Option<
-        tokio::sync::mpsc::UnboundedReceiver<zeph_llm::provider::StatusUpdate>,
-    >;
+    let tui_status_rx_for_params: Option<zeph_llm::status::StatusReceiver>;
     #[cfg(feature = "tui")]
     {
         if let Some(ref early) = early_tui_guard.0 {
@@ -1759,16 +1757,13 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         registry.read().all_meta().into_iter().cloned().collect();
     let skill_count = all_meta_owned.len();
 
-    // Emit load errors to the user immediately at startup.
-    for (path, reason) in registry.read().load_errors() {
-        let name = path
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("<unknown>");
-        let _ = agent_status_tx.send(zeph_llm::provider::StatusUpdate::set(format!(
-            "warning: skill '{name}' skipped: {reason}"
-        )));
+    // Per-skill load errors are logged by the registry at `warn`; the status line (latest-wins)
+    // carries only a one-line summary so it never implies completeness.
+    let skipped_skills = registry.read().load_errors().len();
+    if skipped_skills > 0 {
+        let _ = agent_status_tx.set(format!(
+            "warning: {skipped_skills} skill(s) skipped, see log"
+        ));
     }
 
     // Populate trust DB for all loaded skills (#5920: extracted into a shared helper so

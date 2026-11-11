@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use zeph_common::memory::EdgeType;
 
 use crate::graph::GraphStore;
-use crate::types::EntityId;
+use crate::types::{EntityId, MessageId};
 
 /// Causal distance computer backed by MAGMA graph BFS.
 ///
@@ -120,6 +120,45 @@ impl CausalDistanceComputer {
         Ok(result)
     }
 
+    /// Compute causal distances from `goal` to each message through the entities its edges touch.
+    ///
+    /// Message ids and entity ids are distinct id spaces, so each message is first resolved to
+    /// the entities of its active edges; its distance is the minimum over those entities.
+    /// Messages without any resolved entity are absent from the result (callers treat absence
+    /// as neutral). When `goal` is `None` this returns an empty map before touching the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entity resolution or the BFS query fails.
+    pub async fn causal_distances(
+        &self,
+        goal: Option<EntityId>,
+        message_ids: &[MessageId],
+    ) -> Result<HashMap<MessageId, u32>, crate::error::MemoryError> {
+        let Some(goal) = goal else {
+            return Ok(HashMap::new());
+        };
+        let by_message = self
+            .graph_store
+            .entity_ids_for_messages(message_ids)
+            .await?;
+        let entities: Vec<EntityId> = by_message.values().flatten().copied().collect();
+        if entities.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let distances = self.compute(Some(goal), &entities).await?;
+        Ok(by_message
+            .into_iter()
+            .filter_map(|(message, entities)| {
+                entities
+                    .iter()
+                    .filter_map(|entity| distances.get(entity).copied())
+                    .min()
+                    .map(|distance| (message, distance))
+            })
+            .collect())
+    }
+
     /// Convert a raw causal distance to a score in `[0.0, 1.0]`.
     ///
     /// Distance 1 → 1.0, distance 5 → 0.2, `neutral_distance` → neutral value.
@@ -148,6 +187,8 @@ impl CausalDistanceComputer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "sqlite")]
+    use crate::graph::types::EdgeType;
 
     #[test]
     fn distance_to_score_values() {
@@ -190,12 +231,94 @@ mod tests {
         let computer = CausalDistanceComputer::new(graph_store, 10, 5);
 
         let result = computer
-            .compute(None, &[EntityId(1), EntityId(2), EntityId(3)])
+            .compute(
+                None,
+                &[
+                    EntityId::for_test(1),
+                    EntityId::for_test(2),
+                    EntityId::for_test(3),
+                ],
+            )
             .await
             .expect("None goal must not fail");
         assert!(
             result.is_empty(),
             "goal_entity_id=None must return empty map, got: {result:?}"
         );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn causal_distances_resolve_messages_through_entities() {
+        use crate::graph::types::EntityType;
+
+        let store = crate::store::SqliteStore::new(":memory:").await.unwrap();
+        let gs = Arc::new(GraphStore::new(store.pool().clone()));
+        let conversation = store.create_conversation().await.unwrap();
+        let linked = store
+            .save_message(conversation, "user", "m1")
+            .await
+            .unwrap();
+        let unrelated = store
+            .save_message(conversation, "user", "m2")
+            .await
+            .unwrap();
+        let mut ids = Vec::new();
+        for name in ["goal", "a", "d", "b", "c"] {
+            ids.push(
+                gs.upsert_entity(name, name, EntityType::Concept, None, None)
+                    .await
+                    .unwrap(),
+            );
+        }
+        let [goal, a, d, b, c] = ids[..] else {
+            unreachable!("five entities were inserted")
+        };
+        let edge = |from, to, kind, episode| {
+            let gs = Arc::clone(&gs);
+            async move {
+                gs.insert_edge_typed(from, to, "rel", "fact", 0.9, episode, kind, None, None)
+                    .await
+                    .unwrap();
+            }
+        };
+        edge(goal, a, EdgeType::Causal, None).await;
+        edge(a, d, EdgeType::Causal, Some(linked)).await;
+        edge(b, c, EdgeType::Semantic, Some(unrelated)).await;
+
+        assert_eq!(
+            unrelated.0,
+            a.get(),
+            "premise: the unrelated message id must collide with entity a"
+        );
+        let computer = CausalDistanceComputer::new(gs, 10, 5);
+        let distances = computer
+            .causal_distances(Some(goal), &[linked, unrelated])
+            .await
+            .unwrap();
+
+        assert_eq!(distances.get(&linked), Some(&1));
+        assert_eq!(
+            distances.get(&unrelated),
+            Some(&5),
+            "message {unrelated} shares its numeric id with entity {a}; it must not be read as that entity"
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn causal_distances_touch_store_only_with_goal() {
+        let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
+        pool.close().await;
+        let computer = CausalDistanceComputer::new(Arc::new(GraphStore::new(pool)), 10, 5);
+        let messages = [MessageId(1)];
+
+        let none = computer.causal_distances(None, &messages).await;
+        assert!(none.expect("None goal must not query the store").is_empty());
+
+        let some = computer
+            .causal_distances(Some(EntityId::for_test(1)), &messages)
+            .await;
+        assert!(some.is_err(), "Some goal must query the closed pool");
     }
 }

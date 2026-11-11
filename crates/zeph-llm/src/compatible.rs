@@ -25,9 +25,9 @@ use std::fmt;
 use crate::error::LlmError;
 use crate::openai::{CompletionTokensParam, OpenAiConfig, OpenAiProvider};
 use crate::provider::{
-    ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, StatusTx,
-    ToolDefinition,
+    ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, ToolDefinition,
 };
+use crate::status::StatusSender;
 
 /// Configuration for [`CompatibleProvider`].
 ///
@@ -161,7 +161,7 @@ impl CompatibleProvider {
 
 impl CompatibleProvider {
     /// Attach a status channel for streaming progress events to the TUI.
-    pub fn set_status_tx(&mut self, tx: StatusTx) {
+    pub fn set_status_tx(&mut self, tx: StatusSender) {
         self.inner.status_tx = Some(tx);
     }
 

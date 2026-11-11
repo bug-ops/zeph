@@ -39,8 +39,10 @@ impl SecurityEvent {
         // CR-1: UTF-8 safe truncation using floor_char_boundary (stable since Rust 1.82).
         let detail = detail.into();
         let detail = if detail.len() > 128 {
-            let end = detail.floor_char_boundary(127);
-            format!("{}…", &detail[..end])
+            format!(
+                "{}…",
+                zeph_common::text::truncate_to_bytes_ref(&detail, 127)
+            )
         } else {
             detail
         };
@@ -735,8 +737,7 @@ fn strip_ctrl(s: &str) -> String {
 fn strip_and_truncate_80(s: &str) -> String {
     let s = strip_ctrl(s);
     if s.len() > 80 {
-        let end = s.floor_char_boundary(79);
-        format!("{}…", &s[..end])
+        format!("{}…", zeph_common::text::truncate_to_bytes_ref(&s, 79))
     } else {
         s
     }

@@ -22,7 +22,7 @@ use zeph_db::{DbTransaction, sql};
 use crate::error::MemoryError;
 use crate::graph::activation::ActivatedFact;
 use crate::graph::string_similarity::normalized_similarity;
-use crate::types::EdgeId;
+use crate::types::{CandidateId, EdgeId};
 
 /// A candidate conflict pair detected at write time.
 #[derive(Debug, Clone)]
@@ -209,7 +209,7 @@ pub async fn annotate_conflicts(
 
     let edge_ids: Vec<EdgeId> = facts.iter().map(|f| f.edge.id).collect();
 
-    let mut edge_to_candidate: std::collections::HashMap<EdgeId, i64> =
+    let mut edge_to_candidate: std::collections::HashMap<EdgeId, CandidateId> =
         std::collections::HashMap::new();
 
     for chunk in edge_ids.chunks(MAX_IDS_PER_QUERY) {
@@ -234,7 +234,7 @@ pub async fn annotate_conflicts(
 
         for row in rows {
             use sqlx::Row as _;
-            let candidate_id: i64 = row.try_get("id").map_err(MemoryError::from)?;
+            let candidate_id: CandidateId = row.try_get("id").map_err(MemoryError::from)?;
             let ea: EdgeId = row.try_get("edge_a_id").map_err(MemoryError::from)?;
             let eb: EdgeId = row.try_get("edge_b_id").map_err(MemoryError::from)?;
             edge_to_candidate.entry(ea).or_insert(candidate_id);
@@ -357,8 +357,8 @@ mod tests {
         ActivatedFact {
             edge: Edge {
                 id: crate::types::EdgeId::new(edge_id),
-                source_entity_id: crate::types::EntityId(1),
-                target_entity_id: crate::types::EntityId(2),
+                source_entity_id: crate::types::EntityId::for_test(1),
+                target_entity_id: crate::types::EntityId::for_test(2),
                 relation: "test".to_owned(),
                 canonical_relation: "test".to_owned(),
                 fact: "test fact".to_owned(),

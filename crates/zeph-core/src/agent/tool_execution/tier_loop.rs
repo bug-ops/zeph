@@ -1687,10 +1687,7 @@ impl<C: Channel> Agent<C> {
         // Used by shadow memory below; empty when causal IPI is disabled (deviation_score = 0.0).
         let goal_summary_for_shadow: String = causal_pre_response
             .as_ref()
-            .map(|(pre, _)| {
-                let end = pre.floor_char_boundary(100);
-                pre[..end].to_owned()
-            })
+            .map(|(pre, _)| zeph_common::text::truncate_to_bytes_ref(pre, 100).to_owned())
             .unwrap_or_default();
 
         self.run_causal_ipi_post_probe(causal_pre_response, &result_parts)

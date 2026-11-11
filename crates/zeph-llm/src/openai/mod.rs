@@ -155,10 +155,11 @@ impl fmt::Debug for OpenAiConfig {
 use crate::provider::ResponseUsage;
 use crate::provider::{
     AgentVisible, ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message,
-    MessagePart, Role, StatusTx, ToolDefinition, ToolUseRequest,
+    MessagePart, Role, ToolDefinition, ToolUseRequest,
 };
 use crate::retry::send_with_retry;
 use crate::sse::openai_sse_to_stream;
+use crate::status::StatusSender;
 use crate::usage::UsageTracker;
 
 const MAX_RETRIES: u32 = 3;
@@ -182,7 +183,7 @@ pub struct OpenAiProvider {
     embedding_model: Option<String>,
     /// Reasoning effort level for `o*` models (`"low"`, `"medium"`, or `"high"`).
     pub(crate) reasoning_effort: Option<String>,
-    pub(crate) status_tx: Option<StatusTx>,
+    pub(crate) status_tx: Option<StatusSender>,
     pub(crate) usage: UsageTracker,
     generation_overrides: Option<GenerationOverrides>,
     /// When `true`, append a compact JSON hint of the tool's output schema to its description.
@@ -335,7 +336,7 @@ impl OpenAiProvider {
 
     /// Attach a status event sender so the UI receives retry and fallback notifications.
     #[must_use]
-    pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
+    pub fn with_status_tx(mut self, tx: StatusSender) -> Self {
         self.status_tx = Some(tx);
         self
     }

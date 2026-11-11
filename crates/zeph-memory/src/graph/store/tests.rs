@@ -20,7 +20,7 @@ async fn upsert_entity_insert_new() {
         .upsert_entity("Alice", "Alice", EntityType::Person, Some("a person"), None)
         .await
         .unwrap();
-    assert!(id.0 > 0);
+    assert!(id.get() > 0);
 }
 
 #[tokio::test]
@@ -373,7 +373,11 @@ async fn upsert_community_insert_and_update() {
         .upsert_community(
             "clusterA",
             "summary A",
-            &[EntityId(1), EntityId(2), EntityId(3)],
+            &[
+                EntityId::for_test(1),
+                EntityId::for_test(2),
+                EntityId::for_test(3),
+            ],
             None,
         )
         .await
@@ -383,7 +387,12 @@ async fn upsert_community_insert_and_update() {
         .upsert_community(
             "clusterA",
             "summary A updated",
-            &[EntityId(1), EntityId(2), EntityId(3), EntityId(4)],
+            &[
+                EntityId::for_test(1),
+                EntityId::for_test(2),
+                EntityId::for_test(3),
+                EntityId::for_test(4),
+            ],
             None,
         )
         .await
@@ -396,7 +405,7 @@ async fn upsert_community_insert_and_update() {
         communities[0]
             .entity_ids
             .iter()
-            .map(|e| e.0)
+            .map(|e| e.get())
             .collect::<Vec<_>>(),
         vec![1_i64, 2, 3, 4]
     );
@@ -424,7 +433,10 @@ async fn community_for_entity_found() {
 #[tokio::test]
 async fn community_for_entity_not_found() {
     let gs = setup().await;
-    let result = gs.community_for_entity(EntityId(999)).await.unwrap();
+    let result = gs
+        .community_for_entity(EntityId::for_test(999))
+        .await
+        .unwrap();
     assert!(result.is_none());
 }
 
@@ -658,7 +670,12 @@ async fn all_active_edges_stream_excludes_invalidated() {
 async fn find_community_by_id_found_and_not_found() {
     let gs = setup().await;
     let cid = gs
-        .upsert_community("grp", "summary", &[EntityId(1), EntityId(2)], None)
+        .upsert_community(
+            "grp",
+            "summary",
+            &[EntityId::for_test(1), EntityId::for_test(2)],
+            None,
+        )
         .await
         .unwrap();
     let found = gs.find_community_by_id(cid).await.unwrap();
@@ -672,10 +689,10 @@ async fn find_community_by_id_found_and_not_found() {
 #[tokio::test]
 async fn delete_all_communities_clears_table() {
     let gs = setup().await;
-    gs.upsert_community("c1", "s1", &[EntityId(1)], None)
+    gs.upsert_community("c1", "s1", &[EntityId::for_test(1)], None)
         .await
         .unwrap();
-    gs.upsert_community("c2", "s2", &[EntityId(2)], None)
+    gs.upsert_community("c2", "s2", &[EntityId::for_test(2)], None)
         .await
         .unwrap();
     assert_eq!(gs.community_count().await.unwrap(), 2);
@@ -758,7 +775,10 @@ async fn find_entity_by_id_found() {
 #[tokio::test]
 async fn find_entity_by_id_not_found() {
     let gs = setup().await;
-    let result = gs.find_entity_by_id(EntityId(99999)).await.unwrap();
+    let result = gs
+        .find_entity_by_id(EntityId::for_test(99999))
+        .await
+        .unwrap();
     assert!(result.is_none());
 }
 
@@ -812,12 +832,12 @@ async fn resolve_entity_names_omits_unresolvable_ids() {
         .unwrap();
 
     let result = gs
-        .resolve_entity_names(&[a, EntityId(999_999)])
+        .resolve_entity_names(&[a, EntityId::for_test(999_999)])
         .await
         .unwrap();
     assert_eq!(result.len(), 1);
     assert!(result.contains_key(&a));
-    assert!(!result.contains_key(&EntityId(999_999)));
+    assert!(!result.contains_key(&EntityId::for_test(999_999)));
 }
 
 #[tokio::test]
@@ -3447,11 +3467,11 @@ async fn entity_structural_scores_hub_higher_than_leaf() {
     .unwrap();
     let hub_scores = store.entity_structural_scores(&[hub]).await.unwrap();
     let leaf_scores = store
-        .entity_structural_scores(&[EntityId(leaf0)])
+        .entity_structural_scores(&[EntityId::for_test(leaf0)])
         .await
         .unwrap();
     assert!(
-        hub_scores[&hub] >= leaf_scores[&EntityId(leaf0)],
+        hub_scores[&hub] >= leaf_scores[&EntityId::for_test(leaf0)],
         "hub (degree=5) must score >= leaf (degree=1)"
     );
 }
@@ -3710,7 +3730,9 @@ async fn qdrant_point_ids_for_entities_times_out_on_pool_starvation() {
         drop(conn);
     });
 
-    let result = gs.qdrant_point_ids_for_entities(&[EntityId(1)]).await;
+    let result = gs
+        .qdrant_point_ids_for_entities(&[EntityId::for_test(1)])
+        .await;
     holder.await.expect("holder task");
 
     assert!(
@@ -3899,7 +3921,10 @@ async fn episodes_for_entity_returns_empty_when_no_links() {
 async fn episodes_for_entity_unknown_id_returns_empty() {
     // entity_id 99999 does not exist — should return empty, not error
     let gs = setup().await;
-    let episodes = gs.episodes_for_entity(EntityId(99999)).await.unwrap();
+    let episodes = gs
+        .episodes_for_entity(EntityId::for_test(99999))
+        .await
+        .unwrap();
     assert_eq!(episodes.len(), 0);
 }
 
@@ -3909,7 +3934,9 @@ async fn link_entity_to_episode_invalid_entity_is_fk_error() {
     let gs = setup().await;
     let conv_id = insert_conversation(&gs).await;
     let ep_id = gs.ensure_episode(conv_id).await.unwrap();
-    let result = gs.link_entity_to_episode(ep_id, EntityId(99999)).await;
+    let result = gs
+        .link_entity_to_episode(ep_id, EntityId::for_test(99999))
+        .await;
     // FK enforcement may be off in test pool — accept both Ok (FK off) and Err (FK on).
     match result {
         Ok(()) | Err(crate::error::MemoryError::Sqlx(_)) => {} // FK off or FK violation — both acceptable

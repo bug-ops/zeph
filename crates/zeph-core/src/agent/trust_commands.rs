@@ -35,7 +35,7 @@ impl<C: Channel> Agent<C> {
                         row.skill_name,
                         row.trust_level,
                         row.source_kind,
-                        &row.blake3_hash[..row.blake3_hash.len().min(8)]
+                        zeph_common::text::truncate_to_bytes_ref(&row.blake3_hash, 8)
                     );
                 }
                 Ok(output)

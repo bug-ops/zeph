@@ -52,6 +52,8 @@
 //! }
 //! ```
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 mod error;
 mod handlers;
 mod router;

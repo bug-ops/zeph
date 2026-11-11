@@ -67,8 +67,9 @@ impl<C: Channel> Agent<C> {
             Ok(post_response) => {
                 let analysis = analyzer.analyze(&pre_response, &post_response);
                 if analysis.is_flagged {
-                    let pre_excerpt = &pre_response[..pre_response.floor_char_boundary(100)];
-                    let post_excerpt = &post_response[..post_response.floor_char_boundary(100)];
+                    let pre_excerpt = zeph_common::text::truncate_to_bytes_ref(&pre_response, 100);
+                    let post_excerpt =
+                        zeph_common::text::truncate_to_bytes_ref(&post_response, 100);
                     tracing::warn!(
                         deviation_score = analysis.deviation_score,
                         threshold = analyzer.threshold(),

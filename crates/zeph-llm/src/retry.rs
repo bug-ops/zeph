@@ -5,7 +5,7 @@ use std::future::Future;
 use std::time::{Duration, Instant};
 
 use crate::error::LlmError;
-use crate::provider::{StatusTx, StatusUpdate};
+use crate::status::StatusSender;
 use crate::usage::UsageTracker;
 
 const BASE_BACKOFF_SECS: u64 = 1;
@@ -53,7 +53,7 @@ pub(crate) fn retry_delay(response: &reqwest::Response, attempt: u32) -> Duratio
 pub(crate) async fn send_with_retry<F, Fut>(
     provider_name: &str,
     max_retries: u32,
-    status_tx: Option<&StatusTx>,
+    status_tx: Option<&StatusSender>,
     usage: Option<&UsageTracker>,
     mut f: F,
 ) -> Result<reqwest::Response, LlmError>
@@ -92,7 +92,7 @@ where
                 max_retries
             );
             if let Some(tx) = status_tx {
-                let _ = tx.send(StatusUpdate::set(msg.clone()));
+                let _ = tx.set(msg.clone());
             }
             tracing::warn!("{msg}");
             tokio::time::sleep(delay).await;

@@ -357,6 +357,41 @@ mod tests {
             assert!(usage.is_none(), "fallback path must not report usage");
         }
 
+        struct MarkingSanitizer;
+
+        impl OutputSanitizer for MarkingSanitizer {
+            fn sanitize_task_output(&self, text: &str) -> String {
+                format!("<<SANITIZED>>{text}")
+            }
+        }
+
+        #[tokio::test]
+        async fn test_aggregate_sanitizes_every_task_output_before_prompt() {
+            let (provider, recorded) =
+                MockProvider::with_responses(vec!["synthesized".to_string()]).with_recording();
+            let agg = LlmAggregator::new(provider, &make_config())
+                .with_sanitizer(Arc::new(MarkingSanitizer));
+            let graph = make_graph_with_tasks(&[
+                (TaskStatus::Completed, Some("first-output")),
+                (TaskStatus::Completed, Some("second-output")),
+            ]);
+            agg.aggregate(&graph).await.unwrap();
+
+            let calls = recorded.lock().unwrap();
+            let prompt: String = calls[0].iter().map(|m| m.content.clone()).collect();
+            assert!(prompt.contains("<<SANITIZED>>first-output"), "{prompt}");
+            assert!(prompt.contains("<<SANITIZED>>second-output"), "{prompt}");
+        }
+
+        #[tokio::test]
+        async fn test_aggregate_fallback_sanitizes_task_output() {
+            let agg = LlmAggregator::new(MockProvider::failing(), &make_config())
+                .with_sanitizer(Arc::new(MarkingSanitizer));
+            let graph = make_graph_with_tasks(&[(TaskStatus::Completed, Some("raw-output"))]);
+            let (result, _) = agg.aggregate(&graph).await.unwrap();
+            assert!(result.contains("<<SANITIZED>>raw-output"), "{result}");
+        }
+
         #[tokio::test]
         async fn test_aggregate_error_when_no_tasks() {
             let provider = MockProvider::default();

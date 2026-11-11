@@ -713,7 +713,7 @@ fn collect_structural_hits_inner(
                     def_node = Some(capture.node);
                 }
                 if capture.index as usize == name_idx {
-                    name = Some(source[capture.node.byte_range()].to_string());
+                    name = source.get(capture.node.byte_range()).map(str::to_owned);
                 }
             }
             let Some(name) = name else {

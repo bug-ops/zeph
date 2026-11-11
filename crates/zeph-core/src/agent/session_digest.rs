@@ -46,6 +46,10 @@ fn sanitize_digest(text: &str) -> String {
 }
 
 /// Truncate `text` to at most `max_tokens` tokens using the same binary-search approach.
+#[expect(
+    clippy::string_slice,
+    reason = "pos comes from rfind on the same string"
+)]
 fn truncate_digest(text: &str, max_tokens: usize, tc: &TokenCounter) -> String {
     if tc.count_tokens(text) <= max_tokens {
         return text.to_string();

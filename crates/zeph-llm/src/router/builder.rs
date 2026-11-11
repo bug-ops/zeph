@@ -26,7 +26,8 @@ use super::{RouterProvider, RouterStrategy, blocking_load};
 use crate::any::AnyProvider;
 use crate::ema::EmaTracker;
 use crate::error::LlmError;
-use crate::provider::{LlmProvider, StatusTx};
+use crate::provider::LlmProvider;
+use crate::status::StatusSender;
 
 impl RouterProvider {
     /// Create a new router over `providers`.
@@ -567,7 +568,7 @@ impl RouterProvider {
         state.provider_stats()
     }
 
-    pub fn set_status_tx(&mut self, tx: StatusTx) {
+    pub fn set_status_tx(&mut self, tx: StatusSender) {
         if let Some(providers) = Arc::get_mut(&mut self.state.providers) {
             for p in providers {
                 p.set_status_tx(tx.clone());

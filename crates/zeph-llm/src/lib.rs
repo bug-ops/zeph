@@ -109,6 +109,7 @@ pub(crate) mod retry;
 pub mod router;
 pub(crate) mod schema;
 pub mod sse;
+pub mod status;
 pub mod stt;
 #[cfg(test)]
 pub mod testing;

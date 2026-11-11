@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use zeph_core::channel::{
     Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse,
-    SkillCatalogItem, ToolOutputEvent, ToolStartEvent,
+    SkillCatalogItem, StatusText, ToolOutputEvent, ToolStartEvent,
 };
 
 use crate::command::TuiCommand;
@@ -220,11 +220,11 @@ impl Channel for TuiChannel {
         tracing::instrument(name = "tui.channel.send_status", skip_all)
     )]
     #[allow(clippy::unused_async_trait_impl)]
-    async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
+    async fn send_status(&mut self, text: &StatusText) -> Result<(), ChannelError> {
         // Non-critical: informational status text.
         let _ = self
             .agent_event_tx
-            .try_send(AgentEvent::Status(text.to_owned()));
+            .try_send(AgentEvent::Status(text.to_string()));
         Ok(())
     }
 
@@ -631,7 +631,9 @@ mod tests {
     #[tokio::test]
     async fn send_status_sends_status_event() {
         let (mut ch, _user_tx, mut agent_rx) = make_channel();
-        ch.send_status("summarizing...").await.unwrap();
+        ch.send_status(&StatusText::new("summarizing...").unwrap())
+            .await
+            .unwrap();
         let evt = agent_rx.recv().await.unwrap();
         assert_matches!(evt, AgentEvent::Status(t) if t == "summarizing...");
     }
@@ -930,7 +932,9 @@ mod tests {
             "send_typing should not block or error"
         );
         assert!(
-            ch.send_status("status").await.is_ok(),
+            ch.send_status(&StatusText::new("status").unwrap())
+                .await
+                .is_ok(),
             "send_status should not block or error"
         );
         assert!(

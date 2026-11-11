@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use crate::cocoon::client::CocoonClient;
 use crate::error::LlmError;
-use crate::provider::StatusTx;
+use crate::status::StatusSender;
 use crate::stt::{SpeechToText, Transcription};
 
 /// STT provider that routes audio through the Cocoon sidecar.
@@ -39,7 +39,7 @@ pub struct CocoonSttProvider {
     model: String,
     client: Arc<CocoonClient>,
     language: Option<String>,
-    status_tx: Option<StatusTx>,
+    status_tx: Option<StatusSender>,
 }
 
 impl std::fmt::Debug for CocoonSttProvider {
@@ -91,7 +91,7 @@ impl CocoonSttProvider {
     }
 
     /// Set the TUI status sender; retry/backoff messages are forwarded to the TUI when set.
-    pub fn set_status_tx(&mut self, tx: StatusTx) {
+    pub fn set_status_tx(&mut self, tx: StatusSender) {
         self.status_tx = Some(tx);
     }
 }
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn set_status_tx_stores_sender() {
         let mut stt = CocoonSttProvider::new("whisper-1", make_client());
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, _rx) = crate::status::status_channel(crate::status::StatusSource::Stt);
         stt.set_status_tx(tx);
         assert!(stt.status_tx.is_some());
     }

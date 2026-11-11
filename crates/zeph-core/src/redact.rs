@@ -70,7 +70,7 @@ pub fn redact_binary_blobs(text: &str) -> Cow<'_, str> {
                             format!(
                                 "<redacted possible binary data: {} bytes, blake3:{}>",
                                 bytes.len(),
-                                &hash[..16]
+                                zeph_common::text::truncate_to_bytes_ref(&hash, 16)
                             )
                         },
                     )

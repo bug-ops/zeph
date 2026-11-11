@@ -99,7 +99,10 @@ impl Channel for AppChannel {
     async fn send_notice(&mut self, text: &str) -> Result<(), ChannelError> {
         dispatch_app_channel!(self, send_notice, text)
     }
-    async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
+    async fn send_status(
+        &mut self,
+        text: &zeph_core::channel::StatusText,
+    ) -> Result<(), ChannelError> {
         dispatch_app_channel!(self, send_status, text)
     }
     async fn clear_status(&mut self) -> Result<(), ChannelError> {
@@ -392,7 +395,9 @@ mod tests {
         // 7. send_typing
         ch.send_typing().await.unwrap();
         // 8. send_status
-        ch.send_status("working").await.unwrap();
+        ch.send_status(&zeph_core::channel::StatusText::new("working").unwrap())
+            .await
+            .unwrap();
         // 8b. send_skill_catalog
         ch.send_skill_catalog(&[]).await.unwrap();
         // 9. send_thinking_chunk

@@ -128,6 +128,10 @@ pub(crate) struct InertLogged {
 
 /// Remove every `<skill_state ...>...</skill_state>` span (and one trailing newline) from a
 /// runtime-note body. Returns `None` when nothing was removed.
+#[expect(
+    clippy::string_slice,
+    reason = "indexes come from find on the same string"
+)]
 fn strip_sections(text: &str) -> Option<String> {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -156,6 +160,10 @@ fn note_is_empty(text: &str) -> bool {
 }
 
 /// The most recent `<skill_state>` section present in any runtime note.
+#[expect(
+    clippy::string_slice,
+    reason = "indexes come from rfind and find on the same string"
+)]
 fn last_section(messages: &[Message]) -> Option<&str> {
     messages
         .iter()

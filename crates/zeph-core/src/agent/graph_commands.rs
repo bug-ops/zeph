@@ -588,15 +588,16 @@ impl<C: Channel + Send + 'static> GraphAccess for Agent<C> {
                 let mut out = format!("Knowledge ingest ledger ({} entries):\n\n", rows.len());
                 let mut current_batch = String::new();
                 for row in &rows {
-                    let batch_short = &row.import_batch_id[..row.import_batch_id.len().min(8)];
+                    let batch_short =
+                        zeph_common::text::truncate_to_bytes_ref(&row.import_batch_id, 8);
                     if current_batch != row.import_batch_id {
                         if !current_batch.is_empty() {
                             out.push('\n');
                         }
                         current_batch.clone_from(&row.import_batch_id);
                     }
-                    let uri_display = &row.source_uri[..row.source_uri.floor_char_boundary(40)];
-                    let at_display = &row.ingested_at[..row.ingested_at.len().min(19)];
+                    let uri_display = zeph_common::text::truncate_to_bytes_ref(&row.source_uri, 40);
+                    let at_display = zeph_common::text::truncate_to_bytes_ref(&row.ingested_at, 19);
                     let _ = writeln!(
                         out,
                         "  {uri_display:<40} batch={batch_short} at={at_display} \
@@ -1235,8 +1236,8 @@ mod tests {
             "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence) \
              VALUES (?, ?, ?, ?, ?)"
         ))
-        .bind(self_entity.0)
-        .bind(self_entity.0)
+        .bind(self_entity)
+        .bind(self_entity)
         .bind("refers_to")
         .bind("Self refers to itself")
         .bind(1.0_f64)
@@ -1403,8 +1404,8 @@ mod tests {
             "INSERT INTO graph_edges (source_entity_id, target_entity_id, relation, fact, confidence) \
              VALUES (?, ?, ?, ?, ?)"
         ))
-        .bind(self_entity.0)
-        .bind(self_entity.0)
+        .bind(self_entity)
+        .bind(self_entity)
         .bind("refers_to")
         .bind("Self refers to itself")
         .bind(1.0_f64)

@@ -599,12 +599,22 @@ mod tests {
         use petgraph::graph::NodeIndex;
 
         let mut node_map: HashMap<EntityId, NodeIndex> = (0..600i64)
-            .map(|id| (EntityId(id), NodeIndex::new(usize::try_from(id).unwrap())))
+            .map(|id| {
+                (
+                    EntityId::for_test(id),
+                    NodeIndex::new(usize::try_from(id).unwrap()),
+                )
+            })
             .collect();
         // Assign scores: entity 599 gets highest, 0 gets lowest.
         // i16 covers 0..600 exactly; the i16→f32 cast is lossless (f32 has 23 mantissa bits).
         let entity_scores: HashMap<EntityId, f32> = (0..600i64)
-            .map(|id| (EntityId(id), f32::from(i16::try_from(id).unwrap()) / 599.0))
+            .map(|id| {
+                (
+                    EntityId::for_test(id),
+                    f32::from(i16::try_from(id).unwrap()) / 599.0,
+                )
+            })
             .collect();
 
         cap_node_map(&mut node_map, &entity_scores, MAX_GRAPH_NODES);
@@ -612,7 +622,10 @@ mod tests {
         assert_eq!(node_map.len(), MAX_GRAPH_NODES);
         // The 500 retained nodes must all have id >= 100 (top 500 by score are ids 100..=599).
         for &id in node_map.keys() {
-            assert!(id.0 >= 100, "low-scored node {id} should have been dropped");
+            assert!(
+                id.get() >= 100,
+                "low-scored node {id} should have been dropped"
+            );
         }
     }
 
@@ -621,7 +634,12 @@ mod tests {
         use petgraph::graph::NodeIndex;
 
         let mut node_map: HashMap<EntityId, NodeIndex> = (0..10i64)
-            .map(|id| (EntityId(id), NodeIndex::new(usize::try_from(id).unwrap())))
+            .map(|id| {
+                (
+                    EntityId::for_test(id),
+                    NodeIndex::new(usize::try_from(id).unwrap()),
+                )
+            })
             .collect();
         let entity_scores: HashMap<EntityId, f32> = HashMap::new();
 

@@ -4,7 +4,6 @@
 use super::super::{Agent, Channel};
 use super::super::{Message, Role};
 use super::background::StemTaskArgs;
-use zeph_llm::provider::StatusUpdate;
 use zeph_llm::provider::{LlmProvider as _, MessageMetadata};
 
 impl<C: Channel> Agent<C> {
@@ -106,7 +105,8 @@ impl<C: Channel> Agent<C> {
             .map(|m| m.content.clone())
             .unwrap_or_default();
         let ctx_bytes = blake3::hash(user_msg.chars().take(256).collect::<String>().as_bytes());
-        let context_hash = ctx_bytes.to_hex()[..16].to_string();
+        let context_hash =
+            zeph_common::text::truncate_to_bytes_ref(&ctx_bytes.to_hex(), 16).to_owned();
         let outcome_owned = if outcome == "success" {
             "success"
         } else {
@@ -115,7 +115,7 @@ impl<C: Channel> Agent<C> {
         .to_string();
         let status_tx = self.services.session.status_tx.clone();
         if let Some(ref tx) = self.services.session.status_tx {
-            let _ = tx.send(StatusUpdate::set("Learning from patterns…"));
+            let _ = tx.set("Learning from patterns…");
         }
         let args = StemTaskArgs {
             provider: self.resolve_background_provider(config.stem_provider.as_str()),

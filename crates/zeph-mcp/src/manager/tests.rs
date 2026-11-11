@@ -3,7 +3,7 @@
 
 //! Unit tests for [`McpManager`](super::McpManager) and the manager submodules.
 
-use super::connect::validate_roots;
+use super::connect::{announce_oauth_url, validate_roots};
 use super::ingest::{apply_injection_penalties, ingest_tools};
 use super::retry::{connect_retry_backoff, is_retryable_connect_error, retry_loop};
 use super::*;
@@ -97,7 +97,7 @@ async fn connect_all_skips_failing_servers() {
 #[tokio::test]
 async fn connect_all_emits_status_messages() {
     let (status_tx, mut status_rx) =
-        tokio::sync::mpsc::unbounded_channel::<zeph_llm::provider::StatusUpdate>();
+        zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Mcp);
     let mgr = McpManager::new(
         vec![make_entry("my-mcp")],
         vec![],
@@ -107,18 +107,32 @@ async fn connect_all_emits_status_messages() {
 
     mgr.connect_all().await;
 
-    // The "Connecting to my-mcp..." message must have been emitted before
-    // the connection attempt (which will fail — no real server).
-    let mut messages = Vec::new();
-    while let Ok(msg) = status_rx.try_recv() {
-        messages.push(msg);
-    }
+    // The "Connecting to my-mcp..." message must have been emitted before the connection
+    // attempt (which will fail, there is no real server). Latest wins, so the receiver
+    // observes the last status the manager set.
+    let update = tokio::time::timeout(std::time::Duration::from_millis(100), status_rx.next())
+        .await
+        .expect("connect_all must emit a status message");
     assert!(
-        messages
-            .iter()
-            .any(|m| matches!(m, zeph_llm::provider::StatusUpdate::Set(t) if t.contains("my-mcp"))),
-        "expected status message for my-mcp, got: {messages:?}"
+        matches!(&update, Some(zeph_llm::status::StatusUpdate::Set(t)) if t.as_str().contains("my-mcp")),
+        "expected status message for my-mcp, got: {update:?}"
     );
+}
+
+/// Status is latest-wins, so concurrent OAuth handshakes can replace each other's URL in the
+/// status line; the `warn` log keeps every URL.
+#[test]
+#[tracing_test::traced_test]
+fn announce_oauth_url_logs_every_url_at_warn() {
+    let (status_tx, _status_rx) =
+        zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Mcp);
+
+    announce_oauth_url("server-a", "https://auth.example/a", 8123, Some(&status_tx));
+    announce_oauth_url("server-b", "https://auth.example/b", 8124, Some(&status_tx));
+
+    assert!(logs_contain("https://auth.example/a"));
+    assert!(logs_contain("https://auth.example/b"));
+    assert!(logs_contain("WARN"));
 }
 
 #[tokio::test]

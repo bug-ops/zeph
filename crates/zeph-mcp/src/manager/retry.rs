@@ -10,12 +10,11 @@ use tokio_util::sync::CancellationToken;
 
 use dashmap::DashMap;
 use tokio::sync::mpsc;
-use zeph_llm::provider::StatusUpdate;
 
 use crate::client::{EnvPolicy, McpClient, StderrPolicy, ToolRefreshEvent};
 use crate::error::McpError;
 
-use super::{McpTransport, ServerEntry, StatusTx};
+use super::{McpTransport, ServerEntry, StatusSender};
 
 /// Compute the sleep duration before retry attempt `attempt + 1`.
 ///
@@ -94,7 +93,7 @@ pub(super) async fn retry_loop<F, Fut>(
     server_id: &str,
     max_attempts: u8,
     retry_backoff_base_ms: u64,
-    status_tx: Option<&StatusTx>,
+    status_tx: Option<&StatusSender>,
     shutdown: &CancellationToken,
     mut attempt_fn: F,
 ) -> Result<McpClient, McpError>
@@ -124,7 +123,7 @@ where
                     "Reconnecting to MCP server {server_id} (attempt {attempt}/{max_attempts})..."
                 )
             };
-            let _ = stx.send(StatusUpdate::set(msg));
+            let _ = stx.set(msg);
         }
 
         match attempt_fn(attempt).await {
@@ -176,7 +175,7 @@ pub(super) async fn connect_with_retry(
     handler_cfg: &crate::client::HandlerConfig,
     max_attempts: u8,
     retry_backoff_base_ms: u64,
-    status_tx: Option<&StatusTx>,
+    status_tx: Option<&StatusSender>,
     shutdown: &CancellationToken,
 ) -> Result<McpClient, McpError> {
     retry_loop(

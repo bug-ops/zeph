@@ -7,6 +7,7 @@ use zeph_db::sql;
 use zeph_llm::any::AnyProvider;
 
 use crate::graph::{EntityType, GraphStore};
+use crate::types::EntityId;
 
 use super::super::*;
 use super::test_provider;
@@ -487,7 +488,7 @@ async fn seed_entity_with_zero_embedding(
     store: &GraphStore,
     embedding_store: &crate::embedding_store::EmbeddingStore,
     name: &str,
-) -> i64 {
+) -> EntityId {
     use serde_json::json;
 
     let id = store
@@ -526,7 +527,7 @@ async fn seed_entity_with_zero_embedding(
     .await
     .unwrap();
 
-    id.0
+    id
 }
 
 /// Seed an entity with a zero embedding but WITHOUT writing `qdrant_point_id` back to `SQLite`.
@@ -538,7 +539,7 @@ async fn seed_entity_no_db_point_id(
     store: &GraphStore,
     embedding_store: &crate::embedding_store::EmbeddingStore,
     name: &str,
-) -> i64 {
+) -> EntityId {
     use serde_json::json;
 
     let id = store
@@ -566,7 +567,7 @@ async fn seed_entity_no_db_point_id(
 
     // Intentionally NOT writing qdrant_point_id to graph_entities.
     // The DB row keeps qdrant_point_id = NULL so the primary self-exclusion guard is inactive.
-    id.0
+    id
 }
 
 fn embedding_provider() -> AnyProvider {
@@ -637,14 +638,11 @@ async fn link_memory_notes_threshold_filters() {
     } else {
         (id_b, id_a)
     };
-    let edges = store
-        .edges_for_entity(crate::types::EntityId(src))
-        .await
-        .unwrap();
+    let edges = store.edges_for_entity(src).await.unwrap();
     let has_ab = edges.iter().any(|e| {
         e.relation == "similar_to"
-            && ((e.source_entity_id.0 == src && e.target_entity_id.0 == tgt)
-                || (e.source_entity_id.0 == tgt && e.target_entity_id.0 == src))
+            && ((e.source_entity_id == src && e.target_entity_id == tgt)
+                || (e.source_entity_id == tgt && e.target_entity_id == src))
     });
     assert!(has_ab, "A-B edge must exist above threshold");
 }
@@ -1010,7 +1008,7 @@ async fn link_memory_notes_id_collision_falls_through_to_slow_path() {
             OR (source_entity_id = ?2 AND target_entity_id = ?1)"
     ))
     .bind(id_a)
-    .bind(correct_target.id.0)
+    .bind(correct_target.id)
     .fetch_one(pool)
     .await
     .unwrap();

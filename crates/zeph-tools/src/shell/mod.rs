@@ -1984,7 +1984,8 @@ impl ToolExecutor for ShellExecutor {
             let run_id = self
                 .spawn_background_with_context(command, &resolved)
                 .await?;
-            let id_short = &run_id.to_string()[..8];
+            let run_id_text = run_id.to_string();
+            let id_short = zeph_common::text::truncate_to_bytes_ref(&run_id_text, 8);
             return Ok(Some(ToolOutput {
                 tool_name: ToolName::new("bash"),
                 summary: format!(
@@ -2666,6 +2667,10 @@ fn extract_paths(code: &str) -> Vec<String> {
 /// Excluded:
 /// - URL schemes (`scheme://`)
 /// - Shell variable assignments (`KEY=value`)
+#[expect(
+    clippy::string_slice,
+    reason = "eq_pos comes from find on the same string"
+)]
 fn is_relative_path_token(token: &str) -> bool {
     // Must contain a slash but not start with `/` (absolute) or `.` (handled above).
     if !token.contains('/') || token.starts_with('/') || token.starts_with('.') {

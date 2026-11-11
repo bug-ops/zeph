@@ -55,7 +55,7 @@ async fn goal_status(accounting: &GoalAccounting) -> Result<String, CommandError
             );
             Ok(format!(
                 "Active goal [{}]: {}\n  status: {}\n  turns: {}\n{}",
-                &g.id[..8],
+                zeph_common::text::truncate_to_bytes_ref(&g.id, 8),
                 g.text,
                 g.status,
                 g.turns_used,
@@ -127,7 +127,11 @@ async fn goal_create(
                 ""
             };
             Ok((
-                format!("Goal created [{}]: {}{auto_note}", &g.id[..8], g.text),
+                format!(
+                    "Goal created [{}]: {}{auto_note}",
+                    zeph_common::text::truncate_to_bytes_ref(&g.id, 8),
+                    g.text
+                ),
                 auto_start,
             ))
         }
@@ -151,7 +155,10 @@ async fn goal_pause(
             {
                 Ok(_) => {
                     let _ = accounting.refresh().await;
-                    Ok(format!("Goal [{}] paused.", &g.id[..8]))
+                    Ok(format!(
+                        "Goal [{}] paused.",
+                        zeph_common::text::truncate_to_bytes_ref(&g.id, 8)
+                    ))
                 }
                 Err(crate::goal::store::GoalError::StaleUpdate(_)) => {
                     let current = accounting.get_active().await.ok().flatten();
@@ -184,7 +191,11 @@ async fn goal_resume(
             {
                 Ok(_) => {
                     let _ = accounting.refresh().await;
-                    Ok(format!("Goal [{}] resumed: {}", &g.id[..8], g.text))
+                    Ok(format!(
+                        "Goal [{}] resumed: {}",
+                        zeph_common::text::truncate_to_bytes_ref(&g.id, 8),
+                        g.text
+                    ))
                 }
                 Err(crate::goal::store::GoalError::StaleUpdate(_)) => {
                     Ok("Goal state changed concurrently — please retry.".to_owned())
@@ -208,7 +219,10 @@ async fn goal_complete(
             {
                 Ok(_) => {
                     let _ = accounting.refresh().await;
-                    Ok(format!("Goal [{}] marked complete.", &g.id[..8]))
+                    Ok(format!(
+                        "Goal [{}] marked complete.",
+                        zeph_common::text::truncate_to_bytes_ref(&g.id, 8)
+                    ))
                 }
                 Err(e) => Ok(format!("Complete failed: {e}")),
             }
@@ -234,7 +248,10 @@ async fn goal_clear(
             {
                 Ok(_) => {
                     let _ = accounting.refresh().await;
-                    Ok(format!("Goal [{}] cleared.", &g.id[..8]))
+                    Ok(format!(
+                        "Goal [{}] cleared.",
+                        zeph_common::text::truncate_to_bytes_ref(&g.id, 8)
+                    ))
                 }
                 Err(e) => Ok(format!("Clear failed: {e}")),
             }
@@ -255,7 +272,7 @@ async fn goal_list(store: &GoalStore) -> Result<String, CommandError> {
             format_args!(
                 "  {} [{}] {} — {} turns\n",
                 g.status.badge_symbol(),
-                &g.id[..8],
+                zeph_common::text::truncate_to_bytes_ref(&g.id, 8),
                 g.text,
                 g.turns_used
             ),
@@ -264,6 +281,10 @@ async fn goal_list(store: &GoalStore) -> Result<String, CommandError> {
     Ok(out.trim_end().to_owned())
 }
 
+#[expect(
+    clippy::string_slice,
+    reason = "pos comes from find on the same string"
+)]
 fn parse_goal_create_args(args: &str) -> (&str, Option<u64>) {
     if let Some(pos) = args.find("--budget") {
         let text = args[..pos].trim();

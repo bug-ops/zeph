@@ -64,10 +64,11 @@ use crate::usage::UsageTracker;
 
 use crate::provider::{
     ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, MessagePart, Role,
-    StatusTx, ToolDefinition,
+    ToolDefinition,
 };
 use crate::retry::send_with_retry;
 use crate::sse::claude_sse_to_stream;
+use crate::status::StatusSender;
 
 use self::beta::{
     BetaFeature, BetaLatches, claude_error, is_mid_conversation_system_rejection,
@@ -121,7 +122,7 @@ pub struct ClaudeProvider {
     /// the value upward permanently (see [`Self::set_thinking`]).
     base_max_tokens: u32,
     thinking: Option<ThinkingConfig>,
-    pub(crate) status_tx: Option<StatusTx>,
+    pub(crate) status_tx: Option<StatusSender>,
     /// Whether to attach `cache_control` to user messages in multi-turn conversations.
     cache_user_messages: bool,
     usage: Arc<UsageTracker>,
@@ -567,7 +568,7 @@ impl ClaudeProvider {
 
     /// Attach a status event sender so the UI receives retry and fallback notifications.
     #[must_use]
-    pub fn with_status_tx(mut self, tx: StatusTx) -> Self {
+    pub fn with_status_tx(mut self, tx: StatusSender) -> Self {
         self.status_tx = Some(tx);
         self
     }

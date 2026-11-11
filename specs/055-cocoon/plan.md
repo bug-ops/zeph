@@ -156,7 +156,7 @@ pub struct CocoonProvider {
     inner:     OpenAiProvider,
     client:    Arc<CocoonClient>,
     usage:     UsageTracker,
-    pub(crate) status_tx: Option<StatusTx>,
+    pub(crate) status_tx: Option<StatusSender>,
 }
 ```
 

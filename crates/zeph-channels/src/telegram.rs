@@ -41,7 +41,7 @@ use tokio::sync::mpsc;
 use zeph_common::TaskSupervisor;
 use zeph_core::channel::{
     Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage, ElicitationField,
-    ElicitationFieldType, ElicitationRequest, ElicitationResponse,
+    ElicitationFieldType, ElicitationRequest, ElicitationResponse, StatusText,
 };
 
 const MAX_MESSAGE_LEN: usize = 4096;
@@ -1401,22 +1401,18 @@ impl Channel for TelegramChannel {
     ///
     /// Returns `Err` if the Telegram API call fails.
     #[tracing::instrument(name = "channels.telegram.send_status", skip_all)]
-    async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
+    async fn send_status(&mut self, text: &StatusText) -> Result<(), ChannelError> {
         if self.guest_query_id.is_some() {
             return Ok(());
         }
         let Some(chat_id) = self.chat_id else {
             return Ok(());
         };
-        let req = self.bot.send_message(chat_id, text);
+        let req = self.bot.send_message(chat_id, text.as_str());
         crate::common::teloxide_retry::send_teloxide_with_retry("telegram", &req)
             .await
             .map_err(ChannelError::telegram)?;
         Ok(())
-    }
-
-    fn clear_status(&mut self) -> impl Future<Output = Result<(), ChannelError>> + Send {
-        std::future::ready(Ok(()))
     }
 
     /// Send a yes/no confirmation prompt to Telegram and await the reply.
@@ -1942,7 +1938,10 @@ mod tests {
         let server = MockServer::start().await;
         let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
 
-        channel.send_status("Searching memory…").await.unwrap();
+        channel
+            .send_status(&StatusText::new("Searching memory…").unwrap())
+            .await
+            .unwrap();
 
         let requests = server.received_requests().await.unwrap();
         assert!(
@@ -1971,7 +1970,10 @@ mod tests {
         let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
         channel.chat_id = None;
 
-        channel.send_status("Searching memory…").await.unwrap();
+        channel
+            .send_status(&StatusText::new("Searching memory…").unwrap())
+            .await
+            .unwrap();
 
         let requests = server.received_requests().await.unwrap();
         assert!(
@@ -1986,7 +1988,10 @@ mod tests {
         let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
         channel.guest_query_id = Some("qid".to_string());
 
-        channel.send_status("Searching memory…").await.unwrap();
+        channel
+            .send_status(&StatusText::new("Searching memory…").unwrap())
+            .await
+            .unwrap();
 
         let requests = server.received_requests().await.unwrap();
         assert!(

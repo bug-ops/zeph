@@ -31,7 +31,6 @@ use std::time::Duration;
 
 use tracing::Instrument as _;
 use zeph_llm::any::AnyProvider;
-use zeph_llm::provider::StatusUpdate;
 use zeph_llm::provider::{LlmProvider, Message, Role};
 
 use crate::embedding::{SkillEmbedding, embed_skills_with_timeout};
@@ -123,7 +122,7 @@ pub struct TraceExtractor {
     /// Timeout for individual LLM calls.
     llm_timeout: Duration,
     /// Optional status sender for TUI notifications.
-    status_tx: Option<zeph_llm::provider::StatusTx>,
+    status_tx: Option<zeph_llm::status::StatusSender>,
 }
 
 impl TraceExtractor {
@@ -169,7 +168,7 @@ impl TraceExtractor {
         merge_threshold: f32,
         dedup_threshold: f32,
         merge_enabled: bool,
-        status_tx: Option<zeph_llm::provider::StatusTx>,
+        status_tx: Option<zeph_llm::status::StatusSender>,
     ) -> Self {
         Self {
             generator: SkillGenerator::new(extract_provider.clone(), output_dir),
@@ -553,9 +552,7 @@ impl TraceExtractor {
     /// Send a TUI notification about a proposed skill (non-blocking).
     fn notify_proposed(&self, name: &str) {
         if let Some(ref tx) = self.status_tx {
-            let _ = tx.send(StatusUpdate::set(format!(
-                "Proposed skill: {name} (review pending)"
-            )));
+            let _ = tx.set(format!("Proposed skill: {name} (review pending)"));
         }
     }
 

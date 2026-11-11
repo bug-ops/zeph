@@ -287,7 +287,10 @@ impl Channel for MockChannel {
     }
 
     #[allow(clippy::unused_async_trait_impl)]
-    async fn send_status(&mut self, text: &str) -> Result<(), crate::channel::ChannelError> {
+    async fn send_status(
+        &mut self,
+        text: &crate::channel::StatusText,
+    ) -> Result<(), crate::channel::ChannelError> {
         self.statuses.lock().unwrap().push(text.to_string());
         Ok(())
     }

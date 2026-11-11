@@ -2317,4 +2317,94 @@ mod tests {
             "no usage_records row should exist when cost tracking is disabled"
         );
     }
+
+    fn sanitizer_wiring_graph() -> zeph_orchestration::TaskGraph {
+        use zeph_orchestration::{TaskGraph, TaskNode, TaskResult, TaskStatus};
+
+        let mut graph = TaskGraph::new("sanitizer wiring goal");
+        let mut upstream = TaskNode::new(0, "upstream", "produce");
+        upstream.status = TaskStatus::Completed;
+        upstream.result = Some(TaskResult {
+            output: "upstream sub-agent output".into(),
+            artifacts: vec![],
+            duration_ms: 1,
+            agent_id: None,
+            agent_def: None,
+        });
+        let mut downstream = TaskNode::new(1, "downstream", "consume");
+        downstream.depends_on = vec![zeph_orchestration::TaskId(0)];
+        graph.tasks.push(upstream);
+        graph.tasks.push(downstream);
+        graph
+    }
+
+    // #6999: the plan-built scheduler must carry the real ContentSanitizer, not the
+    // IdentitySanitizer default, so dependency output reaches the next sub-agent as untrusted data.
+    #[test]
+    fn plan_built_scheduler_uses_real_content_sanitizer() {
+        use crate::agent::agent_tests::*;
+        use zeph_orchestration::{GraphStatus, SchedulerAction};
+
+        let mut agent = crate::agent::Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        let mut manager = zeph_subagent::SubAgentManager::new(4);
+        manager
+            .definitions_mut()
+            .push(zeph_subagent::SubAgentDef::for_test("worker"));
+        agent.services.orchestration.subagent_manager = Some(manager);
+
+        let mut graph = sanitizer_wiring_graph();
+        graph.status = GraphStatus::Running;
+        let (mut scheduler, _reserved) = agent.build_dag_scheduler(graph, None).unwrap();
+
+        let prompt = scheduler
+            .tick()
+            .into_iter()
+            .find_map(|a| match a {
+                SchedulerAction::Spawn { prompt, .. } => Some(prompt),
+                _ => None,
+            })
+            .expect("downstream task must be spawned");
+        assert!(
+            prompt.contains("<external-data source=\"a2a_message\""),
+            "dependency output must be wrapped as untrusted A2A data: {prompt}"
+        );
+    }
+
+    // #6999: the aggregator built in finalize_plan_completed must sanitize task outputs; the
+    // failing provider forces the raw-concatenation fallback, which is sanitized the same way.
+    #[tokio::test]
+    async fn plan_built_aggregator_uses_real_content_sanitizer() {
+        use crate::agent::agent_tests::*;
+        use zeph_orchestration::GraphStatus;
+
+        let channel = MockChannel::new(vec![]);
+        let mut agent = crate::agent::Agent::new(
+            mock_provider_failing(),
+            channel,
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        let mut graph = sanitizer_wiring_graph();
+        graph.status = GraphStatus::Completed;
+
+        agent
+            .finalize_plan_execution(graph, GraphStatus::Completed)
+            .await
+            .unwrap();
+
+        let sent = agent.channel.sent_messages().join("\n");
+        assert!(
+            sent.contains("<external-data source=\"a2a_message\""),
+            "aggregated task output must be wrapped as untrusted A2A data: {sent}"
+        );
+    }
 }

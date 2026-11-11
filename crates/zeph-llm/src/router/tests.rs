@@ -809,7 +809,7 @@ fn set_status_tx_works_with_arc() {
     use crate::mock::MockProvider;
     let p = AnyProvider::Mock(MockProvider::default());
     let mut r = RouterProvider::new(vec![p]);
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, _rx) = crate::status::status_channel(crate::status::StatusSource::Provider);
     r.set_status_tx(tx); // must not panic
 }
 

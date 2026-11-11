@@ -190,6 +190,10 @@ impl DestructiveCommandVerifier {
 
     /// Strip leading `env VAR=value` tokens from a command string.
     /// Returns the remainder after all `KEY=VALUE` pairs are consumed.
+    #[expect(
+        clippy::string_slice,
+        reason = "indexes come from find on the same string"
+    )]
     fn strip_env_prefix(cmd: &str) -> &str {
         let mut rest = cmd;
         // `env` keyword is optional; strip it if present.
@@ -199,11 +203,9 @@ impl DestructiveCommandVerifier {
         // Consume `KEY=VALUE` tokens.
         loop {
             // A VAR=value token: identifier chars + '=' + non-space chars.
-            let mut chars = rest.chars();
-            let key_end = chars
-                .by_ref()
-                .take_while(|c| c.is_alphanumeric() || *c == '_')
-                .count();
+            let key_end = rest
+                .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
             if key_end == 0 {
                 break;
             }
@@ -395,6 +397,10 @@ static SSRF_HOST_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 /// Extract the host (and optional port) from a URL string.
 /// Returns the portion between `://` and the next `/`, `?`, `#`, or end of string.
 /// If the URL has no scheme, returns `None`.
+#[expect(
+    clippy::string_slice,
+    reason = "host_end comes from find on the same string"
+)]
 fn extract_url_host(url: &str) -> Option<&str> {
     let after_scheme = url.split_once("://")?.1;
     let host_end = after_scheme
@@ -935,6 +941,15 @@ mod tests {
 
     fn dcv() -> DestructiveCommandVerifier {
         DestructiveCommandVerifier::new(&DestructiveVerifierConfig::default())
+    }
+
+    #[test]
+    fn env_prefix_with_non_ascii_key_does_not_panic() {
+        let v = dcv();
+        assert_eq!(
+            v.verify("bash", &json!({"command": "\u{e9}=x ls"})),
+            VerificationResult::Allow
+        );
     }
 
     #[test]

@@ -545,7 +545,7 @@ impl<C: Channel> Agent<C> {
             .unwrap_or("(no reason provided)");
 
         // Truncate reason to 256 chars at a valid UTF-8 char boundary.
-        let reason = &raw_reason[..raw_reason.floor_char_boundary(256.min(raw_reason.len()))];
+        let reason = zeph_common::text::truncate_to_bytes_ref(raw_reason, 256);
 
         // CompactionState is the single authority for per-turn rate limiting.
         if self

@@ -812,7 +812,20 @@ Pre/post tool hooks and lifecycle hooks use `HookAgentType`, `HookAgentCtx` (`to
 
 ---
 
-## 21. See Also
+## 21. Sub-Agent Final-Text Trust Boundary (#6999)
+
+A sub-agent's final text is produced by an LLM that may have read web or MCP content, so it is untrusted when it reaches another LLM. Four flows carry it: the background completion notice, the foreground last message, durable replay (all operator display only) and orchestration task outputs.
+
+### Key Invariants
+
+- A sub-agent's final text reaches an LLM only through three sanctioned paths, always at `ExternalUntrusted`: (1) orchestration task outputs via `OutputSanitizer::sanitize_task_output` (`A2aMessage`); (2) command-handoff `update` values via the scanned cross-thread store (written and re-read as `MemoryRetrieval`/`ExternalContent`; `[[080-cross-thread-store-dynamic-handoff/spec]]`); (3) peer messages, sanitized as `SubagentPeerMessage` before the LLM sees them (`crates/zeph-subagent/src/peer/tools.rs`, `sanitize_body`; `[[087-subagent-peer-messaging/spec]]`)
+- NEVER route a sub-agent's final text into LLM context or memory through any other path, or with a lower trust label. Known gap: the sub-agent transcript knowledge import is labelled `LocalUntrusted` (#7013), a violation tracked for a separate fix
+- `DagScheduler` and `Aggregator` default to `IdentitySanitizer`; every production construction in `zeph-core` (`plan.rs`) MUST call `with_sanitizer` with the real `ContentSanitizer`
+- Regression tests pin: `sanitize_task_output` labelling, aggregator sanitization of every task output, `build_task_prompt` sanitization of dependency outputs, and the plan-built scheduler/aggregator wiring
+
+---
+
+## 22. See Also
 
 - [[constitution]] — project principles
 - [[002-agent-loop/spec]] — parent agent loop that uses `SubAgentManager`

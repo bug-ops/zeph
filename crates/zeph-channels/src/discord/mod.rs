@@ -11,7 +11,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use zeph_common::TaskSupervisor;
 use zeph_core::channel::{
-    Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse,
+    Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse, StatusText,
 };
 
 use self::gateway::IncomingMessage;
@@ -354,19 +354,15 @@ impl Channel for DiscordChannel {
         Ok(())
     }
 
-    async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
+    async fn send_status(&mut self, text: &StatusText) -> Result<(), ChannelError> {
         let Some(channel_id) = self.channel_id.as_deref() else {
             return Ok(());
         };
         self.rest
-            .send_message(channel_id, text)
+            .send_message(channel_id, text.as_str())
             .await
             .map_err(ChannelError::other)?;
         Ok(())
-    }
-
-    fn clear_status(&mut self) -> impl Future<Output = Result<(), ChannelError>> + Send {
-        std::future::ready(Ok(()))
     }
 
     #[cfg_attr(

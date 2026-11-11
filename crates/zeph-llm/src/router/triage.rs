@@ -15,9 +15,10 @@ use crate::any::AnyProvider;
 use crate::embed::owned_strs;
 use crate::error::LlmError;
 use crate::provider::{
-    ChatResponse, ChatStream, LlmFuture, LlmProvider, Message, MessageMetadata, Role, StatusTx,
+    ChatResponse, ChatStream, LlmFuture, LlmProvider, Message, MessageMetadata, Role,
     ToolDefinition,
 };
+use crate::status::StatusSender;
 
 use super::{messages_contain_image, strip_image_parts};
 
@@ -218,7 +219,7 @@ impl TriageRouter {
     }
 
     /// Propagate a status sender to all tier providers.
-    pub fn set_status_tx(&mut self, tx: &StatusTx) {
+    pub fn set_status_tx(&mut self, tx: &StatusSender) {
         for (_, provider) in &mut self.tier_providers {
             provider.set_status_tx(tx.clone());
         }

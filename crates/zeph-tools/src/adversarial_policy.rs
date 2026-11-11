@@ -204,7 +204,10 @@ fn sanitize_params(params: &serde_json::Map<String, serde_json::Value>) -> Strin
 
     let json = serde_json::to_string_pretty(&sanitized).unwrap_or_default();
     if json.len() > 2000 {
-        format!("{}… [truncated]", &json[..1997])
+        format!(
+            "{}… [truncated]",
+            zeph_common::text::truncate_to_bytes_ref(&json, 1997)
+        )
     } else {
         json
     }
@@ -224,9 +227,10 @@ fn should_redact(key: &str) -> bool {
 
 fn truncate_value(value: &serde_json::Value) -> serde_json::Value {
     match value {
-        serde_json::Value::String(s) if s.len() > 500 => {
-            serde_json::Value::String(format!("{}…", &s[..497]))
-        }
+        serde_json::Value::String(s) if s.len() > 500 => serde_json::Value::String(format!(
+            "{}…",
+            zeph_common::text::truncate_to_bytes_ref(s, 497)
+        )),
         other => other.clone(),
     }
 }
@@ -530,5 +534,29 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[test]
+    fn truncate_value_multibyte_at_cut_offset() {
+        for pad in 0..3 {
+            let text = format!("{}{}", "a".repeat(pad), "\u{20ac}".repeat(300));
+            let out = truncate_value(&serde_json::Value::String(text));
+            let out = out.as_str().unwrap();
+            assert!(out.ends_with('\u{2026}'));
+            assert!(out.len() <= 497 + '\u{2026}'.len_utf8());
+        }
+    }
+
+    #[test]
+    fn sanitize_params_multibyte_at_cut_offset() {
+        for pad in 0..3 {
+            let mut params = serde_json::Map::new();
+            for i in 0..8 {
+                let key = format!("{}k{i}", "a".repeat(pad));
+                params.insert(key, serde_json::Value::String("\u{20ac}".repeat(150)));
+            }
+            let out = sanitize_params(&params);
+            assert!(out.ends_with("\u{2026} [truncated]"));
+        }
     }
 }

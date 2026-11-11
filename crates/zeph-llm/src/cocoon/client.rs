@@ -15,8 +15,8 @@ use serde::Deserialize;
 use tracing::Instrument as _;
 
 use crate::error::LlmError;
-use crate::provider::StatusTx;
 use crate::retry::send_with_retry;
+use crate::status::StatusSender;
 
 /// Bounded retry count for transient 429/503 responses from the sidecar,
 /// matching the Claude/OpenAI/Gemini `send_with_retry` convention.
@@ -183,7 +183,7 @@ impl CocoonClient {
     pub async fn post_multipart<F>(
         &self,
         path: &str,
-        status_tx: Option<&StatusTx>,
+        status_tx: Option<&StatusSender>,
         mut build_form: F,
     ) -> Result<reqwest::Response, LlmError>
     where
@@ -232,7 +232,7 @@ impl CocoonClient {
         &self,
         path: &str,
         body: &[u8],
-        status_tx: Option<&StatusTx>,
+        status_tx: Option<&StatusSender>,
         usage: Option<&crate::usage::UsageTracker>,
     ) -> Result<reqwest::Response, LlmError> {
         let span = tracing::info_span!("llm.cocoon.request", path);

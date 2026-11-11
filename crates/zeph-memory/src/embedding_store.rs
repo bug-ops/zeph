@@ -18,7 +18,7 @@ use zeph_db::sql;
 use crate::db_vector_store::DbVectorStore;
 use crate::error::MemoryError;
 use crate::qdrant_ops::QdrantOps;
-use crate::types::{ConversationId, MessageId};
+use crate::types::{ConversationId, EntityId, MessageId};
 use crate::vector_store::{FieldCondition, FieldValue, VectorFilter, VectorPoint, VectorStore};
 
 /// Distinguishes regular messages from summaries when storing embeddings.
@@ -697,7 +697,7 @@ impl EmbeddingStore {
     pub async fn scroll_all_entity_ids(
         &self,
         collection: &str,
-    ) -> Result<Vec<(String, i64)>, MemoryError> {
+    ) -> Result<Vec<(String, EntityId)>, MemoryError> {
         let rows = self
             .ops
             .scroll_all_with_point_ids(collection, "entity_id_str")
@@ -707,7 +707,7 @@ impl EmbeddingStore {
             let Some(s) = fields.get("entity_id_str") else {
                 continue;
             };
-            if let Ok(id) = s.parse::<i64>() {
+            if let Ok(id) = serde_json::from_str::<EntityId>(s) {
                 out.push((point_id, id));
             } else {
                 tracing::debug!(point_id, value = %s, "entity_id_str unparseable, skipping");

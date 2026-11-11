@@ -314,8 +314,8 @@ mod tests {
     fn make_edge(id: i64, valid_from: &str, confidence: f32) -> Edge {
         Edge {
             id: crate::types::EdgeId::new(id),
-            source_entity_id: crate::types::EntityId(1),
-            target_entity_id: crate::types::EntityId(2),
+            source_entity_id: crate::types::EntityId::for_test(1),
+            target_entity_id: crate::types::EntityId::for_test(2),
             relation: "works_at".into(),
             canonical_relation: "works_at".into(),
             fact: "fact".into(),

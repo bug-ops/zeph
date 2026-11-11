@@ -135,6 +135,31 @@ mod tests {
         assert_eq!(prompt, "description for task 0");
     }
 
+    struct MarkingSanitizer;
+
+    impl zeph_common::OutputSanitizer for MarkingSanitizer {
+        fn sanitize_task_output(&self, text: &str) -> String {
+            format!("<<SANITIZED>>{text}")
+        }
+    }
+
+    #[test]
+    fn test_build_prompt_sanitizes_dependency_output() {
+        let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);
+        graph.tasks[0].status = TaskStatus::Completed;
+        graph.tasks[0].result = Some(TaskResult {
+            output: "upstream-output".to_string(),
+            artifacts: vec![],
+            duration_ms: 10,
+            agent_id: None,
+            agent_def: None,
+        });
+        let scheduler = make_scheduler(graph).with_sanitizer(std::sync::Arc::new(MarkingSanitizer));
+
+        let prompt = scheduler.build_task_prompt(&scheduler.graph.tasks[1]);
+        assert!(prompt.contains("<<SANITIZED>>upstream-output"), "{prompt}");
+    }
+
     #[test]
     fn test_build_prompt_with_deps_and_truncation() {
         let mut graph = graph_from_nodes(vec![make_node(0, &[]), make_node(1, &[0])]);

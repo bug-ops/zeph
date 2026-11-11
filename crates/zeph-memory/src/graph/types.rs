@@ -195,7 +195,8 @@ impl Edge {
     /// use zeph_memory::EntityId;
     /// use zeph_memory::graph::types::Edge;
     ///
-    /// let mut edge = Edge::synthetic_anchor(EntityId(1));
+    /// let anchor: EntityId = serde_json::from_str("1").unwrap();
+    /// let mut edge = Edge::synthetic_anchor(anchor);
     /// assert_eq!(edge.effective_trust(), TurnContextTrust::ExternalUntrusted);
     /// edge.trust_level = Some(TurnContextTrust::Trusted);
     /// assert_eq!(edge.effective_trust(), TurnContextTrust::Trusted);

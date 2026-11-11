@@ -84,7 +84,6 @@ mod worktree_commands;
 use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::sync::Arc;
-use zeph_llm::provider::StatusUpdate;
 
 use parking_lot::RwLock;
 
@@ -1169,7 +1168,7 @@ impl<C: Channel> Agent<C> {
                 "trajectory sentinel alert"
             );
             if let Some(ref tx) = self.services.session.status_tx {
-                let _ = tx.send(StatusUpdate::set(msg));
+                let _ = tx.set(msg);
             }
         }
 
@@ -1297,8 +1296,8 @@ impl<C: Channel> Agent<C> {
         // Capture current-turn intent for VIGIL gate (FR-007). Truncated to 1024 chars.
         // Must be set BEFORE any tool call; cleared at end_turn (FR-008).
         if self.services.security.vigil.is_some() {
-            let intent_len = trimmed.floor_char_boundary(1024.min(trimmed.len()));
-            self.services.session.current_turn_intent = Some(trimmed[..intent_len].to_owned());
+            self.services.session.current_turn_intent =
+                Some(zeph_common::text::truncate_to_bytes_ref(trimmed, 1024).to_owned());
         }
 
         if let Some(result) = self.dispatch_slash_command(trimmed).await {
@@ -2188,8 +2187,7 @@ fn truncate_shell_command(cmd: &str) -> String {
     if cmd.len() <= 80 {
         return cmd.to_owned();
     }
-    let end = cmd.floor_char_boundary(79);
-    format!("{}…", &cmd[..end])
+    format!("{}…", zeph_common::text::truncate_to_bytes_ref(cmd, 79))
 }
 
 /// Take the first 8 characters of a run-id hex string for compact TUI display.

@@ -358,17 +358,16 @@ impl AppBuilder {
     ) -> Result<
         (
             AnyProvider,
-            zeph_llm::provider::StatusTx,
-            tokio::sync::mpsc::UnboundedReceiver<zeph_llm::provider::StatusUpdate>,
+            zeph_llm::status::StatusSender,
+            zeph_llm::status::StatusReceiver,
         ),
         BootstrapError,
     > {
         let mut provider = create_provider(&self.config)?;
 
         let (status_tx, status_rx) =
-            tokio::sync::mpsc::unbounded_channel::<zeph_llm::provider::StatusUpdate>();
-        let status_tx_clone = status_tx.clone();
-        provider.set_status_tx(status_tx);
+            zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Agent);
+        provider.set_status_tx(status_tx.with_source(zeph_llm::status::StatusSource::Provider));
 
         health_check(&provider).await;
 
@@ -401,7 +400,7 @@ impl AppBuilder {
             tracing::info!(context_window = ctx, "detected provider context window");
         }
 
-        Ok((provider, status_tx_clone, status_rx))
+        Ok((provider, status_tx, status_rx))
     }
 
     /// Compute the effective context-budget token count for the given provider.

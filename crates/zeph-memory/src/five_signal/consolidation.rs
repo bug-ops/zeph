@@ -138,7 +138,7 @@ impl ConsolidationHandler {
                 rt.config.neutral_causal_distance,
             );
 
-        let mut promote_ids: Vec<i64> = Vec::new();
+        let mut promote_ids: Vec<MessageId> = Vec::new();
         let mut demote_ids: Vec<MessageId> = Vec::new();
 
         for row in &batch {
@@ -160,7 +160,7 @@ impl ConsolidationHandler {
                     == Some("semantic");
 
             if score >= self.config.promotion_score_threshold && !already_promoted {
-                promote_ids.push(fact_id);
+                promote_ids.push(MessageId(fact_id));
             } else if score < self.config.demotion_score_threshold && already_promoted {
                 demote_ids.push(MessageId(fact_id));
             }
@@ -181,18 +181,18 @@ impl ConsolidationHandler {
         Ok(())
     }
 
-    async fn apply_promotions(&self, promote_ids: &[i64], rt: &FiveSignalRuntime) -> u64 {
+    async fn apply_promotions(&self, promote_ids: &[MessageId], rt: &FiveSignalRuntime) -> u64 {
         let mut count: u64 = 0;
         for fact_id in promote_ids {
-            tracing::debug!(fact_id, "five_signal: promoting fact");
+            tracing::debug!(fact_id = fact_id.0, "five_signal: promoting fact");
             let res = zeph_db::query(sql!(
                 "UPDATE messages SET memory_tier = 'semantic', qdrant_promoted = 1 WHERE id = ?"
             ))
-            .bind(fact_id)
+            .bind(fact_id.0)
             .execute(&rt.pool)
             .await;
             if let Err(e) = res {
-                tracing::warn!(fact_id, error = %e, "five_signal: failed to promote fact");
+                tracing::warn!(fact_id = fact_id.0, error = %e, "five_signal: failed to promote fact");
             } else {
                 count += 1;
             }

@@ -12,7 +12,7 @@ use dashmap::DashMap;
 use tokio::sync::RwLock;
 use tokio::sync::{mpsc, watch};
 
-use zeph_llm::provider::StatusTx;
+use zeph_llm::status::StatusSender;
 /// Per-server trust config: (`trust_level`, `tool_allowlist`, `expected_tools`,
 /// `allow_untrusted_without_allowlist`).
 type ServerTrust = Arc<
@@ -330,7 +330,7 @@ pub struct McpManager {
     /// Optional status sender for OAuth authorization messages.
     /// When set, the authorization URL is sent as a status message instead of
     /// (or in addition to) printing to stderr — required for TUI and Telegram modes.
-    status_tx: Option<StatusTx>,
+    status_tx: Option<StatusSender>,
     /// Per-server trust configuration for tool filtering.
     /// Behind `Arc<RwLock>` because refresh tasks read it from spawned closures
     /// and `add_server()` writes to it.
@@ -427,7 +427,7 @@ struct IngestConfig<'a> {
     /// Operator-declared set of expected tool names used for attestation.
     expected_tools: &'a [String],
     /// Channel for surfacing warnings to the user-facing status bar.
-    status_tx: Option<&'a StatusTx>,
+    status_tx: Option<&'a StatusSender>,
     /// Maximum byte length for tool descriptions; longer descriptions are truncated.
     max_description_bytes: usize,
     /// Per-tool security metadata overrides keyed by tool name.

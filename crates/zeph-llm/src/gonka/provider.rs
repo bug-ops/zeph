@@ -17,10 +17,9 @@ use crate::gonka::endpoints::{EndpointPool, now_ns};
 use crate::gonka::signer::RequestSigner;
 use crate::openai::{OpenAiConfig, OpenAiProvider};
 use crate::provider::ResponseUsage;
-use crate::provider::{
-    ChatResponse, ChatStream, LlmProvider, Message, StatusTx, StatusUpdate, ToolDefinition,
-};
+use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, ToolDefinition};
 use crate::sse::openai_sse_to_stream;
+use crate::status::StatusSender;
 use crate::usage::UsageTracker;
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -154,7 +153,7 @@ pub struct GonkaProvider {
     embedding_model: Option<String>,
     usage: UsageTracker,
     /// Optional TUI status sender; when set, key lifecycle events are forwarded.
-    pub(crate) status_tx: Option<StatusTx>,
+    pub(crate) status_tx: Option<StatusSender>,
     /// Name reported by [`LlmProvider::name`]. Defaults to `"gonka"`; set the TOML-configured
     /// `name` via [`with_provider_name`](Self::with_provider_name) so that router reputation
     /// tracking and provider selection can distinguish between multiple configured Gonka
@@ -233,7 +232,7 @@ impl GonkaProvider {
     }
 
     /// Set the TUI status sender; when set, key lifecycle events are forwarded to the TUI.
-    pub fn set_status_tx(&mut self, tx: StatusTx) {
+    pub fn set_status_tx(&mut self, tx: StatusSender) {
         self.status_tx = Some(tx);
     }
 
@@ -258,10 +257,7 @@ impl GonkaProvider {
 
             tracing::debug!(endpoint = %endpoint.base_url, "gonka POST {url}");
             if let Some(ref tx) = self.status_tx {
-                let _ = tx.send(StatusUpdate::set(format!(
-                    "Gonka: signing request to {}",
-                    endpoint.base_url
-                )));
+                let _ = tx.set(format!("Gonka: signing request to {}", endpoint.base_url));
             }
 
             // Fresh timestamp on every attempt — non-replayable signatures.

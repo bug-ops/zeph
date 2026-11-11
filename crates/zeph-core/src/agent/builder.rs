@@ -3039,10 +3039,12 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Attach a status channel for spinner/status messages sent to TUI or stderr.
-    /// The sender must be cloned from the provider's `StatusTx` before
-    /// `provider.set_status_tx()` consumes it.
+    ///
+    /// Status is latest-wins state: updates collapse and a one-shot notice must also take a
+    /// non-collapsing path. Agent-internal producers share `StatusSource::Agent`; subsystems
+    /// wired separately label their own clones with `StatusSender::with_source`.
     #[must_use]
-    pub fn with_status_tx(mut self, tx: zeph_llm::provider::StatusTx) -> Self {
+    pub fn with_status_tx(mut self, tx: zeph_llm::status::StatusSender) -> Self {
         self.services.session.status_tx = Some(tx);
         self
     }
