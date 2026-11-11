@@ -302,6 +302,14 @@ impl<C: Channel> Agent<C> {
         }
     }
 
+    /// Taint the next accepted `skill_state_patch` when retrieved context was injected this
+    /// turn (recall, graph, cross-session, digest, document or code RAG).
+    pub(in crate::agent) fn ratchet_for_injected_context(&mut self, injected: bool) {
+        if injected {
+            self.ratchet_skill_input_trust(ContentTrustLevel::ExternalUntrusted);
+        }
+    }
+
     /// Reset the turn-scoped absorption bookkeeping (spec 086 FR-009).
     pub(in crate::agent) fn begin_skill_state_turn(&mut self) {
         let tools = &mut self.services.tool_state;
@@ -966,6 +974,29 @@ mod tests {
 
     fn taint(a: &Agent<MockChannel>) -> InputTrust {
         a.services.skill.execution.active().unwrap().taint()
+    }
+
+    #[tokio::test]
+    async fn injected_retrieval_context_taints_the_next_patch() {
+        let mut a = active_agent();
+        a.ratchet_for_injected_context(true);
+        assert_eq!(
+            a.services.skill.input_trust_since_patch,
+            InputTrust::Untrusted
+        );
+        a.handle_skill_state_patch(&serde_json::json!({"phase": "b"}))
+            .await;
+        assert_eq!(taint(&a), InputTrust::Untrusted);
+    }
+
+    #[tokio::test]
+    async fn no_injected_context_leaves_input_trust_untouched() {
+        let mut a = active_agent();
+        a.ratchet_for_injected_context(false);
+        assert_eq!(
+            a.services.skill.input_trust_since_patch,
+            InputTrust::Trusted
+        );
     }
 
     #[tokio::test]

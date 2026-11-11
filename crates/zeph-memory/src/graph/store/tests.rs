@@ -4924,6 +4924,7 @@ async fn provenance_write_sets_origin_and_batch() {
         origin: GraphOrigin::Ingest,
         import_batch_id: "batch-42".to_owned(),
         source_uri: Some("https://example.com/doc".to_owned()),
+        trust: zeph_llm::provider::TurnContextTrust::Trusted,
     };
     let a = gs
         .upsert_entity(
@@ -5006,6 +5007,7 @@ async fn recall_include_imported_false_excludes_ingest_edges() {
         origin: GraphOrigin::Ingest,
         import_batch_id: "b1".to_owned(),
         source_uri: None,
+        trust: zeph_llm::provider::TurnContextTrust::Trusted,
     };
     let a = gs
         .upsert_entity("IngA", "inga", EntityType::Concept, None, Some(&prov))
@@ -5037,6 +5039,7 @@ async fn recall_include_imported_true_includes_ingest_edges() {
         origin: GraphOrigin::Ingest,
         import_batch_id: "b2".to_owned(),
         source_uri: None,
+        trust: zeph_llm::provider::TurnContextTrust::Trusted,
     };
     let a = gs
         .upsert_entity("IngX", "ingx", EntityType::Concept, None, Some(&prov))
@@ -5068,6 +5071,7 @@ async fn entity_provenance_write_sets_origin_and_batch() {
         origin: GraphOrigin::Ingest,
         import_batch_id: "batch-1".to_owned(),
         source_uri: None,
+        trust: zeph_llm::provider::TurnContextTrust::Trusted,
     };
     let eid = gs
         .upsert_entity(
@@ -5100,6 +5104,7 @@ async fn query_batch_edges_excludes_ingest_when_flag_false() {
         origin: GraphOrigin::Ingest,
         import_batch_id: "batch-excl".to_owned(),
         source_uri: None,
+        trust: zeph_llm::provider::TurnContextTrust::Trusted,
     };
     let a = gs
         .upsert_entity("BatchA", "batcha", EntityType::Concept, None, Some(&prov))
@@ -5131,6 +5136,7 @@ async fn delete_batch_removes_imported_edges_and_orphaned_entities() {
         origin: GraphOrigin::Ingest,
         import_batch_id: "batch-A".to_owned(),
         source_uri: None,
+        trust: zeph_llm::provider::TurnContextTrust::Trusted,
     };
 
     // Import-origin entity+edge.

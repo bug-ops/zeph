@@ -63,6 +63,13 @@ pub enum PluginError {
         source: std::io::Error,
     },
 
+    /// The integrity registry lock could not be acquired before the deadline.
+    #[error("timed out after {waited:?} waiting for lock {path}; another zeph process may hold it")]
+    LockTimeout {
+        path: PathBuf,
+        waited: std::time::Duration,
+    },
+
     /// TOML serialization/deserialization error.
     #[error("TOML error: {0}")]
     Toml(#[from] toml::de::Error),

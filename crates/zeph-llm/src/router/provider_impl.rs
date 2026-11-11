@@ -112,14 +112,16 @@ impl LlmProvider for RouterProvider {
 
             // Best response seen so far (for quality gate exhaustion fallback, M2).
             let mut best_response: Option<(f32, String)> = None;
+            let mut best_idx: Option<usize> = None;
             // Preserve the most recent error across the fallback loop so an exhausted
             // loop surfaces the actionable diagnostic instead of a generic `NoProviders`.
             let mut last_err: Option<LlmError> = None;
 
-            for p in &providers {
+            for (idx, p) in providers.iter().enumerate() {
                 let start = std::time::Instant::now();
                 match p.chat_with_extras(&messages).await {
                     Ok((r, extras)) => {
+                        router.state.record_served(p);
                         router.record_availability(
                             p.name(),
                             true,
@@ -147,6 +149,7 @@ impl LlmProvider for RouterProvider {
                                     .is_none_or(|(best, _)| similarity > *best);
                                 if is_better {
                                     best_response = Some((similarity, r.clone()));
+                                    best_idx = Some(idx);
                                 }
                                 // Spawn ASI update even on quality failure, reusing resp_emb.
                                 router.spawn_asi_update(p.name(), r, turn_id, resp_emb);
@@ -230,6 +233,9 @@ impl LlmProvider for RouterProvider {
 
             // All providers exhausted by quality gate: return best response seen (M2).
             if let Some((_, response)) = best_response {
+                if let Some(i) = best_idx {
+                    router.state.record_served(&providers[i]);
+                }
                 return Ok(response);
             }
 
@@ -269,7 +275,9 @@ impl LlmProvider for RouterProvider {
                     .bandit_select_provider(query)
                     .await
                     .ok_or(LlmError::NoProviders)?;
-                return p.chat_stream(&messages).await;
+                let stream = p.chat_stream(&messages).await?;
+                router.state.record_served_stream(&p);
+                return Ok(stream);
             }
             let providers = router.ordered_providers();
             // Preserve the most recent error across the fallback loop so an exhausted
@@ -279,6 +287,7 @@ impl LlmProvider for RouterProvider {
                 let start = std::time::Instant::now();
                 match p.chat_stream(&messages).await {
                     Ok(r) => {
+                        router.state.record_served_stream(p);
                         // NOTE: success is recorded at stream-open time, not on stream
                         // completion. A provider that opens the stream but then fails
                         // mid-delivery still gets alpha += 1. This is a known pre-1.0
@@ -690,6 +699,7 @@ impl LlmProvider for RouterProvider {
                 }
                 let result = p.chat_with_tools(dispatch_messages_for(&p), &tools).await;
                 if result.is_ok() {
+                    router.state.record_served(&p);
                     *router.state.last_active_provider.lock() = Some(p.name().to_owned());
                 }
                 return result;
@@ -724,6 +734,7 @@ impl LlmProvider for RouterProvider {
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                         );
                         // Track which sub-provider served this tool call for reputation attribution.
+                        router.state.record_served(p);
                         *router.state.last_active_provider.lock() = Some(p.name().to_owned());
                         return Ok(r);
                     }
@@ -806,7 +817,7 @@ impl LlmProvider for RouterProvider {
     }
 
     fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
-        None
+        self.state.served_usage()
     }
 
     fn thinking_binding(&self) -> crate::provider::ThinkingBinding {

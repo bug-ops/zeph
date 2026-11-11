@@ -1540,3 +1540,35 @@ async fn resolve_entity_with_many_aliases() {
     let results = gs.find_entities_fuzzy("alias-50", 10).await.unwrap();
     assert!(results.iter().any(|e| e.id.0 == id));
 }
+
+#[tokio::test]
+async fn name_locks_are_evicted_after_resolution() {
+    let gs = setup().await;
+    let resolver = EntityResolver::new(&gs);
+    for i in 0..20 {
+        resolver
+            .resolve(&format!("entity-{i}"), "concept", None, None)
+            .await
+            .unwrap();
+    }
+    assert!(resolver.name_locks.is_empty());
+}
+
+#[tokio::test]
+async fn name_lock_serializes_same_name_and_evicts_when_released() {
+    let gs = setup().await;
+    let resolver = EntityResolver::new(&gs);
+    let first = resolver.lock_name("same-name").await;
+    let mut second = Box::pin(resolver.lock_name("same-name"));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut second)
+            .await
+            .is_err(),
+        "second acquirer must wait while the first guard is held"
+    );
+    drop(first);
+    assert_eq!(resolver.name_locks.len(), 1, "waiter keeps the entry alive");
+    let guard = second.await;
+    drop(guard);
+    assert!(resolver.name_locks.is_empty());
+}

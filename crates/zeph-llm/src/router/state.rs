@@ -31,6 +31,7 @@ use crate::provider::LlmProvider;
 /// | `providers` / `provider_order` | all strategies |
 /// | `provider_models` | Bandit (cost weight), Cascade |
 /// | `last_active_provider` | RAPS reputation attribution |
+/// | `last_served` | `last_response_usage` forwarding |
 /// | `last_memory_confidence` | Bandit MAR signal |
 /// | `turn_counter` / `asi_last_turn` | ASI debounce |
 /// | `embed_call_count` / `embed_cache_hits` | observability stats |
@@ -58,6 +59,10 @@ pub struct RouterState {
     /// Written by the router after each `chat_with_tools` dispatch; read by
     /// `record_quality_outcome` to attribute the RAPS signal to the correct provider.
     pub last_active_provider: Arc<Mutex<Option<String>>>,
+
+    /// Usage of the most recent successful inner response, backing `last_response_usage`.
+    /// Never held across an `.await`.
+    last_served: Arc<Mutex<Option<ServedUsage>>>,
 
     /// MAR (Memory-Augmented Routing) signal for the current turn.
     ///
@@ -101,7 +106,49 @@ pub struct RouterState {
     pub dedicated_embed_provider: Option<Arc<AnyProvider>>,
 }
 
+/// Usage of the most recent response served through the router.
+#[derive(Debug, Clone)]
+struct ServedUsage {
+    snapshot: Option<crate::provider::ResponseUsage>,
+    stream_source: Option<AnyProvider>,
+}
+
 impl RouterState {
+    /// Snapshot the usage of `provider` right after it served a complete response.
+    ///
+    /// Reads the instance that made the call: most backends keep their usage tracker by value
+    /// and a clone starts empty, so the value is copied out here rather than read later.
+    pub(crate) fn record_served(&self, provider: &AnyProvider) {
+        *self.last_served.lock() = Some(ServedUsage {
+            snapshot: provider.last_response_usage(),
+            stream_source: None,
+        });
+    }
+
+    /// Like [`Self::record_served`] for a stream that is still being consumed.
+    ///
+    /// Backends that publish usage when the stream ends (Claude) share their tracker across
+    /// clones, so the kept handle sees the final value; by-value backends fall back to the
+    /// snapshot taken at stream open.
+    pub(crate) fn record_served_stream(&self, provider: &AnyProvider) {
+        *self.last_served.lock() = Some(ServedUsage {
+            snapshot: provider.last_response_usage(),
+            stream_source: Some(provider.clone()),
+        });
+    }
+
+    /// Usage reported for the most recent successful response.
+    ///
+    /// The slot is per router, not per call: concurrent calls overwrite each other (last writer
+    /// wins), and a fully failed call leaves the previous success in place.
+    pub(crate) fn served_usage(&self) -> Option<crate::provider::ResponseUsage> {
+        let served = self.last_served.lock().clone()?;
+        served
+            .stream_source
+            .and_then(|p| p.last_response_usage())
+            .or(served.snapshot)
+    }
+
     /// Build initial state from the provider list.
     ///
     /// `turn_counter` starts at 0; `asi_last_turn` starts at `u64::MAX` so the
@@ -117,6 +164,7 @@ impl RouterState {
             provider_models: Arc::new(provider_models),
             provider_order: Arc::new(Mutex::new((0..n).collect())),
             last_active_provider: Arc::new(Mutex::new(None)),
+            last_served: Arc::new(Mutex::new(None)),
             last_memory_confidence: Arc::new(AtomicU32::new(u32::MAX)),
             turn_counter: Arc::new(AtomicU64::new(0)),
             asi_last_turn: Arc::new(AtomicU64::new(u64::MAX)),

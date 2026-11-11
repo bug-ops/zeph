@@ -119,10 +119,10 @@ impl PluginManager {
 
         // Record integrity digest. Crash between the write above and the save here leaves the
         // plugin with no registry entry — it will load unverified until reinstalled (M4).
-        let mut registry = crate::integrity::IntegrityRegistry::load(&self.integrity_registry_path);
-        if let Err(e) = registry
-            .record(manifest.plugin.name.as_str(), &installed_manifest_path)
-            .and_then(|()| registry.save(&self.integrity_registry_path))
+        if let Err(e) =
+            crate::integrity::IntegrityRegistry::update(&self.integrity_registry_path, |r| {
+                r.record(manifest.plugin.name.as_str(), &installed_manifest_path)
+            })
         {
             tracing::warn!(plugin = %manifest.plugin.name, error = %e, "failed to update integrity registry after install");
         }
@@ -198,9 +198,12 @@ impl PluginManager {
         })?;
 
         // Remove integrity entry; non-fatal if registry cannot be updated.
-        let mut registry = crate::integrity::IntegrityRegistry::load(&self.integrity_registry_path);
-        registry.remove(name);
-        if let Err(e) = registry.save(&self.integrity_registry_path) {
+        if let Err(e) =
+            crate::integrity::IntegrityRegistry::update(&self.integrity_registry_path, |r| {
+                r.remove(name);
+                Ok(())
+            })
+        {
             tracing::warn!(plugin = %name, error = %e, "failed to update integrity registry after remove");
         }
 

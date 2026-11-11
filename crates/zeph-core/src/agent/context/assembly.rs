@@ -697,7 +697,7 @@ impl<C: Channel> Agent<C> {
             zeph_context::input::CorrectionConfig {
                 correction_detection: c.correction_detection,
                 correction_recall_limit: c.correction_recall_limit,
-                correction_min_similarity: c.correction_min_similarity,
+                correction_min_similarity: c.correction_min_similarity.get(),
             }
         });
 
@@ -821,11 +821,10 @@ impl<C: Channel> Agent<C> {
         // (#6427) can't be updated inline at the mutation site — recompute it here.
         self.msg.recompute_non_system_count();
 
-        let delta =
-            result.map_err(|e| super::super::error::AgentError::ContextError(format!("{e:#}")))?;
-
+        // Applied before the error is propagated: content injected before a failure still taints.
         // Apply accumulated metric deltas to the metrics snapshot.
         let m = view.metrics;
+        self.ratchet_for_injected_context(m.untrusted_context_injected);
         self.update_metrics(|ms| {
             ms.sanitizer_runs += m.sanitizer_runs;
             ms.sanitizer_injection_flags += m.sanitizer_injection_flags;
@@ -833,6 +832,9 @@ impl<C: Channel> Agent<C> {
             ms.quarantine_invocations += m.quarantine_invocations;
             ms.quarantine_failures += m.quarantine_failures;
         });
+
+        let delta =
+            result.map_err(|e| super::super::error::AgentError::ContextError(format!("{e:#}")))?;
 
         if let Some(body) = delta.code_context {
             self.inject_code_context(&body);

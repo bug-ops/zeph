@@ -33,12 +33,12 @@ fn default_correction_detection() -> bool {
     true
 }
 
-fn default_judge_adaptive_low() -> f32 {
-    0.5
+fn default_judge_adaptive_low() -> ConfidenceThreshold {
+    ConfidenceThreshold::literal(0.5)
 }
 
-fn default_judge_adaptive_high() -> f32 {
-    0.8
+fn default_judge_adaptive_high() -> ConfidenceThreshold {
+    ConfidenceThreshold::literal(0.8)
 }
 
 fn default_judge_llm_timeout_secs() -> u64 {
@@ -49,8 +49,8 @@ fn default_correction_recall_limit() -> u32 {
     3
 }
 
-fn default_correction_min_similarity() -> f32 {
-    0.75
+fn default_correction_min_similarity() -> ConfidenceThreshold {
+    ConfidenceThreshold::literal(0.75)
 }
 
 fn default_auto_promote_min_uses() -> u32 {
@@ -245,10 +245,10 @@ pub struct LearningConfig {
     pub feedback_provider: ProviderName,
     /// Regex confidence below this value is treated as "not a correction" — judge not invoked.
     #[serde(default = "default_judge_adaptive_low")]
-    pub judge_adaptive_low: f32,
+    pub judge_adaptive_low: ConfidenceThreshold,
     /// Regex confidence at or above this value is accepted without judge confirmation.
     #[serde(default = "default_judge_adaptive_high")]
-    pub judge_adaptive_high: f32,
+    pub judge_adaptive_high: ConfidenceThreshold,
     /// Maximum seconds to wait for the judge LLM to respond before timing out.
     /// Applies to `detector_mode = "judge"` only.
     #[serde(default = "default_judge_llm_timeout_secs")]
@@ -256,7 +256,7 @@ pub struct LearningConfig {
     #[serde(default = "default_correction_recall_limit")]
     pub correction_recall_limit: u32,
     #[serde(default = "default_correction_min_similarity")]
-    pub correction_min_similarity: f32,
+    pub correction_min_similarity: ConfidenceThreshold,
     #[serde(default = "default_auto_promote_min_uses")]
     pub auto_promote_min_uses: u32,
     #[serde(default = "default_auto_promote_threshold")]
@@ -515,13 +515,21 @@ impl LearningConfig {
     ///
     /// # Errors
     ///
-    /// Returns an error string if `merge_threshold >= dedup_threshold`.
+    /// Returns an error string if `merge_threshold >= dedup_threshold` or
+    /// `judge_adaptive_low > judge_adaptive_high`.
     #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), String> {
         if self.merge_threshold >= self.dedup_threshold {
             return Err(format!(
                 "skills.learning.merge_threshold ({}) must be strictly less than dedup_threshold ({})",
                 self.merge_threshold, self.dedup_threshold
+            ));
+        }
+        if self.judge_adaptive_low > self.judge_adaptive_high {
+            return Err(format!(
+                "skills.learning.judge_adaptive_low ({}) must not exceed judge_adaptive_high ({})",
+                self.judge_adaptive_low.get(),
+                self.judge_adaptive_high.get()
             ));
         }
         Ok(())
@@ -565,6 +573,47 @@ mod tests {
                 .abs()
                 < f32::EPSILON
         );
+    }
+
+    #[test]
+    fn adaptive_and_similarity_thresholds_reject_invalid_values() {
+        for key in [
+            "judge_adaptive_low",
+            "judge_adaptive_high",
+            "correction_min_similarity",
+        ] {
+            for bad in ["nan", "inf", "-0.1", "1.5", "7.0"] {
+                assert!(
+                    toml::from_str::<LearningConfig>(&format!("{key} = {bad}")).is_err(),
+                    "{key} = {bad}"
+                );
+            }
+        }
+        let cfg: LearningConfig = toml::from_str(
+            "judge_adaptive_low = 0.3\njudge_adaptive_high = 0.9\ncorrection_min_similarity = 0.6",
+        )
+        .unwrap();
+        assert!(cfg.validate().is_ok());
+        assert!((cfg.correction_min_similarity.get() - 0.6).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn validate_rejects_inverted_adaptive_band() {
+        let cfg: LearningConfig =
+            toml::from_str("judge_adaptive_low = 0.9\njudge_adaptive_high = 0.2").unwrap();
+        assert!(cfg.validate().is_err());
+        let equal: LearningConfig =
+            toml::from_str("judge_adaptive_low = 0.5\njudge_adaptive_high = 0.5").unwrap();
+        assert!(equal.validate().is_ok());
+    }
+
+    #[test]
+    fn adaptive_and_similarity_defaults_unchanged() {
+        let d = LearningConfig::default();
+        assert!((d.judge_adaptive_low.get() - 0.5).abs() < f32::EPSILON);
+        assert!((d.judge_adaptive_high.get() - 0.8).abs() < f32::EPSILON);
+        assert!((d.correction_min_similarity.get() - 0.75).abs() < f32::EPSILON);
+        assert!(d.validate().is_ok());
     }
 
     #[test]

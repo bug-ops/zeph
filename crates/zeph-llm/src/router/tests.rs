@@ -2535,3 +2535,270 @@ fn router_thinking_binding_is_prefix_bound_if_any_member_is() {
     ]);
     assert_eq!(none.thinking_binding(), Unbound);
 }
+
+fn usage_of(input: u64, output: u64) -> crate::provider::ResponseUsage {
+    crate::provider::ResponseUsage {
+        input,
+        output,
+        ..crate::provider::ResponseUsage::default()
+    }
+}
+
+#[tokio::test]
+async fn router_last_response_usage_none_before_any_call() {
+    let r = RouterProvider::new(vec![AnyProvider::Mock(
+        crate::mock::MockProvider::with_responses(vec!["ok".into()])
+            .with_published_usage(usage_of(1, 2)),
+    )]);
+    assert_eq!(r.last_response_usage(), None);
+}
+
+#[tokio::test]
+async fn router_last_response_usage_returns_serving_provider_usage() {
+    let r = RouterProvider::new(vec![AnyProvider::Mock(
+        crate::mock::MockProvider::with_responses(vec!["ok".into()])
+            .with_published_usage(usage_of(11, 7)),
+    )]);
+    let msgs = vec![Message::from_legacy(Role::User, "hi")];
+    r.chat(&msgs).await.unwrap();
+    assert_eq!(r.last_response_usage(), Some(usage_of(11, 7)));
+}
+
+#[tokio::test]
+async fn router_last_response_usage_follows_fallback_provider() {
+    let failing = AnyProvider::Mock(
+        crate::mock::MockProvider::failing().with_published_usage(usage_of(1, 1)),
+    );
+    let healthy = AnyProvider::Mock(
+        crate::mock::MockProvider::with_responses(vec!["ok".into()])
+            .with_published_usage(usage_of(42, 9)),
+    );
+    let r = RouterProvider::new(vec![failing, healthy]);
+    let msgs = vec![Message::from_legacy(Role::User, "hi")];
+    r.chat(&msgs).await.unwrap();
+    assert_eq!(r.last_response_usage(), Some(usage_of(42, 9)));
+}
+
+fn usage_mock(name: &str, usage: crate::provider::ResponseUsage) -> crate::mock::MockProvider {
+    crate::mock::MockProvider::with_responses(vec!["ok".into()])
+        .with_name(name)
+        .with_streaming()
+        .with_published_usage(usage)
+}
+
+#[tokio::test]
+async fn router_last_response_usage_chat_with_tools_serving_provider() {
+    let r = RouterProvider::new(vec![AnyProvider::Mock(usage_mock("a", usage_of(3, 4)))]);
+    let msgs = vec![Message::from_legacy(Role::User, "hi")];
+    r.chat_with_tools(&msgs, &[]).await.unwrap();
+    assert_eq!(r.last_response_usage(), Some(usage_of(3, 4)));
+}
+
+#[tokio::test]
+async fn router_last_response_usage_chat_with_tools_follows_fallback() {
+    let failing = AnyProvider::Mock(
+        crate::mock::MockProvider::failing()
+            .with_name("bad")
+            .with_published_usage(usage_of(1, 1)),
+    );
+    let healthy = AnyProvider::Mock(usage_mock("good", usage_of(8, 2)));
+    let r = RouterProvider::new(vec![failing, healthy]);
+    let msgs = vec![Message::from_legacy(Role::User, "hi")];
+    r.chat_with_tools(&msgs, &[]).await.unwrap();
+    assert_eq!(r.last_response_usage(), Some(usage_of(8, 2)));
+}
+
+#[tokio::test]
+async fn router_last_response_usage_bandit_chat() {
+    let dir = tempfile::tempdir().unwrap();
+    let r = RouterProvider::new(vec![AnyProvider::Mock(usage_mock("a", usage_of(2, 3)))])
+        .with_bandit(
+            BanditRouterConfig::default(),
+            Some(&dir.path().join("bandit.json")),
+            None,
+        );
+    let msgs = vec![Message::from_legacy(Role::User, "hi")];
+    r.chat(&msgs).await.unwrap();
+    assert_eq!(r.last_response_usage(), Some(usage_of(2, 3)));
+}
+
+#[tokio::test]
+async fn router_last_response_usage_bandit_chat_with_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    let r = RouterProvider::new(vec![AnyProvider::Mock(usage_mock("a", usage_of(2, 5)))])
+        .with_bandit(
+            BanditRouterConfig::default(),
+            Some(&dir.path().join("bandit.json")),
+            None,
+        );
+    let msgs = vec![Message::from_legacy(Role::User, "hi")];
+    r.chat_with_tools(&msgs, &[]).await.unwrap();
+    assert_eq!(r.last_response_usage(), Some(usage_of(2, 5)));
+}
+
+#[tokio::test]
+async fn router_last_response_usage_bandit_chat_stream() {
+    let dir = tempfile::tempdir().unwrap();
+    let r = RouterProvider::new(vec![AnyProvider::Mock(usage_mock("a", usage_of(6, 1)))])
+        .with_bandit(
+            BanditRouterConfig::default(),
+            Some(&dir.path().join("bandit.json")),
+            None,
+        );
+    let msgs = vec![Message::from_legacy(Role::User, "hi")];
+    let stream = r.chat_stream(&msgs).await.unwrap();
+    collect_stream(stream).await.unwrap();
+    assert_eq!(r.last_response_usage(), Some(usage_of(6, 1)));
+}
+
+#[tokio::test]
+async fn router_last_response_usage_cascade_chat_follows_serving_provider() {
+    let good = "This is a well-formed response with sufficient length and coherent structure.";
+    let first = crate::mock::MockProvider::with_responses(vec![good.to_owned()])
+        .with_name("first")
+        .with_published_usage(usage_of(10, 20));
+    let second = crate::mock::MockProvider::with_responses(vec![good.to_owned()])
+        .with_name("second")
+        .with_published_usage(usage_of(30, 40));
+    let r = RouterProvider::new(vec![AnyProvider::Mock(first), AnyProvider::Mock(second)])
+        .with_cascade(CascadeRouterConfig {
+            quality_threshold: 0.5,
+            max_escalations: 1,
+            ..CascadeRouterConfig::default()
+        });
+    let msgs = vec![Message::from_legacy(Role::User, "q")];
+    r.chat(&msgs).await.unwrap();
+    assert_eq!(r.last_response_usage(), Some(usage_of(10, 20)));
+}
+
+#[tokio::test]
+async fn router_last_response_usage_cascade_stream_buffered_provider() {
+    let good = "This is a well-formed response with sufficient length and coherent structure.";
+    let first = crate::mock::MockProvider::with_responses(vec![good.to_owned()])
+        .with_name("first")
+        .with_streaming()
+        .with_published_usage(usage_of(10, 20));
+    let second = crate::mock::MockProvider::failing().with_published_usage(usage_of(30, 40));
+    let r = RouterProvider::new(vec![AnyProvider::Mock(first), AnyProvider::Mock(second)])
+        .with_cascade(CascadeRouterConfig {
+            quality_threshold: 0.5,
+            max_escalations: 1,
+            ..CascadeRouterConfig::default()
+        });
+    let msgs = vec![Message::from_legacy(Role::User, "q")];
+    let stream = r.chat_stream(&msgs).await.unwrap();
+    collect_stream(stream).await.unwrap();
+    assert_eq!(r.last_response_usage(), Some(usage_of(10, 20)));
+}
+
+#[tokio::test]
+async fn router_last_response_usage_cascade_stream_last_provider() {
+    let first = crate::mock::MockProvider::with_responses(vec!["x".to_owned()])
+        .with_name("first")
+        .with_streaming()
+        .with_published_usage(usage_of(10, 20));
+    let last = crate::mock::MockProvider::with_responses(vec!["final answer".to_owned()])
+        .with_name("last")
+        .with_streaming()
+        .with_published_usage(usage_of(30, 40));
+    let r = RouterProvider::new(vec![AnyProvider::Mock(first), AnyProvider::Mock(last)])
+        .with_cascade(CascadeRouterConfig {
+            quality_threshold: 0.9,
+            max_escalations: 1,
+            ..CascadeRouterConfig::default()
+        });
+    let msgs = vec![Message::from_legacy(Role::User, "q")];
+    let stream = r.chat_stream(&msgs).await.unwrap();
+    collect_stream(stream).await.unwrap();
+    assert_eq!(r.last_response_usage(), Some(usage_of(30, 40)));
+}
+
+#[tokio::test]
+async fn router_last_response_usage_cascade_chat_best_seen_reports_best_provider() {
+    let good = "This is a reasonable response with enough content to score well.";
+    let p1 = crate::mock::MockProvider::with_responses(vec![good.to_owned()])
+        .with_name("p1")
+        .with_published_usage(usage_of(10, 20));
+    let p2 = crate::mock::MockProvider::with_responses(vec!["x".to_owned()])
+        .with_name("p2")
+        .with_published_usage(usage_of(30, 40));
+    let p3 = crate::mock::MockProvider::failing().with_name("p3");
+    let r = RouterProvider::new(vec![
+        AnyProvider::Mock(p1),
+        AnyProvider::Mock(p2),
+        AnyProvider::Mock(p3),
+    ])
+    .with_cascade(CascadeRouterConfig {
+        quality_threshold: 0.95,
+        max_escalations: 1,
+        ..CascadeRouterConfig::default()
+    });
+    let msgs = vec![Message::from_legacy(Role::User, "q")];
+    assert_eq!(r.chat(&msgs).await.unwrap(), good);
+    assert_eq!(r.last_response_usage(), Some(usage_of(10, 20)));
+}
+
+#[tokio::test]
+async fn router_last_response_usage_cascade_stream_best_seen_reports_best_provider() {
+    let good = "This is a reasonable response with enough content to score well.";
+    let p1 = crate::mock::MockProvider::with_responses(vec![good.to_owned()])
+        .with_name("p1")
+        .with_streaming()
+        .with_published_usage(usage_of(10, 20));
+    let p2 = crate::mock::MockProvider::with_responses(vec!["x".to_owned()])
+        .with_name("p2")
+        .with_streaming()
+        .with_published_usage(usage_of(30, 40));
+    let p3 = crate::mock::MockProvider::failing().with_name("p3");
+    let r = RouterProvider::new(vec![
+        AnyProvider::Mock(p1),
+        AnyProvider::Mock(p2),
+        AnyProvider::Mock(p3),
+    ])
+    .with_cascade(CascadeRouterConfig {
+        quality_threshold: 0.95,
+        max_escalations: 1,
+        ..CascadeRouterConfig::default()
+    });
+    let msgs = vec![Message::from_legacy(Role::User, "q")];
+    let stream = r.chat_stream(&msgs).await.unwrap();
+    assert_eq!(collect_stream(stream).await.unwrap().content, good);
+    assert_eq!(r.last_response_usage(), Some(usage_of(10, 20)));
+}
+
+#[tokio::test]
+async fn router_last_response_usage_stream_end_usage_via_shared_tracker() {
+    let tracker = std::sync::Arc::new(crate::usage::UsageTracker::default());
+    let p = crate::mock::MockProvider::with_responses(vec!["ok".into()])
+        .with_streaming()
+        .with_shared_usage_tracker(usage_of(1, 1), std::sync::Arc::clone(&tracker));
+    let r = RouterProvider::new(vec![AnyProvider::Mock(p)]);
+    let msgs = vec![Message::from_legacy(Role::User, "q")];
+    let stream = r.chat_stream(&msgs).await.unwrap();
+    collect_stream(stream).await.unwrap();
+    tracker.record(Some(usage_of(9, 99)));
+    assert_eq!(r.last_response_usage(), Some(usage_of(9, 99)));
+}
+
+#[tokio::test]
+async fn router_last_response_usage_none_when_every_call_fails() {
+    let failing = RouterProvider::new(vec![AnyProvider::Mock(
+        crate::mock::MockProvider::failing().with_published_usage(usage_of(7, 7)),
+    )]);
+    let msgs = vec![Message::from_legacy(Role::User, "q")];
+    failing.chat(&msgs).await.unwrap_err();
+    assert_eq!(failing.last_response_usage(), None);
+}
+
+#[tokio::test]
+async fn router_last_response_usage_after_chat_stream() {
+    let r = RouterProvider::new(vec![AnyProvider::Mock(
+        crate::mock::MockProvider::with_responses(vec!["ok".into()])
+            .with_streaming()
+            .with_published_usage(usage_of(5, 6)),
+    )]);
+    let msgs = vec![Message::from_legacy(Role::User, "hi")];
+    let stream = r.chat_stream(&msgs).await.unwrap();
+    collect_stream(stream).await.unwrap();
+    assert_eq!(r.last_response_usage(), Some(usage_of(5, 6)));
+}

@@ -40,6 +40,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-subagent`, `zeph-core`: a failing `fail_closed` PreToolUse hook blocks the tool in the subagent loop; the block message no longer shows the hook command (#6937) (#6961)
+- `zeph-subagent`: a sub-agent can reply to any ancestor and the ancestor walk has a cycle guard (#6933) (#6961)
+- `zeph-context`, `zeph-agent-context`, `zeph-core`: memory and recall context is credential-scrubbed before sanitizing in both layouts, including the inline orchestration tool loop, tiered recall and Summary, CrossSession and CodeContext parts (#6951) (#6961)
+- `zeph-agent-context`, `zeph-core`: untrusted retrieved context raises `input_trust_since_patch` once per turn (#6946) (#6961)
+- `zeph-common`: URL credential redaction covers passwords containing `@`, `?` or `#`, empty-user `:pass` and long opaque userinfo, while leaving compact JSON and `host:port?query` intact (#6947) (#6961)
+- `zeph-memory`: entity resolver name locks are evicted after use (#6928) (#6961)
+- `zeph-memory`: `IngestSourceKind::trust_level()` stamps a trust level on extracted graph provenance (breaking: `GraphProvenance` gains a required `trust` field) (#6934) (#6961)
+- `zeph-config`: `judge_adaptive_low`, `judge_adaptive_high` and `correction_min_similarity` are `ConfidenceThreshold` and `low > high` fails config load (#6936) (#6961)
+- `zeph-llm`: `RouterProvider::last_response_usage` returns the usage of the provider that served the response, so routed configs report token and cache usage (#6941) (#6961)
+- `zeph-plugins`: the integrity registry is updated under a bounded file lock and written with owner-only permissions (breaking: new `PluginError::LockTimeout`) (#6930) (#6961)
 - `zeph-core`: `request_compaction` with `allow_agent_compaction = false` returns a "disabled" error instead of an empty result (#6885)
 - `zeph-agent-context`: in `append` the proactive fidelity regrade follows the soft-tier gate and no longer rewrites sent history while the provider cache is warm (#6863) (#6867)
 - `zeph-memory`, `zeph-agent-context`: tiered recall drops items already in history before the token budget is applied (#6864) (#6867)

@@ -22,17 +22,23 @@
 //!
 //! # Concurrency
 //!
-//! The registry is not locked against concurrent `plugin add`/`remove`. If two
-//! processes install plugins simultaneously, the last writer's entry wins; the
-//! other plugin will show as "integrity mismatch" on next startup until reinstalled.
-//! TODO(#6930): file-level locking for M5 follow-up.
+//! Every mutation goes through [`IntegrityRegistry::update`], which holds an exclusive
+//! advisory lock on a sibling `.lock` file for the whole load-modify-save sequence, so
+//! concurrent `plugin add`/`remove` processes never lose each other's entries. The lock
+//! file is never deleted (removing it would let two processes lock different inodes).
 
 use std::collections::HashMap;
+use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
 use crate::error::PluginError;
+
+/// Maximum time [`IntegrityRegistry::update`] waits for the registry lock.
+const LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// In-memory view of `<data_root>/.plugin-integrity.toml`.
 ///
@@ -101,28 +107,47 @@ impl IntegrityRegistry {
         }
         let text = toml::to_string(&toml::Value::Table(table))?;
 
-        // Atomic write: write to a sibling temp file, then rename into place.
-        // Avoids a corrupt or empty registry if the process crashes mid-write.
-        let tmp_path = path.with_extension("toml.tmp");
-        std::fs::write(&tmp_path, &text).map_err(|source| PluginError::Io {
-            path: tmp_path.clone(),
+        zeph_common::fs_secure::atomic_write_private(path, text.as_bytes()).map_err(|source| {
+            PluginError::Io {
+                path: path.to_owned(),
+                source,
+            }
+        })
+    }
+
+    /// Atomically load, modify and save the registry at `path` under an exclusive lock.
+    ///
+    /// Waits up to [`LOCK_TIMEOUT`] for the sibling `<path>.lock` file (owner-only, symlinks
+    /// refused) so concurrent callers, including other processes, are serialized. The lock is
+    /// released when this function returns. `f` runs on the freshly loaded registry; the
+    /// registry is saved only if `f` succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginError::LockTimeout`] if the lock is not acquired in time, an I/O error
+    /// if the lock file cannot be opened or the registry saved, or whatever `f` returns.
+    pub(crate) fn update(
+        path: &Path,
+        f: impl FnOnce(&mut Self) -> Result<(), PluginError>,
+    ) -> Result<(), PluginError> {
+        Self::update_with_timeout(path, LOCK_TIMEOUT, f)
+    }
+
+    fn update_with_timeout(
+        path: &Path,
+        timeout: Duration,
+        f: impl FnOnce(&mut Self) -> Result<(), PluginError>,
+    ) -> Result<(), PluginError> {
+        let parent = path.parent().unwrap_or(std::path::Path::new("."));
+        std::fs::create_dir_all(parent).map_err(|source| PluginError::Io {
+            path: parent.to_owned(),
             source,
         })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600)).map_err(
-                |source| PluginError::Io {
-                    path: tmp_path.clone(),
-                    source,
-                },
-            )?;
-        }
-        std::fs::rename(&tmp_path, path).map_err(|source| PluginError::Io {
-            path: path.to_owned(),
-            source,
-        })?;
-        Ok(())
+        let lock_path = path.with_added_extension("lock");
+        let _lock = acquire_lock(&lock_path, timeout)?;
+        let mut registry = Self::load(path);
+        f(&mut registry)?;
+        registry.save(path)
     }
 
     /// Compute the sha256 of `toml_path` bytes and record it under `plugin_name`.
@@ -196,6 +221,42 @@ pub(crate) enum VerifyResult {
     Match,
     /// Digest does not match — possible tampering.
     Mismatch { expected: String, actual: String },
+}
+
+/// Open `lock_path` owner-only (refusing symlinks) and take an exclusive advisory lock,
+/// polling until `timeout` elapses. The lock is released when the returned file is dropped.
+fn acquire_lock(lock_path: &Path, timeout: Duration) -> Result<File, PluginError> {
+    let io_err = |source| PluginError::Io {
+        path: lock_path.to_owned(),
+        source,
+    };
+    if std::fs::symlink_metadata(lock_path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(io_err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "lock file is a symlink",
+        )));
+    }
+    let file = zeph_common::fs_secure::append_private(lock_path).map_err(io_err)?;
+    #[cfg(unix)]
+    zeph_common::fs_secure::restrict_to_owner(lock_path).map_err(io_err)?;
+
+    let start = Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::Error(e)) => return Err(io_err(e)),
+            Err(TryLockError::WouldBlock) => {
+                let waited = start.elapsed();
+                if waited >= timeout {
+                    return Err(PluginError::LockTimeout {
+                        path: lock_path.to_owned(),
+                        waited,
+                    });
+                }
+                std::thread::sleep(LOCK_POLL_INTERVAL);
+            }
+        }
+    }
 }
 
 /// Compute the lowercase hex sha256 of `bytes`.
@@ -298,6 +359,111 @@ mod tests {
 
         let reg3 = IntegrityRegistry::load(&reg_path);
         assert!(reg3.entries.is_empty());
+    }
+
+    #[test]
+    fn update_waits_for_held_lock_then_proceeds() {
+        let dir = TempDir::new().unwrap();
+        let reg_path = tmp_registry(&dir);
+        let toml_path = dir.path().join("plugin.toml");
+        std::fs::write(&toml_path, b"x").unwrap();
+
+        let held =
+            zeph_common::fs_secure::append_private(&reg_path.with_added_extension("lock")).unwrap();
+        held.lock().unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = {
+            let reg_path = reg_path.clone();
+            std::thread::spawn(move || {
+                let r = IntegrityRegistry::update(&reg_path, |r| r.record("p", &toml_path));
+                tx.send(()).unwrap();
+                r
+            })
+        };
+
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+        drop(held);
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        worker.join().unwrap().unwrap();
+        assert_eq!(IntegrityRegistry::load(&reg_path).entries.len(), 1);
+    }
+
+    #[test]
+    fn update_times_out_when_lock_held() {
+        let dir = TempDir::new().unwrap();
+        let reg_path = tmp_registry(&dir);
+        let held =
+            zeph_common::fs_secure::append_private(&reg_path.with_added_extension("lock")).unwrap();
+        held.lock().unwrap();
+
+        let err =
+            IntegrityRegistry::update_with_timeout(&reg_path, Duration::from_millis(100), |_| {
+                Ok(())
+            })
+            .unwrap_err();
+        assert_matches!(err, PluginError::LockTimeout { .. });
+        assert!(!reg_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_refuses_symlinked_lock_file() {
+        let dir = TempDir::new().unwrap();
+        let reg_path = tmp_registry(&dir);
+        let target = dir.path().join("victim");
+        std::fs::write(&target, b"keep").unwrap();
+        std::os::unix::fs::symlink(&target, reg_path.with_added_extension("lock")).unwrap();
+
+        assert!(IntegrityRegistry::update(&reg_path, |_| Ok(())).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lock_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = TempDir::new().unwrap();
+        let reg_path = tmp_registry(&dir);
+        let lock_path = reg_path.with_added_extension("lock");
+        std::fs::write(&lock_path, b"").unwrap();
+        std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        IntegrityRegistry::update(&reg_path, |_| Ok(())).unwrap();
+        let mode = std::fs::metadata(&lock_path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn update_failure_does_not_save_and_does_not_block_later_runs() {
+        let dir = TempDir::new().unwrap();
+        let reg_path = tmp_registry(&dir);
+        let missing = dir.path().join("missing.toml");
+
+        let err = IntegrityRegistry::update(&reg_path, |r| r.record("p", &missing));
+        assert!(err.is_err());
+        assert!(!reg_path.exists());
+
+        let toml_path = dir.path().join("plugin.toml");
+        std::fs::write(&toml_path, b"x").unwrap();
+        IntegrityRegistry::update(&reg_path, |r| r.record("p", &toml_path)).unwrap();
+        IntegrityRegistry::update(&reg_path, |r| {
+            r.remove("p");
+            Ok(())
+        })
+        .unwrap();
+        assert!(IntegrityRegistry::load(&reg_path).entries.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_writes_owner_only_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = TempDir::new().unwrap();
+        let reg_path = tmp_registry(&dir);
+        IntegrityRegistry::update(&reg_path, |_| Ok(())).unwrap();
+        let mode = std::fs::metadata(&reg_path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

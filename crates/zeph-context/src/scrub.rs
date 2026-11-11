@@ -15,7 +15,7 @@
 use std::borrow::Cow;
 
 use zeph_common::secret_redact::{scrub_content, scrub_secrets};
-use zeph_llm::provider::{Message, MessagePart};
+use zeph_llm::provider::{Message, MessagePart, Role};
 
 /// Replace `text` with the scrubbed form when `scrub` changed it.
 fn scrub_in_place(text: &mut String, scrub: for<'a> fn(&'a str) -> Cow<'a, str>) -> bool {
@@ -27,6 +27,25 @@ fn scrub_in_place(text: &mut String, scrub: for<'a> fn(&'a str) -> Cow<'a, str>)
         *text = s;
         true
     })
+}
+
+/// Whether a credential-scrub pass must visit `msg`.
+///
+/// System messages are agent-authored and skipped, except those carrying retrieved content
+/// ([`MessagePart::Recall`], `CodeContext`, `Summary`, `CrossSession`): that is user-originated
+/// data placed in a system-role message and may hold secrets.
+#[must_use]
+pub fn needs_scrub(msg: &Message) -> bool {
+    msg.role != Role::System
+        || msg.parts.iter().any(|p| {
+            matches!(
+                p,
+                MessagePart::Recall { .. }
+                    | MessagePart::CodeContext { .. }
+                    | MessagePart::Summary { .. }
+                    | MessagePart::CrossSession { .. }
+            )
+        })
 }
 
 /// Scrub one message in place and report whether anything changed.
@@ -64,6 +83,10 @@ pub fn scrub_message(msg: &mut Message) -> bool {
             MessagePart::Text { text } => scrub_in_place(text, scrub_content),
             MessagePart::ToolResult { content, .. } => scrub_in_place(content, scrub_secrets),
             MessagePart::ToolOutput { body, .. } => scrub_in_place(body, scrub_secrets),
+            MessagePart::Recall { text }
+            | MessagePart::CodeContext { text }
+            | MessagePart::Summary { text }
+            | MessagePart::CrossSession { text } => scrub_in_place(text, scrub_secrets),
             _ => false,
         };
     }
@@ -180,6 +203,50 @@ mod tests {
         let mut msg = Message::from_legacy(Role::User, format!("key {OPENAI_KEY} in /Users/a/b"));
         assert!(scrub_message(&mut msg));
         assert!(!msg.content.contains(OPENAI_KEY) && !msg.content.contains("/Users/a"));
+    }
+
+    #[test]
+    fn system_recall_part_is_scrubbed_and_visited() {
+        let mut msg = Message::from_parts(
+            Role::System,
+            vec![MessagePart::Recall {
+                text: format!("- [user] my key is {OPENAI_KEY}"),
+            }],
+        );
+        assert!(needs_scrub(&msg));
+        assert!(scrub_message(&mut msg));
+        let MessagePart::Recall { text } = &msg.parts[0] else {
+            panic!("part kind changed");
+        };
+        assert!(!text.contains(OPENAI_KEY), "{text}");
+        assert!(!msg.content.contains(OPENAI_KEY), "content is rebuilt");
+    }
+
+    #[test]
+    fn system_summary_cross_session_and_code_parts_are_scrubbed() {
+        for part in [
+            MessagePart::Summary {
+                text: format!("summary with {OPENAI_KEY}"),
+            },
+            MessagePart::CrossSession {
+                text: format!("earlier session {OPENAI_KEY}"),
+            },
+            MessagePart::CodeContext {
+                text: format!("const KEY = \"{OPENAI_KEY}\";"),
+            },
+        ] {
+            let mut msg = Message::from_parts(Role::System, vec![part]);
+            assert!(needs_scrub(&msg));
+            assert!(scrub_message(&mut msg));
+            let text = msg.parts[0].as_plain_text().expect("text-like part");
+            assert!(!text.contains(OPENAI_KEY), "{text}");
+            assert!(!msg.content.contains(OPENAI_KEY), "content is rebuilt");
+        }
+    }
+
+    #[test]
+    fn plain_system_message_is_not_visited() {
+        assert!(!needs_scrub(&Message::from_legacy(Role::System, "prompt")));
     }
 
     #[test]

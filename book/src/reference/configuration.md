@@ -274,7 +274,7 @@ cooldown_minutes = 60              # Cooldown between improvements for same skil
 detector_mode = "regex"            # Correction detector: "regex" (default) or "judge" (LLM-backed)
 judge_model = ""                   # Model for judge calls; empty = use primary provider
 judge_adaptive_low = 0.5           # Regex confidence below this bypasses judge (default: 0.5)
-judge_adaptive_high = 0.8          # Regex confidence at/above this bypasses judge (default: 0.8)
+judge_adaptive_high = 0.8          # Regex confidence at/above this bypasses judge (default: 0.8); both in 0.0..=1.0, low <= high
 heuristic_promotion_enabled = false     # Enable A6 background heuristic → full skill promotion (default: false)
 heuristic_promotion_provider = ""       # Provider name for promotion LLM calls; empty = uses summary provider
 heuristic_promotion_threshold = 5       # Minimum heuristics collected before promotion eligibility (default: 5)

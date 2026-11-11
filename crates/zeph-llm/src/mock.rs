@@ -11,6 +11,33 @@ use crate::provider::{
     ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, ToolDefinition,
 };
 
+/// Where [`MockProvider`] publishes per-call usage, mirroring the two real tracker layouts.
+#[derive(Debug, Clone)]
+enum UsageSink {
+    /// Tracker held by value; `Clone` yields an empty one (`OpenAI`, `Ollama`, `Gemini`, ...).
+    ByValue(crate::usage::UsageTracker),
+    /// Tracker shared across clones through an `Arc` (Claude).
+    #[cfg(test)]
+    Shared(Arc<crate::usage::UsageTracker>),
+}
+
+/// Usage a [`MockProvider`] publishes after each successful call, and where.
+#[derive(Debug, Clone)]
+struct PublishedUsage {
+    usage: crate::provider::ResponseUsage,
+    sink: UsageSink,
+}
+
+impl UsageSink {
+    fn tracker(&self) -> &crate::usage::UsageTracker {
+        match self {
+            Self::ByValue(t) => t,
+            #[cfg(test)]
+            Self::Shared(t) => t,
+        }
+    }
+}
+
 #[allow(clippy::struct_excessive_bools)] // independent boolean flags; bitflags or enum would obscure semantics without reducing complexity
 #[derive(Debug, Clone)]
 pub struct MockProvider {
@@ -99,6 +126,9 @@ pub struct MockProvider {
     /// [`MockProvider::with_generation_overrides`]. Shared with the test via
     /// [`MockProvider::with_overrides_capture`] — the mock otherwise ignores overrides entirely.
     captured_overrides: Arc<Mutex<Option<GenerationOverrides>>>,
+    /// Boxed to keep `MockProvider` (and so `AnyProvider`) small; set via
+    /// [`MockProvider::with_published_usage`].
+    published_usage: Option<Box<PublishedUsage>>,
 }
 
 impl Default for MockProvider {
@@ -139,6 +169,7 @@ impl Default for MockProvider {
             per_call_delays: Arc::new(Mutex::new(VecDeque::new())),
             per_call_embed_delays: Arc::new(Mutex::new(VecDeque::new())),
             captured_overrides: Arc::new(Mutex::new(None)),
+            published_usage: None,
         }
     }
 }
@@ -447,6 +478,33 @@ impl MockProvider {
         self
     }
 
+    /// Publish `usage` into a by-value tracker after each successful call (cleared on failure),
+    /// so a clone starts empty like the real non-Claude backends.
+    #[must_use]
+    pub fn with_published_usage(mut self, usage: crate::provider::ResponseUsage) -> Self {
+        self.published_usage = Some(Box::new(PublishedUsage {
+            usage,
+            sink: UsageSink::ByValue(crate::usage::UsageTracker::default()),
+        }));
+        self
+    }
+
+    /// Like [`Self::with_published_usage`] but through a tracker shared across clones, like
+    /// `ClaudeProvider`; lets tests publish usage after a stream is consumed.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_shared_usage_tracker(
+        mut self,
+        usage: crate::provider::ResponseUsage,
+        tracker: Arc<crate::usage::UsageTracker>,
+    ) -> Self {
+        self.published_usage = Some(Box::new(PublishedUsage {
+            usage,
+            sink: UsageSink::Shared(tracker),
+        }));
+        self
+    }
+
     /// Report the whole `usage` snapshot from `last_response_usage()` after every call.
     #[must_use]
     pub fn with_response_usage(mut self, usage: crate::provider::ResponseUsage) -> Self {
@@ -516,6 +574,13 @@ impl LlmProvider for MockProvider {
                 Ok(responses.pop_front().expect("non-empty"))
             }
         };
+
+        if let Some(published) = &self.published_usage {
+            published
+                .sink
+                .tracker()
+                .record(result.is_ok().then_some(published.usage));
+        }
 
         self.in_flight.fetch_sub(1, AOrdering::SeqCst);
         result
@@ -608,6 +673,9 @@ impl LlmProvider for MockProvider {
     }
 
     fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
+        if let Some(published) = &self.published_usage {
+            return published.sink.tracker().last();
+        }
         self.response_usage.or_else(|| {
             self.auxiliary_usage
                 .map(|auxiliary| crate::provider::ResponseUsage {

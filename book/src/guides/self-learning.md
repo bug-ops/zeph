@@ -56,6 +56,8 @@ judge_adaptive_low = 0.5            # regex confidence floor (default: 0.5)
 judge_adaptive_high = 0.8           # regex confidence ceiling (default: 0.8)
 ```
 
+> `judge_adaptive_low`, `judge_adaptive_high` and `correction_min_similarity` must be finite and within `0.0..=1.0`, and `judge_adaptive_low` must not exceed `judge_adaptive_high`; otherwise config loading fails.
+
 The judge only fires when regex confidence is borderline or when regex finds nothing — it does not replace regex. A rate limiter caps judge calls at 5 per 60 seconds. Judge calls run in the background and do not block the response.
 
 > Start with `detector_mode = "regex"` (the default) and switch to `"judge"` only if you notice corrections being missed. The judge adds LLM cost per borderline detection.

@@ -288,6 +288,10 @@ In addition to output redaction, Zeph scrubs credential patterns from conversati
 redact_credentials = true  # default: true
 ```
 
+The same scrubbing covers every memory-derived slot (System-role memory slots, summaries, cross-session recall, code context) and the inline scheduler tool loop, in both the `replace` and `append` context layouts. Spotlight wrapping of untrusted content is preserved after scrubbing.
+
+URL credentials are redacted too: in `scheme://user:password@host`, the password may itself contain `@`, `?` or `#`, and an empty user (`scheme://:password@host`) is handled. Two known residuals: a password containing a raw `"` is not redacted, and a digit-only password followed by `?name=` is read as `host:port` and left intact.
+
 This is independent of `security.redact_secrets` — output redaction sanitizes LLM *responses*, while credential scrubbing sanitizes LLM *inputs* from stored history.
 
 ## Config Validation

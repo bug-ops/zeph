@@ -144,7 +144,7 @@ The `Embeddable` trait provides a generic interface for any type that can be emb
 
 ## Credential Scrubbing
 
-When `memory.redact_credentials` is enabled (default: `true`), Zeph scrubs credential patterns from message content before sending it to the LLM context pipeline. This prevents accidental leakage of API keys, tokens, and passwords stored in conversation history. The scrubbing runs via `scrub_content()` in the context builder and covers the same patterns as the output redaction system (see [Security — Secret Redaction](../reference/security.md#secret-redaction)).
+When `memory.redact_credentials` is enabled (default: `true`), Zeph scrubs credential patterns from message content before sending it to the LLM context pipeline. This prevents accidental leakage of API keys, tokens, and passwords stored in conversation history. The scrubbing runs via `scrub_content()` in the context builder and covers the same patterns as the output redaction system (see [Security — Secret Redaction](../reference/security.md#secret-redaction)). Memory recall, summaries and code context are scrubbed in both context layouts; see [Credential Scrubbing in Context](../reference/security.md#credential-scrubbing-in-context).
 
 ## Autosave Assistant Responses
 

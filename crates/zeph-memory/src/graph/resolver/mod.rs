@@ -73,15 +73,30 @@ struct DisambiguationResponse {
     same_entity: bool,
 }
 
-/// Per-entity-name lock guard to prevent concurrent duplicate creation.
+/// Per-entity-name locks that prevent concurrent duplicate creation.
 ///
 /// Keyed by normalized entity name. Entities with different names resolve concurrently;
-/// entities with the same name are serialized.
-///
-/// TODO(#6928): This map grows unboundedly — one entry per unique normalized name.
-/// For a short-lived resolver this is acceptable. If the resolver becomes long-lived
-/// (stored in `SemanticMemory`), add eviction or use a fixed-size sharded lock array.
+/// entities with the same name are serialized. Entries are removed by [`NameGuard`] once
+/// no task holds or awaits them, so the map size tracks in-flight names only.
 type NameLockMap = Arc<DashMap<String, Arc<Mutex<()>>>>;
+
+/// Holds a per-name lock and evicts the map entry on drop when no other task uses it.
+struct NameGuard {
+    locks: NameLockMap,
+    key: String,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for NameGuard {
+    fn drop(&mut self) {
+        // Release our Arc clone first so the count check below sees only other users.
+        drop(self.guard.take());
+        // remove_if holds the shard write lock, so a concurrent `entry()` clone is either
+        // counted (entry kept) or happens after removal (fresh entry created).
+        self.locks
+            .remove_if(&self.key, |_, lock| Arc::strong_count(lock) == 1);
+    }
+}
 
 pub struct EntityResolver<'a> {
     store: &'a GraphStore,
@@ -208,13 +223,17 @@ impl<'a> EntityResolver<'a> {
     }
 
     /// Acquire the per-name lock and return the guard. Keeps lock alive for the caller.
-    async fn lock_name(&self, normalized: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    async fn lock_name(&self, normalized: &str) -> NameGuard {
         let lock = self
             .name_locks
             .entry(normalized.to_owned())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone();
-        lock.lock_owned().await
+        NameGuard {
+            locks: Arc::clone(&self.name_locks),
+            key: normalized.to_owned(),
+            guard: Some(lock.lock_owned().await),
+        }
     }
 
     /// Resolve an extracted entity using the alias-first canonicalization pipeline.

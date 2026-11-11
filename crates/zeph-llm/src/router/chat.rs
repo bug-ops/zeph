@@ -44,6 +44,7 @@ impl RouterProvider {
         let result = p.chat(messages).await;
         match &result {
             Ok(response) => {
+                self.state.record_served(&p);
                 let verdict = heuristic_score(response);
                 // Record reward even when embedding failed (use zero vector so the arm's
                 // update count increments — prevents permanent cold-start on flaky embedders).
@@ -153,6 +154,7 @@ impl RouterProvider {
 
         let mut escalations_remaining = cfg.max_escalations;
         let mut best: Option<(String, f64)> = None; // (response, score)
+        let mut best_idx: Option<usize> = None;
         let mut tokens_used: u32 = 0;
         let mut last_err: Option<LlmError> = None;
 
@@ -182,6 +184,7 @@ impl RouterProvider {
                     last_err = Some(e);
                 }
                 Ok(response) => {
+                    self.state.record_served(p);
                     let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
                     let eval = cascade_evaluate_response(
@@ -209,6 +212,7 @@ impl RouterProvider {
                             "cascade: best_seen updated"
                         );
                         best = Some((response.clone(), verdict.score));
+                        best_idx = Some(idx);
                     }
 
                     let is_last = idx == providers.len() - 1;
@@ -227,6 +231,9 @@ impl RouterProvider {
                             && (budget_exhausted || escalations_remaining == 0)
                         {
                             let best_response = best.take().map_or(response, |(r, _)| r);
+                            if let Some(i) = best_idx {
+                                self.state.record_served(&providers[i]);
+                            }
                             tracing::info!(
                                 tokens_used,
                                 budget = cfg.max_cascade_tokens,
@@ -264,6 +271,9 @@ impl RouterProvider {
 
         // All providers tried — return best-seen response, or NoProviders if none worked.
         if let Some((_, score)) = &best {
+            if let Some(i) = best_idx {
+                self.state.record_served(&providers[i]);
+            }
             tracing::info!(
                 score,
                 "cascade: all providers exhausted, returning best-seen response"
@@ -306,6 +316,7 @@ impl RouterProvider {
         // Only populated from the early provider loop; the last provider streams
         // directly without buffering or scoring, so it never updates best_seen.
         let mut best_seen: Option<(CollectedStream, f64)> = None;
+        let mut best_idx: Option<usize> = None;
 
         // Try all providers except the last without consuming the escalation budget
         // for errors (only quality failures consume it).
@@ -354,6 +365,7 @@ impl RouterProvider {
                     tracing::warn!(provider = p.name(), error = %e, "cascade stream: stream error");
                 }
                 Ok(collected) => {
+                    self.state.record_served(p);
                     let eval = cascade_evaluate_response(
                         p.name(),
                         &collected.content,
@@ -381,6 +393,7 @@ impl RouterProvider {
                             "cascade stream: best_seen updated"
                         );
                         best_seen = Some((collected.clone(), verdict.score));
+                        best_idx = Some(idx);
                     }
 
                     if !verdict.should_escalate || escalations_remaining == 0 || budget_exhausted {
@@ -399,6 +412,9 @@ impl RouterProvider {
                                 escalations_remaining,
                                 "cascade stream: escalation blocked, returning best response"
                             );
+                            if let Some(i) = best_idx {
+                                self.state.record_served(&early[i]);
+                            }
                             best_seen.take().map_or(collected, |(r, _)| r)
                         } else {
                             collected
@@ -443,6 +459,7 @@ impl RouterProvider {
         let start = std::time::Instant::now();
         match last.chat_stream(messages).await {
             Ok(stream) => {
+                self.state.record_served_stream(last);
                 self.record_availability(
                     last.name(),
                     true,
@@ -463,6 +480,9 @@ impl RouterProvider {
                 // If we have a best-seen response from an early provider, return it
                 // instead of propagating the last provider's error.
                 if let Some((best_collected, _)) = best_seen {
+                    if let Some(i) = best_idx {
+                        self.state.record_served(&early[i]);
+                    }
                     tracing::info!(
                         "cascade stream: last provider failed, returning best-seen response"
                     );

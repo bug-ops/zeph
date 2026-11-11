@@ -89,7 +89,7 @@ Every sub-agent gets three tools automatically:
 - `check_messages` — drain its own inbox, optionally waiting up to `wait_ms` milliseconds for a reply
 - `list_peers` — discover which sub-agents (and you) it's allowed to message
 
-A sub-agent can only message its own spawner, its siblings (other sub-agents spawned by the same parent), and its own descendants — never a sub-agent from an unrelated spawn tree (e.g. one dispatched by a separate `/plan` execution).
+A sub-agent can only message any of its ancestors (its spawner or a higher ancestor, so a descendant can reply to the agent that started the chain), its siblings (other sub-agents spawned by the same parent), and its own descendants — never a sub-agent from an unrelated spawn tree (e.g. one dispatched by a separate `/plan` execution).
 
 From your side, reply to a sub-agent's question with `/agent msg`:
 
@@ -684,7 +684,7 @@ hooks:
 ---
 ```
 
-**`PreToolUse`** fires before a tool is executed. Set `fail_closed: true` to block execution if the hook exits non-zero.
+**`PreToolUse`** fires before a tool is executed. Set `fail_closed: true` to block execution if the hook exits non-zero or times out. The sub-agent's model receives a generic `[blocked] PreToolUse hook blocked tool <name>` result that does not reveal the hook command.
 
 **`PostToolUse`** fires after a tool finishes. Useful for linting, formatting, or auditing changes.
 

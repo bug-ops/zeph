@@ -66,6 +66,16 @@ impl ConfidenceThreshold {
         }
     }
 
+    /// Compile-time constructor for literal defaults; panics (at compile time in `const`
+    /// contexts) when `value` is NaN or outside `0.0..=1.0`.
+    pub(crate) const fn literal(value: f32) -> Self {
+        assert!(
+            value >= 0.0 && value <= 1.0,
+            "threshold must be within 0.0..=1.0"
+        );
+        Self(value)
+    }
+
     /// The raw threshold in `0.0..=1.0`.
     #[must_use]
     pub const fn get(self) -> f32 {
@@ -75,7 +85,7 @@ impl ConfidenceThreshold {
 
 impl Default for ConfidenceThreshold {
     fn default() -> Self {
-        Self(0.6)
+        Self::literal(0.6)
     }
 }
 

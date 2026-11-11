@@ -1375,7 +1375,6 @@ impl<C: Channel> Agent<C> {
                 if matched.is_empty() {
                     return None;
                 }
-                let has_fail_closed = matched.iter().any(|h| h.fail_closed);
                 let owned: Vec<zeph_config::HookDef> = matched.into_iter().cloned().collect();
                 let env = make_tool_hook_env(tc.name.as_str(), &tc.input, conv_id_str.as_deref());
                 let sem = std::sync::Arc::clone(semaphore);
@@ -1395,31 +1394,25 @@ impl<C: Channel> Agent<C> {
                             tool = %tool_name
                         ))
                         .await;
-                    (idx, Some(result.map_err(|e| (e, has_fail_closed))))
+                    (idx, Some(result))
                 })
             });
 
+            // `fire_hooks` returns `Err` only when a fail-closed hook fails.
             for (idx, outcome) in futures::future::join_all(futs).await {
-                let Some(Err((e, has_fail_closed))) = outcome else {
+                let Some(Err(e)) = outcome else {
                     continue;
                 };
                 let tool_name = tool_calls[idx].name.as_str();
-                if has_fail_closed {
-                    self.tool_orchestrator.hook_block_count += 1;
-                    tracing::warn!(
-                        error = %e,
-                        tool = %tool_name,
-                        hook_block_count = self.tool_orchestrator.hook_block_count,
-                        hook_block_cap = self.tool_orchestrator.hook_block_cap,
-                        "PreToolUse hook blocked tool (fail_closed)"
-                    );
-                    pre_hook_blocked.insert(
-                        idx,
-                        format!("[blocked] PreToolUse hook blocked tool `{tool_name}`: {e}"),
-                    );
-                } else {
-                    tracing::warn!(error = %e, tool = %tool_name, "PreToolUse hook failed");
-                }
+                self.tool_orchestrator.hook_block_count += 1;
+                tracing::warn!(
+                    error = %e,
+                    tool = %tool_name,
+                    hook_block_count = self.tool_orchestrator.hook_block_count,
+                    hook_block_cap = self.tool_orchestrator.hook_block_cap,
+                    "PreToolUse hook blocked tool (fail_closed)"
+                );
+                pre_hook_blocked.insert(idx, zeph_subagent::pre_tool_block_message(tool_name));
             }
         }
 
