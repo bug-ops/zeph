@@ -607,7 +607,7 @@ impl<C: Channel> Agent<C> {
             // Mandatory TUI status indicator (CLAUDE.md "TUI Rules") — surfaces which MCP
             // server contributed an image attached to the outgoing LLM request. Deliberately
             // NOT self-cleared: with zero work between a set and a clear on the last-write-wins
-            // `StatusTx` slot, an immediate `clear_status_best_effort()` would blank the label
+            // `StatusSender` slot, an immediate `clear_status_best_effort()` would blank the label
             // before the render loop ever has a chance to pick it up, making it invisible. Left
             // set so the next natural status update (following tool call, LLM response) replaces
             // it once real work actually happens.

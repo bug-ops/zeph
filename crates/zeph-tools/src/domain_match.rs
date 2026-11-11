@@ -32,9 +32,8 @@
 /// ```
 #[must_use]
 pub fn domain_matches(pattern: &str, host: &str) -> bool {
-    if pattern.starts_with("*.") {
+    if let Some(suffix) = pattern.strip_prefix('*').filter(|s| s.starts_with('.')) {
         // Allow only a single subdomain level: `*.example.com` → `<label>.example.com`
-        let suffix = &pattern[1..]; // ".example.com"
         if let Some(remainder) = host.strip_suffix(suffix) {
             // remainder must be a single DNS label (no dots, non-empty)
             !remainder.is_empty() && !remainder.contains('.')

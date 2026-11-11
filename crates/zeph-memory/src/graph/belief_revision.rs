@@ -231,8 +231,8 @@ mod tests {
     ) -> crate::graph::types::Edge {
         crate::graph::types::Edge {
             id: crate::types::EdgeId::new(id),
-            source_entity_id: crate::types::EntityId(1),
-            target_entity_id: crate::types::EntityId(2),
+            source_entity_id: crate::types::EntityId::for_test(1),
+            target_entity_id: crate::types::EntityId::for_test(2),
             relation: relation.to_string(),
             fact: fact.to_string(),
             confidence: 1.0,

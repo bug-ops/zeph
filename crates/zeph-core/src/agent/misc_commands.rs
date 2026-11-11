@@ -16,6 +16,10 @@ use super::Agent;
 use crate::channel::Channel;
 
 /// Parse `<query> [--limit N]` for `/search`. Returns `(trimmed_query, limit)`.
+#[expect(
+    clippy::string_slice,
+    reason = "pos comes from find on the same string"
+)]
 fn parse_search_args(args: &str) -> (&str, Option<usize>) {
     if let Some(pos) = args.find("--limit") {
         let query = args[..pos].trim();

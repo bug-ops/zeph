@@ -9,7 +9,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use zeph_llm::provider::StatusUpdate;
 
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::Role;
@@ -100,7 +99,7 @@ impl<C: Channel> super::Agent<C> {
             .session
             .status_tx
             .as_ref()
-            .map(|tx| tx.send(StatusUpdate::set("Extracting skills from session…")));
+            .map(|tx| tx.set("Extracting skills from session…"));
 
         let blocking_handle = self.runtime.lifecycle.task_supervisor.spawn_oneshot(
             std::sync::Arc::from("agent.learning.trace_extraction"),
@@ -167,7 +166,7 @@ async fn run_extraction(
     session_id: String,
     db_pool: Option<zeph_db::DbPool>,
     memory: Option<Arc<SemanticMemory>>,
-    status_tx: Option<zeph_llm::provider::StatusTx>,
+    status_tx: Option<zeph_llm::status::StatusSender>,
 ) {
     let extractor = TraceExtractor::new(
         extract_provider,

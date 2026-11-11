@@ -1017,7 +1017,7 @@ pub(crate) struct SessionState {
     /// Never shared across turns or propagated into subagents.
     pub(crate) current_turn_intent: Option<String>,
     /// Optional status channel for sending spinner/status messages to TUI or stderr.
-    pub(crate) status_tx: Option<zeph_llm::provider::StatusTx>,
+    pub(crate) status_tx: Option<zeph_llm::status::StatusSender>,
     /// LSP context injection hooks. Fires after native tool execution; queued diagnostics/hover
     /// notes are attached as a `RuntimeNote` on the tail tool-result message before the next
     /// LLM call (never as `System` messages).

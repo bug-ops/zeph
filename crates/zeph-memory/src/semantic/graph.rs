@@ -153,7 +153,7 @@ pub struct ExtractionStats {
 pub struct ExtractionResult {
     pub stats: ExtractionStats,
     /// IDs of entities upserted during this extraction pass. Passed to `link_memory_notes`.
-    pub entity_ids: Vec<i64>,
+    pub entity_ids: Vec<EntityId>,
 }
 
 /// Stats returned from a completed note-linking pass.
@@ -171,7 +171,7 @@ const DEFAULT_EDGE_CONFIDENCE: f32 = 0.8;
 
 /// Work item for a single entity during a note-linking pass.
 struct EntityWorkItem {
-    entity_id: i64,
+    entity_id: EntityId,
     canonical_name: String,
     embed_text: String,
     self_point_id: Option<String>,
@@ -193,7 +193,7 @@ struct EntityWorkItem {
 ///
 /// Errors are logged and not propagated — this is a best-effort background enrichment step.
 pub async fn link_memory_notes(
-    entity_ids: &[i64],
+    entity_ids: &[EntityId],
     pool: DbPool,
     embedding_store: Arc<EmbeddingStore>,
     provider: AnyProvider,
@@ -231,12 +231,12 @@ pub async fn link_memory_notes(
 ///
 /// Processes entities sequentially to avoid connection-pool contention.
 async fn collect_note_link_work_items(
-    entity_ids: &[i64],
+    entity_ids: &[EntityId],
     store: &crate::graph::GraphStore,
 ) -> Vec<EntityWorkItem> {
     let mut work_items: Vec<EntityWorkItem> = Vec::with_capacity(entity_ids.len());
     for &entity_id in entity_ids {
-        let entity = match store.find_entity_by_id(EntityId(entity_id)).await {
+        let entity = match store.find_entity_by_id(entity_id).await {
             Ok(Some(e)) => e,
             Ok(None) => {
                 tracing::debug!("note_linking: entity {entity_id} not found, skipping");
@@ -359,7 +359,7 @@ async fn insert_similarity_edges(
             let Some(payload_entity_id) = point
                 .payload
                 .get("entity_id")
-                .and_then(serde_json::Value::as_i64)
+                .and_then(EntityId::from_payload)
             else {
                 tracing::debug!(
                     "note_linking: missing entity_id in payload for point {}",
@@ -392,15 +392,7 @@ async fn insert_similarity_edges(
             let fact = format!("Semantically similar entities (score: {:.3})", point.score);
 
             match store
-                .insert_edge(
-                    EntityId(src),
-                    EntityId(tgt),
-                    "similar_to",
-                    &fact,
-                    point.score,
-                    None,
-                    None,
-                )
+                .insert_edge(src, tgt, "similar_to", &fact, point.score, None, None)
                 .await
             {
                 Ok(_) => stats.edges_created += 1,
@@ -408,8 +400,8 @@ async fn insert_similarity_edges(
                     // `target_id` came straight from a Qdrant payload (no local-existence
                     // check) — a stale cross-DB id silently drops this link edge (#5801).
                     tracing::warn!(
-                        source = src,
-                        target = tgt,
+                        source = %src,
+                        target = %tgt,
                         "note_linking: insert_edge rejected by FK constraint, dropping edge: {e:#}"
                     );
                 }
@@ -443,11 +435,11 @@ async fn insert_similarity_edges(
 async fn resolve_local_target_id(
     store: &crate::graph::GraphStore,
     payload: &std::collections::HashMap<String, serde_json::Value>,
-    payload_entity_id: i64,
-) -> Option<i64> {
+    payload_entity_id: EntityId,
+) -> Option<EntityId> {
     let Some(canonical_name) = payload.get("canonical_name").and_then(|v| v.as_str()) else {
         tracing::debug!(
-            payload_entity_id,
+            %payload_entity_id,
             "note_linking: missing canonical_name in payload, skipping candidate"
         );
         return None;
@@ -461,7 +453,7 @@ async fn resolve_local_target_id(
 
     // Fast path: the payload id exists locally AND its canonical identity matches the
     // candidate — the expected, synced case.
-    match store.find_entity_by_id(EntityId(payload_entity_id)).await {
+    match store.find_entity_by_id(payload_entity_id).await {
         Ok(Some(entity))
             if entity.canonical_name == canonical_name && entity.entity_type == entity_type =>
         {
@@ -470,7 +462,7 @@ async fn resolve_local_target_id(
         Ok(_) => {}
         Err(e) => {
             tracing::debug!(
-                payload_entity_id,
+                %payload_entity_id,
                 error = %e,
                 "note_linking: find_entity_by_id failed, skipping candidate"
             );
@@ -482,7 +474,7 @@ async fn resolve_local_target_id(
     // Re-resolve by canonical_name — the same key merge_entity uses — falling back to local
     // entity creation only when no local row exists under that name either.
     let resolved = match store.find_entity(canonical_name, entity_type).await {
-        Ok(Some(entity)) => entity.id.0,
+        Ok(Some(entity)) => entity.id,
         Ok(None) => {
             let name = payload
                 .get("name")
@@ -493,7 +485,7 @@ async fn resolve_local_target_id(
                 .upsert_entity(name, canonical_name, entity_type, summary, None)
                 .await
             {
-                Ok(id) => id.0,
+                Ok(id) => id,
                 Err(e) => {
                     tracing::debug!(
                         canonical_name,
@@ -515,8 +507,8 @@ async fn resolve_local_target_id(
     };
 
     tracing::warn!(
-        payload_entity_id,
-        resolved_entity_id = resolved,
+        %payload_entity_id,
+        resolved_entity_id = %resolved,
         canonical_name,
         "note_linking: Qdrant entity_id payload did not match local SQLite row \
          (cross-DB or stale resolution) — corrected to the locally authoritative id"
@@ -603,7 +595,7 @@ pub async fn extract_and_store(
     #[cfg(any(feature = "sqlite", feature = "postgres"))]
     store.checkpoint_wal().await?;
 
-    let new_entity_ids: Vec<i64> = entity_name_to_id.into_values().collect();
+    let new_entity_ids: Vec<EntityId> = entity_name_to_id.into_values().collect();
 
     link_episode(&store, &config, &new_entity_ids).await;
 
@@ -646,8 +638,8 @@ async fn upsert_entities(
     resolver: &crate::graph::EntityResolver<'_>,
     entities: &[crate::graph::extractor::ExtractedEntity],
     provenance: Option<&GraphProvenance>,
-) -> (std::collections::HashMap<String, i64>, usize) {
-    let mut entity_name_to_id: std::collections::HashMap<String, i64> =
+) -> (std::collections::HashMap<String, EntityId>, usize) {
+    let mut entity_name_to_id: std::collections::HashMap<String, EntityId> =
         std::collections::HashMap::new();
     let mut entities_upserted = 0usize;
 
@@ -703,7 +695,7 @@ fn is_low_signal_relation(relation: &str) -> bool {
 async fn insert_edges(
     resolver: &crate::graph::EntityResolver<'_>,
     edges: &[crate::graph::extractor::ExtractedEdge],
-    name_to_id: &std::collections::HashMap<String, i64>,
+    name_to_id: &std::collections::HashMap<String, EntityId>,
     config: &GraphExtractionConfig,
 ) -> usize {
     let mut edges_inserted = 0usize;
@@ -762,8 +754,8 @@ async fn insert_edges(
             match resolver
                 .graph_store()
                 .insert_or_supersede_with_turn_index_and_metrics(
-                    EntityId(src_id),
-                    EntityId(tgt_id),
+                    src_id,
+                    tgt_id,
                     &relation_display,
                     &canonical_relation,
                     &normalized_fact,
@@ -782,8 +774,8 @@ async fn insert_edges(
                     // A resolved entity id was rejected as an FK target — this drops a
                     // user-requested fact permanently and must not be silent (#5801).
                     tracing::warn!(
-                        source = src_id,
-                        target = tgt_id,
+                        source = %src_id,
+                        target = %tgt_id,
                         "graph: edge insert (apex) rejected by FK constraint, dropping edge: {e:#}"
                     );
                 }
@@ -800,8 +792,8 @@ async fn insert_edges(
                     });
             match resolver
                 .resolve_edge_typed(
-                    EntityId(src_id),
-                    EntityId(tgt_id),
+                    src_id,
+                    tgt_id,
                     &edge.relation,
                     &edge.fact,
                     edge.confidence.unwrap_or(DEFAULT_EDGE_CONFIDENCE),
@@ -819,8 +811,8 @@ async fn insert_edges(
                     // A resolved entity id was rejected as an FK target — this drops a
                     // user-requested fact permanently and must not be silent (#5801).
                     tracing::warn!(
-                        source = src_id,
-                        target = tgt_id,
+                        source = %src_id,
+                        target = %tgt_id,
                         "graph: edge insert rejected by FK constraint, dropping edge: {e:#}"
                     );
                 }
@@ -837,7 +829,7 @@ async fn insert_edges(
 async fn link_episode(
     store: &crate::graph::GraphStore,
     config: &GraphExtractionConfig,
-    entity_ids: &[i64],
+    entity_ids: &[EntityId],
 ) {
     let Some(conv_id) = config.conversation_id else {
         return;
@@ -845,10 +837,7 @@ async fn link_episode(
     match store.ensure_episode(conv_id).await {
         Ok(episode_id) => {
             for &entity_id in entity_ids {
-                if let Err(e) = store
-                    .link_entity_to_episode(episode_id, EntityId(entity_id))
-                    .await
-                {
+                if let Err(e) = store.link_entity_to_episode(episode_id, entity_id).await {
                     tracing::debug!("episode linking skipped for entity {entity_id}: {e:#}");
                 }
             }
@@ -1041,7 +1030,7 @@ async fn run_graph_extraction_task(
 /// Run A-MEM note linking after successful extraction when enabled.
 async fn run_note_linking(
     extraction_ok: bool,
-    new_entity_ids: &[i64],
+    new_entity_ids: &[EntityId],
     pool: DbPool,
     embedding_store: Option<Arc<EmbeddingStore>>,
     provider: AnyProvider,
@@ -1661,6 +1650,7 @@ mod tests {
     use crate::graph::GraphStore;
     use crate::in_memory_store::InMemoryVectorStore;
     use crate::store::SqliteStore;
+    use crate::types::EntityId;
 
     use super::GraphExtractionConfig;
 
@@ -1938,7 +1928,7 @@ mod tests {
         let provider = AnyProvider::Mock(mock);
 
         let work_items = vec![super::EntityWorkItem {
-            entity_id: 1,
+            entity_id: EntityId::for_test(1),
             canonical_name: "Alice".to_owned(),
             embed_text: "Alice".to_owned(),
             self_point_id: None,
@@ -2868,8 +2858,8 @@ mod tests {
 
         // Neither id exists in this fresh database — a genuine FK violation.
         let mut name_to_id = std::collections::HashMap::new();
-        name_to_id.insert("Ghost A".to_owned(), 111_111_111);
-        name_to_id.insert("Ghost B".to_owned(), 222_222_222);
+        name_to_id.insert("Ghost A".to_owned(), EntityId::for_test(111_111_111));
+        name_to_id.insert("Ghost B".to_owned(), EntityId::for_test(222_222_222));
 
         let edges = vec![ExtractedEdge {
             source: "Ghost A".to_owned(),
@@ -2909,8 +2899,8 @@ mod tests {
 
         // Neither id exists in this fresh database — a genuine FK violation.
         let mut name_to_id = std::collections::HashMap::new();
-        name_to_id.insert("Ghost C".to_owned(), 333_333_333);
-        name_to_id.insert("Ghost D".to_owned(), 444_444_444);
+        name_to_id.insert("Ghost C".to_owned(), EntityId::for_test(333_333_333));
+        name_to_id.insert("Ghost D".to_owned(), EntityId::for_test(444_444_444));
 
         let edges = vec![ExtractedEdge {
             source: "Ghost C".to_owned(),

@@ -414,6 +414,13 @@ deployments sensitive to graph-recall latency/cost should benchmark before upgra
 
 ### Key Invariants
 
+### `EntityId` construction and `CandidateId` (#7001)
+
+- `EntityId`'s field becomes module-private (`types.rs`) with `get()`; `EntityId(x)` no longer compiles outside `types.rs`. Rows decode through `sqlx` transparent decoding and `Deserialize`; there is no general constructor, so accidental construction from a raw `i64` is a compile error. `Deserialize` stays a public path, so the id is not unforgeable. At most one named `pub(crate)` constructor exists, for store-boundary decodes that cannot be typed (e.g. Qdrant payloads); test fixtures use a `#[cfg(test)]` constructor.
+- Algorithm-internal maps (`community`, `belief*`, resolver, `activation`, `five_signal`) key by `EntityId`/`EdgeId`; counts, timestamps and scores stay `i64`. Every `recall_*` `goal_entity_id` is `Option<EntityId>`.
+- `CandidateId` (module-private field, `get()`) types `implicit_conflict_candidates.id` and `ActivatedFact.conflict_candidate_id`, replacing the raw `i64` and the earlier stop line.
+
+- NEVER construct an `EntityId` from a raw `i64` outside `types.rs` except through the single justified `pub(crate)` decode constructor
 - NEVER widen a new public `GraphStore` method to raw `i64` ids; use `EntityId` / `EdgeId`
 - `Edge::synthetic_anchor(EntityId)` and the `EdgeId(0)` sentinel stay inside `zeph-memory`
 

@@ -347,11 +347,7 @@ pub fn sanitize_applescript_payload(s: &str, max: usize) -> String {
     // Step 3: truncate to `max` char count (not bytes).
     let char_count = cleaned.chars().count();
     let truncated: String = if char_count > max {
-        let end = cleaned
-            .char_indices()
-            .nth(max)
-            .map_or(cleaned.len(), |(i, _)| i);
-        let mut t = cleaned[..end].to_owned();
+        let mut t = zeph_common::text::truncate_chars(&cleaned, max).to_owned();
         t.push('…');
         t
     } else {

@@ -8,6 +8,7 @@ use zeph_common::text::xml_escape;
 use zeph_config::AcpTemperaturePreset;
 
 use zeph_core::LoopbackEvent;
+use zeph_core::channel::StatusUpdate;
 
 /// Returns `true` if `text` looks like a raw tool-use marker that should not be
 /// forwarded to the IDE (e.g. `[tool_use: bash (toolu_abc123)]`).
@@ -495,10 +496,10 @@ pub(super) fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<SessionUpda
                 ))]
             }
         }
-        LoopbackEvent::Status(text) if text.is_empty() => vec![],
-        LoopbackEvent::Status(text) => vec![
+        LoopbackEvent::Status(StatusUpdate::Clear) => vec![],
+        LoopbackEvent::Status(StatusUpdate::Set(text)) => vec![
             SessionUpdate::AgentThoughtChunk(ContentChunk::new("\n".into())),
-            SessionUpdate::AgentThoughtChunk(ContentChunk::new(text.into())),
+            SessionUpdate::AgentThoughtChunk(ContentChunk::new(text.into_string().into())),
         ],
         LoopbackEvent::ToolStart(data) => tool_start_to_updates(*data),
         LoopbackEvent::ToolOutput(data) => tool_output_to_updates(*data),
@@ -560,7 +561,7 @@ mod status_wire_tests {
     #[test]
     fn status_clear_sends_no_client_update() {
         assert_eq!(
-            loopback_event_to_updates(LoopbackEvent::Status(String::new())).len(),
+            loopback_event_to_updates(LoopbackEvent::Status(StatusUpdate::Clear)).len(),
             0
         );
     }
@@ -568,7 +569,10 @@ mod status_wire_tests {
     #[test]
     fn status_text_sends_client_updates() {
         assert_eq!(
-            loopback_event_to_updates(LoopbackEvent::Status("working".to_owned())).len(),
+            loopback_event_to_updates(LoopbackEvent::Status(StatusUpdate::Set(
+                zeph_core::channel::StatusText::new("working").unwrap()
+            )))
+            .len(),
             2
         );
     }

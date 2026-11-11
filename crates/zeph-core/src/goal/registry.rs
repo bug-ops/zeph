@@ -125,8 +125,10 @@ impl AutonomousRegistry {
         map.iter()
             .map(|(id, e)| {
                 let short = if e.goal_text.len() > 80 {
-                    let end = e.goal_text.floor_char_boundary(80);
-                    format!("{}…", &e.goal_text[..end])
+                    format!(
+                        "{}…",
+                        zeph_common::text::truncate_to_bytes_ref(&e.goal_text, 80)
+                    )
                 } else {
                     e.goal_text.clone()
                 };

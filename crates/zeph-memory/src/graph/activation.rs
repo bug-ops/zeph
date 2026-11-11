@@ -47,7 +47,7 @@ pub struct ActivatedFact {
     /// `true` when this edge has a pending implicit conflict candidate (spec 004-17).
     pub is_implicit_conflict: bool,
     /// ID of the `implicit_conflict_candidates` row, if any.
-    pub conflict_candidate_id: Option<i64>,
+    pub conflict_candidate_id: Option<crate::types::CandidateId>,
 }
 
 pub use zeph_common::memory::SpreadingActivationParams;
@@ -255,17 +255,16 @@ pub async fn hela_spreading_recall(
     let Some(anchor_entity_id) = anchor_point
         .payload
         .get("entity_id")
-        .and_then(serde_json::Value::as_i64)
-        .map(EntityId)
+        .and_then(EntityId::from_payload)
     else {
         tracing::warn!("hela: anchor point missing entity_id payload");
         return Ok(Vec::new());
     };
     let anchor_cosine = anchor_point.score;
 
-    tracing::Span::current().record("anchor_id", anchor_entity_id.0);
+    tracing::Span::current().record("anchor_id", anchor_entity_id.get());
     tracing::debug!(
-        anchor_entity_id = anchor_entity_id.0,
+        anchor_entity_id = anchor_entity_id.get(),
         anchor_cosine,
         "hela: anchor resolved"
     );
@@ -368,7 +367,7 @@ pub async fn hela_spreading_recall(
     if visited.len() == 1 {
         tracing::Span::current().record("fallback", true);
         tracing::debug!(
-            anchor_entity_id = anchor_entity_id.0,
+            anchor_entity_id = anchor_entity_id.get(),
             anchor_cosine,
             "hela: anchor isolated, falling back to pure ANN"
         );
@@ -772,11 +771,11 @@ mod tests {
     async fn spread_empty_graph_no_edges_no_facts() {
         let store = setup_store().await;
         let sa = SpreadingActivation::new(default_params());
-        let seeds = HashMap::from([(EntityId(1), 1.0_f32)]);
+        let seeds = HashMap::from([(EntityId::for_test(1), 1.0_f32)]);
         let (nodes, facts) = sa.spread(&store, seeds, &[]).await.unwrap();
         // Seed node is returned as activated (activation=1.0, depth=0).
         assert_eq!(nodes.len(), 1, "seed must be in activated nodes");
-        assert_eq!(nodes[0].entity_id, EntityId(1));
+        assert_eq!(nodes[0].entity_id, EntityId::for_test(1));
         assert!((nodes[0].activation - 1.0).abs() < 1e-6);
         // No edges in empty graph, so no ActivatedFacts.
         assert!(
@@ -1377,14 +1376,14 @@ mod tests {
 
     #[test]
     fn hela_synthetic_anchor_edge_id_is_zero() {
-        let edge = Edge::synthetic_anchor(EntityId(42));
+        let edge = Edge::synthetic_anchor(EntityId::for_test(42));
         assert_eq!(
             edge.id,
             EdgeId::new(0),
             "synthetic anchor must have id = 0 to be excluded from Hebbian"
         );
-        assert_eq!(edge.source_entity_id, EntityId(42));
-        assert_eq!(edge.target_entity_id, EntityId(42));
+        assert_eq!(edge.source_entity_id, EntityId::for_test(42));
+        assert_eq!(edge.target_entity_id, EntityId::for_test(42));
     }
 
     #[test]

@@ -30,7 +30,6 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use zeph_llm::provider::StatusUpdate;
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
@@ -116,7 +115,7 @@ impl IndexWatcher {
     pub fn start(
         root: &Path,
         indexer: Arc<CodeIndexer>,
-        status_tx: Option<zeph_llm::provider::StatusTx>,
+        status_tx: Option<zeph_llm::status::StatusSender>,
         supervisor: Option<TaskSupervisor>,
     ) -> Result<Self> {
         const DEBOUNCE: Duration = Duration::from_millis(500);
@@ -189,13 +188,13 @@ impl IndexWatcher {
                                     || path.display().to_string(),
                                     |n| n.to_string_lossy().into_owned(),
                                 );
-                                let _ = tx.send(StatusUpdate::set(format!("Re-indexing {name}...")));
+                                let _ = tx.set(format!("Re-indexing {name}..."));
                             }
                             if let Err(e) = indexer.reindex_file(&root, &path).await {
                                 tracing::warn!(path = %path.display(), "reindex failed: {e:#}");
                             }
                             if let Some(ref tx) = status_tx {
-                                let _ = tx.send(StatusUpdate::Clear);
+                                let _ = tx.clear();
                             }
                         }
                     }

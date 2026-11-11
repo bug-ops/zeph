@@ -19,10 +19,9 @@ use crate::embed::truncate_for_embed;
 use crate::error::LlmError;
 use crate::openai::OpenAiProvider;
 use crate::provider::ResponseUsage;
-use crate::provider::{
-    ChatResponse, ChatStream, LlmProvider, Message, StatusTx, StatusUpdate, ToolDefinition,
-};
+use crate::provider::{ChatResponse, ChatStream, LlmProvider, Message, ToolDefinition};
 use crate::sse::openai_sse_to_stream;
+use crate::status::StatusSender;
 use crate::usage::UsageTracker;
 
 // ── Wire types (local copies, same pattern as gonka/provider.rs) ─────────────
@@ -116,7 +115,7 @@ pub struct CocoonProvider {
     embedding_model: Option<String>,
     usage: UsageTracker,
     /// Optional TUI status sender.
-    pub(crate) status_tx: Option<StatusTx>,
+    pub(crate) status_tx: Option<StatusSender>,
     /// Name reported by [`LlmProvider::name`]. Defaults to `"cocoon"`; set the TOML-configured
     /// `name` via [`with_provider_name`](Self::with_provider_name) so that router reputation
     /// tracking and provider selection can distinguish between multiple configured Cocoon
@@ -210,7 +209,7 @@ impl CocoonProvider {
     }
 
     /// Set the TUI status sender; lifecycle events are forwarded to the TUI when set.
-    pub fn set_status_tx(&mut self, tx: StatusTx) {
+    pub fn set_status_tx(&mut self, tx: StatusSender) {
         self.status_tx = Some(tx);
     }
 
@@ -295,7 +294,7 @@ impl LlmProvider for CocoonProvider {
         async {
             tracing::debug!(model = self.model_identifier());
             if let Some(ref tx) = self.status_tx {
-                let _ = tx.send(StatusUpdate::set("Cocoon: sending request..."));
+                let _ = tx.set("Cocoon: sending request...");
             }
             let body = self.inner.debug_request_json(messages, &[], false);
             let body_bytes = serde_json::to_vec(&body)
@@ -340,7 +339,7 @@ impl LlmProvider for CocoonProvider {
         async {
             tracing::debug!(model = self.model_identifier());
             if let Some(ref tx) = self.status_tx {
-                let _ = tx.send(StatusUpdate::set("Cocoon: streaming..."));
+                let _ = tx.set("Cocoon: streaming...");
             }
             let body = self.inner.debug_request_json(messages, &[], true);
             let body_bytes = serde_json::to_vec(&body)

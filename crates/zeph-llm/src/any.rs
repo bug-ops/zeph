@@ -38,11 +38,11 @@ use serde::de::DeserializeOwned;
 use std::sync::Arc;
 
 use crate::provider::{
-    ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, StatusTx,
-    ToolDefinition,
+    ChatExtras, ChatResponse, ChatStream, GenerationOverrides, LlmProvider, Message, ToolDefinition,
 };
 use crate::router::RouterProvider;
 use crate::router::triage::TriageRouter;
+use crate::status::StatusSender;
 use zeph_config::ThinkingConfig;
 
 /// Generates a match over all `AnyProvider` variants, binding the inner provider
@@ -683,7 +683,7 @@ impl AnyProvider {
     }
 
     /// Propagate a status sender to the inner provider (where supported).
-    pub fn set_status_tx(&mut self, tx: StatusTx) {
+    pub fn set_status_tx(&mut self, tx: StatusSender) {
         match self {
             Self::Claude(p) => {
                 p.status_tx = Some(tx);

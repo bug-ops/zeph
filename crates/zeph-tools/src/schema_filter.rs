@@ -517,6 +517,10 @@ impl ToolSchemaFilter {
 /// Uses word-boundary checking: the character before and after the match must not be
 /// alphanumeric or underscore. This prevents false positives like "read" matching "thread".
 #[must_use]
+#[expect(
+    clippy::string_slice,
+    reason = "start comes from ceil_char_boundary and pos from find on the same string"
+)]
 pub fn find_mentioned_tool_ids(query: &str, all_tool_ids: &[&str]) -> Vec<String> {
     let query_lower = query.to_lowercase();
     all_tool_ids
@@ -536,7 +540,7 @@ pub fn find_mentioned_tool_ids(query: &str, all_tool_ids: &[&str]) -> Vec<String
                 if before_ok && after_ok {
                     return true;
                 }
-                start = abs_pos + 1;
+                start = query_lower.ceil_char_boundary(abs_pos + 1);
             }
             false
         })
@@ -764,6 +768,12 @@ mod tests {
         // "read" should NOT match inside "thread" or "breadcrumb"
         let found = find_mentioned_tool_ids("thread breadcrumb", &ids);
         assert_eq!(found, [] as [String; 0]);
+    }
+
+    #[test]
+    fn find_mentioned_tool_ids_multibyte_id_after_rejected_match_does_not_panic() {
+        let ids = vec!["\u{e9}"];
+        assert_eq!(find_mentioned_tool_ids("a\u{e9}", &ids), [] as [String; 0]);
     }
 
     #[test]

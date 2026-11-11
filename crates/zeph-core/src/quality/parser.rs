@@ -36,6 +36,7 @@ pub enum ChatJsonError {
 }
 
 /// Strip markdown code fences from LLM output.
+#[expect(clippy::string_slice, reason = "nl comes from find on the same string")]
 fn strip_fences(raw: &str) -> &str {
     let trimmed = raw.trim();
     if let Some(rest) = trimmed.strip_prefix("```") {
@@ -53,6 +54,10 @@ fn strip_fences(raw: &str) -> &str {
 }
 
 /// Find the first `{...}` or `[...]` span in the string.
+#[expect(
+    clippy::string_slice,
+    reason = "open and close are byte offsets of ASCII braces found in the same string"
+)]
 fn find_first_brace_span(s: &str) -> Option<&str> {
     let open = s.find(['{', '['])?;
     let opener = s.as_bytes()[open];
@@ -149,8 +154,7 @@ pub async fn chat_json<T: DeserializeOwned>(
                     .map(|v| (v, approx_tokens(&raw2), 2))
                     .map_err(|_| {
                         let truncated = if raw2.len() > 4096 {
-                            let end = raw2.floor_char_boundary(4096);
-                            format!("{}…", &raw2[..end])
+                            format!("{}…", zeph_common::text::truncate_to_bytes_ref(&raw2, 4096))
                         } else {
                             raw2.clone()
                         };

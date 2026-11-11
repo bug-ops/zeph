@@ -680,7 +680,9 @@ mod tests {
             edge: zeph_memory::graph::types::Edge {
                 fact: "Rust uses LLVM".to_owned(),
                 confidence: 0.95,
-                ..zeph_memory::graph::types::Edge::synthetic_anchor(zeph_memory::EntityId(1))
+                ..zeph_memory::graph::types::Edge::synthetic_anchor(
+                    serde_json::from_str("1").expect("a bare integer decodes as an entity id"),
+                )
             },
             activation_score,
             is_implicit_conflict: false,

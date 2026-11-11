@@ -5408,8 +5408,8 @@ mod tests {
             .await
             .expect("channel must receive a status event");
         match event {
-            zeph_core::LoopbackEvent::Status(text) => {
-                assert_eq!(text, SESSION_LOCK_DEGRADED_MESSAGE);
+            zeph_core::LoopbackEvent::Status(zeph_core::channel::StatusUpdate::Set(text)) => {
+                assert_eq!(text.as_str(), SESSION_LOCK_DEGRADED_MESSAGE);
             }
             other => panic!("expected LoopbackEvent::Status, got {other:?}"),
         }

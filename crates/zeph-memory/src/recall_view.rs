@@ -146,7 +146,7 @@ mod tests {
         use crate::graph::activation::ActivatedFact;
         use zeph_common::trust_level::TurnContextTrust;
 
-        let mut edge = crate::graph::types::Edge::synthetic_anchor(EntityId(1));
+        let mut edge = crate::graph::types::Edge::synthetic_anchor(EntityId::for_test(1));
         assert_eq!(edge.trust_level, None);
         let af = |edge| ActivatedFact {
             edge,

@@ -1136,7 +1136,7 @@ impl SemanticMemory {
         keyword_results: Vec<(MessageId, f64)>,
         vector_results: Vec<crate::embedding_store::SearchResult>,
         limit: usize,
-        goal_entity_id: Option<i64>,
+        goal_entity_id: Option<EntityId>,
     ) -> Result<Vec<RecalledMessage>, MemoryError> {
         tracing::debug!(
             vector_count = vector_results.len(),
@@ -1356,7 +1356,7 @@ impl SemanticMemory {
         &self,
         ranked: &mut [(MessageId, f64)],
         fs: &crate::five_signal::FiveSignalRuntime,
-        goal_entity_id: Option<i64>,
+        goal_entity_id: Option<EntityId>,
     ) {
         use crate::five_signal::causal_distance::CausalDistanceComputer;
         use crate::five_signal::scoring::{CandidateSignals, apply_five_signal_scoring};
@@ -1408,21 +1408,17 @@ impl SemanticMemory {
             }
         };
 
-        // Compute per-candidate causal distances (BFS from current goal entity).
-        // FR-006: when goal_entity_id is None, compute() returns an empty map and all
-        // candidates receive the neutral causal score via distance_to_score(neutral_distance).
-        let causal_distance_map: std::collections::HashMap<EntityId, u32> = {
-            let entity_ids: Vec<EntityId> = ids.iter().map(|id| EntityId(id.0)).collect();
-            match fs
-                .causal_computer
-                .compute(goal_entity_id.map(EntityId), &entity_ids)
-                .await
-            {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::warn!(error = %e, "five_signal: causal BFS failed (using neutral)");
-                    std::collections::HashMap::new()
-                }
+        // FR-006: when goal_entity_id is None, an empty map is returned and all candidates
+        // receive the neutral causal score; messages are resolved to entities before the BFS.
+        let causal_distance_map = match fs
+            .causal_computer
+            .causal_distances(goal_entity_id, &ids)
+            .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(error = %e, "five_signal: causal BFS failed (using neutral)");
+                std::collections::HashMap::new()
             }
         };
         let neutral_causal_score =
@@ -1440,7 +1436,7 @@ impl SemanticMemory {
                 .unwrap_or(fs.session_start);
             let novelty = fs.novelty_computer.compute(fact_created_at);
             let causal = causal_distance_map
-                .get(&EntityId(msg_id.0))
+                .get(&msg_id)
                 .map_or(neutral_causal_score, |&d| {
                     CausalDistanceComputer::distance_to_score(d)
                 });
@@ -1581,7 +1577,7 @@ impl SemanticMemory {
         limit: usize,
         filter: Option<SearchFilter>,
         router: &dyn crate::router::MemoryRouter,
-        goal_entity_id: Option<i64>,
+        goal_entity_id: Option<EntityId>,
     ) -> Result<Vec<RecalledMessage>, MemoryError> {
         let route = router.route(query);
         tracing::debug!(?route, query_len = query.len(), "memory routing decision");
@@ -1622,7 +1618,7 @@ impl SemanticMemory {
         limit: usize,
         filter: Option<crate::embedding_store::SearchFilter>,
         router: &dyn crate::router::AsyncMemoryRouter,
-        goal_entity_id: Option<i64>,
+        goal_entity_id: Option<EntityId>,
     ) -> Result<Vec<RecalledMessage>, MemoryError> {
         let decision = router.route_async(query).await;
         let route = decision.route;

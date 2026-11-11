@@ -67,6 +67,8 @@
 //! - `cuda` — Candle with CUDA acceleration (Linux/Windows)
 //! - `scheduler` — Cron-based periodic task scheduler
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 pub mod agent;
 #[cfg(feature = "profiling-alloc")]
 pub mod alloc_layer;

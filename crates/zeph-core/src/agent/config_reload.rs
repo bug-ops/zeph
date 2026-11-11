@@ -12,7 +12,6 @@ use crate::channel::Channel;
 use crate::config::Config;
 use crate::context::ContextBudget;
 use zeph_llm::provider::LlmProvider as _;
-use zeph_llm::provider::StatusUpdate;
 
 impl<C: Channel> Agent<C> {
     #[allow(clippy::too_many_lines)]
@@ -295,7 +294,7 @@ impl<C: Channel> Agent<C> {
                  for sandbox path recomputation (blocked_commands was rebuilt live)";
             tracing::warn!("{msg}");
             if let Some(ref tx) = self.services.session.status_tx {
-                let _ = tx.send(StatusUpdate::set(msg.to_owned()));
+                let _ = tx.set(msg.to_owned());
             }
         }
 

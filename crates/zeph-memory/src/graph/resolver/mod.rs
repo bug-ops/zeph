@@ -260,7 +260,7 @@ impl<'a> EntityResolver<'a> {
         entity_type: &str,
         summary: Option<&str>,
         provenance: Option<&GraphProvenance>,
-    ) -> Result<(i64, ResolutionOutcome), MemoryError> {
+    ) -> Result<(EntityId, ResolutionOutcome), MemoryError> {
         let normalized = Self::normalize_name(name);
 
         if normalized.is_empty() {
@@ -293,7 +293,7 @@ impl<'a> EntityResolver<'a> {
                     provenance,
                 )
                 .await?;
-            return Ok((entity.id.0, ResolutionOutcome::ExactMatch));
+            return Ok((entity.id, ResolutionOutcome::ExactMatch));
         }
 
         // Step 4: canonical name lookup.
@@ -307,7 +307,7 @@ impl<'a> EntityResolver<'a> {
                     provenance,
                 )
                 .await?;
-            return Ok((entity.id.0, ResolutionOutcome::ExactMatch));
+            return Ok((entity.id, ResolutionOutcome::ExactMatch));
         }
 
         // Step 5: Embedding-based resolution (when configured).
@@ -324,10 +324,9 @@ impl<'a> EntityResolver<'a> {
             .upsert_entity(&surface_name, &normalized, et, summary, provenance)
             .await?;
 
-        self.register_aliases(entity_id.0, &normalized, name)
-            .await?;
+        self.register_aliases(entity_id, &normalized, name).await?;
 
-        Ok((entity_id.0, ResolutionOutcome::Created))
+        Ok((entity_id, ResolutionOutcome::Created))
     }
 
     /// Compute embedding for an entity, incrementing `fallback_count` on failure/timeout.
@@ -380,10 +379,10 @@ impl<'a> EntityResolver<'a> {
         et: EntityType,
         summary: Option<&str>,
         _provenance: Option<&GraphProvenance>,
-    ) -> Result<Option<(i64, ResolutionOutcome)>, MemoryError> {
+    ) -> Result<Option<(EntityId, ResolutionOutcome)>, MemoryError> {
         let payload_entity_id = payload
             .get("entity_id")
-            .and_then(serde_json::Value::as_i64)
+            .and_then(EntityId::from_payload)
             .ok_or_else(|| MemoryError::GraphStore("missing entity_id in payload".into()))?;
         let existing_name = payload
             .get("name")
@@ -458,7 +457,7 @@ impl<'a> EntityResolver<'a> {
         et: EntityType,
         summary: Option<&str>,
         provenance: Option<&GraphProvenance>,
-    ) -> Result<Option<(i64, ResolutionOutcome)>, MemoryError> {
+    ) -> Result<Option<(EntityId, ResolutionOutcome)>, MemoryError> {
         let (Some(emb_store), Some(provider)) = (self.embedding_store, self.provider) else {
             return Ok(None);
         };
@@ -506,7 +505,7 @@ impl<'a> EntityResolver<'a> {
                 let payload_entity_id = best
                     .payload
                     .get("entity_id")
-                    .and_then(serde_json::Value::as_i64)
+                    .and_then(EntityId::from_payload)
                     .ok_or_else(|| {
                         MemoryError::GraphStore("missing entity_id in payload".into())
                     })?;
@@ -580,16 +579,16 @@ impl<'a> EntityResolver<'a> {
         summary: Option<&str>,
         query_vec: &[f32],
         provenance: Option<&GraphProvenance>,
-    ) -> Result<(i64, ResolutionOutcome), MemoryError> {
+    ) -> Result<(EntityId, ResolutionOutcome), MemoryError> {
         let entity_id = self
             .store
             .upsert_entity(surface_name, normalized, et, summary, provenance)
             .await?;
-        self.register_aliases(entity_id.0, normalized, original_name)
+        self.register_aliases(entity_id, normalized, original_name)
             .await?;
         self.store_entity_embedding(
             emb_store,
-            entity_id.0,
+            entity_id,
             None,
             normalized,
             et,
@@ -597,19 +596,17 @@ impl<'a> EntityResolver<'a> {
             query_vec,
         )
         .await;
-        Ok((entity_id.0, ResolutionOutcome::Created))
+        Ok((entity_id, ResolutionOutcome::Created))
     }
 
     /// Register the normalized form and original trimmed form as aliases for an entity.
     async fn register_aliases(
         &self,
-        entity_id: i64,
+        entity_id: EntityId,
         normalized: &str,
         original_name: &str,
     ) -> Result<(), MemoryError> {
-        self.store
-            .add_alias(EntityId(entity_id), normalized)
-            .await?;
+        self.store.add_alias(entity_id, normalized).await?;
 
         // Also register the original trimmed lowercased form if it differs from normalized
         // (e.g. when control chars were stripped, leaving a shorter string).
@@ -617,9 +614,7 @@ impl<'a> EntityResolver<'a> {
         let original_clean_str = strip_control_chars(&original_trimmed);
         let original_clean = truncate_to_bytes_ref(&original_clean_str, MAX_ENTITY_NAME_BYTES);
         if original_clean != normalized {
-            self.store
-                .add_alias(EntityId(entity_id), original_clean)
-                .await?;
+            self.store.add_alias(entity_id, original_clean).await?;
         }
 
         Ok(())
@@ -646,7 +641,7 @@ impl<'a> EntityResolver<'a> {
         &self,
         emb_store: &EmbeddingStore,
         provider: &AnyProvider,
-        payload_entity_id: i64,
+        payload_entity_id: EntityId,
         new_surface_name: &str,
         new_canonical_name: &str,
         entity_type: EntityType,
@@ -654,7 +649,7 @@ impl<'a> EntityResolver<'a> {
         existing_canonical_name: Option<&str>,
         existing_summary_payload: Option<&str>,
         existing_point_id: Option<&str>,
-    ) -> Result<i64, MemoryError> {
+    ) -> Result<EntityId, MemoryError> {
         // Hot path: use values from the Qdrant payload (no SQLite roundtrip).
         // Both canonical_name AND summary must be present; if either is absent the point
         // predates the payload field — fall back to a targeted SQLite read to avoid
@@ -673,10 +668,7 @@ impl<'a> EntityResolver<'a> {
                 // fields; one targeted read is acceptable until the embedding is rewritten
                 // on the next merge. Also used when canonical_name is present but summary
                 // is absent — prevents overwriting a SQLite summary with empty string.
-                let existing = self
-                    .store
-                    .find_entity_by_id(EntityId(payload_entity_id))
-                    .await?;
+                let existing = self.store.find_entity_by_id(payload_entity_id).await?;
                 let canonical = existing_canonical_name.map_or_else(
                     || {
                         existing.as_ref().map_or_else(
@@ -735,8 +727,7 @@ impl<'a> EntityResolver<'a> {
                 summary_opt,
                 None,
             )
-            .await?
-            .0;
+            .await?;
 
         if entity_id != payload_entity_id {
             // The Qdrant payload pointed at an id absent from (or divergent from) the local
@@ -745,8 +736,8 @@ impl<'a> EntityResolver<'a> {
             // `payload_entity_id` as an edge FK target here would fail with a foreign-key
             // violation; the corrected local id is used and re-stamped into Qdrant below.
             tracing::warn!(
-                payload_entity_id,
-                resolved_entity_id = entity_id,
+                %payload_entity_id,
+                resolved_entity_id = %entity_id,
                 canonical_name = %existing_canonical,
                 "graph: Qdrant entity_id payload did not match local SQLite row \
                  (cross-DB or stale resolution) — corrected to the locally authoritative id"
@@ -776,14 +767,14 @@ impl<'a> EntityResolver<'a> {
             }
             Ok(Err(err)) => {
                 tracing::warn!(
-                    entity_id,
+                    %entity_id,
                     error = %err,
                     "merge re-embed failed; Qdrant entry may be stale"
                 );
             }
             Err(_) => {
                 tracing::warn!(
-                    entity_id,
+                    %entity_id,
                     "merge re-embed timed out; Qdrant entry may be stale"
                 );
             }
@@ -803,7 +794,7 @@ impl<'a> EntityResolver<'a> {
     async fn store_entity_embedding(
         &self,
         emb_store: &EmbeddingStore,
-        entity_id: i64,
+        entity_id: EntityId,
         existing_point_id: Option<&str>,
         name: &str,
         entity_type: EntityType,
@@ -850,7 +841,7 @@ impl<'a> EntityResolver<'a> {
                 .await
             {
                 tracing::warn!(
-                    entity_id,
+                    %entity_id,
                     error = %err,
                     "Qdrant upsert (existing point) failed; Qdrant entry may be stale"
                 );
@@ -863,11 +854,11 @@ impl<'a> EntityResolver<'a> {
                 Ok(point_id) => {
                     if let Err(err) = self
                         .store
-                        .set_entity_qdrant_point_id(EntityId(entity_id), &point_id)
+                        .set_entity_qdrant_point_id(entity_id, &point_id)
                         .await
                     {
                         tracing::warn!(
-                            entity_id,
+                            %entity_id,
                             error = %err,
                             "failed to store qdrant_point_id in SQLite"
                         );
@@ -875,7 +866,7 @@ impl<'a> EntityResolver<'a> {
                 }
                 Err(err) => {
                     tracing::warn!(
-                        entity_id,
+                        %entity_id,
                         error = %err,
                         "Qdrant upsert failed; entity created in SQLite, qdrant_point_id remains NULL"
                     );
@@ -973,13 +964,13 @@ impl<'a> EntityResolver<'a> {
     pub async fn resolve_batch(
         &self,
         entities: &[ExtractedEntity],
-    ) -> Result<Vec<(i64, ResolutionOutcome)>, MemoryError> {
+    ) -> Result<Vec<(EntityId, ResolutionOutcome)>, MemoryError> {
         if entities.is_empty() {
             return Ok(Vec::new());
         }
 
         // Process up to 4 embed+resolve operations concurrently (IC-S2/PERF-01).
-        let mut results: Vec<Option<(i64, ResolutionOutcome)>> = vec![None; entities.len()];
+        let mut results: Vec<Option<(EntityId, ResolutionOutcome)>> = vec![None; entities.len()];
 
         let mut stream = stream::iter(entities.iter().enumerate().map(|(i, e)| {
             let name = e.name.clone();

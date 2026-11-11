@@ -203,14 +203,8 @@ mod pg {
             timeout_secs: 10,
         };
 
-        let stats = link_memory_notes(
-            &[source_id.0],
-            pool.clone(),
-            embedding_store,
-            provider,
-            &cfg,
-        )
-        .await;
+        let stats =
+            link_memory_notes(&[source_id], pool.clone(), embedding_store, provider, &cfg).await;
 
         assert_eq!(
             stats.edges_created, 1,
@@ -386,8 +380,8 @@ mod pg {
             "SELECT COUNT(*) FROM graph_edges WHERE source_entity_id = ? AND target_entity_id = ? \
              AND relation = ?"
         ))
-        .bind(a.0)
-        .bind(b.0)
+        .bind(a)
+        .bind(b)
         .bind("knows")
         .fetch_one(&pool)
         .await
@@ -486,8 +480,8 @@ mod pg {
             "SELECT COUNT(*) FROM graph_edges WHERE source_entity_id = ? AND target_entity_id = ? \
              AND canonical_relation = ?"
         ))
-        .bind(a.0)
-        .bind(b.0)
+        .bind(a)
+        .bind(b)
         .bind("manages")
         .fetch_one(&pool)
         .await
@@ -967,7 +961,7 @@ mod pg {
             .await
             .unwrap();
 
-        let candidate_id: i64 = sqlx::query_scalar(zeph_db::sql!(
+        let candidate_id: zeph_memory::CandidateId = sqlx::query_scalar(zeph_db::sql!(
             "INSERT INTO implicit_conflict_candidates \
              (edge_a_id, edge_b_id, similarity, method, status, created_at, expires_at) \
              VALUES (?, ?, 0.95, 'embedding', 'pending', 1000000, 9999999) RETURNING id"
@@ -1012,7 +1006,9 @@ mod pg {
     fn dummy_edge(id: zeph_memory::EdgeId) -> zeph_memory::graph::types::Edge {
         zeph_memory::graph::types::Edge {
             id,
-            ..zeph_memory::graph::types::Edge::synthetic_anchor(zeph_memory::EntityId(0))
+            ..zeph_memory::graph::types::Edge::synthetic_anchor(
+                serde_json::from_str("0").expect("a bare integer decodes as an entity id"),
+            )
         }
     }
 
@@ -1967,8 +1963,8 @@ mod pg {
         for _ in 0..6 {
             promoted = belief_store
                 .record_evidence(
-                    source.0,
-                    target.0,
+                    source,
+                    target,
                     "provides",
                     "provides",
                     "Rust provides memory safety",
@@ -1998,7 +1994,7 @@ mod pg {
             .unwrap();
 
         belief_store
-            .mark_promoted(belief.id, committed_edge_id.get())
+            .mark_promoted(belief.id, committed_edge_id)
             .await
             .unwrap();
 

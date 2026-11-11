@@ -312,7 +312,7 @@ pub struct CocoonProvider {
     inner:     OpenAiProvider,       // body construction + response decode
     client:    Arc<CocoonClient>,
     usage:     UsageTracker,
-    pub(crate) status_tx: Option<StatusTx>,
+    pub(crate) status_tx: Option<StatusSender>,
 }
 
 impl LlmProvider for CocoonProvider {

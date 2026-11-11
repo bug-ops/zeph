@@ -135,6 +135,10 @@ pub fn markdown_to_telegram_with_config(
 /// }
 /// ```
 #[must_use]
+#[expect(
+    clippy::string_slice,
+    reason = "offset, split_at and search_start come from floor_char_boundary, ceil_char_boundary and rfind on the same string"
+)]
 pub fn utf8_chunks(text: &str, max_bytes: usize) -> Vec<&str> {
     if text.len() <= max_bytes {
         return vec![text];
@@ -157,7 +161,9 @@ pub fn utf8_chunks(text: &str, max_bytes: usize) -> Vec<&str> {
             break;
         }
 
-        let search_start = split_at.saturating_sub(256).max(offset);
+        let search_start = text
+            .ceil_char_boundary(split_at.saturating_sub(256))
+            .max(offset);
         if let Some(newline_pos) = text[search_start..split_at].rfind('\n') {
             let potential_split = search_start + newline_pos + 1;
             if potential_split > offset {
@@ -399,6 +405,14 @@ impl TelegramRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utf8_chunks_multibyte_newline_search_window_does_not_panic() {
+        let text = "\u{20ac}".repeat(400);
+        let chunks = utf8_chunks(&text, 700);
+        assert_eq!(chunks.concat(), text);
+        assert!(chunks.iter().all(|c| c.len() <= 700));
+    }
 
     #[test]
     fn test_bold_conversion() {

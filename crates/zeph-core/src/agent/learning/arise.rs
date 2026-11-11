@@ -4,7 +4,6 @@
 use super::super::{Agent, Channel, Role};
 use super::background::AriseTaskArgs;
 use zeph_llm::provider::MessagePart;
-use zeph_llm::provider::StatusUpdate;
 
 /// Outcome of [`Agent::resolve_pool_entry_provider`]. See that method's doc comment for the
 /// rationale behind each variant.
@@ -169,7 +168,7 @@ impl<C: Channel> Agent<C> {
         };
         let status_tx = self.services.session.status_tx.clone();
         if let Some(ref tx) = self.services.session.status_tx {
-            let _ = tx.send(StatusUpdate::set(format!("Evolving skill: {skill_name}…")));
+            let _ = tx.set(format!("Evolving skill: {skill_name}…"));
         }
         let args = AriseTaskArgs {
             provider: self.resolve_background_provider(config.arise_trace_provider.as_str()),

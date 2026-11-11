@@ -168,14 +168,17 @@ impl std::fmt::Display for ExperienceId {
 /// Strongly typed wrapper for `graph_entities.id` row IDs.
 ///
 /// Prevents confusion with [`ExperienceId`] or other integer IDs at graph-store
-/// API boundaries.
+/// API boundaries. The field is private so ids cannot be built from arbitrary integers;
+/// they come from the store (`sqlx` decoding) or from `serde` deserialization. Because
+/// `Deserialize` is a public path the id is not unforgeable, only not accidentally constructible.
 ///
 /// # Examples
 ///
 /// ```
 /// use zeph_memory::EntityId;
 ///
-/// let id = EntityId(5);
+/// let id: EntityId = serde_json::from_str("5").unwrap();
+/// assert_eq!(id.get(), 5);
 /// assert_eq!(id.to_string(), "5");
 /// ```
 #[derive(
@@ -192,7 +195,26 @@ impl std::fmt::Display for ExperienceId {
     serde::Deserialize,
 )]
 #[sqlx(transparent)]
-pub struct EntityId(pub i64);
+pub struct EntityId(i64);
+
+impl EntityId {
+    /// The raw `graph_entities.id` value.
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+
+    /// Decode an id from a `Qdrant` payload value; `None` when it is not an integer.
+    pub(crate) fn from_payload(value: &serde_json::Value) -> Option<Self> {
+        serde::Deserialize::deserialize(value).ok()
+    }
+
+    /// Wrap a raw id in test fixtures.
+    #[cfg(test)]
+    pub(crate) const fn for_test(raw: i64) -> Self {
+        Self(raw)
+    }
+}
 
 impl std::fmt::Display for EntityId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -247,6 +269,39 @@ impl EdgeId {
 }
 
 impl std::fmt::Display for EdgeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Strongly typed wrapper for `implicit_conflict_candidates.id` row IDs.
+///
+/// Keeps candidate ids from being mixed with [`EdgeId`] or [`EntityId`]. The field is private;
+/// ids come from the store through `sqlx` decoding.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_memory::CandidateId;
+///
+/// fn raw(id: CandidateId) -> i64 {
+///     id.get()
+/// }
+/// # let _ = raw;
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, sqlx::Type)]
+#[sqlx(transparent)]
+pub struct CandidateId(i64);
+
+impl CandidateId {
+    /// The raw `implicit_conflict_candidates.id` value.
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for CandidateId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }

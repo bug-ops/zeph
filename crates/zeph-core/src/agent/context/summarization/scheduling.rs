@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::agent::Agent;
 use crate::channel::Channel;
-use zeph_llm::provider::StatusUpdate;
+use zeph_llm::status::{StatusText, StatusUpdate};
 
 // Re-export for tests in this module (subgoal_extraction_tests) — test-only.
 #[cfg(test)]
@@ -51,7 +51,9 @@ impl<C: Channel> Agent<C> {
         let collected = status.take();
         for update in &collected {
             match update {
-                StatusUpdate::Set(text) => self.channel.send_status_best_effort(text).await,
+                StatusUpdate::Set(text) => {
+                    self.channel.send_status_best_effort(text.as_str()).await;
+                }
                 StatusUpdate::Clear => self.channel.clear_status_best_effort().await,
             }
         }
@@ -201,7 +203,7 @@ impl zeph_agent_context::StatusSink for CollectStatusSink {
         self.0
             .lock()
             .expect("invariant: CollectStatusSink mutex is not poisoned")
-            .push(StatusUpdate::set(msg.to_owned()));
+            .extend(StatusText::new(msg.to_owned()).map(StatusUpdate::Set));
         std::future::ready(())
     }
 

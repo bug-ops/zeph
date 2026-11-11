@@ -269,7 +269,7 @@ pub struct ContextAssemblyView<'a> {
     ///
     /// Mirrors the channel wired in `ContextSummarizationView::status_tx`. `None` in
     /// non-TUI modes; the service skips sending when the sender is absent.
-    pub status_tx: Option<zeph_llm::provider::StatusTx>,
+    pub status_tx: Option<zeph_llm::status::StatusSender>,
     /// Background task supervisor for registering `JoinHandle`s produced during context
     /// assembly (e.g. `mark_reasoning_used` in `fetch_reasoning_strategies`).
     ///
@@ -413,7 +413,7 @@ pub struct ContextSummarizationView<'a> {
     /// Hash of the last user message when subgoal extraction was scheduled.
     pub subgoal_user_msg_hash: &'a mut Option<u64>,
     /// TUI / channel status sender for spinner messages. `None` when TUI is disabled.
-    pub status_tx: Option<zeph_llm::provider::StatusTx>,
+    pub status_tx: Option<zeph_llm::status::StatusSender>,
 
     // ── Credential scrubber ───────────────────────────────────────────────────
     /// Function pointer for scrubbing credentials from summary text.

@@ -244,12 +244,13 @@ impl LlmSafetyProbe {
     }
 
     fn parse_verdict(response: &str) -> ProbeVerdict {
-        // Try to extract JSON from the response.
-        let start = response.find('{');
-        let end = response.rfind('}');
-        if let (Some(s), Some(e)) = (start, end)
-            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&response[s..=e])
-        {
+        // Try to extract JSON from the response; a closing brace before the opening one
+        // yields no span and falls through to the fail-open path.
+        let span = response
+            .find('{')
+            .zip(response.rfind('}'))
+            .and_then(|(s, e)| response.get(s..=e));
+        if let Some(v) = span.and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok()) {
             match v.get("verdict").and_then(|x| x.as_str()) {
                 Some("allow") => return ProbeVerdict::Allow,
                 Some("deny") => {
@@ -856,7 +857,10 @@ impl ShadowSentinel {
         };
         let summary = match &verdict {
             ProbeVerdict::Deny { reason } => {
-                format!("probe denied: {}", &reason[..reason.len().min(120)])
+                format!(
+                    "probe denied: {}",
+                    zeph_common::text::truncate_to_bytes_ref(reason, 120)
+                )
             }
             ProbeVerdict::Allow => format!("probe allowed {qualified_tool_id}"),
             ProbeVerdict::Skip => format!("probe skipped {qualified_tool_id}"),
@@ -994,14 +998,14 @@ fn glob_matches(pattern: &str, value: &str) -> bool {
             continue;
         }
         if i == 0 {
-            if !remaining.starts_with(part) {
+            let Some(after) = remaining.strip_prefix(part) else {
                 return false;
-            }
-            remaining = &remaining[part.len()..];
+            };
+            remaining = after;
         } else if i == parts.len() - 1 {
             return remaining.ends_with(part);
-        } else if let Some(pos) = remaining.find(part) {
-            remaining = &remaining[pos + part.len()..];
+        } else if let Some((_, after)) = remaining.split_once(part) {
+            remaining = after;
         } else {
             return false;
         }
@@ -1213,6 +1217,12 @@ mod tests {
         let args = serde_json::json!({});
         let verdict = probe.evaluate("shell", &args, &[]).await;
         assert!(matches!(verdict, ProbeVerdict::Deny { .. }), "{verdict:?}");
+    }
+
+    #[test]
+    fn parse_verdict_closing_brace_before_opening_brace_allows() {
+        let v = LlmSafetyProbe::parse_verdict("no} verdict {");
+        assert!(matches!(v, ProbeVerdict::Allow));
     }
 
     #[test]
@@ -1760,6 +1770,41 @@ mod tests {
                 && e.context_summary.as_deref() == Some("other session ran rm -rf")),
             "probe context must include the cross-session tool history event, got: {seen:?}"
         );
+    }
+
+    /// #6998 regression: a multi-byte deny reason crossing byte 120 must not abort the summary.
+    #[tokio::test]
+    async fn check_tool_call_deny_reason_multibyte_at_summary_cut() {
+        struct DenyProbe(String);
+        impl SafetyProbe for DenyProbe {
+            fn evaluate<'a>(
+                &'a self,
+                _tool_id: &'a str,
+                _tool_args: &'a JsonValue,
+                _trajectory: &'a [SentinelEvent],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ProbeVerdict> + Send + 'a>>
+            {
+                let reason = self.0.clone();
+                Box::pin(async move { ProbeVerdict::Deny { reason } })
+            }
+        }
+
+        let config = zeph_config::ShadowSentinelConfig {
+            enabled: true,
+            ..zeph_config::ShadowSentinelConfig::default()
+        };
+        let reason = format!("{}{}", "a".repeat(119), "\u{20ac}".repeat(4));
+        let sentinel = ShadowSentinel::new(
+            ShadowEventStore::new(test_pool().await),
+            Box::new(DenyProbe(reason)),
+            config,
+            "current-session",
+        );
+        let args = serde_json::Value::Object(serde_json::Map::new());
+        let verdict = sentinel
+            .check_tool_call("builtin:shell", &args, 1, "calm")
+            .await;
+        assert!(matches!(verdict, ProbeVerdict::Deny { .. }));
     }
 
     /// Drives `check_tool_call` for `tool_id` under `session_id` and returns the exact

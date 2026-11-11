@@ -452,7 +452,7 @@ pub(crate) async fn build_tool_setup(
     no_mcp_media: bool,
     runtime_ctx: RuntimeContext,
     age_vault: Option<&Arc<std::sync::RwLock<zeph_core::vault::AgeVaultProvider>>>,
-    status_tx: Option<zeph_llm::provider::StatusTx>,
+    status_tx: Option<zeph_llm::status::StatusSender>,
     pool: Option<&zeph_db::DbPool>,
     provider: &zeph_llm::any::AnyProvider,
     supervisor: Option<&zeph_common::TaskSupervisor>,
@@ -578,7 +578,8 @@ pub(crate) async fn build_tool_setup(
         age_vault,
     );
     if let Some(ref tx) = status_tx {
-        mcp_manager_builder = mcp_manager_builder.with_status_tx(tx.clone());
+        mcp_manager_builder =
+            mcp_manager_builder.with_status_tx(tx.with_source(zeph_llm::status::StatusSource::Mcp));
     }
     mcp_manager_builder =
         crate::bootstrap::wire_trust_calibration(mcp_manager_builder, config, pool).await;
@@ -643,7 +644,8 @@ pub(crate) async fn build_tool_setup(
             config.mcp.media.max_images_per_result,
         );
         if let Some(ref tx) = status_tx {
-            mcp_executor = mcp_executor.with_status_tx(tx.clone());
+            mcp_executor =
+                mcp_executor.with_status_tx(tx.with_source(zeph_llm::status::StatusSource::Mcp));
         }
     }
     if let Some(ref logger) = audit_logger {
@@ -1653,10 +1655,11 @@ pub(crate) async fn apply_code_indexer(
     embed_provider: zeph_llm::any::AnyProvider,
     pool: zeph_db::DbPool,
     cli_mode: bool,
-    status_tx: Option<zeph_llm::provider::StatusTx>,
+    status_tx: Option<zeph_llm::status::StatusSender>,
     supervisor: Option<zeph_common::TaskSupervisor>,
 ) -> CodeIndexerSetup {
     let config = &full_config.index;
+    let status_tx = status_tx.map(|tx| tx.with_source(zeph_llm::status::StatusSource::Index));
     if !config.enabled {
         return (None, None);
     }
@@ -1766,7 +1769,7 @@ fn spawn_background_indexer(
     root: std::path::PathBuf,
     progress_tx: tokio::sync::watch::Sender<zeph_index::IndexProgress>,
     cli_mode: bool,
-    status_tx: Option<zeph_llm::provider::StatusTx>,
+    status_tx: Option<zeph_llm::status::StatusSender>,
     supervisor: Option<zeph_common::TaskSupervisor>,
 ) {
     if let Some(tx) = status_tx {
@@ -1826,7 +1829,7 @@ fn spawn_background_indexer(
 /// `spawn_index_progress_printer`'s one-shot eprintln, kept separate for its own convention).
 fn spawn_index_progress_status_forwarder(
     mut progress_rx: tokio::sync::watch::Receiver<zeph_index::IndexProgress>,
-    status_tx: zeph_llm::provider::StatusTx,
+    status_tx: zeph_llm::status::StatusSender,
     supervisor: Option<zeph_common::TaskSupervisor>,
 ) {
     let fut = async move {
@@ -1835,12 +1838,12 @@ fn spawn_index_progress_status_forwarder(
             if p.files_total == 0 {
                 continue;
             }
-            let _ = status_tx.send(zeph_llm::provider::StatusUpdate::set(format!(
+            let _ = status_tx.set(format!(
                 "Indexing repository… ({}/{} files)",
                 p.files_done, p.files_total
-            )));
+            ));
             if p.files_done >= p.files_total {
-                let _ = status_tx.send(zeph_llm::provider::StatusUpdate::set("Indexing complete"));
+                let _ = status_tx.set("Indexing complete");
                 break;
             }
         }
@@ -1868,7 +1871,7 @@ fn start_index_watcher(
     watch: bool,
     root: &std::path::Path,
     indexer: std::sync::Arc<CodeIndexer>,
-    status_tx: Option<zeph_llm::provider::StatusTx>,
+    status_tx: Option<zeph_llm::status::StatusSender>,
     supervisor: Option<zeph_common::TaskSupervisor>,
 ) -> Option<IndexWatcher> {
     if !watch {
@@ -2593,7 +2596,7 @@ pub(crate) fn apply_cocoon_stt<C: Channel>(
     entry: &zeph_core::config::ProviderEntry,
     language: &str,
     llm_timeout_secs: u64,
-    status_tx: Option<zeph_llm::provider::StatusTx>,
+    status_tx: Option<zeph_llm::status::StatusSender>,
 ) -> zeph_core::agent::Agent<C> {
     let model = entry.stt_model.as_deref().unwrap_or("whisper-1");
     let base_url = entry
@@ -2607,7 +2610,7 @@ pub(crate) fn apply_cocoon_stt<C: Channel>(
     ));
     let mut stt = zeph_llm::cocoon::CocoonSttProvider::new(model, client).with_language(language);
     if let Some(tx) = status_tx {
-        stt.set_status_tx(tx);
+        stt.set_status_tx(tx.with_source(zeph_llm::status::StatusSource::Stt));
     }
     tracing::info!(model, base_url, "STT enabled via Cocoon sidecar");
     agent.with_stt(Box::new(stt))
@@ -2859,7 +2862,7 @@ pub(crate) fn spawn_memory_maintenance_loops(
     memory: &std::sync::Arc<zeph_memory::semantic::SemanticMemory>,
     provider: &zeph_llm::any::AnyProvider,
     supervisor: &zeph_common::TaskSupervisor,
-    status_tx: Option<&zeph_llm::provider::StatusTx>,
+    status_tx: Option<&zeph_llm::status::StatusSender>,
     skip_eviction: bool,
     caller: &str,
 ) {
@@ -3055,7 +3058,8 @@ pub(crate) fn spawn_memory_maintenance_loops(
         let hebbian_provider = app
             .build_hebbian_consolidation_provider()
             .unwrap_or_else(|| provider.clone());
-        let status_tx_clone = status_tx.cloned();
+        let status_tx_clone =
+            status_tx.map(|tx| tx.with_source(zeph_llm::status::StatusSource::Memory));
         let cancel = supervisor.cancellation_token();
         supervisor.spawn(zeph_common::TaskDescriptor {
             name: "mem-hebbian-consolidation",
@@ -3158,16 +3162,17 @@ pub(crate) async fn spawn_worktree_reconcile(
     wm: &Arc<zeph_worktree::DefaultWorktreeManager>,
     cfg: &zeph_config::WorktreeConfig,
     supervisor: &zeph_common::TaskSupervisor,
-    status_tx: Option<&zeph_llm::provider::StatusTx>,
+    status_tx: Option<&zeph_llm::status::StatusSender>,
 ) {
+    let status_tx = status_tx.map(|tx| tx.with_source(zeph_llm::status::StatusSource::Worktree));
     if cfg.reconcile_on_startup {
-        run_worktree_sweep(wm, status_tx, "startup").await;
+        run_worktree_sweep(wm, status_tx.as_ref(), "startup").await;
     }
 
     if cfg.auto_reconcile_secs > 0 {
         let wm = Arc::clone(wm);
         let interval_secs = cfg.auto_reconcile_secs;
-        let status_tx = status_tx.cloned();
+        let status_tx = status_tx.clone();
         let cancel = supervisor.cancellation_token();
         supervisor.spawn(zeph_common::TaskDescriptor {
             name: "worktree_reconcile",
@@ -3194,7 +3199,7 @@ pub(crate) async fn spawn_worktree_reconcile(
 async fn worktree_reconcile_loop(
     wm: Arc<zeph_worktree::DefaultWorktreeManager>,
     interval_secs: u64,
-    status_tx: Option<zeph_llm::provider::StatusTx>,
+    status_tx: Option<zeph_llm::status::StatusSender>,
     cancel: tokio_util::sync::CancellationToken,
 ) {
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
@@ -3217,7 +3222,7 @@ async fn worktree_reconcile_loop(
 /// actually breached (critic gap M7) — a clean sweep logs at `debug` only.
 async fn run_worktree_sweep(
     wm: &zeph_worktree::DefaultWorktreeManager,
-    status_tx: Option<&zeph_llm::provider::StatusTx>,
+    status_tx: Option<&zeph_llm::status::StatusSender>,
     trigger: &str,
 ) {
     match wm.sweep().await {
@@ -3225,7 +3230,7 @@ async fn run_worktree_sweep(
             let msg = format_quota_status_message(&status);
             tracing::warn!(trigger, %msg, "worktree sweep: action needed");
             if let Some(tx) = status_tx {
-                let _ = tx.send(zeph_llm::provider::StatusUpdate::set(msg));
+                let _ = tx.set(msg);
             }
         }
         Ok(_) => {
@@ -4071,9 +4076,13 @@ mod tests {
         let (progress_tx, _keepalive) =
             tokio::sync::watch::channel(zeph_index::IndexProgress::default());
         let (status_tx, mut status_rx) =
-            tokio::sync::mpsc::unbounded_channel::<zeph_llm::provider::StatusUpdate>();
+            zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Index);
 
         spawn_index_progress_status_forwarder(progress_tx.subscribe(), status_tx, None);
+
+        let set = |text: &'static str| {
+            zeph_llm::status::StatusUpdate::Set(zeph_llm::status::StatusText::new(text).unwrap())
+        };
 
         progress_tx
             .send(zeph_index::IndexProgress {
@@ -4083,8 +4092,8 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            status_rx.recv().await.unwrap(),
-            zeph_llm::provider::StatusUpdate::set("Indexing repository… (1/2 files)")
+            status_rx.next().await.unwrap(),
+            set("Indexing repository… (1/2 files)")
         );
 
         progress_tx
@@ -4094,18 +4103,16 @@ mod tests {
                 chunks_created: 5,
             })
             .unwrap();
-        assert_eq!(
-            status_rx.recv().await.unwrap(),
-            zeph_llm::provider::StatusUpdate::set("Indexing repository… (2/2 files)")
-        );
-        assert_eq!(
-            status_rx.recv().await.unwrap(),
-            zeph_llm::provider::StatusUpdate::set("Indexing complete")
-        );
+        // Latest wins: the 2/2 update and the completion message may collapse into one.
+        let mut last = status_rx.next().await.unwrap();
+        if last == set("Indexing repository… (2/2 files)") {
+            last = status_rx.next().await.unwrap();
+        }
+        assert_eq!(last, set("Indexing complete"));
 
         // The forwarder stops after sending the completion message — no further sends,
         // and the channel closes once the forwarder task exits.
-        assert!(status_rx.recv().await.is_none());
+        assert!(status_rx.next().await.is_none());
     }
 
     /// A zero-file project (`files_total == 0`) never sends any `IndexProgress` update from
@@ -4121,13 +4128,13 @@ mod tests {
         let (progress_tx, _keepalive) =
             tokio::sync::watch::channel(zeph_index::IndexProgress::default());
         let (status_tx, mut status_rx) =
-            tokio::sync::mpsc::unbounded_channel::<zeph_llm::provider::StatusUpdate>();
+            zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Index);
 
         spawn_index_progress_status_forwarder(progress_tx.subscribe(), status_tx, None);
         drop(progress_tx); // closes the watch channel, as if index_project finished with no updates
 
         assert!(
-            status_rx.recv().await.is_none(),
+            status_rx.next().await.is_none(),
             "with zero updates ever sent, the forwarder must exit on channel closure without \
              emitting any status message"
         );
@@ -4656,7 +4663,7 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
         let supervisor = zeph_common::TaskSupervisor::new(cancel);
         let (status_tx, _status_rx) =
-            tokio::sync::mpsc::unbounded_channel::<zeph_llm::provider::StatusUpdate>();
+            zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Agent);
 
         spawn_memory_maintenance_loops(
             &app,

@@ -2170,6 +2170,22 @@ fn strip_tafc_fields_removes_think_keys() {
 }
 
 #[test]
+fn strip_tafc_fields_multibyte_key_at_prefix_cut_is_not_a_tafc_key() {
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "_tafc_thi\u{20ac}".to_owned(),
+        serde_json::Value::String("x".to_owned()),
+    );
+    map.insert(
+        "command".to_owned(),
+        serde_json::Value::String("ls".to_owned()),
+    );
+    let result = strip_tafc_fields(&mut map, "bash");
+    assert!(!result.unwrap(), "multi-byte key is not a TAFC field");
+    assert!(map.contains_key("_tafc_thi\u{20ac}"));
+}
+
+#[test]
 fn strip_tafc_fields_no_think_fields() {
     let mut map = serde_json::Map::new();
     map.insert(

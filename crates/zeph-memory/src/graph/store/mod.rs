@@ -141,7 +141,7 @@ impl GraphStore {
                last_seen_at = CURRENT_TIMESTAMP \
              RETURNING id"
         );
-        let id: i64 =
+        let id: EntityId =
             zeph_db::query_scalar(sqlx::AssertSqlSafe(zeph_db::rewrite_placeholders(&raw)))
                 .bind(surface_name)
                 .bind(canonical_name)
@@ -152,7 +152,7 @@ impl GraphStore {
                 .bind(prov.trust_column())
                 .fetch_one(&self.pool)
                 .await?;
-        Ok(EntityId(id))
+        Ok(id)
     }
 
     /// Find an entity by exact canonical name and type.
@@ -225,13 +225,51 @@ impl GraphStore {
             let sql = format!(
                 "SELECT id, canonical_name FROM graph_entities WHERE id IN ({placeholders})"
             );
-            let mut q = zeph_db::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(sql));
+            let mut q = zeph_db::query_as::<_, (EntityId, String)>(sqlx::AssertSqlSafe(sql));
             for id in chunk {
                 q = q.bind(*id);
             }
-            let rows: Vec<(i64, String)> = q.fetch_all(&self.pool).await?;
+            let rows: Vec<(EntityId, String)> = q.fetch_all(&self.pool).await?;
             for (id, name) in rows {
-                result.insert(EntityId(id), name);
+                result.insert(id, name);
+            }
+        }
+        Ok(result)
+    }
+
+    /// Resolve messages to the entities their active edges connect.
+    ///
+    /// The store writes the originating message id to `graph_edges.episode_id`; both endpoints
+    /// of every active edge recorded for a message are returned. Messages without active edges
+    /// are absent from the map. Requests are chunked to stay under the bind-parameter limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database query fails.
+    #[tracing::instrument(name = "memory.graph.store.entity_ids_for_messages", skip_all, fields(count = message_ids.len()))]
+    pub async fn entity_ids_for_messages(
+        &self,
+        message_ids: &[MessageId],
+    ) -> Result<HashMap<MessageId, Vec<EntityId>>, MemoryError> {
+        let mut result: HashMap<MessageId, Vec<EntityId>> = HashMap::new();
+        for chunk in message_ids.chunks(SQLITE_BATCH_LIMIT_2X) {
+            let placeholders = placeholder_list(1, chunk.len());
+            let sql = format!(
+                "SELECT DISTINCT episode_id, source_entity_id, target_entity_id \
+                 FROM graph_edges WHERE episode_id IN ({placeholders}) AND valid_to IS NULL"
+            );
+            let mut q =
+                zeph_db::query_as::<_, (MessageId, EntityId, EntityId)>(sqlx::AssertSqlSafe(sql));
+            for id in chunk {
+                q = q.bind(*id);
+            }
+            for (message, source, target) in q.fetch_all(&self.pool).await? {
+                let entities = result.entry(message).or_default();
+                for entity in [source, target] {
+                    if !entities.contains(&entity) {
+                        entities.push(entity);
+                    }
+                }
             }
         }
         Ok(result)
@@ -2372,7 +2410,7 @@ fn community_ids_sql(placeholders: &str) -> String {
 
 #[derive(zeph_db::FromRow)]
 struct EntityRow {
-    id: i64,
+    id: EntityId,
     name: String,
     canonical_name: String,
     entity_type: String,
@@ -2405,7 +2443,7 @@ fn entity_from_row(row: EntityRow) -> Result<Entity, MemoryError> {
         .parse::<EntityType>()
         .map_err(MemoryError::GraphStore)?;
     Ok(Entity {
-        id: EntityId(row.id),
+        id: row.id,
         name: row.name,
         canonical_name: row.canonical_name,
         entity_type,
@@ -2582,8 +2620,7 @@ fn community_select_cols(table_prefix: &str) -> String {
 }
 
 fn community_from_row(row: CommunityRow) -> Result<Community, MemoryError> {
-    let raw_ids: Vec<i64> = serde_json::from_str(&row.entity_ids)?;
-    let entity_ids = raw_ids.into_iter().map(EntityId).collect();
+    let entity_ids: Vec<EntityId> = serde_json::from_str(&row.entity_ids)?;
     Ok(Community {
         id: row.id,
         name: row.name,
@@ -3492,7 +3529,7 @@ async fn set_superseded_by(
 
 /// Row type for the UNION ALL FTS5 query in `find_entities_ranked`.
 type EntityFtsRow = (
-    i64,
+    EntityId,
     String,
     String,
     String,
@@ -3562,7 +3599,7 @@ fn normalize_and_dedup(rows: Vec<EntityFtsRow>) -> Result<Vec<(Entity, f32)>, Me
     let max_score: f64 = rows.iter().map(|r| r.9).fold(0.0_f64, f64::max);
     let max_score = if max_score <= 0.0 { 1.0 } else { max_score };
 
-    let mut seen_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut seen_ids: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
     let mut result: Vec<(Entity, f32)> = Vec::with_capacity(rows.len());
     for (
         id,
@@ -3584,7 +3621,7 @@ fn normalize_and_dedup(rows: Vec<EntityFtsRow>) -> Result<Vec<(Entity, f32)>, Me
             .parse()
             .unwrap_or(super::types::EntityType::Concept);
         let entity = Entity {
-            id: EntityId(id),
+            id,
             name,
             canonical_name,
             entity_type,

@@ -12,7 +12,7 @@
 
 use zeph_core::channel::{
     Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse,
-    SkillCatalogItem, StopHint, ToolOutputEvent, ToolStartEvent,
+    SkillCatalogItem, StatusText, StopHint, ToolOutputEvent, ToolStartEvent,
 };
 
 use crate::cli::CliChannel;
@@ -160,7 +160,7 @@ impl Channel for AnyChannel {
         dispatch_channel!(self, send_notice, text)
     }
 
-    async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
+    async fn send_status(&mut self, text: &StatusText) -> Result<(), ChannelError> {
         dispatch_channel!(self, send_status, text)
     }
 
@@ -270,7 +270,11 @@ mod tests {
     #[tokio::test]
     async fn any_channel_cli_send_status_returns_ok() {
         let mut ch = AnyChannel::Cli(CliChannel::new());
-        assert!(ch.send_status("thinking...").await.is_ok());
+        assert!(
+            ch.send_status(&StatusText::new("thinking...").unwrap())
+                .await
+                .is_ok()
+        );
     }
 
     // crossterm on Windows uses ReadConsoleInputW which blocks indefinitely
@@ -359,7 +363,9 @@ mod tests {
         // 7. send_typing
         ch.send_typing().await.unwrap();
         // 8. send_status
-        ch.send_status("working").await.unwrap();
+        ch.send_status(&StatusText::new("working").unwrap())
+            .await
+            .unwrap();
         // 9. send_thinking_chunk
         ch.send_thinking_chunk("...").await.unwrap();
         // 10. send_queue_count

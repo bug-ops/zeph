@@ -140,7 +140,10 @@ impl FilterStats {
             .map(|c| {
                 let trimmed = c.trim();
                 if trimmed.len() > 60 {
-                    format!(" `{}…`", &trimmed[..57])
+                    format!(
+                        " `{}…`",
+                        zeph_common::text::truncate_to_bytes_ref(trimmed, 57)
+                    )
                 } else {
                     format!(" `{trimmed}`")
                 }
@@ -463,6 +466,10 @@ pub fn truncate_tool_output(output: &str) -> String {
 /// assert!(truncated.len() < long.len());
 /// ```
 #[must_use]
+#[expect(
+    clippy::string_slice,
+    reason = "head_end and tail_start come from floor_char_boundary and ceil_char_boundary on the same string"
+)]
 pub fn truncate_tool_output_at(output: &str, max_chars: usize) -> String {
     if output.len() <= max_chars {
         return output.to_string();
@@ -1250,6 +1257,10 @@ impl ToolExecutor for DynExecutor {
 ///
 /// Searches for `` ```{lang} `` … `` ``` `` pairs, returning trimmed content.
 #[must_use]
+#[expect(
+    clippy::string_slice,
+    reason = "indexes come from find on the same string and the ASCII marker length"
+)]
 pub fn extract_fenced_blocks<'a>(text: &'a str, lang: &str) -> Vec<&'a str> {
     let marker = format!("```{lang}");
     let marker_len = marker.len();
@@ -1704,6 +1715,19 @@ mod tests {
         let fs = FilterStats::default();
         let line = fs.format_inline("bash");
         assert_eq!(line, "[bash] 0 lines \u{2192} 0 lines, 0.0% filtered");
+    }
+
+    #[test]
+    fn filter_stats_format_inline_multibyte_command_at_cut_offset() {
+        for pad in 0..3 {
+            let command = format!("{}{}", "a".repeat(pad), "\u{20ac}".repeat(40));
+            let fs = FilterStats {
+                command: Some(command),
+                ..Default::default()
+            };
+            let line = fs.format_inline("shell");
+            assert!(line.contains('\u{2026}'));
+        }
     }
 
     // DynExecutor tests

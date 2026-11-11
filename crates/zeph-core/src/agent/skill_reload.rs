@@ -8,7 +8,6 @@
 //! filesystem watcher signals a change.
 
 use std::collections::HashSet;
-use zeph_llm::provider::StatusUpdate;
 
 use super::Agent;
 use crate::channel::Channel;
@@ -222,7 +221,7 @@ impl<C: Channel> Agent<C> {
                     |tx| -> Box<dyn Fn(usize, usize) + Send> {
                         Box::new(move |completed, total| {
                             let msg = format!("Syncing skills: {completed}/{total}");
-                            let _ = tx.send(StatusUpdate::set(msg));
+                            let _ = tx.set(msg);
                         })
                     },
                 );

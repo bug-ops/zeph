@@ -184,8 +184,8 @@ mod tests {
         // Neither entity id exists in this fresh database — a genuine FK violation.
         let err = store
             .insert_edge(
-                crate::types::EntityId(999_999),
-                crate::types::EntityId(888_888),
+                crate::types::EntityId::for_test(999_999),
+                crate::types::EntityId::for_test(888_888),
                 "related_to",
                 "fact",
                 0.9,

@@ -63,6 +63,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-tools`: UTF-8-safe truncation of filter-stats command, adversarial-policy params and values that aborted on multi-byte text (#6997) (#7018)
+- `zeph-tools`, `zeph-core`, `zeph-channels`: all production string slices are boundary-safe, fixing aborts in `$(` deobfuscation, non-ASCII env-prefix keys, doom-loop previews, TAFC keys and probe summaries; `clippy::string_slice` now warns in five crates (#6998) (#7018)
+- `zeph-sanitizer`, `zeph-orchestration`: tests and spec 044 invariant only, pinning that sub-agent final text reaches an LLM through sanitized orchestration paths; no behavior or API change (#6999) (#7018)
+- `zeph-mcp`: an MCP tool result with `is_error` is reported as `Failed` instead of `Success` (#7000) (#7018)
+- `zeph-memory`: `EntityId` has a private field and `CandidateId` types conflict candidates, so ids cannot be built or mixed by accident (breaking: `EntityId(x)` and `.0` removed, use `get()`) (#7001) (#7018)
+- `zeph-llm`, `zeph-core`, `zeph-channels`, `zeph-tui`, `zeph-acp`: typed status protocol with `StatusText`, a bounded latest-wins `StatusSender` and clear-if-armed ownership replaces empty-string clears (breaking: `Channel::send_status` takes `&StatusText`, `StatusTx` removed) (#7002) (#7018)
+- `zeph-memory`: causal-distance scoring resolves message ids to graph entities before measuring distance; latent until a goal entity source exists (#7003) (#7018)
 - `zeph`: `zeph doctor` shows the real path in the `chmod 600` fix hint instead of a masked one (#7007)
 - `zeph-a2a`, `zeph-core`: upstream error bodies and skill failure reasons are truncated on UTF-8 boundaries via `truncate_to_bytes` (#7007)
 - `zeph-core`, `zeph-channels`: the memory-write disclosure note is a `Status` event in `--json` instead of an assistant `response_chunk`, via new `Channel::send_notice`, and no longer carries a tool-output preview (#6979) (#6996)

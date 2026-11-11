@@ -107,11 +107,10 @@ impl<C: Channel> Agent<C> {
                     .experiment_session_summary(&latest.session_id)
                     .await?
             {
-                let sid_len = summary.session_id.len().min(11);
                 let _ = write!(
                     msg,
                     "\nLast session: `{}` | {} experiments | {} accepted | best delta: {:.3}",
-                    &summary.session_id[..sid_len],
+                    zeph_common::text::truncate_to_bytes_ref(&summary.session_id, 11),
                     summary.total,
                     summary.accepted_count,
                     summary.best_delta,
@@ -151,12 +150,11 @@ impl<C: Channel> Agent<C> {
             "ID", "Session", "Parameter", "Delta", "Baseline", "Candidate", "Accepted"
         );
         for r in &rows {
-            let sid_len = r.session_id.len().min(11);
             let _ = writeln!(
                 out,
                 "{:<8} {:<12} {:<20} {:<8.3} {:<8.3} {:<8.3} {:<8}",
                 r.id,
-                &r.session_id[..sid_len],
+                zeph_common::text::truncate_to_bytes_ref(&r.session_id, 11),
                 r.parameter,
                 r.delta,
                 r.baseline_score,
@@ -177,7 +175,6 @@ impl<C: Channel> Agent<C> {
         let msg = match row {
             None => "No accepted experiment results found yet.".to_owned(),
             Some(r) => {
-                let sid_len = r.session_id.len().min(11);
                 format!(
                     "**Best experiment result**\n\
                      - Session: `{}`\n\
@@ -185,7 +182,7 @@ impl<C: Channel> Agent<C> {
                      - Delta: `{:.3}` ({:.3} → {:.3})\n\
                      - Source: `{}`\n\
                      - At: {}",
-                    &r.session_id[..sid_len],
+                    zeph_common::text::truncate_to_bytes_ref(&r.session_id, 11),
                     r.parameter,
                     r.delta,
                     r.baseline_score,
@@ -243,7 +240,7 @@ impl<C: Channel> Agent<C> {
                         format!(
                             "Experiment session `{}` complete: {}/{} accepted, \
                                  baseline {:.3} → {:.3} (improvement {:.3}), {wall_secs:.1}s{}",
-                            &report.session_id[..report.session_id.len().min(8)],
+                            zeph_common::text::truncate_to_bytes_ref(&report.session_id, 8),
                             accepted,
                             report.results.len(),
                             report.baseline_score,

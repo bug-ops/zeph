@@ -10,7 +10,6 @@
 
 use tokio::sync::oneshot::{self, error::RecvError, error::TryRecvError};
 use tracing::Instrument as _;
-use zeph_llm::provider::StatusUpdate;
 
 use super::Agent;
 use super::agent_supervisor::TaskClass;
@@ -20,6 +19,13 @@ use super::goal_selfcheck::{
 };
 use super::turn::TurnOrigin;
 use crate::channel::Channel;
+
+/// Status-line transitions driven by the auto-check lifecycle.
+#[derive(Clone, Copy)]
+enum GoalCheckStatus {
+    Verifying,
+    Clear,
+}
 
 /// A resolved auto-check: its outcome plus whether it is still relevant.
 pub(super) struct Resolution {
@@ -93,11 +99,15 @@ impl GoalAutoCheckState {
 }
 
 impl<C: Channel> Agent<C> {
-    fn set_goal_check_status(&self, update: StatusUpdate) {
-        if let Some(tx) = &self.services.session.status_tx
-            && tx.send(update).is_err()
-        {
-            tracing::debug!("goal auto-check: status receiver closed");
+    fn set_goal_check_status(&self, update: GoalCheckStatus) {
+        if let Some(tx) = &self.services.session.status_tx {
+            let sent = match update {
+                GoalCheckStatus::Verifying => tx.set(STATUS_VERIFYING),
+                GoalCheckStatus::Clear => tx.clear(),
+            };
+            if sent.is_err() {
+                tracing::debug!("goal auto-check: status receiver closed");
+            }
         }
     }
 
@@ -149,7 +159,7 @@ impl<C: Channel> Agent<C> {
             return;
         }
         if self.services.goal_auto_check.reap_finished() {
-            self.set_goal_check_status(StatusUpdate::Clear);
+            self.set_goal_check_status(GoalCheckStatus::Clear);
         }
         let goal_text = match self.goal_auto_check_target(origin, turn_had_error) {
             Ok(text) => text,
@@ -187,13 +197,13 @@ impl<C: Channel> Agent<C> {
         );
         if accepted {
             self.services.goal_auto_check.track(rx);
-            self.set_goal_check_status(StatusUpdate::set(STATUS_VERIFYING));
+            self.set_goal_check_status(GoalCheckStatus::Verifying);
         }
     }
 
     /// Deliver a resolved auto-check: clear the status, then send the report if still current.
     pub(super) async fn handle_goal_auto_check_done(&mut self, resolution: Resolution) {
-        self.set_goal_check_status(StatusUpdate::Clear);
+        self.set_goal_check_status(GoalCheckStatus::Clear);
         match resolution.outcome {
             Ok(GoalCheckOutcome::Report(report)) if resolution.current => {
                 if let Err(e) = self.channel.send(&report).await {
@@ -217,6 +227,7 @@ mod tests {
     };
     use crate::agent::loop_event::LoopEvent;
     use crate::goal::GoalAccounting;
+    use zeph_llm::status::{StatusText, StatusUpdate};
 
     const VERDICT: &str = r#"{"achieved":false,"reasoning":"half done","confidence":0.6,"suggestions":["run tests"]}"#;
 
@@ -252,6 +263,10 @@ mod tests {
         metrics.classes[TaskClass::Enrichment.index()].spawned
     }
 
+    fn verifying() -> StatusUpdate {
+        StatusUpdate::Set(StatusText::new(STATUS_VERIFYING).unwrap())
+    }
+
     fn spawned(agent: &TestAgent) -> bool {
         agent.services.goal_auto_check.is_inflight()
     }
@@ -269,12 +284,12 @@ mod tests {
         let channel = MockChannel::new(vec![]);
         let sent = Arc::clone(&channel.sent);
         let mut agent = qualifying_agent(channel).await;
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Agent);
         agent.services.session.status_tx = Some(tx);
 
         agent.maybe_spawn_goal_auto_check(TurnOrigin::User, false);
         assert!(spawned(&agent));
-        assert_eq!(rx.recv().await, Some(StatusUpdate::set(STATUS_VERIFYING)));
+        assert_eq!(rx.next().await, Some(verifying()));
 
         let resolution = agent.services.goal_auto_check.resolved().await;
         agent.handle_goal_auto_check_done(resolution).await;
@@ -287,7 +302,7 @@ mod tests {
             sent[0]
         );
         assert!(sent[0].contains("[active goal]"), "{}", sent[0]);
-        assert_eq!(rx.recv().await, Some(StatusUpdate::Clear));
+        assert_eq!(rx.next().await, Some(StatusUpdate::Clear));
         assert!(!spawned(&agent));
     }
 
@@ -354,9 +369,10 @@ mod tests {
         let channel = MockChannel::new(vec![]);
         let sent = Arc::clone(&channel.sent);
         let mut agent = qualifying_agent(channel).await;
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Agent);
         agent.services.session.status_tx = Some(tx);
         agent.maybe_spawn_goal_auto_check(TurnOrigin::User, false);
+        assert_eq!(rx.next().await, Some(verifying()));
         agent
             .runtime
             .lifecycle
@@ -368,8 +384,7 @@ mod tests {
         agent.handle_goal_auto_check_done(resolution).await;
 
         assert_eq!(sent.lock().unwrap().clone(), [] as [String; 0]);
-        assert_eq!(rx.recv().await, Some(StatusUpdate::set(STATUS_VERIFYING)));
-        assert_eq!(rx.recv().await, Some(StatusUpdate::Clear));
+        assert_eq!(rx.next().await, Some(StatusUpdate::Clear));
     }
 
     #[tokio::test]
@@ -403,7 +418,7 @@ mod tests {
     #[tokio::test]
     async fn finished_unconsumed_check_does_not_block_the_next_one() {
         let mut agent = qualifying_agent(MockChannel::new(vec![])).await;
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Agent);
         agent.services.session.status_tx = Some(tx);
         agent.maybe_spawn_goal_auto_check(TurnOrigin::User, false);
         while agent.runtime.lifecycle.supervisor.inflight() > 0 {
@@ -415,15 +430,10 @@ mod tests {
 
         assert!(spawned(&agent));
         assert_eq!(enrichment_spawned(&agent), 2);
-        let statuses: Vec<StatusUpdate> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
-        assert_eq!(
-            statuses,
-            [
-                StatusUpdate::set(STATUS_VERIFYING),
-                StatusUpdate::Clear,
-                StatusUpdate::set(STATUS_VERIFYING)
-            ]
-        );
+        // Latest wins: the intermediate Clear collapses into the second Verifying.
+        assert_eq!(rx.next().await, Some(verifying()));
+        let more = tokio::time::timeout(Duration::from_millis(20), rx.next()).await;
+        assert!(more.is_err(), "no further status changes");
     }
 
     #[tokio::test]

@@ -21,7 +21,7 @@ impl<C: Channel> Agent<C> {
                 iteration,
                 hash,
                 content_len = last_msg.content.len(),
-                content_preview = &last_msg.content[..last_msg.content.len().min(120)],
+                content_preview = zeph_common::text::truncate_to_bytes_ref(&last_msg.content, 120),
                 "doom-loop hash recorded"
             );
             self.tool_orchestrator.push_doom_hash(hash);
@@ -30,7 +30,8 @@ impl<C: Channel> Agent<C> {
                     iteration,
                     hash,
                     content_len = last_msg.content.len(),
-                    content_preview = &last_msg.content[..last_msg.content.len().min(200)],
+                    content_preview =
+                        zeph_common::text::truncate_to_bytes_ref(&last_msg.content, 200),
                     "doom-loop detected: {} consecutive identical outputs",
                     crate::agent::DOOM_LOOP_WINDOW
                 );

@@ -236,7 +236,8 @@ alters `messages` table. Wrapped in `BEGIN IMMEDIATE; ... COMMIT;`.
 
 | Scenario | Expected Behavior |
 |----------|-------------------|
-| `TurnContext.current_goal_entity_id` is not set | Causal distance signal contribution = 0 regardless of `w_causal`; no BFS is run |
+| `TurnContext.current_goal_entity_id` is not set | Causal distance signal contribution = 0 regardless of `w_causal`; no BFS is run and no store query is made |
+| Goal entity is set (#7003) | Recall resolves each candidate message to its graph entities via `GraphStore::entity_ids_for_messages` (`graph_edges.episode_id` = message id, `valid_to IS NULL`), runs the causal BFS from the goal entity to those entities and takes the minimum distance per message; a message with no entity gets `neutral_causal_distance`. Message ids and entity ids are different id spaces and are never mixed |
 | MAGMA graph has no causal-type edges | All facts receive `neutral_causal_distance`; causal signal is uniform and has no discriminating effect |
 | `fact_access_log` insert fails (SQLite I/O error) | Log `WARN`; continue agent turn; access count tracking is best-effort |
 | Consolidation daemon runs while agent turn is in progress | Qdrant upserts are atomic per-point; concurrent reads from SYNAPSE see either the old or new version — both are valid. No lock is held across the full batch |

@@ -516,11 +516,7 @@ impl<C: Channel> Agent<C> {
 
         // Truncate to max_chars before redaction to bound redaction work.
         let truncated: &str = if raw.chars().count() > max_chars {
-            let end = raw
-                .char_indices()
-                .nth(max_chars)
-                .map_or(raw.len(), |(i, _)| i);
-            &raw[..end]
+            zeph_common::text::truncate_chars(raw, max_chars)
         } else {
             raw
         };

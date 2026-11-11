@@ -7,8 +7,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use zeph_llm::provider::StatusUpdate;
-
 use crate::attestation::ToolFingerprint;
 use crate::policy::check_data_flow;
 use crate::sanitize::{SanitizeResult, sanitize_tools};
@@ -16,7 +14,8 @@ use crate::tool::{McpTool, ToolSecurityMeta, infer_security_meta};
 use crate::trust_score::TrustScoreStore;
 
 use super::{
-    IngestConfig, MAX_INJECTION_PENALTIES_PER_REGISTRATION, McpTrustLevel, ServerTrust, StatusTx,
+    IngestConfig, MAX_INJECTION_PENALTIES_PER_REGISTRATION, McpTrustLevel, ServerTrust,
+    StatusSender,
 };
 
 /// Apply trust score penalties for injection patterns detected during sanitization.
@@ -248,7 +247,7 @@ fn apply_allowlist(
     trust_level: McpTrustLevel,
     allowlist: Option<&[String]>,
     allow_untrusted_without_allowlist: bool,
-    status_tx: Option<&StatusTx>,
+    status_tx: Option<&StatusSender>,
 ) -> Vec<McpTool> {
     match trust_level {
         McpTrustLevel::Untrusted => match allowlist {
@@ -262,7 +261,7 @@ fn apply_allowlist(
                 );
                 tracing::warn!(server_id, tool_count = tools.len(), "{msg}");
                 if let Some(tx) = status_tx {
-                    let _ = tx.send(StatusUpdate::set(msg));
+                    let _ = tx.set(msg);
                 }
                 tools
             }
@@ -274,7 +273,7 @@ fn apply_allowlist(
                 );
                 tracing::warn!(server_id, "{msg}");
                 if let Some(tx) = status_tx {
-                    let _ = tx.send(StatusUpdate::set(msg));
+                    let _ = tx.set(msg);
                 }
                 Vec::new()
             }

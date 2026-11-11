@@ -115,7 +115,7 @@ impl ExperienceStore {
                  ON CONFLICT (experience_id, entity_id) DO NOTHING"
             ))
             .bind(experience_id.0)
-            .bind(entity_id.0)
+            .bind(entity_id)
             .execute(&self.pool)
             .await
             .map_err(MemoryError::from)?;
@@ -317,7 +317,7 @@ mod tests {
              (source_entity_id, target_entity_id, relation, fact, confidence, edge_type)
              VALUES (?1, ?1, 'knows', 'self', 0.5, 'semantic')"
         ))
-        .bind(e1.0)
+        .bind(e1)
         .execute(&pool)
         .await
         .unwrap();
@@ -348,8 +348,8 @@ mod tests {
             "SELECT COUNT(*) FROM graph_edges
              WHERE source_entity_id = ?1 AND target_entity_id = ?2"
         ))
-        .bind(e1.0)
-        .bind(e2.0)
+        .bind(e1)
+        .bind(e2)
         .fetch_one(&pool)
         .await
         .unwrap();

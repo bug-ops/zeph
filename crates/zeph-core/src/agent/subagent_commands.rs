@@ -65,7 +65,7 @@ impl<C: Channel> Agent<C> {
         let mut results = vec![];
         for (task_id, success) in finished {
             let name = mgr.agents_def(&task_id).map_or_else(
-                || task_id[..8.min(task_id.len())].to_owned(),
+                || zeph_common::text::truncate_to_bytes_ref(&task_id, 8).to_owned(),
                 |d| d.name.clone(),
             );
             match mgr.collect(&task_id).await {
@@ -93,7 +93,10 @@ impl<C: Channel> Agent<C> {
             .map(|(id, s)| {
                 let def = mgr.agents_def(&id);
                 crate::metrics::SubAgentMetrics {
-                    name: def.map_or_else(|| id[..8.min(id.len())].to_owned(), |d| d.name.clone()),
+                    name: def.map_or_else(
+                        || zeph_common::text::truncate_to_bytes_ref(&id, 8).to_owned(),
+                        |d| d.name.clone(),
+                    ),
                     id: id.clone(),
                     state: format!("{:?}", s.state).to_lowercase(),
                     turns_used: s.turns_used,
@@ -131,9 +134,15 @@ impl<C: Channel> Agent<C> {
             // live-forward path (`zeph-subagent::forward::sanitize_text`).
             let result = scrub_secret_shapes(&result).into_owned();
             let notice = if result.is_empty() {
-                format!("[sub-agent {id}] completed (no output)", id = &task_id[..8])
+                format!(
+                    "[sub-agent {id}] completed (no output)",
+                    id = zeph_common::text::truncate_to_bytes_ref(&task_id, 8)
+                )
             } else {
-                format!("[sub-agent {id}] completed:\n{result}", id = &task_id[..8])
+                format!(
+                    "[sub-agent {id}] completed:\n{result}",
+                    id = zeph_common::text::truncate_to_bytes_ref(&task_id, 8)
+                )
             };
             if let Err(e) = self.channel.send(&notice).await {
                 tracing::warn!(error = %e, "failed to send sub-agent completion notice");
@@ -348,7 +357,7 @@ impl<C: Channel> Agent<C> {
             let _ = writeln!(
                 out,
                 "  [{short}] {state}  turns={t}  elapsed={elapsed}s  {msg}",
-                short = &id[..8.min(id.len())],
+                short = zeph_common::text::truncate_to_bytes_ref(id, 8),
                 t = s.turns_used,
                 msg = s.last_message.as_deref().unwrap_or(""),
             );
@@ -561,7 +570,7 @@ impl<C: Channel> Agent<C> {
         {
             DurableSpawnGate::Fresh(seat) => spawn_ctx.durable_resolver = Some(seat),
             DurableSpawnGate::Replayed { result, .. } => {
-                let short = &result.task_id[..8.min(result.task_id.len())];
+                let short = zeph_common::text::truncate_to_bytes_ref(&result.task_id, 8);
                 return Some(if result.output.is_empty() {
                     format!(
                         "[sub-agent {short}] completed (no output, replayed from durable journal)"
@@ -590,7 +599,7 @@ impl<C: Channel> Agent<C> {
         {
             Ok(id) => Some(format!(
                 "Sub-agent '{name}' started in background (id: {short})",
-                short = &id[..8.min(id.len())]
+                short = zeph_common::text::truncate_to_bytes_ref(&id, 8)
             )),
             Err(e) => Some(format!("Failed to spawn sub-agent: {e}")),
         }
@@ -696,7 +705,7 @@ impl<C: Channel> Agent<C> {
             Ok(id) => id,
             Err(e) => return Some(format!("Failed to spawn sub-agent: {e}")),
         };
-        let short = task_id[..8.min(task_id.len())].to_owned();
+        let short = zeph_common::text::truncate_to_bytes_ref(&task_id, 8).to_owned();
         let _ = self
             .channel
             .send(&format!("Sub-agent '{name}' running... (id: {short})"))
@@ -783,7 +792,7 @@ impl<C: Channel> Agent<C> {
             Ok(pair) => pair,
             Err(e) => return Some(format!("Failed to resume sub-agent: {e}")),
         };
-        let short = task_id[..8.min(task_id.len())].to_owned();
+        let short = zeph_common::text::truncate_to_bytes_ref(&task_id, 8).to_owned();
         let _ = self
             .channel
             .send(&format!("Resuming sub-agent '{id}'... (new id: {short})"))

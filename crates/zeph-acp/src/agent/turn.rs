@@ -996,14 +996,17 @@ mod output_rx_leak_regression_tests {
         // (S1, closing the inter-turn window described in its doc), so sending the marker
         // any earlier would make this test indistinguishable from that intentional drain
         // instead of proving the reloaded session's own live channel wasn't clobbered.
-        new_channel.send_status("fresh marker").await.unwrap();
+        new_channel
+            .send_status(&zeph_core::channel::StatusText::new("fresh marker").unwrap())
+            .await
+            .unwrap();
 
         let event = tokio::time::timeout(std::time::Duration::from_millis(200), rx_after.recv())
             .await
             .expect("reloaded session's output_rx must not have been clobbered by the stale guard")
             .expect("reloaded session's channel must not be closed");
         assert!(
-            matches!(event, LoopbackEvent::Status(ref s) if s == "fresh marker"),
+            matches!(event, LoopbackEvent::Status(zeph_core::channel::StatusUpdate::Set(ref s)) if s.as_str() == "fresh marker"),
             "expected the reloaded session's own event, got: {event:?}"
         );
     }
@@ -1023,7 +1026,10 @@ mod output_rx_leak_regression_tests {
         // Simulate the still-running agent loop queuing further events (including a
         // legitimate `Flush`) into the channel before the guard is dropped — exactly what
         // an abort mid-`drain_agent_events` leaves behind.
-        channel.send_status("stale status").await.unwrap();
+        channel
+            .send_status(&zeph_core::channel::StatusText::new("stale status").unwrap())
+            .await
+            .unwrap();
         channel.flush_chunks().await.unwrap();
 
         drop(guard);
@@ -1095,7 +1101,10 @@ mod output_rx_leak_regression_tests {
         let guard = PromptChannelGuard::new(&agent, session_id.clone(), generation, rx);
 
         // A stale event to be drained, same setup as the sibling test above.
-        channel.send_status("stale status").await.unwrap();
+        channel
+            .send_status(&zeph_core::channel::StatusText::new("stale status").unwrap())
+            .await
+            .unwrap();
 
         drop(guard);
 
@@ -1103,14 +1112,17 @@ mod output_rx_leak_regression_tests {
 
         // Sent on the original sender *after* reacquiring — only observable if the receiver
         // handed back is still wired to this channel's sender.
-        channel.send_status("fresh after restore").await.unwrap();
+        channel
+            .send_status(&zeph_core::channel::StatusText::new("fresh after restore").unwrap())
+            .await
+            .unwrap();
 
         let event = tokio::time::timeout(std::time::Duration::from_millis(200), restored_rx.recv())
             .await
             .expect("restored receiver must still be connected to the live channel")
             .expect("restored receiver's channel must not be closed");
         assert!(
-            matches!(event, LoopbackEvent::Status(ref s) if s == "fresh after restore"),
+            matches!(event, LoopbackEvent::Status(zeph_core::channel::StatusUpdate::Set(ref s)) if s.as_str() == "fresh after restore"),
             "expected the post-restore event, got: {event:?}"
         );
     }

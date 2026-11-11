@@ -49,7 +49,7 @@ trait Channel: Send {
     async fn send(&mut self, text: &str) -> Result<(), ChannelError>;
     async fn send_chunk(&mut self, chunk: &str) -> Result<(), ChannelError>;
     async fn send_typing(&mut self) -> Result<(), ChannelError>;
-    async fn send_status(&mut self, text: &str) -> Result<(), ChannelError>;
+    async fn send_status(&mut self, text: &StatusText) -> Result<(), ChannelError>;
     async fn send_tool_start(&mut self, event: ToolStartEvent<'_>) -> Result<(), ChannelError>;
     async fn send_tool_output(&mut self, event: ToolOutputEvent<'_>) -> Result<(), ChannelError>;
     fn supports_exit(&self) -> bool;
@@ -419,18 +419,25 @@ now bounds `MAX_RETRY_SECS` to `[0.0, 3600.0]` (finite, non-negative, at most on
 
 ---
 
-## Typed Status Protocol (#6988)
+## Typed Status Protocol (#6988, #7002)
 
-The empty-string convention for clearing a status indicator is replaced by an explicit protocol.
+The empty-string convention for clearing a status indicator is replaced by an explicit, validated protocol (`zeph_llm::status`).
 
-- `zeph_llm::provider::StatusUpdate { Set(Cow<'static, str>), Clear }` and `StatusTx = UnboundedSender<StatusUpdate>`; every producer (providers, MCP, tools) sends `Set`/`Clear`, so a producer whose text happens to be empty can no longer clear the indicator by accident. The private `StatusTx` alias in `zeph-mcp` is removed in favor of the `zeph-llm` one.
-- `Channel` gains `clear_status()` and `clear_status_best_effort()`; existing signatures are unchanged (`[[001-system-invariants/spec]]` Channel exception). The default `clear_status` delegates to `send_status("")`, so channels without an override keep the old clear wire (CLI, `json_cli`, ACP, serve/loopback). `AnyChannel`, `AppChannel` and `GatewayChannel<C>` forward both methods explicitly. Overrides: `TuiChannel` sends the typed `AgentEvent::ClearStatus`; Telegram, Slack and Discord override `clear_status` as a no-op (the former empty-text guard in `send_status` moved there), so a direct `send_status("")` on those adapters now posts an empty message (API error, logged) instead of a silent no-op: producers must not send empty text.
-- Tests: `AppChannel(Tui)` forwards both clears to the TUI's typed event; `AnyChannel` has no TUI variant, so its only test is the `json_cli` wire pin (empty `message`); a separate ACP test pins "no client update on clear".
-- `StatusSink` gains `clear_status`; the duplicate `TxStatusSink` is merged into the `zeph-agent-context` one (`pub`, `new`), and the core `CollectStatusSink` collects `StatusUpdate`.
-- **Wire output is unchanged**: `json_cli` still emits `Status { message: "" }` on clear; serve/ACP keep `LoopbackEvent::Status("")` internally, and ACP still sends NO client update on clear. Only the CLI stderr forwarder stops printing a blank `[status] ` line (`[[047-cli-modes/spec]]`).
-- Not done here (follow-up): removing the `""` sentinel from `LoopbackEvent::Status` and a bounded/`watch` status channel (`StatusSource`).
+- `StatusText` is a non-empty, non-whitespace newtype over `Cow<'static, str>` (`StatusText::new -> Option<Self>`, `as_str`, `into_string`, `Display`). An empty status is unrepresentable, so a producer can no longer clear the indicator by accident.
+- `StatusUpdate { Set(StatusText), Clear }` lives in `zeph_llm::status` and is re-exported from `zeph_llm::provider`. `StatusSource` is a closed enum (`Provider`, `Mcp`, `Index`, `Memory`, `Stt`, `Worktree`, `Agent`), one variant per wiring point.
+- Background lane: `status_channel(source) -> (StatusSender, StatusReceiver)` over a `tokio::sync::watch` channel holding a private `Board { entry: Option<StatusEntry { source, text }>, armed }`, where `armed` is a bitset with one bit per `StatusSource`. It is bounded and latest-wins: intermediate updates collapse. `StatusSender::set(text)` / `clear()` return `Result<(), StatusClosed>` (`Err` once the receiver is dropped; implemented with `send_if_modified` plus `is_closed()`, never `send`). `set` with empty text is a traced no-op that still reports closure. `set` arms the caller's source. `clear()` is clear-if-armed: it is honored only when the caller's source has an outstanding `set`; it then disarms that source and empties the slot whatever source wrote the current text (a provider retry status nested inside a memory or sidequest operation is cleared by its owner). A clear from an unarmed source is ignored and does not notify. `StatusSender::with_source` re-labels a clone at wiring. `StatusReceiver::next()` yields `Some(StatusUpdate)` and returns `None` once every sender is dropped. The former `StatusTx` unbounded alias is removed.
+- Agent-turn lane: `Channel::send_status(&StatusText)` / `clear_status()` drive the same visible indicator. A turn-lane clear clears it regardless of which background source set it. A pending background entry reappears only on that producer's next update. Clear-if-armed applies to the background lane only, not across both lanes.
+- `zeph_core::channel` re-exports `StatusText` and `StatusUpdate` so channel adapters need no direct `zeph-llm` dependency. Producers are labelled at wiring: provider (bootstrap), MCP, index, memory (hebbian), worktree and STT in `src/agent_setup.rs`; agent internals share `StatusSource::Agent`.
+- `Channel::send_status` takes `&StatusText` (exception in `[[001-system-invariants/spec]]`); the default is a no-op. The default `clear_status` is `Ok(())` and no longer delegates to `send_status("")`. `send_status_best_effort(&str)` keeps `&str`: it parses once; empty text logs at debug and sends nothing. `AnyChannel`, `AppChannel` and `GatewayChannel<C>` forward all status methods explicitly. Telegram, Slack and Discord drop their `clear_status` overrides (the default no-op suffices); `TuiChannel::send_status` sends `AgentEvent::Status(String)` (unchanged event) and its `clear_status` the typed `AgentEvent::ClearStatus`.
+- Loopback/serve: `LoopbackEvent::Status(StatusUpdate)` is not serialized and carries a typed clear; the loopback channel overrides `clear_status` to send `Clear`. ACP maps `Clear` to no client update; daemon ignores it. `StatusSink` keeps `&str` and parses in the sink implementations.
+- **Wire output is unchanged**: `json_cli` overrides `clear_status` to emit `Status { message: "" }`; ACP still sends NO client update on clear; the CLI stderr forwarder prints nothing on `Clear` (`[[047-cli-modes/spec]]`).
+- Status is replaceable state (latest-wins, collapses). A one-shot notice (OAuth URL, skipped-skill warning, ingest injection warning) must also go through a non-collapsing path: a `tracing` warning, or `Channel::send_notice` where a channel exists. MCP OAuth URLs are logged at `warn` (`announce_oauth_url`); skill load errors are logged per skill by the registry and the status line carries only a one-line summary.
+- Tests: a nested provider status is cleared by its owner; a clear from an unarmed source does not notify; a repeated clear is a no-op; a source re-arms after clear; updates collapse to the latest; `Err` when the receiver is dropped; the receiver ends when senders drop; empty/whitespace-only text is rejected; a turn-lane clear followed by a background update shows the background text again; the `json_cli` wire pin; the ACP "no client update on clear" pin.
 
 ### Key Invariants
 
-- NEVER clear a status by sending an empty `Set`; use `StatusUpdate::Clear` / `clear_status`
+- NEVER clear a status by sending an empty `Set`; empty text is unrepresentable (`StatusText`). Use `StatusUpdate::Clear` / `clear_status`
 - NEVER add a status-related `Channel` method without forwarding it in `AnyChannel`, `AppChannel` and `GatewayChannel`
+- NEVER claim clear-if-armed across both status lanes; it holds for the background lane only
+- NEVER deliver a load-bearing notice only through the status lane; status collapses
+- NEVER add an unbounded status channel; background status goes through `status_channel`

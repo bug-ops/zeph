@@ -226,8 +226,7 @@ impl VigilGate {
                 VigilAction::Sanitize => {
                     let cap = self.config.sanitize_max_chars;
                     let truncated = if body.len() > cap {
-                        let boundary = body.floor_char_boundary(cap);
-                        &body[..boundary]
+                        zeph_common::text::truncate_to_bytes_ref(&body, cap)
                     } else {
                         &body
                     };

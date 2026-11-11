@@ -174,10 +174,7 @@ impl SemanticStateAccumulator {
                         let raw = response.trim().to_owned();
                         let cap = cfg.max_state_chars;
                         let new_buf = if raw.chars().count() > cap {
-                            let cut = raw.floor_char_boundary(
-                                raw.char_indices().nth(cap).map_or(raw.len(), |(i, _)| i),
-                            );
-                            raw[..cut].to_owned()
+                            zeph_common::text::truncate_chars(&raw, cap).to_owned()
                         } else {
                             raw
                         };

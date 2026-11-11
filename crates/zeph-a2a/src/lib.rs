@@ -64,6 +64,7 @@
 //! # }
 //! ```
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
 #![forbid(unsafe_code)]
 
 pub mod body_limit;

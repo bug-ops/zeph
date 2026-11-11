@@ -66,8 +66,7 @@ pub fn deobfuscate(command: &str) -> String {
     let _span = tracing::info_span!("tools.deobfuscate.normalize").entered();
     // Step 1: truncate at a valid UTF-8 boundary.
     let input = if command.len() > MAX_INPUT_BYTES {
-        let boundary = command.floor_char_boundary(MAX_INPUT_BYTES);
-        &command[..boundary]
+        zeph_common::text::truncate_to_bytes_ref(command, MAX_INPUT_BYTES)
     } else {
         command
     };
@@ -153,15 +152,15 @@ fn replace_dollar_subshells(s: &str) -> String {
                 }
                 j += 1;
             }
-            let end = j.saturating_sub(1).min(s.len());
-            let inner = s[start..end].trim();
+            let end = if depth == 0 { j - 1 } else { j };
+            let inner = s.get(start..end).unwrap_or_default().trim();
             out.push_str("[subshell: ");
             out.push_str(inner);
             out.push(']');
             i = j;
         } else {
             // Advance by one full UTF-8 char to avoid splitting multi-byte sequences.
-            let ch = s[i..].chars().next().unwrap_or('\0');
+            let ch = s.get(i..).and_then(|r| r.chars().next()).unwrap_or('\0');
             out.push(ch);
             i += ch.len_utf8();
         }
@@ -242,6 +241,16 @@ mod tests {
     #[test]
     fn backtick_subshell() {
         assert_eq!(deobfuscate("`whoami`"), "[subshell: whoami]");
+    }
+
+    #[test]
+    fn unclosed_dollar_subshell_does_not_panic() {
+        assert_eq!(deobfuscate("$("), "[subshell: ]");
+        assert_eq!(deobfuscate("$(\u{20ac}"), "[subshell: \u{20ac}]");
+        assert_eq!(
+            deobfuscate("$(echo \u{20ac}\u{20ac}"),
+            "[subshell: echo \u{20ac}\u{20ac}]"
+        );
     }
 
     #[test]

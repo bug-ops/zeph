@@ -244,8 +244,7 @@ async fn seed_embedding_fallback(
                 if let Some(entity_id) = result
                     .payload
                     .get("entity_id")
-                    .and_then(serde_json::Value::as_i64)
-                    .map(EntityId)
+                    .and_then(EntityId::from_payload)
                     && let Ok(Some(entity)) = store.find_entity_by_id(entity_id).await
                 {
                     fts_map.insert(entity_id, (entity, result.score));

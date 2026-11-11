@@ -617,6 +617,10 @@ fn apply_test_summary(
     make_result(raw, output, FilterConfidence::Full, vec![])
 }
 
+#[expect(
+    clippy::string_slice,
+    reason = "idx comes from find on the same string"
+)]
 fn extract_count(s: &str, label: &str) -> Option<u64> {
     let idx = s.find(label)?;
     let before = s[..idx].trim();

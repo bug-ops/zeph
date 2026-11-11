@@ -11,7 +11,6 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use zeph_llm::provider::StatusUpdate;
 
 use tracing::Instrument as _;
 use zeph_commands::CommandError;
@@ -248,7 +247,7 @@ pub(super) struct GoalCheckJob {
     pub(super) supervisor: GoalSupervisor,
     pub(super) timeout_secs: u64,
     pub(super) active_goal: ActiveGoalLookup,
-    pub(super) status_tx: Option<zeph_llm::provider::StatusTx>,
+    pub(super) status_tx: Option<zeph_llm::status::StatusSender>,
 }
 
 impl GoalCheckJob {
@@ -285,7 +284,7 @@ impl GoalCheckJob {
         };
 
         if let Some(tx) = &self.status_tx {
-            let _ = tx.send(StatusUpdate::set(STATUS_VERIFYING));
+            let _ = tx.set(STATUS_VERIFYING);
         }
         let result = self
             .supervisor
@@ -297,7 +296,7 @@ impl GoalCheckJob {
             ))
             .await;
         if let Some(tx) = &self.status_tx {
-            let _ = tx.send(StatusUpdate::Clear);
+            let _ = tx.clear();
         }
         GoalCheckOutcome::Report(format_report(
             self.trigger,
@@ -570,15 +569,16 @@ mod tests {
 
     #[tokio::test]
     async fn run_sends_status_and_clears_it() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Agent);
         let provider = MockProvider::with_responses(vec![
             r#"{"achieved":false,"reasoning":"no","confidence":0.5}"#.into(),
         ]);
         let mut j = job("cond", None, provider);
         j.status_tx = Some(tx);
         j.run().await;
-        assert_eq!(rx.recv().await, Some(StatusUpdate::set(STATUS_VERIFYING)));
-        assert_eq!(rx.recv().await, Some(StatusUpdate::Clear));
+        // Latest wins: Set and Clear collapse. A Clear is delivered only when the same source
+        // had set a status, so receiving it proves the verifying status was shown and cleared.
+        assert_eq!(rx.next().await, Some(zeph_llm::status::StatusUpdate::Clear));
     }
 
     fn agent_with_verdict(json: &str) -> Agent<crate::agent::agent_tests::MockChannel> {

@@ -31,6 +31,10 @@ static SYMBOL_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
 ///
 /// `line_number_map[i]` = 0-based LSP line number for raw line `i`.
 /// If the content does not have cat-n format, returns the content as-is.
+#[expect(
+    clippy::string_slice,
+    reason = "tab comes from find on the same string"
+)]
 fn strip_cat_n_prefix(content: &str) -> (String, Vec<u64>) {
     let mut clean = String::with_capacity(content.len());
     let mut map: Vec<u64> = Vec::new();
