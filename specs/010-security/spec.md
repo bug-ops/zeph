@@ -197,7 +197,7 @@ follow-up issue filed with the #3077 PR.
 
 | Category | Site | Reason |
 |----------|------|--------|
-| (a) Platform FFI module | `zeph_common::fs_secure::windows` (`#[cfg(windows)]`, windows-sys) | Owner-only DACL applied at file/dir creation; no maintained safe crate covers it (#6929) |
+| (a) Platform FFI module | `zeph_common::fs_secure::windows` (`#[cfg(windows)]`, windows-sys) | Owner-only DACL applied at file/dir creation (`CreateFileW`/`CreateDirectoryW`) and to existing directories via `SetSecurityInfo` in `restrict_dir_to_owner`; no maintained safe crate covers it (#6929) |
 | (b) Model-weight mmap | `zeph_llm::classifier::candle` (`candle.rs:222`, `load_inner`) | mmap of safetensors |
 | (b) Model-weight mmap | `zeph_llm::candle_whisper` (`candle_whisper.rs:52`) | mmap of safetensors |
 | (b) Model-weight mmap | `zeph_llm::candle_provider::embed` (`embed.rs:37`) | mmap of safetensors |

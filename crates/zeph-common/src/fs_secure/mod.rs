@@ -330,13 +330,16 @@ pub fn create_private_dir_all(path: &Path) -> io::Result<()> {
 /// descriptor, so a symlink swapped in at `path` is refused instead of followed. Owner and
 /// special bits stay (`0o755` becomes `0o700`).
 ///
-/// Returns the new permission bits (without the file-type bits). On non-Unix platforms this is a
-/// no-op that returns `0`, because permissions there are ACLs rather than mode bits.
+/// Returns the new permission bits (without the file-type bits). On Windows the directory's DACL
+/// is replaced with a protected, inheritable one granting only `LocalSystem` and the current user
+/// (the equivalent of `0o700`), and `0` is returned because ACLs have no mode bits. Other
+/// platforms get a no-op returning `0`.
 ///
 /// # Errors
 ///
 /// Returns the underlying [`io::Error`] if `path` cannot be opened as a directory, or an
-/// [`io::ErrorKind::InvalidInput`] error if it is a symlink.
+/// [`io::ErrorKind::InvalidInput`] error if it is a symlink (or, on Windows, any reparse point)
+/// or not a directory.
 ///
 /// # Examples
 ///
@@ -372,9 +375,12 @@ pub fn restrict_dir_to_owner(path: &Path) -> io::Result<u32> {
         let raw = u32::from(new_mode.as_raw_mode());
         Ok(raw & 0o7777)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        // TODO(#6970): harden an existing directory's DACL on Windows (needs a handle-relative walk)
+        windows::restrict_dir_to_owner(path).map(|()| 0)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
         let _ = path;
         Ok(0)
     }

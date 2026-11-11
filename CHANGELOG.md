@@ -48,6 +48,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `zeph-core`, `zeph-channels`: the memory-write disclosure note is a `Status` event in `--json` instead of an assistant `response_chunk`, via new `Channel::send_notice`, and no longer carries a tool-output preview (#6979)
+- `zeph-context`: credential scrub covers `TurnContext` blocks (MCP instructions, preferences, goal) before provider send (#6975)
+- `zeph-core`: VIGIL no longer exempts sessions on peer-supplied `parent_tool_use_id`; the subagent exemption is structural (#6971)
+- `zeph-common`: `fs_secure::restrict_dir_to_owner` applies a protected owner-only DACL on Windows (#6970)
 - `zeph-core`: the orchestration inline tool loop fires `post_tool_use` hooks (#6978)
 - `zeph-plugins`: a corrupt integrity registry fails closed at load (plugins skipped with the repair step) and `plugin add`, `remove` and auto-update surface registry warnings (#6978)
 - `zeph-common`: `fs_secure` creates files and directories with an owner-only DACL on Windows through a scoped `unsafe` module (#6978)

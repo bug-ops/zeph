@@ -136,7 +136,7 @@ implementation's rustdoc and into `.local/testing/playbooks/vigil.md`:
 | FR-006 | WHEN VIGIL blocks a tool output triggered by a skill THE SYSTEM SHALL record `FailureKind::SecurityBlocked` in the skill outcome tracker. | must |
 | FR-007 | WHEN the user sends a new message THE SYSTEM SHALL capture the first 1024 chars into `session.current_turn_intent` BEFORE any tool call. | must |
 | FR-008 | WHEN a turn ends OR `/clear` executes OR a turn is aborted THE SYSTEM SHALL set `session.current_turn_intent = None`. | must |
-| FR-009 | WHEN a tool call originates from a subagent (i.e. `ToolCall::parent_tool_use_id.is_some()`) THE SYSTEM SHALL skip `VigilGate` entirely — subagent `AgentBuilder` leaves `SecurityState::vigil = None`. | must |
+| FR-009 | WHEN a session is a spawned subagent THE SYSTEM SHALL skip `VigilGate` entirely — the exemption is structural: subagent `AgentBuilder` leaves `SecurityState::vigil = None`. The exemption MUST NOT key on `parent_tool_use_id` (unvalidated peer input, display/correlation only). | must |
 | FR-010 | WHEN `VigilConfig` loads with an invalid regex in `extra_patterns`, or `extra_patterns` count > 64, or any pattern length > 1024 THE SYSTEM SHALL fail config load with a clear error (no silent skip). | must |
 | FR-011 | WHEN both VIGIL and `ContentSanitizer` would match the same output in `Sanitize` action mode THE SYSTEM MAY increment both `vigil_flags_total` and `sanitizer_injection_flags`; this double-count is expected and documented. In `Block` action mode, VIGIL SHALL short-circuit `sanitize_tool_output` — guaranteeing a single-counter path via `vigil_flags_total` only. | must |
 | FR-012 | WHEN a VIGIL block occurs THE SYSTEM SHALL NOT send the blocked payload to LSP diagnostics hooks, skill self-learning evaluators, or response-cache keys. | must |
@@ -211,8 +211,9 @@ enum VigilOutcome {
 }
 ```
 
-`run_vigil_gate` honors §FR-009 by checking `tc.parent_tool_use_id.is_some()`
-— subagent tool calls skip the gate.
+`run_vigil_gate` honors §FR-009 structurally: subagent sessions have no gate
+(`SecurityState::vigil = None`), so it returns immediately. It does not inspect
+`parent_tool_use_id`.
 
 ### 3.3 Intent cache
 
@@ -232,8 +233,10 @@ without schema churn. Clear points are listed in FR-008.
 
 ### 3.4 Subagent exemption (FR-009)
 
-Subagent detection: `ToolCall::parent_tool_use_id.is_some()`. When true,
-`run_vigil_gate` returns `Clean` immediately without pattern evaluation.
+Subagent sessions are exempt structurally: the spawner never attaches a
+`VigilGate`, so `run_vigil_gate` returns `None` immediately without pattern
+evaluation. `parent_tool_use_id` is unvalidated ACP-peer input used only for
+display/correlation; keying the exemption on it would let a peer bypass VIGIL.
 
 Justification: subagents operate on skill-provided, orchestrator-validated
 params. Their "user intent" is the skill invocation context, not the top-level
@@ -242,9 +245,8 @@ diagnostic subagents reading source code that contains the word "system").
 See spec `[[033-subagent-context-propagation/spec]]` for the parent context
 model.
 
-Complementary knob: `subagent_AgentBuilder` leaves `SecurityState::vigil =
-None` for defense in depth — even if a caller forgot to check
-`parent_tool_use_id`, the subagent's gate is absent.
+Invariant: only the subagent spawner (which omits `with_vigil_config`) may produce
+a gate-less session; top-level sessions always receive the gate when enabled.
 
 ### 3.5 Block sentinel
 
@@ -327,7 +329,7 @@ process_user_message
   └─ session.current_turn_intent = Some(user_msg[..1024])
 
  ... tool call ...
-  tc.parent_tool_use_id.is_some() ── yes ──► skip VIGIL (subagent exemption)
+  security.vigil.is_none() ── yes ──► skip VIGIL (subagent exemption)
                    │
                    no
                    ▼
@@ -356,8 +358,8 @@ end_turn / /clear / turn-abort
 - `VigilGate` runs *before* `sanitize_tool_output` — never replaces it.
 - `ContentSanitizer` remains the canonical injection metric; VIGIL adds a
   parallel counter. `Block` path is single-counter by construction.
-- Subagent tool calls skip VIGIL (`parent_tool_use_id.is_some()` OR
-  `SecurityState::vigil = None`).
+- Subagent tool calls skip VIGIL (`SecurityState::vigil = None`;
+  never keyed on `parent_tool_use_id`).
 - `current_turn_intent` is per-turn, never shared across turns, cleared at
   `end_turn` / `/clear` / abort.
 - `Block` results are non-retryable (`error_category = "vigil_blocked"`).
@@ -400,7 +402,7 @@ Mandatory `.local/testing/playbooks/vigil.md` scenarios:
      `vigil_blocks_total += 1`; `sanitizer_injection_flags` unchanged.
 2. Same phrase from `memory_search` — exempt tool: no flag, no block.
 3. Subagent tool output containing a literal injection — no VIGIL flag
-   (subagent exemption via `parent_tool_use_id.is_some()`).
+   (subagent exemption via `SecurityState::vigil = None`).
 4. `strict_mode=true` + repeat fetch after block — orchestrator honors
    `error_category == "vigil_blocked"`, does NOT retry. Doom-loop prevented.
 5. Double-flag test: tool output matches VIGIL + `ContentSanitizer` banks.

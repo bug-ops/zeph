@@ -156,6 +156,10 @@ impl Channel for AnyChannel {
         }
     }
 
+    async fn send_notice(&mut self, text: &str) -> Result<(), ChannelError> {
+        dispatch_channel!(self, send_notice, text)
+    }
+
     async fn send_status(&mut self, text: &str) -> Result<(), ChannelError> {
         dispatch_channel!(self, send_status, text)
     }

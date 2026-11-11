@@ -273,13 +273,12 @@ impl<C: Channel> Agent<C> {
             let disclose_at = ContentTrustLevel::from_str_opt(&consent_cfg.disclose_threshold)
                 .unwrap_or(ContentTrustLevel::LocalUntrusted);
             if trust >= disclose_at {
-                let preview: String = content.chars().take(120).collect();
                 let note = format!(
-                    "Saved to memory: {preview} — source: {} ({})",
+                    "Saved to memory — source: {} ({})",
                     kind.as_str(),
                     trust.as_str()
                 );
-                if let Err(e) = self.channel.send(&note).await {
+                if let Err(e) = self.channel.send_notice(&note).await {
                     tracing::warn!(error = %e, "failed to send memory-write disclosure note");
                 }
             }

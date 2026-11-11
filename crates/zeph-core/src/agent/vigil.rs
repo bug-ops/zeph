@@ -93,9 +93,9 @@ pub enum VigilVerdict {
 ///
 /// # Subagent exemption
 ///
-/// When `SecurityState::vigil` is `None` (subagent path), the gate is absent.
-/// Additionally, [`VigilGate::verify`] returns [`VigilVerdict::Clean`] when the tool
-/// call originates from a subagent, as detected by the caller via `parent_tool_use_id`.
+/// Subagent sessions are exempt structurally: they never receive a gate, so
+/// `SecurityState::vigil` is `None`. The exemption never keys on peer-supplied data such as
+/// `parent_tool_use_id`, which is for display and correlation only.
 pub struct VigilGate {
     config: VigilConfig,
     patterns: Vec<CompiledPattern>,

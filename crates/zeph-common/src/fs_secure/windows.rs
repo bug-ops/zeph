@@ -11,13 +11,16 @@
 //! This is a registered platform-FFI `unsafe` exception: see `specs/010-security` section
 //! `unsafe`, row `zeph_common::fs_secure::windows`. No maintained safe crate covers it.
 //!
-//! Existing files and directories keep their ACL, matching the Unix `mode(0o600)` behavior
-//! where the mode only applies at creation.
+//! Creating over an existing file or directory keeps its ACL, matching the Unix `mode(0o600)`
+//! behavior where the mode only applies at creation. The one exception is
+//! [`restrict_dir_to_owner`], which deliberately replaces the DACL of an existing directory
+//! through `SetSecurityInfo` on a handle opened with `FILE_FLAG_OPEN_REPARSE_POINT`.
 
 use std::ffi::{OsStr, c_void};
 use std::fs::File;
 use std::io;
 use std::os::windows::ffi::OsStrExt as _;
+use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::path::Path;
 use std::ptr::null_mut;
@@ -26,15 +29,18 @@ use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::{GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, LocalFree};
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    SE_FILE_OBJECT, SetSecurityInfo,
 };
 use windows_sys::Win32::Security::{
-    GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
-    TokenUser,
+    ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetTokenInformation,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY,
+    TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CREATE_ALWAYS, CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_NORMAL,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
     FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_DATA,
-    OPEN_ALWAYS,
+    OPEN_ALWAYS, WRITE_DAC,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -108,6 +114,58 @@ pub(super) fn create_private_dir_all(path: &Path) -> io::Result<()> {
         Err(_) if path.is_dir() => Ok(()),
         Err(e) => Err(e),
     }
+}
+
+/// Replace the DACL of the existing directory `path` with a protected, inheritable owner-only one.
+///
+/// The directory is opened with `FILE_FLAG_OPEN_REPARSE_POINT` and the DACL is set through that
+/// handle, so a symlink or junction swapped in at `path` is refused instead of followed.
+/// Children that inherit from the directory pick up the new ACEs; children with their own
+/// protected DACL are left alone.
+///
+/// Because the ACEs carry `OICI`, `SetSecurityInfo` propagates them to every child that inherits
+/// its ACL, which can be a long walk for a large tree. The only caller (`tracing_init`) logs a
+/// failure as a warning instead of aborting startup.
+pub(super) fn restrict_dir_to_owner(path: &Path) -> io::Result<()> {
+    let dir = std::fs::OpenOptions::new()
+        .access_mode(WRITE_DAC)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let meta = dir.metadata()?;
+    if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a directory (symlink)",
+        ));
+    }
+    if !meta.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a directory",
+        ));
+    }
+    let descriptor = SecurityDescriptor::owner_only(true)?;
+    let dacl = descriptor.dacl()?;
+    // SAFETY: the handle is a valid open directory handle with `WRITE_DAC` access; `dacl` points
+    // into `descriptor`, which outlives the call; owner, group and SACL are null (unchanged).
+    let status = unsafe {
+        SetSecurityInfo(
+            dir.as_raw_handle(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            dacl,
+            null_mut(),
+        )
+    };
+    if status != 0 {
+        // Win32 error codes fit in i32; `from_raw_os_error` takes the signed form.
+        #[allow(clippy::cast_possible_wrap)]
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    Ok(())
 }
 
 fn create_dir(path: &Path) -> io::Result<()> {
@@ -197,6 +255,24 @@ impl SecurityDescriptor {
             return Err(io::Error::last_os_error());
         }
         Ok(Self(descriptor))
+    }
+
+    /// Pointer to the descriptor's DACL, valid while `self` is alive.
+    fn dacl(&self) -> io::Result<*const ACL> {
+        let mut present = 0;
+        let mut defaulted = 0;
+        let mut dacl: *mut ACL = null_mut();
+        // SAFETY: `self.0` is a valid descriptor; all out-pointers are valid locals.
+        let ok = unsafe {
+            GetSecurityDescriptorDacl(self.0, &raw mut present, &raw mut dacl, &raw mut defaulted)
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if present == 0 || dacl.is_null() {
+            return Err(io::Error::other("security descriptor has no DACL"));
+        }
+        Ok(dacl)
     }
 
     fn attributes(&self) -> SECURITY_ATTRIBUTES {
@@ -438,6 +514,39 @@ mod tests {
             "existing parent untouched"
         );
         create_private_dir_all(&leaf).unwrap();
+    }
+
+    #[test]
+    fn restrict_dir_to_owner_replaces_dacl_of_existing_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("existing");
+        std::fs::create_dir(&dir).unwrap();
+        restrict_dir_to_owner(&dir).unwrap();
+        assert_owner_only(&dir, true);
+    }
+
+    #[test]
+    fn restrict_dir_to_owner_refuses_a_file_and_a_missing_path() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("f");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(restrict_dir_to_owner(&file).is_err());
+        assert!(restrict_dir_to_owner(&root.path().join("missing")).is_err());
+    }
+
+    #[test]
+    fn restrict_dir_to_owner_refuses_a_directory_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        let link = root.path().join("link");
+        if std::os::windows::fs::symlink_dir(&target, &link).is_err() {
+            eprintln!("skipped: creating symlinks needs privilege or developer mode");
+            return;
+        }
+        let before = dacl_aces(&target);
+        assert!(restrict_dir_to_owner(&link).is_err());
+        assert_eq!(dacl_aces(&target), before, "symlink target untouched");
     }
 
     #[test]

@@ -86,6 +86,8 @@ pub fn scrub_message(msg: &mut Message) -> bool {
             | MessagePart::CrossSession { text } => scrub_in_place(text, scrub_secrets),
             MessagePart::ToolResult { content, .. } => scrub_in_place(content, scrub_secrets),
             MessagePart::ToolOutput { body, .. } => scrub_in_place(body, scrub_secrets),
+            MessagePart::TurnContext(block) => scrub_in_place(&mut block.text, scrub_secrets),
+            // `MessagePart` is `#[non_exhaustive]` across crates, so a wildcard is unavoidable.
             _ => false,
         };
     }
@@ -99,7 +101,9 @@ pub fn scrub_message(msg: &mut Message) -> bool {
 mod tests {
     use zeph_llm::LlmProvider;
     use zeph_llm::claude::ClaudeProvider;
-    use zeph_llm::provider::{Role, ToolDefinition};
+    use zeph_llm::provider::{
+        Role, ToolDefinition, TurnContextBlock, TurnContextKind, TurnContextTrust,
+    };
     use zeph_llm::{OpenAiConfig, openai::OpenAiProvider};
 
     use super::*;
@@ -319,6 +323,54 @@ mod tests {
             panic!("part kind changed");
         };
         assert_eq!(kept, &input);
+    }
+
+    fn turn_context_msg(kind: TurnContextKind, text: String) -> Message {
+        Message::from_parts(
+            Role::User,
+            vec![
+                MessagePart::TurnContext(TurnContextBlock {
+                    kind,
+                    trust: TurnContextTrust::ExternalUntrusted,
+                    text,
+                    keys: Vec::new(),
+                }),
+                MessagePart::Text { text: "hi".into() },
+            ],
+        )
+    }
+
+    #[test]
+    fn turn_context_secrets_are_scrubbed() {
+        for kind in [TurnContextKind::Directives, TurnContextKind::Retrieved] {
+            let mut msg = turn_context_msg(kind, format!("mcp instructions: token {OPENAI_KEY}"));
+            assert!(needs_scrub(&msg));
+            assert!(scrub_message(&mut msg));
+            assert!(
+                !msg.to_request_text().contains(OPENAI_KEY),
+                "{}",
+                msg.to_request_text()
+            );
+        }
+    }
+
+    #[test]
+    fn turn_context_working_directory_path_survives() {
+        let mut msg = turn_context_msg(
+            TurnContextKind::Directives,
+            format!("working_directory: /Users/dev/project\nkey {OPENAI_KEY}"),
+        );
+        assert!(scrub_message(&mut msg));
+        let request = msg.to_request_text();
+        assert!(request.contains("/Users/dev/project"), "{request}");
+        assert!(!request.contains(OPENAI_KEY), "{request}");
+        assert!(!request.contains("[PATH]"), "{request}");
+    }
+
+    #[test]
+    fn clean_turn_context_reports_no_change() {
+        let mut msg = turn_context_msg(TurnContextKind::Retrieved, "plain".into());
+        assert!(!scrub_message(&mut msg));
     }
 
     #[test]

@@ -3326,6 +3326,27 @@ mod image_persistence_strip {
         agent
     }
 
+    fn has_note(messages: &[String]) -> bool {
+        messages.iter().any(|m| m.contains("Saved to memory"))
+    }
+
+    fn assert_note_only_in_sent_messages(agent: &Agent<MockChannel>) {
+        assert!(
+            !has_note(&agent.channel.statuses.lock().unwrap()),
+            "default send_notice must route through send, not send_status"
+        );
+        assert!(
+            !has_note(&agent.channel.chunks.lock().unwrap()),
+            "disclosure note must not be a response chunk"
+        );
+    }
+
+    fn assert_no_note_anywhere(agent: &Agent<MockChannel>) {
+        assert!(!has_note(&agent.channel.sent_messages()));
+        assert!(!has_note(&agent.channel.statuses.lock().unwrap()));
+        assert!(!has_note(&agent.channel.chunks.lock().unwrap()));
+    }
+
     /// (a) `enabled = true` and `trust_level >= disclose_threshold` — the note must be sent.
     #[tokio::test]
     async fn disclosure_note_sent_when_enabled_and_trust_at_or_above_threshold() {
@@ -3354,6 +3375,7 @@ mod image_persistence_strip {
             "trust at/above disclose_threshold with enabled=true must send a disclosure note, \
              got sent messages: {sent:?}"
         );
+        assert_note_only_in_sent_messages(&agent);
     }
 
     /// (b) `enabled = true` but `trust_level < disclose_threshold` — the note must be suppressed.
@@ -3382,6 +3404,7 @@ mod image_persistence_strip {
             !sent.iter().any(|m| m.contains("Saved to memory")),
             "trust below disclose_threshold must suppress the disclosure note, got: {sent:?}"
         );
+        assert_no_note_anywhere(&agent);
     }
 
     /// (c) `enabled = false` — the note must be suppressed regardless of trust tier, independent
@@ -3413,6 +3436,7 @@ mod image_persistence_strip {
             "consent_gate.enabled=false must suppress the disclosure note even at the highest \
              trust tier, got: {sent:?}"
         );
+        assert_no_note_anywhere(&agent);
     }
 
     /// (d) `audit_all = false` must NOT suppress the disclosure note — `audit_all` and the
@@ -3446,6 +3470,7 @@ mod image_persistence_strip {
             "audit_all=false must not suppress the disclosure note — disclosure and audit are \
              independent switches, got: {sent:?}"
         );
+        assert_note_only_in_sent_messages(&agent);
     }
 
     fn fake_usage_record(cost_cents: f64) -> zeph_memory::UsageRecord {
