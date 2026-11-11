@@ -54,39 +54,67 @@ impl IntegrityRegistry {
         zeph_config::default_integrity_registry_path()
     }
 
-    /// Load the registry from `path`.
+    /// Load the registry from `path`, tolerating damage.
     ///
-    /// Missing file or unparseable content is silently treated as an empty registry
-    /// (forward-compat with pre-integrity installs).
+    /// Missing file, unreadable or unparseable content is treated as an empty registry, and
+    /// non-string values are skipped (forward-compat with pre-integrity installs). Used for
+    /// verification only; a mutation must use [`Self::load_strict`] so damage is never
+    /// persisted over the stored digests.
     pub(crate) fn load(path: &Path) -> Self {
-        let bytes = match std::fs::read(path) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
-            Err(e) => {
+        match read_table(path) {
+            Ok(None) => Self::default(),
+            Ok(Some(table)) => Self {
+                entries: table
+                    .into_iter()
+                    .filter_map(|(k, v)| match v {
+                        toml::Value::String(s) => Some((k, s)),
+                        _ => None,
+                    })
+                    .collect(),
+            },
+            Err(TableError::Read(e)) => {
                 tracing::debug!(path = %path.display(), error = %e, "integrity registry read failed; treating as empty");
-                return Self::default();
+                Self::default()
             }
-        };
-        let Ok(text) = String::from_utf8(bytes) else {
-            tracing::warn!(path = %path.display(), "integrity registry invalid UTF-8; treating as empty");
-            return Self::default();
-        };
-        let table: toml::Value = match toml::from_str(&text) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "integrity registry unparseable; treating as empty");
-                return Self::default();
+            Err(TableError::Content(reason)) => {
+                tracing::warn!(path = %path.display(), %reason, "integrity registry unusable; treating as empty");
+                Self::default()
             }
+        }
+    }
+
+    /// Load the registry from `path`, failing on any damage.
+    ///
+    /// A missing file is an empty registry (first install). Every other problem (read error,
+    /// invalid UTF-8, invalid TOML, a non-string value) is an error, so a read-modify-write
+    /// never overwrites digests it could not read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginError::IntegrityRegistryCorrupt`] when the file exists but is unusable.
+    pub(crate) fn load_strict(path: &Path) -> Result<Self, PluginError> {
+        let corrupt = |reason: String| PluginError::IntegrityRegistryCorrupt {
+            path: path.to_owned(),
+            reason,
         };
-        let entries = table
-            .as_table()
-            .map(|t| {
-                t.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
-                    .collect()
-            })
-            .unwrap_or_default();
-        Self { entries }
+        let Some(table) = read_table(path).map_err(|e| corrupt(e.to_string()))? else {
+            return Ok(Self::default());
+        };
+        let mut entries = HashMap::with_capacity(table.len());
+        for (k, v) in table {
+            match v {
+                toml::Value::String(s) => {
+                    entries.insert(k, s);
+                }
+                other => {
+                    return Err(corrupt(format!(
+                        "entry {k:?} is a {}, expected a string",
+                        other.type_str()
+                    )));
+                }
+            }
+        }
+        Ok(Self { entries })
     }
 
     /// Persist the registry to `path`, creating parent directories as needed.
@@ -124,8 +152,10 @@ impl IntegrityRegistry {
     ///
     /// # Errors
     ///
-    /// Returns [`PluginError::LockTimeout`] if the lock is not acquired in time, an I/O error
-    /// if the lock file cannot be opened or the registry saved, or whatever `f` returns.
+    /// Returns [`PluginError::LockTimeout`] if the lock is not acquired in time,
+    /// [`PluginError::IntegrityRegistryCorrupt`] if the existing registry cannot be read (the
+    /// file is left untouched), an I/O error if the lock file cannot be opened or the registry
+    /// saved, or whatever `f` returns.
     pub(crate) fn update(
         path: &Path,
         f: impl FnOnce(&mut Self) -> Result<(), PluginError>,
@@ -145,7 +175,7 @@ impl IntegrityRegistry {
         })?;
         let lock_path = path.with_added_extension("lock");
         let _lock = acquire_lock(&lock_path, timeout)?;
-        let mut registry = Self::load(path);
+        let mut registry = Self::load_strict(path)?;
         f(&mut registry)?;
         registry.save(path)
     }
@@ -210,6 +240,29 @@ impl IntegrityRegistry {
             })
         }
     }
+}
+
+/// Why [`read_table`] failed; kept apart so the lenient load can log read errors at debug.
+#[derive(Debug, thiserror::Error)]
+enum TableError {
+    #[error("read failed: {0}")]
+    Read(std::io::Error),
+    #[error("{0}")]
+    Content(String),
+}
+
+/// Read `path` as a TOML table. `Ok(None)` means the file does not exist.
+fn read_table(path: &Path) -> Result<Option<toml::value::Table>, TableError> {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(TableError::Read(e)),
+    };
+    let text =
+        String::from_utf8(bytes).map_err(|_| TableError::Content("not valid UTF-8".to_owned()))?;
+    toml::from_str(&text)
+        .map(Some)
+        .map_err(|e| TableError::Content(format!("invalid TOML: {e}")))
 }
 
 /// Outcome of an [`IntegrityRegistry::verify`] call.
@@ -332,14 +385,58 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_integrity_registry_treated_as_empty() {
+    fn corrupt_integrity_registry_load_is_lenient() {
         let dir = TempDir::new().unwrap();
         let reg_path = tmp_registry(&dir);
         std::fs::write(&reg_path, b"not valid toml !!!").unwrap();
 
-        let reg = IntegrityRegistry::load(&reg_path);
-        // Should not panic; entries should be empty.
+        assert!(IntegrityRegistry::load(&reg_path).entries.is_empty());
+    }
+
+    #[test]
+    fn load_strict_missing_file_is_empty() {
+        let dir = TempDir::new().unwrap();
+        let reg = IntegrityRegistry::load_strict(&tmp_registry(&dir)).unwrap();
         assert!(reg.entries.is_empty());
+    }
+
+    #[test]
+    fn update_on_corrupt_registry_errors_and_leaves_file_untouched() {
+        let dir = TempDir::new().unwrap();
+        let reg_path = tmp_registry(&dir);
+        let toml_path = dir.path().join("plugin.toml");
+        std::fs::write(&toml_path, b"x").unwrap();
+        let corrupt: &[&[u8]] = &[
+            b"not valid toml !!!",
+            b"\xff\xfe",
+            b"good = \"abc\"\nbad = 5\n",
+        ];
+        for content in corrupt {
+            std::fs::write(&reg_path, content).unwrap();
+            let err =
+                IntegrityRegistry::update(&reg_path, |r| r.record("p", &toml_path)).unwrap_err();
+            assert_matches!(err, PluginError::IntegrityRegistryCorrupt { .. });
+            assert!(err.to_string().contains(&reg_path.display().to_string()));
+            assert_eq!(std::fs::read(&reg_path).unwrap(), *content);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_on_unreadable_registry_errors_and_leaves_file_untouched() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = TempDir::new().unwrap();
+        let reg_path = tmp_registry(&dir);
+        std::fs::write(&reg_path, b"p = \"abc\"\n").unwrap();
+        std::fs::set_permissions(&reg_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&reg_path).is_ok() {
+            return; // running as root: permissions do not apply
+        }
+
+        let err = IntegrityRegistry::update(&reg_path, |_| Ok(())).unwrap_err();
+        std::fs::set_permissions(&reg_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_matches!(err, PluginError::IntegrityRegistryCorrupt { .. });
+        assert_eq!(std::fs::read(&reg_path).unwrap(), b"p = \"abc\"\n");
     }
 
     #[test]

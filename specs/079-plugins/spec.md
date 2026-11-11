@@ -223,6 +223,7 @@ AND the registry treats all plugin skills as hub-installed (non-bundled)
 | FR-016 | WHEN `tools.allowed_commands` overlays are applied THEN they form an intersection with the base; if the base is empty, no plugin can widen it | must |
 | FR-017 | WHEN `skills.disambiguation_threshold` overlays are applied THEN the maximum value across all plugins is used; thresholds never decrease | must |
 | FR-018 | WHEN plugin integrity is verified at load time THEN the SHA-256 digest stored at install is compared against the current manifest; if mismatch, `VerifyResult::Mismatch` is returned | must |
+| FR-019a | WHEN the integrity registry exists but cannot be read or parsed (I/O error, invalid UTF-8, invalid TOML, non-string value) THEN `IntegrityRegistry::update` aborts with `PluginError::IntegrityRegistryCorrupt` naming the path and the repair step, and the file is left byte-identical; a missing file is an empty registry. Callers (`add`, `remove`/auto-update swap) log a warning and continue, so the plugin is still installed or removed but without a digest update: a freshly added plugin loads unverified until the registry is repaired, and the registry keeps its stored digests (#6955) | must |
 | FR-019 | WHEN overlay resolution encounters a malformed `.plugin.toml` THEN the plugin is logged at WARN and skipped; the merge continues with remaining plugins | must |
 | FR-020 | WHEN `add_remote(url, expected_sha256)` is called THEN the archive is downloaded, SHA-256 is computed and compared, and if match the archive is extracted to a temp dir | must |
 | FR-021 | WHEN the archive SHA-256 does not match `expected_sha256` THEN `PluginError::IntegrityCheckFailed` is returned immediately; the archive is never extracted | must |
@@ -312,6 +313,7 @@ AND the registry treats all plugin skills as hub-installed (non-bundled)
 | Plugin directory already installed | Overwrite with fresh copy (idempotent re-install) |
 | Remote download returns 404 | `PluginError::DownloadFailed` |
 | Archive SHA-256 mismatch | `PluginError::IntegrityCheckFailed`; archive not extracted |
+| Integrity registry corrupt or unreadable during a mutation | `update` returns `PluginError::IntegrityRegistryCorrupt`; registry file untouched; the calling operation logs a warning and continues (the plugin is not recorded until the user repairs or deletes the registry) (#6955). Load-time verification stays lenient: a damaged registry makes plugins load unverified |
 | `.plugin.toml` write fails after copy | Integrity registry not updated; plugin loads unverified next time (M4 fault tolerance) |
 | Overlay resolve encounters missing `.plugin.toml` | Plugin is silently skipped; overlay merge continues with others |
 | Overlay resolve encounters unreadable directory | Logged at DEBUG; plugin skipped |
@@ -392,6 +394,7 @@ Every installed plugin has a SHA-256 digest recorded in the integrity registry. 
 the manifest's digest is verified to detect tampering.
 
 **Guarantee**: Tampering with plugin manifests is detected (logged at WARN; overlay still applied).
+A damaged registry is never overwritten: registry updates load it strictly and abort instead of dropping stored digests.
 
 ### Deterministic Enumeration Invariant
 

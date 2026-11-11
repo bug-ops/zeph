@@ -70,7 +70,7 @@ pub use trust_level::SkillTrustLevel;
 pub use turn_trust_floor::TurnTrustFloor;
 pub use types::{
     ProviderName, SessionId, SessionIdError, SkillName, SkillNameError, StopHint, SubgoalId,
-    ToolDefinition, ToolName,
+    ToolCallId, ToolDefinition, ToolName,
 };
 
 #[cfg(feature = "treesitter")]

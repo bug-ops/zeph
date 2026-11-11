@@ -75,7 +75,7 @@ async fn pre_execution_block_writes_audit_entry() {
         ChatResponse::tool_use(
             None,
             vec![ToolUseRequest {
-                id: "call-block".to_owned(),
+                id: "call-block".to_owned().into(),
                 name: "read_file".to_owned().into(),
                 input: serde_json::json!({"file_path": "/etc/passwd"}),
             }],

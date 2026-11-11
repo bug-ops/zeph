@@ -551,7 +551,7 @@ pub fn repair_tool_pairs(messages: &mut Vec<Message>, action: OrphanAction) -> R
                     } = part
                         && orphaned.contains(tool_use_id.as_str())
                     {
-                        let text = downgraded_tool_result_text(tool_use_id, content);
+                        let text = downgraded_tool_result_text(tool_use_id.as_str(), content);
                         *part = MessagePart::Text { text };
                         changed += 1;
                     }
@@ -778,7 +778,7 @@ mod tests {
 
     fn tool_use(id: &str) -> MessagePart {
         MessagePart::ToolUse {
-            id: id.to_owned(),
+            id: id.into(),
             name: "bash".to_owned(),
             input: serde_json::json!({}),
         }
@@ -786,7 +786,7 @@ mod tests {
 
     fn tool_result(id: &str, content: &str) -> MessagePart {
         MessagePart::ToolResult {
-            tool_use_id: id.to_owned(),
+            tool_use_id: id.into(),
             content: content.to_owned(),
             is_error: false,
         }

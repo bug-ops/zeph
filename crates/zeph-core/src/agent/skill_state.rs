@@ -13,6 +13,7 @@
 //! layout and never under durable agent turns; in every other configuration it is inert and
 //! leaves the tool list, history and prompt cache untouched.
 
+use zeph_common::ToolCallId;
 use zeph_common::delimiter::DelimiterTag;
 use zeph_llm::provider::{Message, MessagePart, Role, ToolDefinition};
 use zeph_sanitizer::ContentTrustLevel;
@@ -36,7 +37,7 @@ const NOTE_CLOSE: &str = DelimiterTag::RuntimeNote.close_tag();
 /// response), so clearing targets exactly this message.
 #[derive(Debug)]
 pub(crate) struct AbsorbableBatch {
-    ids: Vec<String>,
+    ids: Vec<ToolCallId>,
     msg_index: usize,
 }
 
@@ -388,7 +389,7 @@ impl<C: Channel> Agent<C> {
         if !self.services.skill.execution.is_active() {
             return;
         }
-        let ids: Vec<String> = tool_calls
+        let ids: Vec<ToolCallId> = tool_calls
             .iter()
             .filter(|tc| self.builtin_tool(tc.name.as_str()).is_none())
             .map(|tc| tc.id.clone())
@@ -551,7 +552,7 @@ mod tests {
             Role::User,
             ids.iter()
                 .map(|id| MessagePart::ToolResult {
-                    tool_use_id: (*id).to_owned(),
+                    tool_use_id: (*id).to_owned().into(),
                     content: format!("output-{id}"),
                     is_error: false,
                 })
@@ -589,7 +590,7 @@ mod tests {
         let reqs: Vec<ToolUseRequest> = calls
             .iter()
             .map(|(id, name, input)| ToolUseRequest {
-                id: (*id).to_owned(),
+                id: (*id).to_owned().into(),
                 name: (*name).into(),
                 input: input.clone(),
             })
@@ -819,7 +820,7 @@ mod tests {
         let reqs: Vec<ToolUseRequest> = calls
             .iter()
             .map(|(id, name, input)| ToolUseRequest {
-                id: (*id).to_owned(),
+                id: (*id).to_owned().into(),
                 name: (*name).into(),
                 input: input.clone(),
             })
@@ -954,7 +955,7 @@ mod tests {
             .last_batch
             .as_ref()
             .map(|b| b.ids.clone());
-        assert_eq!(before, Some(vec!["a".to_owned()]));
+        assert_eq!(before, Some(vec![ToolCallId::new("a")]));
         assert_eq!(after, before);
     }
 

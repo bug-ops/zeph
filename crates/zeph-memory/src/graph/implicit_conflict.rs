@@ -355,6 +355,7 @@ mod tests {
                 confidence_fast: 1.0,
                 confidence_slow: 1.0,
                 turn_index: None,
+                trust_level: None,
             },
             activation_score: 1.0,
             is_implicit_conflict: false,

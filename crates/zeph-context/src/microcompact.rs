@@ -6,6 +6,7 @@
 //! The `Agent`-level integration (reading `self.*`, mutating message history)
 //! lives in `zeph-core`. This module contains only the stateless helpers.
 
+use zeph_common::ToolCallId;
 use zeph_llm::provider::{Message, MessagePart};
 
 /// Tool names whose output is considered low-value after a session gap.
@@ -170,14 +171,14 @@ pub fn sweep_stale_tool_outputs(
 /// Returns the number of parts cleared.
 pub fn clear_absorbed_tool_results(
     message: &mut Message,
-    tool_use_ids: &[String],
+    tool_use_ids: &[ToolCallId],
     sentinel: &str,
     now_ts: i64,
 ) -> usize {
     if tool_use_ids.is_empty() {
         return 0;
     }
-    let targeted = |id: &str| tool_use_ids.iter().any(|t| t == id);
+    let targeted = |id: &str| tool_use_ids.iter().any(|t| t.as_str() == id);
     let output_ids: Vec<Option<String>> = message
         .parts
         .iter()
@@ -196,7 +197,9 @@ pub fn clear_absorbed_tool_results(
                 tool_use_id,
                 content,
                 ..
-            } if targeted(tool_use_id) && !content.starts_with(CLEARED_SENTINEL_PREFIX) => {
+            } if targeted(tool_use_id.as_str())
+                && !content.starts_with(CLEARED_SENTINEL_PREFIX) =>
+            {
                 sentinel.clone_into(content);
                 cleared += 1;
             }
@@ -432,7 +435,7 @@ mod tests {
     #[test]
     fn clear_absorbed_clears_only_targeted_ids() {
         let mut msg = mixed_msg();
-        let ids = vec!["a".to_string(), "b".to_string()];
+        let ids = vec![ToolCallId::new("a"), ToolCallId::new("b")];
         assert_eq!(
             clear_absorbed_tool_results(&mut msg, &ids, "[cleared]", 7),
             2
@@ -450,7 +453,11 @@ mod tests {
     #[test]
     fn clear_absorbed_is_idempotent_and_keeps_all_parts() {
         let mut msg = mixed_msg();
-        let ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let ids = vec![
+            ToolCallId::new("a"),
+            ToolCallId::new("b"),
+            ToolCallId::new("c"),
+        ];
         assert_eq!(
             clear_absorbed_tool_results(&mut msg, &ids, "[cleared]", 7),
             3

@@ -735,7 +735,7 @@ impl LlmProvider for OllamaProvider {
             .into_iter()
             .enumerate()
             .map(|(i, tc)| ToolUseRequest {
-                id: format!("call_{i}"),
+                id: format!("call_{i}").into(),
                 name: tc.function.name.into(),
                 input: tc.function.arguments,
             })

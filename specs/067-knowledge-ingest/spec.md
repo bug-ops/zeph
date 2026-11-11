@@ -226,6 +226,8 @@ Ingest is a simple/medium task → default config points it at the `fast` provid
 | FR-001 | THE SYSTEM SHALL add `origin TEXT NOT NULL DEFAULT 'conversation'` to `graph_edges` AND `graph_entities`; existing rows backfill to `'conversation'` | must |
 | FR-002 | THE SYSTEM SHALL add `import_batch_id TEXT NULL` and `source_uri TEXT NULL` to `graph_edges` (and `import_batch_id` to `graph_entities`) | must |
 | FR-003 | WHEN recall scores edges, THE SYSTEM SHALL be able to exclude or down-weight rows where `origin != 'conversation'`, controlled by `[knowledge].recall_include_imported` (default `true`) | must |
+| FR-005 | THE SYSTEM SHALL persist the per-source `TurnContextTrust` of imported rows in `trust_level SMALLINT NULL` on `graph_entities` AND `graph_edges` (migration 117, #6953): 0 = `Trusted`, 1 = `LocalUntrusted`, 2 = `ExternalUntrusted`. `NULL` means the row was never ingest-classified (conversation origin or written before the migration): its trust was never assessed, so a reader MUST treat it as untrusted. A stored value outside 0..=2 is a decode error, never a default. The recall-facts path skips an undecodable edge row with a warning rather than failing the whole query. Backfill maps the stored `origin` literals, which record the FIRST writer only: `'subagent'` to 1 and `'external-agent'` to 2 (already untrusted tiers); `'ingest'` to 0 only for entities never touched after creation (`last_seen_at = first_seen_at`) and never for edges (no last-write signal); everything else, including `'conversation'`, stays `NULL`. Known residual risk: an `'ingest'` entity re-written within the timestamp resolution of its creation, and a `'subagent'` row re-written by `'external-agent'`, keep the lower tier. | must |
+| FR-006 | WHEN an existing entity or edge is written again, THE SYSTEM SHALL merge `trust_level` NULL-absorbing: if either the stored or the incoming value is `NULL` the result is `NULL`, otherwise the greater (least trusted) tier. An unassessed source taints the row as unassessed and the taint is sticky. Applies to the entity upsert, the edge dedup update and the edge reassertion path. | must |
 | FR-004 | THE SYSTEM SHALL provide `zeph knowledge rollback <import_batch_id>` that deletes all entities/edges carrying that `import_batch_id` (and orphaned imported entities) | must |
 
 ### Phase 1 — Static artifacts → semantic notes
@@ -508,6 +510,12 @@ ALTER TABLE graph_edges    ADD COLUMN import_batch_id TEXT;       -- NULL for co
 ALTER TABLE graph_edges    ADD COLUMN source_uri     TEXT;        -- e.g. "subagent:<task_id>"
 ALTER TABLE graph_entities ADD COLUMN origin         TEXT NOT NULL DEFAULT 'conversation';
 ALTER TABLE graph_entities ADD COLUMN import_batch_id TEXT;
+
+-- Source trust (#6953, migration 117): 0/1/2 = TurnContextTrust, NULL = never ingest-classified
+ALTER TABLE graph_edges    ADD COLUMN trust_level SMALLINT;
+ALTER TABLE graph_entities ADD COLUMN trust_level SMALLINT;
+-- `origin` keeps the first writer, so the backfill is deliberately conservative: ingest entities
+-- are backfilled 0 only when last_seen_at = first_seen_at, ingest edges stay NULL (see FR-005).
 
 -- Idempotency ledger (re-read/cost guard only — INV-5)
 CREATE TABLE IF NOT EXISTS knowledge_ingest_ledger (

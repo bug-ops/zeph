@@ -398,6 +398,9 @@ Three layers, plus one prevention primitive:
 - **Layer A** — `unmatched_tool_use_ids(msg, next)` / `unmatched_tool_result_ids(msg, prev)` /
   `resolved_tool_result_ids(next)`: pure classification, adjacency-scoped against an
   already-resolved neighbour message (works for both `Vec<Message>` and `Vec<&Message>` callers).
+  `ToolUseRequest.id`, `MessagePart::ToolUse.id` and `MessagePart::ToolResult.tool_use_id` are
+  `zeph_common::ToolCallId` (transparent serde; wire format and stored history unchanged); the
+  id sets returned by Layer A stay `HashSet<&str>` views.
   `resolved_tool_result_ids` is the "matched" half of `unmatched_tool_use_ids` factored out so a
   caller testing arbitrary candidate ids (not necessarily drawn from a `Message`'s own `parts`)
   against the same adjacency-scoped resolution set does not reimplement the predicate — used by

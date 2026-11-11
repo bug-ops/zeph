@@ -251,6 +251,7 @@ mod tests {
             confidence_fast: 1.0,
             confidence_slow: 1.0,
             turn_index: None,
+            trust_level: None,
         }
     }
 

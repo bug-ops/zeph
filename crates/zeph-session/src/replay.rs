@@ -150,7 +150,11 @@ fn fold_step(
                 messages,
                 origin_seqs,
                 seq,
-                MessagePart::ToolUse { id, name, input },
+                MessagePart::ToolUse {
+                    id: id.into(),
+                    name,
+                    input,
+                },
             );
         }
         SessionEvent::ToolResult {
@@ -164,7 +168,7 @@ fn fold_step(
                 origin_seqs,
                 seq,
                 MessagePart::ToolResult {
-                    tool_use_id: id,
+                    tool_use_id: id.into(),
                     content: output,
                     is_error,
                 },
@@ -432,12 +436,12 @@ mod tests {
                 SessionEvent::AssistantMessage {
                     parts: vec![
                         MessagePart::ToolUse {
-                            id: "tc1".to_owned(),
+                            id: "tc1".to_owned().into(),
                             name: "shell".to_owned(),
                             input: serde_json::json!({}),
                         },
                         MessagePart::ToolUse {
-                            id: "tc2".to_owned(),
+                            id: "tc2".to_owned().into(),
                             name: "shell".to_owned(),
                             input: serde_json::json!({}),
                         },

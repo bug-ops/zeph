@@ -2443,4 +2443,146 @@ mod pg {
             "invocation_count must decode as the full INTEGER value, not truncate/zero"
         );
     }
+
+    // ── #6953: graph trust_level round trip and NULL-absorbing merge on Postgres ──
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn graph_trust_level_round_trips_and_null_absorbs_postgres() {
+        use zeph_llm::provider::TurnContextTrust as T;
+        use zeph_memory::graph::types::{GraphOrigin, GraphProvenance};
+
+        let (pool, _container) = start_pg().await;
+        let graph = GraphStore::new(pool).with_recall_include_imported(true);
+        let prov = |trust| GraphProvenance {
+            origin: GraphOrigin::Ingest,
+            import_batch_id: "batch-pg".to_owned(),
+            source_uri: None,
+            trust,
+        };
+        let upsert = |name: &'static str, p: Option<GraphProvenance>| {
+            let graph = &graph;
+            async move {
+                graph
+                    .upsert_entity(name, name, EntityType::Concept, None, p.as_ref())
+                    .await
+                    .unwrap()
+                    .0
+            }
+        };
+        let trust_of = |name: &'static str| {
+            let graph = &graph;
+            async move {
+                graph
+                    .find_entity(name, EntityType::Concept)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .trust_level
+            }
+        };
+
+        let a = upsert("pg_trust_a", Some(prov(T::LocalUntrusted))).await;
+        assert_eq!(trust_of("pg_trust_a").await, Some(T::LocalUntrusted));
+        upsert("pg_trust_a", Some(prov(T::ExternalUntrusted))).await;
+        assert_eq!(trust_of("pg_trust_a").await, Some(T::ExternalUntrusted));
+        upsert("pg_trust_a", Some(prov(T::Trusted))).await;
+        assert_eq!(trust_of("pg_trust_a").await, Some(T::ExternalUntrusted));
+        upsert("pg_trust_a", None).await;
+        assert_eq!(
+            trust_of("pg_trust_a").await,
+            None,
+            "ingest then conversation"
+        );
+
+        let b = upsert("pg_trust_b", None).await;
+        upsert("pg_trust_b", Some(prov(T::Trusted))).await;
+        assert_eq!(
+            trust_of("pg_trust_b").await,
+            None,
+            "conversation then ingest"
+        );
+
+        let edge = |p: Option<GraphProvenance>| {
+            let graph = &graph;
+            async move {
+                graph
+                    .insert_edge(a, b, "rel", "fact", 0.5, None, p.as_ref())
+                    .await
+                    .unwrap()
+            }
+        };
+        let edge_trust = || {
+            let graph = &graph;
+            async move { graph.edges_for_entity(a).await.unwrap()[0].trust_level }
+        };
+        let id = edge(Some(prov(T::LocalUntrusted))).await;
+        assert_eq!(edge_trust().await, Some(T::LocalUntrusted));
+        assert_eq!(edge(Some(prov(T::ExternalUntrusted))).await, id);
+        assert_eq!(edge_trust().await, Some(T::ExternalUntrusted));
+        edge(None).await;
+        assert_eq!(edge_trust().await, None, "ingest then conversation");
+        edge(Some(prov(T::Trusted))).await;
+        assert_eq!(edge_trust().await, None, "NULL stays sticky");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn graph_trust_migration_backfill_does_not_launder_rewritten_rows_postgres() {
+        use zeph_llm::provider::TurnContextTrust as T;
+
+        let (pool, _container) = start_pg().await;
+        let graph = GraphStore::new(pool.clone());
+        for (name, origin, last_seen) in [
+            ("pg_b_ingest", "ingest", "2026-01-01T00:00:00Z"),
+            ("pg_b_rewritten", "ingest", "2026-02-01T00:00:00Z"),
+            ("pg_b_sub", "subagent", "2026-01-01T00:00:00Z"),
+            ("pg_b_ext", "external-agent", "2026-01-01T00:00:00Z"),
+            ("pg_b_conv", "conversation", "2026-01-01T00:00:00Z"),
+        ] {
+            sqlx::query(
+                "INSERT INTO graph_entities \
+                 (name, canonical_name, entity_type, origin, first_seen_at, last_seen_at) \
+                 VALUES ($1, $1, 'concept', $2, '2026-01-01T00:00:00Z'::timestamptz, $3::timestamptz)",
+            )
+            .bind(name)
+            .bind(origin)
+            .bind(last_seen)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let migration = include_str!("../../zeph-db/migrations/postgres/117_graph_trust_level.sql");
+        for stmt in migration.split(';') {
+            let sql = stmt
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("--"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if sql.trim_start().starts_with("UPDATE") {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+        }
+
+        let trust_of = |name: &'static str| {
+            let graph = &graph;
+            async move {
+                graph
+                    .find_entity(name, EntityType::Concept)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .trust_level
+            }
+        };
+        assert_eq!(trust_of("pg_b_ingest").await, Some(T::Trusted));
+        assert_eq!(trust_of("pg_b_rewritten").await, None);
+        assert_eq!(trust_of("pg_b_sub").await, Some(T::LocalUntrusted));
+        assert_eq!(trust_of("pg_b_ext").await, Some(T::ExternalUntrusted));
+        assert_eq!(trust_of("pg_b_conv").await, None);
+    }
 }

@@ -2611,59 +2611,6 @@ impl<C: Channel> Agent<C> {
         svc.remove_correction_messages(&mut self.message_window_view());
     }
 
-    #[tracing::instrument(
-        name = "core.context.inject_semantic_recall",
-        skip_all,
-        level = "debug",
-        err
-    )]
-    pub(in crate::agent) async fn inject_semantic_recall(
-        &mut self,
-        query: &str,
-        token_budget: usize,
-    ) -> Result<(), super::super::error::AgentError> {
-        // Snapshot all read-only fields before the mutable borrow for the window view.
-        let tiered_config = self
-            .services
-            .memory
-            .persistence
-            .tiered_retrieval_config
-            .clone();
-        let tiered_classifier = self
-            .services
-            .memory
-            .persistence
-            .tiered_retrieval_classifier
-            .clone();
-        let tiered_validator = self
-            .services
-            .memory
-            .persistence
-            .tiered_retrieval_validator
-            .clone();
-        let memory = self.services.memory.persistence.memory.clone();
-        let recall_limit = self.services.memory.persistence.recall_limit;
-        let context_format = self.services.memory.persistence.context_format;
-        let conversation_id = self.services.memory.persistence.conversation_id;
-
-        let svc = zeph_agent_context::ContextService::new();
-        let mut window = self.message_window_view();
-        let params = zeph_agent_context::service::SemanticRecallParams {
-            query,
-            token_budget,
-            recall_limit,
-            context_format,
-            conversation_id,
-            tiered_classifier: tiered_classifier.as_ref(),
-            tiered_validator: tiered_validator.as_ref(),
-            tiered_config: &tiered_config,
-        };
-
-        svc.inject_semantic_recall_bare(params, &mut window, memory.as_deref())
-            .await
-            .map_err(|e| super::super::error::AgentError::ContextError(format!("{e:#}")))
-    }
-
     pub(in crate::agent) fn remove_summary_messages(&mut self) {
         let svc = zeph_agent_context::ContextService::new();
         svc.remove_summary_messages(&mut self.message_window_view());
@@ -2672,65 +2619,6 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) fn remove_cross_session_messages(&mut self) {
         let svc = zeph_agent_context::ContextService::new();
         svc.remove_cross_session_messages(&mut self.message_window_view());
-    }
-
-    #[tracing::instrument(
-        name = "core.context.inject_cross_session",
-        skip_all,
-        level = "debug",
-        err
-    )]
-    pub(in crate::agent) async fn inject_cross_session_context(
-        &mut self,
-        query: &str,
-        token_budget: usize,
-    ) -> Result<(), super::super::error::AgentError> {
-        self.remove_cross_session_messages();
-
-        if let Some(msg) = zeph_agent_context::helpers::fetch_cross_session_raw(
-            self.services.memory.persistence.memory.as_deref(),
-            self.services.memory.persistence.conversation_id,
-            self.services
-                .memory
-                .persistence
-                .cross_session_score_threshold,
-            query,
-            token_budget,
-            &self.runtime.metrics.token_counter,
-        )
-        .await
-        .map_err(|e| super::super::error::AgentError::ContextError(format!("{e:#}")))?
-            && self.msg.messages.len() > 1
-        {
-            zeph_llm::provider::insert_at_context_floor(&mut self.msg.messages, msg);
-            tracing::debug!("injected cross-session context");
-        }
-
-        Ok(())
-    }
-
-    #[tracing::instrument(name = "core.context.inject_summaries", skip_all, level = "debug", err)]
-    pub(in crate::agent) async fn inject_summaries(
-        &mut self,
-        token_budget: usize,
-    ) -> Result<(), super::super::error::AgentError> {
-        self.remove_summary_messages();
-
-        if let Some(msg) = zeph_agent_context::helpers::fetch_summaries_raw(
-            self.services.memory.persistence.memory.as_deref(),
-            self.services.memory.persistence.conversation_id,
-            token_budget,
-            &self.runtime.metrics.token_counter,
-        )
-        .await
-        .map_err(|e| super::super::error::AgentError::ContextError(format!("{e:#}")))?
-            && self.msg.messages.len() > 1
-        {
-            zeph_llm::provider::insert_at_context_floor(&mut self.msg.messages, msg);
-            tracing::debug!("injected summaries into context");
-        }
-
-        Ok(())
     }
 
     pub(in crate::agent) fn trim_messages_to_budget(&mut self, token_budget: usize) {

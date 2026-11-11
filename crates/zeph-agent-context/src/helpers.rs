@@ -3,9 +3,8 @@
 
 //! Pure helper functions for context assembly.
 //!
-//! These functions are called by `assembly.rs` in `zeph-core` (via a module alias)
-//! and by the [`crate::service::ContextService`] stubs that will be filled in during
-//! subsequent migration steps.
+//! These functions are called by [`crate::service::ContextService`] and by `assembly.rs`
+//! in `zeph-core`.
 //!
 //! All functions operate on [`crate::state::ContextAssemblyView`] instead of the
 //! `zeph-core`-internal `MemoryState`, keeping this crate free of `zeph-core` types.
@@ -221,7 +220,7 @@ pub async fn fetch_semantic_recall_raw(
 
 /// Fetch session summaries using individual field arguments.
 ///
-/// Raw-args variant used by `zeph-core` test bridge methods and by [`fetch_summaries`].
+/// Raw-args variant that [`fetch_summaries`] delegates to; it has no caller outside this crate.
 ///
 /// # Errors
 ///
@@ -272,7 +271,7 @@ pub async fn fetch_summaries_raw(
 
 /// Fetch cross-session context summaries using individual field arguments.
 ///
-/// Raw-args variant used by `zeph-core` test bridge methods and by [`fetch_cross_session`].
+/// Raw-args variant that [`fetch_cross_session`] delegates to; it has no caller outside this crate.
 ///
 /// # Errors
 ///
@@ -579,5 +578,138 @@ mod budget_hint_tests {
         let xml = hint.format_xml().unwrap();
         assert!(xml.starts_with("<budget>"));
         assert!(xml.ends_with("</budget>"));
+    }
+}
+
+#[cfg(test)]
+mod fetch_raw_tests {
+    use zeph_memory::TokenCounter;
+    use zeph_memory::semantic::SemanticMemory;
+
+    use super::*;
+
+    async fn memory_with_summaries(
+        summaries: &[&str],
+    ) -> (SemanticMemory, zeph_memory::ConversationId) {
+        let memory = SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            None,
+            zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            "test",
+        )
+        .await
+        .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        for content in summaries {
+            let m1 = memory
+                .sqlite()
+                .save_message(cid, "user", "q")
+                .await
+                .unwrap();
+            let m2 = memory
+                .sqlite()
+                .save_message(cid, "assistant", "a")
+                .await
+                .unwrap();
+            memory
+                .sqlite()
+                .save_summary(
+                    cid,
+                    content,
+                    Some(m1),
+                    Some(m2),
+                    i64::try_from(TokenCounter::new().count_tokens(content)).unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+        (memory, cid)
+    }
+
+    #[tokio::test]
+    async fn summaries_without_memory_is_none() {
+        let tc = TokenCounter::new();
+        assert!(
+            fetch_summaries_raw(None, None, 1000, &tc)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn summaries_zero_budget_is_none() {
+        let (memory, cid) = memory_with_summaries(&["summary text"]).await;
+        let tc = TokenCounter::new();
+        let msg = fetch_summaries_raw(Some(&memory), Some(cid), 0, &tc)
+            .await
+            .unwrap();
+        assert!(msg.is_none());
+    }
+
+    #[tokio::test]
+    async fn summaries_empty_is_none() {
+        let (memory, cid) = memory_with_summaries(&[]).await;
+        let tc = TokenCounter::new();
+        let msg = fetch_summaries_raw(Some(&memory), Some(cid), 1000, &tc)
+            .await
+            .unwrap();
+        assert!(msg.is_none());
+    }
+
+    #[tokio::test]
+    async fn summaries_become_a_summary_part_with_prefix() {
+        let (memory, cid) = memory_with_summaries(&["User asked about Rust ownership"]).await;
+        let tc = TokenCounter::new();
+        let msg = fetch_summaries_raw(Some(&memory), Some(cid), 1000, &tc)
+            .await
+            .unwrap()
+            .expect("summary message");
+        assert_eq!(msg.role, Role::System);
+        assert!(msg.content.starts_with(SUMMARY_PREFIX));
+        assert!(msg.content.contains("User asked about Rust ownership"));
+        assert!(matches!(
+            msg.parts.as_slice(),
+            [MessagePart::Summary { .. }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn summaries_respect_token_budget() {
+        let (memory, cid) = memory_with_summaries(&[
+            "short",
+            "this is a much longer summary that should consume more tokens",
+        ])
+        .await;
+        let tc = TokenCounter::new();
+        let budget = tc.count_tokens(SUMMARY_PREFIX) + 10;
+        if let Some(msg) = fetch_summaries_raw(Some(&memory), Some(cid), budget, &tc)
+            .await
+            .unwrap()
+        {
+            assert!(tc.count_tokens(&msg.content) <= budget);
+        }
+    }
+
+    #[tokio::test]
+    async fn cross_session_without_memory_is_none() {
+        let tc = TokenCounter::new();
+        assert!(
+            fetch_cross_session_raw(None, None, 0.5, "test", 1000, &tc)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_session_zero_budget_is_none() {
+        let (memory, cid) = memory_with_summaries(&["summary"]).await;
+        let tc = TokenCounter::new();
+        let msg = fetch_cross_session_raw(Some(&memory), Some(cid), 0.5, "test", 0, &tc)
+            .await
+            .unwrap();
+        assert!(msg.is_none());
     }
 }

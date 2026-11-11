@@ -12,7 +12,7 @@ use std::{
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 
-use zeph_common::ToolName;
+use zeph_common::{ToolCallId, ToolName};
 
 pub use zeph_common::ToolDefinition;
 
@@ -138,7 +138,7 @@ pub type ChatStream = Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> +
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolUseRequest {
     /// Opaque call identifier assigned by the model; must be echoed in `ToolResult.tool_use_id`.
-    pub id: String,
+    pub id: ToolCallId,
     /// Name of the tool to invoke, matching a [`ToolDefinition::name`].
     pub name: ToolName,
     /// JSON arguments the model wants to pass to the tool.
@@ -833,13 +833,13 @@ pub enum MessagePart {
     CrossSession { text: String },
     /// Model-initiated tool invocation. Pairs with a subsequent [`MessagePart::ToolResult`].
     ToolUse {
-        id: String,
+        id: ToolCallId,
         name: String,
         input: serde_json::Value,
     },
     /// Tool execution result returned to the model after a [`MessagePart::ToolUse`].
     ToolResult {
-        tool_use_id: String,
+        tool_use_id: ToolCallId,
         content: String,
         #[serde(default)]
         is_error: bool,
@@ -2859,6 +2859,48 @@ mod tests {
         } else {
             panic!("expected ToolUse");
         }
+    }
+
+    #[test]
+    fn tool_call_id_golden_wire_bytes() {
+        let use_part = MessagePart::ToolUse {
+            id: "toolu_01".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"command": "ls"}),
+        };
+        assert_eq!(
+            serde_json::to_string(&use_part).unwrap(),
+            r#"{"kind":"tool_use","id":"toolu_01","name":"bash","input":{"command":"ls"}}"#
+        );
+        let result_part = MessagePart::ToolResult {
+            tool_use_id: "toolu_01".into(),
+            content: "ok".into(),
+            is_error: false,
+        };
+        assert_eq!(
+            serde_json::to_string(&result_part).unwrap(),
+            r#"{"kind":"tool_result","tool_use_id":"toolu_01","content":"ok","is_error":false}"#
+        );
+        let req = ToolUseRequest {
+            id: "call_0".into(),
+            name: "bash".into(),
+            input: serde_json::json!({}),
+        };
+        assert_eq!(
+            serde_json::to_string(&req).unwrap(),
+            r#"{"id":"call_0","name":"bash","input":{}}"#
+        );
+    }
+
+    #[test]
+    fn stored_pre_newtype_rows_deserialize() {
+        let row = r#"[{"kind":"tool_use","id":"toolu_9","name":"bash","input":{}},{"kind":"tool_result","tool_use_id":"toolu_9","content":"x"}]"#;
+        let parts: Vec<MessagePart> = serde_json::from_str(row).unwrap();
+        assert_matches!(&parts[0], MessagePart::ToolUse { id, .. } if id == "toolu_9");
+        assert_matches!(
+            &parts[1],
+            MessagePart::ToolResult { tool_use_id, is_error: false, .. } if tool_use_id == "toolu_9"
+        );
     }
 
     #[test]

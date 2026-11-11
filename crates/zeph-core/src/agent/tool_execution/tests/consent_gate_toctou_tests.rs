@@ -101,7 +101,7 @@ async fn make_memory() -> SemanticMemory {
 
 fn memory_save_call(id: &str, content: &str) -> ToolUseRequest {
     ToolUseRequest {
-        id: id.to_owned(),
+        id: id.to_owned().into(),
         name: "memory_save".to_owned().into(),
         input: serde_json::json!({ "content": content }),
     }
@@ -109,7 +109,7 @@ fn memory_save_call(id: &str, content: &str) -> ToolUseRequest {
 
 fn web_scrape_call(id: &str) -> ToolUseRequest {
     ToolUseRequest {
-        id: id.to_owned(),
+        id: id.to_owned().into(),
         name: "web_scrape".to_owned().into(),
         input: serde_json::json!({ "url": "https://example.com" }),
     }

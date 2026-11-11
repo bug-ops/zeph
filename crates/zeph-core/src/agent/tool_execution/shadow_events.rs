@@ -65,7 +65,7 @@ mod tests {
 
     fn make_tool_req(name: &str) -> zeph_llm::provider::ToolUseRequest {
         zeph_llm::provider::ToolUseRequest {
-            id: format!("id_{name}"),
+            id: format!("id_{name}").into(),
             name: name.into(),
             input: serde_json::Value::Null,
         }

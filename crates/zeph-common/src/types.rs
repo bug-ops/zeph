@@ -205,6 +205,48 @@ arc_str_newtype!(
     /// Do not construct a `ToolName` with an empty string in application code.
 );
 
+arc_str_newtype!(
+    /// Opaque tool-call identifier assigned by an LLM provider to a tool invocation.
+    ///
+    /// The id links a `ToolUse` request to its `ToolResult` in message history and on the
+    /// provider wire. It is an opaque label, never parsed. Serialization is transparent, so
+    /// stored history and provider payloads are byte-identical to a plain string.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::ToolCallId;
+    ///
+    /// let id = ToolCallId::new("toolu_01");
+    /// assert_eq!(id.as_str(), "toolu_01");
+    /// assert_eq!(serde_json::to_string(&id).unwrap(), "\"toolu_01\"");
+    /// ```
+    struct ToolCallId;
+    new_doc:
+    /// Construct a `ToolCallId` from any value convertible to `Arc<str>`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::ToolCallId;
+    ///
+    /// assert_eq!(ToolCallId::new("call_1"), "call_1");
+    /// ```
+    as_str_doc:
+    /// Return the inner string slice.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::ToolCallId;
+    ///
+    /// assert_eq!(ToolCallId::new("call_1").as_str(), "call_1");
+    /// ```
+    default_doc:
+    /// Returns an empty id. Provided for the shared newtype trait surface; no field relies on
+    /// it, and an empty id is never valid on the wire.
+);
+
 // ── ProviderName ─────────────────────────────────────────────────────────────
 
 arc_str_newtype!(

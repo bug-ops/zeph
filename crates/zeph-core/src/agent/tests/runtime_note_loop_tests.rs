@@ -28,7 +28,7 @@ fn tool_use(id: &str) -> ChatResponse {
     ChatResponse::tool_use(
         None,
         vec![ToolUseRequest {
-            id: id.to_owned(),
+            id: id.to_owned().into(),
             name: "tool_a".to_owned().into(),
             input: serde_json::json!({"arg": id}),
         }],
@@ -202,7 +202,7 @@ fn two_calls() -> ChatResponse {
         None,
         (0..2)
             .map(|i| ToolUseRequest {
-                id: format!("w{i}"),
+                id: format!("w{i}").into(),
                 name: format!("tool_{i}").into(),
                 input: serde_json::json!({"arg": i}),
             })

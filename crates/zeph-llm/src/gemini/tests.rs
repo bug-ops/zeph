@@ -715,7 +715,7 @@ fn test_tool_use_part_to_function_call() {
             role: Role::Assistant,
             content: String::new(),
             parts: vec![MessagePart::ToolUse {
-                id: "call-1".to_owned(),
+                id: "call-1".into(),
                 name: "get_weather".to_owned(),
                 input: serde_json::json!({"location": "Paris"}),
             }],
@@ -725,7 +725,7 @@ fn test_tool_use_part_to_function_call() {
         Message::from_parts(
             Role::User,
             vec![MessagePart::ToolResult {
-                tool_use_id: "call-1".to_owned(),
+                tool_use_id: "call-1".into(),
                 content: "sunny".to_owned(),
                 is_error: false,
             }],
@@ -750,7 +750,7 @@ fn test_tool_result_part_to_function_response_with_name_lookup() {
             role: Role::Assistant,
             content: String::new(),
             parts: vec![MessagePart::ToolUse {
-                id: "call-1".to_owned(),
+                id: "call-1".into(),
                 name: "get_weather".to_owned(),
                 input: serde_json::json!({}),
             }],
@@ -760,7 +760,7 @@ fn test_tool_result_part_to_function_response_with_name_lookup() {
             role: Role::User,
             content: String::new(),
             parts: vec![MessagePart::ToolResult {
-                tool_use_id: "call-1".to_owned(),
+                tool_use_id: "call-1".into(),
                 content: "Sunny, 20°C".to_owned(),
                 is_error: false,
             }],
@@ -785,7 +785,7 @@ fn test_tool_result_is_error_wrapping() {
             role: Role::Assistant,
             content: String::new(),
             parts: vec![MessagePart::ToolUse {
-                id: "call-err".to_owned(),
+                id: "call-err".into(),
                 name: "run_shell".to_owned(),
                 input: serde_json::json!({}),
             }],
@@ -795,7 +795,7 @@ fn test_tool_result_is_error_wrapping() {
             role: Role::User,
             content: String::new(),
             parts: vec![MessagePart::ToolResult {
-                tool_use_id: "call-err".to_owned(),
+                tool_use_id: "call-err".into(),
                 content: "Command not found".to_owned(),
                 is_error: true,
             }],
@@ -818,12 +818,12 @@ fn test_multiple_tool_results_merged_into_one_user_content() {
             content: String::new(),
             parts: vec![
                 MessagePart::ToolUse {
-                    id: "call-1".to_owned(),
+                    id: "call-1".into(),
                     name: "tool_a".to_owned(),
                     input: serde_json::json!({}),
                 },
                 MessagePart::ToolUse {
-                    id: "call-2".to_owned(),
+                    id: "call-2".into(),
                     name: "tool_b".to_owned(),
                     input: serde_json::json!({}),
                 },
@@ -835,12 +835,12 @@ fn test_multiple_tool_results_merged_into_one_user_content() {
             content: String::new(),
             parts: vec![
                 MessagePart::ToolResult {
-                    tool_use_id: "call-1".to_owned(),
+                    tool_use_id: "call-1".into(),
                     content: "result A".to_owned(),
                     is_error: false,
                 },
                 MessagePart::ToolResult {
-                    tool_use_id: "call-2".to_owned(),
+                    tool_use_id: "call-2".into(),
                     content: "result B".to_owned(),
                     is_error: false,
                 },
@@ -884,7 +884,7 @@ fn test_mixed_text_and_tool_use() {
                     text: "Let me check the weather.".to_owned(),
                 },
                 MessagePart::ToolUse {
-                    id: "call-1".to_owned(),
+                    id: "call-1".into(),
                     name: "get_weather".to_owned(),
                     input: serde_json::json!({"location": "London"}),
                 },
@@ -894,7 +894,7 @@ fn test_mixed_text_and_tool_use() {
         Message::from_parts(
             Role::User,
             vec![MessagePart::ToolResult {
-                tool_use_id: "call-1".to_owned(),
+                tool_use_id: "call-1".into(),
                 content: "cloudy".to_owned(),
                 is_error: false,
             }],

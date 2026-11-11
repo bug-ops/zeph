@@ -24,6 +24,69 @@ pub(crate) fn insert_main_agent_ctx(
     }
 }
 
+/// Build the environment passed to `PreToolUse`/`PostToolUse` hooks for one tool call.
+pub(crate) fn make_tool_hook_env(
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+    session_id: Option<&str>,
+) -> std::collections::HashMap<String, String> {
+    let mut env = zeph_subagent::make_base_hook_env(tool_name, tool_input);
+    if let Some(sid) = session_id {
+        env.insert("ZEPH_SESSION_ID".to_owned(), sid.to_owned());
+    }
+    insert_main_agent_ctx(&mut env, session_id);
+    env
+}
+
+/// The `PreToolUse` hooks that match one tool call, with their environment, ready to fire.
+///
+/// Shared by the main tier loop (which fires many of these concurrently under a semaphore) and
+/// the inline orchestration loop (which fires one per call), so both build the same hook
+/// environment and run the same `core.hooks.pre_tool_use` span.
+pub(crate) struct PreToolHookCall {
+    hooks: Vec<zeph_config::HookDef>,
+    env: std::collections::HashMap<String, String>,
+}
+
+impl PreToolHookCall {
+    /// Select the hooks in `pre_hooks` matching `tool_name`; `None` when none match.
+    pub(crate) fn prepare(
+        pre_hooks: &[zeph_config::HookMatcher],
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+        session_id: Option<&str>,
+    ) -> Option<Self> {
+        let hooks: Vec<zeph_config::HookDef> = zeph_subagent::matching_hooks(pre_hooks, tool_name)
+            .into_iter()
+            .cloned()
+            .collect();
+        if hooks.is_empty() {
+            return None;
+        }
+        Some(Self {
+            hooks,
+            env: make_tool_hook_env(tool_name, tool_input, session_id),
+        })
+    }
+
+    /// Fire the selected hooks.
+    ///
+    /// # Errors
+    ///
+    /// Returns the hook error only when a `fail_closed` hook fails; fail-open failures are
+    /// swallowed by `fire_hooks`.
+    pub(crate) async fn fire(
+        &self,
+        tool_name: &str,
+        mcp: Option<&dyn zeph_subagent::McpDispatch>,
+    ) -> Result<zeph_subagent::HookRunResult, zeph_subagent::HookError> {
+        use tracing::Instrument as _;
+        zeph_subagent::hooks::fire_hooks(&self.hooks, &self.env, mcp, None)
+            .instrument(tracing::info_span!("core.hooks.pre_tool_use", tool = %tool_name))
+            .await
+    }
+}
+
 impl<C: Channel> Agent<C> {
     /// Return an `McpDispatch` adapter backed by the agent's MCP manager, if present.
     pub(super) fn mcp_dispatch(&self) -> Option<McpManagerDispatch> {
@@ -33,6 +96,48 @@ impl<C: Channel> Agent<C> {
             .as_ref()
             .map(|m| McpManagerDispatch(Arc::clone(m)))
     }
+    /// Conversation id as a string, the session identifier handed to tool hooks.
+    pub(super) fn hook_session_id(&self) -> Option<String> {
+        self.services
+            .memory
+            .persistence
+            .conversation_id
+            .map(|id| id.0.to_string())
+    }
+
+    /// Fire matching `PreToolUse` hooks for a single tool call outside the main tier loop.
+    ///
+    /// Built-in tools never reach hooks (same rule as the tier loop). Returns the
+    /// `[blocked]` message to hand back to the model when a `fail_closed` hook fails, and
+    /// `None` when the tool may run (no matching hooks, or only fail-open failures).
+    ///
+    /// Takes `&mut self` only so the future stays `Send`: `Agent` is not `Sync`.
+    #[cfg(feature = "scheduler")]
+    pub(super) async fn fire_pre_tool_hooks(
+        &mut self,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+    ) -> Option<String> {
+        let pre_hooks = &self.services.session.hooks_config.pre_tool_use;
+        if pre_hooks.is_empty() || self.builtin_tool(tool_name).is_some() {
+            return None;
+        }
+        let session_id = self.hook_session_id();
+        let call =
+            PreToolHookCall::prepare(pre_hooks, tool_name, tool_input, session_id.as_deref())?;
+        let dispatch = self.mcp_dispatch();
+        let mcp = dispatch
+            .as_ref()
+            .map(|d| d as &dyn zeph_subagent::McpDispatch);
+        match call.fire(tool_name, mcp).await {
+            Ok(_) => None,
+            Err(e) => {
+                tracing::warn!(error = %e, tool = %tool_name, "PreToolUse hook blocked tool (fail_closed)");
+                Some(zeph_subagent::pre_tool_block_message(tool_name))
+            }
+        }
+    }
+
     /// Check if the process cwd has changed since last call and fire `CwdChanged` hooks.
     ///
     /// Called after each tool batch completes. The check is a single syscall and has

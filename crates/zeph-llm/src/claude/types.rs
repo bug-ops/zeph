@@ -4,6 +4,7 @@
 //! Public API types and internal API wire types for the Claude provider.
 
 use serde::{Deserialize, Serialize};
+use zeph_common::ToolCallId;
 
 use crate::error::StopDetails;
 use crate::thinking_replay::{InputTransformation, ThinkingReplay};
@@ -452,12 +453,12 @@ pub(super) enum AnthropicContentBlock {
         cache_control: Option<CacheControl>,
     },
     ToolUse {
-        id: String,
+        id: ToolCallId,
         name: String,
         input: serde_json::Value,
     },
     ToolResult {
-        tool_use_id: String,
+        tool_use_id: ToolCallId,
         content: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,

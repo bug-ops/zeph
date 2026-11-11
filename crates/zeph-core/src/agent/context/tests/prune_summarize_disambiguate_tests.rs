@@ -277,45 +277,6 @@ async fn test_tier2_after_insufficient_prune() {
 }
 
 #[tokio::test]
-async fn test_inject_cross_session_no_memory_noop() {
-    let provider = mock_provider(vec![]);
-    let channel = MockChannel::new(vec![]);
-    let registry = create_test_registry();
-    let executor = MockToolExecutor::no_tools();
-
-    let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-    let msg_count = agent.msg.messages.len();
-
-    agent
-        .inject_cross_session_context("test", 1000)
-        .await
-        .unwrap();
-    assert_eq!(agent.msg.messages.len(), msg_count);
-}
-
-#[tokio::test]
-async fn test_inject_cross_session_zero_budget_noop() {
-    let provider = mock_provider(vec![]);
-    let (memory, cid) = create_memory_with_summaries(provider.clone(), &["summary"]).await;
-
-    let channel = MockChannel::new(vec![]);
-    let registry = create_test_registry();
-    let executor = MockToolExecutor::no_tools();
-
-    let mut agent = Agent::new(provider, channel, registry, None, 5, executor).with_memory(
-        Arc::new(memory),
-        cid,
-        50,
-        5,
-        50,
-    );
-    let msg_count = agent.msg.messages.len();
-
-    agent.inject_cross_session_context("test", 0).await.unwrap();
-    assert_eq!(agent.msg.messages.len(), msg_count);
-}
-
-#[tokio::test]
 async fn test_remove_cross_session_messages() {
     let provider = mock_provider(vec![]);
     let channel = MockChannel::new(vec![]);
@@ -1287,7 +1248,7 @@ fn remove_tool_responses_middle_out_order_is_center_first() {
             Message::from_parts(
                 Role::User,
                 vec![zeph_llm::provider::MessagePart::ToolResult {
-                    tool_use_id: format!("t{i}"),
+                    tool_use_id: format!("t{i}").into(),
                     content: format!("result{i}"),
                     is_error: false,
                 }],

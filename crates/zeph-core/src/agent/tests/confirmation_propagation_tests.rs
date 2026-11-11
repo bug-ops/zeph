@@ -124,12 +124,12 @@ fn dag_tool_use_response() -> ChatResponse {
         None,
         vec![
             ToolUseRequest {
-                id: "tool_a_id".to_owned(),
+                id: "tool_a_id".to_owned().into(),
                 name: "tool_a".to_owned().into(),
                 input: serde_json::json!({"arg": "value"}),
             },
             ToolUseRequest {
-                id: "tool_b_id".to_owned(),
+                id: "tool_b_id".to_owned().into(),
                 name: "tool_b".to_owned().into(),
                 input: serde_json::json!({"source": "tool_a_id"}),
             },
@@ -142,12 +142,12 @@ fn independent_tool_use_response() -> ChatResponse {
         None,
         vec![
             ToolUseRequest {
-                id: "tool_a_id".to_owned(),
+                id: "tool_a_id".to_owned().into(),
                 name: "tool_a".to_owned().into(),
                 input: serde_json::json!({"arg": "value"}),
             },
             ToolUseRequest {
-                id: "tool_c_id".to_owned(),
+                id: "tool_c_id".to_owned().into(),
                 name: "tool_c".to_owned().into(),
                 input: serde_json::json!({"arg": "independent"}),
             },

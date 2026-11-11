@@ -144,7 +144,7 @@ impl SessionSink {
                     None,
                     None,
                     SessionEvent::ToolResult {
-                        id: tool_use_id.clone(),
+                        id: tool_use_id.to_string(),
                         // Not available at this call site — only the flat `MessagePart` reaches
                         // `record_message`, not the originating `ToolUseRequest`. Every consumer
                         // of `SessionEvent::ToolResult` (replay, ACP session updates) keys off
@@ -287,12 +287,12 @@ mod tests {
         let (sink, _dir) = make_sink("s1").await;
         let parts = vec![
             MessagePart::ToolResult {
-                tool_use_id: "call_1".to_owned(),
+                tool_use_id: "call_1".to_owned().into(),
                 content: "file1.rs".to_owned(),
                 is_error: false,
             },
             MessagePart::ToolResult {
-                tool_use_id: "call_2".to_owned(),
+                tool_use_id: "call_2".to_owned().into(),
                 content: "boom".to_owned(),
                 is_error: true,
             },
@@ -350,7 +350,7 @@ mod tests {
             Role::Assistant,
             "",
             &[MessagePart::ToolUse {
-                id: "call_1".to_owned(),
+                id: "call_1".to_owned().into(),
                 name: "shell".to_owned(),
                 input: serde_json::json!({"command": "ls"}),
             }],
@@ -361,7 +361,7 @@ mod tests {
             Role::User,
             "",
             &[MessagePart::ToolResult {
-                tool_use_id: "call_1".to_owned(),
+                tool_use_id: "call_1".to_owned().into(),
                 content: "file.txt".to_owned(),
                 is_error: false,
             }],

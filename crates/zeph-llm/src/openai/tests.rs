@@ -1171,7 +1171,13 @@ fn convert_messages_structured_with_tool_parts() {
     assert_eq!(result[0].role, "assistant");
     assert!(result[0].tool_calls.is_some());
     assert_eq!(result[1].role, "tool");
-    assert_eq!(result[1].tool_call_id.as_deref(), Some("call_1"));
+    assert_eq!(
+        result[1]
+            .tool_call_id
+            .as_ref()
+            .map(zeph_common::ToolCallId::as_str),
+        Some("call_1")
+    );
 }
 
 #[test]
@@ -1395,7 +1401,13 @@ fn convert_messages_structured_dedupes_colliding_tool_call_ids() {
     // First round trip keeps its original id.
     let first_call_id = result[0].tool_calls.as_ref().unwrap()[0].id.clone();
     assert_eq!(first_call_id, "call_1");
-    assert_eq!(result[1].tool_call_id.as_deref(), Some("call_1"));
+    assert_eq!(
+        result[1]
+            .tool_call_id
+            .as_ref()
+            .map(zeph_common::ToolCallId::as_str),
+        Some("call_1")
+    );
 
     // Second round trip's colliding id must be rewritten to something unique...
     let second_call_id = result[4].tool_calls.as_ref().unwrap()[0].id.clone();
@@ -1407,7 +1419,10 @@ fn convert_messages_structured_dedupes_colliding_tool_call_ids() {
 
     // ...and its paired tool-result message must carry the same rewritten id.
     assert_eq!(
-        result[5].tool_call_id.as_deref(),
+        result[5]
+            .tool_call_id
+            .as_ref()
+            .map(zeph_common::ToolCallId::as_str),
         Some(second_call_id.as_str())
     );
 }
@@ -1452,9 +1467,21 @@ fn convert_messages_structured_preserves_unique_tool_call_ids() {
 
     let result = convert_messages_structured(&messages);
     assert_eq!(result[0].tool_calls.as_ref().unwrap()[0].id, "call_1");
-    assert_eq!(result[1].tool_call_id.as_deref(), Some("call_1"));
+    assert_eq!(
+        result[1]
+            .tool_call_id
+            .as_ref()
+            .map(zeph_common::ToolCallId::as_str),
+        Some("call_1")
+    );
     assert_eq!(result[2].tool_calls.as_ref().unwrap()[0].id, "call_2");
-    assert_eq!(result[3].tool_call_id.as_deref(), Some("call_2"));
+    assert_eq!(
+        result[3]
+            .tool_call_id
+            .as_ref()
+            .map(zeph_common::ToolCallId::as_str),
+        Some("call_2")
+    );
 }
 
 #[test]
@@ -1491,7 +1518,7 @@ fn convert_messages_structured_dedupes_triple_collision_fifo() {
     let result = convert_messages_structured(&messages);
     assert_eq!(result.len(), 6);
 
-    let call_ids: Vec<String> = (0..3)
+    let call_ids: Vec<zeph_common::ToolCallId> = (0..3)
         .map(|i| result[i * 2].tool_calls.as_ref().unwrap()[0].id.clone())
         .collect();
 
@@ -1505,7 +1532,10 @@ fn convert_messages_structured_dedupes_triple_collision_fifo() {
     // Each tool-role response must carry the id of its own round trip, in order.
     for i in 0..3 {
         assert_eq!(
-            result[i * 2 + 1].tool_call_id.as_deref(),
+            result[i * 2 + 1]
+                .tool_call_id
+                .as_ref()
+                .map(zeph_common::ToolCallId::as_str),
             Some(call_ids[i].as_str()),
             "round trip {i} response must pair with its own call id"
         );
@@ -1602,12 +1632,18 @@ fn convert_messages_structured_dedupes_multiple_colliding_calls_in_one_message()
 
     // Responses are messages 5 and 6, in the same order as the calls that produced them.
     assert_eq!(
-        result[5].tool_call_id.as_deref(),
+        result[5]
+            .tool_call_id
+            .as_ref()
+            .map(zeph_common::ToolCallId::as_str),
         Some(rewritten_call_1.as_str()),
         "first response must pair with the rewritten call_1, not call_2's id"
     );
     assert_eq!(
-        result[6].tool_call_id.as_deref(),
+        result[6]
+            .tool_call_id
+            .as_ref()
+            .map(zeph_common::ToolCallId::as_str),
         Some(rewritten_call_2.as_str()),
         "second response must pair with the rewritten call_2, not call_1's id"
     );
@@ -1623,7 +1659,7 @@ fn dedupe_tool_call_ids_orphaned_call_without_response_does_not_panic() {
             role: "assistant".to_owned(),
             content: None,
             tool_calls: Some(vec![OpenAiToolCallOut {
-                id: "call_1".to_owned(),
+                id: "call_1".to_owned().into(),
                 r#type: "function".to_owned(),
                 function: OpenAiFunctionCall {
                     name: "bash".to_owned(),
@@ -1637,7 +1673,7 @@ fn dedupe_tool_call_ids_orphaned_call_without_response_does_not_panic() {
             role: "assistant".to_owned(),
             content: None,
             tool_calls: Some(vec![OpenAiToolCallOut {
-                id: "call_1".to_owned(),
+                id: "call_1".to_owned().into(),
                 r#type: "function".to_owned(),
                 function: OpenAiFunctionCall {
                     name: "bash".to_owned(),
@@ -1663,13 +1699,16 @@ fn dedupe_tool_call_ids_tool_message_without_pending_entry_is_unchanged() {
         role: "tool".to_owned(),
         content: Some("output".to_owned()),
         tool_calls: None,
-        tool_call_id: Some("never_collided".to_owned()),
+        tool_call_id: Some("never_collided".to_owned().into()),
     }];
 
     dedupe_tool_call_ids(&mut messages);
 
     assert_eq!(
-        messages[0].tool_call_id.as_deref(),
+        messages[0]
+            .tool_call_id
+            .as_ref()
+            .map(zeph_common::ToolCallId::as_str),
         Some("never_collided"),
         "tool_call_id with no pending rewrite must be left untouched"
     );

@@ -39,6 +39,7 @@ use crate::tool_pairing::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
+use zeph_common::ToolCallId;
 
 /// Which token-limit field to use in the API request body.
 ///
@@ -182,7 +183,7 @@ pub struct OpenAiProvider {
     /// Reasoning effort level for `o*` models (`"low"`, `"medium"`, or `"high"`).
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) status_tx: Option<StatusTx>,
-    usage: UsageTracker,
+    pub(crate) usage: UsageTracker,
     generation_overrides: Option<GenerationOverrides>,
     /// When `true`, append a compact JSON hint of the tool's output schema to its description.
     forward_output_schema: bool,
@@ -1530,12 +1531,12 @@ struct StructuredApiMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OpenAiToolCallOut>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_call_id: Option<String>,
+    tool_call_id: Option<ToolCallId>,
 }
 
 #[derive(Serialize)]
 struct OpenAiToolCallOut {
-    id: String,
+    id: ToolCallId,
     r#type: String,
     function: OpenAiFunctionCall,
 }
@@ -1570,7 +1571,7 @@ struct ToolChatMessage {
 
 #[derive(Deserialize)]
 struct OpenAiToolCall {
-    id: String,
+    id: ToolCallId,
     function: OpenAiToolCallFunction,
 }
 
@@ -1666,7 +1667,7 @@ fn push_user_tool_messages(
                 );
                 result.push(StructuredApiMessage {
                     role: "user".to_owned(),
-                    content: Some(downgraded_tool_result_text(tool_use_id, content)),
+                    content: Some(downgraded_tool_result_text(tool_use_id.as_str(), content)),
                     tool_calls: None,
                     tool_call_id: None,
                 });
@@ -1771,8 +1772,8 @@ fn convert_messages_structured<'a>(
 /// `tool`-role message's `tool_call_id` (matched in FIFO order per original id) so call/response
 /// pairing stays intact. Ids that never collide are left untouched.
 fn dedupe_tool_call_ids(messages: &mut [StructuredApiMessage]) {
-    let mut seen_ids: HashSet<String> = HashSet::new();
-    let mut pending: HashMap<String, VecDeque<String>> = HashMap::new();
+    let mut seen_ids: HashSet<ToolCallId> = HashSet::new();
+    let mut pending: HashMap<ToolCallId, VecDeque<ToolCallId>> = HashMap::new();
 
     for msg in messages.iter_mut() {
         if let Some(tool_calls) = msg.tool_calls.as_mut() {
@@ -1782,9 +1783,9 @@ fn dedupe_tool_call_ids(messages: &mut [StructuredApiMessage]) {
                 }
 
                 let original_id = call.id.clone();
-                let mut new_id = format!("{original_id}-{}", uuid::Uuid::new_v4());
+                let mut new_id = ToolCallId::new(format!("{original_id}-{}", uuid::Uuid::new_v4()));
                 while !seen_ids.insert(new_id.clone()) {
-                    new_id = format!("{original_id}-{}", uuid::Uuid::new_v4());
+                    new_id = ToolCallId::new(format!("{original_id}-{}", uuid::Uuid::new_v4()));
                 }
                 pending
                     .entry(original_id)

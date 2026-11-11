@@ -6,6 +6,7 @@ use std::sync::Arc;
 use eventsource_stream::Eventsource;
 use serde::Deserialize;
 use tokio_stream::StreamExt;
+use zeph_common::ToolCallId;
 use zeph_config::StreamLimits;
 
 use crate::claude::StreamUsage;
@@ -28,7 +29,7 @@ pub enum ToolSseEvent {
     /// and avoid the timing gap where deltas arrive before the `ToolCallComplete` stop event.
     ToolBlockStart {
         index: usize,
-        id: String,
+        id: ToolCallId,
         name: String,
     },
     /// Incremental JSON fragment for the tool at `index`.
@@ -36,7 +37,7 @@ pub enum ToolSseEvent {
     /// A tool-use block is fully received: carries the complete accumulated JSON.
     ToolCallComplete {
         index: usize,
-        id: String,
+        id: ToolCallId,
         name: String,
         full_json: String,
     },
@@ -301,7 +302,7 @@ fn parse_claude_tool_sse_events(
                     // InputJsonDelta arrives for this index (fixes the tool_meta timing gap).
                     vec![ToolSseEvent::ToolBlockStart {
                         index: ev.index,
-                        id,
+                        id: id.into(),
                         name,
                     }]
                 }
@@ -325,7 +326,7 @@ fn parse_claude_tool_sse_events(
             if let Some((index, id, name, json)) = state.tool_block.take() {
                 events.push(ToolSseEvent::ToolCallComplete {
                     index,
-                    id,
+                    id: id.into(),
                     name,
                     full_json: json,
                 });
@@ -683,7 +684,7 @@ fn parse_gemini_sse_event(data: &str) -> Option<Result<StreamChunk, LlmError>> {
     for part in parts {
         if let Some(ref fc) = part.function_call {
             tool_calls.push(ToolUseRequest {
-                id: uuid::Uuid::new_v4().to_string(),
+                id: uuid::Uuid::new_v4().to_string().into(),
                 name: fc.name.clone().into(),
                 input: fc
                     .args

@@ -821,9 +821,9 @@ async fn self_reflection_early_return_pushes_tool_results_for_all_tool_calls() {
     for msg in &agent.msg.messages {
         for part in &msg.parts {
             match part {
-                MessagePart::ToolUse { id, .. } => tool_use_ids.push(id.clone()),
+                MessagePart::ToolUse { id, .. } => tool_use_ids.push(id.to_string()),
                 MessagePart::ToolResult { tool_use_id, .. } => {
-                    tool_result_ids.push(tool_use_id.clone());
+                    tool_result_ids.push(tool_use_id.to_string());
                 }
                 _ => {}
             }
@@ -866,7 +866,7 @@ async fn self_reflection_early_return_pushes_tool_results_for_all_tool_calls() {
                 is_error,
             } = p
             {
-                Some((tool_use_id.clone(), content.clone(), *is_error))
+                Some((tool_use_id.to_string(), content.clone(), *is_error))
             } else {
                 None
             }
@@ -1028,7 +1028,7 @@ async fn self_reflection_single_tool_failure_produces_one_tool_result() {
     for msg in &agent.msg.messages {
         for part in &msg.parts {
             if let MessagePart::ToolUse { id, .. } = part {
-                tool_use_ids.push(id.clone());
+                tool_use_ids.push(id.to_string());
             }
         }
     }
@@ -1054,7 +1054,7 @@ async fn self_reflection_single_tool_failure_produces_one_tool_result() {
                 ..
             } = p
             {
-                Some((tool_use_id.clone(), *is_error))
+                Some((tool_use_id.to_string(), *is_error))
             } else {
                 None
             }
@@ -1133,9 +1133,9 @@ async fn self_reflection_middle_tool_failure_no_orphans() {
     for msg in &agent.msg.messages {
         for part in &msg.parts {
             match part {
-                MessagePart::ToolUse { id, .. } => tool_use_ids.push(id.clone()),
+                MessagePart::ToolUse { id, .. } => tool_use_ids.push(id.to_string()),
                 MessagePart::ToolResult { tool_use_id, .. } => {
-                    tool_result_ids.push(tool_use_id.clone());
+                    tool_result_ids.push(tool_use_id.to_string());
                 }
                 _ => {}
             }
@@ -1532,7 +1532,7 @@ async fn max_parallel_tools_one_runs_all_tools_sequentially() {
         .flat_map(|m| &m.parts)
         .filter_map(|p| {
             if let MessagePart::ToolResult { tool_use_id, .. } = p {
-                Some(tool_use_id.clone())
+                Some(tool_use_id.to_string())
             } else {
                 None
             }
@@ -1761,7 +1761,7 @@ async fn mixed_retryable_and_non_retryable_batch() {
                 is_error,
             } = p
             {
-                Some((tool_use_id.clone(), content.clone(), *is_error))
+                Some((tool_use_id.to_string(), content.clone(), *is_error))
             } else {
                 None
             }
@@ -2488,7 +2488,7 @@ fn result_parts_by_id(
                 is_error,
             } = p
             {
-                Some((tool_use_id.clone(), (content.clone(), *is_error)))
+                Some((tool_use_id.to_string(), (content.clone(), *is_error)))
             } else {
                 None
             }

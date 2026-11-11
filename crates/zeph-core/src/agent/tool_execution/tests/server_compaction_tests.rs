@@ -402,33 +402,3 @@ fn head_injected_user_messages_are_never_subgoal_tagged() {
         "head injections and the turn input stay untagged"
     );
 }
-
-#[tokio::test]
-async fn inject_summaries_shim_lands_after_the_compaction_block() {
-    use zeph_llm::any::AnyProvider;
-    use zeph_memory::semantic::SemanticMemory;
-
-    let memory = SemanticMemory::new(
-        ":memory:",
-        "http://127.0.0.1:1",
-        None,
-        AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
-        "test-model",
-    )
-    .await
-    .unwrap();
-    let cid = memory.sqlite().create_conversation().await.unwrap();
-    memory
-        .sqlite()
-        .save_summary(cid, "earlier work", None, None, 5)
-        .await
-        .unwrap();
-    let mut agent = mid_loop_agent().with_memory(std::sync::Arc::new(memory), cid, 50, 5, 100);
-    agent.apply_server_compaction("s".to_owned());
-
-    agent.inject_summaries(1000).await.unwrap();
-
-    let floor = context_floor(&agent.msg.messages);
-    assert!(is_compaction(&agent.msg.messages[floor - 1]));
-    assert!(agent.msg.messages[floor].content.contains("earlier work"));
-}

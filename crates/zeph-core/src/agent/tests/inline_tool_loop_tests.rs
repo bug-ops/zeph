@@ -73,7 +73,7 @@ fn tool_use_response(tool_id: &str, tool_name: &str) -> ChatResponse {
     ChatResponse::tool_use(
         None,
         vec![ToolUseRequest {
-            id: tool_id.to_owned(),
+            id: tool_id.to_owned().into(),
             name: tool_name.into(),
             input: serde_json::json!({"arg": "val"}),
         }],

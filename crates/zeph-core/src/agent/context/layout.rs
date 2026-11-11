@@ -1054,7 +1054,7 @@ mod agent_tests {
         agent.msg.messages.push(Message::from_parts(
             Role::Assistant,
             vec![MessagePart::ToolUse {
-                id: format!("id_{label}"),
+                id: format!("id_{label}").into(),
                 name: label.to_owned(),
                 input: serde_json::json!({"cmd": "echo"}),
             }],
@@ -1062,7 +1062,7 @@ mod agent_tests {
         let mut result = Message::from_parts(
             Role::User,
             vec![MessagePart::ToolResult {
-                tool_use_id: format!("id_{label}"),
+                tool_use_id: format!("id_{label}").into(),
                 content: format!("output of {label}"),
                 is_error: false,
             }],

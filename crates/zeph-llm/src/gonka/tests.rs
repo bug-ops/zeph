@@ -584,3 +584,131 @@ fn gonka_provider_with_generation_overrides_returns_self() {
     assert_eq!(patched.model_identifier(), "gpt-4o");
     assert!(patched.supports_streaming());
 }
+
+const CHAT_RESPONSE_NO_USAGE: &str = r#"{"choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}]}"#;
+
+async fn mount_json(server: &MockServer, route: &str, body: &str, first_only: bool) {
+    let mock = Mock::given(method("POST")).and(path(route)).respond_with(
+        ResponseTemplate::new(200)
+            .insert_header("content-type", "application/json")
+            .set_body_string(body.to_owned()),
+    );
+    if first_only {
+        mock.up_to_n_times(1).mount(server).await;
+    } else {
+        mock.mount(server).await;
+    }
+}
+
+/// A chat whose response carries no usage must not report the previous call's usage (#6959).
+#[tokio::test]
+async fn chat_without_usage_clears_previous_usage() {
+    let server = MockServer::start().await;
+    mount_json(&server, "/chat/completions", CHAT_RESPONSE, true).await;
+    mount_json(&server, "/chat/completions", CHAT_RESPONSE_NO_USAGE, false).await;
+
+    let provider = make_provider(&server.uri());
+    provider.chat(&user_message("one")).await.unwrap();
+    assert!(provider.last_response_usage().is_some());
+    provider.chat(&user_message("two")).await.unwrap();
+    assert!(provider.last_response_usage().is_none());
+}
+
+/// A stream publishes no usage, so it must clear the previous chat's usage (#6959).
+#[tokio::test]
+async fn chat_stream_clears_previous_usage() {
+    let server = MockServer::start().await;
+    mount_json(&server, "/chat/completions", CHAT_RESPONSE, true).await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string("data: [DONE]\n\n"),
+        )
+        .mount(&server)
+        .await;
+
+    let provider = make_provider(&server.uri());
+    provider.chat(&user_message("one")).await.unwrap();
+    assert!(provider.last_response_usage().is_some());
+    let _stream = provider.chat_stream(&user_message("two")).await.unwrap();
+    assert!(provider.last_response_usage().is_none());
+}
+
+/// An embedding between two chats must not wipe the first chat's usage (#6959).
+#[tokio::test]
+async fn embed_does_not_wipe_chat_usage() {
+    let server = MockServer::start().await;
+    mount_json(&server, "/chat/completions", CHAT_RESPONSE, false).await;
+    mount_json(&server, "/embeddings", EMBED_RESPONSE, false).await;
+
+    let provider = make_provider(&server.uri());
+    provider.chat(&user_message("one")).await.unwrap();
+    let before = provider.last_response_usage();
+    assert!(before.is_some());
+    provider.embed("text").await.unwrap();
+    assert_eq!(provider.last_response_usage(), before);
+}
+
+fn tool_response(with_usage: bool) -> String {
+    let usage = if with_usage {
+        r#", "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}"#
+    } else {
+        ""
+    };
+    format!(
+        r#"{{"choices": [{{"message": {{"role": "assistant", "content": null, "tool_calls": [{{
+            "id": "call_1", "type": "function",
+            "function": {{"name": "get_weather", "arguments": "{{}}"}}}}]}},
+            "finish_reason": "tool_calls"}}]{usage}}}"#
+    )
+}
+
+/// A second tool call whose response has no usage must not republish the first call's usage (#6959).
+#[tokio::test]
+async fn chat_with_tools_without_usage_clears_previous_usage() {
+    let server = MockServer::start().await;
+    mount_json(&server, "/chat/completions", &tool_response(true), true).await;
+    mount_json(&server, "/chat/completions", &tool_response(false), false).await;
+
+    let provider = make_provider(&server.uri());
+    let tools: Vec<ToolDefinition> = vec![];
+    provider
+        .chat_with_tools(&user_message("one"), &tools)
+        .await
+        .unwrap();
+    assert!(provider.last_response_usage().is_some());
+    provider
+        .chat_with_tools(&user_message("two"), &tools)
+        .await
+        .unwrap();
+    assert!(provider.last_response_usage().is_none());
+}
+
+/// A typed chat whose response has no usage must not keep the previous call's usage (#6959).
+#[tokio::test]
+async fn chat_typed_without_usage_clears_previous_usage() {
+    #[derive(Debug, Deserialize, JsonSchema)]
+    struct Out {
+        name: String,
+    }
+    let typed = |usage: &str| {
+        format!(
+            r#"{{"choices": [{{"message": {{"role": "assistant", "content": "{{\"name\":\"x\"}}"}},
+                "finish_reason": "stop"}}]{usage}}}"#
+        )
+    };
+    let server = MockServer::start().await;
+    let with =
+        typed(r#", "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}"#);
+    mount_json(&server, "/chat/completions", &with, true).await;
+    mount_json(&server, "/chat/completions", &typed(""), false).await;
+
+    let provider = make_provider(&server.uri());
+    let first: Out = provider.chat_typed(&user_message("one")).await.unwrap();
+    assert_eq!(first.name, "x");
+    assert!(provider.last_response_usage().is_some());
+    let _: Out = provider.chat_typed(&user_message("two")).await.unwrap();
+    assert!(provider.last_response_usage().is_none());
+}

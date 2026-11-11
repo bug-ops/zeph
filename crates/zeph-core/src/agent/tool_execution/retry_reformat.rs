@@ -351,7 +351,7 @@ mod tests {
 
         fn tool_use_request() -> zeph_llm::provider::ToolUseRequest {
             zeph_llm::provider::ToolUseRequest {
-                id: "call-1".to_owned(),
+                id: "call-1".to_owned().into(),
                 name: "test_tool".to_owned().into(),
                 input: serde_json::json!({"path": 123}),
             }

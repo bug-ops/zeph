@@ -327,15 +327,22 @@ re-scope it) — do not bump the version as a side effect of landing one more 1.
   to-agent delegation* consumer exists — no tool or code path lets the running agent loop
   discover and call an arbitrary peer on its own initiative; `AgentRegistry`'s only live
   caller is the `--connect` attach flow.
-- **Unvalidated interop, partially addressed** (#6201): the RFC 8785 JCS canonicalization in
-  `card_signing.rs` now strips proto3-default-valued fields (empty string/`false`/`0`/empty
-  array/object, recursively) before canonicalizing, closing the specific divergence where a
-  real peer that strips defaults before signing but transmits the full card on the wire would
-  have its signature incorrectly rejected — covered by a synthetic regression test. This is
-  still not validated against a real `a2a-sdk` reference-implementation signed-card vector (no
-  network access during development), so `require` remains unproven against real peers in
-  general until such a vector is obtained and checked in as a test case; `card_trust_policy`
-  intentionally still defaults to `"ignore"`, not `"prefer"`.
+- **Canonicalization mirrors the a2a-python reference** (#6931, supersedes #6201's proto3-default
+  stripping): `card_signing.rs` removes `signatures`, then recursively drops `null`, `""`, `[]`
+  and `{}` (as object values and array elements, including containers emptied by cleaning) and
+  keeps `false` and `0`, exactly like `a2a-sdk` `_clean_empty`, before RFC 8785 JCS. Byte-for-byte
+  agreement and ES256 verification are asserted against vectors generated with `a2a-sdk` 1.3.0
+  (`crates/zeph-a2a/tests/fixtures/card_signing_a2a_python_1_3_0.json`). Nesting deeper than 128
+  containers is rejected, as in the reference. `card_trust_policy` intentionally still defaults
+  to `"ignore"`, not `"prefer"`.
+- **Known limitation**: the Python verifier parses the card into protobuf first, so a
+  non-presence field explicitly sent as `false` (`AgentExtension.required`, `pkceRequired`) by a
+  non-Python peer is dropped on its side but kept by zeph's raw-JSON canonicalization. No
+  schema-aware stripping is implemented.
+- **Known limitation (empty members)**: like the a2a-python reference, the signature does not cover empty members (`null`, `""`, `[]`, `{}`), including security requirements with empty scope lists. A peer can add or drop such members without invalidating the signature; do not rely on a signed card to prove their presence or absence.
+- **`jku` decision** (#6931): `jku` is not fetched and is ignored for key resolution; the
+  out-of-band `TrustedKey` store is the only trust anchor. Any future support needs an explicit
+  allowlist and an SSRF-safe fetch.
 
 ---
 

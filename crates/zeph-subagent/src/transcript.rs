@@ -1101,7 +1101,7 @@ mod tests {
                 text: "used a tool".to_owned(),
             },
             MessagePart::ToolUse {
-                id: "call-1".to_owned(),
+                id: "call-1".to_owned().into(),
                 name: "search".to_owned(),
                 input: serde_json::json!({"query": "rust"}),
             },
@@ -1909,7 +1909,7 @@ mod tests {
         let mut msg = test_message(Role::User, "tool output");
         msg.parts = vec![
             MessagePart::ToolResult {
-                tool_use_id: "t1".to_owned(),
+                tool_use_id: "t1".to_owned().into(),
                 content: "tool output".to_owned(),
                 is_error: false,
             },

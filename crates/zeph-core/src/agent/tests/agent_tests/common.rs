@@ -421,6 +421,9 @@ pub(crate) struct MockToolExecutor {
     pub(crate) captured_env: Arc<Mutex<Vec<EnvSnapshot>>>,
     definitions: Vec<zeph_tools::registry::ToolDef>,
     delay_ms: u64,
+    /// Number of `execute_tool_call` invocations, shared so tests can read it after the
+    /// executor is moved into an agent.
+    pub(crate) call_count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl MockToolExecutor {
@@ -430,6 +433,7 @@ impl MockToolExecutor {
             captured_env: Arc::new(Mutex::new(Vec::new())),
             definitions: Vec::new(),
             delay_ms: 0,
+            call_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -499,6 +503,8 @@ impl ToolExecutor for MockToolExecutor {
         &self,
         _call: &zeph_tools::executor::ToolCall,
     ) -> Result<Option<ToolOutput>, ToolError> {
+        self.call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.delay_ms > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
         }

@@ -763,7 +763,7 @@ async fn utility_gate_blocks_call_and_produces_skipped_output() {
         });
 
     let tool_calls = vec![ToolUseRequest {
-        id: "call-1".to_owned(),
+        id: "call-1".to_owned().into(),
         name: "bash".to_owned().into(),
         input: serde_json::json!({"command": "ls"}),
     }];
@@ -812,7 +812,7 @@ async fn utility_gate_disabled_does_not_produce_skipped_output() {
     assert!(!agent.tool_orchestrator.utility_scorer.is_enabled());
 
     let tool_calls = vec![ToolUseRequest {
-        id: "call-2".to_owned(),
+        id: "call-2".to_owned().into(),
         name: "bash".to_owned().into(),
         input: serde_json::json!({"command": "ls"}),
     }];
@@ -1399,12 +1399,12 @@ mod histogram_recorder_wiring {
 
         let tool_calls = vec![
             ToolUseRequest {
-                id: "id-hr4a".to_owned(),
+                id: "id-hr4a".to_owned().into(),
                 name: "bash".to_owned().into(),
                 input: serde_json::json!({"command": "echo a"}),
             },
             ToolUseRequest {
-                id: "id-hr4b".to_owned(),
+                id: "id-hr4b".to_owned().into(),
                 name: "bash".to_owned().into(),
                 input: serde_json::json!({"command": "echo b"}),
             },
@@ -1659,12 +1659,12 @@ async fn utility_window_exhaustion_signals_hard_break() {
     // Two calls: both will score below threshold → counter hits 2 → window fires.
     let tool_calls = vec![
         ToolUseRequest {
-            id: "call-w1".to_owned(),
+            id: "call-w1".to_owned().into(),
             name: "bash".to_owned().into(),
             input: serde_json::json!({"command": "ls"}),
         },
         ToolUseRequest {
-            id: "call-w2".to_owned(),
+            id: "call-w2".to_owned().into(),
             name: "read".to_owned().into(),
             input: serde_json::json!({"path": "/tmp/x"}),
         },
@@ -1742,7 +1742,7 @@ async fn utility_window_exempt_tool_does_not_trigger_break() {
 
     // invoke_skill is in the exempt list — must bypass note_action entirely.
     let tool_calls = vec![ToolUseRequest {
-        id: "call-exempt".to_owned(),
+        id: "call-exempt".to_owned().into(),
         name: "invoke_skill".to_owned().into(),
         input: serde_json::json!({"skill": "test"}),
     }];

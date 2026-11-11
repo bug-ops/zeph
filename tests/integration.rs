@@ -51,7 +51,7 @@ fn multi_tool_use_provider(iterations: usize, final_text: &str) -> AnyProvider {
         responses.push(ChatResponse::tool_use(
             None,
             vec![ToolUseRequest {
-                id: format!("call{i}"),
+                id: format!("call{i}").into(),
                 name: "bash".into(),
                 input: serde_json::json!({}),
             }],

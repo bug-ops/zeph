@@ -396,6 +396,7 @@ impl LlmProvider for GonkaProvider {
 
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
         tracing::debug!(model = self.model_identifier(), "llm.gonka.chat start");
+        self.usage.clear_response();
         let body = self.inner.debug_request_json(messages, &[], false);
         let body_bytes = serde_json::to_vec(&body)
             .map_err(|e| LlmError::Other(format!("body serialization: {e}")))?;
@@ -430,6 +431,7 @@ impl LlmProvider for GonkaProvider {
             model = self.model_identifier(),
             "llm.gonka.chat_stream start"
         );
+        self.usage.clear_response();
         let body = self.inner.debug_request_json(messages, &[], true);
         let body_bytes = serde_json::to_vec(&body)
             .map_err(|e| LlmError::Other(format!("body serialization: {e}")))?;
@@ -547,6 +549,9 @@ impl LlmProvider for GonkaProvider {
             model = self.model_identifier(),
             "llm.gonka.chat_with_tools start"
         );
+        self.usage.clear_response();
+        // Inner tracker is never cleared by send_with_retry here.
+        self.inner.usage.clear_response();
         let body = serde_json::to_vec(&self.inner.debug_request_json(messages, tools, false))
             .map_err(|e| LlmError::Other(format!("body serialization: {e}")))?;
 
@@ -593,6 +598,7 @@ impl LlmProvider for GonkaProvider {
             model = self.model_identifier(),
             "llm.gonka.chat_typed start"
         );
+        self.usage.clear_response();
         let body_bytes = self.inner.build_typed_chat_body::<T>(messages)?;
 
         let response = self

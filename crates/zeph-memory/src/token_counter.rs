@@ -163,7 +163,7 @@ impl TokenCounter {
             // API sends structured JSON block: `{"type":"tool_use","id":"...","name":"...","input":...}`
             MessagePart::ToolUse { id, name, input } => {
                 TOOL_USE_OVERHEAD
-                    + self.count_tokens(id)
+                    + self.count_tokens(id.as_str())
                     + self.count_tokens(name)
                     + self.count_tokens(&input.to_string())
             }
@@ -173,7 +173,11 @@ impl TokenCounter {
                 tool_use_id,
                 content,
                 ..
-            } => TOOL_RESULT_OVERHEAD + self.count_tokens(tool_use_id) + self.count_tokens(content),
+            } => {
+                TOOL_RESULT_OVERHEAD
+                    + self.count_tokens(tool_use_id.as_str())
+                    + self.count_tokens(content)
+            }
 
             // Image token count depends on pixel dimensions, which are unavailable in ImageData.
             // Using a fixed constant is more accurate than bytes-based formula because
@@ -446,7 +450,7 @@ mod tests {
         let tool_use_id = "toolu_xyz";
         let content = "result text";
         let part = MessagePart::ToolResult {
-            tool_use_id: tool_use_id.to_string(),
+            tool_use_id: tool_use_id.into(),
             content: content.to_string(),
             is_error: false,
         };

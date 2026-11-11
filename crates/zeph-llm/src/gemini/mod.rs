@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use zeph_common::ToolCallId;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 
@@ -591,7 +592,7 @@ fn parse_tool_response(resp: GenerateContentResponse) -> Result<ChatResponse, Ll
     for part in candidate.content.parts {
         if let Some(fc) = part.function_call {
             tool_calls.push(ToolUseRequest {
-                id: uuid::Uuid::new_v4().to_string(),
+                id: uuid::Uuid::new_v4().to_string().into(),
                 name: fc.name.into(),
                 input: fc
                     .args
@@ -853,7 +854,7 @@ fn convert_tool_definitions(tools: &[ToolDefinition]) -> Vec<GeminiFunctionDecla
 // ---------------------------------------------------------------------------
 
 /// Build a lookup map from `tool_use_id` to `tool_name` by scanning all messages.
-fn build_tool_name_lookup(messages: &AgentVisible<'_>) -> HashMap<String, String> {
+fn build_tool_name_lookup(messages: &AgentVisible<'_>) -> HashMap<ToolCallId, String> {
     let mut map = HashMap::new();
     for msg in messages.iter() {
         for part in &msg.parts {
@@ -987,7 +988,7 @@ fn text_part(text: String) -> GeminiPart {
 
 fn convert_message_parts(
     msg: &Message,
-    tool_names: &HashMap<String, String>,
+    tool_names: &HashMap<ToolCallId, String>,
     orphans: &OrphanedIds<'_>,
 ) -> Vec<GeminiPart> {
     if msg.parts.is_empty() {
@@ -1011,7 +1012,7 @@ fn convert_message_parts(
                     result.push(text_part(text.clone()));
                 }
             }
-            MessagePart::ToolUse { id, name, input } if orphans.has_tool_use(id) => {
+            MessagePart::ToolUse { id, name, input } if orphans.has_tool_use(id.as_str()) => {
                 tracing::warn!(
                     tool_use_id = %id,
                     tool_name = %name,
@@ -1023,12 +1024,15 @@ fn convert_message_parts(
                 tool_use_id,
                 content,
                 ..
-            } if orphans.has_tool_result(tool_use_id) => {
+            } if orphans.has_tool_result(tool_use_id.as_str()) => {
                 tracing::warn!(
                     tool_use_id = %tool_use_id,
                     "downgrading orphaned tool_result to text in Gemini request"
                 );
-                result.push(text_part(downgraded_tool_result_text(tool_use_id, content)));
+                result.push(text_part(downgraded_tool_result_text(
+                    tool_use_id.as_str(),
+                    content,
+                )));
             }
             MessagePart::ToolUse { name, input, .. } => {
                 result.push(GeminiPart {
@@ -1051,13 +1055,10 @@ fn convert_message_parts(
                         tool_use_id = %tool_use_id,
                         "ToolResult name lookup miss — using raw ID as function name"
                     );
-                    tool_use_id.clone()
+                    tool_use_id.to_string()
                 });
-                let response = if *is_error {
-                    serde_json::json!({"error": content})
-                } else {
-                    serde_json::json!({"result": content})
-                };
+                let key = if *is_error { "error" } else { "result" };
+                let response = serde_json::json!({ key: content });
                 result.push(GeminiPart {
                     text: None,
                     inline_data: None,

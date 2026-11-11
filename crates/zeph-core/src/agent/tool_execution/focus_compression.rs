@@ -212,7 +212,7 @@ mod tests {
 
     fn make_tool_req(name: &str) -> zeph_llm::provider::ToolUseRequest {
         zeph_llm::provider::ToolUseRequest {
-            id: format!("id_{name}"),
+            id: format!("id_{name}").into(),
             name: name.into(),
             input: serde_json::Value::Null,
         }
@@ -309,7 +309,7 @@ mod tests {
         // Build a result part with text that would be truncated if Acon were active.
         let big_content = "word ".repeat(5000);
         let mut parts = vec![MessagePart::ToolResult {
-            tool_use_id: "id_shell".to_owned(),
+            tool_use_id: "id_shell".to_owned().into(),
             content: big_content.clone(),
             is_error: false,
         }];
@@ -360,7 +360,7 @@ mod tests {
 
         fn tool_result(id: &str, content: String) -> MessagePart {
             MessagePart::ToolResult {
-                tool_use_id: id.to_owned(),
+                tool_use_id: id.to_owned().into(),
                 content,
                 is_error: false,
             }
@@ -370,12 +370,12 @@ mod tests {
         let big_b = "bravo ".repeat(3000);
         let calls = vec![
             ToolUseRequest {
-                id: "id_a".to_owned(),
+                id: "id_a".to_owned().into(),
                 name: "read".into(),
                 input: serde_json::Value::Null,
             },
             ToolUseRequest {
-                id: "id_b".to_owned(),
+                id: "id_b".to_owned().into(),
                 name: "read".into(),
                 input: serde_json::Value::Null,
             },
