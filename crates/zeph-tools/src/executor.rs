@@ -227,9 +227,8 @@ pub enum ClaimSource {
     FileSystem,
     /// HTTP web scrape.
     WebScrape,
-    /// Query-based web search (external search API). Audit-provenance only — the
-    /// sanitizer trust bridge dispatches on the tool-name string, not this variant
-    /// (see `zeph_sanitizer::tool_output_source`).
+    /// Query-based web search (external search API). Maps to native provenance; the sanitizer
+    /// selects the web source kind from the tool name (see `zeph_sanitizer::tool_output_source`).
     WebSearch,
     /// MCP server tool response.
     Mcp,
@@ -250,6 +249,25 @@ pub enum ClaimSource {
     /// Message relayed from a sibling sub-agent through the peer mailbox: the body is
     /// authored by another model and may carry content that sibling fetched.
     PeerMessage,
+}
+
+impl From<ClaimSource> for zeph_common::trust_level::ToolProvenance {
+    fn from(claim: ClaimSource) -> Self {
+        match claim {
+            ClaimSource::Mcp => Self::Mcp,
+            ClaimSource::Shell
+            | ClaimSource::FileSystem
+            | ClaimSource::WebScrape
+            | ClaimSource::WebSearch
+            | ClaimSource::A2a
+            | ClaimSource::CodeSearch
+            | ClaimSource::Diagnostics
+            | ClaimSource::Memory
+            | ClaimSource::Moderation
+            | ClaimSource::ContextManagement
+            | ClaimSource::PeerMessage => Self::Native,
+        }
+    }
 }
 
 impl ClaimSource {
@@ -434,6 +452,10 @@ pub struct ToolOutput {
     pub max_result_size_chars: Option<usize>,
     /// Typed outcome of the call; the single source of truth for success/failure.
     pub status: ToolStatus,
+    /// Classification recorded with a body that an earlier call stored and this call replays
+    /// (overflow or archive retrieval). Set only by executors that return such a body; `None`
+    /// for every freshly produced result.
+    pub replayed_from: Option<zeph_common::trust_level::ToolResultSource>,
 }
 
 impl ToolOutput {
@@ -1337,6 +1359,19 @@ pub fn extract_fenced_blocks<'a>(text: &'a str, lang: &str) -> Vec<&'a str> {
 mod tests {
     use super::*;
     use std::assert_matches;
+
+    #[test]
+    fn claim_source_maps_only_mcp_to_mcp_provenance() {
+        use zeph_common::trust_level::ToolProvenance;
+        assert_eq!(ToolProvenance::from(ClaimSource::Mcp), ToolProvenance::Mcp);
+        for claim in [
+            ClaimSource::Shell,
+            ClaimSource::WebSearch,
+            ClaimSource::PeerMessage,
+        ] {
+            assert_eq!(ToolProvenance::from(claim), ToolProvenance::Native);
+        }
+    }
 
     #[test]
     fn is_local_policy_denial_covers_only_the_policy_layer() {

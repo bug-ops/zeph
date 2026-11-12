@@ -148,9 +148,11 @@ already present or concurrently arriving in the current turn:
   inside `sanitize_tool_output`, which runs *after* a tier's tool calls have already executed
   concurrently via `join_all`. A `memory_save` dispatched in the same batch as `web_scrape` (or
   `memory_search`) could read a stale `Trusted` value during its own concurrent dispatch. Fixed
-  by precomputing the batch's worst-case trust tier from tool names alone
+  by precomputing the batch's worst-case trust tier from tool names and the per-batch MCP registry (`McpToolIds`)
   (`Agent::ratchet_memory_consent_trust_for_dispatch`) and writing it to the slot before any
-  tool in the batch starts executing.
+  tool in the batch starts executing. A `read_overflow` call in the same batch as `memory_save`
+  counts as `ExternalUntrusted` (its stored tier is unknown before it runs); without `memory_save`
+  in the batch the post-result ratchet sets the exact stored tier.
 - **Cross-process reload residual**: `load_history`/`load_history_filtered`/`message_by_id`
   hardcoded `trust_level: None` on reload, silently dropping the gate's context tag across a
   daemon/serve/ACP restart. Fixed by restoring `MessageMetadata::trust_level` from the

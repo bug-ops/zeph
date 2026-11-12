@@ -41,7 +41,7 @@ related:
 | `crates/zeph-tools/src/scrape.rs` | `WebScrapeExecutor` — the pattern this spec mirrors: `validate_url`, `check_domain_policy`, `resolve_and_validate`, `build_client` (SSRF addr-pinning via `resolve_to_addrs`, lines 226-231), `EgressEvent` emission, `log_audit`, `apply_ipi_filter` |
 | `crates/zeph-tools/src/executor.rs` | `ToolExecutor` trait, `ToolCall`, `ToolOutput`, `ToolError` (`Blocked { command }`, `Http { status, message }`, `Timeout { timeout_secs }`, `InvalidParams { message }`, `Execution`), `ClaimSource` (`#[non_exhaustive]`) |
 | `crates/zeph-tools/src/registry.rs` | `ToolDef`, `InvocationHint::ToolCall` |
-| `crates/zeph-core/src/agent/tool_execution/sanitize.rs` | `build_tool_output_source(tool_name: &str)` (line 85) — the sanitizer trust bridge; dispatches on **tool-name string**, not `ClaimSource` |
+| `crates/zeph-sanitizer/src/tool_source.rs` | `zeph_sanitizer::tool_output_source(tool_name, provenance)` — the sanitizer trust bridge; native web tools dispatch on the **tool-name string**, not `ClaimSource` |
 | `crates/zeph-config/src/tools.rs` | `ScrapeConfig`, `ToolsConfig` — config pattern to extend with `SearchConfig` |
 | `010-5-egress-logging.md` | Mandatory `EgressEvent` contract this tool must satisfy |
 | `010-3-authorization.md` | SSRF / domain-policy enforcement this tool must satisfy (with a documented allowlist exemption) |
@@ -96,7 +96,7 @@ questions that have no obvious starting URL. GitHub issue #6358.
 |----|------------|----------|
 | FR-001 | WHEN the LLM issues a `web_search` tool call with a non-empty `query` AND `[tools.search].enabled = true` AND a backend resolves via `SearchBackend::from_config` THE SYSTEM SHALL issue exactly one outbound HTTPS request to the configured search endpoint and return ranked results. | must |
 | FR-002 | WHEN `[tools.search].enabled = false` OR `SearchBackend::from_config` fails to resolve (e.g. no API key for a keyed backend) THE SYSTEM SHALL NOT advertise `web_search` in `tool_definitions()` — the LLM never sees the tool. | must |
-| FR-003 | WHEN a `web_search` call completes (success, block, or error) THE SYSTEM SHALL classify the tool output's trust source identically to `web_scrape`/`fetch` — `ContentSourceKind::WebScrape` (`ExternalUntrusted` + quarantine) — via the **tool-name string** branch in `build_tool_output_source`, not via `ClaimSource`. | must |
+| FR-003 | WHEN a `web_search` call completes (success, block, or error) THE SYSTEM SHALL classify the tool output's trust source identically to `web_scrape`/`fetch` — `ContentSourceKind::WebScrape` (`ExternalUntrusted` + quarantine) — via the **tool-name string** branch of the `Native` provenance case in `tool_output_source`, not via `ClaimSource`. A `web_search` id registered by an MCP server is `Mcp` provenance and classified `McpResponse` (same `ExternalUntrusted` tier). | must |
 | FR-004 | WHEN `web_search` returns results THE SYSTEM SHALL run the rendered result text (titles + snippets) through `IpiFilter::filter_async` before it reaches the LLM, exactly as `web_scrape` output does. | must |
 | FR-005 | WHEN validating the search endpoint THE SYSTEM SHALL apply full SSRF validation (`validate_url` HTTPS-only + `resolve_and_validate` DNS/private-IP rejection) and `[tools.scrape].denied_domains`, but SHALL NOT apply `[tools.scrape].allowed_domains` to the fixed, operator-configured search endpoint. | must |
 | FR-006 | WHEN the search endpoint's addresses are resolved via `resolve_and_validate` THE SYSTEM SHALL pin those exact resolved addresses into the backend's `reqwest::Client` via `resolve_to_addrs` (mirroring `scrape.rs`'s `build_client(host, addrs)`, lines 226-231) before issuing the request — closing the DNS-rebinding TOCTOU window between validation and connection. | must |
@@ -372,8 +372,8 @@ debug dumps or logs.
 - **INVARIANT-1 (trust classification, S1).** `web_search` output is classified
   identically to `web_scrape`/`fetch` — `ContentSourceKind::WebScrape`
   (`ExternalUntrusted` + quarantine) — by adding `|| tool_name == "web_search"`
-  to the tool-name branch in `build_tool_output_source`
-  (`crates/zeph-core/src/agent/tool_execution/sanitize.rs:88`). This bridge
+  to the native tool-name branch in `tool_output_source`
+  (`crates/zeph-sanitizer/src/tool_source.rs`). This bridge
   dispatches on the **tool-name string**, not on `ClaimSource`.
   `ClaimSource::WebSearch` is audit-provenance only and MUST NOT be treated as
   a trust mechanism — it is not read anywhere in the sanitizer trust-decision

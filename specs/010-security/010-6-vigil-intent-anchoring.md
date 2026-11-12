@@ -128,7 +128,7 @@ implementation's rustdoc and into `.local/testing/playbooks/vigil.md`:
 
 | ID | Requirement | Priority |
 |----|------------|----------|
-| FR-001 | WHEN a tool executor returns output AND `[security.vigil].enabled = true` AND the tool is not in `exempt_tools` THE SYSTEM SHALL run `VigilGate::verify` before `sanitize_tool_output`. | must |
+| FR-001 | WHEN a tool executor returns output AND `[security.vigil].enabled = true` AND the tool is not exempt THE SYSTEM SHALL run `VigilGate::verify` before `sanitize_tool_output`. | must |
 | FR-002 | WHEN `verify` returns `Flagged{ action: Block, .. }` THE SYSTEM SHALL replace the body with the security sentinel (§3.5), skip `sanitize_tool_output`, and emit a `VigilFlag` security event. | must |
 | FR-003 | WHEN `verify` returns `Flagged{ action: Sanitize, .. }` THE SYSTEM SHALL truncate body to `sanitize_max_chars`, annotate with `[vigil: sanitized]`, continue to `sanitize_tool_output`, and emit a `VigilFlag` event. | must |
 | FR-004 | WHEN VIGIL blocks a tool output THE SYSTEM SHALL emit an `AuditEntry` with `result = Blocked{ reason: "vigil:<pattern>" }`, `error_category = Some("vigil_blocked")`, `error_domain = Some("security")`, `error_phase = Some("validate")`, `vigil_risk = Some(High)`. | must |
@@ -230,6 +230,10 @@ Naming: `current_turn_intent`, not `cached_user_intent` (explicit per-turn
 scope). Truncation: first 1024 chars of the user message; v1 regex path does
 not consume it semantically, but the field is populated so v2 can drop in
 without schema churn. Clear points are listed in FR-008.
+
+### 3.9 Exemption eligibility
+
+A tool is exempt only when it is named in `exempt_tools` AND its result is eligible (`VigilExemption::Eligible`). An MCP-served result is never eligible, whatever its id. A body replayed by `read_overflow` is eligible only when the stored source is memory retrieval or archived context text (which already passed VIGIL when it entered context); a replay of a local, web or MCP result is gated like the original live result. Live first-party results are unchanged.
 
 ### 3.4 Subagent exemption (FR-009)
 

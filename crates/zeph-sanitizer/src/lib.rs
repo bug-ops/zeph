@@ -88,13 +88,16 @@ pub use sanitizer::ContentSanitizer;
 pub use secret_mask::{SecretCategory, SecretMaskRegistry};
 pub use secret_shape::scrub_secret_shapes;
 pub use shadow_memory::{GoalDriftResult, ShadowEvent, ShadowMemory, classify_tool_permission};
-pub use tool_source::tool_output_source;
+pub use tool_source::{content_source, native_kind, tool_output_source};
 pub use types::{
     ContentSource, ContentSourceKind, ContentTrustLevel, InjectionFlag, MemorySourceHint,
     SanitizedContent,
 };
 #[cfg(feature = "classifiers")]
 pub use types::{InjectionVerdict, InstructionClass};
+pub use zeph_common::trust_level::{
+    NativeToolKind, ToolProvenance, ToolResultSource, UntrustedTier,
+};
 pub use zeph_config::{ContentIsolationConfig, McpMediaConfig, QuarantineConfig};
 
 // ---------------------------------------------------------------------------

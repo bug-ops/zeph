@@ -84,7 +84,13 @@ async fn test_maybe_summarize_short_output_passthrough() {
     agent.tool_orchestrator.summarize_tool_output_enabled = true;
 
     let short = "short output";
-    let result = agent.maybe_summarize_tool_output(short, None).await;
+    let result = agent
+        .maybe_summarize_tool_output(
+            short,
+            None,
+            &crate::agent::agent_tests::local_resolved_source(),
+        )
+        .await;
     assert_eq!(result, short);
 }
 
@@ -127,7 +133,13 @@ async fn test_overflow_notice_contains_uuid() {
     };
 
     let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
-    let result = agent.maybe_summarize_tool_output(&long, None).await;
+    let result = agent
+        .maybe_summarize_tool_output(
+            &long,
+            None,
+            &crate::agent::agent_tests::local_resolved_source(),
+        )
+        .await;
     assert!(
         result.contains("full output stored"),
         "notice must contain overflow storage notice, got: {result}"
@@ -165,7 +177,13 @@ async fn test_maybe_summarize_long_output_disabled_truncates() {
     // Must exceed overflow threshold (1000) so that truncate_tool_output_at produces
     // the "truncated" marker. MAX_TOOL_OUTPUT_CHARS is no longer used in this path.
     let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
-    let result = agent.maybe_summarize_tool_output(&long, None).await;
+    let result = agent
+        .maybe_summarize_tool_output(
+            &long,
+            None,
+            &crate::agent::agent_tests::local_resolved_source(),
+        )
+        .await;
     assert!(result.contains("truncated"));
 }
 
@@ -186,7 +204,13 @@ async fn test_maybe_summarize_long_output_enabled_calls_llm() {
     };
 
     let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
-    let result = agent.maybe_summarize_tool_output(&long, None).await;
+    let result = agent
+        .maybe_summarize_tool_output(
+            &long,
+            None,
+            &crate::agent::agent_tests::local_resolved_source(),
+        )
+        .await;
     assert!(result.contains("summary text"));
     assert!(result.contains("[tool output summary]"));
     assert!(!result.contains("truncated"));
@@ -209,7 +233,13 @@ async fn test_summarize_tool_output_llm_failure_fallback() {
     };
 
     let long = "x".repeat(zeph_tools::MAX_TOOL_OUTPUT_CHARS + 1000);
-    let result = agent.maybe_summarize_tool_output(&long, None).await;
+    let result = agent
+        .maybe_summarize_tool_output(
+            &long,
+            None,
+            &crate::agent::agent_tests::local_resolved_source(),
+        )
+        .await;
     assert!(result.contains("truncated"));
 }
 
@@ -234,7 +264,13 @@ async fn override_requested_zero_degrades_to_threshold() {
 
     // requested=0 -> threshold.max(0.min(131_072)) == threshold: identical to `None`.
     let long = "x".repeat(150);
-    let result = agent.maybe_summarize_tool_output(&long, Some(0)).await;
+    let result = agent
+        .maybe_summarize_tool_output(
+            &long,
+            Some(0),
+            &crate::agent::agent_tests::local_resolved_source(),
+        )
+        .await;
     assert!(
         result.contains("truncated"),
         "requested=0 must degrade to the global threshold, got: {result}"
@@ -260,7 +296,11 @@ async fn override_above_ceiling_is_clamped_to_ceiling() {
     // must NOT be truncated, even though it is far above the 100-char global threshold.
     let at_ceiling = "x".repeat(500);
     let result = agent
-        .maybe_summarize_tool_output(&at_ceiling, Some(999_999))
+        .maybe_summarize_tool_output(
+            &at_ceiling,
+            Some(999_999),
+            &crate::agent::agent_tests::local_resolved_source(),
+        )
         .await;
     assert_eq!(
         result, at_ceiling,
@@ -270,7 +310,11 @@ async fn override_above_ceiling_is_clamped_to_ceiling() {
     // One char beyond the ceiling must still truncate.
     let beyond_ceiling = "x".repeat(501);
     let result = agent
-        .maybe_summarize_tool_output(&beyond_ceiling, Some(999_999))
+        .maybe_summarize_tool_output(
+            &beyond_ceiling,
+            Some(999_999),
+            &crate::agent::agent_tests::local_resolved_source(),
+        )
         .await;
     assert!(
         result.contains("truncated"),
@@ -295,7 +339,13 @@ async fn override_ceiling_zero_disables_feature() {
 
     // ceiling=0 -> threshold.max(requested.min(0)) == threshold, regardless of `requested`.
     let mid = "x".repeat(150);
-    let result = agent.maybe_summarize_tool_output(&mid, Some(140)).await;
+    let result = agent
+        .maybe_summarize_tool_output(
+            &mid,
+            Some(140),
+            &crate::agent::agent_tests::local_resolved_source(),
+        )
+        .await;
     assert!(
         result.contains("truncated"),
         "max_per_call_override=0 must disable the override entirely, got: {result}"
@@ -322,7 +372,13 @@ async fn override_misconfigured_ceiling_below_threshold_stays_inert() {
 
     // 300 chars: above the (inert) ceiling, but below the threshold that actually applies.
     let output = "x".repeat(300);
-    let result = agent.maybe_summarize_tool_output(&output, Some(500)).await;
+    let result = agent
+        .maybe_summarize_tool_output(
+            &output,
+            Some(500),
+            &crate::agent::agent_tests::local_resolved_source(),
+        )
+        .await;
     assert_eq!(
         result, output,
         "misconfigured override (ceiling <= threshold) must be safely inert, falling back \
@@ -348,7 +404,13 @@ async fn none_override_exact_threshold_boundary_matches_pre_3079_behavior() {
     // Regression guard: with no override, the effective limit must be exactly `threshold`
     // (byte-identical to pre-#3079 behavior) — verified at both sides of the boundary.
     let at_threshold = "x".repeat(200);
-    let result = agent.maybe_summarize_tool_output(&at_threshold, None).await;
+    let result = agent
+        .maybe_summarize_tool_output(
+            &at_threshold,
+            None,
+            &crate::agent::agent_tests::local_resolved_source(),
+        )
+        .await;
     assert_eq!(
         result, at_threshold,
         "output exactly at threshold with no override must pass through unchanged"
@@ -356,7 +418,11 @@ async fn none_override_exact_threshold_boundary_matches_pre_3079_behavior() {
 
     let over_threshold = "x".repeat(201);
     let result = agent
-        .maybe_summarize_tool_output(&over_threshold, None)
+        .maybe_summarize_tool_output(
+            &over_threshold,
+            None,
+            &crate::agent::agent_tests::local_resolved_source(),
+        )
         .await;
     assert_ne!(
         result, over_threshold,
@@ -383,7 +449,13 @@ async fn test_overflow_no_memory_backend_s3_fallback() {
     // No memory backend set.
 
     let long = "x".repeat(200);
-    let result = agent.maybe_summarize_tool_output(&long, None).await;
+    let result = agent
+        .maybe_summarize_tool_output(
+            &long,
+            None,
+            &crate::agent::agent_tests::local_resolved_source(),
+        )
+        .await;
     assert!(
         result.contains("could not be saved — no memory backend or conversation available"),
         "S3 fallback message must appear when no memory backend, got: {result}"

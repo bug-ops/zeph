@@ -1088,7 +1088,7 @@ impl<C: Channel> Agent<C> {
         manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
         mcp_config: &crate::config::McpConfig,
     ) -> Self {
-        self.services.mcp.tools = tools;
+        self.services.mcp.set_tools(tools);
         self.services.mcp.registry = registry;
         self.services.mcp.manager = manager;
         self.services
@@ -2430,12 +2430,12 @@ impl<C: Channel> Agent<C> {
             .messages
             .first()
             .map_or(0, |m| u64::try_from(m.content.len()).unwrap_or(0) / 4);
-        let mcp_tool_count = self.services.mcp.tools.len();
+        let mcp_tool_count = self.services.mcp.tools().len();
         let mcp_server_count = if self.services.mcp.server_outcomes.is_empty() {
             // Fallback: count unique server IDs from connected tools
             self.services
                 .mcp
-                .tools
+                .tools()
                 .iter()
                 .map(|t| &t.server_id)
                 .collect::<std::collections::HashSet<_>>()

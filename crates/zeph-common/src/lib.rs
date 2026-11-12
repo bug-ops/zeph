@@ -71,7 +71,9 @@ pub use task_supervisor::{
     TaskSnapshot, TaskStatus, TaskSupervisor,
 };
 pub use text::format_tokens;
-pub use trust_level::SkillTrustLevel;
+pub use trust_level::{
+    NativeToolKind, SkillTrustLevel, ToolProvenance, ToolResultSource, UntrustedTier,
+};
 pub use turn_trust_floor::TurnTrustFloor;
 pub use types::{
     EmptyToolExecutionId, GoalId, GoalIdError, ProviderName, SessionId, SessionIdError,

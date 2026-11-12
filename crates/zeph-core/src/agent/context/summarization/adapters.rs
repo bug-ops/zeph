@@ -283,7 +283,16 @@ impl ToolOutputArchive for AgentArchive {
                         {
                             continue;
                         }
-                        match sqlite.save_archive(cid, body.as_bytes()).await {
+                        match sqlite
+                            .save_archive(
+                                cid,
+                                body.as_bytes(),
+                                zeph_common::trust_level::UntrustedTier::from_message_tier(
+                                    msg.metadata.trust_level,
+                                ),
+                            )
+                            .await
+                        {
                             Ok(uuid) => {
                                 let bytes = body.len();
                                 refs.push(format!(
@@ -441,5 +450,80 @@ impl CompactionAdapters {
         summ.persistence = Some(&self.persistence);
         summ.metrics = Some(&self.metrics);
         summ.typed_pages.clone_from(&self.typed_pages);
+    }
+}
+
+#[cfg(test)]
+mod archive_tier_tests {
+    use super::*;
+    use zeph_common::trust_level::{ToolResultSource, UntrustedTier};
+    use zeph_llm::mock::MockProvider;
+    use zeph_llm::provider::{MessageMetadata, MessagePart, Role};
+    use zeph_memory::semantic::SemanticMemory;
+
+    fn tool_message(body: &str, trust_level: Option<u8>) -> Message {
+        let mut msg = Message {
+            role: Role::User,
+            content: String::new(),
+            parts: vec![MessagePart::ToolOutput {
+                tool_name: "fetch".into(),
+                body: body.to_owned(),
+                compacted_at: None,
+            }],
+            metadata: MessageMetadata {
+                trust_level,
+                ..MessageMetadata::default()
+            },
+        };
+        msg.rebuild_content();
+        msg
+    }
+
+    #[tokio::test]
+    async fn archive_records_the_message_tier_and_defaults_to_external() {
+        let memory = SemanticMemory::with_sqlite_backend(
+            ":memory:",
+            AnyProvider::Mock(MockProvider::default()),
+            "test-model",
+            0.7,
+            0.3,
+        )
+        .await
+        .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let memory = Arc::new(memory);
+        let archive = AgentArchive {
+            archive_enabled: true,
+            memory: Some(Arc::clone(&memory)),
+            conversation_id: Some(cid),
+        };
+        // Tier bytes: 0 trusted, 1 local, 2 external, 200 out of range, None untagged.
+        let tiers = [
+            (Some(0), UntrustedTier::Local),
+            (Some(1), UntrustedTier::Local),
+            (Some(2), UntrustedTier::External),
+            (Some(200), UntrustedTier::External),
+            (None, UntrustedTier::External),
+        ];
+        for (byte, expected) in tiers {
+            let refs = archive
+                .archive(&[tool_message("archived body", byte)])
+                .await;
+            let uuid = refs[0]
+                .strip_prefix("[archived:")
+                .and_then(|r| r.split_whitespace().next())
+                .expect("archive reference carries the id");
+            let entry = memory
+                .sqlite()
+                .load_overflow(uuid, cid)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                entry.source,
+                ToolResultSource::Archived(expected),
+                "{byte:?}"
+            );
+        }
     }
 }

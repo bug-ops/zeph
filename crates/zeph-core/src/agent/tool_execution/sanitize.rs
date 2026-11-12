@@ -1,7 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use zeph_sanitizer::ContentSourceKind;
+use zeph_common::trust_level::{NativeToolKind, ToolProvenance, ToolResultSource};
+use zeph_sanitizer::{ContentSourceKind, tool_output_source};
+use zeph_tools::{McpToolIds, ResolvedToolSource};
+
+use crate::agent::vigil::VigilExemption;
 
 use super::super::Agent;
 use crate::channel::Channel;
@@ -13,10 +17,16 @@ use crate::channel::Channel;
 /// denial) cannot carry an injection payload, so the ML classifier skips it. A tool or server
 /// that merely *prints* `[skipped]` or `category: policy_blocked` stays `Executed` and is
 /// classified like any other external output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::agent) enum ToolOutputOrigin {
     /// The tool ran and produced the body; carries the executor's claimed provenance.
     Executed(Option<zeph_tools::ClaimSource>),
+    /// The body was stored by an earlier call and is replayed by this one; it keeps the
+    /// classification recorded when it was stored.
+    Replayed {
+        stored: zeph_common::trust_level::ToolResultSource,
+        claim: Option<zeph_tools::ClaimSource>,
+    },
     /// The harness wrote the body for a call that never ran ([`zeph_tools::ToolStatus::Synthetic`]).
     HarnessAuthored,
     /// The body is the error of a denial raised by zeph's own policy layer
@@ -28,6 +38,11 @@ impl ToolOutputOrigin {
     pub(in crate::agent) fn from_output(output: &zeph_tools::ToolOutput) -> Self {
         if output.status.is_synthetic() {
             Self::HarnessAuthored
+        } else if let Some(stored) = &output.replayed_from {
+            Self::Replayed {
+                stored: stored.clone(),
+                claim: output.claim_source,
+            }
         } else {
             Self::Executed(output.claim_source)
         }
@@ -41,16 +56,60 @@ impl ToolOutputOrigin {
         }
     }
 
-    pub(super) fn claim_source(self) -> Option<zeph_tools::ClaimSource> {
+    pub(super) fn claim_source(&self) -> Option<zeph_tools::ClaimSource> {
         match self {
-            Self::Executed(claim_source) => claim_source,
+            Self::Executed(claim) | Self::Replayed { claim, .. } => *claim,
             Self::HarnessAuthored | Self::LocalPolicyDenial => None,
         }
     }
 
-    #[cfg(feature = "classifiers")]
-    fn is_harness_text(self) -> bool {
+    fn is_harness_text(&self) -> bool {
         matches!(self, Self::HarnessAuthored | Self::LocalPolicyDenial)
+    }
+
+    /// Resolve the classification of this result once, through the shared registry/claim join.
+    pub(in crate::agent) fn resolve(
+        &self,
+        tool_name: &str,
+        mcp_ids: &McpToolIds,
+    ) -> ResolvedToolSource {
+        let stored = match self {
+            Self::Replayed { stored, .. } => Some(stored),
+            Self::Executed(_) | Self::HarnessAuthored | Self::LocalPolicyDenial => None,
+        };
+        ResolvedToolSource::resolve(
+            tool_name,
+            stored,
+            self.claim_source(),
+            mcp_ids,
+            if self.is_harness_text() {
+                zeph_tools::BodyAuthor::Harness
+            } else {
+                zeph_tools::BodyAuthor::Tool
+            },
+        )
+    }
+
+    /// Whether the VIGIL `exempt_tools` names may exempt this result.
+    ///
+    /// Never for an MCP-served result. A replayed body is exempt only when it is a memory
+    /// retrieval (the one live source the list names) or archived context text that already
+    /// passed VIGIL; a replay never gets an exemption its original source would lack.
+    pub(in crate::agent) fn vigil_exemption(
+        &self,
+        resolved: &ResolvedToolSource,
+    ) -> VigilExemption {
+        if resolved.provenance() == ToolProvenance::Mcp {
+            return VigilExemption::Ineligible;
+        }
+        match (self, resolved.source()) {
+            (Self::Replayed { .. }, ToolResultSource::Native(NativeToolKind::Memory))
+            | (Self::Replayed { .. }, ToolResultSource::Archived(_))
+            | (Self::Executed(_) | Self::HarnessAuthored | Self::LocalPolicyDenial, _) => {
+                VigilExemption::Eligible
+            }
+            (Self::Replayed { .. }, _) => VigilExemption::Ineligible,
+        }
     }
 }
 
@@ -59,9 +118,8 @@ impl ToolOutputOrigin {
 /// for these tools because innocuous internal error strings (e.g. "skill not found: exit")
 /// trigger high-confidence false positives (#3384).
 ///
-/// Safety invariant: only non-namespaced names are listed here. MCP tools use a
-/// `server:tool` format and are routed to `ContentSourceKind::McpResponse` before this
-/// check is reached, so they are never mistakenly matched.
+/// Safety invariant: the list only applies to [`ToolProvenance::Native`] calls. An MCP-served
+/// tool never matches, whatever its id is.
 ///
 /// `read_overflow` is intentionally excluded: its success path replays stored external
 /// tool output and must remain subject to ML classification.
@@ -88,13 +146,13 @@ const INTERNAL_TOOLS: &[&str] = &[
     "cancel_task",
 ];
 
-/// Returns `true` only for non-MCP, Zeph-internal tools that cannot carry injection payloads.
+/// Returns `true` only for native, Zeph-internal tools that cannot carry injection payloads.
 ///
-/// The colon guard ensures a malicious MCP server cannot register a bare `invoke_skill`
-/// tool name and bypass ML classification — MCP tools always use `server:tool` naming.
+/// Requiring [`ToolProvenance::Native`] keeps an MCP-served tool whose id equals an internal
+/// tool name from skipping ML classification.
 #[cfg(feature = "classifiers")]
-fn is_internal_tool(tool_name: &str) -> bool {
-    !tool_name.contains(':') && INTERNAL_TOOLS.contains(&tool_name)
+fn is_internal_tool(tool_name: &str, provenance: ToolProvenance) -> bool {
+    provenance == ToolProvenance::Native && INTERNAL_TOOLS.contains(&tool_name)
 }
 
 /// Splits off the literal `"$ {command}\n"` echo line that `bash`/`shell` tool output is
@@ -126,12 +184,12 @@ fn split_bash_echo_prefix<'a>(body: &'a str, tool_name: &str) -> (&'a str, &'a s
 }
 
 /// Worst-case content-trust tier a batch of about-to-be-dispatched tool calls could
-/// introduce, computed purely from `tool_name` — no execution needed.
+/// introduce, computed from the tool name and the MCP registry — no execution needed.
 ///
-/// `zeph_sanitizer::tool_output_source(name).trust_level` never varies with a tool's actual output,
-/// only with its name (see `sanitize_tool_output`, which computes `trust_level` from the
-/// source before any sanitization happens), so this precomputation is exact, not merely a
-/// conservative upper bound. Used to ratchet the write-time memory-consent gate slot BEFORE
+/// `tool_output_source(name, provenance).trust_level` never varies with a tool's actual output,
+/// only with the tool name and its provenance (see `sanitize_tool_output`), so for a registered
+/// MCP tool this precomputation is exact. The outcome of a call is unknown before dispatch, so
+/// the registry alone decides here. Used to ratchet the write-time memory-consent gate slot BEFORE
 /// tier dispatch starts (issue #6569: same-tier/cross-tier parallel-dispatch TOCTOU race).
 ///
 /// `memory_save` itself is excluded: a `memory_save` call's own (not-yet-produced) result is
@@ -141,16 +199,41 @@ fn split_bash_echo_prefix<'a>(body: &'a str, tool_name: &str) -> (&'a str, &'a s
 /// whenever `confirm_threshold` is configured at or below `local_untrusted`.
 fn batch_dispatch_trust_level(
     tool_calls: &[zeph_llm::provider::ToolUseRequest],
+    mcp_ids: &McpToolIds,
 ) -> zeph_sanitizer::ContentTrustLevel {
+    let batch_has_memory_save = tool_calls
+        .iter()
+        .any(|tc| tc.name.as_str() == crate::memory_tools::MemoryToolExecutor::SAVE_TOOL_NAME);
     tool_calls
         .iter()
-        .filter(|tc| tc.name.as_str() != "memory_save")
-        .map(|tc| zeph_sanitizer::tool_output_source(tc.name.as_str()).trust_level)
+        .filter(|tc| tc.name.as_str() != crate::memory_tools::MemoryToolExecutor::SAVE_TOOL_NAME)
+        .map(|tc| {
+            let name = tc.name.as_str();
+            let known = tool_output_source(name, mcp_ids.provenance(name)).trust_level;
+            // A replay's stored tier is unknown before it runs. It only matters for a
+            // same-batch `memory_save` race; the post-result ratchet sets the exact tier.
+            if batch_has_memory_save
+                && name == crate::overflow_tools::OverflowToolExecutor::TOOL_NAME
+            {
+                known.max(zeph_sanitizer::ContentTrustLevel::ExternalUntrusted)
+            } else {
+                known
+            }
+        })
         .max()
         .unwrap_or(zeph_sanitizer::ContentTrustLevel::Trusted)
 }
 
 impl<C: Channel> Agent<C> {
+    /// MCP dispatch ids for one tool-call batch: the live executor definitions that carry a
+    /// server id (the dispatch authority, shared across ACP sessions) joined with the stored
+    /// tool list (fail-safe coverage when the executor view was pruned or refreshed).
+    pub(in crate::agent) fn batch_mcp_tool_ids(&self) -> McpToolIds {
+        let mut ids = McpToolIds::from_definitions(&self.tool_executor.tool_definitions_erased());
+        ids.extend_from(self.services.mcp.tool_ids());
+        ids
+    }
+
     /// Sanitize tool output body before inserting it into the LLM message history.
     ///
     /// Channel display (`send_tool_output`) still receives the raw body so the user
@@ -158,22 +241,47 @@ impl<C: Channel> Agent<C> {
     ///
     /// This is the SOLE sanitization point for tool output data flows. Do not add
     /// redundant sanitization in leaf crates (zeph-tools, zeph-mcp).
+    #[cfg(any(test, feature = "scheduler"))]
     pub(in crate::agent) async fn sanitize_tool_output(
         &mut self,
         body: &str,
         tool_name: &str,
         origin: ToolOutputOrigin,
+        mcp_ids: &McpToolIds,
     ) -> (
         String,
         bool,
         ContentSourceKind,
         zeph_sanitizer::ContentTrustLevel,
     ) {
-        let source = zeph_sanitizer::tool_output_source(tool_name);
+        let resolved = origin.resolve(tool_name, mcp_ids);
+        self.sanitize_resolved(body, tool_name, &origin, &resolved)
+            .await
+    }
+
+    /// [`Self::sanitize_tool_output`] for a result whose classification was already resolved.
+    ///
+    /// Taking a [`ResolvedToolSource`] means the caller cannot skip the registry/claim join, and
+    /// the overflow save and this sanitization share one classification.
+    pub(in crate::agent) async fn sanitize_resolved(
+        &mut self,
+        body: &str,
+        tool_name: &str,
+        origin: &ToolOutputOrigin,
+        resolved: &ResolvedToolSource,
+    ) -> (
+        String,
+        bool,
+        ContentSourceKind,
+        zeph_sanitizer::ContentTrustLevel,
+    ) {
+        let provenance = resolved.provenance();
+        let source = resolved.content_source(tool_name);
         let kind = source.kind;
         let trust_level = source.trust_level;
         tracing::debug!(
             tool = %tool_name,
+            ?provenance,
             claim_source = ?origin.claim_source(),
             "sanitizing tool output"
         );
@@ -224,7 +332,7 @@ impl<C: Channel> Agent<C> {
 
         #[cfg(feature = "classifiers")]
         if let Some((b, f)) = self
-            .apply_classifier_verdict(&body, tool_name, memory_hint, origin)
+            .apply_classifier_verdict(&body, tool_name, memory_hint, origin, provenance)
             .await
         {
             return (b, f, kind, trust_level);
@@ -241,7 +349,12 @@ impl<C: Channel> Agent<C> {
 
         if is_cross_boundary
             && let Some((b, f)) = self
-                .handle_cross_boundary_quarantine(&sanitized, tool_name, has_injection_flags)
+                .handle_cross_boundary_quarantine(
+                    &sanitized,
+                    tool_name,
+                    resolved.mcp_server_id(),
+                    has_injection_flags,
+                )
                 .await
         {
             return (b, f, kind, trust_level);
@@ -310,8 +423,10 @@ impl<C: Channel> Agent<C> {
     pub(super) fn ratchet_memory_consent_trust_for_dispatch(
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
+        mcp_ids: &McpToolIds,
     ) {
-        let effective = batch_dispatch_trust_level(tool_calls).max(self.context_max_trust_level());
+        let effective =
+            batch_dispatch_trust_level(tool_calls, mcp_ids).max(self.context_max_trust_level());
         let mut slot = self.services.security.memory_consent_trust.write();
         *slot = (*slot).max(effective as u8);
     }
@@ -411,7 +526,8 @@ impl<C: Channel> Agent<C> {
         body: &str,
         tool_name: &str,
         memory_hint: Option<zeph_sanitizer::MemorySourceHint>,
-        origin: ToolOutputOrigin,
+        origin: &ToolOutputOrigin,
+        provenance: ToolProvenance,
     ) -> Option<(String, bool)> {
         let skip_ml = matches!(
             memory_hint,
@@ -420,7 +536,7 @@ impl<C: Channel> Agent<C> {
                     | zeph_sanitizer::MemorySourceHint::LlmSummary
             )
         ) || origin.is_harness_text()
-            || is_internal_tool(tool_name);
+            || is_internal_tool(tool_name, provenance);
         if !skip_ml && self.services.security.sanitizer.has_classifier_backend() {
             let ml_verdict = self
                 .services
@@ -464,17 +580,10 @@ impl<C: Channel> Agent<C> {
         &mut self,
         sanitized: &zeph_sanitizer::SanitizedContent,
         tool_name: &str,
+        mcp_server_id: Option<&str>,
         has_injection_flags: bool,
     ) -> Option<(String, bool)> {
-        // `tool_name` here is always the qualified `server:tool` form (`ToolOutput.tool_name` is
-        // deliberately set to `qualified_name()`, not `sanitized_id()` — see the invariant note
-        // in `crates/zeph-mcp/src/executor.rs`), since this function only runs for
-        // `ContentSourceKind::McpResponse`, which `tool_output_source` only assigns when
-        // `tool_name.contains(':')`. Mirrors the reference split in
-        // `crates/zeph-tools/src/policy_gate.rs`.
-        let mcp_server_id = tool_name
-            .split_once(':')
-            .map(|(server, _)| server.to_owned());
+        let mcp_server_id = mcp_server_id.map(str::to_owned);
         tracing::warn!(
             tool = %tool_name,
             mcp_server_id = mcp_server_id.as_deref().unwrap_or("unknown"),
@@ -708,6 +817,7 @@ mod consent_gate_dispatch_tests {
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
     use zeph_llm::provider::{Message, MessageMetadata, Role, ToolUseRequest};
+    use zeph_tools::McpToolIds;
 
     fn make_agent() -> crate::agent::Agent<MockChannel> {
         crate::agent::Agent::new(
@@ -794,7 +904,7 @@ mod consent_gate_dispatch_tests {
     fn batch_dispatch_trust_level_reflects_web_scrape() {
         let tool_calls = vec![call("web_scrape")];
         assert_eq!(
-            batch_dispatch_trust_level(&tool_calls),
+            batch_dispatch_trust_level(&tool_calls, &McpToolIds::default()),
             zeph_sanitizer::ContentTrustLevel::ExternalUntrusted
         );
     }
@@ -806,7 +916,7 @@ mod consent_gate_dispatch_tests {
     fn batch_dispatch_trust_level_reflects_memory_search() {
         let tool_calls = vec![call("memory_search")];
         assert_eq!(
-            batch_dispatch_trust_level(&tool_calls),
+            batch_dispatch_trust_level(&tool_calls, &McpToolIds::default()),
             zeph_sanitizer::ContentTrustLevel::ExternalUntrusted
         );
     }
@@ -818,7 +928,7 @@ mod consent_gate_dispatch_tests {
     fn batch_dispatch_trust_level_excludes_memory_save_itself() {
         let tool_calls = vec![call("memory_save")];
         assert_eq!(
-            batch_dispatch_trust_level(&tool_calls),
+            batch_dispatch_trust_level(&tool_calls, &McpToolIds::default()),
             zeph_sanitizer::ContentTrustLevel::Trusted
         );
     }
@@ -827,8 +937,33 @@ mod consent_gate_dispatch_tests {
     fn batch_dispatch_trust_level_other_tool_alongside_memory_save_still_counts() {
         let tool_calls = vec![call("web_scrape"), call("memory_save")];
         assert_eq!(
-            batch_dispatch_trust_level(&tool_calls),
+            batch_dispatch_trust_level(&tool_calls, &McpToolIds::default()),
             zeph_sanitizer::ContentTrustLevel::ExternalUntrusted
+        );
+    }
+
+    #[test]
+    fn batch_dispatch_trust_level_registered_mcp_tool_is_external() {
+        let (id, ids) = crate::agent::agent_tests::github_mcp_tool_ids();
+        assert_eq!(
+            batch_dispatch_trust_level(&[call(&id)], &ids),
+            zeph_sanitizer::ContentTrustLevel::ExternalUntrusted
+        );
+        assert_eq!(
+            batch_dispatch_trust_level(&[call(&id)], &McpToolIds::default()),
+            zeph_sanitizer::ContentTrustLevel::LocalUntrusted,
+            "the same id without registry membership is a native tool"
+        );
+    }
+
+    #[test]
+    fn ratchet_registered_mcp_tool_raises_consent_slot() {
+        let (id, ids) = crate::agent::agent_tests::github_mcp_tool_ids();
+        let mut agent = make_agent();
+        agent.ratchet_memory_consent_trust_for_dispatch(&[call(&id)], &ids);
+        assert_eq!(
+            *agent.services.security.memory_consent_trust.read(),
+            zeph_sanitizer::ContentTrustLevel::ExternalUntrusted as u8
         );
     }
 
@@ -843,7 +978,7 @@ mod consent_gate_dispatch_tests {
             zeph_sanitizer::ContentTrustLevel::LocalUntrusted as u8,
         )));
         let tool_calls = vec![call("web_scrape")];
-        agent.ratchet_memory_consent_trust_for_dispatch(&tool_calls);
+        agent.ratchet_memory_consent_trust_for_dispatch(&tool_calls, &McpToolIds::default());
         assert_eq!(
             *agent.services.security.memory_consent_trust.read(),
             zeph_sanitizer::ContentTrustLevel::ExternalUntrusted as u8
@@ -856,14 +991,14 @@ mod consent_gate_dispatch_tests {
     fn ratchet_leaves_slot_trusted_for_bare_memory_save_in_clean_context() {
         let mut agent = make_agent();
         let tool_calls = vec![call("memory_save")];
-        agent.ratchet_memory_consent_trust_for_dispatch(&tool_calls);
+        agent.ratchet_memory_consent_trust_for_dispatch(&tool_calls, &McpToolIds::default());
         assert_eq!(*agent.services.security.memory_consent_trust.read(), 0);
     }
 }
 
 #[cfg(all(test, feature = "classifiers"))]
 mod tests {
-    use super::is_internal_tool;
+    use super::{INTERNAL_TOOLS, ToolProvenance, is_internal_tool};
 
     #[test]
     fn internal_tool_allowlist_covers_all_zeph_tools() {
@@ -883,35 +1018,29 @@ mod tests {
             "cancel_task",
         ] {
             assert!(
-                is_internal_tool(name),
+                is_internal_tool(name, ToolProvenance::Native),
                 "{name} must be in internal allowlist"
             );
         }
     }
 
     #[test]
-    fn external_and_mcp_tools_not_in_allowlist() {
-        for name in [
-            "web-scrape",
-            "fetch",
-            "read_overflow",
-            "github:list_issues",
-            "my-server:invoke_skill",
-            "mcp:invoke_skill",
-        ] {
+    fn non_internal_native_tools_not_in_allowlist() {
+        for name in ["web-scrape", "fetch", "read_overflow", "github_list_issues"] {
             assert!(
-                !is_internal_tool(name),
+                !is_internal_tool(name, ToolProvenance::Native),
                 "{name} must NOT be in internal allowlist"
             );
         }
     }
 
     #[test]
-    fn colon_namespaced_names_always_excluded() {
-        // An adversarial MCP server cannot bypass classification by registering a tool
-        // with the same bare name as an internal tool.
-        assert!(!is_internal_tool("server:invoke_skill"));
-        assert!(!is_internal_tool("attacker:memory_save"));
-        assert!(!is_internal_tool("x:cancel_task"));
+    fn mcp_provenance_never_matches_internal_allowlist() {
+        for name in INTERNAL_TOOLS {
+            assert!(
+                !is_internal_tool(name, ToolProvenance::Mcp),
+                "MCP-served `{name}` must not skip ML classification"
+            );
+        }
     }
 }

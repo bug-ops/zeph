@@ -1025,3 +1025,79 @@ mod run_inline_timeout {
         assert_eq!(scheduler.graph().tasks[1].status, TaskStatus::Completed);
     }
 }
+
+type RecordedRequests = Arc<Mutex<Vec<Vec<zeph_llm::provider::Message>>>>;
+
+fn github_mcp_inline_agent(
+    outcome: Result<Option<ToolOutput>, ToolError>,
+) -> (Agent<MockChannel>, RecordedRequests) {
+    let (id, _) = crate::agent::agent_tests::github_mcp_tool_ids();
+    let (mock, recorded) = MockProvider::default().with_recording();
+    let (mock, _) = mock.with_tool_use(vec![
+        tool_use_response("c1", &id),
+        ChatResponse::text("done"),
+    ]);
+    let mut agent = Agent::new(
+        AnyProvider::Mock(mock),
+        MockChannel::new(vec![]),
+        create_test_registry(),
+        None,
+        5,
+        CallableToolExecutor::new(vec![outcome]),
+    );
+    agent
+        .services
+        .mcp
+        .set_tools(vec![crate::agent::agent_tests::github_mcp_tool()]);
+    (agent, recorded)
+}
+
+fn recorded_tool_result(recorded: &RecordedRequests) -> String {
+    recorded
+        .lock()
+        .unwrap()
+        .last()
+        .expect("second provider call recorded")
+        .iter()
+        .flat_map(|m| &m.parts)
+        .find_map(|p| match p {
+            zeph_llm::provider::MessagePart::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .expect("tool result reached the provider")
+}
+
+#[tokio::test]
+async fn inline_registered_mcp_result_and_error_are_external() {
+    let external = zeph_sanitizer::ContentTrustLevel::ExternalUntrusted as u8;
+    for outcome in [
+        Ok(Some(ok_output("created"))),
+        Err(ToolError::InvalidParams {
+            message: "server said no".into(),
+        }),
+    ] {
+        let (mut agent, recorded) = github_mcp_inline_agent(outcome);
+        agent.run_inline_tool_loop("go", 5, None).await.unwrap();
+        let content = recorded_tool_result(&recorded);
+        assert!(content.contains("<external-data"), "{content}");
+        assert_eq!(
+            *agent.services.security.memory_consent_trust.read(),
+            external
+        );
+    }
+}
+
+#[tokio::test]
+async fn inline_acp_session_applies_mcp_boundary_to_registered_tool() {
+    let (tx, rx) = tokio::sync::watch::channel(crate::metrics::MetricsSnapshot::default());
+    let (agent, recorded) = github_mcp_inline_agent(Ok(Some(ok_output("created"))));
+    let mut agent = agent.with_metrics(tx).with_acp_session(true);
+    agent.run_inline_tool_loop("go", 5, None).await.unwrap();
+    assert!(recorded_tool_result(&recorded).contains("<external-data"));
+    assert!(
+        rx.borrow()
+            .security_events
+            .iter()
+            .any(|e| e.category == zeph_common::SecurityEventCategory::CrossBoundaryMcpToAcp)
+    );
+}

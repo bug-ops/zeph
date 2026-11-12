@@ -2580,4 +2580,77 @@ mod pg {
         assert_eq!(trust_of("pg_b_ext").await, Some(T::ExternalUntrusted));
         assert_eq!(trust_of("pg_b_conv").await, None);
     }
+
+    // ── tool_overflow result classification round trip on Postgres (migration 120) ──
+
+    #[tokio::test]
+    #[ignore = "requires Docker"]
+    async fn tool_overflow_result_source_round_trips_postgres() {
+        use zeph_common::trust_level::{NativeToolKind, ToolResultSource, UntrustedTier};
+
+        let (pool, _container) = start_pg().await;
+        let store = SqliteStore::from_pool(pool).await.unwrap();
+        let cid = store.create_conversation().await.unwrap();
+
+        let sources = [
+            ToolResultSource::Native(NativeToolKind::Local),
+            ToolResultSource::Native(NativeToolKind::Web),
+            ToolResultSource::Native(NativeToolKind::Memory),
+            ToolResultSource::Mcp {
+                server_id: Some("github".to_owned()),
+            },
+            ToolResultSource::Mcp { server_id: None },
+            ToolResultSource::Archived(UntrustedTier::Local),
+            ToolResultSource::Archived(UntrustedTier::External),
+        ];
+        for source in sources {
+            let id = store.save_overflow(cid, b"body", &source).await.unwrap();
+            let entry = store.load_overflow(&id, cid).await.unwrap().unwrap();
+            assert_eq!(entry.source, source);
+        }
+
+        let archive_id = store
+            .save_archive(cid, b"archived", UntrustedTier::External)
+            .await
+            .unwrap();
+        let archived = store
+            .load_overflow(&archive_id, cid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            archived.source,
+            ToolResultSource::Archived(UntrustedTier::External)
+        );
+
+        // A row recorded before the column existed carries no classification.
+        let legacy_id = uuid::Uuid::new_v4().to_string();
+        zeph_db::query(zeph_db::sql!(
+            "INSERT INTO tool_overflow (id, conversation_id, content, byte_size) \
+             VALUES (?, ?, ?, ?)"
+        ))
+        .bind(&legacy_id)
+        .bind(cid)
+        .bind(b"legacy".as_slice())
+        .bind(6i64)
+        .execute(store.pool())
+        .await
+        .unwrap();
+        let legacy = store.load_overflow(&legacy_id, cid).await.unwrap().unwrap();
+        assert_eq!(legacy.source, ToolResultSource::Mcp { server_id: None });
+
+        // The CHECK constraint rejects a code outside the table.
+        let bad = zeph_db::query(zeph_db::sql!(
+            "INSERT INTO tool_overflow \
+             (id, conversation_id, content, byte_size, result_source) VALUES (?, ?, ?, ?, ?)"
+        ))
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(cid)
+        .bind(b"x".as_slice())
+        .bind(1i64)
+        .bind(9i16)
+        .execute(store.pool())
+        .await;
+        assert!(bad.is_err());
+    }
 }

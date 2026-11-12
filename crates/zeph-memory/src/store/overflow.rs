@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use uuid::Uuid;
+use zeph_common::trust_level::{NativeToolKind, ToolResultSource, UntrustedTier};
 #[allow(unused_imports)]
 use zeph_db::sql;
 
@@ -22,8 +23,78 @@ fn now_minus_seconds_expr() -> &'static str {
     }
 }
 
+/// A stored tool result body together with the classification recorded when it was saved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverflowEntry {
+    /// The stored body.
+    pub content: Vec<u8>,
+    /// How the body was classified when it was saved.
+    pub source: ToolResultSource,
+}
+
+/// Column code for `result_source`; the exhaustive match makes a new variant a compile error.
+fn encode_source(source: &ToolResultSource) -> (i16, Option<&str>) {
+    match source {
+        ToolResultSource::Native(NativeToolKind::Local) => (1, None),
+        ToolResultSource::Native(NativeToolKind::Web) => (2, None),
+        ToolResultSource::Native(NativeToolKind::Memory) => (3, None),
+        ToolResultSource::Mcp { server_id } => (4, server_id.as_deref()),
+        ToolResultSource::Archived(UntrustedTier::Local) => (5, None),
+        ToolResultSource::Archived(UntrustedTier::External) => (6, None),
+    }
+}
+
+/// Inverse of [`encode_source`]. A row recorded before the column existed (`NULL`) is treated as
+/// MCP-served, the strictest classification; an unknown code is an error, never a default.
+fn decode_source(
+    code: Option<i16>,
+    server_id: Option<String>,
+) -> Result<ToolResultSource, MemoryError> {
+    Ok(match code {
+        None | Some(4) => ToolResultSource::Mcp { server_id },
+        Some(1) => ToolResultSource::Native(NativeToolKind::Local),
+        Some(2) => ToolResultSource::Native(NativeToolKind::Web),
+        Some(3) => ToolResultSource::Native(NativeToolKind::Memory),
+        Some(5) => ToolResultSource::Archived(UntrustedTier::Local),
+        Some(6) => ToolResultSource::Archived(UntrustedTier::External),
+        Some(other) => {
+            return Err(MemoryError::InvalidInput(format!(
+                "invalid tool_overflow result_source code: {other}"
+            )));
+        }
+    })
+}
+
 impl SqliteStore {
-    /// Save overflow content associated with a conversation, returning the generated UUID.
+    async fn insert_overflow_row(
+        &self,
+        conversation_id: ConversationId,
+        content: &[u8],
+        archive_type: &'static str,
+        source: &ToolResultSource,
+    ) -> Result<String, MemoryError> {
+        let id = Uuid::new_v4().to_string();
+        let byte_size = i64::try_from(content.len()).unwrap_or(i64::MAX);
+        let (code, server_id) = encode_source(source);
+        zeph_db::query(sql!(
+            "INSERT INTO tool_overflow \
+             (id, conversation_id, content, byte_size, archive_type, result_source, mcp_server_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)"
+        ))
+        .bind(&id)
+        .bind(conversation_id)
+        .bind(content)
+        .bind(byte_size)
+        .bind(archive_type)
+        .bind(code)
+        .bind(server_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(id)
+    }
+
+    /// Save overflow content with the classification of the tool result it came from,
+    /// returning the generated UUID.
     ///
     /// # Errors
     ///
@@ -32,26 +103,17 @@ impl SqliteStore {
         &self,
         conversation_id: ConversationId,
         content: &[u8],
+        source: &ToolResultSource,
     ) -> Result<String, MemoryError> {
-        let id = Uuid::new_v4().to_string();
-        let byte_size = i64::try_from(content.len()).unwrap_or(i64::MAX);
-        zeph_db::query(sql!(
-            "INSERT INTO tool_overflow (id, conversation_id, content, byte_size, archive_type) \
-             VALUES (?, ?, ?, ?, 'overflow')"
-        ))
-        .bind(&id)
-        .bind(conversation_id)
-        .bind(content)
-        .bind(byte_size)
-        .execute(&self.pool)
-        .await?;
-        Ok(id)
+        self.insert_overflow_row(conversation_id, content, "overflow", source)
+            .await
     }
 
     /// Save a Memex compaction-time archive, returning the generated UUID.
     ///
     /// Archives use `archive_type = 'archive'` and are excluded from the short-lived
-    /// `cleanup_overflow()` job. They persist as long as the conversation exists.
+    /// `cleanup_overflow()` job. They persist as long as the conversation exists. Archived text
+    /// is post-sanitize context text, so only its untrusted `tier` is recorded.
     ///
     /// # Errors
     ///
@@ -60,41 +122,45 @@ impl SqliteStore {
         &self,
         conversation_id: ConversationId,
         content: &[u8],
+        tier: UntrustedTier,
     ) -> Result<String, MemoryError> {
-        let id = Uuid::new_v4().to_string();
-        let byte_size = i64::try_from(content.len()).unwrap_or(i64::MAX);
-        zeph_db::query(sql!(
-            "INSERT INTO tool_overflow (id, conversation_id, content, byte_size, archive_type) \
-             VALUES (?, ?, ?, ?, 'archive')"
-        ))
-        .bind(&id)
-        .bind(conversation_id)
-        .bind(content)
-        .bind(byte_size)
-        .execute(&self.pool)
-        .await?;
-        Ok(id)
+        self.insert_overflow_row(
+            conversation_id,
+            content,
+            "archive",
+            &ToolResultSource::Archived(tier),
+        )
+        .await
     }
 
-    /// Load overflow content by UUID, scoped to the given conversation.
-    /// Returns `None` if the entry does not exist or belongs to a different conversation.
+    /// Load overflow content and its recorded classification by UUID, scoped to the given
+    /// conversation. Returns `None` if the entry does not exist or belongs to a different
+    /// conversation.
     ///
     /// # Errors
     ///
-    /// Returns an error if the database query fails.
+    /// Returns an error if the database query fails or the stored classification code is
+    /// unknown.
     pub async fn load_overflow(
         &self,
         id: &str,
         conversation_id: ConversationId,
-    ) -> Result<Option<Vec<u8>>, MemoryError> {
-        let row: Option<(Vec<u8>,)> = zeph_db::query_as(sql!(
-            "SELECT content FROM tool_overflow WHERE id = ? AND conversation_id = ?"
+    ) -> Result<Option<OverflowEntry>, MemoryError> {
+        let row: Option<(Vec<u8>, Option<i16>, Option<String>)> = zeph_db::query_as(sql!(
+            "SELECT content, result_source, mcp_server_id FROM tool_overflow \
+             WHERE id = ? AND conversation_id = ?"
         ))
         .bind(id)
         .bind(conversation_id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|(content,)| content))
+        row.map(|(content, code, server_id)| {
+            Ok(OverflowEntry {
+                content,
+                source: decode_source(code, server_id)?,
+            })
+        })
+        .transpose()
     }
 
     /// Delete execution-time overflow entries (`archive_type = 'overflow'`) older than
@@ -166,6 +232,8 @@ mod tests {
         }
     }
 
+    const LOCAL: ToolResultSource = ToolResultSource::Native(NativeToolKind::Local);
+
     async fn make_store() -> (SqliteStore, ConversationId) {
         let store = SqliteStore::new(":memory:")
             .await
@@ -181,9 +249,18 @@ mod tests {
     async fn save_and_load_roundtrip() {
         let (store, cid) = make_store().await;
         let content = b"hello overflow world";
-        let id = store.save_overflow(cid, content).await.expect("save");
+        let id = store
+            .save_overflow(cid, content, &LOCAL)
+            .await
+            .expect("save");
         let loaded = store.load_overflow(&id, cid).await.expect("load");
-        assert_eq!(loaded, Some(content.to_vec()));
+        assert_eq!(
+            loaded,
+            Some(OverflowEntry {
+                content: content.to_vec(),
+                source: LOCAL
+            })
+        );
     }
 
     #[tokio::test]
@@ -203,7 +280,10 @@ mod tests {
             .create_conversation()
             .await
             .expect("create_conversation");
-        let id = store.save_overflow(cid1, b"secret").await.expect("save");
+        let id = store
+            .save_overflow(cid1, b"secret", &LOCAL)
+            .await
+            .expect("save");
         // Loading with a different conversation_id must return None.
         let loaded = store.load_overflow(&id, cid2).await.expect("load");
         assert!(
@@ -222,8 +302,14 @@ mod tests {
     #[tokio::test]
     async fn overflow_size_sums_byte_sizes() {
         let (store, cid) = make_store().await;
-        store.save_overflow(cid, b"aaa").await.expect("save1");
-        store.save_overflow(cid, b"bb").await.expect("save2");
+        store
+            .save_overflow(cid, b"aaa", &LOCAL)
+            .await
+            .expect("save1");
+        store
+            .save_overflow(cid, b"bb", &LOCAL)
+            .await
+            .expect("save2");
         let size = store.overflow_size(cid).await.expect("size");
         assert_eq!(size, 5);
     }
@@ -231,7 +317,10 @@ mod tests {
     #[tokio::test]
     async fn cascade_delete_removes_overflow() {
         let (store, cid) = make_store().await;
-        let id = store.save_overflow(cid, b"data").await.expect("save");
+        let id = store
+            .save_overflow(cid, b"data", &LOCAL)
+            .await
+            .expect("save");
         // Delete the conversation — overflow should cascade.
         zeph_db::query(sql!("DELETE FROM conversations WHERE id = ?"))
             .bind(cid)
@@ -270,7 +359,10 @@ mod tests {
             .expect("insert old row");
 
         // Insert a fresh row.
-        let fresh_id = store.save_overflow(cid, b"fresh").await.expect("fresh");
+        let fresh_id = store
+            .save_overflow(cid, b"fresh", &LOCAL)
+            .await
+            .expect("fresh");
 
         let deleted = store.cleanup_overflow(86400).await.expect("cleanup");
         assert_eq!(deleted, 1, "one old row should be deleted");
@@ -294,8 +386,8 @@ mod tests {
     #[tokio::test]
     async fn cleanup_fresh_entries_not_removed() {
         let (store, cid) = make_store().await;
-        store.save_overflow(cid, b"a").await.expect("save");
-        store.save_overflow(cid, b"b").await.expect("save");
+        store.save_overflow(cid, b"a", &LOCAL).await.expect("save");
+        store.save_overflow(cid, b"b", &LOCAL).await.expect("save");
         // Cleanup with 1 day retention — fresh entries should not be removed.
         let deleted = store.cleanup_overflow(86400).await.expect("cleanup");
         assert_eq!(deleted, 0);
@@ -306,12 +398,18 @@ mod tests {
         let (store, cid) = make_store().await;
         let content = b"archived tool output body";
         let id = store
-            .save_archive(cid, content)
+            .save_archive(cid, content, UntrustedTier::External)
             .await
             .expect("save_archive");
         // Archives are stored in the same table and loadable by the same API.
         let loaded = store.load_overflow(&id, cid).await.expect("load");
-        assert_eq!(loaded, Some(content.to_vec()));
+        assert_eq!(
+            loaded,
+            Some(OverflowEntry {
+                content: content.to_vec(),
+                source: ToolResultSource::Archived(UntrustedTier::External)
+            })
+        );
     }
 
     #[tokio::test]
@@ -374,5 +472,67 @@ mod tests {
                 .is_none(),
             "old overflow must be removed by cleanup"
         );
+    }
+
+    fn every_source() -> Vec<ToolResultSource> {
+        vec![
+            ToolResultSource::Native(NativeToolKind::Local),
+            ToolResultSource::Native(NativeToolKind::Web),
+            ToolResultSource::Native(NativeToolKind::Memory),
+            ToolResultSource::Mcp {
+                server_id: Some("github".into()),
+            },
+            ToolResultSource::Mcp { server_id: None },
+            ToolResultSource::Archived(UntrustedTier::Local),
+            ToolResultSource::Archived(UntrustedTier::External),
+        ]
+    }
+
+    #[tokio::test]
+    async fn every_source_round_trips_through_the_store() {
+        let (store, cid) = make_store().await;
+        for source in every_source() {
+            let id = store
+                .save_overflow(cid, b"body", &source)
+                .await
+                .expect("save");
+            let loaded = store.load_overflow(&id, cid).await.expect("load").unwrap();
+            assert_eq!(loaded.source, source);
+        }
+    }
+
+    #[tokio::test]
+    async fn row_without_recorded_source_decodes_as_mcp() {
+        let (store, cid) = make_store().await;
+        let id = Uuid::new_v4().to_string();
+        zeph_db::query(sql!(
+            "INSERT INTO tool_overflow (id, conversation_id, content, byte_size) \
+             VALUES (?, ?, ?, ?)"
+        ))
+        .bind(&id)
+        .bind(cid)
+        .bind(b"legacy".as_slice())
+        .bind(6i64)
+        .execute(store.pool())
+        .await
+        .expect("insert legacy row");
+        let loaded = store.load_overflow(&id, cid).await.expect("load").unwrap();
+        assert_eq!(loaded.source, ToolResultSource::Mcp { server_id: None });
+    }
+
+    #[test]
+    fn unknown_source_code_is_an_error() {
+        assert!(decode_source(Some(7), None).is_err());
+        assert!(decode_source(Some(0), None).is_err());
+        assert!(decode_source(Some(-1), None).is_err());
+    }
+
+    #[test]
+    fn encode_decode_agree_for_every_source() {
+        for source in every_source() {
+            let (code, server) = encode_source(&source);
+            let back = decode_source(Some(code), server.map(str::to_owned)).unwrap();
+            assert_eq!(back, source);
+        }
     }
 }

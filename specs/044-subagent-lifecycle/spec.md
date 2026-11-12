@@ -320,7 +320,7 @@ at respawn time, not from a stale snapshot.
 ### Key Invariants
 
 - Respawned subagents MUST inherit the parent's current MCP config, not the config at initial spawn
-- MCP tool names list is never cached in `SubAgentDef` — always fetched live from parent manager
+- MCP tool names list is never cached in `SubAgentDef` — always fetched live from parent manager (known gap: resume currently reads `mcp_tool_names` from the transcript meta; trust classification tolerates this because live executor definitions are joined in per batch)
 
 ---
 
@@ -792,7 +792,7 @@ Every sub-agent tool result (the `Ok(Some)` summary and the `Err` text) is prote
 2. `strip_control_chars_preserve_whitespace` (control and zero-width characters are removed first so they cannot split a secret past the matchers)
 3. `SecretMaskRegistry::mask` (`would_mask` pre-check; section 16)
 4. `zeph_common::secret_redact::scrub_secrets`, only when `CredentialScrub::Enabled`
-5. `ContentSanitizer::sanitize(raw, zeph_sanitizer::tool_output_source(tool_name))` (injection flags logged at `warn`)
+5. `ContentSanitizer::sanitize(raw, resolved.content_source(tool_name))` (`ResolvedToolSource::resolve`) (injection flags logged at `warn`); provenance is resolved per batch from the live executor's MCP definitions joined with `mcp_tool_names`, then joined with the result's `ClaimSource` and, for a replayed `read_overflow` body, its stored source (`ToolOutput.replayed_from`)
 6. `[tool output: name]` fence for results, `[tool error]:` prefix for errors
 
 `SpawnContext.credential_scrub: CredentialScrub { Enabled, Disabled }` (`Default = Enabled`, `From<bool>`) is set from `runtime.config.redact_credentials` when the context is built in `subagent_commands.rs` and threaded into `AgentLoopArgs`. The sub-agent wire `is_error` stays `Err`-only: a non-zero exit is not a sub-agent tool error (`[[006-tools/spec]]`).

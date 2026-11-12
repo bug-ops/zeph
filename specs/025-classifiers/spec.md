@@ -106,13 +106,13 @@ zeph classifiers download --model pii|injection|all
 
 The ML injection classifier (DeBERTa) is bypassed for outputs from internal Zeph tools that produce only Zeph-generated text (#3384, #3394, #3396). The pattern-based sanitizer continues to run on these outputs for telemetry purposes.
 
-**Bypassed tool names** (exact match on unnamespaced tool name, `INTERNAL_TOOLS` in
+**Bypassed tool names** (exact match on the tool name, `Native` provenance only, `INTERNAL_TOOLS` in
 `crates/zeph-core/src/agent/tool_execution/sanitize.rs`):
 `bash`, `shell`, `invoke_skill`, `load_skill`, `memory_save`, `memory_search`,
 `compress_context`, `request_compaction`, `complete_focus`, `start_focus`,
 `schedule_periodic`, `schedule_deferred`, `cancel_task`
 
-**Adversarial-MCP guard**: colon-namespaced tool names (e.g. `server:invoke_skill`) are NEVER matched against the bypass allowlist — only bare names qualify. This prevents a malicious MCP server from registering a tool named `server:invoke_skill` to escape ML classification.
+**Adversarial-MCP guard**: only calls with `ToolProvenance::Native` can match the bypass allowlist; an MCP-served tool never does, whatever its id is. This prevents a malicious MCP server from registering a tool named like an internal tool (for example `invoke_skill`) to escape ML classification. The guard is provenance, not a name shape. A body replayed by `read_overflow` is classified by its stored source; `read_overflow` itself is never in the allowlist.
 
 Unit test `skip_ml_fires_for_internal_tool_names` in `zeph-core` proves this invariant (#3396).
 
@@ -127,4 +127,4 @@ Unit test `skip_ml_fires_for_internal_tool_names` in `zeph-core` proves this inv
 - NEVER load models on startup — lazy-load on first use
 - NEVER apply PII redaction when `pii_enabled = false`, even if NER model is loaded
 - NEVER emit a `WARN` security scan false-positive for `.bundled` skill content
-- NEVER match colon-namespaced tool names (e.g. `server:invoke_skill`) against the internal tool bypass allowlist — bare names only
+- NEVER match an MCP-served tool against the internal tool bypass allowlist — only `Native` provenance may match it

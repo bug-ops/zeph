@@ -83,8 +83,8 @@ impl ToolExecutor for OverflowToolExecutor {
         };
 
         match self.sqlite.load_overflow(id, conv_id).await {
-            Ok(Some(bytes)) => {
-                let text = String::from_utf8_lossy(&bytes).into_owned();
+            Ok(Some(entry)) => {
+                let text = String::from_utf8_lossy(&entry.content).into_owned();
                 Ok(Some(ToolOutput {
                     tool_name: zeph_common::ToolName::new(Self::TOOL_NAME),
                     summary: text,
@@ -96,6 +96,7 @@ impl ToolExecutor for OverflowToolExecutor {
                     locations: None,
                     raw_response: None,
                     claim_source: None,
+                    replayed_from: Some(entry.source),
                     ..Default::default()
                 }))
             }
@@ -116,6 +117,11 @@ mod tests {
     use super::*;
     use std::assert_matches;
     use zeph_memory::store::SqliteStore;
+
+    const LOCAL_SOURCE: zeph_common::trust_level::ToolResultSource =
+        zeph_common::trust_level::ToolResultSource::Native(
+            zeph_common::trust_level::NativeToolKind::Local,
+        );
 
     async fn make_store_with_conv() -> (Arc<SqliteStore>, ConversationId) {
         let store = SqliteStore::new(":memory:")
@@ -190,7 +196,7 @@ mod tests {
         let (store, cid) = make_store_with_conv().await;
         let content = b"prefixed overflow content";
         let uuid = store
-            .save_overflow(cid, content)
+            .save_overflow(cid, content, &LOCAL_SOURCE)
             .await
             .expect("save_overflow");
 
@@ -205,7 +211,7 @@ mod tests {
         let (store, cid) = make_store_with_conv().await;
         let content = b"bare uuid content";
         let uuid = store
-            .save_overflow(cid, content)
+            .save_overflow(cid, content, &LOCAL_SOURCE)
             .await
             .expect("save_overflow");
 
@@ -236,7 +242,10 @@ mod tests {
     #[tokio::test]
     async fn no_conversation_returns_error() {
         let (store, cid) = make_store_with_conv().await;
-        let uuid = store.save_overflow(cid, b"data").await.expect("save");
+        let uuid = store
+            .save_overflow(cid, b"data", &LOCAL_SOURCE)
+            .await
+            .expect("save");
         // Executor without conversation_id must return error (not panic).
         let exec = OverflowToolExecutor::new(store);
         let call = make_call(&uuid);
@@ -249,7 +258,7 @@ mod tests {
         let (store, cid) = make_store_with_conv().await;
         let content = b"full tool output content";
         let uuid = store
-            .save_overflow(cid, content)
+            .save_overflow(cid, content, &LOCAL_SOURCE)
             .await
             .expect("save_overflow");
 
@@ -267,7 +276,10 @@ mod tests {
             .create_conversation()
             .await
             .expect("create_conversation");
-        let uuid = store.save_overflow(cid1, b"secret").await.expect("save");
+        let uuid = store
+            .save_overflow(cid1, b"secret", &LOCAL_SOURCE)
+            .await
+            .expect("save");
         // Executor bound to cid2 must not retrieve cid1's overflow.
         let exec = OverflowToolExecutor::new(Arc::clone(&store)).with_conversation(cid2);
         let call = make_call(&uuid);
@@ -285,7 +297,7 @@ mod tests {
         let (store, cid) = make_store_with_conv().await;
         let big_content = "x".repeat(100_000).into_bytes();
         let uuid = store
-            .save_overflow(cid, &big_content)
+            .save_overflow(cid, &big_content, &LOCAL_SOURCE)
             .await
             .expect("save_overflow");
 

@@ -2168,11 +2168,11 @@ impl<C: Channel> Agent<C> {
         query: &str,
         query_embed_cache: &mut QueryEmbedCache,
     ) {
-        if !self.services.mcp.tools.is_empty() {
+        if !self.services.mcp.tools().is_empty() {
             match self.services.mcp.discovery_strategy {
                 zeph_mcp::ToolDiscoveryStrategy::Embedding => {
                     let params = self.services.mcp.discovery_params.clone();
-                    if self.services.mcp.tools.len() < params.min_tools_to_filter {
+                    if self.services.mcp.tools().len() < params.min_tools_to_filter {
                         // Below threshold — skip filtering.
                         self.services.mcp.sync_executor_tools();
                     } else if let Some(ref index) = self.services.mcp.semantic_index {
@@ -2227,7 +2227,7 @@ impl<C: Channel> Agent<C> {
                                     &params.always_include,
                                 );
                                 tracing::info!(
-                                    total = self.services.mcp.tools.len(),
+                                    total = self.services.mcp.tools().len(),
                                     selected = selected.len(),
                                     "semantic tool discovery applied"
                                 );
@@ -2265,7 +2265,7 @@ impl<C: Channel> Agent<C> {
                             .pruning_provider
                             .clone()
                             .unwrap_or_else(|| self.provider.clone());
-                        let tools_snapshot = self.services.mcp.tools.clone();
+                        let tools_snapshot = self.services.mcp.tools().to_vec();
                         let params_snapshot = self.services.mcp.pruning_params.clone();
                         match zeph_mcp::prune_tools_cached(
                             &mut self.services.mcp.pruning_cache,
@@ -2314,7 +2314,7 @@ impl<C: Channel> Agent<C> {
         let stable: Vec<zeph_mcp::McpTool> = self
             .services
             .mcp
-            .tools
+            .tools()
             .iter()
             .filter(|t| union.contains(&t.qualified_name()))
             .cloned()
@@ -3995,7 +3995,7 @@ mod tests {
             embed_dedup_discovery_params(),
             None, // no distinct provider — shares the default embedding_provider (#6267 path)
         );
-        agent.services.mcp.tools = vec![embed_dedup_mcp_tool()];
+        agent.services.mcp.set_tools(vec![embed_dedup_mcp_tool()]);
         agent.services.mcp.semantic_index = Some(build_mcp_semantic_index(embed_dim).await);
         agent.services.tool_state.tool_schema_filter = Some(ToolSchemaFilter::new(
             vec![],
@@ -4051,7 +4051,7 @@ mod tests {
             embed_dedup_discovery_params(),
             Some(distinct_provider),
         );
-        agent.services.mcp.tools = vec![embed_dedup_mcp_tool()];
+        agent.services.mcp.set_tools(vec![embed_dedup_mcp_tool()]);
         agent.services.mcp.semantic_index = Some(build_mcp_semantic_index(embed_dim).await);
         agent.services.tool_state.tool_schema_filter = Some(ToolSchemaFilter::new(
             vec![],
@@ -4227,12 +4227,15 @@ mod tests {
             name: "other_tool".into(),
             ..embed_dedup_mcp_tool()
         };
-        agent.services.mcp.tools = vec![embed_dedup_mcp_tool(), other.clone()];
+        agent
+            .services
+            .mcp
+            .set_tools(vec![embed_dedup_mcp_tool(), other.clone()]);
         let embed_fn = |_: &str| -> zeph_llm::provider::EmbedFuture {
             Box::pin(async move { Ok(vec![1.0_f32; 4]) })
         };
         agent.services.mcp.semantic_index = Some(
-            SemanticToolIndex::build(&agent.services.mcp.tools, &embed_fn)
+            SemanticToolIndex::build(agent.services.mcp.tools(), &embed_fn)
                 .await
                 .unwrap(),
         );
@@ -4274,7 +4277,7 @@ mod tests {
             embed_dedup_discovery_params(),
             None,
         );
-        agent.services.mcp.tools = vec![embed_dedup_mcp_tool()];
+        agent.services.mcp.set_tools(vec![embed_dedup_mcp_tool()]);
         agent.services.mcp.semantic_index = Some(build_mcp_semantic_index(embed_dim).await);
 
         let all_meta_refs: Vec<&SkillMeta> = all_meta_owned.iter().collect();
@@ -4476,7 +4479,7 @@ mod tests {
             agent.embedding_provider = AnyProvider::Mock(
                 MockProvider::with_responses(vec![]).with_embedding(query_embedding),
             );
-            agent.services.mcp.tools = mcp_tools;
+            agent.services.mcp.set_tools(mcp_tools);
             agent.rebuild_system_prompt("query").await;
             let prompt = agent.msg.messages[0].content.clone();
             let (stable, volatile) = prompt

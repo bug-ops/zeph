@@ -203,40 +203,36 @@ pub(super) async fn sanitize_tool_output(
     &mut self,
     body: &str,
     tool_name: &str,
+    origin: ToolOutputOrigin,
+    mcp_ids: &McpToolIds,
 ) -> (
     String,                                    // Sanitized body
     bool,                                      // Injection detected flag
     ContentSourceKind,                         // Source classification
     zeph_sanitizer::ContentTrustLevel,        // Trust level
 ) {
-    // Classify output source: MCP response, web scrape, memory retrieval, or generic tool result
-    let source = build_tool_output_source(tool_name);
-    
-    // MCP responses are identified by tool_name containing ':' (server:tool format)
-    // and tagged as ContentSourceKind::McpResponse
-    
+    // Classification: MCP registry membership of the sanitized id, joined with the executor's
+    // ClaimSource and, for a replayed body, its stored source. Harness-authored text is Native.
+    // The tool-name shape is never consulted.
+    let resolved = origin.resolve(tool_name, mcp_ids);   // ResolvedToolSource::resolve
+    let source = resolved.content_source(tool_name);
+
     // Injection detection via regex spotlighting and optional ML classifiers
     let sanitized = self.sanitizer.sanitize(&body, source);
-    
+
     (sanitized.body, !sanitized.injection_flags.is_empty(), source.kind, source.trust_level)
 }
 
-/// Route tool outputs to their correct source classification.
-fn build_tool_output_source(tool_name: &str) -> ContentSource {
-    if tool_name.contains(':') || tool_name == "mcp" {
-        // MCP responses identified by server:tool naming convention
-        ContentSource::new(ContentSourceKind::McpResponse).with_identifier(tool_name)
-    } else if tool_name.starts_with("web") {
-        ContentSource::new(ContentSourceKind::WebScrape).with_identifier(tool_name)
-    } else if tool_name == "memory_search" {
-        ContentSource::new(ContentSourceKind::MemoryRetrieval).with_identifier(tool_name)
-    } else {
-        ContentSource::new(ContentSourceKind::ToolResult).with_identifier(tool_name)
-    }
-}
+/// `zeph-sanitizer`: `Mcp` provenance is always `McpResponse`; `Native` selects by name
+/// (web tools, `memory_search`, otherwise `ToolResult`).
+pub fn tool_output_source(tool_name: &str, provenance: ToolProvenance) -> ContentSource;
 ```
 
-**Flow**: `McpToolExecutor::execute_tool()` returns raw output → agent loop classifies via `build_tool_output_source()` → sanitization applies injection detection and trust wrapping via `sanitize_tool_output()` → clean body enters LLM context.
+`McpToolIds` is built once per tool-call batch from the live executor definitions that carry a `server_id` (the dispatch authority, shared across ACP sessions) joined with the stored MCP tool list. It also supplies the `mcp_server_id` for ACP cross-boundary audit entries and classifies error text, calls that return no output, and the pre-dispatch memory-consent ratchet.
+
+An oversized MCP result saved to the overflow store records its resolved classification (`Mcp` plus the server id); `read_overflow` replays it with that classification, so the replay is `<external-data>` wrapped and takes the MCP-to-ACP boundary like the original.
+
+**Flow**: `McpToolExecutor::execute_tool()` returns raw output → agent loop classifies via `ResolvedToolSource::resolve` + `content_source` → sanitization applies injection detection and trust wrapping via `sanitize_tool_output()` → clean body enters LLM context.
 
 ## Output Validation: Embedding Anomaly Detection
 
