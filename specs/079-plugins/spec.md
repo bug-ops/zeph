@@ -224,6 +224,7 @@ AND the registry treats all plugin skills as hub-installed (non-bundled)
 | FR-017 | WHEN `skills.disambiguation_threshold` overlays are applied THEN the maximum value across all plugins is used; thresholds never decrease | must |
 | FR-018 | WHEN plugin integrity is verified at load time THEN the SHA-256 digest stored at install is compared against the current manifest; if mismatch, `VerifyResult::Mismatch` is returned | must |
 | FR-019a | WHEN the integrity registry exists but cannot be read or parsed (I/O error, invalid UTF-8, invalid TOML, non-string value) THEN `IntegrityRegistry::update` aborts with `PluginError::IntegrityRegistryCorrupt` naming the path and the repair step, and the file is left byte-identical; a missing file is an empty registry. Callers (`add`, `remove`/auto-update swap) log a warning and continue, so the plugin is still installed or removed but without a digest update: a freshly added plugin loads unverified until the registry is repaired, and the registry keeps its stored digests (#6955) | must |
+| FR-019b | WHEN overlay resolution finds an installed plugin with no digest in the integrity registry (`VerifyResult::Missing`) THEN the overlay is still applied (tighten-only), the plugin is recorded in `ResolvedOverlay::unverified_plugins` with a `zeph plugin add` repair hint and logged at WARN, and `zeph plugin list --overlay` and `/plugins overlay` list it under "Unverified plugins" (#6977) | must |
 | FR-019 | WHEN overlay resolution encounters a malformed `.plugin.toml` THEN the plugin is logged at WARN and skipped; the merge continues with remaining plugins | must |
 | FR-020 | WHEN `add_remote(url, expected_sha256)` is called THEN the archive is downloaded, SHA-256 is computed and compared, and if match the archive is extracted to a temp dir | must |
 | FR-021 | WHEN the archive SHA-256 does not match `expected_sha256` THEN `PluginError::IntegrityCheckFailed` is returned immediately; the archive is never extracted | must |
@@ -394,6 +395,7 @@ Every installed plugin has a SHA-256 digest recorded in the integrity registry. 
 the manifest's digest is verified to detect tampering.
 
 **Guarantee**: Tampering with plugin manifests is detected: a digest mismatch skips the plugin's overlay and is recorded in `ResolvedOverlay::skipped_plugins` (matches `[[010-security/spec]]` "hard rejection"; the earlier "logged at WARN; overlay still applied" wording did not match the code). The overlay verifies the exact bytes it parses: `IntegrityRegistry::verify_bytes(plugin, &[u8])` hashes the already-read manifest text, replacing the path-based `verify(path)` that re-read the file (#6985, closes the read-verify-parse window).
+A plugin with no recorded digest still loads (tighten-only overlay) but is surfaced in `ResolvedOverlay::unverified_plugins` (FR-019b, #6977).
 A damaged registry is never overwritten: registry updates load it strictly and abort instead of dropping stored digests.
 
 ### Deterministic Enumeration Invariant

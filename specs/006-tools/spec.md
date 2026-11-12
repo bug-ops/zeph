@@ -129,6 +129,7 @@ pub struct ShellOutputEnvelope {
 - `is_failure()` drives: audit `Error`, the TUI/ACP `success` flag on `ToolEvent::Completed`, skill `tool_failure` outcome (`FailureKind::ExitNonzero` for `NonZeroExit`, `Unknown` for `Failed`/`GateRefused`), anomaly detector `Error`, ERL/ARISE gating, Wilson re-ranking input (`[[015-self-learning/spec]]`, `[[005-skills/spec]]`) and the inline-loop wire `is_error`.
 - `aborts_dependants()` drives: tier-loop `failed_ids` (dependant calls are skipped) and the inline-loop `ToolCallSummary.ok` (`!(Err || aborts_dependants() || HookBlocked)`), hence whether a `RunInline` DAG task ends `Failed` (`[[009-orchestration/spec]]`).
 - Wire `is_error` differs between loops for the same non-zero exit (R9, intentional, do not "fix" in #6993): the tier-loop `ToolResult.is_error` stays `Err`-only (`false` for `NonZeroExit`); the inline-loop wire `is_error` is `true` (follows `is_failure()`), while `ok` stays `true` in both loops.
+- Agent-answered built-ins (`BuiltinReply`): a disabled `request_compaction`, an inactive or rejected `skill_state_patch` reply carry `ToolStatus::Failed`; a recorded patch is `Success` (#7005).
 - MCP tool results (#7000): `CallToolResult.is_error == Some(true)` maps to `ToolStatus::Failed`; absent or `false` maps to `Success`. Summary and media rendering are unchanged, so the `is_failure()` consumers above see MCP-reported errors.
 - Exit 0 is never an `Err` and never a failure, whatever the output text says (stderr progress, `[error]` text, "permission denied" in data).
 
@@ -139,6 +140,7 @@ pub struct ShellOutputEnvelope {
 - `TimedOut` -> `Err(ToolError::Timeout)` + audit `Timeout`; `Cancelled` -> `Err(ToolError::Cancelled)`.
 - `LaunchFailed` (spawn failure, sandbox setup error) -> `Err(ToolError::Shell { category: PermanentFailure })` chosen without text matching, audit `Error`. A launch failure is always an `Err`, including ones whose text lacks "permission denied"/"no such file" (previously `Ok`).
 - `Exited` + exit 0 -> `Success`; `Exited` + non-zero -> `Ok(NonZeroExit(n))` unless `classify_shell_exit` assigns a category (below), in which case `Err(ToolError::Shell)`. Multi-block bash calls report the first non-success block status.
+- `Exited` classified as `Err(ToolError::Shell)` (exit 126/127 and text-refined non-zero exits) writes exactly one audit `Error` entry, like `LaunchFailed` (#7006); every `Err` outcome of the shell executor is audited.
 - Audit `Success` iff exit 0. `ToolEvent::Completed.success = !status.is_failure()`.
 - Background runs report the real process exit code (previously collapsed to 0/1); `success` = exited with 0.
 

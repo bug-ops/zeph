@@ -23,6 +23,7 @@ use zeph_skills::state::{InputTrust, SkillExecutionState};
 use crate::agent::Agent;
 use crate::agent::runtime_note::RuntimeNoteSection;
 use crate::agent::state::{SkillState, ToolState};
+use crate::agent::tool_execution::BuiltinReply;
 use crate::channel::Channel;
 
 /// Name of the synthetic patch tool.
@@ -352,7 +353,7 @@ impl<C: Channel> Agent<C> {
     pub(in crate::agent) async fn handle_skill_state_patch(
         &mut self,
         input: &serde_json::Value,
-    ) -> String {
+    ) -> BuiltinReply {
         self.channel
             .send_status_best_effort("Validating skill state patch\u{2026}")
             .await;
@@ -361,10 +362,10 @@ impl<C: Channel> Agent<C> {
         out
     }
 
-    fn apply_skill_state_patch(&mut self, input: &serde_json::Value) -> String {
+    fn apply_skill_state_patch(&mut self, input: &serde_json::Value) -> BuiltinReply {
         let _span = tracing::info_span!("core.skillstate.dispatch").entered();
         let Some(exec) = self.services.skill.execution.active_mut() else {
-            return "Error: skill_state_patch is not active this turn".to_owned();
+            return BuiltinReply::failed("Error: skill_state_patch is not active this turn");
         };
         match exec.prepare_patch(input) {
             Ok(patch) => {
@@ -376,11 +377,11 @@ impl<C: Channel> Agent<C> {
                         .pending_absorbed
                         .get_or_insert(AbsorbedBatch::Pending(batch));
                 }
-                "State recorded.".to_owned()
+                BuiltinReply::completed("State recorded.")
             }
-            Err(e) => {
-                format!("Error: patch rejected ({e}). State unchanged; send a corrected patch.")
-            }
+            Err(e) => BuiltinReply::failed(format!(
+                "Error: patch rejected ({e}). State unchanged; send a corrected patch."
+            )),
         }
     }
 
@@ -665,7 +666,8 @@ mod tests {
     async fn patch_without_active_state_returns_error() {
         let mut a = agent();
         let out = a.handle_skill_state_patch(&serde_json::json!({})).await;
-        assert!(out.contains("not active"));
+        assert!(out.text.contains("not active"));
+        assert_eq!(out.status, zeph_tools::ToolStatus::Failed);
     }
 
     #[tokio::test]
@@ -972,7 +974,8 @@ mod tests {
         let mut a = active_agent();
         run_real(&mut a, &[("a", "shell", NOOP)]).await;
         let out = a.handle_skill_state_patch(&serde_json::json!({})).await;
-        assert!(out.contains("empty"), "{out}");
+        assert!(out.text.contains("empty"), "{}", out.text);
+        assert_eq!(out.status, zeph_tools::ToolStatus::Failed);
         assert!(a.services.tool_state.pending_absorbed.is_none());
         assert!(a.services.tool_state.last_batch.is_some());
         run_real(&mut a, &[patch("e", serde_json::json!({}))]).await;
@@ -1015,7 +1018,8 @@ mod tests {
         let out = a
             .handle_skill_state_patch(&serde_json::json!({"phase": "b"}))
             .await;
-        assert!(out.contains("recorded"), "{out}");
+        assert!(out.text.contains("recorded"), "{}", out.text);
+        assert_eq!(out.status, zeph_tools::ToolStatus::Success);
         assert_eq!(taint(&a), InputTrust::Untrusted);
         assert_eq!(
             a.services.skill.input_trust_since_patch,
@@ -1059,7 +1063,8 @@ mod tests {
         let out = a
             .handle_skill_state_patch(&serde_json::json!({"phase": "zzz"}))
             .await;
-        assert!(out.contains("rejected"), "{out}");
+        assert!(out.text.contains("rejected"), "{}", out.text);
+        assert_eq!(out.status, zeph_tools::ToolStatus::Failed);
         assert_eq!(
             a.services.skill.input_trust_since_patch,
             InputTrust::Untrusted
@@ -1243,7 +1248,8 @@ mod tests {
         let out = a
             .handle_skill_state_patch(&serde_json::json!({"note": "B"}))
             .await;
-        assert!(out.contains("not active"), "{out}");
+        assert!(out.text.contains("not active"), "{}", out.text);
+        assert_eq!(out.status, zeph_tools::ToolStatus::Failed);
         a.push_message(results_msg(&["z"]));
         a.attach_runtime_note(1);
         assert_eq!(

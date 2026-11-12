@@ -754,15 +754,14 @@ fn is_tool_use_only(content: &str) -> bool {
         return false;
     }
     let mut rest = trimmed;
-    while let Some(start) = rest.find("[tool_use: ") {
-        if !rest[..start].trim().is_empty() {
+    while let Some((head, after)) = rest.split_once("[tool_use: ") {
+        if !head.trim().is_empty() {
             return false;
         }
-        let after = &rest[start + "[tool_use: ".len()..];
-        let Some(end) = after.find(']') else {
+        let Some((_, tail)) = after.split_once(']') else {
             return false;
         };
-        rest = after[end + 1..].trim_start();
+        rest = tail.trim_start();
     }
     rest.is_empty()
 }
@@ -770,11 +769,9 @@ fn is_tool_use_only(content: &str) -> bool {
 fn parse_tool_output(content: &str, suffix: &str) -> Option<(String, String)> {
     // New format: [tool output: name]
     if let Some(rest) = content.strip_prefix("[tool output: ")
-        && let Some(header_end) = rest.find("]\n```\n")
+        && let Some((name, body_part)) = rest.split_once("]\n```\n")
     {
-        let name = rest[..header_end].to_owned();
-        let body_start = header_end + "]\n```\n".len();
-        let body_part = &rest[body_start..];
+        let name = name.to_owned();
         let body = body_part.strip_suffix(suffix).unwrap_or(body_part);
         return Some((name, body.to_owned()));
     }
@@ -790,7 +787,7 @@ fn parse_tool_output(content: &str, suffix: &str) -> Option<(String, String)> {
     }
     // Native tool_use format: [tool_result: id]\ncontent
     if let Some(rest) = content.strip_prefix("[tool_result: ") {
-        let body = rest.find("]\n").map_or("", |i| &rest[i + 2..]);
+        let body = rest.split_once("]\n").map_or("", |(_, body)| body);
         let name = if body.contains("$ ") { "bash" } else { "tool" };
         return Some((name.to_owned(), body.to_owned()));
     }

@@ -48,6 +48,10 @@ pub struct ResolvedOverlay {
 
     /// Plugins that were skipped. Each entry: `"<name>: <reason>"`.
     pub skipped_plugins: Vec<String>,
+
+    /// Plugins whose overlay was applied without integrity verification because the registry
+    /// has no digest recorded for them. Each entry: `"<name>: <reason>"`.
+    pub unverified_plugins: Vec<String>,
 }
 
 /// Apply tighten-only config overlays from every installed plugin to `config`.
@@ -204,15 +208,18 @@ fn process_plugin_entry(
         Ok(r) => r,
         Err(reason) => {
             out.skipped_plugins.push(format!(
-                "{plugin_dir_name}: integrity registry unusable ({reason}): restore it, or delete it and reinstall every plugin before the next agent start; until then no plugin overlay is applied"
+                "{plugin_dir_name}: integrity registry unusable ({reason}): restore it from a backup, or delete it and run `zeph plugin add` for each installed plugin; until then no plugin overlay is applied"
             ));
             return;
         }
     };
-    if let Err(reason) = check_manifest_integrity(registry, &plugin_dir_name, &text) {
-        out.skipped_plugins.push(reason);
-        return;
-    }
+    let verification = match check_manifest_integrity(registry, &plugin_dir_name, &text) {
+        Ok(v) => v,
+        Err(reason) => {
+            out.skipped_plugins.push(reason);
+            return;
+        }
+    };
 
     // M2: re-run install-time safelist check as defence-in-depth against post-install tampering.
     if let Err(e) = validate_overlay_keys(&manifest.config) {
@@ -223,10 +230,29 @@ fn process_plugin_entry(
         return;
     }
 
+    if verification == Verification::Unverified {
+        tracing::warn!(
+            plugin = %plugin_dir_name,
+            "no integrity digest recorded; applying plugin overlay unverified"
+        );
+        out.unverified_plugins.push(format!(
+            "{plugin_dir_name}: no integrity digest recorded; run `zeph plugin add` again to verify it"
+        ));
+    }
+
     let contributed = merge_manifest_overlay(&manifest, out, blocked_set, allowed_accum, threshold);
     if contributed {
         out.source_plugins.push(manifest.plugin.name.to_string());
     }
+}
+
+/// Outcome of a manifest integrity check that did not reject the plugin.
+#[derive(Debug, PartialEq, Eq)]
+enum Verification {
+    /// The stored digest matches the manifest.
+    Verified,
+    /// No digest is recorded: the overlay still applies (spec 079 FR-019a) but is surfaced.
+    Unverified,
 }
 
 /// Verifies the exact manifest text that was parsed, never a second read of the file.
@@ -234,9 +260,10 @@ fn check_manifest_integrity(
     registry: &crate::integrity::IntegrityRegistry,
     plugin_dir_name: &str,
     parsed_text: &str,
-) -> Result<(), String> {
+) -> Result<Verification, String> {
     match registry.verify_bytes(plugin_dir_name, parsed_text.as_bytes()) {
-        crate::integrity::VerifyResult::Match | crate::integrity::VerifyResult::Missing => Ok(()),
+        crate::integrity::VerifyResult::Match => Ok(Verification::Verified),
+        crate::integrity::VerifyResult::Missing => Ok(Verification::Unverified),
         crate::integrity::VerifyResult::Mismatch { expected, actual } => Err(format!(
             "{plugin_dir_name}: integrity mismatch (expected {expected}, got {actual})"
         )),
@@ -950,6 +977,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn unverified_plugin_rejected_by_safelist_is_only_skipped() {
+        let dir = TempDir::new().unwrap();
+        let registry_path = dir.path().join("registry.toml");
+        write_plugin_overlay(dir.path(), "badplugin", "[config.llm]\nprovider = \"evil\"");
+
+        let mut cfg = base_config();
+        let overlay =
+            apply_plugin_config_overlays_with_registry(&mut cfg, dir.path(), &registry_path)
+                .unwrap();
+
+        assert_eq!(overlay.unverified_plugins, Vec::<String>::new());
+        assert_eq!(overlay.skipped_plugins.len(), 1);
+        assert!(overlay.skipped_plugins[0].contains("safelist"));
+    }
+
     // Plugin with no registry entry (pre-integrity install) loads without errors.
     #[test]
     fn missing_integrity_record_allowed() {
@@ -973,5 +1016,8 @@ mod tests {
             "pre-integrity plugin must not be skipped"
         );
         assert!(cfg.tools.shell.blocked_commands.contains(&"nc".to_owned()));
+        assert_eq!(overlay.unverified_plugins.len(), 1);
+        assert!(overlay.unverified_plugins[0].starts_with("oldplugin: "));
+        assert!(overlay.unverified_plugins[0].contains("zeph plugin add"));
     }
 }

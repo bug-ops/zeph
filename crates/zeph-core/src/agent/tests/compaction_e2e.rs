@@ -737,6 +737,8 @@ async fn test_secret_drain_after_instant_completion() {
             transcript_dir: None,
             mcp_tool_names: Vec::new(),
             peer: None,
+            trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
+            resumed_from: None,
         },
     );
     agent.services.orchestration.subagent_manager = Some(mgr);

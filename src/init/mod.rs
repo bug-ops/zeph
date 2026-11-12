@@ -1966,14 +1966,14 @@ fn step_logging(state: &mut WizardState) -> anyhow::Result<()> {
             .with_prompt(format!("File log level [{}]", VALID_LEVELS.join("|")))
             .default(state.log_level.clone())
             .validate_with(|input: &String| {
-                if VALID_LEVELS.contains(&input.to_lowercase().as_str()) {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "invalid level '{input}'; choose one of: {}",
-                        VALID_LEVELS.join(", ")
-                    ))
-                }
+                VALID_LEVELS
+                    .contains(&input.to_lowercase().as_str())
+                    .ok_or_else(|| {
+                        format!(
+                            "invalid level '{input}'; choose one of: {}",
+                            VALID_LEVELS.join(", ")
+                        )
+                    })
             })
             .interact_text()?;
         state.log_level = log_level;

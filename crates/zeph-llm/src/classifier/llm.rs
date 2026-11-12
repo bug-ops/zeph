@@ -15,7 +15,7 @@ use std::sync::Arc;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use zeph_common::text::truncate_chars;
-use zeph_config::ConfidenceCalibration;
+use zeph_config::{ConfidenceCalibration, ConfidenceThreshold};
 
 use crate::any::AnyProvider;
 use crate::error::LlmError;
@@ -181,22 +181,23 @@ pub struct GateOutcome {
 /// # Examples
 ///
 /// ```
+/// use zeph_config::ConfidenceThreshold;
 /// use zeph_llm::classifier::llm::{FeedbackGate, FeedbackGateDecision, FeedbackVerdictSource};
 ///
-/// let gate = FeedbackGate::uncalibrated(0.6);
+/// let gate = FeedbackGate::uncalibrated(ConfidenceThreshold::literal(0.6));
 /// let out = gate.apply(FeedbackVerdictSource::Judge, true, "repetition", 0.4);
 /// assert_eq!(out.decision, FeedbackGateDecision::Suppressed);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct FeedbackGate {
-    threshold: f32,
+    threshold: ConfidenceThreshold,
     calibration: ConfidenceCalibration,
 }
 
 impl FeedbackGate {
     /// Build a gate from a threshold and a calibration curve.
     #[must_use]
-    pub const fn new(threshold: f32, calibration: ConfidenceCalibration) -> Self {
+    pub const fn new(threshold: ConfidenceThreshold, calibration: ConfidenceCalibration) -> Self {
         Self {
             threshold,
             calibration,
@@ -205,7 +206,7 @@ impl FeedbackGate {
 
     /// Build a gate with the identity calibration.
     #[must_use]
-    pub const fn uncalibrated(threshold: f32) -> Self {
+    pub const fn uncalibrated(threshold: ConfidenceThreshold) -> Self {
         Self::new(threshold, ConfidenceCalibration::identity())
     }
 
@@ -219,7 +220,7 @@ impl FeedbackGate {
         raw_confidence: f32,
     ) -> GateOutcome {
         let confidence = self.calibration.calibrate(raw_confidence);
-        let decision = if is_correction && confidence < self.threshold {
+        let decision = if is_correction && confidence < self.threshold.get() {
             FeedbackGateDecision::Suppressed
         } else {
             FeedbackGateDecision::unsuppressed(is_correction)
@@ -229,7 +230,7 @@ impl FeedbackGate {
             kind,
             raw_confidence,
             confidence,
-            self.threshold,
+            self.threshold.get(),
             decision,
         );
         GateOutcome {
@@ -451,7 +452,7 @@ mod tests {
             .classify_feedback(
                 "no that's wrong",
                 "previous response",
-                &FeedbackGate::uncalibrated(0.6),
+                &FeedbackGate::uncalibrated(ConfidenceThreshold::literal(0.6)),
             )
             .await
             .unwrap();
@@ -479,7 +480,7 @@ mod tests {
             .classify_feedback(
                 "maybe try differently",
                 "response",
-                &FeedbackGate::uncalibrated(0.6),
+                &FeedbackGate::uncalibrated(ConfidenceThreshold::literal(0.6)),
             )
             .await
             .unwrap();
@@ -509,7 +510,11 @@ mod tests {
     }
 
     async fn calibration_log(verdict_json: &str, threshold: f32) -> String {
-        calibration_log_with_gate(verdict_json, &FeedbackGate::uncalibrated(threshold)).await
+        calibration_log_with_gate(
+            verdict_json,
+            &FeedbackGate::uncalibrated(ConfidenceThreshold::literal(threshold)),
+        )
+        .await
     }
 
     async fn calibration_log_with_gate(verdict_json: &str, gate: &FeedbackGate) -> String {
@@ -571,7 +576,7 @@ mod tests {
 
     fn curved_gate() -> FeedbackGate {
         let curve = ConfidenceCalibration::new(vec![[0.0, 0.0], [0.8, 0.4], [1.0, 1.0]]).unwrap();
-        FeedbackGate::new(0.6, curve)
+        FeedbackGate::new(ConfidenceThreshold::literal(0.6), curve)
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -589,7 +594,7 @@ mod tests {
 
     #[test]
     fn identity_gate_matches_plain_threshold_for_finite_inputs() {
-        let gate = FeedbackGate::uncalibrated(0.6);
+        let gate = FeedbackGate::uncalibrated(ConfidenceThreshold::literal(0.6));
         for i in -10..=20_i16 {
             let raw = f32::from(i) / 10.0;
             let out = gate.apply(FeedbackVerdictSource::Judge, true, "repetition", raw);
@@ -606,13 +611,13 @@ mod tests {
     fn calibration_moves_a_boundary_decision_to_passed() {
         let curve = ConfidenceCalibration::new(vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]]).unwrap();
         let raw = 0.5;
-        let plain = FeedbackGate::uncalibrated(0.6).apply(
+        let plain = FeedbackGate::uncalibrated(ConfidenceThreshold::literal(0.6)).apply(
             FeedbackVerdictSource::Judge,
             true,
             "repetition",
             raw,
         );
-        let calibrated = FeedbackGate::new(0.6, curve).apply(
+        let calibrated = FeedbackGate::new(ConfidenceThreshold::literal(0.6), curve).apply(
             FeedbackVerdictSource::Judge,
             true,
             "repetition",
@@ -624,7 +629,7 @@ mod tests {
 
     #[test]
     fn nan_confidence_is_suppressed() {
-        let out = FeedbackGate::uncalibrated(0.6).apply(
+        let out = FeedbackGate::uncalibrated(ConfidenceThreshold::literal(0.6)).apply(
             FeedbackVerdictSource::Judge,
             true,
             "repetition",

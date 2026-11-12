@@ -67,6 +67,8 @@
 //! # }
 //! ```
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 pub mod admission;
 pub mod cascade;
 pub mod command;

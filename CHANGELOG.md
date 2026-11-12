@@ -21,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-a2a`: response body size caps for agent cards, JSON-RPC responses, SSE events and error bodies (`A2aError::BodyTooLarge`) (#7007)
 - `zeph-llm`, `zeph-channels`, `zeph-tui`, `zeph-core`, `zeph`: typed `StatusUpdate { Set, Clear }` and `Channel::clear_status`; `Status("")` no longer clears the TUI or chat channels (breaking: status producers send `StatusUpdate`, TUI gains `AgentEvent::ClearStatus`); `json_cli`/ACP/serve wire unchanged, CLI stderr no longer prints a blank `[status]` line (#7007)
 - `zeph-config`: `Fraction` unit-interval float type validated at parse time, with no `Default`; replaces the `de_unit_*` and `validate()` float checks (breaking: threshold fields change type; invalid values fail at load) (#7007)
+- `zeph-llm`, `zeph-mcp`: `StatusSender::urgent_notice` second queue so MCP OAuth URLs survive notice bursts (#7023) (#PR)
+- `zeph`: `zeph doctor` flags a group- or world-accessible default log directory and `--fix` restricts it to owner-only (#6944) (#PR)
 
 ### Changed
 
@@ -60,6 +62,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-skills`, `zeph-common`, `zeph-core`: validated `SkillCategory` for `SkillMeta.category` (invalid values still warn and are dropped); `GeneratedSkill.name` field replaced by `name()` (breaking) (#7007)
 - `zeph-plugins`: `IntegrityRegistry::verify(path)` replaced by `verify_bytes`, hashing the bytes the overlay parses (breaking) (#7007)
 - `zeph-subagent`: one aggregated warning per `filter_skills` call instead of one per excluded skill (#7007)
+- `zeph-core`, `zeph-channels`, `zeph-tui`, `zeph`: `Channel::send_diff` and `AgentEvent::DiffReady` removed; diffs reach the TUI only through `ToolOutputEvent.diff` (breaking) (#6973) (#PR)
+- `zeph-memory`, `zeph-db`: `graph_edges.source_message_id` is the single message-provenance column; migration 119 backfills it from `episode_id` and replaces the partial index (#7015) (#PR)
+- `zeph-common`, `zeph-sanitizer`: `ContentTrustLevel` is an alias of `TurnContextTrust`, which is now exhaustive; `ContentTrustLevel::from_ordinal` removed, use `from_u8_or_untrusted` (breaking) (#6972) (#PR)
+- `zeph-agent-feedback`, `zeph-llm`, `zeph-core`: `FeedbackDetector::new`, `FeedbackGate::new` and `FeedbackGate::uncalibrated` take `ConfidenceThreshold` instead of `f32` (breaking) (#6942) (#PR)
+- `zeph-subagent`, `zeph-core`, `zeph`: `SubagentJsonl::new` takes a `TranscriptTrustSchema`; `TranscriptMeta` and `SubAgentHandle` gain `trust_schema`/`resumed_from`; transcripts without a per-result trust marker import as `external_untrusted` (breaking) (#7022) (#PR)
+- `zeph-skills`: `SkillGenerationRequest.category` is `Option<SkillCategory>` (breaking) (#7004) (#PR)
+- `zeph-memory`: session digests and compression-failure pairs are stored credential-scrubbed only, paths kept (#6976) (#PR)
+- `zeph-plugins`, `zeph`: plugins loaded without a recorded integrity digest still apply and are listed as unverified in `zeph plugin list --overlay` and `/plugins overlay` (#6977) (#PR)
+- `docs`: spec 010 unsafe registry covers binary-crate sites and records the `runner.rs` `set_var` violation (#6974) (#PR)
+- `workspace`: `clippy::string_slice` enabled in the remaining library crates and the root binary; unchecked byte-offset string slices replaced with boundary-safe APIs (#7020) (#PR)
+- `workspace`: use `Path::is_empty`, `bool::ok_or` and `Duration::from_hours` where the MSRV allows (#6992) (#PR)
 
 ### Fixed
 
@@ -187,6 +200,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-subagent`, `zeph-tools`: `check_messages` peer-relayed content is tagged `ExternalUntrusted` in the transcript (new `ClaimSource::PeerMessage`) (#7013, #7019)
 - `zeph-llm`, `zeph-mcp`, `zeph-tui`, `zeph`: OAuth URLs are delivered as ordered notices instead of colliding in one status slot, and a turn clear no longer hides a background status (#7016, #7019)
 - `zeph-tui`, `zeph-llm`, `zeph-core`: background status keeps the spinner but no longer makes the agent look busy (Ctrl-C, stall detection); set-only status producers use scoped statuses or notices (#7016, #7019)
+- `zeph-tui`: foreground sub-agent completion clears the turn status lane and background completion no longer touches it (#7024) (#PR)
+- `zeph-channels`: the JSON CLI channel emits `queue: N` only when the queue depth changes (#6945) (#PR)
+- `zeph-tools`: shell exit 126/127 and text-refined non-zero exits write an audit error entry (#7006) (#PR)
+- `zeph-core`: disabled `request_compaction` and inactive or rejected `skill_state_patch` replies carry `ToolStatus::Failed` (#7005) (#PR)
+- `zeph-common`: AWS STS access key ids glued to underscores are redacted (#6948) (#PR)
+- `zeph-memory`: clippy `assert_is_empty` lints in the Postgres integration tests (#6966) (#PR)
+- `workspace`: regression tests for MCP `isError` status, chat `clear_status`, the recall causal error branch and goal id truncation (#7017) (#PR)
+
+### Security
+
+- `zeph-common`: skill name and category validation errors escape control characters in the echoed value (#6949) (#PR)
+- `zeph-plugins`, `zeph-common`: the plugin integrity lock file opens with `O_NOFOLLOW`/`O_NONBLOCK` and is checked and chmodded on the same descriptor (#6960) (#PR)
+- `zeph`: rotated log files are pre-created owner-only in custom log directories (#6950) (#PR)
+- `zeph-core`: sub-agent completion and status notices are masked through the secret registry and PII filter like live forwarding (#7021) (#PR)
+
 
 ## [0.22.5] - 2026-09-18
 

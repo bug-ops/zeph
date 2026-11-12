@@ -426,6 +426,10 @@ fn top_level_lines(doc: &str) -> impl Iterator<Item = (usize, &str)> {
 }
 
 /// Byte index of the closing `delim` in `rest`; backslash escapes are honoured in `"""` strings.
+#[expect(
+    clippy::string_slice,
+    reason = "offsets come from char_indices on the same string"
+)]
 fn find_string_close(rest: &str, delim: &str) -> Option<usize> {
     let mut escaped = false;
     for (i, c) in rest.char_indices() {
@@ -444,6 +448,10 @@ fn find_string_close(rest: &str, delim: &str) -> Option<usize> {
 ///
 /// Quoted keys and values are skipped as units, so a `#` or bracket inside quotes (`[a."x#1"]`)
 /// neither starts a comment nor changes the depth.
+#[expect(
+    clippy::string_slice,
+    reason = "offsets come from find on the same string and delimiters are ASCII"
+)]
 fn scan_line(line: &str, mut state: ScanState) -> ScanState {
     let mut rest = line;
     while !rest.is_empty() {
@@ -483,6 +491,10 @@ fn scan_line(line: &str, mut state: ScanState) -> ScanState {
 }
 
 /// Remainder of a single-line string after its opening quote `q`.
+#[expect(
+    clippy::string_slice,
+    reason = "offsets come from char_indices on the same string"
+)]
 fn skip_single_line_string<'a>(tail: &'a str, q: &str) -> &'a str {
     let mut escaped = false;
     for (i, c) in tail.char_indices() {
@@ -503,6 +515,10 @@ fn skip_single_line_string<'a>(tail: &'a str, q: &str) -> &'a str {
 ///
 /// Used to scope idempotency guards to a single section so that a comment present in
 /// one section does not suppress insertion into a different section with the same key name.
+#[expect(
+    clippy::string_slice,
+    reason = "offsets come from find and section_span on the same string"
+)]
 fn section_body<'a>(doc: &'a str, section: &str) -> &'a str {
     section_span(doc, section).map_or("", |span| {
         let header_end = doc[span.start..]
@@ -519,6 +535,10 @@ fn section_body<'a>(doc: &'a str, section: &str) -> &'a str {
 /// `toml_edit` decor round-trip loss. The header is matched at the start of a line outside
 /// multi-line strings; when it is absent (the table is implicit, or only mentioned in a comment
 /// or string) the text is appended at the end of the file.
+#[expect(
+    clippy::string_slice,
+    reason = "insert_pos comes from section_span on the same string"
+)]
 fn insert_after_section(raw: &str, section_name: &str, text: &str) -> String {
     let insert_pos = section_span(raw, section_name).map_or(raw.len(), |span| span.end);
     let mut out = String::with_capacity(raw.len() + text.len() + 1);
@@ -677,11 +697,10 @@ fn extract_section_name(header: &str) -> &str {
     // Strip leading `# ` for commented headers.
     let trimmed = header.trim().trim_start_matches("# ");
     // Strip `[` and `]`.
-    if trimmed.starts_with('[') && trimmed.contains(']') {
-        let inner = &trimmed[1..];
-        if let Some(end) = inner.find(']') {
-            return &inner[..end];
-        }
+    if let Some(inner) = trimmed.strip_prefix('[')
+        && let Some((name, _)) = inner.split_once(']')
+    {
+        return name;
     }
     trimmed
 }
@@ -720,11 +739,11 @@ fn split_into_sections(toml_str: &str) -> Vec<(String, String)> {
 /// Top-level means `[name]` with no dots. Commented headers like `# [name]`
 /// are NOT treated as section boundaries — they are migrator-generated hints.
 fn is_top_level_section_header(line: &str) -> bool {
-    if line.starts_with('[')
-        && !line.starts_with("[[")
-        && let Some(end) = line.find(']')
+    if !line.starts_with("[[")
+        && let Some(inner) = line.strip_prefix('[')
+        && let Some((name, _)) = inner.split_once(']')
     {
-        return !line[1..end].contains('.');
+        return !name.contains('.');
     }
     false
 }

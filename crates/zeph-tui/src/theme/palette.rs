@@ -38,12 +38,17 @@ impl Rgb {
                 hex.len()
             ));
         }
-        let r = u8::from_str_radix(&hex[0..2], 16)
-            .map_err(|e| format!("invalid red component in '{s}': {e}"))?;
-        let g = u8::from_str_radix(&hex[2..4], 16)
-            .map_err(|e| format!("invalid green component in '{s}': {e}"))?;
-        let b = u8::from_str_radix(&hex[4..6], 16)
-            .map_err(|e| format!("invalid blue component in '{s}': {e}"))?;
+        let component = |range: std::ops::Range<usize>, name: &str| {
+            hex.get(range)
+                .ok_or_else(|| format!("invalid {name} component in '{s}': not ASCII hex"))
+                .and_then(|digits| {
+                    u8::from_str_radix(digits, 16)
+                        .map_err(|e| format!("invalid {name} component in '{s}': {e}"))
+                })
+        };
+        let r = component(0..2, "red")?;
+        let g = component(2..4, "green")?;
+        let b = component(4..6, "blue")?;
         Ok(Self(r, g, b))
     }
 }

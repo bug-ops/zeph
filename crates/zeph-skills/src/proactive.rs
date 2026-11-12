@@ -29,6 +29,9 @@ use crate::evaluator::{SkillEvaluationRequest, SkillEvaluator, SkillVerdict};
 use crate::generator::{SkillGenerationRequest, SkillGenerator};
 use crate::registry::SkillRegistry;
 
+/// Category hint attached to proactively generated skills; must satisfy `SkillCategory::parse`.
+const EXPLORE_CATEGORY: &str = "dev";
+
 /// Keyword → domain mapping used by [`ProactiveExplorer::classify`].
 ///
 /// Each entry is `(keyword, domain_slug)`. Keyword matching is case-insensitive
@@ -215,7 +218,7 @@ impl ProactiveExplorer {
 
         let req = SkillGenerationRequest {
             description: description.clone(),
-            category: Some("dev".into()),
+            category: zeph_common::SkillCategory::parse(EXPLORE_CATEGORY).ok(),
             allowed_tools: vec![],
         };
 
@@ -279,6 +282,11 @@ fn stamp_proactive_domain(skill_md: &str, domain: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explore_category_is_a_valid_skill_category() {
+        assert!(zeph_common::SkillCategory::parse(EXPLORE_CATEGORY).is_ok());
+    }
 
     #[test]
     fn classify_rust_query() {

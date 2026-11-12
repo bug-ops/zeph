@@ -2679,6 +2679,63 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn apply_five_signal_scoring_uses_neutral_causal_score_when_bfs_fails() {
+        use std::sync::Arc;
+        use zeph_config::memory::FiveSignalConfig;
+
+        use crate::five_signal::causal_distance::CausalDistanceComputer;
+
+        let store = crate::store::SqliteStore::new(":memory:").await.unwrap();
+        let cid = store.create_conversation().await.unwrap();
+        let message = store.save_message(cid, "user", "m").await.unwrap();
+
+        // The graph store sits on a closed pool, so the causal BFS fails while the access
+        // frequency and `created_at` lookups on the open pool still succeed.
+        let broken = crate::store::SqliteStore::new(":memory:").await.unwrap();
+        let graph_store = Arc::new(crate::graph::GraphStore::new(broken.pool().clone()));
+        broken.pool().close().await;
+
+        let config = FiveSignalConfig {
+            w_recency: 0.0,
+            w_relevance: 0.0,
+            w_frequency: 0.0,
+            w_causal: 1.0,
+            w_novelty: 0.0,
+            ..FiveSignalConfig::default()
+        };
+        let neutral = CausalDistanceComputer::distance_to_score(config.neutral_causal_distance);
+        let fs = crate::five_signal::FiveSignalRuntime::new(
+            config,
+            store.pool().clone(),
+            graph_store,
+            None,
+            0,
+            "sess-causal-err",
+        );
+        let goal = crate::types::EntityId::from_payload(&serde_json::json!(1)).unwrap();
+        assert!(
+            fs.causal_computer
+                .causal_distances(Some(goal), &[message])
+                .await
+                .is_err(),
+            "premise: the closed graph pool must make the BFS fail"
+        );
+
+        let memory = make_semantic_memory_with_sqlite(store);
+        let mut ranked = vec![(message, 0.5)];
+        memory
+            .apply_five_signal_scoring(&mut ranked, &fs, Some(goal))
+            .await;
+
+        assert!(
+            (ranked[0].1 - neutral).abs() < 1e-9,
+            "a failing causal BFS must yield the neutral causal score {neutral}, got {}",
+            ranked[0].1
+        );
+    }
+
     #[test]
     fn qdrant_warn_rate_limit_shared_across_concurrent_sites() {
         // All 3 WARN sites (bg embed_regular/embed_tool/embed_category) share one

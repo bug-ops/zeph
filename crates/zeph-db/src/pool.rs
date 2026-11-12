@@ -215,11 +215,11 @@ pub fn redact_url(url: &str) -> Option<String> {
                 return Some("[redacted]".to_string());
             }
             let without_userinfo = parsed.as_str();
-            let host_start = without_userinfo.find("://")? + "://".len();
+            let (scheme, rest) = without_userinfo.split_once("://")?;
             let mut redacted = String::with_capacity(without_userinfo.len() + 11);
-            redacted.push_str(&without_userinfo[..host_start]);
-            redacted.push_str("[redacted]@");
-            redacted.push_str(&without_userinfo[host_start..]);
+            redacted.push_str(scheme);
+            redacted.push_str("://[redacted]@");
+            redacted.push_str(rest);
             Some(redacted)
         }
         Err(_) if url.contains('@') || contains_password_assignment(url) => {
@@ -233,6 +233,10 @@ pub fn redact_url(url: &str) -> Option<String> {
 /// libpq query-param URIs (`?password=...`) and key-value DSNs
 /// (`host=... password=...`). Whitespace between `password` and `=` is
 /// tolerated since libpq DSNs allow it (`password = secret`).
+#[expect(
+    clippy::string_slice,
+    reason = "offsets come from find on the same string"
+)]
 fn contains_password_assignment(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
     let mut offset = 0;

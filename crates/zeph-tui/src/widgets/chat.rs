@@ -443,12 +443,18 @@ fn highlight_span(
                 .map_or(content.len(), |(byte, _)| *byte);
             if match_start > seg_start {
                 out.push(Span::styled(
-                    content[seg_start..match_start].to_string(),
+                    content
+                        .get(seg_start..match_start)
+                        .unwrap_or_default()
+                        .to_string(),
                     span.style,
                 ));
             }
             out.push(Span::styled(
-                content[match_start..match_end].to_string(),
+                content
+                    .get(match_start..match_end)
+                    .unwrap_or_default()
+                    .to_string(),
                 span.style.patch(highlight_style),
             ));
             seg_start = match_end;
@@ -458,7 +464,10 @@ fn highlight_span(
         }
     }
     if seg_start < content.len() {
-        out.push(Span::styled(content[seg_start..].to_string(), span.style));
+        out.push(Span::styled(
+            content.get(seg_start..).unwrap_or_default().to_string(),
+            span.style,
+        ));
     }
     if out.is_empty() {
         out.push(Span::styled(content.to_string(), span.style));
@@ -994,14 +1003,13 @@ fn render_with_thinking(
 
     while !remaining.is_empty() {
         if in_thinking {
-            if let Some(end) = remaining.find("</think>") {
-                let segment = &remaining[..end];
+            if let Some((segment, after)) = remaining.split_once("</think>") {
                 if !segment.trim().is_empty() {
                     let (rendered, collected) = render_md(segment, theme.thinking_message, theme);
                     all_lines.extend(rendered);
                     md_links_buf.extend(collected);
                 }
-                remaining = &remaining[end + "</think>".len()..];
+                remaining = after;
                 in_thinking = false;
             } else {
                 if !remaining.trim().is_empty() {
@@ -1011,14 +1019,13 @@ fn render_with_thinking(
                 }
                 break;
             }
-        } else if let Some(start) = remaining.find("<think>") {
-            let segment = &remaining[..start];
+        } else if let Some((segment, after)) = remaining.split_once("<think>") {
             if !segment.trim().is_empty() {
                 let (rendered, collected) = render_md(segment, base_style, theme);
                 all_lines.extend(rendered);
                 md_links_buf.extend(collected);
             }
-            remaining = &remaining[start + "<think>".len()..];
+            remaining = after;
             in_thinking = true;
         } else {
             let (rendered, collected) = render_md(remaining, base_style, theme);

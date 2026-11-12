@@ -137,10 +137,14 @@ impl<C: crate::channel::Channel> Agent<C> {
             .unwrap_or_default();
         let conv_id_bg = conv_id;
         let gate = self.services.learning_engine.config.as_ref().map_or_else(
-            || zeph_llm::classifier::llm::FeedbackGate::uncalibrated(0.6),
+            || {
+                zeph_llm::classifier::llm::FeedbackGate::uncalibrated(
+                    zeph_config::DEFAULT_CORRECTION_CONFIDENCE,
+                )
+            },
             |c| {
                 zeph_llm::classifier::llm::FeedbackGate::new(
-                    c.correction_confidence_threshold.get(),
+                    c.correction_confidence_threshold,
                     c.correction_confidence_calibration.clone(),
                 )
             },
@@ -618,7 +622,7 @@ mod tests {
             classifier,
             "no that's wrong".to_owned(),
             "previous response".to_owned(),
-            FeedbackGate::uncalibrated(0.6),
+            FeedbackGate::uncalibrated(zeph_config::DEFAULT_CORRECTION_CONFIDENCE),
             Duration::from_millis(20),
             None,
             None,
@@ -649,7 +653,7 @@ mod tests {
             classifier,
             "no that's wrong".to_owned(),
             "previous response".to_owned(),
-            FeedbackGate::uncalibrated(0.6),
+            FeedbackGate::uncalibrated(zeph_config::DEFAULT_CORRECTION_CONFIDENCE),
             Duration::from_millis(200),
             None,
             None,

@@ -40,6 +40,7 @@ use tokio::time::Instant;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
+use zeph_config::ConfidenceThreshold;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::classifier::llm::{FeedbackGate, FeedbackGateDecision, FeedbackVerdictSource};
 use zeph_llm::provider::{LlmProvider as _, Message, MessageMetadata, Role};
@@ -398,7 +399,7 @@ pub struct CorrectionSignal {
 /// Detects implicit corrections in user messages without an LLM call.
 #[derive(Clone)]
 pub struct FeedbackDetector {
-    confidence_threshold: f32,
+    confidence_threshold: ConfidenceThreshold,
 }
 
 impl FeedbackDetector {
@@ -406,7 +407,7 @@ impl FeedbackDetector {
     ///
     /// Signals below `confidence_threshold` are suppressed.
     #[must_use]
-    pub fn new(confidence_threshold: f32) -> Self {
+    pub const fn new(confidence_threshold: ConfidenceThreshold) -> Self {
         Self {
             confidence_threshold,
         }
@@ -428,22 +429,22 @@ impl FeedbackDetector {
         // are classified as SelfCorrection due to priority order — a conservative choice that
         // avoids penalizing skills when intent is ambiguous.
         if let Some(signal) = Self::check_self_correction(user_message)
-            && signal.confidence >= self.confidence_threshold
+            && signal.confidence >= self.confidence_threshold.get()
         {
             return Some(signal);
         }
         if let Some(signal) = Self::check_explicit_rejection(user_message)
-            && signal.confidence >= self.confidence_threshold
+            && signal.confidence >= self.confidence_threshold.get()
         {
             return Some(signal);
         }
         if let Some(signal) = Self::check_alternative_request(user_message)
-            && signal.confidence >= self.confidence_threshold
+            && signal.confidence >= self.confidence_threshold.get()
         {
             return Some(signal);
         }
         if let Some(signal) = Self::check_repetition(user_message, previous_messages)
-            && signal.confidence >= self.confidence_threshold
+            && signal.confidence >= self.confidence_threshold.get()
         {
             return Some(signal);
         }
@@ -775,7 +776,7 @@ mod tests {
     use super::*;
 
     fn detector() -> FeedbackDetector {
-        FeedbackDetector::new(0.6)
+        FeedbackDetector::new(ConfidenceThreshold::literal(0.6))
     }
 
     // ── English: existing tests (unchanged) ───────────────────────────────
@@ -877,7 +878,7 @@ mod tests {
     #[test]
     fn confidence_threshold_filters_low_confidence() {
         // AlternativeRequest fires at 0.70 — threshold 0.8 should suppress it
-        let d = FeedbackDetector::new(0.80);
+        let d = FeedbackDetector::new(ConfidenceThreshold::literal(0.80));
         assert!(d.detect("instead use git rebase", &[]).is_none());
     }
 
@@ -965,7 +966,7 @@ mod tests {
 
     #[test]
     fn confidence_threshold_blocks_repetition() {
-        let d = FeedbackDetector::new(0.80);
+        let d = FeedbackDetector::new(ConfidenceThreshold::literal(0.80));
         let prev = vec!["list all files in the repo"];
         assert!(d.detect("list all files in the repo", &prev).is_none());
     }
@@ -1965,7 +1966,7 @@ mod tests {
                 &provider,
                 "user msg",
                 "assistant resp",
-                &FeedbackGate::uncalibrated(0.5),
+                &FeedbackGate::uncalibrated(ConfidenceThreshold::literal(0.5)),
                 Duration::from_secs(30),
             )
             .await
@@ -2002,7 +2003,7 @@ mod tests {
 
     #[test]
     fn detect_short_message_below_threshold() {
-        let d = FeedbackDetector::new(0.6);
+        let d = FeedbackDetector::new(ConfidenceThreshold::literal(0.6));
         let msg = "no that's wrong";
         assert!(msg.len() < 4096);
         let signal = d.detect(msg, &[]);
@@ -2012,7 +2013,7 @@ mod tests {
 
     #[test]
     fn detect_long_message_above_threshold_same_result() {
-        let d = FeedbackDetector::new(0.6);
+        let d = FeedbackDetector::new(ConfidenceThreshold::literal(0.6));
         // Build a message > 4096 bytes that still contains a rejection phrase.
         let padding = "a ".repeat(2100); // 4200 bytes
         let long_msg = format!("no that's wrong {padding}");
@@ -2027,7 +2028,7 @@ mod tests {
 
     #[test]
     fn detect_long_neutral_message_returns_none() {
-        let d = FeedbackDetector::new(0.6);
+        let d = FeedbackDetector::new(ConfidenceThreshold::literal(0.6));
         let neutral = "please ".repeat(800); // ~5600 bytes, no rejection phrase
         assert!(neutral.len() > 4096);
         let signal = d.detect(&neutral, &[]);
@@ -2072,7 +2073,7 @@ mod tests {
             &provider,
             "secret user text",
             "assistant text",
-            &FeedbackGate::uncalibrated(threshold),
+            &FeedbackGate::uncalibrated(ConfidenceThreshold::literal(threshold)),
             Duration::from_secs(5),
         )
         .await

@@ -72,7 +72,7 @@ pub(crate) async fn handle_skill_command(
             println!(
                 "Installed skill \"{}\" (hash: {}..., trust: quarantined)",
                 result.name,
-                &result.blake3_hash[..8]
+                result.blake3_hash.get(..8).unwrap_or(&result.blake3_hash)
             );
 
             let skill_md = managed_dir.join(&result.name).join("SKILL.md");
@@ -163,7 +163,10 @@ pub(crate) async fn handle_skill_command(
                             .map_err(|e| anyhow::anyhow!("hash update failed: {e}"))?;
                     }
                     None => {
-                        println!("{name}: no stored hash (hash: {}...)", &current_hash[..8]);
+                        println!(
+                            "{name}: no stored hash (hash: {}...)",
+                            current_hash.get(..8).unwrap_or(&current_hash)
+                        );
                     }
                 }
             } else {
@@ -438,7 +441,7 @@ pub(crate) async fn handle_skill_command(
                 let prompt = build_promotion_prompt(&parent_body, &heuristics);
                 println!(
                     "  {skill_name}: {count} heuristics, batch_hash={batch_hash:.8}…\n  Prompt preview (first 200 chars): {}…",
-                    &prompt[..prompt.len().min(200)]
+                    zeph_common::text::truncate_to_bytes_ref(&prompt, 200)
                 );
 
                 // Dry-run: show what would be evaluated. A live LLM call requires
@@ -639,7 +642,7 @@ async fn registry_get_with(
     println!(
         "Installed skill \"{}\" from registry {registry_id:?} (hash: {}..., trust: quarantined)",
         result.name,
-        &result.blake3_hash[..8]
+        result.blake3_hash.get(..8).unwrap_or(&result.blake3_hash)
     );
 
     let skill_md = managed_dir.join(&result.name).join("SKILL.md");

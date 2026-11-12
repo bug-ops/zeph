@@ -35,6 +35,7 @@ use std::sync::Arc;
 
 use serde_json::Value as JsonValue;
 use zeph_agent_persistence::graph::build_graph_extraction_config;
+use zeph_common::trust_level::TranscriptTrustSchema;
 use zeph_core::config::Config;
 use zeph_core::vault::Secret;
 use zeph_llm::any::AnyProvider;
@@ -912,6 +913,72 @@ fn build_shared_validator(
     }))
 }
 
+/// Upper bound on a transcript meta sidecar; a real one is a few hundred bytes.
+const MAX_SIDECAR_BYTES: u64 = 64 * 1024;
+
+/// Trust-marker format of a transcript, read from its meta sidecar next to the JSONL file.
+///
+/// Returns the schema recorded by the sidecar. Fail closed: a missing,
+/// unreadable, oversized or unparseable sidecar, one resolving outside `root` (INV-6), one that
+/// is not a regular file, or one written before per-result trust tagging yields
+/// `Legacy` so the transcript imports as external content.
+async fn transcript_trust_schema(root: &Path, path: &Path, task_id: &str) -> TranscriptTrustSchema {
+    let Some(sidecar) = path
+        .parent()
+        .map(|dir| dir.join(format!("{task_id}.meta.json")))
+    else {
+        return TranscriptTrustSchema::Legacy;
+    };
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || read_sidecar_schema(&root, &sidecar))
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(TranscriptTrustSchema::Legacy)
+}
+
+/// The single per-run summary line for transcripts imported without a per-result trust marker,
+/// or `None` when every transcript carried one.
+fn unmarked_transcripts_warning(schemas: &[TranscriptTrustSchema]) -> Option<String> {
+    let unmarked = schemas
+        .iter()
+        .filter(|s| **s == TranscriptTrustSchema::Legacy)
+        .count();
+    (unmarked > 0).then(|| {
+        format!(
+            "[WARN] {unmarked} transcript(s) without a per-result trust marker imported as \
+             external_untrusted"
+        )
+    })
+}
+
+/// Bounded, root-confined read of a meta sidecar; `None` on any refusal.
+///
+/// The path is canonicalized (so a symlink to `/dev/zero` or a file outside the project is
+/// rejected), must be a regular file (so a FIFO never blocks) and is read through a size cap.
+fn read_sidecar_schema(root: &Path, sidecar: &Path) -> Option<TranscriptTrustSchema> {
+    use std::io::Read as _;
+
+    let canonical = sidecar.canonicalize().ok()?;
+    if !canonical.starts_with(root) {
+        return None;
+    }
+    let file = std::fs::File::open(&canonical).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_SIDECAR_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_SIDECAR_BYTES {
+        return None;
+    }
+    serde_json::from_slice::<zeph_subagent::TranscriptMeta>(&bytes)
+        .ok()
+        .map(|meta| meta.trust_schema)
+}
+
 /// Execute the graph-sink ingest path for `--source subagents` (spec-067 Phase 2, FR-020..024).
 ///
 /// Discovers subagent JSONL transcripts under the project-anchored transcript dir,
@@ -1029,11 +1096,14 @@ async fn run_graph_ingest(
     let batch_id = ImportBatchId::new();
     let mut documents = Vec::new();
     let mut parse_errors: Vec<String> = Vec::new();
+    let mut schemas: Vec<TranscriptTrustSchema> = Vec::new();
 
     for (task_id, path) in &transcript_files {
         match tokio::fs::read_to_string(path).await {
             Ok(raw) => {
-                let adapter = SubagentJsonl::new(task_id.as_str());
+                let schema = transcript_trust_schema(root, path, task_id).await;
+                schemas.push(schema);
+                let adapter = SubagentJsonl::new(task_id.as_str(), schema);
                 match adapter.parse(&raw, &batch_id) {
                     Ok(docs) => documents.extend(docs),
                     Err(e) => {
@@ -1045,6 +1115,11 @@ async fn run_graph_ingest(
                 parse_errors.push(format!("{}: read error: {e}", path.display()));
             }
         }
+    }
+
+    if let Some(warning) = unmarked_transcripts_warning(&schemas) {
+        println!("  {warning}");
+        println!();
     }
 
     if !parse_errors.is_empty() {
@@ -1269,7 +1344,7 @@ fn truncate_uri(uri: &str, max_len: usize) -> String {
         uri.to_owned()
     } else {
         let start = uri.floor_char_boundary(uri.len().saturating_sub(max_len - 1));
-        format!("…{}", &uri[start..])
+        format!("…{}", uri.get(start..).unwrap_or_default())
     }
 }
 
@@ -1819,7 +1894,7 @@ async fn handle_status(config_path: Option<&Path>) -> anyhow::Result<()> {
 
     let mut current_batch = String::new();
     for row in &rows {
-        let batch_short = &row.import_batch_id[..row.import_batch_id.len().min(8)];
+        let batch_short = zeph_common::text::truncate_to_bytes_ref(&row.import_batch_id, 8);
         let uri_display = truncate_uri(&row.source_uri, 55);
 
         if current_batch != row.import_batch_id {
@@ -1847,6 +1922,102 @@ async fn handle_status(config_path: Option<&Path>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── transcript_trust_schema ───────────────────────────────────────────────
+
+    fn write_sidecar(dir: &Path, id: &str, extra: &str) {
+        let json = format!(
+            r#"{{"agent_id":"{id}","agent_name":"bot","def_name":"bot","status":"Completed","started_at":"2026-01-01T00:00:00Z","turns_used":1{extra}}}"#
+        );
+        std::fs::write(dir.join(format!("{id}.meta.json")), json).unwrap();
+    }
+
+    #[tokio::test]
+    async fn transcript_trust_schema_reads_sidecar_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        write_sidecar(&root, "marked", r#","trust_schema":"per_result""#);
+        write_sidecar(&root, "old", "");
+        std::fs::write(root.join("broken.meta.json"), "{{{").unwrap();
+
+        let path = |id: &str| root.join(format!("{id}.jsonl"));
+        assert_eq!(
+            transcript_trust_schema(&root, &path("marked"), "marked").await,
+            TranscriptTrustSchema::PerResult
+        );
+        for id in ["old", "broken", "missing"] {
+            assert_eq!(
+                transcript_trust_schema(&root, &path(id), id).await,
+                TranscriptTrustSchema::Legacy,
+                "{id}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn transcript_trust_schema_refuses_symlink_outside_root_and_special_files() {
+        let outside = tempfile::tempdir().unwrap();
+        write_sidecar(outside.path(), "ext", r#","trust_schema":"per_result""#);
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("ext.meta.json"),
+            root.join("ext.meta.json"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("/dev/zero", root.join("zero.meta.json")).unwrap();
+
+        for id in ["ext", "zero"] {
+            assert_eq!(
+                transcript_trust_schema(&root, &root.join(format!("{id}.jsonl")), id).await,
+                TranscriptTrustSchema::Legacy,
+                "{id}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn transcript_trust_schema_refuses_oversized_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let padding = " ".repeat(usize::try_from(MAX_SIDECAR_BYTES).unwrap());
+        write_sidecar(
+            &root,
+            "big",
+            &format!(r#","trust_schema":"per_result"{padding}"#),
+        );
+
+        assert_eq!(
+            transcript_trust_schema(&root, &root.join("big.jsonl"), "big").await,
+            TranscriptTrustSchema::Legacy
+        );
+    }
+
+    #[test]
+    fn unmarked_warning_is_a_single_line_with_the_count() {
+        let legacy = [TranscriptTrustSchema::Legacy; 3];
+        let warning = unmarked_transcripts_warning(&legacy).unwrap();
+        assert_eq!(
+            warning,
+            "[WARN] 3 transcript(s) without a per-result trust marker imported as external_untrusted"
+        );
+        assert!(!warning.contains('\n'));
+
+        let mixed = [
+            TranscriptTrustSchema::PerResult,
+            TranscriptTrustSchema::Legacy,
+        ];
+        assert!(
+            unmarked_transcripts_warning(&mixed)
+                .unwrap()
+                .contains("1 transcript(s)")
+        );
+        assert_eq!(
+            unmarked_transcripts_warning(&[TranscriptTrustSchema::PerResult]),
+            None
+        );
+    }
 
     // ── truncate_uri ──────────────────────────────────────────────────────────
 

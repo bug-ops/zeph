@@ -195,7 +195,7 @@ fn chunk_children(
         let Some(child) = parent.named_child(i) else {
             continue;
         };
-        let child_text = &ctx.source[child.byte_range()];
+        let child_text = ctx.source.get(child.byte_range()).unwrap_or_default();
         let child_nws = non_ws_len(child_text);
 
         if child_nws > ctx.config.max_size {
@@ -242,7 +242,7 @@ fn flush_batch(ctx: &ChunkCtx<'_>, batch: &[Node], scope: &str, output: &mut Vec
 
     let start = batch[0].start_byte();
     let end = batch[batch.len() - 1].end_byte();
-    let code = &ctx.source[start..end];
+    let code = ctx.source.get(start..end).unwrap_or_default();
     let nws = non_ws_len(code);
 
     if nws < ctx.config.min_size {
@@ -309,7 +309,7 @@ fn extract_imports(source: &str, root: &Node, lang: Lang) -> String {
             continue;
         };
         if import_kinds.contains(&child.kind()) {
-            imports.push_str(&source[child.byte_range()]);
+            imports.push_str(source.get(child.byte_range()).unwrap_or_default());
             imports.push('\n');
         }
     }
@@ -320,7 +320,7 @@ fn extract_entity_name(node: &Node, source: &str) -> Option<String> {
     // tree-sitter-rust: impl_item uses "type" field, most others use "name"
     node.child_by_field_name("name")
         .or_else(|| node.child_by_field_name("type"))
-        .map(|n| source[n.byte_range()].to_string())
+        .map(|n| source.get(n.byte_range()).unwrap_or_default().to_string())
 }
 
 fn extend_scope(parent_scope: &str, node: &Node, source: &str) -> String {

@@ -272,11 +272,7 @@ fn print_fleet_table(sessions: &[AgentSessionRow]) {
     println!("{}", "-".repeat(100));
 
     for s in sessions {
-        let id = if s.id.len() > w_id {
-            &s.id[..w_id]
-        } else {
-            &s.id
-        };
+        let id = zeph_common::text::truncate_to_bytes_ref(&s.id, w_id);
         let model = truncate(&s.model, w_model);
         let tokens = format!(
             "{}/{}",

@@ -124,6 +124,73 @@ pub fn append_private(path: &Path) -> io::Result<File> {
     }
 }
 
+/// Open `path` for append like [`append_private`], but refuse symlinks, non-regular files and
+/// files owned by another user, with all checks made on the opened descriptor.
+///
+/// On Unix the file is opened once with `O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY` and mode
+/// 0o600, then `fstat`-checked (regular file, owned by the effective uid) and `fchmod`ed through
+/// the same descriptor, so there is no window between check and use. A pre-existing file with
+/// group or other bits is tightened. Other platforms delegate to [`append_private`].
+///
+/// # Errors
+///
+/// Returns [`io::ErrorKind::InvalidInput`] when `path` is a symlink, is not a regular file, or is
+/// owned by a different user; otherwise the underlying [`io::Error`].
+///
+/// # Examples
+///
+/// ```no_run
+/// use zeph_common::fs_secure;
+///
+/// let _lock = fs_secure::append_private_nofollow(std::path::Path::new("/tmp/registry.lock"))?;
+/// # Ok::<(), std::io::Error>(())
+/// ```
+pub fn append_private_nofollow(path: &Path) -> io::Result<File> {
+    #[cfg(unix)]
+    {
+        use rustix::fs::{FileType, Mode, OFlags};
+
+        let fd = rustix::fs::open(
+            path,
+            OFlags::WRONLY
+                | OFlags::APPEND
+                | OFlags::CREATE
+                | OFlags::NOFOLLOW
+                | OFlags::NONBLOCK
+                | OFlags::NOCTTY
+                | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .map_err(|e| {
+            if e == rustix::io::Errno::LOOP {
+                io::Error::new(io::ErrorKind::InvalidInput, "not a regular file (symlink)")
+            } else {
+                io::Error::from(e)
+            }
+        })?;
+        let stat = rustix::fs::fstat(&fd).map_err(io::Error::from)?;
+        if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a regular file",
+            ));
+        }
+        if stat.st_uid != rustix::process::geteuid().as_raw() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "file is owned by another user",
+            ));
+        }
+        let new_mode = Mode::from_raw_mode(stat.st_mode).difference(Mode::RWXG | Mode::RWXO);
+        rustix::fs::fchmod(&fd, new_mode).map_err(io::Error::from)?;
+        Ok(File::from(fd))
+    }
+    #[cfg(not(unix))]
+    {
+        append_private(path)
+    }
+}
+
 /// Write `data` to `path`, creating or truncating the file with mode 0o600 on Unix (owner-only DACL on Windows).
 ///
 /// This is a one-shot convenience wrapper around [`open_private_truncate`] that handles
@@ -433,6 +500,37 @@ mod tests {
         let file = root.path().join("f");
         std::fs::write(&file, b"x").unwrap();
         assert!(restrict_dir_to_owner(&file).is_err());
+    }
+
+    #[test]
+    fn append_private_nofollow_refuses_symlink_and_fifo_and_tightens_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        std::fs::write(&target, b"x").unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let err = append_private_nofollow(&link).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+
+        let fifo = dir.path().join("fifo");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(append_private_nofollow(&fifo).is_err());
+
+        let lock = dir.path().join("lock");
+        std::fs::write(&lock, b"").unwrap();
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
+        append_private_nofollow(&lock).unwrap();
+        assert_eq!(mode(&lock), 0o600);
+
+        let fresh = dir.path().join("fresh");
+        append_private_nofollow(&fresh).unwrap();
+        assert_eq!(mode(&fresh), 0o600);
     }
 
     #[test]

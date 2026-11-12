@@ -91,7 +91,7 @@ async fn resolve_prefers_named_entity_over_high_degree_hub() {
 }
 
 #[tokio::test]
-async fn episode_active_index_backs_the_production_lookup_query() {
+async fn source_message_active_index_backs_the_production_lookup_query() {
     let (_, store) = graph_memory().await;
     let sql = format!(
         "EXPLAIN QUERY PLAN {}",
@@ -105,7 +105,7 @@ async fn episode_active_index_backs_the_production_lookup_query() {
         .unwrap();
     assert!(
         plan.iter()
-            .any(|row| row.3.contains("idx_graph_edges_episode_active")),
+            .any(|row| row.3.contains("idx_graph_edges_source_message_active")),
         "episode lookup must use the partial index, plan: {plan:?}"
     );
 }

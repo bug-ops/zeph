@@ -75,7 +75,7 @@ pub enum PluginError {
     /// Raised by mutations so that damaged digests are never overwritten, and by the overlay
     /// verify path, which then skips every plugin rather than loading them unverified.
     #[error(
-        "plugin integrity registry {path} is unusable ({reason}); restore the file, or delete it and run plugin add for each installed plugin"
+        "plugin integrity registry {path} is unusable ({reason}); restore it from a backup, or delete it and run `zeph plugin add` for each installed plugin; until then plugin overlays load unverified"
     )]
     IntegrityRegistryCorrupt {
         /// Registry file that failed to load.

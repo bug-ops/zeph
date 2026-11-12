@@ -569,13 +569,7 @@ pub async fn run_focus_auto_consolidation(
     let truncated = if raw.len() <= max_chars {
         raw
     } else {
-        let boundary = raw
-            .char_indices()
-            .map(|(i, _)| i)
-            .take_while(|&i| i <= max_chars)
-            .last()
-            .unwrap_or(0);
-        raw[..boundary].to_owned()
+        zeph_common::text::truncate_to_bytes(&raw, max_chars)
     };
     if truncated.is_empty() {
         return Ok(None);

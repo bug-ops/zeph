@@ -10801,6 +10801,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zeph-common",
+ "zeph-config",
  "zeph-llm",
 ]
 

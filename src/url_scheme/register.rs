@@ -484,11 +484,10 @@ fn status_macos(current_exe: Option<&std::path::Path>) -> bool {
 /// It is not a general plist parser.
 #[cfg(target_os = "macos")]
 fn extract_zeph_exe_from_plist(content: &str) -> Option<String> {
-    let key_pos = content.find("<key>_ZephExePath</key>")?;
-    let after_key = &content[key_pos + "<key>_ZephExePath</key>".len()..];
-    let start = after_key.find("<string>")? + "<string>".len();
-    let end = after_key[start..].find("</string>")?;
-    let raw = after_key[start..start + end].trim();
+    let (_, after_key) = content.split_once("<key>_ZephExePath</key>")?;
+    let (_, after_open) = after_key.split_once("<string>")?;
+    let (raw, _) = after_open.split_once("</string>")?;
+    let raw = raw.trim();
     // Unescape the XML entities written by xml_escape() at registration time.
     Some(
         raw.replace("&amp;", "&")

@@ -208,7 +208,7 @@ impl zeph_memory::compression::promotion::SkillWriter for GeneratorSkillWriter {
             // Use the signature as idempotency key: skip write if skill dir already exists.
             let skill_dir = self.output_dir.join(format!(
                 "promoted-pattern-{}",
-                &signature[..12.min(signature.len())]
+                zeph_common::text::truncate_to_bytes_ref(&signature, 12)
             ));
             if skill_dir.exists() {
                 return Ok(());

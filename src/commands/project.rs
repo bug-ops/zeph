@@ -745,19 +745,18 @@ fn print_summary(freed: u64, qdrant_deleted: usize) {
 /// For `postgresql://user:secret@host/db` returns `postgresql://user:***@host/db`.
 /// URLs without a password (or without `@`) are returned unchanged.
 fn mask_postgres_url(url: &str) -> String {
-    let Some(at_pos) = url.find('@') else {
+    let Some((before_at, tail)) = url.split_once('@') else {
         return url.to_owned();
     };
-    let before_at = &url[..at_pos];
-    let after_at = &url[at_pos..]; // includes '@'
 
     // Only look for ':' after the authority prefix ("://").
-    let userinfo_start = before_at.find("://").map_or(0, |p| p + 3);
-    let userinfo = &before_at[userinfo_start..];
+    let (scheme_prefix, userinfo) = match before_at.split_once("://") {
+        Some((scheme, rest)) => (format!("{scheme}://"), rest),
+        None => (String::new(), before_at),
+    };
 
-    if let Some(colon_pos) = userinfo.rfind(':') {
-        let abs_colon = userinfo_start + colon_pos;
-        return format!("{}:***{}", &before_at[..abs_colon], after_at);
+    if let Some((user, _)) = userinfo.rsplit_once(':') {
+        return format!("{scheme_prefix}{user}:***@{tail}");
     }
 
     // No password colon in userinfo — return as-is.

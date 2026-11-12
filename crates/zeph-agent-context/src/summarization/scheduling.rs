@@ -311,8 +311,7 @@ fn recent_user_assistant_excerpt(
 pub fn parse_subgoal_extraction_response(response: &str) -> SubgoalExtractionResult {
     let trimmed = response.trim();
 
-    if let Some(current_pos) = trimmed.find("CURRENT:") {
-        let after_current = &trimmed[current_pos + "CURRENT:".len()..];
+    if let Some((_, after_current)) = trimmed.split_once("CURRENT:") {
         let (current_line_raw, remainder_raw) = after_current
             .split_once('\n')
             .map_or((after_current, ""), |(l, r)| (l, r));
@@ -328,8 +327,8 @@ pub fn parse_subgoal_extraction_response(response: &str) -> SubgoalExtractionRes
 
         let current = current_line.to_string();
 
-        let completed = if let Some(comp_pos) = remainder.find("COMPLETED:") {
-            let comp_text = remainder[comp_pos + "COMPLETED:".len()..].trim();
+        let completed = if let Some((_, comp_text)) = remainder.split_once("COMPLETED:") {
+            let comp_text = comp_text.trim();
             let comp_line = comp_text
                 .split('\n')
                 .next()
@@ -366,12 +365,7 @@ fn format_conversation_excerpt(recent: &[(Role, String)]) -> String {
             Role::System => "system",
             Role::User | _ => "user",
         };
-        let preview = if content.len() > 300 {
-            let end = content.floor_char_boundary(300);
-            &content[..end]
-        } else {
-            content.as_str()
-        };
+        let preview = zeph_common::text::truncate_to_bytes_ref(content, 300);
         let _ = std::fmt::write(&mut context_text, format_args!("[{role_str}]: {preview}\n"));
     }
     context_text
@@ -418,8 +412,10 @@ fn spawn_task_goal_extraction(
                             len = trimmed.len(),
                             "extract_task_goal: LLM returned oversized goal; truncating"
                         );
-                        let end = trimmed.floor_char_boundary(MAX_GOAL_CHARS);
-                        Some(trimmed[..end].to_string())
+                        Some(zeph_common::text::truncate_to_bytes(
+                            trimmed,
+                            MAX_GOAL_CHARS,
+                        ))
                     } else {
                         Some(trimmed.to_string())
                     }

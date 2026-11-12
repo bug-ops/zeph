@@ -573,9 +573,9 @@ fn extract_tool_name_from_content(content: &str) -> Option<String> {
 
     let trimmed = content.trim_start();
     if let Some(rest) = trimmed.strip_prefix("[tool:")
-        && let Some(end) = rest.find(']')
+        && let Some((name, _)) = rest.split_once(']')
     {
-        return Some(rest[..end].to_string());
+        return Some(name.to_string());
     }
     if let Some(rest) = trimmed.strip_prefix("[tool_output] ") {
         let first_word = rest.split_whitespace().next().unwrap_or("");

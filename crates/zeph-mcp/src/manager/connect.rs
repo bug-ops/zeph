@@ -793,7 +793,7 @@ pub(super) fn announce_oauth_url(
     );
     let auth_msg = format!("MCP OAuth: Open this URL to authorize '{server_id}': {auth_url}");
     if let Some(stx) = status_tx {
-        let _ = stx.notice(auth_msg);
+        let _ = stx.urgent_notice(auth_msg);
         let _ = stx.set(format!("Waiting for OAuth: {server_id}"));
     } else {
         eprintln!("{auth_msg}");

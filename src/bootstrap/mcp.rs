@@ -161,6 +161,10 @@ fn build_transport(
 /// replaced with the corresponding vault value.
 ///
 /// This runs at startup time and is acceptable as blocking I/O.
+#[expect(
+    clippy::string_slice,
+    reason = "offsets come from find on the same string and the delimiters are ASCII"
+)]
 fn resolve_vault_ref(value: &str, vault: Option<&Arc<RwLock<AgeVaultProvider>>>) -> String {
     if !value.contains("${") {
         return value.to_owned();

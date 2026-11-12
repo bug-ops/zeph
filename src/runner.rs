@@ -4296,12 +4296,11 @@ async fn run_experiment_report(app: &crate::bootstrap::AppBuilder) -> anyhow::Re
         "ID", "Session", "Parameter", "Delta", "Baseline", "Candidate", "Accepted"
     );
     for r in &rows {
-        let sid_len = r.session_id.len().min(11);
         // lgtm[rust/cleartext-logging]
         println!(
             "{:<8} {:<12} {:<20} {:<8.3} {:<8.3} {:<8.3} {:<8}",
             r.id,
-            &r.session_id[..sid_len],
+            zeph_common::text::truncate_to_bytes_ref(&r.session_id, 11),
             r.parameter,
             r.delta,
             r.baseline_score,
@@ -4474,8 +4473,8 @@ fn parse_reasoning_effort_arg(s: &str) -> anyhow::Result<zeph_llm::any::Reasonin
 /// is the *last* `@` in the string, which avoids confusing `user@host` in
 /// hypothetical non-HTTPS URLs while still working for typical HTTPS archives.
 fn parse_plugin_url_arg(raw: &str) -> (&str, Option<&str>) {
-    match raw.rfind('@') {
-        Some(pos) => (&raw[..pos], Some(&raw[pos + 1..])),
+    match raw.rsplit_once('@') {
+        Some((url, sha)) => (url, Some(sha)),
         None => (raw, None),
     }
 }

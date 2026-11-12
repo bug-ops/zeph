@@ -157,11 +157,8 @@ pub(super) fn step_memory(state: &mut WizardState) -> anyhow::Result<()> {
             )
             .default(0u32)
             .validate_with(|v: &u32| {
-                if *v == 0 || zeph_config::CompactionTrigger::new(*v).is_ok() {
-                    Ok(())
-                } else {
-                    Err("must be 0 or at least 50000")
-                }
+                (*v == 0 || zeph_config::CompactionTrigger::new(*v).is_ok())
+                    .ok_or("must be 0 or at least 50000")
             })
             .interact_text()?;
         state.server_compaction_trigger = (tokens != 0)
@@ -292,11 +289,7 @@ pub(super) fn step_context_compression(state: &mut WizardState) -> anyhow::Resul
         state.focus_compression_interval = Input::new()
             .with_prompt("Focus compression interval (turns between suggestions)")
             .default(state.focus_compression_interval)
-            .validate_with(
-                |v: &usize| {
-                    if *v >= 1 { Ok(()) } else { Err("must be >= 1") }
-                },
-            )
+            .validate_with(|v: &usize| (*v >= 1).ok_or("must be >= 1"))
             .interact_text()?;
     }
 
@@ -311,7 +304,7 @@ pub(super) fn step_context_compression(state: &mut WizardState) -> anyhow::Resul
         state.memory_tiers_promotion_min_sessions = Input::new()
             .with_prompt("Minimum sessions before episodic fact is promoted to semantic")
             .default(state.memory_tiers_promotion_min_sessions)
-            .validate_with(|v: &u32| if *v >= 2 { Ok(()) } else { Err("must be >= 2") })
+            .validate_with(|v: &u32| (*v >= 2).ok_or("must be >= 2"))
             .interact_text()?;
     }
 
@@ -324,7 +317,7 @@ pub(super) fn step_context_compression(state: &mut WizardState) -> anyhow::Resul
         state.sidequest_interval_turns = Input::new()
             .with_prompt("SideQuest eviction interval (user turns)")
             .default(state.sidequest_interval_turns)
-            .validate_with(|v: &u32| if *v >= 1 { Ok(()) } else { Err("must be >= 1") })
+            .validate_with(|v: &u32| (*v >= 1).ok_or("must be >= 1"))
             .interact_text()?;
     }
 

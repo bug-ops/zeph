@@ -6,7 +6,7 @@
 use crate::error::MemoryError;
 use crate::store::SqliteStore;
 use crate::types::ConversationId;
-use zeph_common::secret_redact::scrub_content;
+use zeph_common::secret_redact::scrub_secrets;
 #[allow(unused_imports)]
 use zeph_db::sql;
 
@@ -35,7 +35,7 @@ impl SqliteStore {
         digest: &str,
         token_count: i64,
     ) -> Result<(), MemoryError> {
-        let safe_digest = scrub_content(digest);
+        let safe_digest = scrub_secrets(digest);
         zeph_db::query(sql!(
             "INSERT INTO session_digest (conversation_id, digest, token_count, updated_at) \
              VALUES (?, ?, ?, CURRENT_TIMESTAMP) \
@@ -124,6 +124,24 @@ mod tests {
         .await
         .map(ConversationId)
         .expect("insert conversation")
+    }
+
+    #[tokio::test]
+    async fn digest_keeps_paths_and_redacts_secrets() {
+        let store = make_store().await;
+        let conv_id = insert_conversation(&store).await;
+
+        store
+            .save_session_digest(
+                conv_id,
+                "edited /Users/dev/x.rs using sk-abc123def456ghij",
+                5,
+            )
+            .await
+            .unwrap();
+        let loaded = store.load_session_digest(conv_id).await.unwrap().unwrap();
+        assert!(loaded.digest.contains("/Users/dev/x.rs"));
+        assert!(!loaded.digest.contains("sk-abc123def456ghij"));
     }
 
     #[tokio::test]

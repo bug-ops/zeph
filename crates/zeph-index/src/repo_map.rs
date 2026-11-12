@@ -317,7 +317,7 @@ fn extract_via_query(
             m.captures()
                 .iter()
                 .find(|c| c.index == vi)
-                .map(|c| &source[c.node.byte_range()])
+                .map(|c| source.get(c.node.byte_range()).unwrap_or_default())
         });
 
         let Some(def_node) = def_node else { continue };
@@ -328,7 +328,10 @@ fn extract_via_query(
             continue;
         }
 
-        let name = source[name_node.byte_range()].to_string();
+        let name = source
+            .get(name_node.byte_range())
+            .unwrap_or_default()
+            .to_string();
         let kind = SymbolKind::from_node_kind(def_node.kind());
         let visibility = Visibility::from_node_text(vis_text);
         let line = def_node.start_position().row;
@@ -384,13 +387,16 @@ fn extract_methods(source: &str, lang: Lang, parent: &tree_sitter::Node<'_>) -> 
             m.captures()
                 .iter()
                 .find(|c| c.index == vi)
-                .map(|c| &source[c.node.byte_range()])
+                .map(|c| source.get(c.node.byte_range()).unwrap_or_default())
         });
 
         let Some(def_node) = def_node else { continue };
         let Some(name_node) = name_node else { continue };
 
-        let name = source[name_node.byte_range()].to_string();
+        let name = source
+            .get(name_node.byte_range())
+            .unwrap_or_default()
+            .to_string();
         let visibility = Visibility::from_node_text(vis_text);
         let line = def_node.start_position().row;
 
@@ -434,7 +440,7 @@ fn extract_heuristic(source: &str, grammar: &tree_sitter::Language, lang: Lang) 
             .or_else(|| child.child_by_field_name("type"))
             .map_or_else(
                 || child.kind().to_string(),
-                |n| source[n.byte_range()].to_string(),
+                |n| source.get(n.byte_range()).unwrap_or_default().to_string(),
             );
 
         let kind = SymbolKind::from_node_kind(child.kind());
@@ -475,7 +481,10 @@ fn extract_heuristic_methods(node: &tree_sitter::Node, source: &str) -> Vec<Symb
             continue;
         };
         if let Some(method_name) = method.child_by_field_name("name") {
-            let name = source[method_name.byte_range()].to_string();
+            let name = source
+                .get(method_name.byte_range())
+                .unwrap_or_default()
+                .to_string();
             let line = method.start_position().row;
             methods.push(SymbolInfo {
                 name,

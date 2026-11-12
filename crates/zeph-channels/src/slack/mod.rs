@@ -386,6 +386,34 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn clear_status_sends_no_request() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat.postMessage"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"ok": true, "ts": "1.2"})),
+            )
+            .mount(&server)
+            .await;
+        let mut channel = make_channel();
+        channel.api = api::SlackApi::with_base_url(server.uri(), "xoxb-test".into());
+        channel.channel_id = Some("C1".into());
+
+        channel.clear_status().await.unwrap();
+        assert!(server.received_requests().await.unwrap().is_empty());
+
+        channel
+            .send_status(&StatusText::new("Searching memory…").unwrap())
+            .await
+            .unwrap();
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
     fn make_incoming(user_id: &str, channel_id: &str) -> IncomingMessage {
         IncomingMessage {
             channel_id: channel_id.into(),

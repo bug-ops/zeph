@@ -110,7 +110,7 @@ pub struct ChatMessage {
     pub paste_line_count: Option<usize>,
     /// Opaque tool-call identifier forwarded from the agent loop.
     ///
-    /// Used to correlate `DiffReady` and `ToolOutputChunk` events with the
+    /// Used to correlate `ToolOutputChunk` events with the
     /// correct `ChatMessage` when multiple tools run concurrently.
     pub tool_call_id: Option<zeph_common::ToolExecutionId>,
     /// Whether the tool call succeeded. `None` while streaming, `Some(true)` on
@@ -187,8 +187,8 @@ impl ChatMessage {
 
     /// Attach a `tool_call_id` for id-based event correlation.
     ///
-    /// Used to correlate streaming [`crate::event::AgentEvent::ToolOutputChunk`] and
-    /// `DiffReady` events with the originating tool call when multiple tools execute concurrently.
+    /// Used to correlate streaming [`crate::event::AgentEvent::ToolOutputChunk`]
+    /// events with the originating tool call when multiple tools execute concurrently.
     ///
     /// # Examples
     ///

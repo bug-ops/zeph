@@ -304,20 +304,33 @@ pub(crate) fn init_tracing(
                 eprintln!("zeph: log directory creation failed, file logging disabled: {e}");
             }
         } else {
-            let rotation = match logging.rotation {
-                LogRotation::Daily => Rotation::DAILY,
-                LogRotation::Hourly => Rotation::HOURLY,
-                _ => {
-                    precreate_private_log_file(
-                        &dir.join(format!("{filename_prefix}.{filename_suffix}")),
-                        is_default_dir,
-                    );
-                    Rotation::NEVER
-                }
+            let period = match logging.rotation {
+                LogRotation::Daily => Some(RotationPeriod::Daily),
+                LogRotation::Hourly => Some(RotationPeriod::Hourly),
+                _ => None,
+            };
+            let periodic = period.map(|period| PeriodicLogFiles {
+                dir: dir.clone(),
+                prefix: filename_prefix.clone(),
+                suffix: filename_suffix.clone(),
+                period,
+            });
+            let (rotation, max_files) = if let Some(files) = &periodic {
+                files.precreate_current_and_next(chrono::Utc::now(), is_default_dir);
+                (
+                    files.period.rotation(),
+                    rolling_max_files(logging.max_files),
+                )
+            } else {
+                precreate_private_log_file(
+                    &dir.join(format!("{filename_prefix}.{filename_suffix}")),
+                    is_default_dir,
+                );
+                (Rotation::NEVER, logging.max_files)
             };
             match RollingFileAppender::builder()
                 .rotation(rotation)
-                .max_log_files(logging.max_files)
+                .max_log_files(max_files)
                 .filename_prefix(&filename_prefix)
                 .filename_suffix(&filename_suffix)
                 .build(&dir)
@@ -330,7 +343,13 @@ pub(crate) fn init_tracing(
                     }
                 }
                 Ok(appender) => {
-                    let (non_blocking, guard) = tracing_appender::non_blocking(appender);
+                    let (non_blocking, guard) =
+                        match periodic {
+                            Some(files) => tracing_appender::non_blocking(
+                                PrivateRollingWriter::new(appender, files, chrono::Utc::now),
+                            ),
+                            None => tracing_appender::non_blocking(appender),
+                        };
                     let file_filter = tracing_subscriber::EnvFilter::try_new(&logging.level)
                         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
                     layers.push(Box::new(
@@ -463,6 +482,128 @@ fn precreate_private_log_file(path: &std::path::Path, tighten_existing: bool) {
     }
     #[cfg(not(unix))]
     let _ = tighten_existing;
+}
+
+/// Rotation periods for which [`PrivateRollingWriter`] pre-creates files owner-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RotationPeriod {
+    Daily,
+    Hourly,
+}
+
+impl RotationPeriod {
+    fn rotation(self) -> Rotation {
+        match self {
+            Self::Daily => Rotation::DAILY,
+            Self::Hourly => Rotation::HOURLY,
+        }
+    }
+
+    fn step(self) -> chrono::Duration {
+        match self {
+            Self::Daily => chrono::Duration::days(1),
+            Self::Hourly => chrono::Duration::hours(1),
+        }
+    }
+
+    /// UTC period key as embedded in the file name by tracing-appender 0.2.5 (`join_date`).
+    fn key(self, at: chrono::DateTime<chrono::Utc>) -> String {
+        let format = match self {
+            Self::Daily => "%Y-%m-%d",
+            Self::Hourly => "%Y-%m-%d-%H",
+        };
+        at.format(format).to_string()
+    }
+}
+
+/// File naming of a rolling log, enough to compute and pre-create the file of any period.
+#[derive(Debug, Clone)]
+struct PeriodicLogFiles {
+    dir: std::path::PathBuf,
+    prefix: String,
+    suffix: String,
+    period: RotationPeriod,
+}
+
+impl PeriodicLogFiles {
+    fn path_at(&self, at: chrono::DateTime<chrono::Utc>) -> std::path::PathBuf {
+        self.dir.join(format!(
+            "{}.{}.{}",
+            self.prefix,
+            self.period.key(at),
+            self.suffix
+        ))
+    }
+
+    /// Pre-create the files of the period containing `now` and of the next one, so the
+    /// appender never opens either with the process umask.
+    fn precreate_current_and_next(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+        tighten_existing: bool,
+    ) {
+        self.precreate_at(now, tighten_existing);
+        self.precreate_at(now + self.period.step(), tighten_existing);
+    }
+
+    fn precreate_at(&self, at: chrono::DateTime<chrono::Utc>, tighten_existing: bool) {
+        precreate_private_log_file(&self.path_at(at), tighten_existing);
+    }
+}
+
+/// Retention budget handed to tracing-appender for rolling rotation.
+///
+/// One extra slot covers the pre-created next-period file, which the appender counts as a log
+/// file when pruning. `0` stays `0` (unlimited): adding one would turn it into a wipe-all.
+/// Consequence: until the first rollover after start-up, history holds one past file fewer, and
+/// one empty future-period file remains after exit.
+fn rolling_max_files(max: usize) -> usize {
+    if max == 0 { 0 } else { max.saturating_add(1) }
+}
+
+/// `Write` wrapper that keeps rolling log files owner-only.
+///
+/// tracing-appender opens each rotated file with the process umask. When the UTC period key
+/// changes, this writer pre-creates the current file (normally present already), delegates the
+/// write, which makes the appender prune and open the file, and only then pre-creates the next
+/// period's file, so a single future file exists while pruning runs.
+struct PrivateRollingWriter<W: std::io::Write> {
+    inner: W,
+    files: PeriodicLogFiles,
+    now: fn() -> chrono::DateTime<chrono::Utc>,
+    current_key: String,
+}
+
+impl<W: std::io::Write> PrivateRollingWriter<W> {
+    fn new(inner: W, files: PeriodicLogFiles, now: fn() -> chrono::DateTime<chrono::Utc>) -> Self {
+        let current_key = files.period.key(now());
+        Self {
+            inner,
+            files,
+            now,
+            current_key,
+        }
+    }
+}
+
+impl<W: std::io::Write> std::io::Write for PrivateRollingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let at = (self.now)();
+        let key = self.files.period.key(at);
+        if key == self.current_key {
+            return self.inner.write(buf);
+        }
+        self.files.precreate_at(at, false);
+        let written = self.inner.write(buf);
+        self.files
+            .precreate_at(at + self.files.period.step(), false);
+        self.current_key = key;
+        written
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// Create `trace_dir` (owner-only when missing) and a fresh owner-only trace file named
@@ -951,6 +1092,115 @@ mod tests {
             b"old line\n",
             "content kept"
         );
+    }
+
+    #[test]
+    fn rolling_max_files_budget() {
+        assert_eq!(rolling_max_files(0), 0);
+        assert_eq!(rolling_max_files(3), 4);
+        assert_eq!(rolling_max_files(usize::MAX), usize::MAX);
+    }
+
+    fn utc(y: i32, m: u32, d: u32, h: u32) -> chrono::DateTime<chrono::Utc> {
+        use chrono::TimeZone as _;
+        chrono::Utc.with_ymd_and_hms(y, m, d, h, 30, 0).unwrap()
+    }
+
+    #[test]
+    fn period_key_pins_the_filename_format() {
+        let at = utc(2026, 11, 9, 7);
+        assert_eq!(RotationPeriod::Daily.key(at), "2026-11-09");
+        assert_eq!(RotationPeriod::Hourly.key(at), "2026-11-09-07");
+        let files = PeriodicLogFiles {
+            dir: std::path::PathBuf::from("/d"),
+            prefix: "zeph".into(),
+            suffix: "log".into(),
+            period: RotationPeriod::Hourly,
+        };
+        assert_eq!(
+            files.path_at(at + RotationPeriod::Hourly.step()),
+            std::path::Path::new("/d/zeph.2026-11-09-08.log")
+        );
+    }
+
+    #[cfg(unix)]
+    thread_local! {
+        static TEST_NOW: std::cell::Cell<Option<chrono::DateTime<chrono::Utc>>> =
+            const { std::cell::Cell::new(None) };
+        static TEST_EVENTS: std::cell::RefCell<Vec<usize>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    #[cfg(unix)]
+    fn test_now() -> chrono::DateTime<chrono::Utc> {
+        TEST_NOW.with(std::cell::Cell::get).unwrap()
+    }
+
+    /// Records how many files exist in the directory at each delegated write.
+    #[cfg(unix)]
+    struct CountingInner(std::path::PathBuf);
+
+    #[cfg(unix)]
+    impl std::io::Write for CountingInner {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let count = std::fs::read_dir(&self.0).unwrap().count();
+            TEST_EVENTS.with(|e| e.borrow_mut().push(count));
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_precreates_current_and_next_period_files_owner_only_in_a_custom_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        world_readable_dir(dir.path());
+        let files = PeriodicLogFiles {
+            dir: dir.path().to_path_buf(),
+            prefix: "zeph".into(),
+            suffix: "log".into(),
+            period: RotationPeriod::Hourly,
+        };
+        files.precreate_current_and_next(utc(2026, 11, 9, 23), false);
+
+        for name in ["zeph.2026-11-09-23.log", "zeph.2026-11-10-00.log"] {
+            assert_eq!(mode_of(&dir.path().join(name)), 0o600, "{name}");
+        }
+        assert_eq!(mode_of(dir.path()), 0o755, "custom dir stays untouched");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollover_precreates_current_then_delegates_then_precreates_next() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        world_readable_dir(dir.path());
+        let files = PeriodicLogFiles {
+            dir: dir.path().to_path_buf(),
+            prefix: "zeph".into(),
+            suffix: "log".into(),
+            period: RotationPeriod::Daily,
+        };
+        TEST_NOW.with(|n| n.set(Some(utc(2026, 11, 9, 1))));
+        files.precreate_at(test_now(), false);
+        files.precreate_at(test_now() + files.period.step(), false);
+        for name in ["zeph.2026-11-09.log", "zeph.2026-11-10.log"] {
+            assert_eq!(mode_of(&dir.path().join(name)), 0o600, "{name}");
+        }
+        let mut writer =
+            PrivateRollingWriter::new(CountingInner(dir.path().to_path_buf()), files, test_now);
+
+        writer.write_all(b"a").unwrap();
+        TEST_NOW.with(|n| n.set(Some(utc(2026, 11, 10, 0))));
+        writer.write_all(b"b").unwrap();
+        writer.write_all(b"c").unwrap();
+
+        // 11-11 is created only after the delegated write on rollover.
+        TEST_EVENTS.with(|e| assert_eq!(*e.borrow(), [2, 2, 3]));
+        assert_eq!(mode_of(&dir.path().join("zeph.2026-11-11.log")), 0o600);
     }
 
     #[cfg(unix)]

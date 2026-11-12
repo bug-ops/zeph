@@ -120,13 +120,6 @@ impl Channel for AppChannel {
     async fn send_context_estimate(&mut self, tokens: usize) -> Result<(), ChannelError> {
         dispatch_app_channel!(self, send_context_estimate, tokens)
     }
-    async fn send_diff(
-        &mut self,
-        diff: zeph_core::DiffData,
-        tool_call_id: &zeph_common::ToolExecutionId,
-    ) -> Result<(), ChannelError> {
-        dispatch_app_channel!(self, send_diff, diff, tool_call_id)
-    }
     async fn send_tool_output(&mut self, event: ToolOutputEvent) -> Result<(), ChannelError> {
         dispatch_app_channel!(self, send_tool_output, event)
     }
@@ -406,17 +399,6 @@ mod tests {
         ch.send_queue_count(3).await.unwrap();
         // 11. send_usage
         ch.send_usage(10, 5, 8192, 0, 0, 0.0).await.unwrap();
-        // 12. send_diff
-        ch.send_diff(
-            zeph_core::DiffData {
-                file_path: String::new(),
-                old_content: String::new(),
-                new_content: String::new(),
-            },
-            &zeph_common::ToolExecutionId::new("test-call-id").unwrap(),
-        )
-        .await
-        .unwrap();
         // 13. send_tool_start
         ch.send_tool_start(ToolStartEvent {
             tool_name: ToolName::from("bash"),

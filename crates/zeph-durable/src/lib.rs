@@ -74,6 +74,8 @@
 //! assert_eq!(key, IdempotencyKey::derive(execution, StepId::new(0), b"tool:read_file"));
 //! ```
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 mod replay;
 mod sealed;
 mod waiters;

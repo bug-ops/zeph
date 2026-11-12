@@ -69,6 +69,8 @@
 //! # }
 //! ```
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 // TODO(#6935): A-4 — evaluate channel-adapter collapse after spec 013 amendment for Send/!Send agent variant.
 
 pub mod agent;

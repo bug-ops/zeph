@@ -2453,10 +2453,11 @@ mod tests {
     ) -> crate::graph::ingest::IngestDocument {
         use crate::graph::ingest::SubagentJsonl;
         use crate::graph::ingest::adapter::IngestSourceAdapter as _;
+        use zeph_common::trust_level::TranscriptTrustSchema;
         let raw = format!(
             r#"{{"seq":0,"timestamp":null,"message":{{"role":"user","content":{content:?},"parts":[]}}}}"#,
         );
-        let adapter = SubagentJsonl::new(task_id);
+        let adapter = SubagentJsonl::new(task_id, TranscriptTrustSchema::PerResult);
         adapter.parse(&raw, batch_id).unwrap().remove(0)
     }
 
@@ -2734,6 +2735,7 @@ mod tests {
         use crate::graph::ingest::adapter::IngestSourceAdapter;
         use crate::graph::ingest::{ImportBatchId, SubagentJsonl};
         use crate::store::SqliteStore;
+        use zeph_common::trust_level::TranscriptTrustSchema;
 
         use super::{GraphExtractionConfig, IngestBatchConfig};
 
@@ -2781,7 +2783,7 @@ mod tests {
             "\n",
             r#"{"seq":1,"timestamp":null,"message":{"role":"user","content":"Tokio is an async runtime","parts":[]}}"#,
         );
-        let adapter = SubagentJsonl::new("task-dry-run");
+        let adapter = SubagentJsonl::new("task-dry-run", TranscriptTrustSchema::PerResult);
         let batch_id = ImportBatchId::new();
         let docs = adapter.parse(raw, &batch_id).unwrap();
         assert_eq!(docs.len(), 2);

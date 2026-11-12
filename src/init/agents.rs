@@ -126,7 +126,7 @@ fn step_command_handoff(state: &mut WizardState) -> anyhow::Result<()> {
                  not the primary bound)",
             )
             .default(16u32)
-            .validate_with(|v: &u32| if *v > 0 { Ok(()) } else { Err("must be > 0") })
+            .validate_with(|v: &u32| (*v > 0).ok_or("must be > 0"))
             .interact_text()?;
     }
 

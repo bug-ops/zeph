@@ -57,6 +57,8 @@
 //! # }
 //! ```
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 mod age;
 mod arc;
 mod env;

@@ -134,12 +134,12 @@ pub fn humanize(raw: &str) -> VerbPhrase {
         && open < close
     {
         // Prefer the verb portion (e.g. "retrieve" in "Retrieve (some-tool)")
-        let verb_part = rest[..open].trim();
+        let verb_part = rest.get(..open).unwrap_or_default().trim();
         if let Some(phrase) = match_fragment(verb_part) {
             return phrase;
         }
         // Fall back to matching the tool name (e.g. "shell" in "Respond (shell)")
-        let name = rest[open + 1..close].trim();
+        let name = rest.get(open + 1..close).unwrap_or_default().trim();
         if let Some(phrase) = match_fragment(name) {
             return phrase;
         }

@@ -185,6 +185,7 @@ AND memory content exceeding the token budget is truncated, not omitted entirely
 | FR-007 | WHEN a `Grant` TTL expires THEN `PermissionGrants::check()` SHALL return an error for that grant | must |
 | FR-008 | WHEN `FilteredToolExecutor` receives a tool call THEN it SHALL check the `ToolPolicy` and denylist before forwarding to the real executor, matching tool IDs case-insensitively after stripping argument suffixes (`"Bash(cargo *)"` → `"bash"`) via `normalize_tool_id` (#3765) | must |
 | FR-009 | WHEN a subagent session ends (normally or via cancellation) THEN a JSONL transcript SHALL be written with complete turn history | must |
+| FR-009a | WHEN a transcript is written THEN `TranscriptMeta.trust_schema` SHALL record its trust-marker format (`per_result` for new sessions; a missing key reads as `legacy`). `SubAgentHandle` carries `trust_schema` and `resumed_from` so the final meta written on collect keeps both; resuming a `legacy` transcript yields a `legacy` session (#7022). Text of sub-agent notices (#7021) passes `SecretMaskRegistry::mask`, then `scrub_secret_shapes`, then `PiiFilter::scrub` when enabled, the same order as live forwarding. | must |
 | FR-010 | WHEN `sweep_old_transcripts()` is called THEN transcripts beyond the retention window SHALL be deleted | must |
 | FR-011 | WHEN lifecycle hooks are defined THEN `fire_hooks()` SHALL execute matching hooks for each `HookType` event | must |
 | FR-012 | WHEN hook execution fails THEN the failure SHALL be logged at `WARN` and the subagent session SHALL continue | must |

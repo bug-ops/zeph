@@ -69,18 +69,18 @@ pub fn parse_loop_args(args: &str) -> Result<(String, u64), CommandError> {
     // Find " every " as the separator between prompt and interval spec.
     // We search from the right so prompts that contain the word "every" work correctly.
     let sep = " every ";
-    let sep_pos = args.rfind(sep).ok_or_else(|| {
+    let (prompt, interval_str) = args.rsplit_once(sep).ok_or_else(|| {
         CommandError::new(
             "Usage: /loop <prompt> every <N> <unit>  (e.g. /loop check logs every 10 minutes)",
         )
     })?;
 
-    let prompt = args[..sep_pos].trim().to_owned();
+    let prompt = prompt.trim().to_owned();
     if prompt.is_empty() {
         return Err(CommandError::new("Prompt must not be empty."));
     }
 
-    let interval_str = args[sep_pos + sep.len()..].trim();
+    let interval_str = interval_str.trim();
     let (n_str, unit) = interval_str.split_once(' ').ok_or_else(|| {
         CommandError::new("Expected format: every <N> <unit>  (e.g. every 5 minutes)")
     })?;

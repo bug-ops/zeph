@@ -29,34 +29,47 @@ pub(crate) fn format_overlay_section(plugins_dir: &std::path::Path) -> String {
     let mut cfg = zeph_config::Config::default();
     match zeph_plugins::apply_plugin_config_overlays(&mut cfg, plugins_dir) {
         Err(e) => format!("overlay resolution failed: {e}"),
-        Ok(overlay) => {
-            if overlay.source_plugins.is_empty() && overlay.skipped_plugins.is_empty() {
-                return "No plugin overlay active.".to_owned();
-            }
-            let mut out = String::from("Active plugin overlay:\n");
-            if overlay.source_plugins.is_empty() {
-                out.push_str("  Source plugins:  (none)\n");
-            } else {
-                out.push_str("  Source plugins:  ");
-                out.push_str(&overlay.source_plugins.join(", "));
-                out.push('\n');
-            }
-            if overlay.skipped_plugins.is_empty() {
-                out.push_str("  Skipped plugins: (none)\n");
-            } else {
-                out.push_str("  Skipped plugins:\n");
-                for reason in &overlay.skipped_plugins {
-                    out.push_str("    - ");
-                    out.push_str(reason);
-                    out.push('\n');
-                }
-            }
-            out.push_str(
-                "  Note: overlay values shown against default config — run with --config for live intersection.",
-            );
-            out
+        Ok(overlay) => render_overlay(&overlay),
+    }
+}
+
+fn render_overlay(overlay: &zeph_plugins::ResolvedOverlay) -> String {
+    if overlay.source_plugins.is_empty()
+        && overlay.skipped_plugins.is_empty()
+        && overlay.unverified_plugins.is_empty()
+    {
+        return "No plugin overlay active.".to_owned();
+    }
+    let mut out = String::from("Active plugin overlay:\n");
+    if overlay.source_plugins.is_empty() {
+        out.push_str("  Source plugins:  (none)\n");
+    } else {
+        out.push_str("  Source plugins:  ");
+        out.push_str(&overlay.source_plugins.join(", "));
+        out.push('\n');
+    }
+    if overlay.skipped_plugins.is_empty() {
+        out.push_str("  Skipped plugins: (none)\n");
+    } else {
+        out.push_str("  Skipped plugins:\n");
+        for reason in &overlay.skipped_plugins {
+            out.push_str("    - ");
+            out.push_str(reason);
+            out.push('\n');
         }
     }
+    if !overlay.unverified_plugins.is_empty() {
+        out.push_str("  Unverified plugins (applied without an integrity digest):\n");
+        for reason in &overlay.unverified_plugins {
+            out.push_str("    - ");
+            out.push_str(reason);
+            out.push('\n');
+        }
+    }
+    out.push_str(
+        "  Note: overlay values shown against default config — run with --config for live intersection.",
+    );
+    out
 }
 
 impl<C: crate::channel::Channel> Agent<C> {
@@ -1527,6 +1540,26 @@ mod tests {
         assert!(!zeph_commands::is_recognized_command(
             "/subagent spawn zeph --acp"
         ));
+    }
+
+    #[test]
+    fn render_overlay_lists_unverified_plugins_only_when_present() {
+        let mut overlay = zeph_plugins::ResolvedOverlay::default();
+        overlay.source_plugins.push("p".to_owned());
+        let without = render_overlay(&overlay);
+        assert!(!without.contains("Unverified plugins"), "{without}");
+
+        overlay
+            .unverified_plugins
+            .push("p: no integrity digest recorded; run `zeph plugin add` again".to_owned());
+        let with = render_overlay(&overlay);
+        assert!(
+            with.contains("Unverified plugins (applied without an integrity digest):\n    - p: no integrity digest"),
+            "{with}"
+        );
+
+        overlay.source_plugins.clear();
+        assert_ne!(render_overlay(&overlay), "No plugin overlay active.");
     }
 
     #[test]

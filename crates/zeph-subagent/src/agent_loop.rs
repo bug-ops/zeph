@@ -841,7 +841,7 @@ fn name_based_tool_trust(tool_name: &str, mcp_tool_names: &[String]) -> TurnCont
     if mcp_tool_names.iter().any(|n| n == tool_name) {
         TurnContextTrust::ExternalUntrusted
     } else {
-        TurnContextTrust::from(tool_output_source(tool_name).trust_level)
+        tool_output_source(tool_name).trust_level
     }
 }
 

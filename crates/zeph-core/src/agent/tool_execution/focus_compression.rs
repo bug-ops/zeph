@@ -87,12 +87,10 @@ impl<C: Channel> Agent<C> {
                         .arc_config
                         .allow_agent_compaction =>
                 {
-                    BuiltinReply::completed("Error: request_compaction is disabled")
+                    BuiltinReply::failed("Error: request_compaction is disabled")
                 }
                 BuiltinTool::RequestCompaction => self.handle_request_compaction(&tc.input).await,
-                BuiltinTool::SkillStatePatch => {
-                    BuiltinReply::completed(self.handle_skill_state_patch(&tc.input).await)
-                }
+                BuiltinTool::SkillStatePatch => self.handle_skill_state_patch(&tc.input).await,
                 BuiltinTool::Focus => {
                     let (text, maybe_checkpoint) =
                         self.handle_focus_tool(tc.name.as_str(), &tc.input);
@@ -276,6 +274,7 @@ mod tests {
             panic!("slot must hold a result, got {:?}", results[0]);
         };
         assert!(out.summary.contains("disabled"), "got {:?}", out.summary);
+        assert_eq!(out.status, zeph_tools::ToolStatus::Failed);
     }
 
     #[tokio::test]

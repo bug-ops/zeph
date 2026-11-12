@@ -66,8 +66,8 @@ const SQLITE_BATCH_LIMIT_2X: usize = 490;
 pub(crate) fn entity_ids_for_messages_sql(placeholder_count: usize) -> String {
     let placeholders = placeholder_list(1, placeholder_count);
     format!(
-        "SELECT DISTINCT episode_id, source_entity_id, target_entity_id \
-         FROM graph_edges WHERE episode_id IN ({placeholders}) AND valid_to IS NULL"
+        "SELECT DISTINCT source_message_id, source_entity_id, target_entity_id \
+         FROM graph_edges WHERE source_message_id IN ({placeholders}) AND valid_to IS NULL"
     )
 }
 
@@ -249,7 +249,7 @@ impl GraphStore {
 
     /// Resolve messages to the entities their active edges connect.
     ///
-    /// The store writes the originating message id to `graph_edges.episode_id`; both endpoints
+    /// The store writes the originating message id to `graph_edges.source_message_id`; both endpoints
     /// of every active edge recorded for a message are returned. Messages without active edges
     /// are absent from the map. Requests are chunked to stay under the bind-parameter limit.
     ///
@@ -676,7 +676,7 @@ impl GraphStore {
         let id: EdgeId = zeph_db::query_scalar(sql!(
             "INSERT INTO graph_edges
              (source_entity_id, target_entity_id, relation, fact, confidence,
-              confidence_fast, confidence_slow, episode_id, edge_type, turn_index,
+              confidence_fast, confidence_slow, source_message_id, edge_type, turn_index,
               origin, import_batch_id, source_uri, trust_level)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              RETURNING id"
@@ -2498,7 +2498,6 @@ struct EdgeRow {
     valid_to: Option<String>,
     created_at: String,
     expired_at: Option<String>,
-    #[sqlx(rename = "episode_id")]
     source_message_id: Option<i64>,
     qdrant_point_id: Option<String>,
     edge_type: String,
@@ -2544,7 +2543,7 @@ fn edge_select_cols(table_prefix: &str) -> String {
          {table_prefix}relation, {table_prefix}fact, {table_prefix}confidence, \
          {valid_from_sel} AS valid_from, {valid_to_sel} AS valid_to, \
          {created_at_sel} AS created_at, {expired_at_sel} AS expired_at, \
-         {table_prefix}episode_id, {table_prefix}qdrant_point_id, {table_prefix}edge_type, \
+         {table_prefix}source_message_id, {table_prefix}qdrant_point_id, {table_prefix}edge_type, \
          {table_prefix}retrieval_count, {table_prefix}last_retrieved_at, \
          {table_prefix}superseded_by, {table_prefix}canonical_relation, {table_prefix}supersedes, \
          CAST({table_prefix}weight AS DOUBLE PRECISION) AS weight, \
@@ -3126,7 +3125,7 @@ impl GraphStore {
 
     /// Fetch `(edge_id, source_message_id)` pairs for a batch of edge ids.
     ///
-    /// Returns only rows where `source_message_id` (`episode_id` column) is not NULL.
+    /// Returns only rows where `source_message_id` is not NULL.
     /// Called from [`crate::semantic::SemanticMemory::recall_graph_view`] for Zoom-In provenance.
     ///
     /// # Errors
@@ -3142,8 +3141,8 @@ impl GraphStore {
         }
         let placeholders = placeholder_list(1, edge_ids.len());
         let sql = format!(
-            "SELECT id, episode_id FROM graph_edges \
-             WHERE id IN ({placeholders}) AND episode_id IS NOT NULL"
+            "SELECT id, source_message_id FROM graph_edges \
+             WHERE id IN ({placeholders}) AND source_message_id IS NOT NULL"
         );
         let mut q =
             zeph_db::query_as::<_, (EdgeId, crate::types::MessageId)>(sqlx::AssertSqlSafe(sql));
@@ -3471,7 +3470,7 @@ async fn insert_new_edge(
     Ok(zeph_db::query_scalar(sql!(
         "INSERT INTO graph_edges
          (source_entity_id, target_entity_id, relation, canonical_relation, fact,
-          confidence, confidence_fast, confidence_slow, episode_id, edge_type, supersedes, turn_index,
+          confidence, confidence_fast, confidence_slow, source_message_id, edge_type, supersedes, turn_index,
           origin, import_batch_id, source_uri, trust_level)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          RETURNING id"

@@ -24,6 +24,8 @@
 //! This crate does NOT depend on `zeph-core`. A change in `zeph-core`'s agent loop does
 //! not recompile `zeph-commands`.
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 pub mod commands;
 pub mod context;
 pub mod handlers;
@@ -368,7 +370,7 @@ impl<Ctx: ?Sized> CommandRegistry<Ctx> {
             )));
         }
         let name = handler.name();
-        let args = trimmed[name.len()..].trim();
+        let args = trimmed.get(name.len()..).unwrap_or_default().trim();
         Some(handler.handle(ctx, args).await)
     }
 

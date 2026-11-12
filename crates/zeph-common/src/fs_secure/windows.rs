@@ -95,7 +95,7 @@ pub(super) fn open_private(path: &Path, disposition: Disposition) -> io::Result<
 /// Existing components are left untouched. A concurrent creator winning the race
 /// (`ERROR_ALREADY_EXISTS`) counts as success as long as the path is a directory.
 pub(super) fn create_private_dir_all(path: &Path) -> io::Result<()> {
-    if path.as_os_str().is_empty() {
+    if path.is_empty() {
         return Ok(());
     }
     match create_dir(path) {

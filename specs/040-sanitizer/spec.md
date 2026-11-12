@@ -71,6 +71,8 @@ pub enum ContentTrustLevel {
 }
 ```
 
+`ContentTrustLevel` is a type alias of `zeph_common::trust_level::TurnContextTrust`, the single (exhaustive) trust-tier enum shared by all crates; there is no second enum or conversion (#6972).
+
 Each trust level triggers different processing:
 
 | Level | Source | Wrapping | Injection Check | Logging |

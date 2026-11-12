@@ -18,6 +18,8 @@
 //! - `.bundled` markers are stripped recursively from all plugin skill trees.
 //! - Skill name conflicts with managed, bundled, or other plugin skills are hard-errors at install.
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 pub mod error;
 pub(crate) mod integrity;
 pub mod manager;

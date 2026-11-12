@@ -308,36 +308,6 @@ impl Channel for TuiChannel {
 
     #[cfg_attr(
         feature = "profiling",
-        tracing::instrument(name = "tui.channel.send_diff", skip_all)
-    )]
-    async fn send_diff(
-        &mut self,
-        diff: zeph_core::DiffData,
-        tool_call_id: &zeph_common::ToolExecutionId,
-    ) -> Result<(), ChannelError> {
-        // Substantive user-facing content: bounded send so the diff is displayed unless
-        // the TUI is severely stalled (>100ms). On timeout, drop silently; on channel
-        // close, propagate the error.
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            self.agent_event_tx.send(AgentEvent::DiffReady {
-                diff,
-                tool_call_id: tool_call_id.clone(),
-            }),
-        )
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(_)) => return Err(ChannelError::ChannelClosed),
-            Err(_elapsed) => {
-                tracing::warn!("TuiChannel::send_diff timed out after 100ms, dropping diff");
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg_attr(
-        feature = "profiling",
         tracing::instrument(name = "tui.channel.send_tool_start", skip_all)
     )]
     #[allow(clippy::unused_async_trait_impl)]

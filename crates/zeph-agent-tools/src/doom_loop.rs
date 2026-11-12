@@ -49,6 +49,10 @@ pub fn doom_loop_hash(content: &str) -> u64 {
     hasher.finish()
 }
 
+#[expect(
+    clippy::string_slice,
+    reason = "start and bracket offsets come from find on the same string"
+)]
 fn hash_tool_result_in_place(hasher: &mut impl std::hash::Hasher, rest: &mut &str, start: usize) {
     hasher.write(&rest.as_bytes()[..start]);
     if let Some(end) = rest[start..].find(']') {
@@ -60,6 +64,10 @@ fn hash_tool_result_in_place(hasher: &mut impl std::hash::Hasher, rest: &mut &st
     }
 }
 
+#[expect(
+    clippy::string_slice,
+    reason = "start and bracket offsets come from find on the same string"
+)]
 fn hash_tool_use_in_place(hasher: &mut impl std::hash::Hasher, rest: &mut &str, start: usize) {
     hasher.write(&rest.as_bytes()[..start]);
     let tag = &rest[start..];

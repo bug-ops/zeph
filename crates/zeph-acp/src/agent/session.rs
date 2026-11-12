@@ -1277,7 +1277,7 @@ impl ZephAcpAgentState {
                     &prompt,
                 )];
                 let sid_str = sid.to_string();
-                let sid_prefix = &sid_str[..8.min(sid_str.len())];
+                let sid_prefix = sid_str.get(..8).unwrap_or(&sid_str);
                 let fallback_title = format!("Session {sid_prefix}");
                 let title = match tokio::time::timeout(
                     std::time::Duration::from_secs(15),

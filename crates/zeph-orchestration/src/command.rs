@@ -174,11 +174,10 @@ fn parse_task_ref(raw: &str) -> TaskRef {
 /// is extracted, and a genuinely adversarial payload is caught there, not here.
 fn extract_fenced_body(trimmed: &str) -> Option<&str> {
     let before_close = trimmed.strip_suffix(FENCE_CLOSE)?;
-    let open_idx = before_close.rfind(FENCE_OPEN)?;
-    if open_idx != 0 && before_close.as_bytes()[open_idx - 1] != b'\n' {
+    let (head, after_marker) = before_close.rsplit_once(FENCE_OPEN)?;
+    if !head.is_empty() && !head.ends_with('\n') {
         return None;
     }
-    let after_marker = &before_close[open_idx + FENCE_OPEN.len()..];
     let starts_with_boundary = after_marker.chars().next().is_none_or(char::is_whitespace);
     if !starts_with_boundary {
         return None;
@@ -227,10 +226,9 @@ pub fn has_handoff_fence(text: &str) -> bool {
     // — the open marker must be the one immediately preceding the text's final closing
     // fence, with correct start-of-line/whitespace boundaries on both sides.
     if let Some(before_close) = trimmed.strip_suffix(FENCE_CLOSE)
-        && let Some(open_idx) = before_close.rfind(FENCE_OPEN)
+        && let Some((head, after_marker)) = before_close.rsplit_once(FENCE_OPEN)
     {
-        let boundary_before = open_idx == 0 || before_close.as_bytes()[open_idx - 1] == b'\n';
-        let after_marker = &before_close[open_idx + FENCE_OPEN.len()..];
+        let boundary_before = head.is_empty() || head.ends_with('\n');
         let boundary_after = after_marker.chars().next().is_none_or(char::is_whitespace);
         if boundary_before && boundary_after {
             return true;
@@ -240,9 +238,8 @@ pub fn has_handoff_fence(text: &str) -> bool {
     // Unclosed case: the last fence-open marker in the text has no closing fence
     // anywhere after it — a genuinely truncated/abandoned attempt at the tail, not an
     // earlier demonstration later superseded by unrelated, properly-closed content.
-    if let Some(open_idx) = trimmed.rfind(FENCE_OPEN) {
-        let boundary_before = open_idx == 0 || trimmed.as_bytes()[open_idx - 1] == b'\n';
-        let after_marker = &trimmed[open_idx + FENCE_OPEN.len()..];
+    if let Some((head, after_marker)) = trimmed.rsplit_once(FENCE_OPEN) {
+        let boundary_before = head.is_empty() || head.ends_with('\n');
         let boundary_after = after_marker.chars().next().is_none_or(char::is_whitespace);
         let closed_afterward = after_marker.contains(FENCE_CLOSE);
         if boundary_before && boundary_after && !closed_afterward {

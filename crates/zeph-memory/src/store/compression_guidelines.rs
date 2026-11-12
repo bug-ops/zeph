@@ -6,7 +6,7 @@
 #[allow(unused_imports)]
 use zeph_db::sql;
 
-use zeph_common::secret_redact::scrub_content;
+use zeph_common::secret_redact::scrub_secrets;
 use zeph_common::text::truncate_to_bytes_ref;
 
 use crate::error::MemoryError;
@@ -166,9 +166,9 @@ impl SqliteStore {
         failure_reason: &str,
         category: &str,
     ) -> Result<i64, MemoryError> {
-        let ctx = scrub_content(compressed_context);
+        let ctx = scrub_secrets(compressed_context);
         let ctx = truncate_field(&ctx);
-        let reason = scrub_content(failure_reason);
+        let reason = scrub_secrets(failure_reason);
         let reason = truncate_field(&reason);
         let id = zeph_db::query_scalar(sql!(
             "INSERT INTO compression_failure_pairs \
@@ -436,6 +436,7 @@ mod tests {
     use std::borrow::Cow;
 
     use super::*;
+    use zeph_common::secret_redact::scrub_content;
 
     // pool_size=1 is required: SQLite :memory: creates an isolated database per
     // connection, so multiple connections would each see an empty schema.
@@ -811,13 +812,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn log_compression_failure_redacts_paths() {
+    async fn log_compression_failure_keeps_paths_and_redacts_secrets() {
         let store = make_store().await;
         let cid = ConversationId(store.create_conversation().await.unwrap().0);
         store
             .log_compression_failure(
                 cid,
-                "/Users/dev/project/config.toml was loaded",
+                "/Users/dev/project/config.toml was loaded with sk-abc123def456ghij",
                 "lost",
                 "unknown",
             )
@@ -825,12 +826,14 @@ mod tests {
             .unwrap();
         let pairs = store.get_unused_failure_pairs(10).await.unwrap();
         assert!(
-            pairs[0].compressed_context.contains("[PATH]"),
-            "stored context must have redacted path"
+            pairs[0]
+                .compressed_context
+                .contains("/Users/dev/project/config.toml"),
+            "stored context must keep the real path"
         );
         assert!(
-            !pairs[0].compressed_context.contains("/Users/dev/"),
-            "stored context must not contain raw path"
+            !pairs[0].compressed_context.contains("sk-abc123def456ghij"),
+            "stored context must not contain the secret"
         );
     }
 

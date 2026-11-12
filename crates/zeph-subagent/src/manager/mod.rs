@@ -18,6 +18,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use zeph_common::task_supervisor::BlockingHandle;
+use zeph_common::trust_level::TranscriptTrustSchema;
 use zeph_common::{SkillTrustLevel, TaskSupervisor};
 use zeph_config::{ContentIsolationConfig, McpServerConfig};
 use zeph_llm::provider::Message;
@@ -424,6 +425,12 @@ pub struct SubAgentHandle {
     /// agent after that point returns `DeliveryError::TargetNotFound` rather than a silent
     /// drop into a dangling mailbox.
     pub peer: Option<PeerRegistration>,
+    /// Trust-marker format of this session's transcript, copied into the final meta sidecar
+    /// on collect. A session resumed from a legacy transcript stays
+    /// [`TranscriptTrustSchema::Legacy`]: its LLM context carries untagged tool output.
+    pub trust_schema: TranscriptTrustSchema,
+    /// Full ID of the session this one was resumed from, persisted on collect.
+    pub resumed_from: Option<String>,
 }
 
 impl SubAgentHandle {
@@ -461,6 +468,8 @@ impl SubAgentHandle {
             transcript_dir: None,
             mcp_tool_names: Vec::new(),
             peer: None,
+            trust_schema: TranscriptTrustSchema::PerResult,
+            resumed_from: None,
         }
     }
 

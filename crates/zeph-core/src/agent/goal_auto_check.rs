@@ -556,7 +556,7 @@ mod tests {
         agent.runtime.lifecycle.user_loop = Some(crate::agent::state::LoopState {
             prompt: "loop prompt".to_owned(),
             iteration: 0,
-            interval: tokio::time::interval(Duration::from_secs(3600)),
+            interval: tokio::time::interval(Duration::from_hours(1)),
             cancel_tx: tokio_util::sync::CancellationToken::new(),
         });
         let sent = run_until_idle(&mut agent, &sent).await;
