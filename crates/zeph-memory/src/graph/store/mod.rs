@@ -61,6 +61,16 @@ pub struct GraphStore {
 /// only bind each id once reuse the same constant for a uniform, still-safe batch size.
 const SQLITE_BATCH_LIMIT_2X: usize = 490;
 
+/// The production query behind [`GraphStore::entity_ids_for_messages`] for `placeholder_count`
+/// message ids, so tests can inspect the exact statement (query plan, index use).
+pub(crate) fn entity_ids_for_messages_sql(placeholder_count: usize) -> String {
+    let placeholders = placeholder_list(1, placeholder_count);
+    format!(
+        "SELECT DISTINCT episode_id, source_entity_id, target_entity_id \
+         FROM graph_edges WHERE episode_id IN ({placeholders}) AND valid_to IS NULL"
+    )
+}
+
 impl GraphStore {
     /// Create a new `GraphStore` wrapping `pool`.
     ///
@@ -253,11 +263,7 @@ impl GraphStore {
     ) -> Result<HashMap<MessageId, Vec<EntityId>>, MemoryError> {
         let mut result: HashMap<MessageId, Vec<EntityId>> = HashMap::new();
         for chunk in message_ids.chunks(SQLITE_BATCH_LIMIT_2X) {
-            let placeholders = placeholder_list(1, chunk.len());
-            let sql = format!(
-                "SELECT DISTINCT episode_id, source_entity_id, target_entity_id \
-                 FROM graph_edges WHERE episode_id IN ({placeholders}) AND valid_to IS NULL"
-            );
+            let sql = entity_ids_for_messages_sql(chunk.len());
             let mut q =
                 zeph_db::query_as::<_, (MessageId, EntityId, EntityId)>(sqlx::AssertSqlSafe(sql));
             for id in chunk {
@@ -326,7 +332,7 @@ impl GraphStore {
         // prevents syntax errors when user input contains them as literal search terms
         // (e.g., "graph OR unrelated" must not produce "graph* OR* unrelated*").
         const FTS5_OPERATORS: &[&str] = &["AND", "OR", "NOT", "NEAR"];
-        let query = &query[..query.floor_char_boundary(512)];
+        let query = zeph_common::text::truncate_to_bytes_ref(query, 512);
         // Sanitize input: split on non-alphanumeric characters, filter empty tokens,
         // append '*' to each token for FTS5 prefix matching ("graph" -> "graph*").
         let sanitized = sanitize_fts_query(query);
@@ -1303,7 +1309,7 @@ impl GraphStore {
         query: &str,
         limit: usize,
     ) -> Result<Vec<(Entity, f32)>, MemoryError> {
-        let query = &query[..query.floor_char_boundary(512)];
+        let query = zeph_common::text::truncate_to_bytes_ref(query, 512);
         let Some(fts_query) = build_fts_query(query) else {
             return Ok(vec![]);
         };

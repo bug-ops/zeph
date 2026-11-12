@@ -293,9 +293,10 @@ impl LlmProvider for CocoonProvider {
         let span = tracing::info_span!("llm.cocoon.request", op = "chat");
         async {
             tracing::debug!(model = self.model_identifier());
-            if let Some(ref tx) = self.status_tx {
-                let _ = tx.set("Cocoon: sending request...");
-            }
+            let _status = self
+                .status_tx
+                .as_ref()
+                .map(|tx| tx.scope("Cocoon: sending request..."));
             let body = self.inner.debug_request_json(messages, &[], false);
             let body_bytes = serde_json::to_vec(&body)
                 .map_err(|e| LlmError::Other(format!("body serialization: {e}")))?;
@@ -338,9 +339,10 @@ impl LlmProvider for CocoonProvider {
         let span = tracing::info_span!("llm.cocoon.request", op = "chat_stream");
         async {
             tracing::debug!(model = self.model_identifier());
-            if let Some(ref tx) = self.status_tx {
-                let _ = tx.set("Cocoon: streaming...");
-            }
+            let _status = self
+                .status_tx
+                .as_ref()
+                .map(|tx| tx.scope("Cocoon: streaming..."));
             let body = self.inner.debug_request_json(messages, &[], true);
             let body_bytes = serde_json::to_vec(&body)
                 .map_err(|e| LlmError::Other(format!("body serialization: {e}")))?;

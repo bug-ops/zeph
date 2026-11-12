@@ -97,13 +97,7 @@ pub fn collect_context_messages(messages: &[Message]) -> Vec<String> {
                     .any(|p| matches!(p, MessagePart::ToolResult { .. }))
         })
         .take(4)
-        .map(|m| {
-            if m.content.len() > 2048 {
-                m.content[..m.content.floor_char_boundary(2048)].to_owned()
-            } else {
-                m.content.clone()
-            }
-        })
+        .map(|m| zeph_common::text::truncate_to_bytes_ref(&m.content, 2048).to_owned())
         .collect()
 }
 

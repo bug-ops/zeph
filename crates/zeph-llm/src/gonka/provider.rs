@@ -256,9 +256,10 @@ impl GonkaProvider {
             let url = format!("{}{path}", endpoint.base_url);
 
             tracing::debug!(endpoint = %endpoint.base_url, "gonka POST {url}");
-            if let Some(ref tx) = self.status_tx {
-                let _ = tx.set(format!("Gonka: signing request to {}", endpoint.base_url));
-            }
+            let _status = self
+                .status_tx
+                .as_ref()
+                .map(|tx| tx.scope(format!("Gonka: signing request to {}", endpoint.base_url)));
 
             // Fresh timestamp on every attempt — non-replayable signatures.
             let timestamp_ns = u128::from(now_ns());

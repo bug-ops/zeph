@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod algorithms;
+mod goal_anchor;
 mod graph;
 mod query_bias;
 mod recall;

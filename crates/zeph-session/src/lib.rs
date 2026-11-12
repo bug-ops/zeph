@@ -39,6 +39,8 @@
 //! The `zeph-core` `SessionActor` integration (`zeph serve`, spec §9) lands in a later phase of
 //! the implementation plan (`specs/068-session-persistence/plan.md`).
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 pub mod condenser;
 pub mod error;
 pub mod event;

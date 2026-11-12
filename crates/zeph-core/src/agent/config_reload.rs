@@ -294,7 +294,7 @@ impl<C: Channel> Agent<C> {
                  for sandbox path recomputation (blocked_commands was rebuilt live)";
             tracing::warn!("{msg}");
             if let Some(ref tx) = self.services.session.status_tx {
-                let _ = tx.set(msg.to_owned());
+                let _ = tx.notice(msg);
             }
         }
 

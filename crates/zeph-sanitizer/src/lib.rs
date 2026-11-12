@@ -61,6 +61,8 @@
 //!   `ContentSanitizer::detect_pii`]. Requires an attached classifier backend.
 //!   See `ContentSanitizer::with_classifier`] and `ContentSanitizer::with_pii_detector`].
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 pub mod audit;
 pub mod causal_ipi;
 pub mod exfiltration;

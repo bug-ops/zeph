@@ -278,15 +278,14 @@ fn replace_ranges(text: &str, ranges: &mut [(usize, usize)]) -> String {
     let mut cursor = 0usize;
 
     for (start, end) in merge_ranges(ranges) {
+        let (start, end) = crate::pii::widen_to_char_boundaries(text, start, end);
         if start > cursor {
-            result.push_str(&text[cursor..start]);
+            result.push_str(text.get(cursor..start).unwrap_or_default());
         }
         result.push_str("[FILTERED]");
-        cursor = end;
+        cursor = cursor.max(end);
     }
-    if cursor < text.len() {
-        result.push_str(&text[cursor..]);
-    }
+    result.push_str(text.get(cursor..).unwrap_or_default());
     result
 }
 
@@ -312,6 +311,24 @@ mod tests {
 
     fn filter() -> IpiFilter {
         IpiFilter::new(0.6)
+    }
+
+    #[test]
+    fn replace_ranges_widens_range_off_a_char_boundary() {
+        // 'é' spans bytes 1..3, so (2, 4) widens to (1, 4) and the whole 'él' is replaced.
+        let text = "héllo world";
+        let mut ranges = [(2, 4), (7, 12)];
+        let out = replace_ranges(text, &mut ranges);
+        assert_eq!(out, "h[FILTERED]lo [FILTERED]");
+    }
+
+    #[test]
+    fn replace_ranges_clamps_out_of_range_end() {
+        let mut ranges = [(7, 999)];
+        assert_eq!(
+            replace_ranges("héllo world", &mut ranges),
+            "héllo [FILTERED]"
+        );
     }
 
     // --- clean text ---

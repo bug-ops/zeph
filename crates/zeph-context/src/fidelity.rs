@@ -179,11 +179,7 @@ where
 ///
 /// Returns a new `String`; does not modify the original.
 fn truncate_to_byte_limit(s: &str, max_bytes: usize) -> String {
-    if s.len() <= max_bytes {
-        return s.to_string();
-    }
-    let boundary = s.floor_char_boundary(max_bytes);
-    s[..boundary].to_string()
+    zeph_common::text::truncate_to_bytes_ref(s, max_bytes).to_string()
 }
 
 struct FidelityScore {
@@ -764,6 +760,10 @@ pub fn apply_input_cap(content: &mut String, max_tokens: usize) {
     }
 }
 
+#[expect(
+    clippy::string_slice,
+    reason = "index derived from a char boundary API on the same string"
+)]
 fn truncate_to_tokens(content: &mut String, max_tokens: usize, tc: &dyn TokenCounting) {
     if tc.count_tokens(content) <= max_tokens {
         return;

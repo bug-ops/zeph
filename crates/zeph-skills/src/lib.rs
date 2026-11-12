@@ -51,6 +51,8 @@
 //! # }
 //! ```
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 pub mod bm25;
 pub mod bundled;
 pub mod embedding;

@@ -227,7 +227,7 @@ async fn run_promotion_scan(
         let msg = format!("Heuristic promotion: {promoted_count} draft(s) queued for review");
         tracing::info!("{msg}");
         if let Some(tx) = status_tx {
-            let _ = tx.set(msg);
+            let _ = tx.notice(msg);
         }
     }
 }

@@ -327,7 +327,7 @@ impl GuardrailFilter {
                     .char_indices()
                     .nth(self.max_input_chars)
                     .map_or(content.len(), |(i, _)| i);
-                &content[..byte_end]
+                content.get(..byte_end).unwrap_or(content)
             } else {
                 content
             };

@@ -304,6 +304,10 @@ fn strip_spotlight_wrappers(body: &str) -> &str {
     body
 }
 
+#[expect(
+    clippy::string_slice,
+    reason = "offsets come from find/rfind of ASCII markers on the same string"
+)]
 fn extract_wrapper_inner<'a>(body: &'a str, open_tag: &str, close_tag: &str) -> Option<&'a str> {
     let start = body.find(open_tag)?;
     // Find end of opening tag (the '>')

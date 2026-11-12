@@ -13,7 +13,7 @@
 //! D1 — unknown schema versions must fail loud.
 
 use serde::Deserialize;
-use zeph_llm::provider::Message;
+use zeph_llm::provider::{Message, MessagePart, TurnContextTrust};
 
 use crate::MemoryError;
 use crate::graph::ingest::document::IngestSourceKind;
@@ -37,6 +37,7 @@ fn build_ingest_documents(
     context_window: usize,
     batch_id: &ImportBatchId,
     kind: IngestSourceKind,
+    trust: TurnContextTrust,
     source_uri: impl Fn(&str) -> String,
 ) -> Vec<IngestDocument> {
     let mut docs = Vec::with_capacity(texts.len());
@@ -50,11 +51,36 @@ fn build_ingest_documents(
             origin: kind.graph_origin(),
             import_batch_id: batch_id.as_str().to_owned(),
             source_uri: Some(source_uri(id)),
-            trust: kind.trust_level(),
+            trust,
         };
         docs.push(IngestDocument::new(content.clone(), ctx, provenance));
     }
     docs
+}
+
+/// Trust tier of a whole sub-agent transcript: the highest tier recorded on any tool-result
+/// message, never below the [`IngestSourceKind::SubagentTranscript`] floor.
+///
+/// A tool-result message without a recorded tier (a transcript written before per-result
+/// trust existed) or with an unknown value counts as `ExternalUntrusted`. The maximum is taken
+/// over the whole transcript, not per entry, because assistant text that follows a web fetch
+/// or an MCP call carries that content forward.
+fn transcript_trust(entries: &[TranscriptEntry]) -> TurnContextTrust {
+    entries
+        .iter()
+        .filter(|e| {
+            e.message
+                .parts
+                .iter()
+                .any(|p| matches!(p, MessagePart::ToolResult { .. }))
+        })
+        .map(|e| {
+            e.message.metadata.trust_level.map_or(
+                TurnContextTrust::ExternalUntrusted,
+                TurnContextTrust::from_u8_or_untrusted,
+            )
+        })
+        .fold(IngestSourceKind::SubagentTranscript.trust_level(), Ord::max)
 }
 
 /// Adapter that converts raw source material into [`IngestDocument`] values.
@@ -192,6 +218,7 @@ impl IngestSourceAdapter for SubagentJsonl {
             self.context_window,
             batch_id,
             IngestSourceKind::SubagentTranscript,
+            transcript_trust(&entries),
             |id| format!("subagent:{}#{id}", self.task_id),
         ))
     }
@@ -373,6 +400,7 @@ impl IngestSourceAdapter for ClaudeCodeJsonl {
             self.context_window,
             batch_id,
             IngestSourceKind::ExternalAgent,
+            IngestSourceKind::ExternalAgent.trust_level(),
             |uuid| format!("claude-code:{}#{uuid}", self.session_id),
         ))
     }
@@ -540,6 +568,7 @@ impl IngestSourceAdapter for CodexJsonl {
             self.context_window,
             batch_id,
             IngestSourceKind::ExternalAgent,
+            IngestSourceKind::ExternalAgent.trust_level(),
             |item_id| format!("codex:{}#{item_id}", self.session_id),
         ))
     }
@@ -630,6 +659,99 @@ mod tests {
         let batch = ImportBatchId::new();
         let docs = adapter.parse("", &batch).unwrap();
         assert!(docs.is_empty());
+    }
+
+    fn tool_result_line(seq: u64, tool: &str, trust: Option<u8>) -> String {
+        use zeph_llm::provider::{MessagePart, Role};
+        let mut message = Message::from_parts(
+            Role::User,
+            vec![MessagePart::ToolResult {
+                tool_use_id: format!("call-{seq}").into(),
+                content: format!("[tool output: {tool}]\nresult text"),
+                is_error: false,
+            }],
+        );
+        message.metadata.trust_level = trust;
+        serde_json::json!({"seq": seq, "timestamp": null, "message": message}).to_string()
+    }
+
+    fn parse_trust(lines: &[String]) -> Vec<TurnContextTrust> {
+        let docs = SubagentJsonl::new("task-t")
+            .parse(&lines.join("\n"), &ImportBatchId::new())
+            .unwrap();
+        assert!(!docs.is_empty());
+        docs.iter().map(|d| d.provenance().trust).collect()
+    }
+
+    #[test]
+    fn mcp_only_transcript_is_external_untrusted() {
+        let lines = [tool_result_line(
+            0,
+            "github_create_issue",
+            Some(TurnContextTrust::ExternalUntrusted.as_u8()),
+        )];
+        assert_eq!(
+            parse_trust(&lines),
+            vec![TurnContextTrust::ExternalUntrusted]
+        );
+    }
+
+    #[test]
+    fn check_messages_only_transcript_is_external_untrusted() {
+        let lines = [tool_result_line(
+            0,
+            "check_messages",
+            Some(TurnContextTrust::ExternalUntrusted.as_u8()),
+        )];
+        assert_eq!(
+            parse_trust(&lines),
+            vec![TurnContextTrust::ExternalUntrusted]
+        );
+    }
+
+    #[test]
+    fn shell_only_transcript_stays_local_untrusted() {
+        let lines = [tool_result_line(
+            0,
+            "shell",
+            Some(TurnContextTrust::LocalUntrusted.as_u8()),
+        )];
+        assert_eq!(parse_trust(&lines), vec![TurnContextTrust::LocalUntrusted]);
+    }
+
+    #[test]
+    fn mixed_transcript_takes_highest_trust_for_every_document() {
+        let lines = [
+            tool_result_line(0, "shell", Some(TurnContextTrust::LocalUntrusted.as_u8())),
+            make_jsonl(&[(1, "assistant summary of the fetched page")]),
+            tool_result_line(
+                2,
+                "web_scrape",
+                Some(TurnContextTrust::ExternalUntrusted.as_u8()),
+            ),
+        ];
+        assert_eq!(
+            parse_trust(&lines),
+            vec![TurnContextTrust::ExternalUntrusted; 3]
+        );
+    }
+
+    #[test]
+    fn tool_result_without_recorded_trust_fails_closed() {
+        let lines = [tool_result_line(0, "shell", None)];
+        assert_eq!(
+            parse_trust(&lines),
+            vec![TurnContextTrust::ExternalUntrusted]
+        );
+    }
+
+    #[test]
+    fn tool_result_with_unknown_trust_value_fails_closed() {
+        let lines = [tool_result_line(0, "shell", Some(9))];
+        assert_eq!(
+            parse_trust(&lines),
+            vec![TurnContextTrust::ExternalUntrusted]
+        );
     }
 
     // ── ClaudeCodeJsonl tests ────────────────────────────────────────────────

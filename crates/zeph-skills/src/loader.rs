@@ -350,7 +350,8 @@ fn collect_block_scalar<'a>(
                 if s.trim().is_empty() {
                     ""
                 } else {
-                    &s[block_indent.min(leading_indent(s))..]
+                    s.get(block_indent.min(leading_indent(s))..)
+                        .unwrap_or_default()
                 }
             })
             .collect();
@@ -582,6 +583,10 @@ fn parse_frontmatter(yaml_str: &str) -> RawFrontmatter {
     raw
 }
 
+#[expect(
+    clippy::string_slice,
+    reason = "ASCII-only indentation and markers keep every offset on a char boundary"
+)]
 fn split_frontmatter(content: &str) -> Result<(&str, &str), SkillError> {
     let content = content.trim_start();
     if !content.starts_with("---") {
@@ -838,12 +843,12 @@ pub fn validate_skill_references(body: &str, skill_dir: &Path) -> Vec<String> {
     // Match ](references/...), ](scripts/...), ](assets/...)
     let mut rest = body;
     while let Some(open) = rest.find("](") {
-        rest = &rest[open + 2..];
+        rest = rest.get(open + 2..).unwrap_or_default();
         let Some(close) = rest.find(')') else {
             break;
         };
-        let target = &rest[..close];
-        rest = &rest[close + 1..];
+        let target = rest.get(..close).unwrap_or_default();
+        rest = rest.get(close + 1..).unwrap_or_default();
 
         if !target.starts_with("references/")
             && !target.starts_with("scripts/")

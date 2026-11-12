@@ -626,13 +626,10 @@ fn parse_tier_from_response(raw: &str) -> Option<ComplexityTier> {
     }
     // Try extracting from partial/embedded JSON.
     let trimmed = raw.trim();
-    if let Some(start) = trimmed.find('{')
-        && let Some(end) = trimmed.rfind('}')
+    if let Some(json_fragment) = zeph_common::llm_response::extract_json_object_slice(trimmed)
+        && let Ok(verdict) = serde_json::from_str::<TriageVerdict>(json_fragment)
     {
-        let json_fragment = &trimmed[start..=end];
-        if let Ok(verdict) = serde_json::from_str::<TriageVerdict>(json_fragment) {
-            return Some(verdict.tier);
-        }
+        return Some(verdict.tier);
     }
     // Substring fallback: look for tier value patterns in the raw text.
     for (needle, tier) in [
@@ -642,8 +639,7 @@ fn parse_tier_from_response(raw: &str) -> Option<ComplexityTier> {
         ("\"expert\"", ComplexityTier::Expert),
     ] {
         // Only match when preceded by "tier" key to avoid false positives.
-        if let Some(tier_pos) = raw.find("\"tier\"") {
-            let after_key = &raw[tier_pos..];
+        if let Some((_, after_key)) = raw.split_once("\"tier\"") {
             if after_key.contains(needle) {
                 return Some(tier);
             }
@@ -1149,6 +1145,12 @@ mod tests {
     fn parse_tier_json() {
         let raw = r#"{"tier":"simple","reason":"greeting","large_context":false}"#;
         assert_eq!(parse_tier_from_response(raw), Some(ComplexityTier::Simple));
+    }
+
+    #[test]
+    fn parse_tier_inverted_braces_does_not_panic() {
+        assert_eq!(parse_tier_from_response("no} verdict {"), None);
+        assert_eq!(parse_tier_from_response("вердикт} нет {ответа"), None);
     }
 
     #[test]

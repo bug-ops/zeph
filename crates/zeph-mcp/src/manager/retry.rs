@@ -113,18 +113,13 @@ where
             });
         }
 
-        // Emit status message.
-        if let Some(stx) = status_tx {
-            // SECURITY: only server_id is included — never transport URL, headers, or tokens.
-            let msg = if attempt == 1 {
-                format!("Connecting to MCP server {server_id}...")
-            } else {
-                format!(
-                    "Reconnecting to MCP server {server_id} (attempt {attempt}/{max_attempts})..."
-                )
-            };
-            let _ = stx.set(msg);
-        }
+        // SECURITY: only server_id is included — never transport URL, headers, or tokens.
+        let msg = if attempt == 1 {
+            format!("Connecting to MCP server {server_id}...")
+        } else {
+            format!("Reconnecting to MCP server {server_id} (attempt {attempt}/{max_attempts})...")
+        };
+        let _status = status_tx.map(|stx| stx.scope(msg));
 
         match attempt_fn(attempt).await {
             Ok(client) => return Ok(client),

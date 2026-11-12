@@ -1642,7 +1642,10 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             if let Some(ref early) = early_tui_guard.0 {
                 let _ = early
                     .agent_tx
-                    .send(zeph_tui::AgentEvent::Status($msg.into()))
+                    .send(crate::tui_bridge::lane_set(
+                        zeph_tui::event::ProducerLane::Bootstrap,
+                        $msg,
+                    ))
                     .await;
             }
         };
@@ -1653,7 +1656,12 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     macro_rules! tui_status_clear {
         () => {
             if let Some(ref early) = early_tui_guard.0 {
-                let _ = early.agent_tx.send(zeph_tui::AgentEvent::ClearStatus).await;
+                let _ = early
+                    .agent_tx
+                    .send(crate::tui_bridge::lane_clear(
+                        zeph_tui::event::ProducerLane::Bootstrap,
+                    ))
+                    .await;
             }
         };
     }
@@ -1757,11 +1765,11 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         registry.read().all_meta().into_iter().cloned().collect();
     let skill_count = all_meta_owned.len();
 
-    // Per-skill load errors are logged by the registry at `warn`; the status line (latest-wins)
-    // carries only a one-line summary so it never implies completeness.
+    // Per-skill load errors are logged by the registry at `warn`; the notice carries only a
+    // one-line summary so it never implies completeness.
     let skipped_skills = registry.read().load_errors().len();
     if skipped_skills > 0 {
-        let _ = agent_status_tx.set(format!(
+        let _ = agent_status_tx.notice(format!(
             "warning: {skipped_skills} skill(s) skipped, see log"
         ));
     }

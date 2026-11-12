@@ -105,12 +105,14 @@ pub(crate) fn maybe_refresh_task_goal(summ: &mut ContextSummarizationView<'_>) {
     *summ.task_goal_user_msg_hash = Some(hash);
     let recent = recent_user_assistant_excerpt(summ.messages, 10, false);
     let provider = summ.summarization_deps.provider.clone();
-    let handle = spawn_task_goal_extraction(provider, recent, &summ.task_supervisor);
+    let handle = spawn_task_goal_extraction(
+        provider,
+        recent,
+        &summ.task_supervisor,
+        summ.status_tx.clone(),
+    );
     *summ.pending_task_goal = Some(handle);
     tracing::debug!("extract_task_goal: background task spawned");
-    if let Some(ref tx) = summ.status_tx {
-        let _ = tx.set("Extracting task goal...");
-    }
 }
 
 /// Refresh the subgoal registry when the last user message has changed.
@@ -160,12 +162,14 @@ pub(crate) fn maybe_refresh_subgoal(summ: &mut ContextSummarizationView<'_>) {
 
     let recent = recent_user_assistant_excerpt(summ.messages, 6, true);
     let provider = summ.summarization_deps.provider.clone();
-    let handle = spawn_subgoal_extraction(provider, recent, &summ.task_supervisor);
+    let handle = spawn_subgoal_extraction(
+        provider,
+        recent,
+        &summ.task_supervisor,
+        summ.status_tx.clone(),
+    );
     *summ.pending_subgoal = Some(handle);
     tracing::debug!("subgoal_extraction: background task spawned");
-    if let Some(ref tx) = summ.status_tx {
-        let _ = tx.set("Tracking subgoal...");
-    }
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
@@ -185,12 +189,7 @@ fn apply_completed_task_goal(summ: &mut ContextSummarizationView<'_>) {
             Ok(Err(e)) => tracing::debug!("extract_task_goal: task error: {e}"),
             Err(handle) => {
                 *summ.pending_task_goal = Some(handle);
-                return;
             }
-        }
-        // Clear spinner on all completion paths.
-        if let Some(ref tx) = summ.status_tx {
-            let _ = tx.clear();
         }
     }
 }
@@ -211,11 +210,7 @@ fn apply_completed_subgoal(summ: &mut ContextSummarizationView<'_>, msg_len: usi
             Ok(Err(e)) => tracing::debug!("subgoal_extraction: task error: {e}"),
             Err(handle) => {
                 *summ.pending_subgoal = Some(handle);
-                return;
             }
-        }
-        if let Some(ref tx) = summ.status_tx {
-            let _ = tx.clear();
         }
     }
 }
@@ -387,8 +382,10 @@ fn spawn_task_goal_extraction(
     provider: AnyProvider,
     recent: Vec<(Role, String)>,
     supervisor: &std::sync::Arc<zeph_common::TaskSupervisor>,
+    status_tx: Option<zeph_llm::status::StatusSender>,
 ) -> BlockingHandle<Option<String>> {
     let task = async move {
+        let _status = status_tx.map(|tx| tx.scope("Extracting task goal..."));
         if recent.is_empty() {
             return None;
         }
@@ -450,8 +447,10 @@ fn spawn_subgoal_extraction(
     provider: AnyProvider,
     recent: Vec<(Role, String)>,
     supervisor: &std::sync::Arc<zeph_common::TaskSupervisor>,
+    status_tx: Option<zeph_llm::status::StatusSender>,
 ) -> BlockingHandle<Option<SubgoalExtractionResult>> {
     let task = async move {
+        let _status = status_tx.map(|tx| tx.scope("Tracking subgoal..."));
         if recent.is_empty() {
             return None;
         }

@@ -111,13 +111,20 @@ fn map_session_summary(r: zeph_memory::semantic::SessionSummaryResult) -> MemSes
 /// Adapter that implements [`ContextMemoryBackend`] by delegating to [`SemanticMemory`].
 pub struct SemanticMemoryBackend {
     inner: std::sync::Arc<SemanticMemory>,
+    goal_anchor: Option<zeph_memory::EntityId>,
 }
 
 impl SemanticMemoryBackend {
     /// Wrap an `Arc<SemanticMemory>` in the backend adapter.
+    ///
+    /// `goal_anchor` is the graph entity of the active goal, forwarded to every flat recall so the
+    /// causal-distance signal of five-signal ranking can run; `None` keeps it neutral.
     #[must_use]
-    pub fn new(inner: std::sync::Arc<SemanticMemory>) -> Self {
-        Self { inner }
+    pub fn new(
+        inner: std::sync::Arc<SemanticMemory>,
+        goal_anchor: Option<zeph_memory::EntityId>,
+    ) -> Self {
+        Self { inner, goal_anchor }
     }
 }
 
@@ -227,12 +234,12 @@ impl ContextMemoryBackend for SemanticMemoryBackend {
         Box::pin(async move {
             let recalled = if let Some(r) = router {
                 self.inner
-                    .recall_routed_async(query, limit, None, r, None)
+                    .recall_routed_async(query, limit, None, r, self.goal_anchor)
                     .await
                     .map_err(box_err)?
             } else {
                 self.inner
-                    .recall(query, limit, None)
+                    .recall(query, limit, None, self.goal_anchor)
                     .await
                     .map_err(box_err)?
             };
@@ -1026,7 +1033,7 @@ mod tests {
             .unwrap();
 
         let memory = std::sync::Arc::new(memory.with_graph_store(graph_store));
-        SemanticMemoryBackend::new(memory)
+        SemanticMemoryBackend::new(memory, None)
     }
 
     #[tokio::test]
@@ -1168,7 +1175,7 @@ mod tests {
             .unwrap();
 
         let memory = std::sync::Arc::new(memory.with_graph_store(graph_store));
-        SemanticMemoryBackend::new(memory)
+        SemanticMemoryBackend::new(memory, None)
     }
 
     #[tokio::test]
@@ -1304,7 +1311,7 @@ mod tests {
             .unwrap();
 
         let memory = std::sync::Arc::new(memory.with_graph_store(graph_store));
-        SemanticMemoryBackend::new(memory)
+        SemanticMemoryBackend::new(memory, None)
     }
 
     /// Proves `retrieval_strategy = WaterCircles` dispatches to `recall_graph_watercircles`
@@ -1547,7 +1554,7 @@ mod tests {
             .unwrap();
 
         let memory = std::sync::Arc::new(memory.with_graph_store(graph_store));
-        (SemanticMemoryBackend::new(memory), snippet.to_owned())
+        (SemanticMemoryBackend::new(memory, None), snippet.to_owned())
     }
 
     #[tokio::test]
@@ -1669,7 +1676,7 @@ mod tests {
             .unwrap();
 
         let memory = std::sync::Arc::new(memory.with_graph_store(graph_store));
-        SemanticMemoryBackend::new(memory)
+        SemanticMemoryBackend::new(memory, None)
     }
 
     #[tokio::test]

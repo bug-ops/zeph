@@ -95,7 +95,7 @@ async fn connect_all_skips_failing_servers() {
 }
 
 #[tokio::test]
-async fn connect_all_emits_status_messages() {
+async fn connect_all_clears_its_status_when_the_attempt_ends() {
     let (status_tx, mut status_rx) =
         zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Mcp);
     let mgr = McpManager::new(
@@ -107,16 +107,13 @@ async fn connect_all_emits_status_messages() {
 
     mgr.connect_all().await;
 
-    // The "Connecting to my-mcp..." message must have been emitted before the connection
-    // attempt (which will fail, there is no real server). Latest wins, so the receiver
-    // observes the last status the manager set.
+    // The "Connecting to my-mcp..." status was set before the attempt (which fails, there is
+    // no real server) and cleared when it ended. Latest wins, so the receiver observes the
+    // clear: a stale "Connecting..." must not outlive the attempt.
     let update = tokio::time::timeout(std::time::Duration::from_millis(100), status_rx.next())
         .await
-        .expect("connect_all must emit a status message");
-    assert!(
-        matches!(&update, Some(zeph_llm::status::StatusUpdate::Set(t)) if t.as_str().contains("my-mcp")),
-        "expected status message for my-mcp, got: {update:?}"
-    );
+        .expect("connect_all must touch the status channel");
+    assert_eq!(update, Some(zeph_llm::status::StatusUpdate::Clear));
 }
 
 /// Status is latest-wins, so concurrent OAuth handshakes can replace each other's URL in the
@@ -133,6 +130,33 @@ fn announce_oauth_url_logs_every_url_at_warn() {
     assert!(logs_contain("https://auth.example/a"));
     assert!(logs_contain("https://auth.example/b"));
     assert!(logs_contain("WARN"));
+}
+
+/// Concurrent handshakes share the latest-wins status slot, but each URL stays deliverable
+/// through the notice queue.
+#[tokio::test]
+async fn announce_oauth_url_delivers_every_url_as_a_notice() {
+    use zeph_llm::status::{StatusEvent, StatusSource, StatusUpdate, status_channel};
+
+    let (status_tx, mut status_rx) = status_channel(StatusSource::Mcp);
+
+    announce_oauth_url("server-a", "https://auth.example/a", 8123, Some(&status_tx));
+    announce_oauth_url("server-b", "https://auth.example/b", 8124, Some(&status_tx));
+
+    let mut notices = Vec::new();
+    for _ in 0..2 {
+        match status_rx.next_event().await {
+            Some(StatusEvent::Notice(text)) => notices.push(text.into_string()),
+            other => panic!("expected a notice, got {other:?}"),
+        }
+    }
+    assert!(notices[0].contains("https://auth.example/a"));
+    assert!(notices[1].contains("https://auth.example/b"));
+
+    let Some(StatusEvent::Update(StatusUpdate::Set(label))) = status_rx.next_event().await else {
+        panic!("expected the short status label after the notices");
+    };
+    assert_eq!(label.as_str(), "Waiting for OAuth: server-b");
 }
 
 #[tokio::test]

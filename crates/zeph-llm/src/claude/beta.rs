@@ -109,6 +109,10 @@ pub(super) fn is_thinking_binding_mismatch(status: StatusCode, body: &str) -> bo
 
 /// Whether `marker` occurs in `body` as a root-level field path, not as the tail of a longer
 /// path such as `messages.0.<marker>`.
+#[expect(
+    clippy::string_slice,
+    reason = "index derived from a find/char-boundary API on the same string"
+)]
 fn contains_root_path(body: &str, marker: &str) -> bool {
     body.match_indices(marker).any(|(at, _)| {
         body[..at]

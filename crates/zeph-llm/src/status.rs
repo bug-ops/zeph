@@ -18,12 +18,13 @@
 //!   is ignored.
 //!
 //! Status is replaceable state: updates collapse to the latest. A one-shot notice that must not
-//! be lost (an OAuth URL, a skipped-skill warning) must also go through a non-collapsing path
-//! such as a `tracing` warning or `Channel::send_notice`.
+//! be lost (an OAuth URL, a skipped-skill warning) goes through the notice queue
+//! ([`StatusSender::notice`]): a small bounded queue that never collapses, delivered to the
+//! receiver as [`StatusEvent::Notice`] ahead of any pending status update.
 //!
 //! Clear-if-armed applies to this background lane only. The agent-turn lane
-//! (`Channel::send_status` / `clear_status`) drives the same visible indicator and clears it
-//! unconditionally.
+//! (`Channel::send_status` / `clear_status`) is a separate lane on the consumer side, so a turn
+//! clear never hides a background status (see the TUI status board).
 //!
 //! # Examples
 //!
@@ -47,7 +48,10 @@
 use std::borrow::Cow;
 use std::fmt;
 
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
+
+/// Capacity of the notice queue. A full queue drops the newest notice with a `warn` log.
+const NOTICE_QUEUE_CAPACITY: usize = 16;
 
 /// A non-empty status message.
 ///
@@ -192,6 +196,31 @@ impl StatusEntry {
     }
 }
 
+/// One item delivered by [`StatusReceiver::next_event`].
+///
+/// # Examples
+///
+/// ```
+/// use zeph_llm::status::{StatusEvent, StatusSource, status_channel};
+///
+/// # tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
+/// let (tx, mut rx) = status_channel(StatusSource::Mcp);
+/// tx.set("Waiting for OAuth: a").unwrap();
+/// tx.notice("Open https://auth.example/a").unwrap();
+///
+/// // Notices are delivered first and never collapse.
+/// assert!(matches!(rx.next_event().await, Some(StatusEvent::Notice(_))));
+/// assert!(matches!(rx.next_event().await, Some(StatusEvent::Update(_))));
+/// # });
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StatusEvent {
+    /// The latest-wins status changed.
+    Update(StatusUpdate),
+    /// A one-shot message that must reach the user.
+    Notice(StatusText),
+}
+
 /// Every receiver of the status channel has been dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("status receiver closed")]
@@ -205,6 +234,7 @@ pub struct StatusClosed;
 pub struct StatusSender {
     source: StatusSource,
     tx: watch::Sender<Board>,
+    notices: mpsc::Sender<StatusText>,
 }
 
 impl StatusSender {
@@ -214,6 +244,7 @@ impl StatusSender {
         Self {
             source,
             tx: self.tx.clone(),
+            notices: self.notices.clone(),
         }
     }
 
@@ -262,6 +293,35 @@ impl StatusSender {
         }
     }
 
+    /// Show `text` for as long as the returned guard lives; dropping it clears the status.
+    ///
+    /// Preferred over a bare [`set`](Self::set): the clear on every exit path (early return,
+    /// `?`, cancellation) is enforced by the guard. Text that reports a one-shot result or a
+    /// warning belongs in [`notice`](Self::notice) instead. Empty text is a logged no-op set,
+    /// and the guard still clears on drop.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::status::{StatusSource, StatusUpdate, status_channel};
+    ///
+    /// # tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
+    /// let (tx, mut rx) = status_channel(StatusSource::Memory);
+    /// {
+    ///     let _scope = tx.scope("Searching memory…");
+    ///     assert_eq!(rx.next().await.unwrap().to_string(), "Set(Searching memory…)");
+    /// }
+    /// assert_eq!(rx.next().await, Some(StatusUpdate::Clear));
+    /// # });
+    /// ```
+    #[must_use = "dropping the scope clears the status"]
+    pub fn scope(&self, text: impl Into<Cow<'static, str>>) -> StatusScope {
+        let _ = self.set(text);
+        StatusScope {
+            sender: self.clone(),
+        }
+    }
+
     /// Clear the status if this sender's source has an outstanding `set` (clear-if-armed).
     ///
     /// # Errors
@@ -269,6 +329,31 @@ impl StatusSender {
     /// Returns [`StatusClosed`] when no receiver is left.
     pub fn clear(&self) -> Result<(), StatusClosed> {
         self.send(StatusUpdate::Clear)
+    }
+
+    /// Queue a one-shot notice that must not collapse (an OAuth URL, a warning).
+    ///
+    /// Unlike [`set`](Self::set), notices are never replaced by later ones. The queue is
+    /// bounded; when it is full the notice is dropped with a `warn` log and `Ok` is returned, so
+    /// a slow consumer cannot stall the producer. Empty or whitespace-only text is a logged
+    /// no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StatusClosed`] when no receiver is left.
+    pub fn notice(&self, text: impl Into<Cow<'static, str>>) -> Result<(), StatusClosed> {
+        let Some(text) = StatusText::new(text) else {
+            tracing::debug!(source = ?self.source, "ignoring empty status notice");
+            return self.closed_result();
+        };
+        match self.notices.try_send(text) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                tracing::warn!(source = ?self.source, "status notice queue full, dropping notice");
+                Ok(())
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(StatusClosed),
+        }
     }
 
     fn closed_result(&self) -> Result<(), StatusClosed> {
@@ -280,25 +365,100 @@ impl StatusSender {
     }
 }
 
+/// RAII guard returned by [`StatusSender::scope`]: the status it set is cleared on drop.
+///
+/// Clearing is clear-if-armed, so a nested status from another source is removed by its owner
+/// and a clear after the receiver is gone is silently ignored.
+#[derive(Debug)]
+#[must_use = "dropping the scope clears the status"]
+pub struct StatusScope {
+    sender: StatusSender,
+}
+
+impl StatusScope {
+    /// Replace the scope's text while the work continues (latest wins).
+    pub fn update(&self, text: impl Into<Cow<'static, str>>) {
+        let _ = self.sender.set(text);
+    }
+}
+
+impl Drop for StatusScope {
+    fn drop(&mut self) {
+        let _ = self.sender.clear();
+    }
+}
+
+/// A status scope opened on the first message of an operation, for code paths that only
+/// sometimes have something to report (a router fallback). The status is cleared when the
+/// reporter is dropped, so it never outlives the operation.
+#[derive(Debug)]
+pub(crate) struct StatusReporter {
+    sender: Option<StatusSender>,
+    scope: Option<StatusScope>,
+}
+
+impl StatusReporter {
+    pub(crate) fn new(sender: Option<StatusSender>) -> Self {
+        Self {
+            sender,
+            scope: None,
+        }
+    }
+
+    pub(crate) fn show(&mut self, text: impl Into<Cow<'static, str>>) {
+        match (&self.scope, &self.sender) {
+            (Some(scope), _) => scope.update(text),
+            (None, Some(sender)) => self.scope = Some(sender.scope(text)),
+            (None, None) => {}
+        }
+    }
+}
+
 /// Consumer handle of the status channel.
 #[derive(Debug)]
 pub struct StatusReceiver {
     rx: watch::Receiver<Board>,
+    notices: mpsc::Receiver<StatusText>,
 }
 
 impl StatusReceiver {
-    /// Wait for the next change and return it as an update.
+    /// Wait for the next status change and return it as an update.
     ///
-    /// Intermediate updates are collapsed: only the latest state is observed. Returns `None`
-    /// once every sender is dropped and the last change was consumed.
+    /// Intermediate updates are collapsed: only the latest state is observed. Notices are
+    /// skipped (use [`next_event`](Self::next_event) to receive them). Returns `None` once every
+    /// sender is dropped and the last change was consumed.
     pub async fn next(&mut self) -> Option<StatusUpdate> {
-        self.rx.changed().await.ok()?;
-        let entry = self.rx.borrow_and_update().entry.clone();
-        Some(match entry {
-            Some(entry) => StatusUpdate::Set(entry.text),
-            None => StatusUpdate::Clear,
-        })
+        loop {
+            match self.next_event().await? {
+                StatusEvent::Update(update) => return Some(update),
+                StatusEvent::Notice(_) => {}
+            }
+        }
     }
+
+    /// Wait for the next status change or notice.
+    ///
+    /// Pending notices are delivered before status updates. Returns `None` once every sender is
+    /// dropped, the notice queue is drained and the last status change was consumed.
+    pub async fn next_event(&mut self) -> Option<StatusEvent> {
+        tokio::select! {
+            biased;
+            notice = self.notices.recv() => match notice {
+                Some(text) => Some(StatusEvent::Notice(text)),
+                None => next_update(&mut self.rx).await.map(StatusEvent::Update),
+            },
+            update = next_update(&mut self.rx) => update.map(StatusEvent::Update),
+        }
+    }
+}
+
+async fn next_update(rx: &mut watch::Receiver<Board>) -> Option<StatusUpdate> {
+    rx.changed().await.ok()?;
+    let entry = rx.borrow_and_update().entry.clone();
+    Some(match entry {
+        Some(entry) => StatusUpdate::Set(entry.text),
+        None => StatusUpdate::Clear,
+    })
 }
 
 /// Create a status channel whose sender is labelled with `source`.
@@ -315,7 +475,18 @@ impl StatusReceiver {
 #[must_use]
 pub fn status_channel(source: StatusSource) -> (StatusSender, StatusReceiver) {
     let (tx, rx) = watch::channel(Board::default());
-    (StatusSender { source, tx }, StatusReceiver { rx })
+    let (notice_tx, notice_rx) = mpsc::channel(NOTICE_QUEUE_CAPACITY);
+    (
+        StatusSender {
+            source,
+            tx,
+            notices: notice_tx,
+        },
+        StatusReceiver {
+            rx,
+            notices: notice_rx,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -457,6 +628,114 @@ mod tests {
         drop(tx);
         drop(clone);
         assert_eq!(rx.next().await, None);
+    }
+
+    #[tokio::test]
+    async fn dropping_a_scope_delivers_clear() {
+        let (tx, mut rx) = status_channel(StatusSource::Memory);
+        {
+            let scope = tx.scope("working");
+            assert_eq!(rx.next().await, Some(StatusUpdate::Set(text("working"))));
+            scope.update("still working");
+            assert_eq!(
+                rx.next().await,
+                Some(StatusUpdate::Set(text("still working")))
+            );
+        }
+        assert_eq!(rx.next().await, Some(StatusUpdate::Clear));
+    }
+
+    #[tokio::test]
+    async fn scope_owner_clears_a_nested_status_from_another_source() {
+        let (agent, mut rx) = status_channel(StatusSource::Agent);
+        let provider = agent.with_source(StatusSource::Provider);
+        let scope = agent.scope("sidequest");
+        assert_eq!(rx.next().await, Some(StatusUpdate::Set(text("sidequest"))));
+        provider.set("retrying").unwrap();
+        assert_eq!(rx.next().await, Some(StatusUpdate::Set(text("retrying"))));
+
+        drop(scope);
+        assert_eq!(rx.next().await, Some(StatusUpdate::Clear));
+    }
+
+    #[test]
+    fn scope_drop_after_receiver_closed_does_not_panic() {
+        let (tx, rx) = status_channel(StatusSource::Agent);
+        let scope = tx.scope("busy");
+        drop(rx);
+        drop(scope);
+    }
+
+    #[tokio::test]
+    async fn notices_never_collapse_and_precede_status_updates() {
+        let (tx, mut rx) = status_channel(StatusSource::Mcp);
+        tx.set("Waiting for OAuth: a").unwrap();
+        tx.notice("url-a").unwrap();
+        tx.notice("url-b").unwrap();
+
+        assert_eq!(
+            rx.next_event().await,
+            Some(StatusEvent::Notice(text("url-a")))
+        );
+        assert_eq!(
+            rx.next_event().await,
+            Some(StatusEvent::Notice(text("url-b")))
+        );
+        assert_eq!(
+            rx.next_event().await,
+            Some(StatusEvent::Update(StatusUpdate::Set(text(
+                "Waiting for OAuth: a"
+            ))))
+        );
+    }
+
+    #[tokio::test]
+    async fn next_skips_notices_and_still_yields_updates() {
+        let (tx, mut rx) = status_channel(StatusSource::Mcp);
+        tx.notice("url").unwrap();
+        tx.set("busy").unwrap();
+        assert_eq!(rx.next().await, Some(StatusUpdate::Set(text("busy"))));
+    }
+
+    #[tokio::test]
+    async fn full_notice_queue_drops_newest_without_error() {
+        let (tx, mut rx) = status_channel(StatusSource::Mcp);
+        for _ in 0..NOTICE_QUEUE_CAPACITY {
+            tx.notice("queued").unwrap();
+        }
+        assert!(tx.notice("overflow").is_ok());
+        for _ in 0..NOTICE_QUEUE_CAPACITY {
+            assert_eq!(
+                rx.next_event().await,
+                Some(StatusEvent::Notice(text("queued")))
+            );
+        }
+        assert_silent_events(&mut rx).await;
+    }
+
+    async fn assert_silent_events(rx: &mut StatusReceiver) {
+        let woken = tokio::time::timeout(Duration::from_millis(50), rx.next_event()).await;
+        assert!(woken.is_err(), "no further event expected");
+    }
+
+    #[test]
+    fn notice_reports_closed_and_ignores_empty_text() {
+        let (tx, rx) = status_channel(StatusSource::Mcp);
+        assert!(tx.notice("  ").is_ok());
+        drop(rx);
+        assert_eq!(tx.notice("url"), Err(StatusClosed));
+    }
+
+    #[tokio::test]
+    async fn pending_notice_is_delivered_after_senders_drop() {
+        let (tx, mut rx) = status_channel(StatusSource::Mcp);
+        tx.notice("last words").unwrap();
+        drop(tx);
+        assert_eq!(
+            rx.next_event().await,
+            Some(StatusEvent::Notice(text("last words")))
+        );
+        assert_eq!(rx.next_event().await, None);
     }
 
     #[tokio::test]

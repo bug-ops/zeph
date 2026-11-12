@@ -202,12 +202,9 @@ impl TurnCausalAnalyzer {
                 let trimmed = response.trim();
                 // Bound probe response to probe_max_chars to cap Levenshtein cost and
                 // prevent unbounded responses from distorting deviation scores.
-                let bounded = if trimmed.len() <= self.probe_max_chars {
-                    trimmed.to_owned()
-                } else {
-                    let boundary = trimmed.floor_char_boundary(self.probe_max_chars);
-                    trimmed[..boundary].to_owned()
-                };
+                let bounded =
+                    zeph_common::text::truncate_to_bytes_ref(trimmed, self.probe_max_chars)
+                        .to_owned();
                 Ok(bounded)
             }
             Ok(Err(e)) => Err(CausalIpiError::LlmError(e)),
@@ -356,11 +353,7 @@ pub fn format_tool_snippet(body: &str) -> String {
     if body.is_empty() {
         return "[empty]".into();
     }
-    if body.len() <= SNIPPET_MAX_BYTES {
-        return body.to_owned();
-    }
-    let boundary = body.floor_char_boundary(SNIPPET_MAX_BYTES);
-    body[..boundary].to_owned()
+    zeph_common::text::truncate_to_bytes_ref(body, SNIPPET_MAX_BYTES).to_owned()
 }
 
 /// Format a tool error as a snippet for the post-probe context.
@@ -378,12 +371,7 @@ pub fn format_tool_snippet(body: &str) -> String {
 #[must_use]
 pub fn format_error_snippet(error: &str) -> String {
     let max = 100;
-    let truncated = if error.len() <= max {
-        error
-    } else {
-        let b = error.floor_char_boundary(max);
-        &error[..b]
-    };
+    let truncated = zeph_common::text::truncate_to_bytes_ref(error, max);
     format!("[error: {truncated}]")
 }
 

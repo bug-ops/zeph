@@ -113,10 +113,12 @@ impl<C: Channel> Agent<C> {
             "failure"
         }
         .to_string();
-        let status_tx = self.services.session.status_tx.clone();
-        if let Some(ref tx) = self.services.session.status_tx {
-            let _ = tx.set("Learning from patterns…");
-        }
+        let status = self
+            .services
+            .session
+            .status_tx
+            .as_ref()
+            .map(|tx| tx.scope("Learning from patterns…"));
         let args = StemTaskArgs {
             provider: self.resolve_background_provider(config.stem_provider.as_str()),
             memory,
@@ -131,9 +133,8 @@ impl<C: Channel> Agent<C> {
             retention_days: config.stem_retention_days,
             max_auto_sections: config.max_auto_sections,
             skill_paths: self.services.skill.skill_paths.clone(),
-            status_tx,
         };
-        self.try_spawn_learning_task(super::background::stem_detection_task(args));
+        self.try_spawn_learning_task_scoped(status, super::background::stem_detection_task(args));
     }
 
     /// Retrieve matching step corrections for the current tool failure.

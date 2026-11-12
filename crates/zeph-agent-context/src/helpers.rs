@@ -105,6 +105,8 @@ pub struct SemanticRecallRawParams<'a> {
     /// When `Some(t)`, results with a top score below `t` are classified as
     /// low-confidence and logged via the memory's retrieval failure logger.
     pub low_confidence_threshold: Option<f32>,
+    /// Graph entity anchoring the active goal; `None` keeps the causal signal neutral.
+    pub goal_anchor: Option<zeph_memory::EntityId>,
 }
 
 /// Fetch semantically recalled messages using individual field arguments.
@@ -135,11 +137,17 @@ pub async fn fetch_semantic_recall_raw(
     let t0 = Instant::now();
     let recalled = if let Some(r) = router {
         memory
-            .recall_routed_async(params.query, params.recall_limit, None, r, None)
+            .recall_routed_async(
+                params.query,
+                params.recall_limit,
+                None,
+                r,
+                params.goal_anchor,
+            )
             .await?
     } else {
         memory
-            .recall(params.query, params.recall_limit, None)
+            .recall(params.query, params.recall_limit, None, params.goal_anchor)
             .await?
     };
     let latency_ms = t0.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
@@ -355,6 +363,7 @@ pub async fn fetch_semantic_recall(
             token_budget,
             tc,
             low_confidence_threshold: None,
+            goal_anchor: view.goal_anchor,
         },
         router,
     )

@@ -12,6 +12,7 @@ use crate::app::reducer::{reduce, run_effects};
 use crate::command::TuiCommand;
 use crate::file_picker::FileIndex;
 use crate::layout::truncate_to_width;
+use crate::status_board::StatusLane;
 
 use super::{
     AgentViewTarget, App, ChatMessage, InputMode, MessageRole, Panel, PasteState, oneshot,
@@ -1212,7 +1213,10 @@ impl App {
         if !needs_rebuild || self.pending_file_index.is_some() {
             return;
         }
-        self.sessions.current_mut().status_label = Some("indexing files...".to_owned());
+        self.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::FileIndex, "indexing files...");
         // Status change counts as progress so the wave animates (never reads Stalled).
         self.last_progress_at = std::time::Instant::now();
         let pending = if let Some(sup) = &self.task_supervisor {
@@ -1262,7 +1266,10 @@ impl App {
             Some(Ok(idx)) => {
                 let files_arc = idx.paths_arc();
                 self.file_index = Some(idx);
-                self.sessions.current_mut().status_label = None;
+                self.sessions
+                    .current_mut()
+                    .status
+                    .clear(StatusLane::FileIndex);
                 if self.mention_picker.is_some() {
                     let query = crate::app::reducer::mention_picker_query(self);
                     if let Some(picker) = self.mention_picker.as_mut() {
@@ -1272,7 +1279,10 @@ impl App {
                 }
             }
             Some(Err(())) | None => {
-                self.sessions.current_mut().status_label = None;
+                self.sessions
+                    .current_mut()
+                    .status
+                    .clear(StatusLane::FileIndex);
             }
         }
     }
@@ -1283,7 +1293,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
-    use crate::event::AgentEvent;
+    use crate::event::{AgentEvent, LaneUpdate, ProducerLane};
     use crate::types::MessageRole;
 
     fn make_app() -> (App, mpsc::Receiver<String>, mpsc::Sender<AgentEvent>) {
@@ -1292,6 +1302,45 @@ mod tests {
         let mut app = App::new(user_tx, agent_rx);
         app.sessions.current_mut().messages.clear();
         (app, user_rx, agent_tx)
+    }
+
+    fn ctrl_c() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn ctrl_c_with_only_background_status_requests_quit_and_wave_never_stalls() {
+        use crate::widgets::wave::WaveState;
+
+        let (mut app, _rx, _tx) = make_app();
+        app.handle_agent_event(AgentEvent::LaneStatus {
+            lane: ProducerLane::Warmup,
+            update: LaneUpdate::Set("Backfilling embeddings...".into()),
+        });
+        app.handle_agent_event(AgentEvent::ClearStatus);
+
+        assert!(!app.is_agent_busy());
+        assert!(app.has_activity());
+        assert_eq!(app.status_label(), Some("Backfilling embeddings..."));
+        assert_eq!(app.decode_key(ctrl_c()), Some(Action::RequestQuit));
+
+        app.pending_quit_tick = Some(app.anim_tick());
+        assert!(app.quit_hint_active());
+
+        app.last_progress_at = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(60))
+            .unwrap();
+        assert!(!matches!(
+            app.wave_state(),
+            WaveState::Stalled | WaveState::Idle
+        ));
+    }
+
+    #[test]
+    fn ctrl_c_with_turn_status_cancels_the_agent() {
+        let (mut app, _rx, _tx) = make_app();
+        app.handle_agent_event(AgentEvent::Typing);
+        assert_eq!(app.decode_key(ctrl_c()), Some(Action::CancelAgent));
     }
 
     #[test]

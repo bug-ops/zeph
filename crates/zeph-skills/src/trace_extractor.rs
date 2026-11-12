@@ -552,7 +552,7 @@ impl TraceExtractor {
     /// Send a TUI notification about a proposed skill (non-blocking).
     fn notify_proposed(&self, name: &str) {
         if let Some(ref tx) = self.status_tx {
-            let _ = tx.set(format!("Proposed skill: {name} (review pending)"));
+            let _ = tx.notice(format!("Proposed skill: {name} (review pending)"));
         }
     }
 
@@ -570,6 +570,10 @@ impl TraceExtractor {
 ///
 /// This compensates for LLMs that correctly open the YAML frontmatter block but omit the
 /// mandatory closing delimiter.
+#[expect(
+    clippy::string_slice,
+    reason = "the prefix was just verified to be ASCII dashes"
+)]
 fn ensure_closed_frontmatter(content: String) -> String {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {

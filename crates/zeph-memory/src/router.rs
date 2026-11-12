@@ -183,7 +183,7 @@ pub fn strip_temporal_keywords(query: &str) -> String {
     for pattern in SORTED_TEMPORAL_PATTERNS.iter() {
         let plen = pattern.len();
         let mut search_from = 0;
-        while let Some(pos) = lower[search_from..].find(pattern) {
+        while let Some(pos) = lower.get(search_from..).and_then(|rest| rest.find(pattern)) {
             let abs = search_from + pos;
             remove.push((abs, abs + plen));
             search_from = abs + plen;
@@ -196,7 +196,7 @@ pub fn strip_temporal_keywords(query: &str) -> String {
         let lbytes = lower.as_bytes();
         let mut i = 0;
         while i + wlen <= lower.len() {
-            if lower[i..].starts_with(*word) {
+            if lbytes[i..].starts_with(word.as_bytes()) {
                 let before_ok =
                     i == 0 || !lbytes[i - 1].is_ascii_alphanumeric() && lbytes[i - 1] != b'_';
                 let after_ok = i + wlen == lower.len()
@@ -562,10 +562,7 @@ impl LlmRouter {
 
     fn parse_llm_response(&self, raw: &str, query: &str) -> RoutingDecision {
         // Extract JSON object from the response (may have surrounding text).
-        let json_str = raw
-            .find('{')
-            .and_then(|start| raw[start..].rfind('}').map(|end| &raw[start..=start + end]))
-            .unwrap_or("");
+        let json_str = zeph_common::llm_response::extract_json_object_slice(raw).unwrap_or("");
 
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
             let route_str = v.get("route").and_then(|r| r.as_str()).unwrap_or("hybrid");
@@ -582,7 +579,7 @@ impl LlmRouter {
             let route = parse_route_str(route_str, self.fallback_route);
 
             tracing::debug!(
-                query = &query[..query.len().min(60)],
+                query = zeph_common::text::truncate_to_bytes_ref(query, 60),
                 ?route,
                 confidence,
                 "LlmRouter: classified"
@@ -658,7 +655,7 @@ impl HybridRouter {
         let heuristic = HeuristicRouter.route_with_confidence(query);
         if heuristic.confidence >= self.confidence_threshold {
             tracing::debug!(
-                query = &query[..query.len().min(60)],
+                query = zeph_common::text::truncate_to_bytes_ref(query, 60),
                 confidence = heuristic.confidence,
                 route = ?heuristic.route,
                 "HybridRouter: heuristic sufficient, skipping LLM"
@@ -667,7 +664,7 @@ impl HybridRouter {
         }
 
         tracing::debug!(
-            query = &query[..query.len().min(60)],
+            query = zeph_common::text::truncate_to_bytes_ref(query, 60),
             confidence = heuristic.confidence,
             threshold = self.confidence_threshold,
             "HybridRouter: low confidence, escalating to LLM"
@@ -1158,5 +1155,34 @@ mod tests {
                 "mismatch for query: {q}"
             );
         }
+    }
+
+    #[test]
+    fn strip_temporal_keywords_non_ascii_before_keyword() {
+        assert_eq!(
+            strip_temporal_keywords("что мы обсуждали yesterday"),
+            "что мы обсуждали"
+        );
+        assert_eq!(strip_temporal_keywords("é ago é"), "é é");
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn parse_llm_response_non_ascii_inputs_do_not_panic() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        let router = LlmRouter::new(
+            std::sync::Arc::new(AnyProvider::Mock(MockProvider::default())),
+            MemoryRoute::Hybrid,
+        );
+        let long_query = "что мы обсуждали вчера про архитектуру памяти агента".repeat(3);
+        let ok = router.parse_llm_response(r#"{"route": "graph", "confidence": 0.9}"#, &long_query);
+        assert_eq!(ok.route, MemoryRoute::Graph);
+        let inverted = router.parse_llm_response("no} verdict {", &long_query);
+        assert_eq!(
+            inverted.route,
+            HeuristicRouter.route_with_confidence(&long_query).route
+        );
     }
 }

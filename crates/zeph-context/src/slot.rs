@@ -125,6 +125,10 @@ pub fn chunk_messages(
 /// Prevents a misbehaving LLM backend from returning an arbitrarily large summary that
 /// would expand rather than shrink the context window after compaction.
 #[must_use]
+#[expect(
+    clippy::string_slice,
+    reason = "index derived from a char boundary API on the same string"
+)]
 pub fn cap_summary(s: String, max_chars: usize) -> String {
     match s.char_indices().nth(max_chars) {
         Some((byte_idx, _)) => {

@@ -253,7 +253,7 @@ pub fn extract_candidate_entities(text: &str) -> Vec<String> {
     let text_lower = text.to_lowercase();
     for term in TECH_TERMS {
         let mut start = 0;
-        while let Some(pos) = text_lower[start..].find(term) {
+        while let Some(pos) = text_lower.get(start..).and_then(|rest| rest.find(term)) {
             let abs_pos = start + pos;
             let before_ok = abs_pos == 0
                 || text_lower

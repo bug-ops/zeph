@@ -39,7 +39,7 @@ use crate::error::MemoryError;
 use crate::router::{HeuristicRouter, HybridRouter, MemoryRoute, MemoryRouter};
 use crate::semantic::RecalledMessage;
 use crate::semantic::SemanticMemory;
-use crate::types::{ConversationId, MessageId};
+use crate::types::{ConversationId, EntityId, MessageId};
 
 // ── Intent classification ─────────────────────────────────────────────────────
 
@@ -150,6 +150,9 @@ pub struct TieredRetrievalResult {
 /// present in history). They are dropped before the token budget is applied, so the budget is
 /// spent on new content only. Pass `&|_| false` to keep every candidate.
 ///
+/// `goal_anchor` is the graph entity of the active goal; it feeds the causal-distance signal of the
+/// flat-recall tiers. `None` keeps that signal neutral.
+///
 /// # Errors
 ///
 /// Returns an error if any underlying search or database operation fails.
@@ -164,6 +167,7 @@ pub async fn recall_tiered(
     config: &TieredRetrievalConfig,
     remaining_budget: Option<usize>,
     is_known: &(dyn Fn(&str) -> bool + Sync),
+    goal_anchor: Option<EntityId>,
 ) -> Result<TieredRetrievalResult, MemoryError> {
     let effective_budget =
         remaining_budget.map_or(config.token_budget, |rb| rb.min(config.token_budget));
@@ -203,6 +207,7 @@ pub async fn recall_tiered(
         config,
         effective_budget,
         is_known,
+        goal_anchor,
     )
     .await
 }
@@ -223,13 +228,15 @@ async fn escalation_loop(
     config: &TieredRetrievalConfig,
     effective_budget: usize,
     is_known: &(dyn Fn(&str) -> bool + Sync),
+    goal_anchor: Option<EntityId>,
 ) -> Result<TieredRetrievalResult, MemoryError> {
     let mut intent = initial_intent;
     let mut escalations: u8 = 0;
     let mut tier_escalated = false;
 
     loop {
-        let raw_candidates = retrieve_tier(memory, query, conversation_id, intent, config).await?;
+        let raw_candidates =
+            retrieve_tier(memory, query, conversation_id, intent, config, goal_anchor).await?;
 
         let candidates = score_candidates(memory, query, raw_candidates, config).await?;
 
@@ -286,6 +293,7 @@ async fn retrieve_tier(
     conversation_id: Option<ConversationId>,
     intent: IntentClass,
     config: &TieredRetrievalConfig,
+    goal_anchor: Option<EntityId>,
 ) -> Result<Vec<RecalledMessage>, MemoryError> {
     let top_k = intent.top_k();
     let heuristic = HeuristicRouter;
@@ -338,7 +346,7 @@ async fn retrieve_tier(
 
     // All other tiers (and DeepReasoning fallback) route through recall_routed.
     memory
-        .recall_routed(query, top_k, filter, &heuristic, None)
+        .recall_routed(query, top_k, filter, &heuristic, goal_anchor)
         .await
 }
 
@@ -697,10 +705,7 @@ async fn validate_evidence(
 }
 
 fn parse_validation_response(raw: &str, threshold: f32) -> bool {
-    let json_str = raw
-        .find('{')
-        .and_then(|s| raw[s..].rfind('}').map(|e| &raw[s..=s + e]))
-        .unwrap_or("");
+    let json_str = zeph_common::llm_response::extract_json_object_slice(raw).unwrap_or("");
 
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) {
         let sufficient = v
@@ -1123,6 +1128,12 @@ mod tests {
     }
 
     #[test]
+    fn parse_validation_response_reversed_braces_do_not_panic() {
+        assert!(parse_validation_response("no} verdict {", 0.6));
+        assert!(parse_validation_response("}{", 0.6));
+    }
+
+    #[test]
     fn parse_validation_response_malformed_json_treats_as_sufficient() {
         let raw = "not json at all";
         assert!(parse_validation_response(raw, 0.6));
@@ -1164,6 +1175,7 @@ mod tests {
             &config,
             None,
             &|_| false,
+            None,
         )
         .await
         .expect("recall_tiered must not fail");
@@ -1211,6 +1223,7 @@ mod tests {
             &config,
             None,
             &|_| false,
+            None,
         )
         .await
         .expect("recall_tiered with classifier must not fail");
@@ -1256,6 +1269,7 @@ mod tests {
             &config,
             None,
             &|_| false,
+            None,
         )
         .await
         .expect("escalation path must not fail");
@@ -1318,6 +1332,7 @@ mod tests {
             &config,
             None,
             &|_| false,
+            None,
         )
         .await
         .expect("timeout path must not propagate as error");
@@ -1371,6 +1386,7 @@ mod tests {
             &config,
             None,
             &|_| false,
+            None,
         )
         .await
         .expect("LLM error path must not propagate as retrieval error");
@@ -1420,6 +1436,7 @@ mod tests {
             config,
             Some(250),
             is_known,
+            None,
         )
         .await
         .expect("recall_tiered")
@@ -1484,6 +1501,7 @@ mod tests {
             &config,
             None,
             &|_| true,
+            None,
         )
         .await
         .expect("recall_tiered");
@@ -1521,6 +1539,7 @@ mod tests {
             &config,
             None,
             &|_| false,
+            None,
         )
         .await
         .expect("conversation-scoped recall must not fail");
@@ -1555,6 +1574,7 @@ mod tests {
             None,
             IntentClass::DeepReasoning,
             &config,
+            None,
         )
         .await
         .expect("retrieve_tier with empty HELA must not fail");
@@ -1590,6 +1610,7 @@ mod tests {
             None,
             IntentClass::DeepReasoning,
             &config,
+            None,
         )
         .await
         .expect("retrieve_tier with deep_reasoning_query_conditioned=false must not fail");

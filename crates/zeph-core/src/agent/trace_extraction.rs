@@ -94,13 +94,6 @@ impl<C: Channel> super::Agent<C> {
         let db_pool = self.get_db_pool_for_trace_extraction();
         let memory = self.services.memory.persistence.memory.clone();
 
-        let _ = self
-            .services
-            .session
-            .status_tx
-            .as_ref()
-            .map(|tx| tx.set("Extracting skills from session…"));
-
         let blocking_handle = self.runtime.lifecycle.task_supervisor.spawn_oneshot(
             std::sync::Arc::from("agent.learning.trace_extraction"),
             move || {
@@ -168,6 +161,9 @@ async fn run_extraction(
     memory: Option<Arc<SemanticMemory>>,
     status_tx: Option<zeph_llm::status::StatusSender>,
 ) {
+    let _status = status_tx
+        .as_ref()
+        .map(|tx| tx.scope("Extracting skills from session…"));
     let extractor = TraceExtractor::new(
         extract_provider,
         embed_provider,

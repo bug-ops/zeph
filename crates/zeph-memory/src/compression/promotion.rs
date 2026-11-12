@@ -277,7 +277,10 @@ impl PromotionEngine {
                           fields(signature = %candidate.signature))]
     pub async fn promote(&self, candidate: &PromotionCandidate) -> Result<(), MemoryError> {
         // Idempotency: skip if already exists.
-        let skill_name = format!("promoted-pattern-{}", &candidate.signature[..12]);
+        let skill_name = format!(
+            "promoted-pattern-{}",
+            zeph_common::text::truncate_to_bytes_ref(&candidate.signature, 12)
+        );
         let skill_dir = self.output_dir.join(&skill_name);
         if skill_dir.exists() {
             tracing::debug!(signature = %candidate.signature, "promotion candidate already exists, skipping");

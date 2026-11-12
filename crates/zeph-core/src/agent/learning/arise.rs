@@ -166,10 +166,12 @@ impl<C: Channel> Agent<C> {
         let Ok(skill) = self.services.skill.registry.read().skill(skill_name) else {
             return;
         };
-        let status_tx = self.services.session.status_tx.clone();
-        if let Some(ref tx) = self.services.session.status_tx {
-            let _ = tx.set(format!("Evolving skill: {skill_name}…"));
-        }
+        let status = self
+            .services
+            .session
+            .status_tx
+            .as_ref()
+            .map(|tx| tx.scope(format!("Evolving skill: {skill_name}…")));
         let args = AriseTaskArgs {
             provider: self.resolve_background_provider(config.arise_trace_provider.as_str()),
             memory,
@@ -182,8 +184,7 @@ impl<C: Channel> Agent<C> {
             auto_activate: config.auto_activate,
             max_versions: config.max_versions,
             domain_success_gate: config.domain_success_gate,
-            status_tx,
         };
-        self.try_spawn_learning_task(super::background::arise_trace_task(args));
+        self.try_spawn_learning_task_scoped(status, super::background::arise_trace_task(args));
     }
 }

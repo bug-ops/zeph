@@ -51,6 +51,8 @@ pub struct SemanticRecallParams<'a> {
     pub tiered_validator: Option<&'a std::sync::Arc<zeph_llm::any::AnyProvider>>,
     /// Tiered retrieval configuration controlling whether the tiered path is active.
     pub tiered_config: &'a zeph_config::memory::TieredRetrievalConfig,
+    /// Graph entity anchoring the active goal; `None` keeps the causal signal neutral.
+    pub goal_anchor: Option<zeph_memory::EntityId>,
 }
 
 /// Stateless façade for agent context-assembly operations.
@@ -291,6 +293,7 @@ impl ContextService {
             tiered_classifier: view.tiered_retrieval_classifier.as_ref(),
             tiered_validator: view.tiered_retrieval_validator.as_ref(),
             tiered_config: &view.tiered_retrieval_config,
+            goal_anchor: view.goal_anchor,
         };
         let msg = self
             .run_tiered_recall(&params, window, view.memory.as_deref())
@@ -345,6 +348,7 @@ impl ContextService {
                     token_budget: params.token_budget,
                     tc: &window.token_counter,
                     low_confidence_threshold: None,
+                    goal_anchor: params.goal_anchor,
                 },
                 None,
             )
@@ -383,6 +387,7 @@ impl ContextService {
                 &|content| {
                     keys.is_some_and(|k| k.is_excluded(ItemKeys::key(TIERED_SOURCE, content)))
                 },
+                params.goal_anchor,
             )
             .instrument(tracing::info_span!("agent_context.tiered_retrieval.recall")),
         )
@@ -596,7 +601,10 @@ impl ContextService {
         let memory_backend: Option<std::sync::Arc<dyn zeph_common::memory::ContextMemoryBackend>> =
             view.memory.clone().map(
                 |m| -> std::sync::Arc<dyn zeph_common::memory::ContextMemoryBackend> {
-                    std::sync::Arc::new(crate::memory_backend::SemanticMemoryBackend::new(m))
+                    std::sync::Arc::new(crate::memory_backend::SemanticMemoryBackend::new(
+                        m,
+                        view.goal_anchor,
+                    ))
                 },
             );
 
@@ -749,9 +757,10 @@ impl ContextService {
             && !memory_first_active
         {
             use tracing::Instrument as _;
-            if let Some(ref tx) = view.status_tx {
-                let _ = tx.set("Scoring context fidelity\u{2026}");
-            }
+            let _status = view
+                .status_tx
+                .as_ref()
+                .map(|tx| tx.scope("Scoring context fidelity\u{2026}"));
             let (embed_provider, compress_provider) = fidelity_provider_pair(
                 view.fidelity_semantic_provider.as_ref(),
                 view.fidelity_compress_provider.as_ref(),
@@ -778,9 +787,6 @@ impl ContextService {
             // Persist fidelity tags so subsequent turns see the floor invariant.
             persist_fidelity_tags(window.messages, view.memory.as_deref()).await;
             recompute_prompt_tokens(window);
-            if let Some(ref tx) = view.status_tx {
-                let _ = tx.clear();
-            }
         }
 
         Ok(delta)
@@ -1110,6 +1116,7 @@ impl ContextService {
                 tiered_classifier: view.tiered_retrieval_classifier.as_ref(),
                 tiered_validator: view.tiered_retrieval_validator.as_ref(),
                 tiered_config: &view.tiered_retrieval_config,
+                goal_anchor: view.goal_anchor,
             };
             let loaded = self
                 .load_tiered_recall_items(&params, view.memory.as_deref(), Some(keys))
@@ -2766,6 +2773,7 @@ mod tests {
                 tiered_retrieval_classifier: None,
                 tiered_retrieval_validator: None,
                 type_aware_compose_config: zeph_config::memory::TypeAwareComposeConfig::default(),
+                goal_anchor: None,
                 fidelity_config: None,
                 fidelity_semantic_provider: None,
                 fidelity_compress_provider: None,
@@ -3117,6 +3125,7 @@ mod tests {
                 tiered_retrieval_classifier: None,
                 tiered_retrieval_validator: None,
                 type_aware_compose_config: zeph_config::memory::TypeAwareComposeConfig::default(),
+                goal_anchor: None,
                 fidelity_config: None,
                 fidelity_semantic_provider: None,
                 fidelity_compress_provider: None,
@@ -3631,6 +3640,7 @@ mod tests {
                 tiered_retrieval_classifier: None,
                 tiered_retrieval_validator: None,
                 type_aware_compose_config: zeph_config::memory::TypeAwareComposeConfig::default(),
+                goal_anchor: None,
                 fidelity_config: None,
                 fidelity_semantic_provider: None,
                 fidelity_compress_provider: None,
@@ -3716,6 +3726,7 @@ mod tests {
                 tiered_retrieval_classifier: None,
                 tiered_retrieval_validator: None,
                 type_aware_compose_config: zeph_config::memory::TypeAwareComposeConfig::default(),
+                goal_anchor: None,
                 fidelity_config: None,
                 fidelity_semantic_provider: None,
                 fidelity_compress_provider: None,
@@ -3808,6 +3819,7 @@ mod tests {
                 tiered_retrieval_classifier: None,
                 tiered_retrieval_validator: None,
                 type_aware_compose_config: zeph_config::memory::TypeAwareComposeConfig::default(),
+                goal_anchor: None,
                 fidelity_config: None,
                 fidelity_semantic_provider: None,
                 fidelity_compress_provider: None,
@@ -4012,6 +4024,7 @@ mod tests {
                 tiered_retrieval_classifier: None,
                 tiered_retrieval_validator: None,
                 type_aware_compose_config: zeph_config::memory::TypeAwareComposeConfig::default(),
+                goal_anchor: None,
                 fidelity_config: None,
                 fidelity_semantic_provider: None,
                 fidelity_compress_provider: None,
@@ -4484,6 +4497,7 @@ mod tests {
                 tiered_classifier: None,
                 tiered_validator: None,
                 tiered_config: &view.tiered_retrieval_config,
+                goal_anchor: None,
             };
 
             let first = svc
@@ -4533,6 +4547,7 @@ mod tests {
                 tiered_classifier: None,
                 tiered_validator: None,
                 tiered_config: &view.tiered_retrieval_config,
+                goal_anchor: None,
             };
             assert!(
                 svc.load_tiered_recall_items(&params, view.memory.as_deref(), None)

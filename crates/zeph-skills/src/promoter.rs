@@ -180,7 +180,10 @@ pub fn parse_promotion_response(response: &str) -> (PromotionRecommendation, Opt
         let rest = rest.trim();
         // rest: "<name>\n<body>" or "<name> <body...>"
         let (name_part, body_part) = if let Some(nl) = rest.find('\n') {
-            (rest[..nl].trim(), rest[nl + 1..].trim())
+            (
+                rest.get(..nl).unwrap_or_default().trim(),
+                rest.get(nl + 1..).unwrap_or_default().trim(),
+            )
         } else {
             // No newline: treat first word as name, rest as body
             let mut parts = rest.splitn(2, ' ');

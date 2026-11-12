@@ -22,7 +22,7 @@ use super::test_semantic_memory;
 async fn recall_returns_empty_without_qdrant() {
     let memory = test_semantic_memory(true).await;
 
-    let recalled = memory.recall("test", 5, None).await.unwrap();
+    let recalled = memory.recall("test", 5, None, None).await.unwrap();
     assert!(recalled.is_empty());
 }
 
@@ -30,7 +30,7 @@ async fn recall_returns_empty_without_qdrant() {
 async fn recall_returns_empty_when_embeddings_not_supported() {
     let memory = test_semantic_memory(false).await;
 
-    let recalled = memory.recall("test", 5, None).await.unwrap();
+    let recalled = memory.recall("test", 5, None, None).await.unwrap();
     assert!(recalled.is_empty());
 }
 
@@ -104,7 +104,7 @@ async fn test_semantic_memory_sqlite_remember_recall_roundtrip() {
         .unwrap();
     assert!(id1 < id2);
 
-    let recalled = memory.recall("rust", 5, None).await.unwrap();
+    let recalled = memory.recall("rust", 5, None, None).await.unwrap();
     assert!(
         !recalled.is_empty(),
         "recall must return at least one result"
@@ -137,7 +137,10 @@ async fn recall_empty_without_qdrant_regardless_of_filter() {
         conversation_id: Some(ConversationId(1)),
         role: None,
     };
-    let recalled = memory.recall("query", 10, Some(filter)).await.unwrap();
+    let recalled = memory
+        .recall("query", 10, Some(filter), None)
+        .await
+        .unwrap();
     assert!(recalled.is_empty());
 }
 
@@ -159,7 +162,7 @@ async fn recall_fts5_fallback_without_qdrant() {
         .await
         .unwrap();
 
-    let recalled = memory.recall("rust", 5, None).await.unwrap();
+    let recalled = memory.recall("rust", 5, None, None).await.unwrap();
     assert_eq!(recalled.len(), 2);
     assert!(recalled[0].score >= recalled[1].score);
 }
@@ -185,7 +188,7 @@ async fn recall_fts5_fallback_with_filter() {
         conversation_id: Some(cid1),
         role: None,
     };
-    let recalled = memory.recall("hello", 5, Some(filter)).await.unwrap();
+    let recalled = memory.recall("hello", 5, Some(filter), None).await.unwrap();
     assert_eq!(recalled.len(), 1);
 }
 
@@ -200,7 +203,7 @@ async fn recall_fts5_no_matches_returns_empty() {
         .unwrap()
         .unwrap();
 
-    let recalled = memory.recall("nonexistent", 5, None).await.unwrap();
+    let recalled = memory.recall("nonexistent", 5, None, None).await.unwrap();
     assert!(recalled.is_empty());
 }
 
@@ -216,7 +219,7 @@ async fn recall_fts5_respects_limit() {
             .unwrap();
     }
 
-    let recalled = memory.recall("test", 3, None).await.unwrap();
+    let recalled = memory.recall("test", 3, None, None).await.unwrap();
     assert_eq!(recalled.len(), 3);
 }
 
@@ -478,7 +481,7 @@ async fn recall_importance_enabled_blends_score() {
         .unwrap()
         .unwrap();
 
-    let recalled = memory.recall("API key", 5, None).await.unwrap();
+    let recalled = memory.recall("API key", 5, None, None).await.unwrap();
     assert!(
         recalled.len() >= 2,
         "both messages must be recalled, got {}",
@@ -513,7 +516,7 @@ async fn recall_importance_disabled_no_blending() {
         .unwrap()
         .unwrap();
 
-    let recalled = memory.recall("API key", 5, None).await.unwrap();
+    let recalled = memory.recall("API key", 5, None, None).await.unwrap();
     // Must return results without panicking.
     assert!(!recalled.is_empty());
 }
@@ -523,7 +526,7 @@ async fn batch_increment_access_count_empty_vec_noop() {
     let memory = test_semantic_memory(false).await;
     // Recall on empty DB returns empty → access count increment is skipped.
     // No panic, no SQL error.
-    let recalled = memory.recall("anything", 5, None).await.unwrap();
+    let recalled = memory.recall("anything", 5, None, None).await.unwrap();
     assert!(recalled.is_empty());
 }
 
@@ -543,7 +546,7 @@ async fn recall_access_count_incremented_after_recall() {
         .unwrap();
     assert_eq!(before.0, 0, "access_count must start at 0");
 
-    let recalled = memory.recall("rust", 5, None).await.unwrap();
+    let recalled = memory.recall("rust", 5, None, None).await.unwrap();
     assert!(!recalled.is_empty());
 
     let after: (i64,) = zeph_db::query_as(sql!("SELECT access_count FROM messages WHERE id = ?"))
@@ -1128,4 +1131,103 @@ fn apply_search_prompt_missing_placeholder_returns_raw_query() {
         .with_retrieval_options(0, "no placeholder here");
     // warn fires, raw query returned
     assert_eq!(memory.apply_search_prompt("hello"), "hello");
+}
+
+#[tokio::test]
+async fn goal_anchor_makes_causal_signal_non_neutral_in_recall() {
+    use crate::graph::{EntityType, GraphStore};
+    use zeph_config::memory::FiveSignalConfig;
+
+    let memory = test_semantic_memory(false).await;
+    let pool = memory.sqlite.pool().clone();
+    let graph = Arc::new(GraphStore::new(pool.clone()));
+    let config = FiveSignalConfig {
+        w_recency: 0.0,
+        w_relevance: 0.0,
+        w_frequency: 0.0,
+        w_causal: 1.0,
+        w_novelty: 0.0,
+        ..FiveSignalConfig::default()
+    };
+    let runtime = crate::five_signal::FiveSignalRuntime::new(
+        config,
+        pool,
+        Arc::clone(&graph),
+        None,
+        0,
+        "sess-goal-anchor",
+    );
+    let memory = memory
+        .with_graph_store(Arc::clone(&graph))
+        .with_five_signal(Arc::new(runtime));
+
+    let cid = memory.sqlite().create_conversation().await.unwrap();
+    let near_msg = memory
+        .sqlite()
+        .save_message(cid, "user", "deploy alpha")
+        .await
+        .unwrap();
+    let far_msg = memory
+        .sqlite()
+        .save_message(cid, "user", "deploy beta")
+        .await
+        .unwrap();
+
+    let mut ids = Vec::new();
+    for name in ["goalnode", "nearnode", "farone", "fartwo"] {
+        ids.push(
+            graph
+                .upsert_entity(name, name, EntityType::Concept, None, None)
+                .await
+                .unwrap(),
+        );
+    }
+    graph
+        .insert_edge(
+            ids[0],
+            ids[1],
+            "causes",
+            "goal causes near",
+            1.0,
+            Some(near_msg),
+            None,
+        )
+        .await
+        .unwrap();
+    graph
+        .insert_edge(
+            ids[2],
+            ids[3],
+            "causes",
+            "far causes far",
+            1.0,
+            Some(far_msg),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let score_of = |recalled: &[RecalledMessage], needle: &str| {
+        recalled
+            .iter()
+            .find(|r| r.message.content.contains(needle))
+            .map(|r| r.score)
+            .expect("both messages recalled")
+    };
+
+    let neutral = memory.recall("deploy", 5, None, None).await.unwrap();
+    assert!(
+        (score_of(&neutral, "alpha") - score_of(&neutral, "beta")).abs() < 1e-9,
+        "without a goal anchor the causal signal is neutral for every candidate"
+    );
+
+    let anchored = memory
+        .recall("deploy", 5, None, Some(ids[0]))
+        .await
+        .unwrap();
+    assert!(
+        score_of(&anchored, "alpha") > score_of(&anchored, "beta"),
+        "with the goal anchor the message linked to the goal must outrank the unlinked one"
+    );
+    assert!(anchored[0].message.content.contains("alpha"));
 }

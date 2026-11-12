@@ -111,6 +111,10 @@ fn is_url_credential(userinfo: &str) -> bool {
 }
 
 /// Redact credential-bearing userinfo; keep `text` borrowed when no URL qualifies.
+#[expect(
+    clippy::string_slice,
+    reason = "index derived from a boundary API on the same string"
+)]
 fn redact_url_credentials(text: &str) -> Cow<'_, str> {
     let mut out: Option<String> = None;
     let mut last = 0;

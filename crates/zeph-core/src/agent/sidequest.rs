@@ -358,7 +358,8 @@ impl<C: Channel> Agent<C> {
                         d.dump_sidequest_eviction(&cursors_snapshot, &evicted_indices, freed);
                     }
                     if let Some(ref tx) = self.services.session.status_tx {
-                        let _ = tx.set(format!("SideQuest evicted {freed} tokens"));
+                        let _ = tx.clear();
+                        let _ = tx.notice(format!("SideQuest evicted {freed} tokens"));
                     }
                 } else {
                     // apply_eviction returned 0 — clear spinner so it doesn't dangle.

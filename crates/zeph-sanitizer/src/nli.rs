@@ -208,11 +208,7 @@ impl NliSanitizer {
     }
 
     fn truncate_content(content: &str, max_chars: usize) -> &str {
-        if content.len() <= max_chars {
-            return content;
-        }
-        // floor_char_boundary is stable since 1.82 (MSRV 1.95 here).
-        &content[..content.floor_char_boundary(max_chars)]
+        zeph_common::text::truncate_to_bytes_ref(content, max_chars)
     }
 
     fn build_nli_prompt(content: &str) -> String {

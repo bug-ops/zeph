@@ -53,7 +53,7 @@ impl App {
         // (so concurrent background work is visible), unless the user has hidden it.
         let wave_state = self.wave_state();
         let wave_tick = self.wave_tick();
-        let wave_active = self.is_agent_busy() || self.background_inflight() > 0;
+        let wave_active = self.has_activity() || self.background_inflight() > 0;
         let eq_area =
             if should_carve_equalizer(self.show_equalizer, wave_active, layout.subagents.height) {
                 let sub_h = layout.subagents.height - EQ_PANEL_H;
@@ -87,7 +87,7 @@ impl App {
         }
 
         let spinner_idx = self.throbber_state().index().cast_unsigned();
-        let busy = self.is_agent_busy();
+        let busy = self.has_activity();
         let motion = self.motion();
         widgets::input::render(self, frame, layout.input, busy, spinner_idx, motion);
         widgets::status::render(self, &self.metrics, frame, layout.status);
@@ -470,6 +470,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{App, EQ_PANEL_H, should_carve_equalizer};
+    use crate::status_board::StatusLane;
 
     fn make_app() -> App {
         let (user_tx, _) = mpsc::channel(1);
@@ -595,7 +596,10 @@ mod tests {
         // than an empty list's content-driven demand actually grants.
         let mut app = make_app();
         app.show_equalizer = true;
-        app.sessions.current_mut().status_label = Some("thinking...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::Turn, "thinking...");
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();

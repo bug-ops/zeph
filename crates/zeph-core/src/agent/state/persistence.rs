@@ -96,6 +96,8 @@ pub(crate) struct MemoryPersistenceState {
     /// `memory` (above) via `SemanticMemory::sqlite()`'s cross-thread-store methods —
     /// this field only gates and bounds those calls.
     pub(crate) store_config: zeph_config::CrossThreadStoreConfig,
+    /// Cached graph anchor of the active goal for the causal-distance signal (spec 004-18 FR-006).
+    pub(crate) goal_anchor: crate::agent::goal_anchor::GoalAnchor,
 }
 
 impl Default for MemoryPersistenceState {
@@ -117,6 +119,7 @@ impl Default for MemoryPersistenceState {
             tiered_retrieval_validator: None,
             type_aware_compose_config: TypeAwareComposeConfig::default(),
             store_config: zeph_config::CrossThreadStoreConfig::default(),
+            goal_anchor: crate::agent::goal_anchor::GoalAnchor::default(),
         }
     }
 }

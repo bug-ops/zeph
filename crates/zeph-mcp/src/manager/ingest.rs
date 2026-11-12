@@ -261,7 +261,7 @@ fn apply_allowlist(
                 );
                 tracing::warn!(server_id, tool_count = tools.len(), "{msg}");
                 if let Some(tx) = status_tx {
-                    let _ = tx.set(msg);
+                    let _ = tx.notice(msg);
                 }
                 tools
             }
@@ -273,7 +273,7 @@ fn apply_allowlist(
                 );
                 tracing::warn!(server_id, "{msg}");
                 if let Some(tx) = status_tx {
-                    let _ = tx.set(msg);
+                    let _ = tx.notice(msg);
                 }
                 Vec::new()
             }

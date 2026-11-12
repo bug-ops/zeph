@@ -45,6 +45,16 @@ pub enum ContentTrustLevel {
     ExternalUntrusted = 2,
 }
 
+impl From<ContentTrustLevel> for zeph_common::trust_level::TurnContextTrust {
+    fn from(level: ContentTrustLevel) -> Self {
+        match level {
+            ContentTrustLevel::Trusted => Self::Trusted,
+            ContentTrustLevel::LocalUntrusted => Self::LocalUntrusted,
+            ContentTrustLevel::ExternalUntrusted => Self::ExternalUntrusted,
+        }
+    }
+}
+
 impl ContentTrustLevel {
     /// Returns the `snake_case` identifier string for this trust level.
     ///

@@ -12,7 +12,27 @@ use crate::channel::TuiHandle;
 use zeph_core::channel::Channel;
 #[cfg(feature = "tui")]
 use zeph_llm::any::AnyProvider;
-use zeph_llm::status::{StatusReceiver, StatusUpdate};
+use zeph_llm::status::{StatusEvent, StatusReceiver, StatusUpdate};
+#[cfg(feature = "tui")]
+use zeph_tui::AgentEvent;
+#[cfg(feature = "tui")]
+use zeph_tui::event::{LaneUpdate, ProducerLane};
+
+#[cfg(feature = "tui")]
+pub(crate) fn lane_set(lane: ProducerLane, text: impl Into<String>) -> AgentEvent {
+    AgentEvent::LaneStatus {
+        lane,
+        update: LaneUpdate::Set(text.into()),
+    }
+}
+
+#[cfg(feature = "tui")]
+pub(crate) fn lane_clear(lane: ProducerLane) -> AgentEvent {
+    AgentEvent::LaneStatus {
+        lane,
+        update: LaneUpdate::Clear,
+    }
+}
 
 #[cfg(feature = "tui")]
 pub(crate) struct TuiRunParams<'a> {
@@ -132,7 +152,7 @@ pub(crate) fn start_tui_early(
     let agent_tx = tui_handle.agent_tx.clone();
 
     // Send initial loading status directly — channel is empty at this point (capacity 256).
-    let _ = agent_tx.try_send(zeph_tui::AgentEvent::Status("Starting up...".into()));
+    let _ = agent_tx.try_send(lane_set(ProducerLane::Bootstrap, "Starting up..."));
 
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<anyhow::Result<()>>();
     std::thread::Builder::new()
@@ -170,28 +190,26 @@ async fn spawn_warmup_with_backfill_status(
     tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
 ) {
     let _ = tx
-        .send(zeph_tui::AgentEvent::Status("warming up model...".into()))
+        .send(lane_set(ProducerLane::Warmup, "warming up model..."))
         .await;
     warmup_provider(&provider).await;
-    let _ = tx
-        .send(zeph_tui::AgentEvent::Status("model ready".into()))
-        .await;
+    let _ = tx.send(lane_set(ProducerLane::Warmup, "model ready")).await;
     let _ = warmup_tx.send(true);
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    let _ = tx.send(zeph_tui::AgentEvent::ClearStatus).await;
+    let _ = tx.send(lane_clear(ProducerLane::Warmup)).await;
     // After init status clears, show backfill progress until it finishes.
     loop {
         let progress = *backfill_rx.borrow_and_update();
         if let Some(p) = progress {
             let pct = (p.done * 100).checked_div(p.total).unwrap_or(0);
             let _ = tx
-                .send(zeph_tui::AgentEvent::Status(format!(
-                    "Backfilling embeddings: {}/{} ({}%)",
-                    p.done, p.total, pct
-                )))
+                .send(lane_set(
+                    ProducerLane::Warmup,
+                    format!("Backfilling embeddings: {}/{} ({}%)", p.done, p.total, pct),
+                ))
                 .await;
         } else {
-            let _ = tx.send(zeph_tui::AgentEvent::ClearStatus).await;
+            let _ = tx.send(lane_clear(ProducerLane::Warmup)).await;
             break;
         }
         if backfill_rx.changed().await.is_err() {
@@ -467,19 +485,21 @@ async fn deep_link_notification_task(
 ) {
     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
     let _ = tx
-        .send(zeph_tui::AgentEvent::Status(format!(
-            "Opened via deep link: {uri}"
-        )))
+        .send(lane_set(
+            ProducerLane::DeepLink,
+            format!("Opened via deep link: {uri}"),
+        ))
         .await;
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    let _ = tx.send(zeph_tui::AgentEvent::ClearStatus).await;
+    let _ = tx.send(lane_clear(ProducerLane::DeepLink)).await;
 }
 
 pub(crate) async fn forward_status_to_stderr(mut rx: StatusReceiver) {
-    while let Some(msg) = rx.next().await {
-        match msg {
-            StatusUpdate::Set(text) => eprintln!("[status] {text}"),
-            StatusUpdate::Clear => {}
+    while let Some(event) = rx.next_event().await {
+        match event {
+            StatusEvent::Update(StatusUpdate::Set(text)) => eprintln!("[status] {text}"),
+            StatusEvent::Update(StatusUpdate::Clear) => {}
+            StatusEvent::Notice(text) => eprintln!("[notice] {text}"),
         }
     }
 }
@@ -582,10 +602,13 @@ pub(crate) async fn forward_status_to_tui(
     mut rx: StatusReceiver,
     tx: tokio::sync::mpsc::Sender<zeph_tui::AgentEvent>,
 ) {
-    while let Some(msg) = rx.next().await {
-        let event = match msg {
-            StatusUpdate::Set(text) => zeph_tui::AgentEvent::Status(text.into_string()),
-            StatusUpdate::Clear => zeph_tui::AgentEvent::ClearStatus,
+    while let Some(item) = rx.next_event().await {
+        let event = match item {
+            StatusEvent::Update(StatusUpdate::Set(text)) => {
+                lane_set(ProducerLane::Background, text.into_string())
+            }
+            StatusEvent::Update(StatusUpdate::Clear) => lane_clear(ProducerLane::Background),
+            StatusEvent::Notice(text) => AgentEvent::Notice(text.into_string()),
         };
         if tx.send(event).await.is_err() {
             break;
@@ -648,11 +671,11 @@ mod tests {
         status_tx.set("Connecting tools...").unwrap();
         // Latest wins, so wait for each update before sending the next.
         let first = agent_rx.recv().await.unwrap();
-        assert!(matches!(&first, zeph_tui::AgentEvent::Status(s) if s == "Connecting tools..."));
+        assert!(is_background_set(&first, "Connecting tools..."));
 
         status_tx.set("Memory ready").unwrap();
         let second = agent_rx.recv().await.unwrap();
-        assert!(matches!(&second, zeph_tui::AgentEvent::Status(s) if s == "Memory ready"));
+        assert!(is_background_set(&second, "Memory ready"));
 
         drop(status_tx);
         assert!(agent_rx.recv().await.is_none());
@@ -667,21 +690,31 @@ mod tests {
         tokio::spawn(forward_status_to_tui(status_rx, agent_tx)); // EXEMPT(#5143): test-only spawn
 
         status_tx.set("busy").unwrap();
-        assert!(matches!(
-            agent_rx.recv().await,
-            Some(zeph_tui::AgentEvent::Status(_))
-        ));
+        assert!(is_background_set(&agent_rx.recv().await.unwrap(), "busy"));
         status_tx.clear().unwrap();
         assert!(matches!(
             agent_rx.recv().await,
-            Some(zeph_tui::AgentEvent::ClearStatus)
+            Some(zeph_tui::AgentEvent::LaneStatus {
+                lane: ProducerLane::Background,
+                update: zeph_tui::event::LaneUpdate::Clear,
+            })
         ));
     }
 
-    // Two status lanes (spec 007): a turn-lane clear hides the indicator whatever the background
-    // lane set; the pending background entry shows again on that producer's next update.
+    fn is_background_set(event: &zeph_tui::AgentEvent, expected: &str) -> bool {
+        matches!(
+            event,
+            zeph_tui::AgentEvent::LaneStatus {
+                lane: ProducerLane::Background,
+                update: zeph_tui::event::LaneUpdate::Set(s),
+            } if s == expected
+        )
+    }
+
+    // Spec 007 status lanes: a turn-lane clear hides only the turn lane, so a still-active
+    // background status stays visible without waiting for its producer's next update.
     #[tokio::test]
-    async fn turn_lane_clear_then_background_update_shows_background_text_again() {
+    async fn turn_lane_clear_keeps_active_background_status_visible() {
         use zeph_core::channel::Channel as _;
 
         let (status_tx, status_rx) =
@@ -689,24 +722,37 @@ mod tests {
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(16);
         let (_user_tx, user_rx) = tokio::sync::mpsc::channel(1);
         let mut tui_channel = zeph_tui::TuiChannel::new(user_rx, agent_tx.clone());
+        let (app_user_tx, _app_user_rx) = tokio::sync::mpsc::channel(1);
+        let (_unused_tx, app_agent_rx) = tokio::sync::mpsc::channel(1);
+        let mut app = zeph_tui::App::new(app_user_tx, app_agent_rx);
 
         tokio::spawn(forward_status_to_tui(status_rx, agent_tx)); // EXEMPT(#5143): test-only spawn
 
         status_tx.set("Connecting...").unwrap();
-        assert!(
-            matches!(agent_rx.recv().await, Some(zeph_tui::AgentEvent::Status(s)) if s == "Connecting...")
-        );
+        app.handle_agent_event(agent_rx.recv().await.unwrap());
+        assert_eq!(app.status_label(), Some("Connecting..."));
 
         tui_channel.clear_status().await.unwrap();
-        assert!(matches!(
-            agent_rx.recv().await,
-            Some(zeph_tui::AgentEvent::ClearStatus)
-        ));
+        app.handle_agent_event(agent_rx.recv().await.unwrap());
+        assert_eq!(app.status_label(), Some("Connecting..."));
+    }
 
-        status_tx.set("Connecting...").unwrap();
-        assert!(
-            matches!(agent_rx.recv().await, Some(zeph_tui::AgentEvent::Status(s)) if s == "Connecting...")
-        );
+    #[tokio::test]
+    async fn forward_status_to_tui_keeps_every_notice() {
+        let (status_tx, status_rx) =
+            zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Mcp);
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::channel::<zeph_tui::AgentEvent>(16);
+
+        tokio::spawn(forward_status_to_tui(status_rx, agent_tx)); // EXEMPT(#5143): test-only spawn
+
+        status_tx.notice("url-a").unwrap();
+        status_tx.notice("url-b").unwrap();
+        for expected in ["url-a", "url-b"] {
+            assert!(matches!(
+                agent_rx.recv().await,
+                Some(zeph_tui::AgentEvent::Notice(s)) if s == expected
+            ));
+        }
     }
 
     #[tokio::test]
@@ -899,7 +945,11 @@ pub(crate) async fn forward_index_progress_to_tui(
                 p.files_done, p.files_total, pct
             )
         };
-        if tx.send(zeph_tui::AgentEvent::Status(msg)).await.is_err() {
+        if tx
+            .send(lane_set(ProducerLane::CodeIndex, msg))
+            .await
+            .is_err()
+        {
             break;
         }
     }
@@ -912,7 +962,7 @@ pub(crate) async fn forward_index_progress_to_tui(
         Duration::from_millis(200)
     };
     tokio::time::sleep(delay).await;
-    let _ = tx.send(zeph_tui::AgentEvent::ClearStatus).await;
+    let _ = tx.send(lane_clear(ProducerLane::CodeIndex)).await;
 }
 
 /// Periodically poll the database for fleet session data and forward snapshots to the TUI.
@@ -943,9 +993,7 @@ pub(crate) async fn fleet_poll_task(
         ticker.tick().await;
 
         if tx
-            .send(zeph_tui::AgentEvent::Status(
-                "Refreshing fleet...".to_owned(),
-            ))
+            .send(lane_set(ProducerLane::Refresh, "Refreshing fleet..."))
             .await
             .is_err()
         {
@@ -956,12 +1004,12 @@ pub(crate) async fn fleet_poll_task(
             Ok(s) => s,
             Err(e) => {
                 tracing::debug!(error = %e, "fleet poll: list_agent_sessions failed");
-                let _ = tx.send(zeph_tui::AgentEvent::ClearStatus).await;
+                let _ = tx.send(lane_clear(ProducerLane::Refresh)).await;
                 continue;
             }
         };
 
-        let _ = tx.send(zeph_tui::AgentEvent::ClearStatus).await;
+        let _ = tx.send(lane_clear(ProducerLane::Refresh)).await;
 
         let snapshot = zeph_tui::widgets::fleet::FleetSnapshot { sessions };
         if tx
@@ -1041,8 +1089,9 @@ pub(crate) async fn durable_poll_task(
         ticker.tick().await;
 
         if tx
-            .send(zeph_tui::AgentEvent::Status(
-                "Refreshing durable journal...".to_owned(),
+            .send(lane_set(
+                ProducerLane::Refresh,
+                "Refreshing durable journal...",
             ))
             .await
             .is_err()
@@ -1054,12 +1103,12 @@ pub(crate) async fn durable_poll_task(
             Ok(r) => r,
             Err(e) => {
                 tracing::debug!(error = %e, "durable poll: list_executions failed");
-                let _ = tx.send(zeph_tui::AgentEvent::ClearStatus).await;
+                let _ = tx.send(lane_clear(ProducerLane::Refresh)).await;
                 continue;
             }
         };
 
-        let _ = tx.send(zeph_tui::AgentEvent::ClearStatus).await;
+        let _ = tx.send(lane_clear(ProducerLane::Refresh)).await;
 
         let now_ms = chrono::Utc::now().timestamp_millis();
         let executions: Vec<DurableRow> = rows

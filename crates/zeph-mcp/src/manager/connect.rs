@@ -775,9 +775,10 @@ async fn run_oauth_handshake(
 
 /// Announce an OAuth authorization URL the user must open.
 ///
-/// The URL is load-bearing, so it is logged at `warn` (non-collapsing, survives a `warn`
-/// filter) in addition to the status line, which is latest-wins and may be replaced by a
-/// concurrent handshake. Without a status channel it is printed to stderr.
+/// The URL is load-bearing, so it is logged at `warn` and sent through the non-collapsing
+/// notice queue, so concurrent handshakes each keep their own URL. The status line carries only
+/// a short, latest-wins `Waiting for OAuth` label. Without a status channel the URL is printed
+/// to stderr.
 pub(super) fn announce_oauth_url(
     server_id: &str,
     auth_url: &str,
@@ -792,8 +793,8 @@ pub(super) fn announce_oauth_url(
     );
     let auth_msg = format!("MCP OAuth: Open this URL to authorize '{server_id}': {auth_url}");
     if let Some(stx) = status_tx {
+        let _ = stx.notice(auth_msg);
         let _ = stx.set(format!("Waiting for OAuth: {server_id}"));
-        let _ = stx.set(auth_msg);
     } else {
         eprintln!("{auth_msg}");
     }

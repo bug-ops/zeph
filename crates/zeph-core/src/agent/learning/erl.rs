@@ -77,10 +77,12 @@ impl<C: Channel> Agent<C> {
             .find(|m| m.role == super::super::Role::User)
             .map(|m| m.content.chars().take(512).collect::<String>())
             .unwrap_or_default();
-        let status_tx = self.services.session.status_tx.clone();
-        if let Some(ref tx) = self.services.session.status_tx {
-            let _ = tx.set("Reflecting on experience…");
-        }
+        let status = self
+            .services
+            .session
+            .status_tx
+            .as_ref()
+            .map(|tx| tx.scope("Reflecting on experience…"));
         let args = ErlTaskArgs {
             provider: self.resolve_background_provider(config.erl_extract_provider.as_str()),
             memory,
@@ -88,8 +90,7 @@ impl<C: Channel> Agent<C> {
             task_summary,
             tool_calls_str: tool_names.join(", "),
             dedup_threshold: config.erl_dedup_threshold,
-            status_tx,
         };
-        self.try_spawn_learning_task(erl_reflection_task(args));
+        self.try_spawn_learning_task_scoped(status, erl_reflection_task(args));
     }
 }

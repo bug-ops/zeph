@@ -216,6 +216,12 @@ impl<C: Channel> Agent<C> {
             self.channel
                 .send_status_best_effort("syncing skill index...")
                 .await;
+            let _sync_status = self
+                .services
+                .session
+                .status_tx
+                .as_ref()
+                .map(|tx| tx.scope("Syncing skills…"));
             let on_progress: Option<Box<dyn Fn(usize, usize) + Send>> =
                 self.services.session.status_tx.clone().map(
                     |tx| -> Box<dyn Fn(usize, usize) + Send> {

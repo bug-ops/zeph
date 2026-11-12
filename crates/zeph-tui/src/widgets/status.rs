@@ -639,6 +639,7 @@ fn format_uptime(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::status_board::StatusLane;
 
     fn short_uptime(secs: u64) -> String {
         let m = secs / 60;
@@ -1130,7 +1131,10 @@ mod tests {
         let (_, agent_rx) = mpsc::channel(1);
         let mut app = App::new(user_tx, agent_rx);
         app.motion = zeph_config::Motion::Off;
-        app.sessions.current_mut().status_label = Some("thinking".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::Turn, "thinking");
 
         let metrics = MetricsSnapshot::default();
         let output = render_to_string(200, 1, |frame, area| {
@@ -1197,7 +1201,10 @@ mod tests {
         let (user_tx, _) = mpsc::channel(1);
         let (_, agent_rx) = mpsc::channel(1);
         let mut app = App::new(user_tx, agent_rx);
-        app.sessions.current_mut().status_label = Some("Loading skills...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::Turn, "Loading skills...");
 
         let metrics = MetricsSnapshot::default();
         let output = render_to_string(200, 1, |frame, area| {
@@ -1221,7 +1228,10 @@ mod tests {
         let (user_tx, _) = mpsc::channel(1);
         let (_, agent_rx) = mpsc::channel(1);
         let mut app = App::new(user_tx, agent_rx);
-        app.sessions.current_mut().status_label = Some("Some unknown operation...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::Turn, "Some unknown operation...");
 
         let metrics = MetricsSnapshot::default();
         let output = render_to_string(200, 1, |frame, area| {
@@ -1255,7 +1265,11 @@ mod tests {
         let (user_tx, _) = mpsc::channel(1);
         let (_, agent_rx) = mpsc::channel(1);
         let mut app_short = App::new(user_tx, agent_rx);
-        app_short.sessions.current_mut().status_label = Some("thinking".to_owned());
+        app_short
+            .sessions
+            .current_mut()
+            .status
+            .set(StatusLane::Turn, "thinking");
         assert!(
             app_short.is_agent_busy(),
             "test setup must actually exercise the busy path"
@@ -1267,8 +1281,11 @@ mod tests {
         let (user_tx, _) = mpsc::channel(1);
         let (_, agent_rx) = mpsc::channel(1);
         let mut app_long = App::new(user_tx, agent_rx);
-        app_long.sessions.current_mut().status_label =
-            Some("compacting context in the background".to_owned());
+        app_long
+            .sessions
+            .current_mut()
+            .status
+            .set(StatusLane::Turn, "compacting context in the background");
         assert!(
             app_long.is_agent_busy(),
             "test setup must actually exercise the busy path"
@@ -1312,7 +1329,10 @@ mod tests {
         let (user_tx, _) = mpsc::channel(1);
         let (_, agent_rx) = mpsc::channel(1);
         let mut app = App::new(user_tx, agent_rx);
-        app.sessions.current_mut().status_label = Some("thinking...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::Turn, "thinking...");
 
         let metrics = MetricsSnapshot::default();
         let output = render_to_string(200, 1, |frame, area| {
@@ -1369,7 +1389,10 @@ mod tests {
         let (_, agent_rx) = mpsc::channel(1);
         let mut app = App::new(user_tx, agent_rx);
         app.pending_quit_tick = Some(app.anim_tick());
-        app.sessions.current_mut().status_label = Some("Thinking...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::Turn, "Thinking...");
         assert!(app.is_agent_busy());
         assert!(
             !app.quit_hint_active(),
@@ -1400,7 +1423,10 @@ mod tests {
         let (_, agent_rx) = mpsc::channel(1);
         let mut app = App::new(user_tx, agent_rx);
         app.unicode_capable = false;
-        app.sessions.current_mut().status_label = Some("thinking...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::Turn, "thinking...");
 
         assert!(app.is_ascii_only());
 

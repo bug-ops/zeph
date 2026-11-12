@@ -356,14 +356,13 @@ impl SqliteStore {
         // Truncate plain-text content only. `parts_json` is skipped because a
         // mid-byte cut produces invalid JSON that breaks downstream deserialization.
         let content_cow: std::borrow::Cow<'_, str> = if content.len() > MAX_BYTES {
-            let boundary = content.floor_char_boundary(MAX_BYTES);
             tracing::debug!(
                 original_bytes = content.len(),
                 "save_message: content exceeds 100KB, truncating"
             );
             std::borrow::Cow::Owned(format!(
                 "{}... [truncated, {} bytes total]",
-                &content[..boundary],
+                zeph_common::text::truncate_to_bytes_ref(content, MAX_BYTES),
                 content.len()
             ))
         } else {

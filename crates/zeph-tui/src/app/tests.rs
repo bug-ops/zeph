@@ -3,8 +3,9 @@
 
 use super::state::CTRL_C_DOUBLE_PRESS_TICKS;
 use super::*;
-use crate::event::{AgentEvent, AppEvent};
+use crate::event::{AgentEvent, AppEvent, LaneUpdate, ProducerLane};
 use crate::session::MAX_TUI_MESSAGES;
+use crate::status_board::StatusLane;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::assert_matches;
 
@@ -16,13 +17,74 @@ fn make_app() -> (App, mpsc::Receiver<String>, mpsc::Sender<AgentEvent>) {
     (app, user_rx, agent_tx)
 }
 
+fn lane_set(lane: ProducerLane, text: &str) -> AgentEvent {
+    AgentEvent::LaneStatus {
+        lane,
+        update: LaneUpdate::Set(text.into()),
+    }
+}
+
+fn lane_clear(lane: ProducerLane) -> AgentEvent {
+    AgentEvent::LaneStatus {
+        lane,
+        update: LaneUpdate::Clear,
+    }
+}
+
+#[test]
+fn turn_clear_keeps_active_background_lane_status() {
+    let (mut app, _user_rx, _agent_tx) = make_app();
+    app.handle_agent_event(lane_set(ProducerLane::Warmup, "Backfilling embeddings..."));
+    app.handle_agent_event(AgentEvent::Typing);
+    assert_eq!(app.status_label(), Some("thinking..."));
+    assert!(app.is_agent_busy());
+
+    app.handle_agent_event(AgentEvent::ClearStatus);
+    assert_eq!(app.status_label(), Some("Backfilling embeddings..."));
+    assert!(!app.is_agent_busy());
+    assert!(app.has_activity());
+
+    app.handle_agent_event(lane_clear(ProducerLane::Warmup));
+    assert!(!app.has_activity());
+}
+
+#[test]
+fn lane_clear_does_not_hide_turn_status() {
+    let (mut app, _user_rx, _agent_tx) = make_app();
+    app.handle_agent_event(lane_set(ProducerLane::CodeIndex, "Indexing code..."));
+    app.handle_agent_event(AgentEvent::Status("Searching memory...".into()));
+    app.handle_agent_event(lane_clear(ProducerLane::CodeIndex));
+    assert_eq!(app.status_label(), Some("Searching memory..."));
+}
+
+#[test]
+fn concurrent_oauth_notices_both_stay_visible_in_chat() {
+    let (mut app, _user_rx, _agent_tx) = make_app();
+    app.handle_agent_event(AgentEvent::Notice("Open https://auth.example/a".into()));
+    app.handle_agent_event(AgentEvent::Notice("Open https://auth.example/b".into()));
+    app.handle_agent_event(lane_clear(ProducerLane::Background));
+
+    let notices: Vec<&str> = app
+        .sessions
+        .current()
+        .messages
+        .iter()
+        .filter(|m| m.role == MessageRole::System)
+        .map(|m| m.content.as_str())
+        .collect();
+    assert_eq!(
+        notices,
+        ["Open https://auth.example/a", "Open https://auth.example/b"]
+    );
+}
+
 #[test]
 fn clear_status_event_leaves_agent_idle() {
     let (mut app, _user_rx, _agent_tx) = make_app();
     app.handle_agent_event(AgentEvent::Status("Loading memory...".into()));
     assert!(app.is_agent_busy());
     app.handle_agent_event(AgentEvent::ClearStatus);
-    assert!(app.sessions.current().status_label.is_none());
+    assert!(app.status_label().is_none());
     assert!(!app.is_agent_busy());
 }
 
@@ -93,7 +155,10 @@ async fn ctrl_c_cancels_immediately_when_agent_busy() {
     tokio::task::yield_now().await;
 
     app = app.with_cancel_signal(Arc::clone(&notify));
-    app.sessions.current_mut().status_label = Some("Thinking...".into());
+    app.sessions
+        .current_mut()
+        .status
+        .set(StatusLane::Turn, "Thinking...");
     assert!(app.is_agent_busy());
 
     let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
@@ -159,7 +224,10 @@ async fn cancel_agent_clears_pending_quit_tick_preventing_accidental_quit_on_nex
 
     // 2. Agent becomes busy before a second press.
     app.advance_wave_tick();
-    app.sessions.current_mut().status_label = Some("Thinking...".into());
+    app.sessions
+        .current_mut()
+        .status
+        .set(StatusLane::Turn, "Thinking...");
     assert!(app.is_agent_busy());
 
     // 3. Ctrl+C while busy cancels the turn (not a quit-window press).
@@ -168,7 +236,7 @@ async fn cancel_agent_clears_pending_quit_tick_preventing_accidental_quit_on_nex
     assert!(result.is_ok(), "cancel signal should have fired");
 
     // 4. Turn ends, agent idle again — still within the original window's tick range.
-    app.sessions.current_mut().status_label = None;
+    app.sessions.current_mut().status.clear(StatusLane::Turn);
     assert!(!app.is_agent_busy());
 
     // 5. User's next Ctrl+C is intended as a FIRST press — must not quit.
@@ -937,7 +1005,10 @@ async fn esc_in_normal_mode_does_not_cancel_when_busy() {
 
     app = app.with_cancel_signal(Arc::clone(&notify));
     app.sessions.current_mut().input_mode = InputMode::Normal;
-    app.sessions.current_mut().status_label = Some("Thinking...".into());
+    app.sessions
+        .current_mut()
+        .status
+        .set(StatusLane::Turn, "Thinking...");
     assert!(app.is_agent_busy());
 
     let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
@@ -2386,7 +2457,10 @@ mod mention_picker_tests {
         let (idx, _dir) = build_temp_index(&["foo.rs"]);
         let _ = tx.send(idx);
         app.pending_file_index = Some(PendingFileIndex::Bare(rx));
-        app.sessions.current_mut().status_label = Some("indexing files...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::FileIndex, "indexing files...");
 
         tokio::task::yield_now().await;
 
@@ -2394,7 +2468,7 @@ mod mention_picker_tests {
 
         assert!(app.file_index.is_some(), "file_index should be installed");
         assert!(
-            app.sessions.current_mut().status_label.is_none(),
+            app.status_label().is_none(),
             "status should be cleared after index ready"
         );
         assert!(
@@ -2428,7 +2502,10 @@ mod mention_picker_tests {
         let (tx, rx) = tokio::sync::oneshot::channel::<crate::file_picker::FileIndex>();
         drop(tx);
         app.pending_file_index = Some(PendingFileIndex::Bare(rx));
-        app.sessions.current_mut().status_label = Some("indexing files...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::FileIndex, "indexing files...");
 
         app.poll_pending_file_index();
 
@@ -2437,7 +2514,7 @@ mod mention_picker_tests {
             "closed handle should be consumed"
         );
         assert!(
-            app.sessions.current_mut().status_label.is_none(),
+            app.status_label().is_none(),
             "status should be cleared on closed sender"
         );
     }

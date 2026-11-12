@@ -65,13 +65,9 @@ pub(super) fn split_system_into_blocks(
     ttl: Option<CacheTtl>,
 ) -> Vec<SystemContentBlock> {
     // Split on volatile marker first: everything before is cacheable
-    let (cacheable_part, volatile_part) = if let Some(pos) = system.find(CACHE_MARKER_VOLATILE) {
-        (
-            &system[..pos],
-            Some(&system[pos + CACHE_MARKER_VOLATILE.len()..]),
-        )
-    } else {
-        (system, None)
+    let (cacheable_part, volatile_part) = match system.split_once(CACHE_MARKER_VOLATILE) {
+        Some((cacheable, volatile)) => (cacheable, Some(volatile)),
+        None => (system, None),
     };
 
     let mut blocks = Vec::new();
@@ -81,8 +77,8 @@ pub(super) fn split_system_into_blocks(
 
     let mut first_block = true;
     for marker in &cache_markers {
-        if let Some(pos) = remaining.find(marker) {
-            let before = remaining[..pos].trim();
+        if let Some((before_marker, after_marker)) = remaining.split_once(marker) {
+            let before = before_marker.trim();
             if !before.is_empty() {
                 // Pad Block 1 (the stable base prompt) with agent identity text
                 // when it is below the cache minimum threshold. This ensures
@@ -121,7 +117,7 @@ pub(super) fn split_system_into_blocks(
                     cache_control: cc,
                 });
             }
-            remaining = &remaining[pos + marker.len()..];
+            remaining = after_marker;
             first_block = false;
         }
     }

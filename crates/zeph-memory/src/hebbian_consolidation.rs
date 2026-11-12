@@ -233,9 +233,7 @@ pub async fn distill_cluster(
         }
     };
 
-    let start = text.find('{')?;
-    let end = text.rfind('}')?;
-    let json_slice = &text[start..=end];
+    let json_slice = zeph_common::llm_response::extract_json_object_slice(&text)?;
 
     match serde_json::from_str::<HebbianConsolidationOutcome>(json_slice) {
         Ok(outcome) => Some(outcome),
@@ -616,6 +614,14 @@ mod tests {
             candidates.is_empty(),
             "entity within cooldown window must be skipped"
         );
+    }
+
+    #[tokio::test]
+    async fn test_distill_cluster_inverted_braces_returns_none() {
+        let mock = MockProvider::with_responses(vec!["вердикт} нет {ответа".to_owned()]);
+        let provider = AnyProvider::Mock(mock);
+        let neighbors = vec!["Entity A uses Rust".to_owned()];
+        assert!(distill_cluster(&provider, &neighbors, 30).await.is_none());
     }
 
     #[tokio::test]

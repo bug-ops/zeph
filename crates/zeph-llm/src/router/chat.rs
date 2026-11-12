@@ -15,7 +15,7 @@ use super::config::CascadeRouterConfig;
 use crate::any::AnyProvider;
 use crate::error::LlmError;
 use crate::provider::{ChatStream, LlmProvider, Message};
-use crate::status::StatusSender;
+use crate::status::{StatusReporter, StatusSender};
 
 // ── Bandit routing helpers ────────────────────────────────────────────────────
 
@@ -27,6 +27,7 @@ impl RouterProvider {
         messages: &[Message],
         status_tx: Option<StatusSender>,
     ) -> Result<String, LlmError> {
+        let mut status = StatusReporter::new(status_tx);
         let query = messages
             .last()
             .map(crate::provider::Message::to_llm_content)
@@ -38,9 +39,7 @@ impl RouterProvider {
             .await
             .ok_or(LlmError::NoProviders)?;
 
-        if let Some(ref tx) = status_tx {
-            let _ = tx.set(format!("bandit: routing to {}", p.name()));
-        }
+        status.show(format!("bandit: routing to {}", p.name()));
 
         let result = p.chat(messages).await;
         match &result {
@@ -144,6 +143,7 @@ impl RouterProvider {
         messages: &[Message],
         status_tx: Option<StatusSender>,
     ) -> Result<String, LlmError> {
+        let mut status = StatusReporter::new(status_tx);
         let cfg = self
             .cascade_config
             .as_ref()
@@ -178,9 +178,7 @@ impl RouterProvider {
                     // Network/API error: record availability failure but don't consume escalation budget.
                     let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                     self.record_availability(p.name(), false, latency);
-                    if let Some(tx) = &status_tx {
-                        let _ = tx.set(format!("cascade: {} unavailable, trying next", p.name()));
-                    }
+                    status.show(format!("cascade: {} unavailable, trying next", p.name()));
                     tracing::warn!(provider = p.name(), error = %e, "cascade: provider error");
                     last_err = Some(e);
                 }
@@ -250,15 +248,13 @@ impl RouterProvider {
                     self.record_availability(p.name(), true, latency);
                     escalations_remaining -= 1;
 
-                    if let Some(tx) = &status_tx {
-                        let _ = tx.set(format!(
-                            "cascade: {} quality {:.2} < {:.2}, escalating ({} left)",
-                            p.name(),
-                            verdict.score,
-                            cfg.quality_threshold,
-                            escalations_remaining
-                        ));
-                    }
+                    status.show(format!(
+                        "cascade: {} quality {:.2} < {:.2}, escalating ({} left)",
+                        p.name(),
+                        verdict.score,
+                        cfg.quality_threshold,
+                        escalations_remaining
+                    ));
                     tracing::info!(
                         provider = %p.name(),
                         score = verdict.score,
@@ -302,6 +298,7 @@ impl RouterProvider {
         messages: &[Message],
         status_tx: Option<StatusSender>,
     ) -> Result<ChatStream, LlmError> {
+        let mut status = StatusReporter::new(status_tx);
         let cfg = self
             .cascade_config
             .as_ref()
@@ -343,9 +340,7 @@ impl RouterProvider {
                     let latency = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                     self.record_availability(p.name(), false, latency);
                     tracing::warn!(provider = p.name(), error = %e, "cascade stream: provider error");
-                    if let Some(tx) = &status_tx {
-                        let _ = tx.set(format!("cascade: {} unavailable, trying next", p.name()));
-                    }
+                    status.show(format!("cascade: {} unavailable, trying next", p.name()));
                     continue;
                 }
                 Ok(s) => s,
@@ -428,14 +423,12 @@ impl RouterProvider {
                     self.record_availability(p.name(), true, latency);
                     escalations_remaining -= 1;
 
-                    if let Some(tx) = &status_tx {
-                        let _ = tx.set(format!(
-                            "cascade: {} quality {:.2} < {:.2}, escalating",
-                            p.name(),
-                            verdict.score,
-                            cfg.quality_threshold,
-                        ));
-                    }
+                    status.show(format!(
+                        "cascade: {} quality {:.2} < {:.2}, escalating",
+                        p.name(),
+                        verdict.score,
+                        cfg.quality_threshold,
+                    ));
                     tracing::info!(
                         provider = %p.name(),
                         score = verdict.score,

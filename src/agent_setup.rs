@@ -1833,17 +1833,23 @@ fn spawn_index_progress_status_forwarder(
     supervisor: Option<zeph_common::TaskSupervisor>,
 ) {
     let fut = async move {
+        let mut status: Option<zeph_llm::status::StatusScope> = None;
         while progress_rx.changed().await.is_ok() {
             let p = progress_rx.borrow_and_update().clone();
             if p.files_total == 0 {
                 continue;
             }
-            let _ = status_tx.set(format!(
+            let text = format!(
                 "Indexing repository… ({}/{} files)",
                 p.files_done, p.files_total
-            ));
+            );
+            match &status {
+                Some(scope) => scope.update(text),
+                None => status = Some(status_tx.scope(text)),
+            }
             if p.files_done >= p.files_total {
-                let _ = status_tx.set("Indexing complete");
+                drop(status.take());
+                let _ = status_tx.notice("Indexing complete");
                 break;
             }
         }
@@ -3230,7 +3236,7 @@ async fn run_worktree_sweep(
             let msg = format_quota_status_message(&status);
             tracing::warn!(trigger, %msg, "worktree sweep: action needed");
             if let Some(tx) = status_tx {
-                let _ = tx.set(msg);
+                let _ = tx.notice(msg);
             }
         }
         Ok(_) => {
@@ -4067,8 +4073,8 @@ mod tests {
 
     /// `spawn_index_progress_status_forwarder` must forward each `IndexProgress` update as a
     /// human-readable status string, then send a completion message once `files_done` reaches
-    /// `files_total` and stop — the next real status message (e.g. from the file watcher)
-    /// overwrites it naturally, matching `IndexWatcher`'s own convention. This is the mechanism
+    /// `files_total`, clear the progress status and stop; completion is a one-shot notice
+    /// that does not collapse. This is the mechanism
     /// that closes the "no status visibility during the initial index pass" gap (#5720 item D)
     /// for TUI/Telegram/Discord — previously only the CLI got a one-shot `eprintln!`.
     #[tokio::test]
@@ -4103,16 +4109,18 @@ mod tests {
                 chunks_created: 5,
             })
             .unwrap();
-        // Latest wins: the 2/2 update and the completion message may collapse into one.
-        let mut last = status_rx.next().await.unwrap();
-        if last == set("Indexing repository… (2/2 files)") {
-            last = status_rx.next().await.unwrap();
+        // Completion is a one-shot notice and the progress status is cleared; the forwarder
+        // then stops, which closes the channel and ends this drain loop.
+        let mut notices = Vec::new();
+        let mut last_update = None;
+        while let Some(event) = status_rx.next_event().await {
+            match event {
+                zeph_llm::status::StatusEvent::Notice(text) => notices.push(text.into_string()),
+                zeph_llm::status::StatusEvent::Update(update) => last_update = Some(update),
+            }
         }
-        assert_eq!(last, set("Indexing complete"));
-
-        // The forwarder stops after sending the completion message — no further sends,
-        // and the channel closes once the forwarder task exits.
-        assert!(status_rx.next().await.is_none());
+        assert_eq!(notices, ["Indexing complete"]);
+        assert_eq!(last_update, Some(zeph_llm::status::StatusUpdate::Clear));
     }
 
     /// A zero-file project (`files_total == 0`) never sends any `IndexProgress` update from

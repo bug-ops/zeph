@@ -1189,22 +1189,17 @@ fn extract_json(s: &str) -> &str {
     let trimmed = s.trim();
     // Strip ```json ... ``` or ``` ... ```
     if let Some(inner) = trimmed.strip_prefix("```json")
-        && let Some(end) = inner.rfind("```")
+        && let Some((body, _)) = inner.rsplit_once("```")
     {
-        return inner[..end].trim();
+        return body.trim();
     }
     if let Some(inner) = trimmed.strip_prefix("```")
-        && let Some(end) = inner.rfind("```")
+        && let Some((body, _)) = inner.rsplit_once("```")
     {
-        return inner[..end].trim();
+        return body.trim();
     }
     // Find first '{' to last '}'
-    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}'))
-        && start <= end
-    {
-        return &trimmed[start..=end];
-    }
-    trimmed
+    zeph_common::llm_response::extract_json_object_slice(trimmed).unwrap_or(trimmed)
 }
 
 #[cfg(test)]

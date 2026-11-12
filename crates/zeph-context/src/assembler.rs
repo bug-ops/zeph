@@ -588,12 +588,7 @@ pub(crate) async fn fetch_graph_facts(
     let fused_query;
     let effective_query = if let Some(ref state) = memory.memcot_state {
         let max_state_chars = 2 * query.len();
-        let state_slice = if state.len() > max_state_chars {
-            let boundary = state.floor_char_boundary(max_state_chars);
-            &state[..boundary]
-        } else {
-            state.as_str()
-        };
+        let state_slice = zeph_common::text::truncate_to_bytes_ref(state, max_state_chars);
         fused_query = format!("[state] {state_slice}\n{query}");
         &fused_query as &str
     } else {

@@ -24,6 +24,8 @@
 //! # TODO(#6935): consolidate MockChannel/MockToolExecutor into shared zeph-agent-test-helpers
 //! crate; tracked separately from #3515/#3516
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 pub mod condense;
 pub mod embed;
 pub mod error;

@@ -255,14 +255,15 @@ impl<C: Channel> super::Agent<C> {
             docs = due_paths.len(),
             "magic_docs: spawning background update"
         );
-        let _ = self
+        let status = self
             .services
             .session
             .status_tx
             .as_ref()
-            .map(|tx| tx.set(format!("Updating {} magic doc(s)…", due_paths.len())));
+            .map(|tx| tx.scope(format!("Updating {} magic doc(s)…", due_paths.len())));
 
         let update_future = async move {
+            let _status = status;
             for path in &due_paths {
                 if let Err(e) = update_magic_doc(path, &provider, usize::from(max_iterations)).await
                 {
