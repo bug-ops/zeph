@@ -236,9 +236,6 @@ impl App {
                 self.queued_count = count;
                 self.pending_count = count;
             }
-            AgentEvent::DiffReady { diff, tool_call_id } => {
-                self.handle_diff_ready(diff, &tool_call_id);
-            }
             AgentEvent::CommandResult { output, .. } => {
                 self.command_palette = None;
                 self.sessions
@@ -277,11 +274,9 @@ impl App {
                 } else {
                     format!("Sub-agent '{name}' failed")
                 };
-                self.sessions
-                    .current_mut()
-                    .status
-                    .set(StatusLane::Turn, label.clone());
-                // Status change counts as progress so the wave animates (never reads Stalled).
+                // The Turn lane belongs to the command turn; the completion line is chat-only so
+                // it cannot outlive the turn and look busy.
+                self.sessions.current_mut().status.clear(StatusLane::Turn);
                 self.last_progress_at = Instant::now();
                 self.sessions
                     .current_mut()
@@ -302,12 +297,6 @@ impl App {
                         format!("Sub-agent '{name}' failed")
                     };
                     self.set_view_target(super::AgentViewTarget::Main);
-                    self.sessions
-                        .current_mut()
-                        .status
-                        .set(StatusLane::Turn, label.clone());
-                    // Status change counts as progress so the wave animates (never reads Stalled).
-                    self.last_progress_at = Instant::now();
                     self.sessions
                         .current_mut()
                         .messages
@@ -357,23 +346,6 @@ impl App {
                     }
                 }
             }
-        }
-    }
-
-    fn handle_diff_ready(
-        &mut self,
-        diff: zeph_core::DiffData,
-        tool_call_id: &zeph_common::ToolExecutionId,
-    ) {
-        if let Some(msg) = self
-            .sessions
-            .current_mut()
-            .messages
-            .iter_mut()
-            .rev()
-            .find(|m| m.role == MessageRole::Tool && m.tool_call_id.as_ref() == Some(tool_call_id))
-        {
-            msg.diff_data = Some(diff);
         }
     }
 
@@ -536,8 +508,8 @@ mod tests {
 
     use crate::app::{AgentViewTarget, App};
     use crate::event::AgentEvent;
+    use crate::status_board::{BoardActivity, StatusLane};
     use crate::types::{ChatMessage, MessageRole};
-    use zeph_core::DiffData;
 
     fn make_app() -> App {
         let (user_tx, agent_rx) = {
@@ -556,20 +528,6 @@ mod tests {
             .streaming()
             .with_tool_call_id(zeph_common::ToolExecutionId::new(id).unwrap());
         app.sessions.current_mut().messages.push(msg);
-    }
-
-    fn tool_msg(id: &str) -> ChatMessage {
-        ChatMessage::new(MessageRole::Tool, "$ cmd\n".to_owned())
-            .with_tool("bash".into())
-            .with_tool_call_id(zeph_common::ToolExecutionId::new(id).unwrap())
-    }
-
-    fn diff() -> DiffData {
-        DiffData {
-            file_path: "a.rs".into(),
-            old_content: "old".into(),
-            new_content: "new".into(),
-        }
     }
 
     #[test]
@@ -650,92 +608,6 @@ mod tests {
     }
 
     #[test]
-    fn diff_ready_attaches_to_matching_id() {
-        let mut app = make_app();
-        app.sessions.current_mut().messages.push(tool_msg("call-1"));
-        app.sessions.current_mut().messages.push(tool_msg("call-2"));
-
-        app.handle_agent_event(AgentEvent::DiffReady {
-            diff: diff(),
-            tool_call_id: zeph_common::ToolExecutionId::new("call-2").unwrap(),
-        });
-
-        assert!(app.sessions.current().messages[0].diff_data.is_none());
-        assert!(app.sessions.current().messages[1].diff_data.is_some());
-    }
-
-    #[test]
-    fn diff_ready_mismatched_id_does_not_attach() {
-        let mut app = make_app();
-        app.sessions.current_mut().messages.push(tool_msg("call-1"));
-
-        app.handle_agent_event(AgentEvent::DiffReady {
-            diff: diff(),
-            tool_call_id: zeph_common::ToolExecutionId::new("call-99").unwrap(),
-        });
-
-        assert!(app.sessions.current().messages[0].diff_data.is_none());
-    }
-
-    #[test]
-    fn diff_ready_empty_id_does_not_attach() {
-        let mut app = make_app();
-        app.sessions.current_mut().messages.push(tool_msg("call-1"));
-
-        app.handle_agent_event(AgentEvent::DiffReady {
-            diff: diff(),
-            tool_call_id: zeph_common::ToolExecutionId::generate(),
-        });
-
-        assert!(app.sessions.current().messages[0].diff_data.is_none());
-    }
-
-    #[test]
-    fn diff_ready_two_concurrent_attach_to_correct_messages() {
-        let mut app = make_app();
-        app.sessions.current_mut().messages.push(tool_msg("call-A"));
-        app.sessions.current_mut().messages.push(tool_msg("call-B"));
-        app.sessions.current_mut().messages.push(tool_msg("call-C"));
-
-        let diff_a = DiffData {
-            file_path: "a.rs".into(),
-            old_content: "old_a".into(),
-            new_content: "new_a".into(),
-        };
-        let diff_b = DiffData {
-            file_path: "b.rs".into(),
-            old_content: "old_b".into(),
-            new_content: "new_b".into(),
-        };
-
-        // Deliver out of order: B first, then A
-        app.handle_agent_event(AgentEvent::DiffReady {
-            diff: diff_b,
-            tool_call_id: zeph_common::ToolExecutionId::new("call-B").unwrap(),
-        });
-        app.handle_agent_event(AgentEvent::DiffReady {
-            diff: diff_a,
-            tool_call_id: zeph_common::ToolExecutionId::new("call-A").unwrap(),
-        });
-
-        let msgs = &app.sessions.current().messages;
-        assert_eq!(
-            msgs[0].diff_data.as_ref().map(|d| d.file_path.as_str()),
-            Some("a.rs"),
-            "call-A diff must attach to message 0"
-        );
-        assert_eq!(
-            msgs[1].diff_data.as_ref().map(|d| d.file_path.as_str()),
-            Some("b.rs"),
-            "call-B diff must attach to message 1"
-        );
-        assert!(
-            msgs[2].diff_data.is_none(),
-            "call-C must remain without diff"
-        );
-    }
-
-    #[test]
     fn foreground_subagent_started_switches_view_to_subagent() {
         let mut app = make_app();
         assert!(app.sessions.current().view_target.is_main());
@@ -776,7 +648,10 @@ mod tests {
             app.sessions.current().view_target.is_main(),
             "view must return to Main after completion"
         );
-        assert_eq!(app.status_label(), Some("Sub-agent 'coder' completed"));
+        assert_eq!(
+            app.sessions.current().status.activity(),
+            BoardActivity::Idle
+        );
         let system_msg = app
             .sessions
             .current()
@@ -832,7 +707,17 @@ mod tests {
             success: false,
         });
 
-        assert_eq!(app.status_label(), Some("Sub-agent 'builder' failed"));
+        assert_eq!(
+            app.sessions.current().status.activity(),
+            BoardActivity::Idle
+        );
+        assert!(
+            app.sessions
+                .current()
+                .messages
+                .iter()
+                .any(|m| m.role == MessageRole::System && m.content == "Sub-agent 'builder' failed")
+        );
     }
 
     // Fast-completing subagents cause a Started then immediately Completed event.
@@ -885,7 +770,10 @@ mod tests {
             app.sessions.current().view_target.is_main(),
             "view must return to Main once the manually-viewed background subagent completes"
         );
-        assert_eq!(app.status_label(), Some("Sub-agent 'researcher' completed"));
+        assert_eq!(
+            app.sessions.current().status.activity(),
+            BoardActivity::Idle
+        );
         let system_msg = app
             .sessions
             .current()
@@ -913,7 +801,61 @@ mod tests {
         });
 
         assert!(app.sessions.current().view_target.is_main());
-        assert_eq!(app.status_label(), Some("Sub-agent 'worker' failed"));
+        assert_eq!(
+            app.sessions.current().status.activity(),
+            BoardActivity::Idle
+        );
+    }
+
+    #[test]
+    fn background_subagent_completed_while_idle_leaves_status_untouched() {
+        let mut app = make_app();
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::Background, "indexing");
+        app.set_view_target(AgentViewTarget::SubAgent {
+            id: "sa-bg-5".into(),
+            name: "worker".into(),
+        });
+
+        app.handle_agent_event(AgentEvent::BackgroundSubagentCompleted {
+            id: "sa-bg-5".into(),
+            name: "worker".into(),
+            success: true,
+        });
+
+        assert_eq!(
+            app.sessions.current().status.activity(),
+            BoardActivity::Background,
+            "the Turn lane must not be set, and other lanes must not be cleared"
+        );
+        assert_eq!(app.status_label(), Some("indexing"));
+    }
+
+    #[test]
+    fn background_subagent_completed_keeps_running_turn_status() {
+        let mut app = make_app();
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::Turn, "thinking...");
+        app.set_view_target(AgentViewTarget::SubAgent {
+            id: "sa-bg-4".into(),
+            name: "worker".into(),
+        });
+
+        app.handle_agent_event(AgentEvent::BackgroundSubagentCompleted {
+            id: "sa-bg-4".into(),
+            name: "worker".into(),
+            success: true,
+        });
+
+        assert_eq!(
+            app.sessions.current().status.activity(),
+            BoardActivity::Turn
+        );
+        assert_eq!(app.status_label(), Some("thinking..."));
     }
 
     #[test]

@@ -441,3 +441,38 @@ impl<C: Channel + Send + 'static> TrackingAccess for Agent<C> {
         })
     }
 }
+
+#[cfg(all(test, feature = "sqlite"))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn goal_list_truncates_a_multibyte_id_on_a_char_boundary() {
+        let pool = zeph_db::DbConfig {
+            url: ":memory:".to_owned(),
+            pool_size: 1,
+        }
+        .connect()
+        .await
+        .unwrap();
+        zeph_db::run_migrations(&pool).await.unwrap();
+        // 11 bytes: byte 8 falls inside the fourth two-byte char.
+        let id = "a\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}";
+        let now = chrono::Utc::now().to_rfc3339();
+        zeph_db::query(zeph_db::sql!(
+            "INSERT INTO zeph_goals (id, text, status, token_budget, turns_used, tokens_used, \
+             created_at, updated_at) VALUES (?, 'goal text', 'active', NULL, 0, 0, ?, ?)"
+        ))
+        .bind(id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let out = goal_list(&crate::goal::GoalStore::new(std::sync::Arc::new(pool)))
+            .await
+            .unwrap();
+        assert!(out.contains("[a\u{e9}\u{e9}\u{e9}]"), "{out}");
+    }
+}

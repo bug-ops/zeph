@@ -15,7 +15,6 @@
 use std::io::{BufRead, BufReader, IsTerminal};
 use std::sync::Arc;
 
-use zeph_core::DiffData;
 use zeph_core::channel::{
     Channel, ChannelError, ChannelMessage, ElicitationRequest, ElicitationResponse, StatusText,
     StopHint, ToolOutputEvent, ToolStartEvent,
@@ -42,6 +41,9 @@ pub struct JsonCliChannel {
     /// returns `Ok(None)` immediately instead of waiting on stdin, so an exit
     /// command discarded mid-drain still ends the session.
     exit_requested: bool,
+    /// Last queue depth emitted as a `queue: N` status; the agent reports the count after
+    /// every command, so unchanged values are suppressed to keep the JSONL stream quiet.
+    last_queue_count: usize,
 }
 
 impl JsonCliChannel {
@@ -80,6 +82,7 @@ impl JsonCliChannel {
             auto,
             pending_chunks: false,
             exit_requested: false,
+            last_queue_count: 0,
         }
     }
 }
@@ -241,19 +244,14 @@ impl Channel for JsonCliChannel {
 
     #[allow(clippy::unused_async_trait_impl)]
     async fn send_queue_count(&mut self, count: usize) -> Result<(), ChannelError> {
+        if count == self.last_queue_count {
+            return Ok(());
+        }
+        self.last_queue_count = count;
         self.sink.emit(&JsonEvent::Status {
             message: &format!("queue: {count}"),
         });
         Ok(())
-    }
-
-    fn send_diff(
-        &mut self,
-        _diff: DiffData,
-        _tool_call_id: &zeph_common::ToolExecutionId,
-    ) -> impl std::future::Future<Output = Result<(), ChannelError>> + Send {
-        // v1: diffs are not emitted as JSON events.
-        std::future::ready(Ok(()))
     }
 
     /// No-op: `JsonEventLayer` emits `tool_result` from its `after_tool` hook.
@@ -601,8 +599,23 @@ mod tests {
             auto: false,
             pending_chunks: false,
             exit_requested: false,
+            last_queue_count: 0,
         };
         (ch, tx)
+    }
+
+    #[tokio::test]
+    async fn send_queue_count_emits_only_on_change() {
+        let (sink, read) = make_test_sink();
+        let (mut ch, _tx) = make_test_channel(sink);
+
+        ch.send_queue_count(0).await.unwrap();
+        ch.send_queue_count(0).await.unwrap();
+        assert!(read().is_empty(), "unchanged count must not emit");
+
+        ch.send_queue_count(2).await.unwrap();
+        ch.send_queue_count(2).await.unwrap();
+        assert_eq!(read().len(), 1, "a changed count emits exactly once");
     }
 
     #[tokio::test]

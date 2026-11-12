@@ -233,7 +233,7 @@ impl MemoryToolExecutor {
         self.consent_gate
             .as_ref()
             .map_or(ContentTrustLevel::Trusted, |gate| {
-                ContentTrustLevel::from_ordinal(*gate.trust_slot.read())
+                ContentTrustLevel::from_u8_or_untrusted(*gate.trust_slot.read())
             })
     }
 

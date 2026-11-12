@@ -223,10 +223,9 @@ pub(crate) fn parse_frontmatter_meta(content: &str, fallback_path: &str) -> (Str
     let Some(rest) = after_open else {
         return (fallback_path.to_owned(), String::new());
     };
-    let Some(end) = rest.find("\n---") else {
+    let Some((frontmatter, _)) = rest.split_once("\n---") else {
         return (fallback_path.to_owned(), String::new());
     };
-    let frontmatter = &rest[..end];
 
     let mut name = fallback_path.to_owned();
     let mut description = String::new();

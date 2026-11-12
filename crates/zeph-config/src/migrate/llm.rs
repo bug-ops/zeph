@@ -551,12 +551,15 @@ fn replace_llm_section(toml_str: &str, new_llm_section: &str) -> String {
         let trimmed = line.trim();
 
         // Check if this is a top-level section header [something] or [[something]].
-        let is_top_section = (trimmed.starts_with('[') && !trimmed.starts_with("[["))
-            && trimmed.ends_with(']')
-            && !trimmed[1..trimmed.len() - 1].contains('.');
-        let is_top_aot = trimmed.starts_with("[[")
-            && trimmed.ends_with("]]")
-            && !trimmed[2..trimmed.len() - 2].contains('.');
+        let is_top_section = !trimmed.starts_with("[[")
+            && trimmed
+                .strip_prefix('[')
+                .and_then(|s| s.strip_suffix(']'))
+                .is_some_and(|inner| !inner.contains('.'));
+        let is_top_aot = trimmed
+            .strip_prefix("[[")
+            .and_then(|s| s.strip_suffix("]]"))
+            .is_some_and(|inner| !inner.contains('.'));
         let is_llm_sub = (trimmed.starts_with("[llm") || trimmed.starts_with("[[llm"))
             && (trimmed.contains(']'));
 

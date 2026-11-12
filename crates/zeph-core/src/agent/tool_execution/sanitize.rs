@@ -288,7 +288,7 @@ impl<C: Channel> Agent<C> {
             .messages
             .iter()
             .filter_map(|m| m.metadata.trust_level)
-            .map(zeph_sanitizer::ContentTrustLevel::from_ordinal)
+            .map(zeph_sanitizer::ContentTrustLevel::from_u8_or_untrusted)
             .max()
             .unwrap_or(zeph_sanitizer::ContentTrustLevel::Trusted)
     }

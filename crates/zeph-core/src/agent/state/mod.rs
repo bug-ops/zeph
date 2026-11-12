@@ -1523,7 +1523,9 @@ impl Default for DebugState {
 impl Default for FeedbackState {
     fn default() -> Self {
         Self {
-            detector: zeph_agent_feedback::FeedbackDetector::new(0.6),
+            detector: zeph_agent_feedback::FeedbackDetector::new(
+                zeph_config::DEFAULT_CORRECTION_CONFIDENCE,
+            ),
             judge: None,
             llm_classifier: None,
         }

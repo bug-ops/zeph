@@ -3725,6 +3725,49 @@ mod tests {
         );
     }
 
+    /// A `Working` handle for `def` whose status channel never leaves `Working`; the returned
+    /// sender keeps (or, once dropped, freezes) that state.
+    fn working_handle(
+        task_id: &str,
+        def: &zeph_subagent::SubAgentDef,
+        join_handle: zeph_common::task_supervisor::BlockingHandle<
+            Result<String, zeph_subagent::SubAgentError>,
+        >,
+    ) -> (
+        zeph_subagent::SubAgentHandle,
+        tokio::sync::watch::Sender<zeph_subagent::SubAgentStatus>,
+    ) {
+        use zeph_subagent::{PermissionGrants, SubAgentHandle, SubAgentState, SubAgentStatus};
+
+        let (status_tx, status_rx) = tokio::sync::watch::channel(SubAgentStatus {
+            state: SubAgentState::Working,
+            last_message: None,
+            turns_used: 0,
+            started_at: std::time::Instant::now(),
+        });
+        let (_pending_secret_tx, pending_secret_rx) = tokio::sync::mpsc::channel(1);
+        let (secret_tx, _secret_rx) = tokio::sync::mpsc::channel(1);
+        let handle = SubAgentHandle {
+            id: task_id.to_owned(),
+            def: def.clone(),
+            task_id: task_id.to_owned(),
+            state: SubAgentState::Working,
+            join_handle: Some(join_handle),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            status_rx,
+            grants: std::sync::Arc::new(std::sync::Mutex::new(PermissionGrants::default())),
+            pending_secret_rx,
+            secret_tx,
+            started_at_str: String::new(),
+            transcript_dir: None,
+            mcp_tool_names: Vec::new(),
+            peer: None,
+            trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
+            resumed_from: None,
+        };
+        (handle, status_tx)
+    }
+
     /// Regression test for issue #6408: a sub-agent whose background task exits (e.g. via a
     /// panic inside `run_agent_loop`) without ever publishing a terminal `SubAgentState` on
     /// `status_rx` must still be reaped by `collect_finished_subagents()`. This is detected via
@@ -3736,10 +3779,7 @@ mod tests {
         use crate::agent::agent_tests::*;
         use zeph_subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
         use zeph_subagent::hooks::SubagentHooks;
-        use zeph_subagent::{
-            PermissionGrants, SubAgentDef, SubAgentHandle, SubAgentManager, SubAgentState,
-            SubAgentStatus,
-        };
+        use zeph_subagent::{SubAgentDef, SubAgentManager, SubAgentState};
 
         let provider = mock_provider(vec!["unused".into()]);
         let channel = MockChannel::new(vec![]);
@@ -3786,33 +3826,9 @@ mod tests {
         // `status_tx` is dropped without ever sending a terminal state, so `status_rx` stays
         // stuck on the initial `Working` value forever — exactly what a real panic leaves
         // behind (the sender lives inside the panicked task's stack).
-        let (status_tx, status_rx) = tokio::sync::watch::channel(SubAgentStatus {
-            state: SubAgentState::Working,
-            last_message: None,
-            turns_used: 0,
-            started_at: std::time::Instant::now(),
-        });
-        drop(status_tx);
-        let (_pending_secret_tx, pending_secret_rx) = tokio::sync::mpsc::channel(1);
-        let (secret_tx, _secret_rx) = tokio::sync::mpsc::channel(1);
-
         let task_id = "panicked-agent".to_string();
-        let sa_handle = SubAgentHandle {
-            id: task_id.clone(),
-            def: def.clone(),
-            task_id: task_id.clone(),
-            state: SubAgentState::Working,
-            join_handle: Some(join_handle),
-            cancel: tokio_util::sync::CancellationToken::new(),
-            status_rx,
-            grants: std::sync::Arc::new(std::sync::Mutex::new(PermissionGrants::default())),
-            pending_secret_rx,
-            secret_tx,
-            started_at_str: String::new(),
-            transcript_dir: None,
-            mcp_tool_names: Vec::new(),
-            peer: None,
-        };
+        let (sa_handle, status_tx) = working_handle(&task_id, &def, join_handle);
+        drop(status_tx);
 
         let mut mgr = SubAgentManager::new(4);
         mgr.definitions_mut().push(def);
@@ -3861,10 +3877,7 @@ mod tests {
         use crate::agent::agent_tests::*;
         use zeph_subagent::def::{SkillFilter, SubAgentPermissions, ToolPolicy};
         use zeph_subagent::hooks::SubagentHooks;
-        use zeph_subagent::{
-            PermissionGrants, SubAgentDef, SubAgentHandle, SubAgentManager, SubAgentState,
-            SubAgentStatus,
-        };
+        use zeph_subagent::{SubAgentDef, SubAgentManager, SubAgentState};
 
         let provider = mock_provider(vec!["unused".into()]);
         let channel = MockChannel::new(vec![]);
@@ -3904,33 +3917,8 @@ mod tests {
             "precondition: the still-running background task must not have finished"
         );
 
-        let (status_tx, status_rx) = tokio::sync::watch::channel(SubAgentStatus {
-            state: SubAgentState::Working,
-            last_message: None,
-            turns_used: 0,
-            started_at: std::time::Instant::now(),
-        });
-
-        let (_pending_secret_tx, pending_secret_rx) = tokio::sync::mpsc::channel(1);
-        let (secret_tx, _secret_rx) = tokio::sync::mpsc::channel(1);
-
         let task_id = "still-running-agent".to_string();
-        let sa_handle = SubAgentHandle {
-            id: task_id.clone(),
-            def: def.clone(),
-            task_id: task_id.clone(),
-            state: SubAgentState::Working,
-            join_handle: Some(join_handle),
-            cancel: tokio_util::sync::CancellationToken::new(),
-            status_rx,
-            grants: std::sync::Arc::new(std::sync::Mutex::new(PermissionGrants::default())),
-            pending_secret_rx,
-            secret_tx,
-            started_at_str: String::new(),
-            transcript_dir: None,
-            mcp_tool_names: Vec::new(),
-            peer: None,
-        };
+        let (sa_handle, status_tx) = working_handle(&task_id, &def, join_handle);
 
         let mut mgr = SubAgentManager::new(4);
         mgr.definitions_mut().push(def);

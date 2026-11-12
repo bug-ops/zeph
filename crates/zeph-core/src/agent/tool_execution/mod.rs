@@ -20,6 +20,7 @@ mod tier_loop;
 mod tool_call_dag;
 mod tool_result;
 
+pub(in crate::agent) use focus::BuiltinReply;
 #[cfg(feature = "scheduler")]
 pub(in crate::agent) use sanitize::ToolOutputOrigin;
 use zeph_common::text::truncate_to_bytes;

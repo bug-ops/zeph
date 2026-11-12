@@ -189,9 +189,9 @@ follow-up issue filed with the #3077 PR.
 - `unsafe_code = "deny"` is set workspace-wide and enforced by the compiler
 - The only exceptions are the scoped `#[allow(unsafe_code)]` sites listed in the registry below, each with a `// SAFETY:` comment on every `unsafe` block
 - Every new unsafe site requires a registry row plus an explicit architectural decision, and is allowed only where no maintained safe crate covers the API
-- Categories (a)-(c) are descriptive labels of the registered sites, not blanket permissions; category (d) is frozen to the file list below
+- Categories (a)-(d) are descriptive labels of the registered sites, not blanket permissions; a site not named in the registry is non-compliant
 - Inventory: `rg -n 'allow\(unsafe_code\)' src crates`
-- Trait-signature note (#6964): `Channel::send_diff` takes `&ToolExecutionId` for `tool_call_id`; this is the only sanctioned change to the frozen `Channel` signatures
+- Channel::send_diff was removed (#6973); no sanctioned Channel signature changes remain from #6964.
 
 ### Unsafe registry
 
@@ -204,8 +204,9 @@ follow-up issue filed with the #3077 PR.
 | (b) Model-weight mmap | `zeph_llm::classifier::ner` (`ner.rs:256`) | mmap of safetensors |
 | (b) Model-weight mmap | `zeph_llm::classifier::three_class` (`three_class.rs:261`) | mmap of safetensors |
 | (b) Model-weight mmap | `zeph_llm::classifier::candle_pii` (`candle_pii.rs:127`) | mmap of safetensors |
-| (c) Test-only env mutation | `std::env::set_var`/`remove_var` in tests (edition 2024): zeph-tools `shell/tests.rs`, zeph-tui `theme/color_mode.rs`, zeph-vault `lib.rs`, zeph-acp `client/tests.rs` | Process env mutation is `unsafe` in edition 2024 |
-| (d) Binary-crate sites (frozen list, pending an audit) | `src/bootstrap/tests.rs`, `src/commands/{durable,registry_client,scheduler_daemon,skill,vault}.rs`, `src/execution_mode.rs`, `src/init/durable.rs`, `src/main.rs`, `src/runner.rs`, `src/url_scheme/register.rs` | Pre-date the registry; no new file may be added |
+| (c) Test-only env mutation | `std::env::set_var`/`remove_var` in tests (edition 2024), each serialized or process-isolated by nextest: zeph-tools `shell/tests.rs`, zeph-tui `theme/color_mode.rs`, zeph-vault `lib.rs`, zeph-acp `client/tests.rs`, and in the binary `src/bootstrap/tests.rs`, `src/commands/{durable,registry_client,scheduler_daemon,skill,vault}.rs` (test modules), `src/execution_mode.rs` (test), `src/init/durable.rs` (test guard), `src/runner.rs` (`handle_url_open` re-entrancy test), `src/url_scheme/register.rs` (`linux` test module) | Process env mutation is `unsafe` in edition 2024; no new file may be added |
+| (d) Profiling allocator | `src/main.rs` `alloc_counter` and `#[global_allocator]` (`main.rs:14,103`, feature `profiling-alloc` only) | `GlobalAlloc` impl that forwards every call to `System` with the caller's `Layout` unchanged and only counts per thread; a global allocator has no safe API |
+| (d) Known violation | `src/runner.rs` `handle_url_open` (`runner.rs:4517`): `std::env::set_var("ZEPH_URL_OPEN_DEPTH")` outside tests | The site's `SAFETY` claim of single-threaded startup is false under the multi-thread tokio runtime; it is registered, not audited as sound. Tracked by #7025 |
 
 ## SSRF Protection
 

@@ -35,8 +35,9 @@ cargo add zeph-agent-feedback
 
 ```rust
 use zeph_agent_feedback::{FeedbackDetector, CorrectionKind};
+use zeph_config::ConfidenceThreshold;
 
-let detector = FeedbackDetector::new(0.6); // confidence threshold
+let detector = FeedbackDetector::new(ConfidenceThreshold::literal(0.6)); // validated confidence threshold
 
 let history = ["explain how async works"];
 if let Some(signal) = detector.detect("that's wrong, try again", &history) {

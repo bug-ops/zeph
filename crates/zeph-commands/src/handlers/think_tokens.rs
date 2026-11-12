@@ -42,10 +42,12 @@ pub fn parse_token_budget(arg: &str) -> Result<Option<u32>, String> {
         return Ok(None);
     }
 
-    let (numeric, multiplier) = match trimmed.chars().last() {
-        Some(c) if c.eq_ignore_ascii_case(&'k') => (&trimmed[..trimmed.len() - 1], 1_000.0),
-        Some(c) if c.eq_ignore_ascii_case(&'m') => (&trimmed[..trimmed.len() - 1], 1_000_000.0),
-        _ => (trimmed, 1.0),
+    let (numeric, multiplier) = if let Some(n) = trimmed.strip_suffix(['k', 'K']) {
+        (n, 1_000.0)
+    } else if let Some(n) = trimmed.strip_suffix(['m', 'M']) {
+        (n, 1_000_000.0)
+    } else {
+        (trimmed, 1.0)
     };
 
     if numeric.is_empty() {

@@ -13,6 +13,7 @@
 //! D1 — unknown schema versions must fail loud.
 
 use serde::Deserialize;
+use zeph_common::trust_level::TranscriptTrustSchema;
 use zeph_llm::provider::{Message, MessagePart, TurnContextTrust};
 
 use crate::MemoryError;
@@ -58,14 +59,22 @@ fn build_ingest_documents(
     docs
 }
 
-/// Trust tier of a whole sub-agent transcript: the highest tier recorded on any tool-result
-/// message, never below the [`IngestSourceKind::SubagentTranscript`] floor.
+/// Trust tier of a whole sub-agent transcript.
 ///
-/// A tool-result message without a recorded tier (a transcript written before per-result
-/// trust existed) or with an unknown value counts as `ExternalUntrusted`. The maximum is taken
-/// over the whole transcript, not per entry, because assistant text that follows a web fetch
-/// or an MCP call carries that content forward.
-fn transcript_trust(entries: &[TranscriptEntry]) -> TurnContextTrust {
+/// A [`TranscriptTrustSchema::Legacy`] transcript predates per-result trust tagging, so it is
+/// `ExternalUntrusted` regardless of its content. For [`TranscriptTrustSchema::PerResult`] it is
+/// the highest tier recorded on any tool-result message, never below the
+/// [`IngestSourceKind::SubagentTranscript`] floor; a tool-result message without a recorded
+/// tier or with an unknown value counts as `ExternalUntrusted`. The maximum is taken over the
+/// whole transcript, not per entry, because assistant text that follows a web fetch or an MCP
+/// call carries that content forward.
+fn transcript_trust(
+    entries: &[TranscriptEntry],
+    schema: TranscriptTrustSchema,
+) -> TurnContextTrust {
+    if schema == TranscriptTrustSchema::Legacy {
+        return TurnContextTrust::ExternalUntrusted;
+    }
     entries
         .iter()
         .filter(|e| {
@@ -145,16 +154,19 @@ pub struct TranscriptEntry {
 /// # Examples
 ///
 /// ```no_run
+/// use zeph_common::trust_level::TranscriptTrustSchema;
 /// use zeph_memory::graph::ingest::{SubagentJsonl, IngestSourceAdapter, ImportBatchId};
 ///
 /// let raw = r#"{"seq":0,"timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"hello","parts":[]}}"#;
-/// let adapter = SubagentJsonl::new("task-42");
+/// let adapter = SubagentJsonl::new("task-42", TranscriptTrustSchema::PerResult);
 /// let batch = ImportBatchId::new();
 /// let docs = adapter.parse(raw, &batch).unwrap();
 /// assert!(!docs.is_empty());
 /// ```
 pub struct SubagentJsonl {
     task_id: String,
+    /// Trust-marker format of the transcript being imported.
+    schema: TranscriptTrustSchema,
     /// Number of preceding messages used as extraction context.
     context_window: usize,
 }
@@ -165,11 +177,15 @@ impl SubagentJsonl {
     /// `task_id` is embedded in every document's `source_uri` as
     /// `"subagent:<task_id>#<seq>"`.
     ///
+    /// `schema` is the transcript's trust-marker format (from its meta sidecar): a
+    /// [`TranscriptTrustSchema::Legacy`] transcript imports as `ExternalUntrusted`.
+    ///
     /// The `context_window` defaults to 3 preceding messages.
     #[must_use]
-    pub fn new(task_id: impl Into<String>) -> Self {
+    pub fn new(task_id: impl Into<String>, schema: TranscriptTrustSchema) -> Self {
         Self {
             task_id: task_id.into(),
+            schema,
             context_window: 3,
         }
     }
@@ -218,7 +234,7 @@ impl IngestSourceAdapter for SubagentJsonl {
             self.context_window,
             batch_id,
             IngestSourceKind::SubagentTranscript,
-            transcript_trust(&entries),
+            transcript_trust(&entries, self.schema),
             |id| format!("subagent:{}#{id}", self.task_id),
         ))
     }
@@ -594,7 +610,7 @@ mod tests {
     #[test]
     fn parse_single_entry() {
         let raw = make_jsonl(&[(0, "Rust is a systems language")]);
-        let adapter = SubagentJsonl::new("task-1");
+        let adapter = SubagentJsonl::new("task-1", TranscriptTrustSchema::PerResult);
         let batch = ImportBatchId::new();
         let docs = adapter.parse(&raw, &batch).unwrap();
         assert_eq!(docs.len(), 1);
@@ -610,7 +626,7 @@ mod tests {
     #[test]
     fn parse_skips_empty_content() {
         let raw = make_jsonl(&[(0, ""), (1, "non-empty content")]);
-        let adapter = SubagentJsonl::new("task-2");
+        let adapter = SubagentJsonl::new("task-2", TranscriptTrustSchema::PerResult);
         let batch = ImportBatchId::new();
         let docs = adapter.parse(&raw, &batch).unwrap();
         assert_eq!(docs.len(), 1);
@@ -625,7 +641,8 @@ mod tests {
             (2, "third message"),
             (3, "fourth message"),
         ]);
-        let adapter = SubagentJsonl::new("task-3").with_context_window(2);
+        let adapter =
+            SubagentJsonl::new("task-3", TranscriptTrustSchema::PerResult).with_context_window(2);
         let batch = ImportBatchId::new();
         let docs = adapter.parse(&raw, &batch).unwrap();
         assert_eq!(docs.len(), 4);
@@ -638,7 +655,7 @@ mod tests {
     #[test]
     fn parse_skips_malformed_lines() {
         let raw = "not json\n".to_owned() + &make_jsonl(&[(0, "valid message")]);
-        let adapter = SubagentJsonl::new("task-4");
+        let adapter = SubagentJsonl::new("task-4", TranscriptTrustSchema::PerResult);
         let batch = ImportBatchId::new();
         let docs = adapter.parse(&raw, &batch).unwrap();
         assert_eq!(docs.len(), 1);
@@ -647,7 +664,7 @@ mod tests {
     #[test]
     fn parse_embeds_batch_id_in_provenance() {
         let raw = make_jsonl(&[(0, "content")]);
-        let adapter = SubagentJsonl::new("task-5");
+        let adapter = SubagentJsonl::new("task-5", TranscriptTrustSchema::PerResult);
         let batch = ImportBatchId::new();
         let docs = adapter.parse(&raw, &batch).unwrap();
         assert_eq!(docs[0].provenance().import_batch_id, batch.as_str());
@@ -655,7 +672,7 @@ mod tests {
 
     #[test]
     fn parse_empty_raw_returns_empty_vec() {
-        let adapter = SubagentJsonl::new("task-6");
+        let adapter = SubagentJsonl::new("task-6", TranscriptTrustSchema::PerResult);
         let batch = ImportBatchId::new();
         let docs = adapter.parse("", &batch).unwrap();
         assert!(docs.is_empty());
@@ -675,12 +692,38 @@ mod tests {
         serde_json::json!({"seq": seq, "timestamp": null, "message": message}).to_string()
     }
 
-    fn parse_trust(lines: &[String]) -> Vec<TurnContextTrust> {
-        let docs = SubagentJsonl::new("task-t")
+    fn parse_trust_with(lines: &[String], schema: TranscriptTrustSchema) -> Vec<TurnContextTrust> {
+        let docs = SubagentJsonl::new("task-t", schema)
             .parse(&lines.join("\n"), &ImportBatchId::new())
             .unwrap();
         assert!(!docs.is_empty());
         docs.iter().map(|d| d.provenance().trust).collect()
+    }
+
+    fn parse_trust(lines: &[String]) -> Vec<TurnContextTrust> {
+        parse_trust_with(lines, TranscriptTrustSchema::PerResult)
+    }
+
+    #[test]
+    fn legacy_content_only_transcript_is_external_untrusted() {
+        let lines = [make_jsonl(&[(0, "legacy shell output, no parts")])];
+        assert_eq!(
+            parse_trust_with(&lines, TranscriptTrustSchema::Legacy),
+            vec![TurnContextTrust::ExternalUntrusted]
+        );
+    }
+
+    #[test]
+    fn per_result_shell_only_transcript_is_local_untrusted() {
+        let lines = [tool_result_line(
+            0,
+            "shell",
+            Some(TurnContextTrust::LocalUntrusted.as_u8()),
+        )];
+        assert_eq!(
+            parse_trust_with(&lines, TranscriptTrustSchema::PerResult),
+            vec![TurnContextTrust::LocalUntrusted]
+        );
     }
 
     #[test]

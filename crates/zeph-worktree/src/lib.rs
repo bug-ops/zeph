@@ -44,6 +44,8 @@
 //! # }
 //! ```
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 pub mod error;
 pub mod git_runner;
 pub mod handle;

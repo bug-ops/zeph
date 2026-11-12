@@ -57,13 +57,13 @@ static PEM_UNTERMINATED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static AWS_SECRET_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(AWS_SECRET_KEY_PATTERN).expect("aws secret shape regex is valid"));
 
-static TOKEN_SHAPE_REGEXES: LazyLock<[Regex; 3]> = LazyLock::new(|| {
-    [
-        GITHUB_APP_TOKEN_PATTERN,
-        AWS_STS_ACCESS_KEY_ID_PATTERN,
-        TELEGRAM_BOT_TOKEN_PATTERN,
-    ]
-    .map(|pattern| Regex::new(pattern).expect("token shape regex is valid"))
+static AWS_STS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(AWS_STS_ACCESS_KEY_ID_PATTERN).expect("aws sts shape regex is valid")
+});
+
+static TOKEN_SHAPE_REGEXES: LazyLock<[Regex; 2]> = LazyLock::new(|| {
+    [GITHUB_APP_TOKEN_PATTERN, TELEGRAM_BOT_TOKEN_PATTERN]
+        .map(|pattern| Regex::new(pattern).expect("token shape regex is valid"))
 });
 
 /// Minimum length for colon-less URL userinfo to be treated as an opaque credential token.
@@ -242,6 +242,11 @@ pub fn scrub_secret_shapes(text: &str) -> Cow<'_, str> {
     for re in TOKEN_SHAPE_REGEXES.iter() {
         current = chain(current, |t| re.replace_all(t, "[REDACTED]"));
     }
+    // The match consumes its delimiters, so a key sharing a delimiter with the previous one is
+    // skipped in the first pass; the second pass redacts it.
+    let current = (0..2).fold(current, |acc, _| {
+        chain(acc, |t| AWS_STS_REGEX.replace_all(t, "${1}[REDACTED]${2}"))
+    });
     let current = chain(current, |t| BEARER_REGEX.replace_all(t, "${1}[REDACTED]"));
     let current = chain(current, |t| JWT_REGEX.replace_all(t, "[REDACTED_JWT]"));
     chain(current, |t| {
@@ -377,6 +382,26 @@ mod tests {
         }
         let bot = scrub_secret_shapes("bot 1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw0");
         assert_eq!(bot, "bot [REDACTED]");
+    }
+
+    #[test]
+    fn sts_key_id_glued_to_underscore_is_redacted() {
+        assert_eq!(
+            scrub_secret_shapes("AWS_KEY_ASIAIOSFODNN7EXAMPLE"),
+            "AWS_KEY_[REDACTED]"
+        );
+        assert_eq!(
+            scrub_secret_shapes("ASIAIOSFODNN7EXAMPLE_x"),
+            "[REDACTED]_x"
+        );
+        assert_eq!(
+            scrub_secret_shapes("id=ASIAIOSFODNN7EXAMPLE end"),
+            "id=[REDACTED] end"
+        );
+        assert_eq!(
+            scrub_secret_shapes("ASIAIOSFODNN7EXAMPLE,ASIAABCDEFGHIEXAMPLE,ASIAIOSFODNN7EXAMPLE"),
+            "[REDACTED],[REDACTED],[REDACTED]"
+        );
     }
 
     #[test]

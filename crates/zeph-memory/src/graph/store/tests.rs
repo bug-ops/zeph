@@ -4525,12 +4525,14 @@ async fn source_message_ids_for_edges_returns_rows_with_episode_id() {
         .execute(&gs.pool)
         .await
         .unwrap();
-    sqlx::query(sql!("UPDATE graph_edges SET episode_id = ?1 WHERE id = ?2"))
-        .bind(synthetic_msg_id)
-        .bind(eid)
-        .execute(&gs.pool)
-        .await
-        .unwrap();
+    sqlx::query(sql!(
+        "UPDATE graph_edges SET source_message_id = ?1 WHERE id = ?2"
+    ))
+    .bind(synthetic_msg_id)
+    .bind(eid)
+    .execute(&gs.pool)
+    .await
+    .unwrap();
     sqlx::query(sql!("PRAGMA foreign_keys = ON"))
         .execute(&gs.pool)
         .await
@@ -4540,6 +4542,42 @@ async fn source_message_ids_for_edges_returns_rows_with_episode_id() {
     assert_eq!(pairs.len(), 1);
     assert_eq!(pairs[0].0, eid);
     assert_eq!(pairs[0].1, crate::types::MessageId(synthetic_msg_id));
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn migration_119_backfills_source_message_id_from_legacy_episode_id() {
+    let gs = setup().await;
+    let src = gs
+        .upsert_entity("A", "A", EntityType::Concept, None, None)
+        .await
+        .unwrap();
+    let tgt = gs
+        .upsert_entity("B", "B", EntityType::Concept, None, None)
+        .await
+        .unwrap();
+    let eid = gs
+        .insert_edge(src, tgt, "knows", "A knows B", 0.8, None, None)
+        .await
+        .unwrap();
+    sqlx::query(sql!("PRAGMA foreign_keys = OFF"))
+        .execute(&gs.pool)
+        .await
+        .unwrap();
+    sqlx::query(sql!("UPDATE graph_edges SET episode_id = 42 WHERE id = ?1"))
+        .bind(eid)
+        .execute(&gs.pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../../../zeph-db/migrations/sqlite/119_graph_edges_source_message_id.sql"
+    ))
+    .execute(&gs.pool)
+    .await
+    .unwrap();
+
+    let pairs = gs.source_message_ids_for_edges(&[eid]).await.unwrap();
+    assert_eq!(pairs, vec![(eid, crate::types::MessageId(42))]);
 }
 
 #[tokio::test]

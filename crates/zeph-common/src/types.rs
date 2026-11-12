@@ -453,13 +453,13 @@ pub enum SkillNameError {
     #[error("skill name must be 1-64 characters, got {0}")]
     Length(usize),
     /// Contains a character outside `[a-z0-9-]`.
-    #[error("skill name must contain only lowercase letters, digits, and hyphens: {0}")]
+    #[error("skill name must contain only lowercase letters, digits, and hyphens: {0:?}")]
     Charset(String),
     /// Starts or ends with a hyphen.
-    #[error("skill name must not start or end with hyphen: {0}")]
+    #[error("skill name must not start or end with hyphen: {0:?}")]
     EdgeHyphen(String),
     /// Contains two consecutive hyphens.
-    #[error("skill name must not contain consecutive hyphens: {0}")]
+    #[error("skill name must not contain consecutive hyphens: {0:?}")]
     DoubleHyphen(String),
 }
 
@@ -619,13 +619,13 @@ pub enum SkillCategoryError {
     #[error("category must be 1-32 characters, got {0}")]
     Length(usize),
     /// Contains a character outside `[a-z0-9-]`.
-    #[error("category must contain only lowercase letters, digits, and hyphens: {0}")]
+    #[error("category must contain only lowercase letters, digits, and hyphens: {0:?}")]
     Charset(String),
     /// Starts or ends with a hyphen.
-    #[error("category must not start or end with hyphen: {0}")]
+    #[error("category must not start or end with hyphen: {0:?}")]
     EdgeHyphen(String),
     /// Contains two consecutive hyphens.
-    #[error("category must not contain consecutive hyphens: {0}")]
+    #[error("category must not contain consecutive hyphens: {0:?}")]
     DoubleHyphen(String),
 }
 
@@ -1326,6 +1326,30 @@ mod tests {
             SkillName::parse("a--b"),
             Err(SkillNameError::DoubleHyphen(_))
         ));
+    }
+
+    #[test]
+    fn skill_name_and_category_errors_escape_control_characters() {
+        let hostile = "a\u{1b}[31mb";
+        let name_err = SkillName::parse(hostile).unwrap_err().to_string();
+        let category_err = SkillCategory::parse(hostile).unwrap_err().to_string();
+        for msg in [name_err, category_err] {
+            assert!(!msg.contains('\u{1b}'), "{msg:?}");
+        }
+        for bad in ["-a\u{1b}", "a--\u{1b}"] {
+            assert!(
+                !SkillName::parse(bad)
+                    .unwrap_err()
+                    .to_string()
+                    .contains('\u{1b}')
+            );
+            assert!(
+                !SkillCategory::parse(bad)
+                    .unwrap_err()
+                    .to_string()
+                    .contains('\u{1b}')
+            );
+        }
     }
 
     #[test]

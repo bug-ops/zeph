@@ -74,7 +74,7 @@ pub fn format_fleet_section(entries: &[FleetEntry]) -> String {
     );
 
     for e in entries {
-        let short_id = &e.goal_id[..8.min(e.goal_id.len())];
+        let short_id = e.goal_id.get(..8).unwrap_or(&e.goal_id);
         let elapsed = format_elapsed(e.elapsed);
         let _ = writeln!(
             out,
@@ -110,7 +110,7 @@ fn truncate_display(s: &str, max_chars: usize) -> String {
         s.to_owned()
     } else {
         let end = s.floor_char_boundary(max_chars.saturating_sub(1));
-        format!("{}…", &s[..end])
+        format!("{}…", s.get(..end).unwrap_or_default())
     }
 }
 

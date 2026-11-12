@@ -291,6 +291,27 @@ async fn permission_denied_text_with_exit_zero_is_ok_success() {
 
 #[tokio::test]
 #[cfg(not(target_os = "windows"))]
+async fn classified_exit_failures_write_exactly_one_audit_error() {
+    for command in ["exit 127", "echo 'Permission denied' >&2; exit 1"] {
+        let dir = tempfile::tempdir().unwrap();
+        let (executor, log_path) = audited_executor(&dir).await;
+        let result = executor.execute_tool_call(&bash_call(command)).await;
+        assert!(
+            matches!(result, Err(ToolError::Shell { .. })),
+            "{command}: {result:?}"
+        );
+        let content = tokio::fs::read_to_string(&log_path).await.unwrap();
+        assert_eq!(
+            content.matches("\"type\":\"error\"").count(),
+            1,
+            "{command}: {content}"
+        );
+        assert_eq!(content.lines().count(), 1, "{command}: {content}");
+    }
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "windows"))]
 async fn nonzero_exit_is_audit_error_and_non_zero_status() {
     let dir = tempfile::tempdir().unwrap();
     let (executor, log_path) = audited_executor(&dir).await;

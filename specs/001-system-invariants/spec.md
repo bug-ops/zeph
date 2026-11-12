@@ -294,7 +294,7 @@ Every new feature MUST be wired at all applicable integration points:
 ## Agent Boundaries
 
 ### Always (without asking)
-- Preserve all trait method signatures exactly, except `Channel::send_diff`, whose `tool_call_id` parameter becomes `&ToolExecutionId` (#6964), `Channel` gaining `clear_status` / `clear_status_best_effort` (#6988; see `[[007-channels/spec]]`), and `Channel::send_status`, whose `text` parameter becomes `&StatusText` (#7002, same precedent as #6964; see `[[007-channels/spec]]`)
+- Preserve all trait method signatures exactly, except `Channel::send_diff` being removed (#6973; the TUI diff panel is fed by `ToolOutputEvent.diff`), `Channel` gaining `clear_status` / `clear_status_best_effort` (#6988; see `[[007-channels/spec]]`), and `Channel::send_status`, whose `text` parameter becomes `&StatusText` (#7002, same precedent as #6964; see `[[007-channels/spec]]`)
 - Only add features to `default` that gate real optional deps AND have `Tested` coverage status (per spec 029 §2 + §3.1)
 - Maintain `kind` discriminator in `MessagePart` serde
 - Enforce `max_active_skills` limit in skill injection
@@ -302,7 +302,7 @@ Every new feature MUST be wired at all applicable integration points:
 - Use `Arc<dyn RuntimeLayer>` not `Box<dyn RuntimeLayer>` in agent struct
 - Return `Result<Option<MessageId>>` from `remember()` — never `Result<MessageId>`
 
-- Keep `#![cfg_attr(not(test), warn(clippy::string_slice))]` in `zeph-tools`, `zeph-channels`, `zeph-core`, `zeph-a2a`, `zeph-gateway` (#6998), `zeph-common`, `zeph-memory`, `zeph-llm`, `zeph-subagent`, `zeph-context`, `zeph-mcp`, `zeph-agent-persistence`, `zeph-agent-feedback`, `zeph-session`, `zeph-sanitizer` and `zeph-skills` (#7011): byte-index slicing of `str` uses `zeph_common::text::truncate_to_bytes_ref`, `.get(..)` with a named fallback, or a justified `#[expect(clippy::string_slice, reason = "...")]` when the index comes from a boundary-returning API on the same string
+- Keep `#![cfg_attr(not(test), warn(clippy::string_slice))]` in every workspace crate and the root binary (#6998, #7011, #7020): byte-index slicing of `str` uses `zeph_common::text::truncate_to_bytes_ref`, `.get(..)` with a named fallback, or a justified `#[expect(clippy::string_slice, reason = "...")]` when the index comes from a boundary-returning API on the same string
 
 ### Ask First
 - Adding a new `MessagePart` variant (breaks serialization compatibility)

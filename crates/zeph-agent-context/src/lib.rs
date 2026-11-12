@@ -30,6 +30,8 @@
 //!
 //! - `index` — enables `zeph-index` integration via the `IndexAccess` trait.
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 pub mod compaction;
 pub mod error;
 pub mod helpers;

@@ -189,6 +189,15 @@ fn build_idle_sep<'a>(app: &'a App, theme: &'a Theme) -> Vec<Span<'a>> {
     spans
 }
 
+/// Prefix of `input` preceding the char at `char_index`, or all of `input` when out of range.
+fn text_before_char(input: &str, char_index: usize) -> &str {
+    input
+        .char_indices()
+        .nth(char_index)
+        .and_then(|(idx, _)| input.get(..idx))
+        .unwrap_or(input)
+}
+
 /// Render the editable text area and update the terminal cursor position.
 fn render_text_area(app: &App, frame: &mut Frame, text_area: Rect, busy: bool) {
     let theme = &app.theme;
@@ -196,11 +205,7 @@ fn render_text_area(app: &App, frame: &mut Frame, text_area: Rect, busy: bool) {
 
     let visible_lines = text_area.height;
     let cursor_line = u16::try_from(
-        app.input()[..app
-            .input()
-            .char_indices()
-            .nth(app.cursor_position())
-            .map_or(app.input().len(), |(idx, _)| idx)]
+        text_before_char(app.input(), app.cursor_position())
             .matches('\n')
             .count(),
     )
@@ -258,11 +263,7 @@ fn render_text_area(app: &App, frame: &mut Frame, text_area: Rect, busy: bool) {
 /// by both call sites, not something this helper newly introduces.
 pub(crate) fn caret_xy(app: &App, text_area: Rect, char_index: usize) -> (u16, u16) {
     let input = app.input();
-    let byte_idx = input
-        .char_indices()
-        .nth(char_index)
-        .map_or(input.len(), |(idx, _)| idx);
-    let prefix = &input[..byte_idx];
+    let prefix = text_before_char(input, char_index);
     let last_line = prefix.rsplit('\n').next().unwrap_or(prefix);
     #[allow(clippy::cast_possible_truncation)]
     let cursor_x = text_area.x + last_line.width() as u16;

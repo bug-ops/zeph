@@ -72,7 +72,7 @@ pub struct SkillGenerationRequest {
     /// Natural language description of what the skill should do and when to invoke it.
     pub description: String,
     /// Optional category hint (e.g. `"web"`, `"dev"`, `"data"`).
-    pub category: Option<String>,
+    pub category: Option<zeph_common::SkillCategory>,
     /// Optional list of tool names to suggest in `allowed-tools`.
     pub allowed_tools: Vec<String>,
 }
@@ -116,7 +116,7 @@ impl GeneratedSkill {
 ///     let skill_gen = SkillGenerator::new(provider, PathBuf::from("/path/to/skills"));
 ///     let request = SkillGenerationRequest {
 ///         description: "Fetch current weather from wttr.in".into(),
-///         category: Some("web".into()),
+///         category: zeph_common::SkillCategory::parse("web").ok(),
 ///         allowed_tools: vec!["bash".into()],
 ///     };
 ///     let skill = skill_gen.generate(request).await?;
@@ -368,7 +368,7 @@ fn build_generation_prompt(req: &SkillGenerationRequest) -> String {
     );
     if let Some(ref cat) = req.category {
         prompt.push_str("\n\nPreferred category: ");
-        prompt.push_str(cat);
+        prompt.push_str(cat.as_str());
     }
     if !req.allowed_tools.is_empty() {
         prompt.push_str("\n\nSuggested allowed-tools: ");
@@ -531,11 +531,12 @@ mod tests {
     fn build_generation_prompt_includes_category() {
         let req = SkillGenerationRequest {
             description: "desc".into(),
-            category: Some("web".into()),
+            category: zeph_common::SkillCategory::parse("web").ok(),
             allowed_tools: vec![],
         };
+        assert!(req.category.is_some());
         let prompt = build_generation_prompt(&req);
-        assert!(prompt.contains("web"));
+        assert!(prompt.contains("Preferred category: web"));
     }
 
     #[tokio::test]

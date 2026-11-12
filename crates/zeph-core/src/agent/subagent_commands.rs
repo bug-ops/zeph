@@ -10,6 +10,8 @@
 
 use std::sync::Arc;
 
+use zeph_sanitizer::pii::PiiFilter;
+use zeph_sanitizer::secret_mask::SecretMaskRegistry;
 use zeph_sanitizer::secret_shape::scrub_secret_shapes;
 use zeph_tools::registry::ToolDef;
 
@@ -127,7 +129,11 @@ impl<C: Channel> Agent<C> {
     pub(super) async fn notify_completed_subagents(&mut self) -> Result<(), error::AgentError> {
         let completed = self.poll_subagents().await;
         for (task_id, name, result, success) in completed {
-            let result = scrub_subagent_text(&result);
+            let result = scrub_subagent_text(
+                &result,
+                self.services.security.secret_registry.as_deref(),
+                &self.services.security.pii_filter,
+            );
             let notice = if result.is_empty() {
                 format!(
                     "[sub-agent {id}] completed (no output)",
@@ -193,7 +199,11 @@ impl<C: Channel> Agent<C> {
         )
         .with_identifier(msg.sender_name.as_str());
         let sanitized = self.services.security.sanitizer.sanitize(&msg.body, source);
-        msg.body = scrub_subagent_text(&sanitized.body);
+        msg.body = scrub_subagent_text(
+            &sanitized.body,
+            self.services.security.secret_registry.as_deref(),
+            &self.services.security.pii_filter,
+        );
         format!("[peer message from {}] {}", msg.sender_name, msg.body)
     }
     /// Poll a sub-agent until it reaches a terminal state, bridging secret requests to the
@@ -257,17 +267,29 @@ impl<C: Channel> Agent<C> {
             };
             match status.state {
                 SubAgentState::Completed => {
-                    let msg = status
-                        .last_message
-                        .as_deref()
-                        .map_or_else(|| "done".into(), scrub_subagent_text);
+                    let msg = status.last_message.as_deref().map_or_else(
+                        || "done".into(),
+                        |m| {
+                            scrub_subagent_text(
+                                m,
+                                self.services.security.secret_registry.as_deref(),
+                                &self.services.security.pii_filter,
+                            )
+                        },
+                    );
                     break (format!("{label} completed: {msg}"), true);
                 }
                 SubAgentState::Failed => {
-                    let msg = status
-                        .last_message
-                        .as_deref()
-                        .map_or_else(|| "unknown error".into(), scrub_subagent_text);
+                    let msg = status.last_message.as_deref().map_or_else(
+                        || "unknown error".into(),
+                        |m| {
+                            scrub_subagent_text(
+                                m,
+                                self.services.security.secret_registry.as_deref(),
+                                &self.services.security.pii_filter,
+                            )
+                        },
+                    );
                     break (format!("{label} failed: {msg}"), false);
                 }
                 SubAgentState::Canceled => {
@@ -365,7 +387,11 @@ impl<C: Channel> Agent<C> {
                 "  [{short}] {state}  turns={t}  elapsed={elapsed}s  {msg}",
                 short = zeph_common::text::truncate_to_bytes_ref(id, 8),
                 t = s.turns_used,
-                msg = scrub_subagent_text(s.last_message.as_deref().unwrap_or("")),
+                msg = scrub_subagent_text(
+                    s.last_message.as_deref().unwrap_or(""),
+                    self.services.security.secret_registry.as_deref(),
+                    &self.services.security.pii_filter,
+                ),
             );
             // Show memory directory path for agents with memory enabled.
             if let Some(def) = mgr.agents_def(id)
@@ -584,7 +610,11 @@ impl<C: Channel> Agent<C> {
                 } else {
                     format!(
                         "[sub-agent {short}] completed (replayed from durable journal):\n{}",
-                        scrub_subagent_text(&result.output)
+                        scrub_subagent_text(
+                            &result.output,
+                            self.services.security.secret_registry.as_deref(),
+                            &self.services.security.pii_filter
+                        )
                     )
                 });
             }
@@ -647,11 +677,15 @@ impl<C: Channel> Agent<C> {
             true
         };
 
-        let text = scrub_subagent_text(&if success {
-            result.output
-        } else {
-            result.error.unwrap_or_else(|| "unknown error".to_owned())
-        });
+        let text = scrub_subagent_text(
+            &if success {
+                result.output
+            } else {
+                result.error.unwrap_or_else(|| "unknown error".to_owned())
+            },
+            self.services.security.secret_registry.as_deref(),
+            &self.services.security.pii_filter,
+        );
 
         if should_notify {
             let _ = self
@@ -1234,10 +1268,23 @@ enum DurableSpawnGate {
     None,
 }
 
-/// Masks secret-shaped strings in sub-agent-authored text before it reaches an
-/// operator-visible channel notice (#6571, #7014).
-fn scrub_subagent_text(raw: &str) -> String {
-    scrub_secret_shapes(raw).into_owned()
+/// Masks secrets and PII in sub-agent-authored text before it reaches an operator-visible
+/// channel notice (#6571, #7014, #7021).
+///
+/// Same order as the live-forward path: exact-value registry masking, then shape-based scrub,
+/// then PII scrub when enabled.
+fn scrub_subagent_text(
+    raw: &str,
+    registry: Option<&SecretMaskRegistry>,
+    pii_filter: &PiiFilter,
+) -> String {
+    let masked = registry.map_or_else(|| raw.to_owned(), |r| r.mask(raw));
+    let scrubbed = scrub_secret_shapes(&masked).into_owned();
+    if pii_filter.is_enabled() {
+        pii_filter.scrub(&scrubbed).into_owned()
+    } else {
+        scrubbed
+    }
 }
 
 /// Check the durable-execution gate for the next sub-agent spawn.
@@ -2594,8 +2641,30 @@ mod tests {
 
     #[test]
     fn scrub_subagent_text_masks_aws_key_shape() {
-        let out = scrub_subagent_text(&format!("key {AWS_KEY} end"));
+        let pii = PiiFilter::new(zeph_config::PiiFilterConfig::default());
+        let out = scrub_subagent_text(&format!("key {AWS_KEY} end"), None, &pii);
         assert!(!out.contains(AWS_KEY), "{out}");
+    }
+
+    #[test]
+    fn scrub_subagent_text_masks_registered_shapeless_secret_and_pii() {
+        use zeph_sanitizer::secret_mask::SecretCategory;
+
+        let registry = SecretMaskRegistry::new();
+        registry.register("DB_PASS", "hunter2-plain-value", SecretCategory::Password);
+        let pii = PiiFilter::new(zeph_config::PiiFilterConfig {
+            enabled: true,
+            ..Default::default()
+        });
+
+        let out = scrub_subagent_text(
+            "pass hunter2-plain-value mail user@example.com",
+            Some(&registry),
+            &pii,
+        );
+
+        assert!(!out.contains("hunter2-plain-value"), "{out}");
+        assert!(!out.contains("user@example.com"), "{out}");
     }
 
     #[tokio::test]

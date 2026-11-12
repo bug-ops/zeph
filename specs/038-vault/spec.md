@@ -440,6 +440,8 @@ the normal first-time "Vault initialized:" success message.
 ### Always (doctor, #6994)
 - `zeph doctor` key/vault file-mode failures carry the real file path in the `chmod 600 <path>` fix hint, appended after `scrub_content` (the path is the user's own; masking it would leave an unusable `chmod 600 [PATH]`), in both text and JSON output
 
+- `zeph doctor --fix` scope (#6944): a `PermissionFix` is a path plus a `FixTarget` (`File` to `0600`, `Directory` to `0700`) and nothing else. The `logging.dir_mode` check covers only the parent of `default_log_file_path()` (never a user-configured log path), skips a missing directory, and warns with a `Directory` fix on group/world bits.
+
 ### Ask First
 - Using `backend = "env"` in a persistent config (should be `age` or explicit CI handling)
 - Sharing the age private key across machines (use different keys per environment)

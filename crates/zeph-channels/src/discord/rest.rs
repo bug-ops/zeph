@@ -90,7 +90,7 @@ impl RestClient {
 
     /// Test-only constructor pointing at a custom base URL (e.g. a mock server).
     #[cfg(test)]
-    fn with_base_url(base_url: String, token: String) -> Self {
+    pub(super) fn with_base_url(base_url: String, token: String) -> Self {
         Self {
             client: zeph_core::http::default_client(),
             token,

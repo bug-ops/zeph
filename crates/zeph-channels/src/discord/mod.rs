@@ -407,6 +407,31 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn clear_status_sends_no_request() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/channels/123/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "9"})))
+            .mount(&server)
+            .await;
+        let mut channel = make_channel();
+        channel.rest = rest::RestClient::with_base_url(server.uri(), "test-token".into());
+        channel.channel_id = Some("123".into());
+
+        channel.clear_status().await.unwrap();
+        assert!(server.received_requests().await.unwrap().is_empty());
+
+        channel
+            .send_status(&StatusText::new("Searching memory…").unwrap())
+            .await
+            .unwrap();
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
     fn make_incoming(author_id: &str, channel_id: &str, roles: Vec<String>) -> IncomingMessage {
         IncomingMessage {
             channel_id: channel_id.into(),

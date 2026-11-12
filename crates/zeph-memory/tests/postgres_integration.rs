@@ -1204,8 +1204,8 @@ mod pg {
             .unwrap()
             .expect("session must exist");
         assert_eq!(info.id, "sess-ts-1");
-        assert!(!info.created_at.is_empty());
-        assert!(!info.updated_at.is_empty());
+        assert_ne!(info.created_at, "");
+        assert_ne!(info.updated_at, "");
     }
 
     // Regression coverage for issue #5980: `list_acp_sessions`/`list_acp_sessions_for_owner`
@@ -2259,7 +2259,7 @@ mod pg {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].latency_ms, 500);
         assert_eq!(listed[0].tokens_used, 100);
-        assert!(!listed[0].created_at.is_empty());
+        assert_ne!(listed[0].created_at, "");
 
         let best = store.best_experiment_result(None).await.unwrap().unwrap();
         assert_eq!(best.latency_ms, 500);
@@ -2296,7 +2296,7 @@ mod pg {
         let batch = store.get_training_batch(10).await.unwrap();
         assert_eq!(batch.len(), 1);
         assert!((batch[0].composite_score - 0.5).abs() < 1e-6);
-        assert!(!batch[0].created_at.is_empty());
+        assert_ne!(batch[0].created_at, "");
     }
 
     // ── retrieval_failures: bind-cast DELETE (#5538) ────────────────────────────
@@ -2357,8 +2357,8 @@ mod pg {
         let facts = store.load_persona_facts(0.0).await.unwrap();
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].content, "prefers dark mode");
-        assert!(!facts[0].created_at.is_empty());
-        assert!(!facts[0].updated_at.is_empty());
+        assert_ne!(facts[0].created_at, "");
+        assert_ne!(facts[0].updated_at, "");
     }
 
     // ── skills: tuple-decode cluster (#5538) ─────────────────────────────────────
@@ -2381,12 +2381,12 @@ mod pg {
         assert_eq!(versions[0].success_count, 0);
         assert_eq!(versions[0].failure_count, 0);
         assert!(versions[0].is_active);
-        assert!(!versions[0].created_at.is_empty());
+        assert_ne!(versions[0].created_at, "");
 
         let active = store.active_skill_version("git").await.unwrap().unwrap();
         assert_eq!(active.id, v1);
         assert_eq!(active.version, 1);
-        assert!(!active.created_at.is_empty());
+        assert_ne!(active.created_at, "");
     }
 
     // Exercises `predecessor_version`, the third call site sharing `SkillVersionTuple` (#5573) —

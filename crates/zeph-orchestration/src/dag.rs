@@ -1179,8 +1179,7 @@ pub fn lookahead_tools(graph: &TaskGraph, depth: u8) -> Vec<PlannedToolHint> {
 /// lowercased, filtered for stopwords and minimum length, deduplicated, capped
 /// at 10 total entries.
 fn extract_keywords(tool_name: &str, description: &str) -> Vec<String> {
-    let end = description.floor_char_boundary(200);
-    let desc_prefix = &description[..end];
+    let desc_prefix = zeph_common::text::truncate_to_bytes_ref(description, 200);
     let combined = format!("{tool_name} {desc_prefix}");
 
     let mut seen = std::collections::HashSet::new();

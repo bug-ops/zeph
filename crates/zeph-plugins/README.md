@@ -172,6 +172,7 @@ At bootstrap (`AppBuilder::new`) and on hot-reload (`reload_config`), `apply_plu
 |-------|-------------|
 | `source_plugins` | Names of plugins whose overlay contributed at least one safelisted value |
 | `skipped_plugins` | Plugins skipped (validation failure, I/O error), each as `"<name>: <reason>"` |
+| `unverified_plugins` | Plugins applied without verification because the integrity registry has no digest for them, each as `"<name>: <reason>"` |
 | `blocked_commands_add` | Sorted, de-duplicated union of all plugin `blocked_commands` contributions |
 | `allowed_commands_intersect_accum` | Accumulated intersection of `allowed_commands` (`None` if no plugin supplied it) |
 | `disambiguation_threshold_max` | Max of all `disambiguation_threshold` contributions (`None` if none supplied) |

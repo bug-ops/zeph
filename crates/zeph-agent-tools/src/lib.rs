@@ -12,6 +12,8 @@
 //! #3516) with no implementors anywhere in the workspace; it was removed as dead code (issue
 //! #6480). Reviving that dispatcher-extraction plan needs a fresh tracking issue.
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 pub mod doom_loop;
 
 pub use doom_loop::doom_loop_hash;

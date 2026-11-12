@@ -106,7 +106,7 @@ fn parse_persisted_trust_level(s: Option<&str>) -> Option<u8> {
 /// [`SqliteStore::save_message_with_provenance`]'s doc comment). Any ordinal `>= 2` maps to
 /// `"external_untrusted"` (the most conservative tier) rather than panicking or silently
 /// dropping — defensive against a future `ContentTrustLevel` variant this crate does not know
-/// about, matching `zeph_sanitizer::ContentTrustLevel::from_ordinal`'s own clamping behavior.
+/// about, matching `zeph_sanitizer::TurnContextTrust::from_u8_or_untrusted`'s own clamping behavior.
 fn trust_level_ordinal_to_str(ordinal: Option<u8>) -> Option<&'static str> {
     match ordinal {
         None => None,

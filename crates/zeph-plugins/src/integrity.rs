@@ -233,7 +233,7 @@ enum TableError {
 fn warning_text(effect: &str, e: &PluginError) -> String {
     match e {
         PluginError::IntegrityRegistryCorrupt { reason, .. } => format!(
-            "{effect}: integrity registry unusable ({reason}); restore it, or delete it and run plugin add for each installed plugin before restarting"
+            "{effect}: integrity registry unusable ({reason}); restore it from a backup, or delete it and run `zeph plugin add` for each installed plugin; until then plugin overlays load unverified"
         ),
         other => format!(
             "{effect}: integrity registry could not be updated ({other}); fix the cause and run plugin add again for this plugin"
@@ -282,15 +282,7 @@ fn acquire_lock(lock_path: &Path, timeout: Duration) -> Result<File, PluginError
         path: lock_path.to_owned(),
         source,
     };
-    if std::fs::symlink_metadata(lock_path).is_ok_and(|m| m.file_type().is_symlink()) {
-        return Err(io_err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "lock file is a symlink",
-        )));
-    }
-    let file = zeph_common::fs_secure::append_private(lock_path).map_err(io_err)?;
-    #[cfg(unix)]
-    zeph_common::fs_secure::restrict_to_owner(lock_path).map_err(io_err)?;
+    let file = zeph_common::fs_secure::append_private_nofollow(lock_path).map_err(io_err)?;
 
     let start = Instant::now();
     loop {

@@ -64,6 +64,8 @@
 //! | [`runner`] | [`BenchRunner`] that drives the agent loop over a dataset |
 //! | [`scenario`] | Core traits ([`DatasetLoader`], [`Evaluator`]) and scoring helpers |
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 pub mod baseline;
 pub mod channel;
 pub mod cli;

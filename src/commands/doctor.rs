@@ -54,17 +54,33 @@ pub(crate) struct CheckResult {
     pub elapsed_ms: u64,
     /// Remediation offered by `--fix`; set only on a mode-violation failure.
     #[serde(skip)]
+    // Only read by the Unix-only `--fix` flow.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub fix: Option<PermissionFix>,
 }
 
-/// The only remediation `zeph doctor --fix` can perform: restrict a file to owner-only access.
+/// What kind of filesystem entry a [`PermissionFix`] restricts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Only read by the Unix-only `--fix` flow.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) enum FixTarget {
+    /// A regular file, restricted to `0600`.
+    File,
+    /// A directory, restricted to `0700`.
+    Directory,
+}
+
+/// The only remediation `zeph doctor --fix` can perform: restrict a file or directory to
+/// owner-only access.
 ///
-/// It carries a path and nothing else, so a fix can never express a content or vault change.
+/// It carries a path and its kind and nothing else, so a fix can never express a content or
+/// vault change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 // Only read by the Unix-only `--fix` flow.
 #[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) struct PermissionFix {
     pub path: PathBuf,
+    pub target: FixTarget,
 }
 
 impl CheckResult {
@@ -103,16 +119,22 @@ impl CheckResult {
         Self::new(CheckStatus::Fail, name, detail, elapsed_ms)
     }
 
-    /// Attaches the owner-only remediation and appends its `chmod` hint to the detail.
+    /// Attaches the owner-only remediation for `target` and appends its `chmod` hint to the
+    /// detail.
     ///
     /// The hint is appended after `scrub_content` on purpose: the path is the user's own, printed
     /// to their own terminal, and masking it would leave an unusable `chmod 600 [PATH]`.
     #[cfg(unix)]
-    fn with_fix(mut self, path: &str) -> Self {
+    fn with_fix(mut self, path: &str, target: FixTarget) -> Self {
         let fix = PermissionFix {
             path: PathBuf::from(path),
+            target,
         };
-        self.detail = format!("{} — fix: chmod 600 {}", self.detail, fix.path.display());
+        let mode = match target {
+            FixTarget::File => "600",
+            FixTarget::Directory => "700",
+        };
+        self.detail = format!("{} — fix: chmod {mode} {}", self.detail, fix.path.display());
         self.fix = Some(fix);
         self
     }
@@ -449,7 +471,7 @@ fn check_vault_key_mode(key_path: &str) -> CheckResult {
                     format!("key file has group/world permissions (mode {mode:#o})"),
                     elapsed_ms(start),
                 )
-                .with_fix(key_path)
+                .with_fix(key_path, FixTarget::File)
             } else {
                 CheckResult::ok(
                     "vault.key_mode",
@@ -480,7 +502,7 @@ fn check_vault_file_mode(vault_path: &str, check_name: &str) -> CheckResult {
                     format!("vault file has group/world permissions (mode {mode:#o})"),
                     elapsed_ms(start),
                 )
-                .with_fix(vault_path)
+                .with_fix(vault_path, FixTarget::File)
             } else {
                 CheckResult::ok(
                     check_name,
@@ -503,6 +525,52 @@ fn check_vault_file_mode(vault_path: &str, check_name: &str) -> CheckResult {
 #[cfg(not(unix))]
 fn check_vault_file_mode(_vault_path: &str, check_name: &str) -> CheckResult {
     CheckResult::ok(check_name, "skipped on non-unix", 0)
+}
+
+/// Check name of the default log directory mode check.
+const LOG_DIR_MODE_CHECK: &str = "logging.dir_mode";
+
+/// Flags a group/world-accessible default log directory and offers the owner-only fix.
+///
+/// A missing directory is skipped: the logger creates it owner-only on the next start.
+#[cfg(unix)]
+fn check_log_dir_mode(dir: &str) -> CheckResult {
+    use std::os::unix::fs::PermissionsExt as _;
+    let start = Instant::now();
+    match std::fs::metadata(dir) {
+        Ok(meta) => {
+            let mode = meta.permissions().mode() & 0o777;
+            if mode & 0o077 != 0 {
+                CheckResult::warn(
+                    LOG_DIR_MODE_CHECK,
+                    format!("log directory has group/world permissions (mode {mode:#o})"),
+                    elapsed_ms(start),
+                )
+                .with_fix(dir, FixTarget::Directory)
+            } else {
+                CheckResult::ok(
+                    LOG_DIR_MODE_CHECK,
+                    format!("permissions ok (mode {mode:#o})"),
+                    elapsed_ms(start),
+                )
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => CheckResult::ok(
+            LOG_DIR_MODE_CHECK,
+            "directory not found (skipped)",
+            elapsed_ms(start),
+        ),
+        Err(e) => CheckResult::warn(
+            LOG_DIR_MODE_CHECK,
+            format!("could not read metadata: {e}"),
+            elapsed_ms(start),
+        ),
+    }
+}
+
+#[cfg(not(unix))]
+fn check_log_dir_mode(_dir: &str) -> CheckResult {
+    CheckResult::ok(LOG_DIR_MODE_CHECK, "skipped on non-unix", 0)
 }
 
 fn check_fs_writable(name: &str, dir: &Path) -> CheckResult {
@@ -1045,6 +1113,15 @@ async fn build_doctor_report(
         }
     }
 
+    // 7b. logging.dir_mode: only the default log directory; custom paths are never touched.
+    if let Some(dir) = Path::new(&zeph_core::config::default_log_file_path())
+        .parent()
+        .and_then(Path::to_str)
+        .filter(|d| !d.is_empty())
+    {
+        results.push(check_log_dir_mode(dir));
+    }
+
     // 8. filesystem.audit_log
     if config.tools.audit.enabled
         && let zeph_config::AuditDestination::File(ref audit_file_path) =
@@ -1303,20 +1380,29 @@ fn run_fixes(
 
 #[cfg(unix)]
 fn apply_fix(fix: &PermissionFix) -> Result<(), String> {
-    zeph_common::fs_secure::restrict_to_owner(&fix.path)
+    let applied = match fix.target {
+        FixTarget::File => zeph_common::fs_secure::restrict_to_owner(&fix.path),
+        FixTarget::Directory => zeph_common::fs_secure::restrict_dir_to_owner(&fix.path),
+    };
+    applied
         .map(|_| ())
-        .map_err(|e| match e.kind() {
-            io::ErrorKind::InvalidInput => "not a regular file; fix manually".to_owned(),
+        .map_err(|e| match (e.kind(), fix.target) {
+            (io::ErrorKind::InvalidInput, FixTarget::File) => {
+                "not a regular file; fix manually".to_owned()
+            }
+            (io::ErrorKind::InvalidInput, FixTarget::Directory) => {
+                "not a directory; fix manually".to_owned()
+            }
             _ => e.to_string(),
         })
 }
 
 #[cfg(unix)]
 fn recheck_permission(name: &str, path: &str) -> CheckResult {
-    if name == "vault.key_mode" {
-        check_vault_key_mode(path)
-    } else {
-        check_vault_file_mode(path, name)
+    match name {
+        "vault.key_mode" => check_vault_key_mode(path),
+        LOG_DIR_MODE_CHECK => check_log_dir_mode(path),
+        _ => check_vault_file_mode(path, name),
     }
 }
 
@@ -1911,7 +1997,13 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let p = key_file(dir.path(), 0o640);
             let bad = check_vault_key_mode(p.to_str().unwrap());
-            assert_eq!(bad.fix, Some(PermissionFix { path: p.clone() }));
+            assert_eq!(
+                bad.fix,
+                Some(PermissionFix {
+                    path: p.clone(),
+                    target: FixTarget::File
+                })
+            );
 
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
             assert!(check_vault_key_mode(p.to_str().unwrap()).fix.is_none());
@@ -1961,6 +2053,65 @@ mod tests {
             assert_eq!(mode_of(&p), 0o644);
             assert!(report.has_failures());
             assert!(String::from_utf8(out).unwrap().contains("[SKIP]"));
+        }
+
+        fn dir_with_mode(parent: &Path, mode: u32) -> PathBuf {
+            let dir = parent.join("logs");
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+            dir
+        }
+
+        #[test]
+        fn log_dir_mode_missing_is_skipped_without_fix() {
+            let parent = tempfile::tempdir().unwrap();
+            let missing = parent.path().join("absent");
+            let result = check_log_dir_mode(missing.to_str().unwrap());
+            assert_eq!(result.status, CheckStatus::Ok);
+            assert!(result.fix.is_none());
+        }
+
+        #[test]
+        fn log_dir_mode_owner_only_is_ok() {
+            let parent = tempfile::tempdir().unwrap();
+            let dir = dir_with_mode(parent.path(), 0o700);
+            let result = check_log_dir_mode(dir.to_str().unwrap());
+            assert_eq!(result.status, CheckStatus::Ok);
+            assert!(result.fix.is_none());
+        }
+
+        #[test]
+        fn log_dir_mode_loose_warns_with_directory_fix_and_fix_restricts_it() {
+            let parent = tempfile::tempdir().unwrap();
+            let dir = dir_with_mode(parent.path(), 0o755);
+            let result = check_log_dir_mode(dir.to_str().unwrap());
+            assert_eq!(result.status, CheckStatus::Warn);
+            assert_eq!(
+                result.fix,
+                Some(PermissionFix {
+                    path: dir.clone(),
+                    target: FixTarget::Directory
+                })
+            );
+            assert!(result.detail.contains("chmod 700"), "{}", result.detail);
+
+            let mut report = report_for(result);
+            let mut out = Vec::new();
+            run_fixes(&mut report, &mut out, |_| Ok(true)).unwrap();
+            assert_eq!(mode_of(&dir), 0o700);
+            assert_eq!(report.results[0].status, CheckStatus::Ok);
+        }
+
+        #[test]
+        fn directory_fix_refuses_a_regular_file() {
+            let dir = tempfile::tempdir().unwrap();
+            let file = key_file(dir.path(), 0o644);
+            let fix = PermissionFix {
+                path: file.clone(),
+                target: FixTarget::Directory,
+            };
+            assert!(apply_fix(&fix).is_err());
+            assert_eq!(mode_of(&file), 0o644);
         }
 
         #[test]

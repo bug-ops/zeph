@@ -146,7 +146,7 @@ fn make_runtime_config() -> RuntimeConfig {
 
 fn make_feedback_state() -> FeedbackState {
     FeedbackState {
-        detector: FeedbackDetector::new(0.6),
+        detector: FeedbackDetector::new(zeph_config::DEFAULT_CORRECTION_CONFIDENCE),
         judge: None,
         llm_classifier: None,
     }

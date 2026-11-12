@@ -413,11 +413,11 @@ fn parse_class(raw: &str) -> TaskClass {
         return str_to_class(class);
     }
     // Extract first {...} substring.
-    if let Some(start) = raw.find('{')
-        && let Some(end) = raw[start..].find('}')
+    if let Some((_, tail)) = raw.split_once('{')
+        && let Some((body, _)) = tail.split_once('}')
     {
-        let chunk = &raw[start..=start + end];
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(chunk)
+        let chunk = format!("{{{body}}}");
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&chunk)
             && let Some(class) = val.get("class").and_then(|c| c.as_str())
         {
             return str_to_class(class);

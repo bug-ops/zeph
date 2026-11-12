@@ -113,12 +113,15 @@ pub const GITHUB_FINE_GRAINED_PAT_PATTERN: &str = r"github_pat_[A-Za-z0-9]{22}_[
 pub const GITHUB_APP_TOKEN_PATTERN: &str = r"gh[sur]_[A-Za-z0-9]{36,}";
 
 /// Regex matching an AWS STS temporary access key id: `ASIA` followed by 16 uppercase
-/// alphanumerics, delimited by word boundaries.
+/// alphanumerics, delimited by non-alphanumerics (underscore counts as a delimiter).
 ///
 /// Deliberately a length-bound shape and not a [`SECRET_PREFIXES`] entry (as `AKIA` is): the
 /// prefix tier has no length rule, so listing `ASIA` there would redact words such as `ASIAN_`.
-/// An STS key id is exactly 20 characters, which the word boundaries enforce.
-pub const AWS_STS_ACCESS_KEY_ID_PATTERN: &str = r"\bASIA[A-Z0-9]{16}\b";
+/// An STS key id is exactly 20 characters, which the delimiter groups enforce. Capture groups 1
+/// and 2 hold the delimiters and must be preserved by the replacement. The delimiters are
+/// consumed by a match, so a replacement pass skips a key that shares its delimiter with the
+/// previous one; callers apply the replacement twice to cover keys joined by one delimiter.
+pub const AWS_STS_ACCESS_KEY_ID_PATTERN: &str = r"(^|[^A-Za-z0-9])ASIA[A-Z0-9]{16}([^A-Za-z0-9]|$)";
 
 /// Regex matching a Telegram bot token: 8-10 digit bot id, `:`, then `AA` and at least 33 URL-safe
 /// base64 characters. It has no fixed prefix, so it cannot live in [`SECRET_PREFIXES`].

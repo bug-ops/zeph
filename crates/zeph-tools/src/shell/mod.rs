@@ -1386,7 +1386,17 @@ impl ShellExecutor {
                 })
             }
             BashTermination::Exited => {
-                classify_shell_exit(exit_code, out).map(|category| ToolError::Shell {
+                let category = classify_shell_exit(exit_code, out)?;
+                self.log_audit(
+                    block,
+                    AuditResult::Error { message: message() },
+                    duration_ms,
+                    None,
+                    Some(exit_code),
+                    false,
+                )
+                .await;
+                Some(ToolError::Shell {
                     exit_code,
                     category,
                     message: message(),

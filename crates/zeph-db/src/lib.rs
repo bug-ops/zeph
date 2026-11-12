@@ -17,6 +17,8 @@
 //! neither, is a compile error. Use `--no-default-features --features postgres`
 //! for a `PostgreSQL` build.
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 #[cfg(all(feature = "sqlite", feature = "postgres"))]
 compile_error!("features `sqlite` and `postgres` are mutually exclusive for `zeph-db`");
 

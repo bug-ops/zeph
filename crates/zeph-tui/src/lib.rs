@@ -37,6 +37,8 @@
 //! }
 //! ```
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 pub mod app;
 pub mod channel;
 pub mod clipboard;

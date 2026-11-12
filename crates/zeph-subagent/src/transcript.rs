@@ -23,6 +23,7 @@ use zeph_common::hash_chain::{
     ChainHash, ChainKeyRing, KeyResolution, chain_next, genesis,
     verify_chained_prefix_with_checkpoint,
 };
+use zeph_common::trust_level::TranscriptTrustSchema;
 use zeph_llm::provider::{Message, MessagePart};
 
 use super::error::SubAgentError;
@@ -202,6 +203,12 @@ pub struct TranscriptMeta {
     /// in its system prompt without re-connecting MCP servers.
     #[serde(default)]
     pub mcp_tool_names: Vec<String>,
+    /// Trust-marker format of the sibling JSONL transcript.
+    ///
+    /// Sidecars written before per-result trust tagging lack this key and deserialize to
+    /// [`TranscriptTrustSchema::Legacy`], so importers treat them as external content.
+    #[serde(default = "TranscriptTrustSchema::legacy")]
+    pub trust_schema: TranscriptTrustSchema,
 }
 
 /// Appends [`TranscriptEntry`] lines to a JSONL transcript file.
@@ -1020,6 +1027,7 @@ mod tests {
             resumed_from: None,
             turns_used: 2,
             mcp_tool_names: Vec::new(),
+            trust_schema: TranscriptTrustSchema::PerResult,
         }
     }
 
@@ -1416,6 +1424,23 @@ mod tests {
         TranscriptWriter::write_meta(dir.path(), agent_id, &meta).unwrap();
         let loaded = TranscriptReader::load_meta(dir.path(), agent_id).unwrap();
         assert_eq!(loaded.mcp_tool_names, vec!["search", "write_file"]);
+    }
+
+    #[test]
+    fn meta_without_trust_schema_deserializes_to_legacy() {
+        let json = r#"{"agent_id":"a","agent_name":"bot","def_name":"bot","status":"Completed","started_at":"2026-01-01T00:00:00Z","turns_used":1}"#;
+        let meta: TranscriptMeta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.trust_schema, TranscriptTrustSchema::Legacy);
+    }
+
+    #[test]
+    #[serial_test::serial(subagent_transcript_integrity)]
+    fn meta_roundtrip_preserves_trust_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = test_meta("abc");
+        TranscriptWriter::write_meta(dir.path(), "abc", &meta).unwrap();
+        let loaded = TranscriptReader::load_meta(dir.path(), "abc").unwrap();
+        assert_eq!(loaded.trust_schema, TranscriptTrustSchema::PerResult);
     }
 
     // --- Hash-chain integrity tests (issue #6360) ---

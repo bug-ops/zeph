@@ -458,6 +458,8 @@ fn insert_handle_with_pending_secret_channel(
             transcript_dir: None,
             mcp_tool_names: Vec::new(),
             peer: None,
+            trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
+            resumed_from: None,
         },
     );
     req_tx
@@ -1611,6 +1613,7 @@ fn write_completed_meta_with_tool_names(
         resumed_from: None,
         turns_used: 1,
         mcp_tool_names,
+        trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
     };
     TranscriptWriter::write_meta(dir, agent_id, &meta).unwrap();
     // Create the empty JSONL so TranscriptReader::load succeeds.
@@ -1712,6 +1715,8 @@ fn resume_still_running_via_active_agents_returns_error() {
             transcript_dir: None,
             mcp_tool_names: Vec::new(),
             peer: None,
+            trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
+            resumed_from: None,
         },
     );
     drop(status_tx);
@@ -1860,6 +1865,89 @@ fn resume_populates_resumed_from_in_meta() {
 
     let _guard = rt.enter();
     mgr.cancel(&new_id).unwrap();
+}
+
+async fn wait_completed(mgr: &SubAgentManager, id: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !mgr
+        .statuses()
+        .into_iter()
+        .any(|(i, s)| i == id && s.state == SubAgentState::Completed)
+    {
+        assert!(
+            std::time::Instant::now() <= deadline,
+            "sub-agent did not complete within timeout"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial(subagent_transcript_integrity)]
+async fn fresh_spawn_final_meta_is_per_result() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = make_cfg_with_dir(tmp.path());
+    let mut mgr = make_manager();
+    mgr.definitions.push(sample_def());
+
+    let id = mgr
+        .spawn(
+            "bot",
+            "do stuff",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &cfg,
+            SpawnContext::default(),
+        )
+        .await
+        .unwrap();
+    wait_completed(&mgr, &id).await;
+    mgr.collect(&id).await.unwrap();
+
+    let meta = crate::transcript::TranscriptReader::load_meta(tmp.path(), &id).unwrap();
+    assert_eq!(meta.trust_schema, TranscriptTrustSchema::PerResult);
+    assert_eq!(meta.resumed_from, None);
+}
+
+#[tokio::test]
+#[serial_test::serial(subagent_transcript_integrity)]
+async fn resume_keeps_schema_and_resumed_from_through_collect() {
+    for schema in [
+        TranscriptTrustSchema::Legacy,
+        TranscriptTrustSchema::PerResult,
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let original_id = "0000beef-0000-0000-0000-000000000000";
+        write_completed_meta(tmp.path(), original_id, "bot");
+        let mut original =
+            crate::transcript::TranscriptReader::load_meta(tmp.path(), original_id).unwrap();
+        original.trust_schema = schema;
+        crate::transcript::TranscriptWriter::write_meta(tmp.path(), original_id, &original)
+            .unwrap();
+
+        let mut mgr = make_manager();
+        mgr.definitions.push(sample_def());
+        let cfg = make_cfg_with_dir(tmp.path());
+        let (new_id, _) = mgr
+            .resume(
+                "0000beef",
+                "continue",
+                mock_provider(vec!["done"]),
+                noop_executor(),
+                None,
+                &cfg,
+                None,
+            )
+            .await
+            .unwrap();
+        wait_completed(&mgr, &new_id).await;
+        mgr.collect(&new_id).await.unwrap();
+
+        let meta = crate::transcript::TranscriptReader::load_meta(tmp.path(), &new_id).unwrap();
+        assert_eq!(meta.trust_schema, schema);
+        assert_eq!(meta.resumed_from.as_deref(), Some(original_id));
+    }
 }
 
 #[test]

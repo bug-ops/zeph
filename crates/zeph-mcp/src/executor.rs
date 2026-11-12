@@ -371,31 +371,7 @@ impl ToolExecutor for McpToolExecutor {
             .collect_media(&tool.server_id, &tool.name, &result.content)
             .await;
 
-        // Fail-closed: any malformed value (wrong type, negative, non-integer, or a
-        // magnitude that doesn't fit `usize`) yields `None`, which downstream means
-        // "use the global threshold" — never "unlimited".
-        let max_result_size_chars = result
-            .meta
-            .as_ref()
-            .and_then(|meta| meta.0.get("zeph/maxResultSizeChars"))
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|n| usize::try_from(n).ok());
-
-        Ok(Some(ToolOutput {
-            tool_name: tool.qualified_name().into(),
-            summary: text,
-            blocks_executed: 1,
-            filter_stats: None,
-            diff: None,
-            streamed: false,
-            terminal_id: None,
-            locations: None,
-            raw_response: None,
-            claim_source: Some(zeph_tools::ClaimSource::Mcp),
-            media,
-            max_result_size_chars,
-            status: tool_status(&result),
-        }))
+        Ok(Some(tool_output(&tool, text, media, &result)))
     }
 
     #[cfg_attr(
@@ -490,6 +466,40 @@ fn tool_status(result: &rmcp::model::CallToolResult) -> zeph_tools::ToolStatus {
     }
 }
 
+/// Assembles the executor result of an MCP call, carrying the typed status of `result`.
+fn tool_output(
+    tool: &McpTool,
+    text: String,
+    media: Vec<zeph_llm::provider::ImageData>,
+    result: &rmcp::model::CallToolResult,
+) -> ToolOutput {
+    // Fail-closed: any malformed value (wrong type, negative, non-integer, or a
+    // magnitude that doesn't fit `usize`) yields `None`, which downstream means
+    // "use the global threshold" — never "unlimited".
+    let max_result_size_chars = result
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.0.get("zeph/maxResultSizeChars"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok());
+
+    ToolOutput {
+        tool_name: tool.qualified_name().into(),
+        summary: text,
+        blocks_executed: 1,
+        filter_stats: None,
+        diff: None,
+        streamed: false,
+        terminal_id: None,
+        locations: None,
+        raw_response: None,
+        claim_source: Some(zeph_tools::ClaimSource::Mcp),
+        media,
+        max_result_size_chars,
+        status: tool_status(result),
+    }
+}
+
 fn default_args() -> serde_json::Value {
     serde_json::Value::Object(serde_json::Map::new())
 }
@@ -569,6 +579,31 @@ mod tests {
         let mut unset = CallToolResult::success(vec![]);
         unset.is_error = None;
         assert_eq!(tool_status(&unset), ToolStatus::Success);
+    }
+
+    #[test]
+    fn executor_output_carries_failed_status_for_is_error_result() {
+        use rmcp::model::{CallToolResult, ContentBlock};
+        use zeph_tools::ToolStatus;
+
+        let tool = McpTool {
+            server_id: "srv".into(),
+            name: "tool".into(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+            output_schema: None,
+            security_meta: crate::tool::ToolSecurityMeta::default(),
+        };
+        let failed = CallToolResult::error(vec![ContentBlock::text("boom")]);
+        let out = tool_output(&tool, "boom".into(), Vec::new(), &failed);
+        assert_eq!(out.status, ToolStatus::Failed);
+        assert_eq!(out.tool_name, "srv:tool");
+
+        let ok = CallToolResult::success(vec![ContentBlock::text("fine")]);
+        assert_eq!(
+            tool_output(&tool, "fine".into(), Vec::new(), &ok).status,
+            ToolStatus::Success
+        );
     }
 
     fn png_image_block() -> rmcp::model::ContentBlock {

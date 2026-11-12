@@ -268,9 +268,8 @@ impl CommandHandler<CommandContext<'_>> for StoreSlashCommand {
 }
 
 fn parse_backfill_limit(args: &str) -> Option<usize> {
-    let pos = args.find("--limit")?;
-    args[pos + "--limit".len()..]
-        .split_whitespace()
+    let (_, rest) = args.split_once("--limit")?;
+    rest.split_whitespace()
         .next()
         .and_then(|s| s.parse::<usize>().ok())
 }

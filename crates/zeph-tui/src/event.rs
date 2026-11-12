@@ -215,13 +215,6 @@ pub enum AgentEvent {
     },
     /// Updated count of messages queued for the agent (shown in the input bar).
     QueueCount(usize),
-    /// A diff is ready for immediate display in the diff panel.
-    DiffReady {
-        /// The diff payload to attach to the corresponding tool message.
-        diff: zeph_core::DiffData,
-        /// Identifies which tool call produced this diff.
-        tool_call_id: zeph_common::ToolExecutionId,
-    },
     /// Result from a slash-command dispatched to the agent.
     CommandResult {
         /// The slash-command identifier that produced this result.

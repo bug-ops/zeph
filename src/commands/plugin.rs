@@ -15,7 +15,10 @@ fn print_overlay_section(plugins_dir: &std::path::Path) -> anyhow::Result<()> {
     let overlay = zeph_plugins::apply_plugin_config_overlays(&mut cfg, plugins_dir)
         .map_err(|e| anyhow::anyhow!("overlay resolution failed: {e}"))?;
 
-    if overlay.source_plugins.is_empty() && overlay.skipped_plugins.is_empty() {
+    if overlay.source_plugins.is_empty()
+        && overlay.skipped_plugins.is_empty()
+        && overlay.unverified_plugins.is_empty()
+    {
         println!("No plugin overlay active.");
         return Ok(());
     }
@@ -33,6 +36,13 @@ fn print_overlay_section(plugins_dir: &std::path::Path) -> anyhow::Result<()> {
     } else {
         println!("  Skipped plugins:");
         for reason in &overlay.skipped_plugins {
+            println!("    - {reason}");
+        }
+    }
+
+    if !overlay.unverified_plugins.is_empty() {
+        println!("  Unverified plugins (applied without an integrity digest):");
+        for reason in &overlay.unverified_plugins {
             println!("    - {reason}");
         }
     }

@@ -47,8 +47,10 @@ fn build_task_row(task: &crate::metrics::TaskSnapshotRow, tick: u8, ascii: bool)
     };
 
     let title_display = if task.title.len() > 28 {
-        let end = task.title.floor_char_boundary(27);
-        format!("{}…", &task.title[..end])
+        format!(
+            "{}…",
+            zeph_common::text::truncate_to_bytes_ref(&task.title, 27)
+        )
     } else {
         task.title.clone()
     };
@@ -77,8 +79,7 @@ fn build_task_row(task: &crate::metrics::TaskSnapshotRow, tick: u8, ascii: bool)
         .as_deref()
         .map(|a| {
             if a.len() > 10 {
-                let end = a.floor_char_boundary(9);
-                format!("{}…", &a[..end])
+                format!("{}…", zeph_common::text::truncate_to_bytes_ref(a, 9))
             } else {
                 a.to_owned()
             }
@@ -261,8 +262,10 @@ fn truncate_goal(goal: &str, max: usize) -> String {
     if goal.len() <= max {
         goal.to_owned()
     } else {
-        let end = goal.floor_char_boundary(max.saturating_sub(1));
-        format!("{}…", &goal[..end])
+        format!(
+            "{}…",
+            zeph_common::text::truncate_to_bytes_ref(goal, max.saturating_sub(1))
+        )
     }
 }
 

@@ -13,6 +13,8 @@ use crate::fleet::FleetSessionStatus;
 use crate::hooks::HookAgentCtx;
 use crate::hooks::fire_hooks;
 use crate::state::SubAgentState;
+use zeph_common::trust_level::TranscriptTrustSchema;
+
 use crate::transcript::{TranscriptMeta, TranscriptWriter, sweep_old_transcripts};
 
 impl SubAgentManager {
@@ -92,9 +94,10 @@ impl SubAgentManager {
                 status: final_state,
                 started_at: handle.started_at_str.clone(),
                 finished_at: Some(crate::transcript::utc_now()),
-                resumed_from: None,
+                resumed_from: handle.resumed_from.clone(),
                 turns_used,
                 mcp_tool_names: handle.mcp_tool_names.clone(),
+                trust_schema: handle.trust_schema,
             };
             if let Err(e) = TranscriptWriter::write_meta_async(dir, task_id, &meta).await {
                 tracing::warn!(error = %e, task_id, "failed to write final transcript meta");
@@ -227,6 +230,7 @@ impl SubAgentManager {
         task_id: &str,
         agent_name: &str,
         resumed_from: Option<&str>,
+        trust_schema: TranscriptTrustSchema,
     ) -> Option<TranscriptWriter> {
         if !config.transcript_enabled {
             return None;
@@ -244,6 +248,7 @@ impl SubAgentManager {
             resumed_from: resumed_from.map(str::to_owned),
             turns_used: 0,
             mcp_tool_names: Vec::new(),
+            trust_schema,
         };
         let task_id = task_id.to_owned();
         run_blocking(move || {

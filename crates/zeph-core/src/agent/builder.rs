@@ -2704,9 +2704,8 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_learning(mut self, config: LearningConfig) -> Self {
         if config.correction_detection {
-            self.services.feedback.detector = zeph_agent_feedback::FeedbackDetector::new(
-                config.correction_confidence_threshold.get(),
-            );
+            self.services.feedback.detector =
+                zeph_agent_feedback::FeedbackDetector::new(config.correction_confidence_threshold);
             if config.detector_mode == crate::config::DetectorMode::Judge {
                 self.services.feedback.judge = Some(zeph_agent_feedback::JudgeDetector::new(
                     config.judge_adaptive_low.get(),

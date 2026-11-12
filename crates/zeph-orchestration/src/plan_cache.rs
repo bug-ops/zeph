@@ -165,7 +165,7 @@ fn slugify_title(title: &str, idx: u32) -> String {
         .join("-");
 
     // Cap at 32 chars, then append index to ensure uniqueness.
-    let capped = if slug.len() > 32 { &slug[..32] } else { &slug };
+    let capped = zeph_common::text::truncate_to_bytes_ref(&slug, 32);
     // Trim trailing dashes after cap.
     let capped = capped.trim_end_matches('-');
     if capped.is_empty() {

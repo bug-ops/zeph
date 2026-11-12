@@ -28,7 +28,7 @@ async fn handle_schedule_add(
     let sanitized = sanitize_task_prompt(&prompt);
     let job_name = name.unwrap_or_else(|| {
         let hash = blake3::hash(sanitized.as_bytes());
-        format!("cli-{}", &hash.to_hex()[..8])
+        format!("cli-{}", hash.to_hex().get(..8).unwrap_or_default())
     });
 
     if let Some(run_at) = run_at {

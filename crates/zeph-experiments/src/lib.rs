@@ -68,6 +68,8 @@
 //! # Ok(())
 //! # }
 //! ```
+
+#![cfg_attr(not(test), warn(clippy::string_slice))]
 pub mod benchmark;
 pub mod engine;
 pub mod error;

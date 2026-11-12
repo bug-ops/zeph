@@ -20,7 +20,9 @@
 //! Status is replaceable state: updates collapse to the latest. A one-shot notice that must not
 //! be lost (an OAuth URL, a skipped-skill warning) goes through the notice queue
 //! ([`StatusSender::notice`]): a small bounded queue that never collapses, delivered to the
-//! receiver as [`StatusEvent::Notice`] ahead of any pending status update.
+//! receiver as [`StatusEvent::Notice`] ahead of any pending status update. A notice that must
+//! also survive a burst of ordinary notices (an OAuth URL the user has to act on) goes through
+//! [`StatusSender::urgent_notice`], a second queue that is always drained first.
 //!
 //! Clear-if-armed applies to this background lane only. The agent-turn lane
 //! (`Channel::send_status` / `clear_status`) is a separate lane on the consumer side, so a turn
@@ -52,6 +54,8 @@ use tokio::sync::{mpsc, watch};
 
 /// Capacity of the notice queue. A full queue drops the newest notice with a `warn` log.
 const NOTICE_QUEUE_CAPACITY: usize = 16;
+/// Capacity of the urgent notice queue; same drop-with-warn policy as the ordinary queue.
+const URGENT_NOTICE_QUEUE_CAPACITY: usize = 16;
 
 /// A non-empty status message.
 ///
@@ -235,6 +239,7 @@ pub struct StatusSender {
     source: StatusSource,
     tx: watch::Sender<Board>,
     notices: mpsc::Sender<StatusText>,
+    urgent_notices: mpsc::Sender<StatusText>,
 }
 
 impl StatusSender {
@@ -245,6 +250,7 @@ impl StatusSender {
             source,
             tx: self.tx.clone(),
             notices: self.notices.clone(),
+            urgent_notices: self.urgent_notices.clone(),
         }
     }
 
@@ -342,11 +348,32 @@ impl StatusSender {
     ///
     /// Returns [`StatusClosed`] when no receiver is left.
     pub fn notice(&self, text: impl Into<Cow<'static, str>>) -> Result<(), StatusClosed> {
+        self.enqueue_notice(&self.notices, text.into())
+    }
+
+    /// Queue a notice that is delivered ahead of every ordinary notice.
+    ///
+    /// Uses a separate bounded queue, so ordinary notices filling their own queue cannot cause
+    /// this one to be dropped. Use it only for text the user must act on (an OAuth URL). Same
+    /// drop-with-warn policy, empty-text handling and error as [`notice`](Self::notice).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StatusClosed`] when no receiver is left.
+    pub fn urgent_notice(&self, text: impl Into<Cow<'static, str>>) -> Result<(), StatusClosed> {
+        self.enqueue_notice(&self.urgent_notices, text.into())
+    }
+
+    fn enqueue_notice(
+        &self,
+        queue: &mpsc::Sender<StatusText>,
+        text: Cow<'static, str>,
+    ) -> Result<(), StatusClosed> {
         let Some(text) = StatusText::new(text) else {
             tracing::debug!(source = ?self.source, "ignoring empty status notice");
             return self.closed_result();
         };
-        match self.notices.try_send(text) {
+        match queue.try_send(text) {
             Ok(()) => Ok(()),
             Err(mpsc::error::TrySendError::Full(_)) => {
                 tracing::warn!(source = ?self.source, "status notice queue full, dropping notice");
@@ -419,6 +446,7 @@ impl StatusReporter {
 pub struct StatusReceiver {
     rx: watch::Receiver<Board>,
     notices: mpsc::Receiver<StatusText>,
+    urgent_notices: mpsc::Receiver<StatusText>,
 }
 
 impl StatusReceiver {
@@ -438,15 +466,14 @@ impl StatusReceiver {
 
     /// Wait for the next status change or notice.
     ///
-    /// Pending notices are delivered before status updates. Returns `None` once every sender is
-    /// dropped, the notice queue is drained and the last status change was consumed.
+    /// Urgent notices come first, then ordinary notices, then status updates. Returns `None`
+    /// once every sender is dropped, both notice queues are drained and the last status change
+    /// was consumed.
     pub async fn next_event(&mut self) -> Option<StatusEvent> {
         tokio::select! {
             biased;
-            notice = self.notices.recv() => match notice {
-                Some(text) => Some(StatusEvent::Notice(text)),
-                None => next_update(&mut self.rx).await.map(StatusEvent::Update),
-            },
+            Some(text) = self.urgent_notices.recv() => Some(StatusEvent::Notice(text)),
+            Some(text) = self.notices.recv() => Some(StatusEvent::Notice(text)),
             update = next_update(&mut self.rx) => update.map(StatusEvent::Update),
         }
     }
@@ -476,15 +503,18 @@ async fn next_update(rx: &mut watch::Receiver<Board>) -> Option<StatusUpdate> {
 pub fn status_channel(source: StatusSource) -> (StatusSender, StatusReceiver) {
     let (tx, rx) = watch::channel(Board::default());
     let (notice_tx, notice_rx) = mpsc::channel(NOTICE_QUEUE_CAPACITY);
+    let (urgent_tx, urgent_rx) = mpsc::channel(URGENT_NOTICE_QUEUE_CAPACITY);
     (
         StatusSender {
             source,
             tx,
             notices: notice_tx,
+            urgent_notices: urgent_tx,
         },
         StatusReceiver {
             rx,
             notices: notice_rx,
+            urgent_notices: urgent_rx,
         },
     )
 }
@@ -711,6 +741,39 @@ mod tests {
             );
         }
         assert_silent_events(&mut rx).await;
+    }
+
+    #[tokio::test]
+    async fn urgent_notice_survives_full_ordinary_queue_and_comes_first() {
+        let (tx, mut rx) = status_channel(StatusSource::Mcp);
+        for _ in 0..NOTICE_QUEUE_CAPACITY {
+            tx.notice("queued").unwrap();
+        }
+        assert!(tx.notice("dropped").is_ok());
+        tx.urgent_notice("oauth-url").unwrap();
+        assert_eq!(
+            rx.next_event().await,
+            Some(StatusEvent::Notice(text("oauth-url")))
+        );
+        for _ in 0..NOTICE_QUEUE_CAPACITY {
+            assert_eq!(
+                rx.next_event().await,
+                Some(StatusEvent::Notice(text("queued")))
+            );
+        }
+        assert_silent_events(&mut rx).await;
+    }
+
+    #[tokio::test]
+    async fn pending_urgent_notice_is_delivered_after_senders_drop() {
+        let (tx, mut rx) = status_channel(StatusSource::Mcp);
+        tx.urgent_notice("last words").unwrap();
+        drop(tx);
+        assert_eq!(
+            rx.next_event().await,
+            Some(StatusEvent::Notice(text("last words")))
+        );
+        assert_eq!(rx.next_event().await, None);
     }
 
     async fn assert_silent_events(rx: &mut StatusReceiver) {

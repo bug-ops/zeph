@@ -53,7 +53,7 @@ SQLite tables:
 ├── graph_entity_aliases   — surface aliases, foreign key to canonical entity
 ├── edges                  — (id, source_entity_id, target_entity_id, relation, fact,
 │                             confidence: f32, valid_from, valid_to, expired_at,
-│                             episode_id, qdrant_point_id)
+│                             source_message_id, qdrant_point_id)
 ├── communities            — (id, name, summary, entity_ids[], fingerprint, created_at, updated_at)
 └── metadata               — (key, value) — graph-level config and stats
 ```
@@ -83,7 +83,7 @@ Runs **fire-and-forget** in a background task after each turn:
    d. Per-name serialized locking prevents concurrent duplicate creation
    e. On embed/LLM errors: create new entity (graceful degradation)
 3. New entities inserted; aliases merged to canonical
-4. New edges inserted with `confidence: f32`, `episode_id` (MessageId link)
+4. New edges inserted with `confidence: f32`, `source_message_id` (MessageId link)
 
 The background extraction must **not block the agent loop**.
 
@@ -428,7 +428,7 @@ deployments sensitive to graph-recall latency/cost should benchmark before upgra
 
 ## Episode lookup index (#7012)
 
-`GraphStore::entity_ids_for_messages` filters `graph_edges` by `episode_id IN (...) AND valid_to IS NULL`. Migration 118 adds the partial index `idx_graph_edges_episode_active ON graph_edges(episode_id) WHERE valid_to IS NULL` on both backends. The column name (`episode_id` holds a message id; see `source_message_id`) is tracked by #7015, and the index must move with the column if it is renamed.
+`GraphStore::entity_ids_for_messages` filters `graph_edges` by `source_message_id IN (...) AND valid_to IS NULL`. Migration 118 added a partial index on the legacy column; migration 119 replaces it. Migration 119 (#7015) makes `graph_edges.source_message_id` the canonical message-provenance column: it backfills it from `episode_id`, replaces the index with `idx_graph_edges_source_message_active ON graph_edges(source_message_id) WHERE valid_to IS NULL AND source_message_id IS NOT NULL`, and the store reads and writes only `source_message_id`. `graph_edges.episode_id` remains as a dead column (never read or written); `graph_episode_entities.episode_id` and `edge_reassertions.episode_id` are unrelated and unchanged.
 
 `SemanticMemory::resolve_goal_anchor` maps the Active goal text to a graph entity (`find_seed_entities`, `structural_weight = 0.0`, top-1) for the causal-distance signal (spec 004-18 FR-006).
 

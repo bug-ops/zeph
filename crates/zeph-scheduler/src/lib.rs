@@ -81,6 +81,8 @@
 //! `zeph-db` migrations. Use [`JobStore::open`] to connect or [`JobStore::new`] when
 //! you already hold a [`zeph_db::DbPool`].
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 pub mod durable;
 mod error;
 mod handlers;

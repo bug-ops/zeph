@@ -213,11 +213,11 @@ impl fmt::Display for SkillTrustLevel {
 /// Content-trust tier of a per-turn context block (the minimum over its sections) and of
 /// recalled graph facts.
 ///
-/// Mirrors `zeph_sanitizer::ContentTrustLevel` (which this crate cannot depend on); the
-/// discriminants are identical so the two convert through `u8`.
+/// This is the single trust-tier enum; `zeph_sanitizer::ContentTrustLevel` is an alias of it.
+/// The enum is exhaustive: adding a tier is a deliberate breaking change that forces every
+/// `match` to be revisited.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[non_exhaustive]
 #[repr(u8)]
 pub enum TurnContextTrust {
     /// System-authored or direct user content.
@@ -229,7 +229,7 @@ pub enum TurnContextTrust {
 }
 
 impl TurnContextTrust {
-    /// The `u8` discriminant, identical to `zeph_sanitizer::ContentTrustLevel as u8`.
+    /// The `u8` discriminant.
     ///
     /// # Examples
     ///
@@ -279,6 +279,32 @@ impl TurnContextTrust {
         Self::from_u8(value).unwrap_or(Self::ExternalUntrusted)
     }
 
+    /// Parse the `snake_case` identifier produced by [`as_str`](Self::as_str).
+    ///
+    /// Returns `None` for unrecognized strings so callers can fall back to a conservative
+    /// default and log a warning instead of failing deserialization.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::trust_level::TurnContextTrust;
+    ///
+    /// assert_eq!(
+    ///     TurnContextTrust::from_str_opt("local_untrusted"),
+    ///     Some(TurnContextTrust::LocalUntrusted)
+    /// );
+    /// assert_eq!(TurnContextTrust::from_str_opt("unknown"), None);
+    /// ```
+    #[must_use]
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s {
+            "trusted" => Some(Self::Trusted),
+            "local_untrusted" => Some(Self::LocalUntrusted),
+            "external_untrusted" => Some(Self::ExternalUntrusted),
+            _ => None,
+        }
+    }
+
     /// Lowercase `snake_case` name, matching the serde representation.
     ///
     /// # Examples
@@ -295,6 +321,42 @@ impl TurnContextTrust {
             Self::LocalUntrusted => "local_untrusted",
             Self::ExternalUntrusted => "external_untrusted",
         }
+    }
+}
+
+/// Format version of a sub-agent transcript with respect to per-result trust tagging.
+///
+/// A transcript written before per-result trust markers existed (`Legacy`) carries no
+/// information about where its tool output came from, so it is imported at
+/// `ExternalUntrusted`. A `PerResult` transcript tags each tool result and is trusted
+/// according to the maximum per-result trust (with a `LocalUntrusted` floor).
+///
+/// There is deliberately no `Default`: callers must choose a schema explicitly. Serde
+/// deserialization of metadata that lacks the field uses [`TranscriptTrustSchema::legacy`].
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_common::trust_level::TranscriptTrustSchema;
+///
+/// assert_eq!(serde_json::to_string(&TranscriptTrustSchema::Legacy).unwrap(), "\"legacy\"");
+/// let back: TranscriptTrustSchema = serde_json::from_str("\"per_result\"").unwrap();
+/// assert_eq!(back, TranscriptTrustSchema::PerResult);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptTrustSchema {
+    /// Written before per-result trust tagging; imports at `ExternalUntrusted`.
+    Legacy,
+    /// Every tool result carries its own trust marker.
+    PerResult,
+}
+
+impl TranscriptTrustSchema {
+    /// Serde default for metadata files that predate the `trust_schema` field.
+    #[must_use]
+    pub const fn legacy() -> Self {
+        Self::Legacy
     }
 }
 
@@ -385,6 +447,24 @@ mod tests {
         assert_eq!(
             SkillTrustLevel::from_severity(255),
             SkillTrustLevel::Blocked
+        );
+    }
+
+    #[test]
+    fn transcript_trust_schema_serde_roundtrip() {
+        for (v, text) in [
+            (TranscriptTrustSchema::Legacy, "\"legacy\""),
+            (TranscriptTrustSchema::PerResult, "\"per_result\""),
+        ] {
+            assert_eq!(serde_json::to_string(&v).unwrap(), text);
+            assert_eq!(
+                serde_json::from_str::<TranscriptTrustSchema>(text).unwrap(),
+                v
+            );
+        }
+        assert_eq!(
+            TranscriptTrustSchema::legacy(),
+            TranscriptTrustSchema::Legacy
         );
     }
 }

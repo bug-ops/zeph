@@ -67,6 +67,8 @@
 //! std::fs::write("config.toml", &result.output).unwrap();
 //! ```
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 // TODO(#6935): post-v1.0 — re-evaluate ConfigSection derive macro for the 131 config structs.
 
 pub mod agent;

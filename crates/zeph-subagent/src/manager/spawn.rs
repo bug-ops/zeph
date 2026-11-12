@@ -8,6 +8,7 @@ use std::time::Instant;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+use zeph_common::trust_level::TranscriptTrustSchema;
 use zeph_config::{BgIsolation, ContentIsolationConfig, SubAgentConfig};
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{Message, Role};
@@ -877,7 +878,13 @@ impl SubAgentManager {
         let grants = Arc::new(std::sync::Mutex::new(PermissionGrants::default()));
         let tool_grants_for_loop = Arc::clone(&grants);
 
-        let transcript_writer = self.create_transcript_writer(config, &task_id, &def.name, None);
+        let transcript_writer = self.create_transcript_writer(
+            config,
+            &task_id,
+            &def.name,
+            None,
+            TranscriptTrustSchema::PerResult,
+        );
 
         // Captured before `ctx.content_isolation` is moved into `agent_loop_args` below
         // (P-new-4): the drain needs its own clone of the sanitizer config, taken at spawn
@@ -1019,6 +1026,8 @@ impl SubAgentManager {
             transcript_dir: handle_transcript_dir,
             mcp_tool_names: handle_mcp_tool_names,
             peer: peer_registration,
+            trust_schema: TranscriptTrustSchema::PerResult,
+            resumed_from: None,
         };
 
         self.agents.insert(task_id.clone(), handle);
@@ -1400,8 +1409,14 @@ impl SubAgentManager {
         let grants = Arc::new(std::sync::Mutex::new(PermissionGrants::default()));
         let tool_grants_for_loop = Arc::clone(&grants);
 
-        let transcript_writer =
-            self.create_transcript_writer(config, &new_task_id, &def.name, Some(&original_id));
+        let trust_schema = meta.trust_schema;
+        let transcript_writer = self.create_transcript_writer(
+            config,
+            &new_task_id,
+            &def.name,
+            Some(&original_id),
+            trust_schema,
+        );
 
         let original_tool_count = meta.mcp_tool_names.len();
         let resumed_mcp_tool_names: Vec<String> = meta
@@ -1495,6 +1510,8 @@ impl SubAgentManager {
             transcript_dir: resume_handle_transcript_dir,
             mcp_tool_names: resumed_mcp_tool_names_for_handle,
             peer: peer_registration,
+            trust_schema,
+            resumed_from: Some(original_id.clone()),
         };
 
         self.agents.insert(new_task_id.clone(), handle);
