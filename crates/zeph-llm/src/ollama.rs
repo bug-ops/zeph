@@ -938,11 +938,10 @@ fn parse_host_port(base_url: &str) -> (String, u16) {
     // url::Url::parse() treats the part before the first ':' as a scheme in that case,
     // so the scheme-gated branch above is intentionally skipped for such inputs.
     let trimmed = base_url.trim_end_matches('/');
-    if let Some(colon_pos) = trimmed.rfind(':') {
-        let port_str = &trimmed[colon_pos + 1..];
-        if let Ok(port) = port_str.parse::<u16>() {
-            return (trimmed[..colon_pos].to_string(), port);
-        }
+    if let Some((host, port_str)) = trimmed.rsplit_once(':')
+        && let Ok(port) = port_str.parse::<u16>()
+    {
+        return (host.to_string(), port);
     }
     (trimmed.to_string(), 11434)
 }

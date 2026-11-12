@@ -37,6 +37,10 @@ pub fn format_tokens(n: u64) -> String {
 /// unchanged. Otherwise, walks char boundaries and truncates at the largest
 /// boundary that fits.
 #[must_use]
+#[expect(
+    clippy::string_slice,
+    reason = "index derived from a boundary API on the same string"
+)]
 pub fn truncate_to_bytes(s: &str, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
         return s.to_owned();
@@ -59,6 +63,10 @@ pub fn truncate_to_bytes(s: &str, max_bytes: usize) -> String {
 /// Returns a subslice of `s`. Walks backwards from `max_bytes` to find a valid
 /// UTF-8 char boundary.
 #[must_use]
+#[expect(
+    clippy::string_slice,
+    reason = "index derived from a boundary API on the same string"
+)]
 pub fn truncate_to_bytes_ref(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
         return s;
@@ -80,6 +88,10 @@ pub fn estimate_tokens(text: &str) -> usize {
 ///
 /// Returns a subslice of `s`. No ellipsis is appended.
 #[must_use]
+#[expect(
+    clippy::string_slice,
+    reason = "index derived from a boundary API on the same string"
+)]
 pub fn truncate_chars(s: &str, max_chars: usize) -> &str {
     if max_chars == 0 {
         return "";
@@ -137,11 +149,12 @@ pub fn patch_frontmatter_fields(skill_md: &str, fields: &[(&str, &str)]) -> Stri
     let Some(after_open) = skill_md.strip_prefix("---") else {
         return skill_md.to_string();
     };
-    let Some(close_pos) = after_open.find("---") else {
+    let Some((yaml, rest)) = after_open
+        .find("---")
+        .and_then(|close_pos| after_open.split_at_checked(close_pos))
+    else {
         return skill_md.to_string();
     };
-    let yaml = &after_open[..close_pos];
-    let rest = &after_open[close_pos..];
 
     let mut lines: Vec<String> = yaml
         .lines()

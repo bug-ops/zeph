@@ -2609,6 +2609,27 @@ async fn router_last_response_usage_chat_with_tools_follows_fallback() {
 }
 
 #[tokio::test]
+async fn bandit_chat_clears_its_routing_status_when_the_call_returns() {
+    use crate::status::{StatusSource, StatusUpdate, status_channel};
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut r = RouterProvider::new(vec![AnyProvider::Mock(usage_mock("a", usage_of(2, 3)))])
+        .with_bandit(
+            BanditRouterConfig::default(),
+            Some(&dir.path().join("bandit.json")),
+            None,
+        );
+    let (tx, mut rx) = status_channel(StatusSource::Provider);
+    r.set_status_tx(tx);
+
+    let msgs = vec![Message::from_legacy(Role::User, "hi")];
+    r.chat(&msgs).await.unwrap();
+
+    // The routing status was set and then cleared, so the last observed state is `Clear`.
+    assert_eq!(rx.next().await, Some(StatusUpdate::Clear));
+}
+
+#[tokio::test]
 async fn router_last_response_usage_bandit_chat() {
     let dir = tempfile::tempdir().unwrap();
     let r = RouterProvider::new(vec![AnyProvider::Mock(usage_mock("a", usage_of(2, 3)))])

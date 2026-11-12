@@ -224,7 +224,7 @@ struct PendingSanitizeBuffers {
 /// Byte offset in `buf` of the last PEM/SSH2 header marker (`-----BEGIN` or `---- BEGIN`)
 /// starting strictly before `before`, if any.
 fn last_header_before(buf: &str, before: usize) -> Option<usize> {
-    let region = &buf[..before];
+    let region = buf.get(..before)?;
     [region.rfind("-----BEGIN"), region.rfind("---- BEGIN")]
         .into_iter()
         .flatten()
@@ -234,7 +234,7 @@ fn last_header_before(buf: &str, before: usize) -> Option<usize> {
 /// Byte offset just past the first PEM/SSH2 footer marker's `END` token (`-----END` or
 /// `---- END`, both exactly 8 bytes) found anywhere in `buf` at or after `marker_idx`, if any.
 fn footer_end_after(buf: &str, marker_idx: usize) -> Option<usize> {
-    let tail = &buf[marker_idx..];
+    let tail = buf.get(marker_idx..)?;
     let end_offset = [tail.find("-----END"), tail.find("---- END")]
         .into_iter()
         .flatten()
@@ -328,12 +328,12 @@ fn split_off_safe_prefix(buf: &mut String, holdback: usize) -> Option<String> {
         let natural_target = buf.floor_char_boundary(buf.len().saturating_sub(holdback));
         pem_safe_flush_target(buf, natural_target)
     };
-    let boundary = buf.floor_char_boundary(target.min(buf.len()));
-    if boundary == 0 {
+    let prefix = zeph_common::text::truncate_to_bytes_ref(buf, target);
+    if prefix.is_empty() {
         return None;
     }
-    let prefix = buf[..boundary].to_owned();
-    buf.drain(..boundary);
+    let prefix = prefix.to_owned();
+    buf.drain(..prefix.len());
     Some(prefix)
 }
 

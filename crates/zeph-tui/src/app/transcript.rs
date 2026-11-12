@@ -6,6 +6,8 @@
 
 use tokio::sync::oneshot;
 
+use crate::status_board::StatusLane;
+
 use super::{
     AgentViewTarget, App, ChatMessage, MessageRole, TRANSCRIPT_MAX_ENTRIES, TranscriptCache,
     TuiTranscriptEntry, load_transcript_file,
@@ -34,7 +36,10 @@ impl App {
             // never be cleared, since poll_pending_transcript (the only other clearer)
             // never runs once pending_transcript is gone (e.g. Esc back to Main before
             // the load resolves).
-            self.sessions.current_mut().status_label = None;
+            self.sessions
+                .current_mut()
+                .status
+                .clear(StatusLane::TranscriptLoad);
         }
         // Kick off transcript load if switching to a subagent.
         if let AgentViewTarget::SubAgent { ref id, .. } = self.sessions.current().view_target {
@@ -60,7 +65,10 @@ impl App {
 
         let (tx, rx) = oneshot::channel();
         self.sessions.current_mut().pending_transcript = Some(rx);
-        self.sessions.current_mut().status_label = Some("loading transcript...".to_owned());
+        self.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::TranscriptLoad, "loading transcript...");
         // Determine if the agent is still active (for C2: skip warning on partial last line).
         let is_active = self
             .metrics
@@ -84,7 +92,10 @@ impl App {
         match rx.try_recv() {
             Ok((entries, total)) => {
                 self.sessions.current_mut().pending_transcript = None;
-                self.sessions.current_mut().status_label = None;
+                self.sessions
+                    .current_mut()
+                    .status
+                    .clear(StatusLane::TranscriptLoad);
                 let turns_at_load = self
                     .sessions
                     .current()
@@ -107,7 +118,10 @@ impl App {
             Err(oneshot::error::TryRecvError::Empty) => {}
             Err(oneshot::error::TryRecvError::Closed) => {
                 self.sessions.current_mut().pending_transcript = None;
-                self.sessions.current_mut().status_label = None;
+                self.sessions
+                    .current_mut()
+                    .status
+                    .clear(StatusLane::TranscriptLoad);
             }
         }
     }
@@ -239,7 +253,10 @@ mod tests {
     #[test]
     fn poll_pending_transcript_clears_status_label_on_success() {
         let mut app = make_app();
-        app.sessions.current_mut().status_label = Some("loading transcript...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::TranscriptLoad, "loading transcript...");
         app.sessions.current_mut().view_target = AgentViewTarget::SubAgent {
             id: "sa-1".to_owned(),
             name: "Planner".to_owned(),
@@ -259,7 +276,10 @@ mod tests {
         // Closed branch: the spawn_blocking task dropped its sender without sending
         // (e.g. panicked) — status_label must not be left stuck on "loading transcript...".
         let mut app = make_app();
-        app.sessions.current_mut().status_label = Some("loading transcript...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::TranscriptLoad, "loading transcript...");
         let (tx, rx) = oneshot::channel::<(Vec<TuiTranscriptEntry>, usize)>();
         app.sessions.current_mut().pending_transcript = Some(rx);
         drop(tx);
@@ -273,7 +293,10 @@ mod tests {
     #[test]
     fn poll_pending_transcript_is_noop_while_still_pending() {
         let mut app = make_app();
-        app.sessions.current_mut().status_label = Some("loading transcript...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::TranscriptLoad, "loading transcript...");
         let (_tx, rx) = oneshot::channel();
         app.sessions.current_mut().pending_transcript = Some(rx);
 
@@ -300,7 +323,10 @@ mod tests {
         };
         let (_tx, rx) = oneshot::channel();
         app.sessions.current_mut().pending_transcript = Some(rx);
-        app.sessions.current_mut().status_label = Some("loading transcript...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::TranscriptLoad, "loading transcript...");
 
         app.set_view_target(AgentViewTarget::Main);
 
@@ -322,7 +348,10 @@ mod tests {
         // start_transcript_load returns early) must not wipe an unrelated status_label.
         let mut app = make_app();
         assert!(app.metrics.sub_agents.is_empty());
-        app.sessions.current_mut().status_label = Some("indexing files...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::FileIndex, "indexing files...");
 
         app.set_view_target(AgentViewTarget::SubAgent {
             id: "sa-1".to_owned(),

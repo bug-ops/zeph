@@ -16,8 +16,8 @@ use zeph_common::ToolName;
 use zeph_sanitizer::exfiltration::ExfiltrationGuard;
 use zeph_sanitizer::{ContentSanitizer, ContentSource, ContentSourceKind};
 use zeph_tools::executor::{
-    CheckpointActionResult, CheckpointListResult, ErasedToolExecutor, ToolCall, ToolError,
-    ToolOutput, deserialize_params,
+    CheckpointActionResult, CheckpointListResult, ClaimSource, ErasedToolExecutor, ToolCall,
+    ToolError, ToolOutput, deserialize_params,
 };
 use zeph_tools::registry::{InvocationHint, ToolDef};
 
@@ -73,6 +73,7 @@ fn tool_output(tool_id: &str, summary: String) -> ToolOutput {
         tool_name: ToolName::new(tool_id),
         summary,
         blocks_executed: 1,
+        claim_source: (tool_id == CHECK_MESSAGES).then_some(ClaimSource::PeerMessage),
         ..Default::default()
     }
 }
@@ -707,6 +708,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(out.summary.contains("\"messages\":[]"));
+        assert_eq!(out.claim_source, Some(ClaimSource::PeerMessage));
     }
 
     #[tokio::test]

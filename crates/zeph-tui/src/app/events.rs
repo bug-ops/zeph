@@ -5,7 +5,8 @@ use std::time::Instant;
 
 use tokio::sync::mpsc;
 
-use crate::event::{AgentEvent, AppEvent};
+use crate::event::{AgentEvent, AppEvent, LaneUpdate};
+use crate::status_board::StatusLane;
 
 use super::{App, ChatMessage, ConfirmState, ElicitationState, MessageRole, debug};
 
@@ -69,7 +70,7 @@ impl App {
     pub fn handle_agent_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Chunk(text) => {
-                self.sessions.current_mut().status_label = None;
+                self.sessions.current_mut().status.clear(StatusLane::Turn);
                 // New token chunk — refresh stall clock.
                 self.last_progress_at = Instant::now();
                 if let Some(last) = self.sessions.current_mut().messages.last_mut()
@@ -92,7 +93,7 @@ impl App {
                 self.auto_scroll();
             }
             AgentEvent::FullMessage(text) => {
-                self.sessions.current_mut().status_label = None;
+                self.sessions.current_mut().status.clear(StatusLane::Turn);
                 if !text.starts_with("[tool output") {
                     self.sessions
                         .current_mut()
@@ -116,20 +117,26 @@ impl App {
             }
             AgentEvent::Typing => {
                 self.pending_count = self.pending_count.saturating_sub(1);
-                self.sessions.current_mut().status_label = Some("thinking...".to_owned());
+                self.sessions
+                    .current_mut()
+                    .status
+                    .set(StatusLane::Turn, "thinking...");
                 // Turn begins — initialize the stall clock so the first frame is Swell, not Stalled.
                 self.last_progress_at = Instant::now();
                 // Micro-delight: reset streaming rate tracker for this new turn.
                 self.stream_rate.on_turn_start();
             }
             AgentEvent::Status(text) => {
-                self.sessions.current_mut().status_label = Some(text);
+                self.sessions
+                    .current_mut()
+                    .status
+                    .set(StatusLane::Turn, text);
                 // A status update counts as progress (supervisor activity, tool dispatch…).
                 self.last_progress_at = Instant::now();
                 self.auto_scroll();
             }
             AgentEvent::ClearStatus => {
-                self.sessions.current_mut().status_label = None;
+                self.sessions.current_mut().status.clear(StatusLane::Turn);
                 self.auto_scroll();
             }
             AgentEvent::ToolStart {
@@ -138,7 +145,7 @@ impl App {
                 tool_call_id,
                 is_mcp,
             } => {
-                self.sessions.current_mut().status_label = None;
+                self.sessions.current_mut().status.clear(StatusLane::Turn);
                 self.sessions.current_mut().messages.push(
                     ChatMessage::new(MessageRole::Tool, format!("$ {command}\n"))
                         .streaming()
@@ -251,8 +258,10 @@ impl App {
                 self.set_task_supervisor(supervisor);
             }
             AgentEvent::ForegroundSubagentStarted { id, name } => {
-                self.sessions.current_mut().status_label =
-                    Some(format!("Sub-agent '{name}' running..."));
+                self.sessions
+                    .current_mut()
+                    .status
+                    .set(StatusLane::Turn, format!("Sub-agent '{name}' running..."));
                 // Status change counts as progress so the wave animates (never reads Stalled).
                 self.last_progress_at = Instant::now();
                 self.set_view_target(super::AgentViewTarget::SubAgent { id, name });
@@ -268,7 +277,10 @@ impl App {
                 } else {
                     format!("Sub-agent '{name}' failed")
                 };
-                self.sessions.current_mut().status_label = Some(label.clone());
+                self.sessions
+                    .current_mut()
+                    .status
+                    .set(StatusLane::Turn, label.clone());
                 // Status change counts as progress so the wave animates (never reads Stalled).
                 self.last_progress_at = Instant::now();
                 self.sessions
@@ -290,7 +302,10 @@ impl App {
                         format!("Sub-agent '{name}' failed")
                     };
                     self.set_view_target(super::AgentViewTarget::Main);
-                    self.sessions.current_mut().status_label = Some(label.clone());
+                    self.sessions
+                        .current_mut()
+                        .status
+                        .set(StatusLane::Turn, label.clone());
                     // Status change counts as progress so the wave animates (never reads Stalled).
                     self.last_progress_at = Instant::now();
                     self.sessions
@@ -315,6 +330,21 @@ impl App {
             }
             AgentEvent::HistoryBackfill(entries) => {
                 self.backfill_history_display_only(&entries);
+            }
+            AgentEvent::LaneStatus { lane, update } => {
+                if matches!(update, LaneUpdate::Set(_)) {
+                    self.last_progress_at = Instant::now();
+                }
+                self.sessions.current_mut().status.apply(lane, update);
+                self.auto_scroll();
+            }
+            AgentEvent::Notice(text) => {
+                self.sessions
+                    .current_mut()
+                    .messages
+                    .push(ChatMessage::new(MessageRole::System, text));
+                self.trim_messages();
+                self.auto_scroll();
             }
             AgentEvent::SkillCatalog(items) => {
                 self.skill_catalog = Some(items);
@@ -720,10 +750,7 @@ mod tests {
             Some("sa-001"),
             "view must switch to the started subagent"
         );
-        assert_eq!(
-            app.sessions.current().status_label.as_deref(),
-            Some("Sub-agent 'planner' running...")
-        );
+        assert_eq!(app.status_label(), Some("Sub-agent 'planner' running..."));
     }
 
     #[test]
@@ -749,10 +776,7 @@ mod tests {
             app.sessions.current().view_target.is_main(),
             "view must return to Main after completion"
         );
-        assert_eq!(
-            app.sessions.current().status_label.as_deref(),
-            Some("Sub-agent 'coder' completed")
-        );
+        assert_eq!(app.status_label(), Some("Sub-agent 'coder' completed"));
         let system_msg = app
             .sessions
             .current()
@@ -808,10 +832,7 @@ mod tests {
             success: false,
         });
 
-        assert_eq!(
-            app.sessions.current().status_label.as_deref(),
-            Some("Sub-agent 'builder' failed")
-        );
+        assert_eq!(app.status_label(), Some("Sub-agent 'builder' failed"));
     }
 
     // Fast-completing subagents cause a Started then immediately Completed event.
@@ -864,10 +885,7 @@ mod tests {
             app.sessions.current().view_target.is_main(),
             "view must return to Main once the manually-viewed background subagent completes"
         );
-        assert_eq!(
-            app.sessions.current().status_label.as_deref(),
-            Some("Sub-agent 'researcher' completed")
-        );
+        assert_eq!(app.status_label(), Some("Sub-agent 'researcher' completed"));
         let system_msg = app
             .sessions
             .current()
@@ -895,10 +913,7 @@ mod tests {
         });
 
         assert!(app.sessions.current().view_target.is_main());
-        assert_eq!(
-            app.sessions.current().status_label.as_deref(),
-            Some("Sub-agent 'worker' failed")
-        );
+        assert_eq!(app.status_label(), Some("Sub-agent 'worker' failed"));
     }
 
     #[test]
@@ -923,7 +938,7 @@ mod tests {
             messages_before,
             "no message should be pushed for a background subagent that isn't being viewed"
         );
-        assert_eq!(app.sessions.current().status_label, None);
+        assert_eq!(app.status_label(), None);
     }
 
     #[test]

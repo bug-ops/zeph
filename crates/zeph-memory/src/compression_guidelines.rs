@@ -148,8 +148,8 @@ mod updater {
         }
         // Truncate at last newline boundary for cleaner output.
         let candidate: String = chars[..lo].iter().collect();
-        if let Some(pos) = candidate.rfind('\n') {
-            candidate[..pos].to_string()
+        if let Some((head, _)) = candidate.rsplit_once('\n') {
+            head.to_string()
         } else {
             candidate
         }

@@ -9,6 +9,7 @@ use std::time::Instant;
 use tokio::sync::{mpsc, watch};
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
+use zeph_common::trust_level::TurnContextTrust;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{
     AssistantContentBuilder, ChatResponse, LlmProvider, Message, MessageMetadata, MessagePart,
@@ -17,6 +18,7 @@ use zeph_llm::provider::{
 };
 use zeph_llm::sse::{ToolSseEvent, ToolSseStream};
 use zeph_llm::thinking_replay::ThinkingReplay;
+use zeph_sanitizer::secret_shape::scrub_secret_shapes;
 use zeph_sanitizer::{ContentSanitizer, tool_output_source};
 use zeph_tools::executor::{ErasedToolExecutor, ToolCall};
 
@@ -449,13 +451,19 @@ fn publish_completed_status(
 ) {
     let _ = status_tx.send(SubAgentStatus {
         state: SubAgentState::Completed,
-        last_message: Some(last_result.chars().take(120).collect()),
+        last_message: Some(status_snippet(last_result)),
         turns_used: turns,
         started_at,
     });
     if let Some(f) = forward {
         f.send_terminal(forward_state);
     }
+}
+
+/// First 120 chars of `text` for the status line, secret-scrubbed before the cut so a token
+/// that straddles the limit is masked whole instead of leaking a prefix.
+fn status_snippet(text: &str) -> String {
+    scrub_secret_shapes(text).chars().take(120).collect()
 }
 
 fn emit_working_status(
@@ -466,7 +474,7 @@ fn emit_working_status(
 ) {
     let _ = status_tx.send(SubAgentStatus {
         state: SubAgentState::Working,
-        last_message: Some(response_text.chars().take(120).collect()),
+        last_message: Some(status_snippet(response_text)),
         turns_used: turns,
         started_at,
     });
@@ -716,6 +724,7 @@ async fn run_turn(
     secret_registry: Option<&zeph_sanitizer::secret_mask::SecretMaskRegistry>,
     tool_grants: &Arc<Mutex<PermissionGrants>>,
     active_tool_grants_seen: &mut std::collections::HashSet<String>,
+    mcp_tool_names: &[String],
 ) -> Result<TurnOutcome, super::error::SubAgentError> {
     let (response, streamed) = call_provider_with_status(
         provider,
@@ -795,6 +804,7 @@ async fn run_turn(
         secret_registry,
         tool_grants,
         active_tool_grants_seen,
+        mcp_tool_names,
     )
     .await;
 
@@ -825,6 +835,16 @@ async fn run_turn(
     Ok(TurnOutcome::ToolCalled)
 }
 
+/// Trust tier of a tool result whose executor reported no provenance: MCP-served tools are
+/// external, anything else follows the tool-name classification.
+fn name_based_tool_trust(tool_name: &str, mcp_tool_names: &[String]) -> TurnContextTrust {
+    if mcp_tool_names.iter().any(|n| n == tool_name) {
+        TurnContextTrust::ExternalUntrusted
+    } else {
+        TurnContextTrust::from(tool_output_source(tool_name).trust_level)
+    }
+}
+
 // Returns `true` if no tool was called (loop should break).
 #[tracing::instrument(name = "subagent.agent_loop.handle_tool_step", skip_all)]
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
@@ -841,6 +861,7 @@ async fn handle_tool_step(
     secret_registry: Option<&zeph_sanitizer::secret_mask::SecretMaskRegistry>,
     tool_grants: &Arc<Mutex<PermissionGrants>>,
     active_tool_grants_seen: &mut std::collections::HashSet<String>,
+    mcp_tool_names: &[String],
 ) -> bool {
     match response {
         ChatResponse::Text { text, .. } => {
@@ -855,6 +876,7 @@ async fn handle_tool_step(
             ));
 
             let mut result_parts: Vec<MessagePart> = Vec::new();
+            let mut batch_trust = TurnContextTrust::LocalUntrusted;
             for tc in &tool_calls {
                 // #6567 (FR-001/FR-002/FR-003/NFR-001): a `GrantKind::Tool` grant for this tool
                 // name, if one exists, must still be active or the call is rejected outright —
@@ -908,6 +930,8 @@ async fn handle_tool_step(
                     ToolGrantCheck::NoGrant => active_tool_grants_seen.contains(tc.name.as_str()),
                 };
                 if tool_grant_rejected {
+                    batch_trust =
+                        batch_trust.max(name_based_tool_trust(tc.name.as_str(), mcp_tool_names));
                     // Deliberately NOT removed from `active_tool_grants_seen` here: this tool
                     // name was observed `Active` at least once, so it must stay enforced for
                     // the rest of the run (see the comment above) — removing it on rejection
@@ -950,6 +974,8 @@ async fn handle_tool_step(
                             task_id,
                             "PreToolUse hook blocked tool (fail_closed)"
                         );
+                        batch_trust = batch_trust
+                            .max(name_based_tool_trust(tc.name.as_str(), mcp_tool_names));
                         result_parts.push(MessagePart::ToolResult {
                             tool_use_id: tc.id.clone(),
                             content: pre_tool_block_message(tc.name.as_str()),
@@ -1039,6 +1065,15 @@ async fn handle_tool_step(
                     }
                 };
 
+                let claim = exec_result
+                    .as_ref()
+                    .ok()
+                    .and_then(|o| o.as_ref())
+                    .and_then(|o| o.claim_source);
+                batch_trust = batch_trust.max(claim.map_or_else(
+                    || name_based_tool_trust(tc.name.as_str(), mcp_tool_names),
+                    zeph_tools::ClaimSource::content_trust,
+                ));
                 result_parts.push(MessagePart::ToolResult {
                     tool_use_id: tc.id.clone(),
                     content,
@@ -1046,7 +1081,9 @@ async fn handle_tool_step(
                 });
             }
 
-            messages.push(Message::from_parts(Role::User, result_parts));
+            let mut result_msg = Message::from_parts(Role::User, result_parts);
+            result_msg.metadata.trust_level = Some(batch_trust.as_u8());
+            messages.push(result_msg);
             false
         }
         _ => true,
@@ -1244,6 +1281,7 @@ pub(super) async fn run_agent_loop(
             secret_registry,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &mcp_tool_names,
         )
         .await;
 
@@ -2080,6 +2118,35 @@ mod hook_env_tests {
 }
 
 #[cfg(test)]
+mod status_snippet_tests {
+    use super::*;
+
+    #[test]
+    fn token_straddling_the_cut_is_masked_whole() {
+        // Key id starts at char 110, so a cut at 120 would leave a 10-char prefix.
+        let text = format!("{}AKIA1234567890ABCDEF tail", "x ".repeat(55));
+        let snippet = status_snippet(&text);
+        assert!(!snippet.contains("AKIA"), "{snippet}");
+        assert!(snippet.contains("[REDACTED]"), "{snippet}");
+    }
+
+    #[test]
+    fn working_status_is_scrubbed_and_bounded() {
+        let (tx, rx) = watch::channel(SubAgentStatus {
+            state: SubAgentState::Working,
+            last_message: None,
+            turns_used: 0,
+            started_at: Instant::now(),
+        });
+        let text = format!("{}AKIA1234567890ABCDEF", "y".repeat(110));
+        emit_working_status(&tx, &text, 1, Instant::now());
+        let msg = rx.borrow().last_message.clone().unwrap();
+        assert!(!msg.contains("AKIA"), "{msg}");
+        assert!(msg.chars().count() <= 120);
+    }
+}
+
+#[cfg(test)]
 mod handle_tool_step_granted_secrets_tests {
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
@@ -2099,6 +2166,7 @@ mod handle_tool_step_granted_secrets_tests {
     #[derive(Default)]
     struct RecordingExecutor {
         calls: Mutex<Vec<ToolCall>>,
+        claim_source: Option<zeph_tools::ClaimSource>,
     }
 
     impl ErasedToolExecutor for RecordingExecutor {
@@ -2147,7 +2215,7 @@ mod handle_tool_step_granted_secrets_tests {
                 terminal_id: None,
                 locations: None,
                 raw_response: None,
-                claim_source: None,
+                claim_source: self.claim_source,
                 ..Default::default()
             }))))
         }
@@ -2296,6 +2364,91 @@ mod handle_tool_step_granted_secrets_tests {
         )
     }
 
+    async fn recorded_batch_trust(
+        tool: &str,
+        claim_source: Option<zeph_tools::ClaimSource>,
+        mcp_tool_names: &[String],
+    ) -> Option<u8> {
+        let executor = FilteredToolExecutor::new(
+            Arc::new(RecordingExecutor {
+                claim_source,
+                ..Default::default()
+            }) as Arc<dyn ErasedToolExecutor>,
+            ToolPolicy::InheritAll,
+        );
+        let response = ChatResponse::tool_use(
+            None,
+            vec![ToolUseRequest {
+                id: "call-1".into(),
+                name: tool.into(),
+                input: serde_json::json!({}),
+            }],
+        );
+        let mut messages = Vec::new();
+        let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+        handle_tool_step(
+            &executor,
+            response,
+            &mut messages,
+            &SubagentHooks::default(),
+            "task-1",
+            "bot",
+            &sanitizer,
+            CredentialScrub::Enabled,
+            &mut HashMap::new(),
+            None,
+            &Arc::new(Mutex::new(PermissionGrants::default())),
+            &mut std::collections::HashSet::new(),
+            mcp_tool_names,
+        )
+        .await;
+        let result_msg = messages.last().unwrap();
+        assert_eq!(result_msg.role, Role::User);
+        result_msg.metadata.trust_level
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_result_batch_is_tagged_external_untrusted() {
+        let trust = recorded_batch_trust(
+            "github_create_issue",
+            Some(zeph_tools::ClaimSource::Mcp),
+            &[],
+        )
+        .await;
+        assert_eq!(trust, Some(TurnContextTrust::ExternalUntrusted.as_u8()));
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_without_claim_source_is_external_via_mcp_name_list() {
+        let names = ["github_create_issue".to_owned()];
+        let trust = recorded_batch_trust("github_create_issue", None, &names).await;
+        assert_eq!(trust, Some(TurnContextTrust::ExternalUntrusted.as_u8()));
+    }
+
+    #[tokio::test]
+    async fn peer_message_result_batch_is_tagged_external_untrusted() {
+        let trust = recorded_batch_trust(
+            "check_messages",
+            Some(zeph_tools::ClaimSource::PeerMessage),
+            &[],
+        )
+        .await;
+        assert_eq!(trust, Some(TurnContextTrust::ExternalUntrusted.as_u8()));
+    }
+
+    #[tokio::test]
+    async fn shell_tool_result_batch_is_tagged_local_untrusted() {
+        let trust = recorded_batch_trust("shell", Some(zeph_tools::ClaimSource::Shell), &[]).await;
+        assert_eq!(trust, Some(TurnContextTrust::LocalUntrusted.as_u8()));
+    }
+
+    #[tokio::test]
+    async fn web_scrape_result_batch_is_tagged_external_untrusted() {
+        let trust =
+            recorded_batch_trust("web_scrape", Some(zeph_tools::ClaimSource::WebScrape), &[]).await;
+        assert_eq!(trust, Some(TurnContextTrust::ExternalUntrusted.as_u8()));
+    }
+
     #[tokio::test]
     async fn assistant_message_replays_thinking_in_response_order() {
         let executor = FilteredToolExecutor::new(
@@ -2334,6 +2487,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &Arc::new(Mutex::new(PermissionGrants::default())),
             &mut std::collections::HashSet::new(),
+            &[],
         )
         .await;
 
@@ -2377,6 +2531,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &[],
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -2441,6 +2596,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &Arc::new(Mutex::new(PermissionGrants::default())),
             &mut std::collections::HashSet::new(),
+            &[],
         )
         .await;
         (recorder, messages)
@@ -2569,6 +2725,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &[],
         )
         .await;
         assert!(!no_tool);
@@ -2619,6 +2776,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &[],
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -2680,6 +2838,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &[],
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -2751,6 +2910,7 @@ mod handle_tool_step_granted_secrets_tests {
             Some(&registry),
             &tool_grants,
             &mut active_tool_grants_seen,
+            &[],
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -2807,6 +2967,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &[],
         )
         .await;
         assert!(!no_tool);
@@ -2863,6 +3024,7 @@ mod handle_tool_step_granted_secrets_tests {
             registry,
             &Arc::new(Mutex::new(PermissionGrants::default())),
             &mut std::collections::HashSet::new(),
+            &[],
         )
         .await;
         messages
@@ -2959,6 +3121,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &[],
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -3003,6 +3166,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &[],
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -3048,6 +3212,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &[],
         )
         .await;
         assert!(
@@ -3098,6 +3263,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &[],
         )
         .await;
         assert!(
@@ -3150,6 +3316,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &[],
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -3175,6 +3342,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &[],
         )
         .await;
         assert!(
@@ -3205,6 +3373,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &[],
         )
         .await;
         assert!(

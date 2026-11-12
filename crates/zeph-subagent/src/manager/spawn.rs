@@ -509,8 +509,8 @@ pub(crate) fn apply_context_injection(
                     // full content into the sub-agent's task prompt unbounded. A zero cap falls
                     // back to the bare task prompt, consistent with `Summary` mode's
                     // `summary.is_empty()` fallback below, rather than emitting an empty header.
-                    let end = content.floor_char_boundary(summary_max_chars.min(content.len()));
-                    let truncated = &content[..end];
+                    let truncated =
+                        zeph_common::text::truncate_to_bytes_ref(content, summary_max_chars);
                     format!(
                         "Parent agent context (last response):\n{truncated}\n\n---\n\nTask: \
                          {task_prompt}"
@@ -542,8 +542,7 @@ pub(crate) fn build_context_summary(parent_messages: &[Message], max_chars: usiz
         let text = user_msg.content.replace('\n', " ");
         let text = text.trim();
         if !text.is_empty() {
-            let end = text.floor_char_boundary(GOAL_CHARS.min(text.len()));
-            parts.push(text[..end].to_owned());
+            parts.push(zeph_common::text::truncate_to_bytes_ref(text, GOAL_CHARS).to_owned());
         }
     }
 
@@ -571,8 +570,7 @@ pub(crate) fn build_context_summary(parent_messages: &[Message], max_chars: usiz
                 return None;
             }
             let text = raw.replace('\n', " ");
-            let end = text.floor_char_boundary(DECISION_CHARS.min(text.len()));
-            Some(text[..end].to_owned())
+            Some(zeph_common::text::truncate_to_bytes_ref(&text, DECISION_CHARS).to_owned())
         })
         .collect();
 
@@ -583,8 +581,7 @@ pub(crate) fn build_context_summary(parent_messages: &[Message], max_chars: usiz
     }
 
     let joined = parts.join("; ");
-    let end = joined.floor_char_boundary(max_chars.min(joined.len()));
-    joined[..end].to_owned()
+    zeph_common::text::truncate_to_bytes_ref(&joined, max_chars).to_owned()
 }
 
 /// Publishes a terminal `Failed` status before an early return from the cwd-lock/worktree

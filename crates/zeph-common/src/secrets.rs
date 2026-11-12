@@ -182,6 +182,10 @@ impl GluedTier {
     /// assert!(!GluedTier::Distinctive.accepts("some_long_identifier_name"));
     /// ```
     #[must_use]
+    #[expect(
+        clippy::string_slice,
+        reason = "index derived from a boundary API on the same string"
+    )]
     pub fn accepts(self, body: &str) -> bool {
         let run = &body[..glued_run_len(body)];
         match self {
@@ -254,22 +258,49 @@ where
     let mut out: Option<String> = None;
     let mut copied = 0;
     for (whole, lead, body) in matches {
-        if !tier.accepts(&text[body]) {
+        let whole = widen_range(text, whole);
+        let (body, lead) = (widen_range(text, body), widen_range(text, lead));
+        let (Some(body_text), Some(gap), Some(lead_text)) = (
+            text.get(body),
+            text.get(copied..whole.start.max(copied)),
+            text.get(lead),
+        ) else {
+            continue;
+        };
+        if !tier.accepts(body_text) {
             continue;
         }
         let buf = out.get_or_insert_with(|| String::with_capacity(text.len()));
-        buf.push_str(&text[copied..whole.start]);
-        buf.push_str(&text[lead]);
+        buf.push_str(gap);
+        buf.push_str(lead_text);
         buf.push_str("[REDACTED]");
         copied = whole.end;
     }
     match out {
         Some(mut buf) => {
-            buf.push_str(&text[copied..]);
+            // `copied` is a widened range end, so it is always a char boundary within `text`.
+            buf.push_str(text.get(copied..).unwrap_or_default());
             std::borrow::Cow::Owned(buf)
         }
         None => std::borrow::Cow::Borrowed(text),
     }
+}
+
+/// Clamp `range` to `text` and widen it outwards to char boundaries, so redaction covers at
+/// least the requested bytes and never panics or drops text. Logs at `warn` when it changes.
+fn widen_range(text: &str, range: std::ops::Range<usize>) -> std::ops::Range<usize> {
+    let start = text.floor_char_boundary(range.start.min(text.len()));
+    let end = text
+        .ceil_char_boundary(range.end.min(text.len()))
+        .max(start);
+    if (start, end) != (range.start, range.end) {
+        tracing::warn!(
+            requested = ?range,
+            widened = ?(start..end),
+            "glued-secret range was off a char boundary or out of range; widened"
+        );
+    }
+    start..end
 }
 
 /// Absolute filesystem path prefixes redacted before persisting or displaying untrusted
@@ -611,6 +642,31 @@ mod tests {
             ),
             std::borrow::Cow::Borrowed(_)
         ));
+    }
+
+    #[test]
+    fn redact_glued_matches_widens_off_boundary_and_out_of_range_ends() {
+        let text = "x9glpat-aB_cd-efghijklmnopqr\u{e9} tail";
+        let mid_char = text.find('\u{e9}').unwrap() + 1;
+        assert!(!text.is_char_boundary(mid_char));
+        assert_eq!(
+            redact_glued_matches(
+                text,
+                GluedTier::Distinctive,
+                [(1..mid_char, 1..2, 8..mid_char)]
+            ),
+            "x9[REDACTED] tail"
+        );
+
+        let bare = "x9glpat-aB_cd-efghijklmnopqr";
+        assert_eq!(
+            redact_glued_matches(
+                bare,
+                GluedTier::Distinctive,
+                [(1..bare.len() + 10, 1..2, 8..bare.len() + 10)]
+            ),
+            "x9[REDACTED]"
+        );
     }
 
     #[test]

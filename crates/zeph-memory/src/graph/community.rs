@@ -45,8 +45,10 @@ fn truncate_prompt(prompt: String, max_bytes: usize) -> String {
     if prompt.len() <= max_bytes {
         return prompt;
     }
-    let boundary = prompt.floor_char_boundary(max_bytes);
-    format!("{}...", &prompt[..boundary])
+    format!(
+        "{}...",
+        zeph_common::text::truncate_to_bytes_ref(&prompt, max_bytes)
+    )
 }
 
 /// Compute a BLAKE3 fingerprint for a community partition.

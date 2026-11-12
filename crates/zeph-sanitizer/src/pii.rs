@@ -310,25 +310,47 @@ pub fn merge_spans(mut spans: Vec<PiiSpan>) -> Vec<PiiSpan> {
 /// Redact `spans` from `text` in a single pass, replacing each with `[PII:<label>]`.
 ///
 /// `spans` must be sorted by `start` offset (ascending) and non-overlapping (use
-/// [`merge_spans`] first). Byte offsets must align to UTF-8 character boundaries.
+/// [`merge_spans`] first). Offsets should align to UTF-8 character boundaries; a span that does
+/// not is widened to the nearest enclosing boundaries (and clamped to the text) so the covered
+/// text is still redacted rather than leaked.
 #[must_use]
 pub fn redact_spans(text: &str, spans: &[PiiSpan]) -> String {
     let mut result = String::with_capacity(text.len());
     let mut last_end = 0usize;
     for span in spans {
-        if span.start > last_end {
-            result.push_str(&text[last_end..span.start]);
+        let (start, end) = widen_to_char_boundaries(text, span.start, span.end);
+        if start > last_end {
+            result.push_str(text.get(last_end..start).unwrap_or_default());
         }
         result.push('[');
         result.push_str("PII:");
         result.push_str(&span.label);
         result.push(']');
-        last_end = span.end;
+        last_end = last_end.max(end);
     }
-    if last_end < text.len() {
-        result.push_str(&text[last_end..]);
-    }
+    result.push_str(text.get(last_end..).unwrap_or_default());
     result
+}
+
+/// Clamp `start..end` to `text` and widen it outwards to char boundaries (start floored, end
+/// ceiled), so a security filter redacts at least the range it was asked to and never panics.
+///
+/// Logs at `warn` when the range had to change.
+pub(crate) fn widen_to_char_boundaries(text: &str, start: usize, end: usize) -> (usize, usize) {
+    let widened_start = text.floor_char_boundary(start.min(text.len()));
+    let widened_end = text
+        .ceil_char_boundary(end.min(text.len()))
+        .max(widened_start);
+    if (widened_start, widened_end) != (start, end) {
+        tracing::warn!(
+            start,
+            end,
+            widened_start,
+            widened_end,
+            "redaction range was off a char boundary or out of range; widened"
+        );
+    }
+    (widened_start, widened_end)
 }
 
 // ---------------------------------------------------------------------------
@@ -1079,6 +1101,36 @@ mod tests {
         ];
         let result = redact_spans(text, &spans);
         assert_eq!(result, "[PII:email] and [PII:phone]");
+    }
+
+    #[test]
+    fn redact_widens_span_off_a_char_boundary_instead_of_leaking() {
+        // 'é' spans bytes 1..3: start 2 widens to 1, so the whole 'él' is redacted.
+        let text = "héllo world";
+        let spans = vec![
+            PiiSpan {
+                label: "x".into(),
+                start: 2,
+                end: 4,
+            },
+            PiiSpan {
+                label: "w".into(),
+                start: 7,
+                end: 12,
+            },
+        ];
+        let result = redact_spans(text, &spans);
+        assert_eq!(result, "h[PII:x]lo [PII:w]");
+    }
+
+    #[test]
+    fn redact_clamps_out_of_range_span_end() {
+        let spans = vec![PiiSpan {
+            label: "x".into(),
+            start: 3,
+            end: 999,
+        }];
+        assert_eq!(redact_spans("abcdef", &spans), "abc[PII:x]");
     }
 
     #[test]

@@ -600,12 +600,9 @@ async fn call_llm_scorer(content: &str, provider: &AnyProvider, timeout_ms: u64)
 /// Returns `0.5` on any parse failure.
 fn parse_llm_score(response: &str) -> f32 {
     // Find JSON object in the response.
-    let start = response.find('{');
-    let end = response.rfind('}');
-    let (Some(s), Some(e)) = (start, end) else {
+    let Some(json_str) = zeph_common::llm_response::extract_json_object_slice(response) else {
         return 0.5;
     };
-    let json_str = &response[s..=e];
     let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) else {
         return 0.5;
     };
@@ -713,6 +710,12 @@ mod tests {
             score > 0.7,
             "high-quality JSON should yield high score, got {score}"
         );
+    }
+
+    #[test]
+    fn parse_llm_score_inverted_braces_returns_neutral() {
+        assert!((parse_llm_score("no} verdict {") - 0.5).abs() < 0.01);
+        assert!((parse_llm_score("вердикт} нет {ответа") - 0.5).abs() < 0.01);
     }
 
     #[test]

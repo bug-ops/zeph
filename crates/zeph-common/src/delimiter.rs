@@ -306,6 +306,10 @@ fn opens_tag(after_bracket: &str, tags: &[DelimiterTag]) -> bool {
 /// ));
 /// ```
 #[must_use]
+#[expect(
+    clippy::string_slice,
+    reason = "index derived from a boundary API on the same string"
+)]
 pub fn escape_delimiter_tags<'a>(content: &'a str, tags: &[DelimiterTag]) -> Cow<'a, str> {
     let mut escaped: Option<String> = None;
     let mut copied_to = 0;

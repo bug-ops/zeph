@@ -318,6 +318,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use crate::app::App;
+    use crate::status_board::StatusLane;
     use crate::test_utils::render_to_string;
 
     fn make_app() -> App {
@@ -585,7 +586,10 @@ mod tests {
     #[test]
     fn input_busy_humanizes_label_with_detail() {
         let mut app = make_app();
-        app.sessions.current_mut().status_label = Some("Loading skills...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::Turn, "Loading skills...");
         let output = render_to_string(80, 5, |frame, area| {
             render_input(&app, frame, area, true, 0, zeph_config::Motion::Minimal);
         });
@@ -602,7 +606,10 @@ mod tests {
     #[test]
     fn input_busy_unrecognized_label_passes_through() {
         let mut app = make_app();
-        app.sessions.current_mut().status_label = Some("Some unknown operation...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::Turn, "Some unknown operation...");
         let output = render_to_string(80, 5, |frame, area| {
             render_input(&app, frame, area, true, 0, zeph_config::Motion::Minimal);
         });
@@ -615,8 +622,10 @@ mod tests {
     #[test]
     fn input_busy_long_verb_is_capped_and_hint_still_shown() {
         let mut app = make_app();
-        app.sessions.current_mut().status_label =
-            Some("This is a very long unrecognized status message".to_owned());
+        app.sessions.current_mut().status.set(
+            StatusLane::Turn,
+            "This is a very long unrecognized status message",
+        );
         let output = render_to_string(200, 5, |frame, area| {
             render_input(&app, frame, area, true, 0, zeph_config::Motion::Minimal);
         });

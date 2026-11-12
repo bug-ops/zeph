@@ -333,7 +333,7 @@ impl MemoryFacade for crate::semantic::SemanticMemory {
 
     #[tracing::instrument(name = "memory.facade.recall", skip_all)]
     async fn recall(&self, query: &str, limit: usize) -> Result<Vec<MemoryMatch>, MemoryError> {
-        let recalled = self.recall(query, limit, None).await?;
+        let recalled = self.recall(query, limit, None, None).await?;
         Ok(recalled
             .into_iter()
             .map(|r| MemoryMatch {

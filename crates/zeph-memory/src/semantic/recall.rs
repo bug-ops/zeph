@@ -32,25 +32,11 @@ fn chunk_text(text: &str) -> Vec<&str> {
     let mut start = 0;
 
     while start < text.len() {
-        let end = if start + CHUNK_CHARS >= text.len() {
-            text.len()
-        } else {
-            // Find a clean UTF-8 char boundary at or before start + CHUNK_CHARS.
-            let boundary = text.floor_char_boundary(start + CHUNK_CHARS);
-            // Prefer to split at a paragraph or line break for cleaner chunks.
-            let slice = &text[start..boundary];
-            if let Some(pos) = slice.rfind("\n\n") {
-                start + pos + 2
-            } else if let Some(pos) = slice.rfind('\n') {
-                start + pos + 1
-            } else if let Some(pos) = slice.rfind(' ') {
-                start + pos + 1
-            } else {
-                boundary
-            }
+        let end = chunk_end(text, start);
+        let Some(chunk) = text.get(start..end) else {
+            break;
         };
-
-        chunks.push(&text[start..end]);
+        chunks.push(chunk);
         if end >= text.len() {
             break;
         }
@@ -63,6 +49,25 @@ fn chunk_text(text: &str) -> Vec<&str> {
     }
 
     chunks
+}
+
+/// End offset of the chunk starting at `start`: a paragraph, line or word break inside the
+/// window when there is one, otherwise the char boundary at the window edge.
+fn chunk_end(text: &str, start: usize) -> usize {
+    if start + CHUNK_CHARS >= text.len() {
+        return text.len();
+    }
+    let boundary = text.floor_char_boundary(start + CHUNK_CHARS);
+    let Some(window) = text.get(start..boundary) else {
+        return boundary;
+    };
+    if let Some(pos) = window.rfind("\n\n") {
+        start + pos + 2
+    } else if let Some(pos) = window.rfind('\n').or_else(|| window.rfind(' ')) {
+        start + pos + 1
+    } else {
+        boundary
+    }
 }
 
 use crate::admission::{AdmissionDecision, log_admission_decision};
@@ -698,7 +703,7 @@ impl SemanticMemory {
             f.category = category.map(str::to_owned);
             f
         });
-        self.recall(query, limit, filter_with_category).await
+        self.recall(query, limit, filter_with_category, None).await
     }
 
     /// Reap completed background embed tasks (non-blocking).
@@ -990,6 +995,9 @@ impl SemanticMemory {
     /// results using weighted scoring. When Qdrant is unavailable, falls back to
     /// FTS5-only keyword search.
     ///
+    /// `goal_anchor` is the graph entity of the active goal for the causal-distance signal of
+    /// five-signal ranking; `None` keeps that signal neutral.
+    ///
     /// # Errors
     ///
     /// Returns an error if embedding generation, Qdrant search, or FTS5 query fails.
@@ -1002,6 +1010,7 @@ impl SemanticMemory {
         query: &str,
         limit: usize,
         filter: Option<SearchFilter>,
+        goal_anchor: Option<EntityId>,
     ) -> Result<Vec<RecalledMessage>, MemoryError> {
         let conversation_id = filter.as_ref().and_then(|f| f.conversation_id);
 
@@ -1053,7 +1062,7 @@ impl SemanticMemory {
         };
 
         let results = self
-            .recall_merge_and_rank(keyword_results, vector_results, limit, None)
+            .recall_merge_and_rank(keyword_results, vector_results, limit, goal_anchor)
             .await?;
         #[cfg(feature = "profiling")]
         {

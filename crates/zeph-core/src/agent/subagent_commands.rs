@@ -127,12 +127,7 @@ impl<C: Channel> Agent<C> {
     pub(super) async fn notify_completed_subagents(&mut self) -> Result<(), error::AgentError> {
         let completed = self.poll_subagents().await;
         for (task_id, name, result, success) in completed {
-            // #6571: `result` is the sub-agent's raw final text — nothing upstream (the agent
-            // loop's own return value, `SubAgentManager::collect`) sanitizes it before it
-            // reaches this operator-visible completion notice, so a generic secret-shaped
-            // string the sub-agent fabricates or echoes must be scrubbed here, the same as the
-            // live-forward path (`zeph-subagent::forward::sanitize_text`).
-            let result = scrub_secret_shapes(&result).into_owned();
+            let result = scrub_subagent_text(&result);
             let notice = if result.is_empty() {
                 format!(
                     "[sub-agent {id}] completed (no output)",
@@ -173,25 +168,33 @@ impl<C: Channel> Agent<C> {
         let Some(mgr) = self.services.orchestration.subagent_manager.as_mut() else {
             return;
         };
-        while let Some(mut msg) = mgr.try_recv_peer_message() {
-            let source = zeph_sanitizer::ContentSource::new(
-                zeph_sanitizer::ContentSourceKind::SubagentPeerMessage,
-            )
-            .with_identifier(msg.sender_name.as_str());
-            let sanitized = self.services.security.sanitizer.sanitize(&msg.body, source);
-            let notice = format!("[peer message from {}] {}", msg.sender_name, sanitized.body);
+        let mut drained = Vec::new();
+        while let Some(msg) = mgr.try_recv_peer_message() {
+            drained.push(msg);
+        }
+        for mut msg in drained {
+            let notice = self.sanitize_peer_message(&mut msg);
             if let Err(e) = self.channel.send(&notice).await {
                 tracing::warn!(error = %e, "failed to send peer-message notice");
             }
-            // Store the sanitized body, not the raw one — `/agent inbox` is an operator
-            // display surface, not an LLM context injection, but re-showing unsanitized
-            // attacker-influenceable content there defeats the point of sanitizing it above.
-            msg.body = sanitized.body;
             self.services.orchestration.peer_inbox.push_back(msg);
             while self.services.orchestration.peer_inbox.len() > super::state::PEER_INBOX_CAPACITY {
                 self.services.orchestration.peer_inbox.pop_front();
             }
         }
+    }
+    /// Sanitize and secret-scrub a peer message body in place and return the operator notice.
+    ///
+    /// The stored body is the cleaned one: `/agent inbox` re-shows it, so showing the raw text
+    /// there would defeat the sanitizing (#7014).
+    fn sanitize_peer_message(&self, msg: &mut zeph_subagent::peer::PeerMessage) -> String {
+        let source = zeph_sanitizer::ContentSource::new(
+            zeph_sanitizer::ContentSourceKind::SubagentPeerMessage,
+        )
+        .with_identifier(msg.sender_name.as_str());
+        let sanitized = self.services.security.sanitizer.sanitize(&msg.body, source);
+        msg.body = scrub_subagent_text(&sanitized.body);
+        format!("[peer message from {}] {}", msg.sender_name, msg.body)
     }
     /// Poll a sub-agent until it reaches a terminal state, bridging secret requests to the
     /// channel. Returns a human-readable status string and success flag suitable for
@@ -254,14 +257,17 @@ impl<C: Channel> Agent<C> {
             };
             match status.state {
                 SubAgentState::Completed => {
-                    let msg = status.last_message.clone().unwrap_or_else(|| "done".into());
+                    let msg = status
+                        .last_message
+                        .as_deref()
+                        .map_or_else(|| "done".into(), scrub_subagent_text);
                     break (format!("{label} completed: {msg}"), true);
                 }
                 SubAgentState::Failed => {
                     let msg = status
                         .last_message
-                        .clone()
-                        .unwrap_or_else(|| "unknown error".into());
+                        .as_deref()
+                        .map_or_else(|| "unknown error".into(), scrub_subagent_text);
                     break (format!("{label} failed: {msg}"), false);
                 }
                 SubAgentState::Canceled => {
@@ -359,7 +365,7 @@ impl<C: Channel> Agent<C> {
                 "  [{short}] {state}  turns={t}  elapsed={elapsed}s  {msg}",
                 short = zeph_common::text::truncate_to_bytes_ref(id, 8),
                 t = s.turns_used,
-                msg = s.last_message.as_deref().unwrap_or(""),
+                msg = scrub_subagent_text(s.last_message.as_deref().unwrap_or("")),
             );
             // Show memory directory path for agents with memory enabled.
             if let Some(def) = mgr.agents_def(id)
@@ -578,7 +584,7 @@ impl<C: Channel> Agent<C> {
                 } else {
                     format!(
                         "[sub-agent {short}] completed (replayed from durable journal):\n{}",
-                        result.output
+                        scrub_subagent_text(&result.output)
                     )
                 });
             }
@@ -641,11 +647,11 @@ impl<C: Channel> Agent<C> {
             true
         };
 
-        let text = if success {
+        let text = scrub_subagent_text(&if success {
             result.output
         } else {
             result.error.unwrap_or_else(|| "unknown error".to_owned())
-        };
+        });
 
         if should_notify {
             let _ = self
@@ -1226,6 +1232,12 @@ enum DurableSpawnGate {
     /// means the original child is genuinely gone, and re-spawning cannot duplicate a live
     /// child. See `durable.rs` "Scope boundary".
     None,
+}
+
+/// Masks secret-shaped strings in sub-agent-authored text before it reaches an
+/// operator-visible channel notice (#6571, #7014).
+fn scrub_subagent_text(raw: &str) -> String {
+    scrub_secret_shapes(raw).into_owned()
 }
 
 /// Check the durable-execution gate for the next sub-agent spawn.
@@ -2525,6 +2537,132 @@ mod tests {
             notice.contains("[REDACTED]"),
             "masked placeholder must be present in the completion notice: {notice}"
         );
+    }
+
+    // ── #7014: every sub-agent notice path scrubs secret shapes ──────────────
+
+    const AWS_KEY: &str = "AKIA1234567890ABCDEF";
+
+    async fn replayed_agent(
+        db_url: &str,
+        base: i64,
+        output: &str,
+        task: &str,
+    ) -> Agent<MockChannel> {
+        let agent1 = Box::pin(agent_with_durable_and_manager(db_url, base)).await;
+        let ctx1 = agent1.services.session.durable_ctx.clone().unwrap();
+        let (_promise, seat) = zeph_subagent::make_durable_promise(&ctx1).await.unwrap();
+        let seat = seat.expect("test setup: run 1 must be fresh and yield a resolver seat");
+        let loop_result: Result<String, zeph_subagent::SubAgentError> = Ok(output.to_owned());
+        zeph_subagent::resolve_durable_promise(seat, task, &loop_result).await;
+        agent1
+            .services
+            .session
+            .durable_writer
+            .as_ref()
+            .unwrap()
+            .flush()
+            .await
+            .unwrap();
+        drop(agent1);
+        Box::pin(agent_with_durable_and_manager(db_url, base)).await
+    }
+
+    #[test]
+    fn peer_message_notice_and_inbox_body_mask_secret_shape() {
+        use zeph_subagent::peer::{AgentId, PeerGroupId, PeerMessage};
+        let agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        let mut msg = PeerMessage {
+            sender_id: AgentId::Task("sib".into()),
+            sender_name: "sib".into(),
+            target_id: AgentId::Root(PeerGroupId::Session),
+            body: format!("found {AWS_KEY} in the page"),
+            sent_at: chrono::Utc::now(),
+        };
+        let notice = agent.sanitize_peer_message(&mut msg);
+        assert!(!notice.contains(AWS_KEY), "{notice}");
+        assert!(!msg.body.contains(AWS_KEY), "{}", msg.body);
+        assert!(msg.body.contains("[REDACTED]"), "{}", msg.body);
+    }
+
+    #[test]
+    fn scrub_subagent_text_masks_aws_key_shape() {
+        let out = scrub_subagent_text(&format!("key {AWS_KEY} end"));
+        assert!(!out.contains(AWS_KEY), "{out}");
+    }
+
+    #[tokio::test]
+    async fn background_durable_replay_notice_masks_secret_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_url = dir.path().join("durable.db").to_string_lossy().into_owned();
+        let mut agent = Box::pin(replayed_agent(
+            &db_url,
+            100,
+            &format!("leaked {AWS_KEY}"),
+            "task-7014-a",
+        ))
+        .await;
+
+        let resp = agent
+            .handle_agent_background("helper", "do work")
+            .await
+            .unwrap();
+        assert!(resp.contains("replayed from durable journal"), "{resp}");
+        assert!(!resp.contains(AWS_KEY), "{resp}");
+    }
+
+    #[tokio::test]
+    async fn foreground_durable_replay_masks_secret_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_url = dir.path().join("durable.db").to_string_lossy().into_owned();
+        let mut agent = Box::pin(replayed_agent(
+            &db_url,
+            200,
+            &format!("leaked {AWS_KEY}"),
+            "task-7014-b",
+        ))
+        .await;
+
+        let resp = agent
+            .handle_agent_spawn_foreground("helper", "do work")
+            .await
+            .unwrap();
+        assert!(!resp.contains(AWS_KEY), "{resp}");
+        assert!(resp.contains("[REDACTED]"), "{resp}");
+    }
+
+    #[tokio::test]
+    async fn foreground_poll_and_status_mask_secret_shape() {
+        let provider = mock_provider(vec![
+            "thinking about it".into(),
+            format!("here is a key: {AWS_KEY}"),
+        ]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let executor = MockToolExecutor::no_tools();
+        let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let mut mgr = zeph_subagent::SubAgentManager::new(4);
+        mgr.definitions_mut().push(subagent_def("helper"));
+        agent.services.orchestration.subagent_manager = Some(mgr);
+
+        let resp = agent
+            .handle_agent_spawn_foreground("helper", "do work")
+            .await
+            .unwrap();
+        assert!(resp.contains("completed"), "{resp}");
+        assert!(!resp.contains(AWS_KEY), "{resp}");
+        assert!(resp.contains("[REDACTED]"), "{resp}");
+
+        let status = agent.handle_agent_status().unwrap();
+        assert!(!status.contains(AWS_KEY), "{status}");
+        assert!(status.contains("[REDACTED]"), "{status}");
     }
 
     // ── filtered_skills_for token-budget cap (#6421) ─────────────────────────

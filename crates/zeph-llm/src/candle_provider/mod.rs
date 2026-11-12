@@ -322,11 +322,11 @@ impl LlmProvider for CandleProvider {
     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {
         let text = self.dispatch(messages.to_vec()).await?;
         let mut chunks: Vec<Result<StreamChunk, LlmError>> = Vec::new();
-        let mut start = 0;
-        while start < text.len() {
-            let end = start + truncate_to_bytes_ref(&text[start..], 32).len();
-            chunks.push(Ok(StreamChunk::Content(text[start..end].to_string())));
-            start = end;
+        let mut rest = text.as_str();
+        while !rest.is_empty() {
+            let chunk = truncate_to_bytes_ref(rest, 32);
+            chunks.push(Ok(StreamChunk::Content(chunk.to_string())));
+            rest = rest.get(chunk.len()..).unwrap_or_default();
         }
         Ok(Box::pin(tokio_stream::iter(chunks)))
     }

@@ -9,10 +9,11 @@ use crate::error::McpError;
 /// Returns the original string unchanged if it does not start with `~` or
 /// if the `HOME` environment variable is not set.
 fn expand_tilde(path: &str) -> std::borrow::Cow<'_, str> {
-    if (path == "~" || path.starts_with("~/") || path.starts_with("~\\"))
+    if let Some(rest) = path.strip_prefix('~')
+        && (rest.is_empty() || rest.starts_with(['/', '\\']))
         && let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"))
     {
-        return std::borrow::Cow::Owned(format!("{home}{}", &path[1..]));
+        return std::borrow::Cow::Owned(format!("{home}{rest}"));
     }
     std::borrow::Cow::Borrowed(path)
 }

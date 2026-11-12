@@ -1363,7 +1363,6 @@ fn arise_args(
         auto_activate,
         max_versions: 5,
         domain_success_gate: false,
-        status_tx: None,
     }
 }
 

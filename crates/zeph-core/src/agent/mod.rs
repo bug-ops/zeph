@@ -22,6 +22,7 @@ pub use durable_bootstrap::DurableKeyMaterial;
 pub mod error;
 mod experiment_cmd;
 pub(crate) mod focus;
+pub(crate) mod goal_anchor;
 mod goal_auto_check;
 mod goal_selfcheck;
 mod graph_commands;
@@ -1156,25 +1157,31 @@ impl<C: Channel> Agent<C> {
         // Publish updated risk level to the shared slot so PolicyGateExecutor can read it.
         let risk_level = self.services.security.trajectory.current_risk();
         *self.services.security.trajectory_risk_slot.write() = u8::from(risk_level);
-        // TUI/CLI: emit a status indicator when risk reaches High or Critical (NFR-CG-006).
-        if let Some(alert) = self.services.security.trajectory.poll_alert() {
-            let msg = format!(
-                "[trajectory] Risk level: {:?} (score={:.2})",
-                alert.level, alert.score
-            );
-            tracing::warn!(
-                level = ?alert.level,
-                score = alert.score,
-                "trajectory sentinel alert"
-            );
-            if let Some(ref tx) = self.services.session.status_tx {
-                let _ = tx.set(msg);
-            }
-        }
+        self.notify_trajectory_alert();
 
         let context = turn::TurnContext::new(id, cancel_token, self.runtime.config.timeouts)
             .with_tool_allowlist(self.runtime.config.channel_tool_allowlist.clone());
         turn::Turn::new(context, input)
+    }
+
+    /// TUI/CLI: tell the user once per risk-level change when risk reaches High or Critical
+    /// (NFR-CG-006); a level that persists across turns is not repeated.
+    fn notify_trajectory_alert(&mut self) {
+        let alert = self.services.security.trajectory.poll_alert();
+        let Some(alert) = self.services.security.trajectory_alert_edge.observe(alert) else {
+            return;
+        };
+        tracing::warn!(
+            level = ?alert.level,
+            score = alert.score,
+            "trajectory sentinel alert"
+        );
+        if let Some(ref tx) = self.services.session.status_tx {
+            let _ = tx.notice(format!(
+                "[trajectory] Risk level: {:?} (score={:.2})",
+                alert.level, alert.score
+            ));
+        }
     }
 
     /// Finalise a turn: copy accumulated timings into `MetricsState` and flush.

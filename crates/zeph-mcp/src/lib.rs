@@ -106,6 +106,8 @@
 //! # }
 //! ```
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 #[allow(unused_imports)]
 pub(crate) use zeph_db::sql;
 

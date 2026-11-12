@@ -527,12 +527,8 @@ impl ContentSanitizer {
     // -----------------------------------------------------------------------
 
     fn truncate(content: &str, max_bytes: usize) -> (&str, bool) {
-        if content.len() <= max_bytes {
-            return (content, false);
-        }
-        // floor_char_boundary is stable since Rust 1.82
-        let boundary = content.floor_char_boundary(max_bytes);
-        (&content[..boundary], true)
+        let kept = zeph_common::text::truncate_to_bytes_ref(content, max_bytes);
+        (kept, kept.len() < content.len())
     }
 
     pub(crate) fn detect_injections(content: &str) -> Vec<InjectionFlag> {

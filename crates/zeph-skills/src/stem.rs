@@ -91,6 +91,7 @@ pub fn normalize_tool_sequence(tools: &[&str]) -> String {
 
 /// Compute a 16-character blake3 hex hash of the normalized tool sequence.
 #[must_use]
+#[expect(clippy::string_slice, reason = "a blake3 hex digest is ASCII")]
 pub fn sequence_hash(normalized: &str) -> String {
     let hash = blake3::hash(normalized.as_bytes());
     hash.to_hex()[..16].to_string()

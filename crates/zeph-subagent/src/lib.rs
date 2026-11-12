@@ -5,6 +5,7 @@
 // (spawn_agent_task -> run_agent_loop -> run_turn) exceeds the default Send
 // auto-trait recursion limit of 128 during type-checking.
 #![recursion_limit = "256"]
+#![cfg_attr(not(test), warn(clippy::string_slice))]
 
 //! Subagent management: spawning, grants, transcripts, and lifecycle hooks.
 //!

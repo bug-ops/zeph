@@ -176,6 +176,27 @@ pub struct RiskAlert {
     pub score: f32,
 }
 
+/// Edge detector that turns the level-triggered [`TrajectorySentinel::poll_alert`] into one user
+/// notice per risk-level change.
+///
+/// A level that stays the same across turns is reported once; dropping below the alert
+/// threshold re-arms it.
+#[derive(Debug, Default)]
+pub struct AlertEdge {
+    last: Option<RiskLevel>,
+}
+
+impl AlertEdge {
+    /// Record this turn's alert and return it only when its level differs from the last one
+    /// reported.
+    pub fn observe(&mut self, alert: Option<RiskAlert>) -> Option<RiskAlert> {
+        let level = alert.map(|a| a.level);
+        let changed = level != self.last;
+        self.last = level;
+        alert.filter(|_| changed)
+    }
+}
+
 // ── Sentinel ──────────────────────────────────────────────────────────────────
 
 /// Cross-turn risk accumulator for the advisory trajectory governance layer.
@@ -443,6 +464,27 @@ mod tests {
 
     fn default_sentinel() -> TrajectorySentinel {
         TrajectorySentinel::new(TrajectorySentinelConfig::default())
+    }
+
+    fn alert(level: RiskLevel) -> RiskAlert {
+        RiskAlert { level, score: 5.0 }
+    }
+
+    #[test]
+    fn alert_edge_reports_same_level_once() {
+        let mut edge = AlertEdge::default();
+        assert!(edge.observe(Some(alert(RiskLevel::High))).is_some());
+        assert!(edge.observe(Some(alert(RiskLevel::High))).is_none());
+        assert!(edge.observe(Some(alert(RiskLevel::High))).is_none());
+    }
+
+    #[test]
+    fn alert_edge_reports_level_change_and_rearms_after_calm() {
+        let mut edge = AlertEdge::default();
+        assert!(edge.observe(Some(alert(RiskLevel::High))).is_some());
+        assert!(edge.observe(Some(alert(RiskLevel::Critical))).is_some());
+        assert!(edge.observe(None).is_none());
+        assert!(edge.observe(Some(alert(RiskLevel::Critical))).is_some());
     }
 
     #[test]

@@ -245,6 +245,9 @@ pub struct ContextAssemblyView<'a> {
     /// Retrieval-only: no write-path or storage change. `enabled = false` (default) is a
     /// byte-for-byte no-op.
     pub type_aware_compose_config: zeph_config::memory::TypeAwareComposeConfig,
+    /// Graph entity anchoring the active goal for the causal-distance signal of five-signal
+    /// recall (spec 004-18 FR-006). `None` keeps that signal neutral.
+    pub goal_anchor: Option<zeph_memory::EntityId>,
 
     // ── CAM: Context-Adaptive Memory (#4547) ─────────────────────────────────
     /// Fidelity scoring configuration resolved from `[memory.fidelity]`.

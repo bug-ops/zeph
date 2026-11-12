@@ -12,6 +12,7 @@ use tokio::sync::oneshot;
 
 use crate::app::{AgentViewTarget, TranscriptCache, TuiTranscriptEntry};
 use crate::render_cache::RenderCache;
+use crate::status_board::StatusBoard;
 use crate::types::{ChatMessage, InputMode, PasteState};
 
 /// Duration (in animation ticks) for the completion flash tint. ≈400ms at 10fps.
@@ -149,7 +150,7 @@ pub(crate) struct SessionSlot {
     // Per-turn splash/plan flags
     pub show_splash: bool,
     pub plan_view_active: bool,
-    pub status_label: Option<String>,
+    pub status: StatusBoard,
 
     // Micro-delight state — session-scoped to prevent cross-session bleed (#5104).
     pub(crate) flash: FlashState,
@@ -185,7 +186,7 @@ impl SessionSlot {
             pending_transcript: None,
             show_splash: true,
             plan_view_active: false,
-            status_label: None,
+            status: StatusBoard::default(),
             flash: FlashState::new(),
             scroll_anim: None,
             flashed_groups: std::collections::HashSet::new(),

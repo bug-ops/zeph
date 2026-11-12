@@ -1122,6 +1122,20 @@ async fn extract_json_strips_markdown_fences() {
     assert!(!parsed2.same_entity);
 }
 
+#[test]
+fn extract_json_inverted_braces_returns_input_without_panic() {
+    assert_eq!(extract_json("no} verdict {"), "no} verdict {");
+    assert_eq!(extract_json("вердикт} нет {ответа"), "вердикт} нет {ответа");
+}
+
+#[test]
+fn extract_json_non_ascii_prose_around_object() {
+    assert_eq!(
+        extract_json("ответ: {\"same_entity\": true} готово"),
+        "{\"same_entity\": true}"
+    );
+}
+
 // Helper: build a MockProvider with embeddings enabled, given vector, and queued chat responses.
 fn make_mock_with_embedding_and_chat(
     embedding: Vec<f32>,

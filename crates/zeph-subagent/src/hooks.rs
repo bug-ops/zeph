@@ -352,8 +352,10 @@ pub fn make_base_hook_env(
             limit = TOOL_ARGS_JSON_LIMIT,
             "ZEPH_TOOL_ARGS_JSON truncated for hook dispatch"
         );
-        let limit = raw.floor_char_boundary(TOOL_ARGS_JSON_LIMIT);
-        format!("{}…", &raw[..limit])
+        format!(
+            "{}…",
+            zeph_common::text::truncate_to_bytes_ref(&raw, TOOL_ARGS_JSON_LIMIT)
+        )
     } else {
         raw
     };

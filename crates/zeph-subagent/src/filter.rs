@@ -610,10 +610,8 @@ fn compile_glob(pattern: &str) -> Result<GlobPattern, SubAgentError> {
 
     let is_star = pattern == "*";
 
-    let (prefix, suffix) = if let Some(pos) = pattern.find('*') {
-        let before = pattern[..pos].to_owned();
-        let after = pattern[pos + 1..].to_owned();
-        (before, Some(after))
+    let (prefix, suffix) = if let Some((before, after)) = pattern.split_once('*') {
+        (before.to_owned(), Some(after.to_owned()))
     } else {
         (pattern.to_owned(), None)
     };

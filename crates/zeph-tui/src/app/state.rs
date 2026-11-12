@@ -17,6 +17,7 @@ use crate::hyperlink::HyperlinkSpan;
 use crate::layout::{PanelDemand, PanelSizing};
 use crate::metrics::MetricsSnapshot;
 use crate::session::SessionRegistry;
+use crate::status_board::{BoardActivity, StatusLane};
 use crate::types::PasteState;
 use crate::widgets::subagents::SubAgentSlotMode;
 use crate::widgets::tool_view::ToolDensity;
@@ -263,7 +264,10 @@ impl App {
                 // "loading theme..." label would otherwise never be cleared, since
                 // poll_pending_theme (the only other clearer) never runs once
                 // pending_theme is gone.
-                self.sessions.current_mut().status_label = None;
+                self.sessions
+                    .current_mut()
+                    .status
+                    .clear(StatusLane::ThemeLoad);
             }
             self.pending_theme_name = None;
             let palette = preset.palette();
@@ -277,7 +281,10 @@ impl App {
 
         // User file: offload blocking I/O to a spawn_blocking thread.
         // The result is installed by `poll_pending_theme` on the next tick.
-        self.sessions.current_mut().status_label = Some("loading theme...".to_owned());
+        self.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::ThemeLoad, "loading theme...");
         let name_owned = name.to_owned();
         let (tx, rx) = tokio::sync::oneshot::channel();
         tokio::task::spawn_blocking(move || {
@@ -300,7 +307,10 @@ impl App {
         match rx.try_recv() {
             Ok(result) => {
                 self.pending_theme = None;
-                self.sessions.current_mut().status_label = None;
+                self.sessions
+                    .current_mut()
+                    .status
+                    .clear(StatusLane::ThemeLoad);
                 let name = self.pending_theme_name.take().unwrap_or_default();
                 match result {
                     Ok(palette) => {
@@ -324,7 +334,10 @@ impl App {
                 // Sender dropped without sending (spawn_blocking panicked).
                 self.pending_theme = None;
                 self.pending_theme_name = None;
-                self.sessions.current_mut().status_label = None;
+                self.sessions
+                    .current_mut()
+                    .status
+                    .clear(StatusLane::ThemeLoad);
                 tracing::warn!("pending theme load task dropped without result");
             }
         }
@@ -950,7 +963,7 @@ impl App {
     /// the spinner; other consumers (logs, debug output) use the raw form.
     #[must_use]
     pub fn status_label(&self) -> Option<&str> {
-        self.sessions.current().status_label.as_deref()
+        self.sessions.current().status.visible()
     }
 
     /// Return the persistent "Resuming session" banner text, if a non-empty prior
@@ -995,18 +1008,31 @@ impl App {
         self.editing_queued
     }
 
-    /// Return `true` when the agent is actively processing (streaming or running a tool).
+    /// Return `true` when the agent is actively processing a turn (turn status or streaming).
     ///
-    /// Used by the render loop to decide whether to show the activity spinner.
+    /// Background-lane statuses (backfill, indexing, refresh, loads) do not count: this drives
+    /// Ctrl-C (cancel vs quit), the quit hint and stall detection. Use
+    /// [`Self::has_activity`] for the spinner and status text.
     #[must_use]
     pub fn is_agent_busy(&self) -> bool {
-        self.sessions.current().status_label.is_some()
-            || self
-                .sessions
-                .current()
-                .messages
-                .last()
-                .is_some_and(|m| m.streaming)
+        self.sessions.current().status.activity() == BoardActivity::Turn || self.last_streaming()
+    }
+
+    /// Return `true` when any status lane is set or a message is streaming.
+    ///
+    /// Drives the spinner, status text and animation so every background operation keeps a
+    /// visible indicator.
+    #[must_use]
+    pub fn has_activity(&self) -> bool {
+        self.sessions.current().status.activity() != BoardActivity::Idle || self.last_streaming()
+    }
+
+    fn last_streaming(&self) -> bool {
+        self.sessions
+            .current()
+            .messages
+            .last()
+            .is_some_and(|m| m.streaming)
     }
 
     /// Return `true` when the last message is a streaming tool output.
@@ -1227,7 +1253,7 @@ impl App {
                         subagents::desired_height(&self.metrics, &self.theme)
                     }
                 };
-                if self.show_equalizer && (self.is_agent_busy() || self.background_inflight() > 0) {
+                if self.show_equalizer && (self.has_activity() || self.background_inflight() > 0) {
                     rows = rows.saturating_add(EQ_PANEL_H);
                 }
                 PanelDemand::Rows(rows)
@@ -1459,7 +1485,9 @@ impl App {
         use crate::widgets::wave::WaveState;
 
         let foreground = self.is_agent_busy();
-        let bg = self.background_inflight();
+        let board_background =
+            self.sessions.current().status.activity() == BoardActivity::Background;
+        let bg = self.background_inflight().max(u64::from(board_background));
 
         // Nothing running at all → flat baseline.
         if !foreground && bg == 0 {
@@ -1724,6 +1752,7 @@ mod tests {
     use super::{App, Panel};
     use crate::app::EQ_PANEL_H;
     use crate::layout::PanelDemand;
+    use crate::status_board::StatusLane;
 
     fn make_app() -> App {
         let (user_tx, _) = mpsc::channel(1);
@@ -1853,7 +1882,10 @@ mod tests {
     #[test]
     fn poll_pending_theme_clears_status_label_on_success() {
         let mut app = make_app();
-        app.sessions.current_mut().status_label = Some("loading theme...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::ThemeLoad, "loading theme...");
         let (tx, rx) = tokio::sync::oneshot::channel();
         app.pending_theme = Some(rx);
         app.pending_theme_name = Some("custom".to_owned());
@@ -1871,7 +1903,10 @@ mod tests {
         // The Ok(result) branch covers both success and a load error inside the Result —
         // status_label must be cleared in both sub-cases, not only on success.
         let mut app = make_app();
-        app.sessions.current_mut().status_label = Some("loading theme...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::ThemeLoad, "loading theme...");
         let (tx, rx) = tokio::sync::oneshot::channel();
         app.pending_theme = Some(rx);
         app.pending_theme_name = Some("custom".to_owned());
@@ -1891,7 +1926,10 @@ mod tests {
         // Closed branch: the spawn_blocking task dropped its sender without sending
         // (e.g. panicked) — status_label must not be left stuck on "loading theme...".
         let mut app = make_app();
-        app.sessions.current_mut().status_label = Some("loading theme...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::ThemeLoad, "loading theme...");
         let (tx, rx) = tokio::sync::oneshot::channel::<
             Result<crate::theme::SemanticPalette, crate::theme::ThemeLoadError>,
         >();
@@ -1909,7 +1947,10 @@ mod tests {
     #[test]
     fn poll_pending_theme_is_noop_while_still_pending() {
         let mut app = make_app();
-        app.sessions.current_mut().status_label = Some("loading theme...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::ThemeLoad, "loading theme...");
         let (_tx, rx) = tokio::sync::oneshot::channel();
         app.pending_theme = Some(rx);
 
@@ -1932,7 +1973,10 @@ mod tests {
         let (_tx, rx) = tokio::sync::oneshot::channel();
         app.pending_theme = Some(rx);
         app.pending_theme_name = Some("my-custom-theme".to_owned());
-        app.sessions.current_mut().status_label = Some("loading theme...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::ThemeLoad, "loading theme...");
 
         app.apply_theme("zephyr-light").expect("valid preset");
 
@@ -1954,7 +1998,10 @@ mod tests {
         // preset switch — the clear is conditioned on an actual cancellation happening.
         let mut app = make_app();
         assert!(app.pending_theme.is_none());
-        app.sessions.current_mut().status_label = Some("indexing files...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::FileIndex, "indexing files...");
 
         app.apply_theme("zephyr-light").expect("valid preset");
 
@@ -2132,7 +2179,10 @@ mod tests {
         let mut app = make_app();
         app.show_equalizer = true;
         let idle = rows_of(app.panel_demands().demands[3]);
-        app.sessions.current_mut().status_label = Some("thinking...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::Turn, "thinking...");
         let busy = rows_of(app.panel_demands().demands[3]);
         assert_eq!(
             busy,
@@ -2147,7 +2197,10 @@ mod tests {
         let mut app = make_app();
         app.show_equalizer = false;
         let idle = rows_of(app.panel_demands().demands[3]);
-        app.sessions.current_mut().status_label = Some("thinking...".to_owned());
+        app.sessions
+            .current_mut()
+            .status
+            .set(StatusLane::Turn, "thinking...");
         let busy = rows_of(app.panel_demands().demands[3]);
         assert_eq!(busy, idle, "no equalizer rows when the user has hidden it");
     }

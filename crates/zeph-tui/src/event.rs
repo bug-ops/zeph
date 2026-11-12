@@ -299,6 +299,60 @@ pub enum AgentEvent {
     /// re-emitted on skill hot-reload (spec 084 §6, issue #6648). Stored into
     /// `App::skill_catalog` and used to refresh an open mention picker's Skills tab.
     SkillCatalog(Arc<[zeph_core::channel::SkillCatalogItem]>),
+    /// A status update for one producer lane of the activity bar.
+    ///
+    /// A [`LaneUpdate::Clear`] hides only the status its own lane set; other lanes (including
+    /// the agent-turn lane driven by [`AgentEvent::Status`] / [`AgentEvent::ClearStatus`]) are
+    /// unaffected.
+    LaneStatus {
+        /// Producer lane the update belongs to.
+        lane: ProducerLane,
+        /// Set or clear.
+        update: LaneUpdate,
+    },
+    /// A one-shot message that must not collapse (an OAuth URL): rendered as a System chat line.
+    Notice(String),
+}
+
+/// Status lanes an external (non-TUI) producer may write through [`AgentEvent::LaneStatus`].
+///
+/// The agent-turn lane is written by [`AgentEvent::Status`] and the TUI-local lanes (file
+/// index, transcript load, theme load) only by the TUI itself, so they are not addressable here.
+///
+/// # Examples
+///
+/// ```rust
+/// use zeph_tui::event::{AgentEvent, LaneUpdate, ProducerLane};
+///
+/// let ev = AgentEvent::LaneStatus {
+///     lane: ProducerLane::CodeIndex,
+///     update: LaneUpdate::Set("Indexing code…".into()),
+/// };
+/// assert!(matches!(ev, AgentEvent::LaneStatus { .. }));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProducerLane {
+    /// Background subsystems reporting through the typed status channel.
+    Background,
+    /// Startup sequence in the binary.
+    Bootstrap,
+    /// Model warm-up and embedding backfill.
+    Warmup,
+    /// Code-index progress.
+    CodeIndex,
+    /// Deep-link handling.
+    DeepLink,
+    /// Periodic fleet and durable-run polls.
+    Refresh,
+}
+
+/// Set or clear command for one [`ProducerLane`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaneUpdate {
+    /// Show this text on the lane.
+    Set(String),
+    /// Clear the lane.
+    Clear,
 }
 
 /// Blocking event pump that forwards terminal events to the async [`AppEvent`] channel.

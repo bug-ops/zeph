@@ -265,14 +265,14 @@ impl ExfiltrationGuard {
             let url = percent_decode_url(raw_url);
 
             if is_external_url(&url) {
-                replacement.push_str(&text[last_end..m.start()]);
+                replacement.push_str(segment(text, last_end..m.start()));
                 let _ = write!(replacement, "[image removed: {url}]");
                 last_end = m.end();
                 events.push(ExfiltrationEvent::MarkdownImageBlocked { url });
             }
         }
         if !events.is_empty() || last_end > 0 {
-            replacement.push_str(&text[last_end..]);
+            replacement.push_str(segment(text, last_end..));
             result = replacement;
         }
 
@@ -297,13 +297,13 @@ impl ExfiltrationGuard {
                 let m = cap.get(0).expect("full match");
                 let label = cap.get(2).expect("label").as_str().to_lowercase();
                 if let Some(url) = ref_defs.get(&label) {
-                    cleaned.push_str(&result[last_end..m.start()]);
+                    cleaned.push_str(segment(&result, last_end..m.start()));
                     let _ = write!(cleaned, "[image removed: {url}]");
                     last_end = m.end();
                     events.push(ExfiltrationEvent::MarkdownImageBlocked { url: url.clone() });
                 }
             }
-            cleaned.push_str(&result[last_end..]);
+            cleaned.push_str(segment(&result, last_end..));
             result = cleaned;
 
             // Remove the reference definition lines for blocked refs.
@@ -344,13 +344,13 @@ impl ExfiltrationGuard {
                 .as_str()
                 .to_owned();
             tracing::warn!(url = %url, "HTML img tag with external URL stripped from LLM output");
-            html_result.push_str(&result[html_last_end..m.start()]);
+            html_result.push_str(segment(&result, html_last_end..m.start()));
             let _ = write!(html_result, "[image removed: {url}]");
             html_last_end = m.end();
             events.push(ExfiltrationEvent::HtmlImageBlocked { url });
         }
         if html_last_end > 0 {
-            html_result.push_str(&result[html_last_end..]);
+            html_result.push_str(segment(&result, html_last_end..));
             result = html_result;
         }
 
@@ -497,6 +497,14 @@ pub fn extract_flagged_urls(content: &str) -> HashSet<String> {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// `text[range]` for offsets taken from regex matches on `text` itself.
+///
+/// Returns an empty slice for an invalid range instead of panicking; regex offsets are always
+/// char boundaries, so the fallback is unreachable in practice.
+fn segment<R: std::slice::SliceIndex<str, Output = str>>(text: &str, range: R) -> &str {
+    text.get(range).unwrap_or_default()
+}
+
 /// Decode percent-encoded URL characters before exfiltration matching.
 ///
 /// Converts `%68ttps://` → `https://` so simple percent-encoding bypasses are caught.
@@ -581,6 +589,10 @@ fn is_external_url(url: &str) -> bool {
 /// assert!(flagged.contains("//evil.com/x"));
 /// ```
 #[must_use]
+#[expect(
+    clippy::string_slice,
+    reason = "the first 7 or 8 bytes are verified ASCII, so the offset is a char boundary"
+)]
 pub fn normalize_url_for_matching(url: &str) -> &str {
     if url
         .get(..8)

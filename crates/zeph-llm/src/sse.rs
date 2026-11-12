@@ -480,7 +480,7 @@ fn append_capped(buf: &mut String, add: &str, cap: usize) {
         return;
     }
     tracing::warn!(cap, "compaction buffer exceeded cap; discarding excess");
-    buf.push_str(&add[..add.floor_char_boundary(remaining)]);
+    buf.push_str(zeph_common::text::truncate_to_bytes_ref(add, remaining));
 }
 
 /// Record the usage of a `message_start` event and surface its `thinking_dropped` report, if any.

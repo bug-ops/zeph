@@ -46,25 +46,22 @@ pub(crate) fn truncate_for_embed(text: &str) -> Cow<'_, str> {
     }
 
     // Find safe UTF-8 boundary for the head slice.
-    let head_end = text.floor_char_boundary(EMBED_HEAD_CHARS);
+    let head = zeph_common::text::truncate_to_bytes_ref(text, EMBED_HEAD_CHARS);
 
     // Find safe UTF-8 boundary for the tail slice (search from the end).
     let tail_byte_start = text.len().saturating_sub(EMBED_TAIL_CHARS);
-    let tail_start = text.ceil_char_boundary(tail_byte_start);
+    let tail = text
+        .get(text.ceil_char_boundary(tail_byte_start)..)
+        .unwrap_or_default();
 
     tracing::warn!(
         original_chars = text.len(),
-        head_chars = head_end,
-        tail_chars = text.len() - tail_start,
+        head_chars = head.len(),
+        tail_chars = tail.len(),
         "embed input truncated to fit provider limit"
     );
 
-    Cow::Owned(format!(
-        "{}{}{}",
-        &text[..head_end],
-        EMBED_TRUNCATION_MARKER,
-        &text[tail_start..]
-    ))
+    Cow::Owned(format!("{head}{EMBED_TRUNCATION_MARKER}{tail}"))
 }
 
 #[cfg(test)]

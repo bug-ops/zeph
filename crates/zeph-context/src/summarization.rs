@@ -632,6 +632,10 @@ pub fn remove_tool_responses_middle_out(mut messages: Vec<Message>, fraction: f3
 ///
 /// Returns the UUID substring on success, or `None` if the notice is absent.
 #[must_use]
+#[expect(
+    clippy::string_slice,
+    reason = "index derived from a char boundary API on the same string"
+)]
 pub fn extract_overflow_ref(body: &str) -> Option<&str> {
     let start = body.find(OVERFLOW_NOTICE_PREFIX)?;
     let rest = &body[start + OVERFLOW_NOTICE_PREFIX.len()..];

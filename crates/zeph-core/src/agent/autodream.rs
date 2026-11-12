@@ -103,12 +103,12 @@ impl<C: Channel> super::Agent<C> {
         };
 
         tracing::info!("autoDream: starting memory consolidation");
-        let _ = self
+        let _status = self
             .services
             .session
             .status_tx
             .as_ref()
-            .map(|tx| tx.set("Consolidating memories…"));
+            .map(|tx| tx.scope("Consolidating memories…"));
 
         let provider = self.resolve_background_provider(cfg.consolidation_provider.as_str());
 

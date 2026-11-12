@@ -446,9 +446,7 @@ async fn propose_merge_op(
     };
 
     // Try to parse from the first JSON object in the response.
-    let start = text.find('{')?;
-    let end = text.rfind('}')?;
-    let json_slice = &text[start..=end];
+    let json_slice = zeph_common::llm_response::extract_json_object_slice(&text)?;
 
     match serde_json::from_str::<TopologyOp>(json_slice) {
         Ok(op) => Some(op),
@@ -1158,5 +1156,17 @@ mod tests {
             CONSOLIDATION_EMBED_CONCURRENCY,
             "peak concurrent embed() calls must reach the {CONSOLIDATION_EMBED_CONCURRENCY} bound exactly"
         );
+    }
+
+    #[tokio::test]
+    async fn propose_merge_op_inverted_braces_returns_none() {
+        use zeph_llm::any::AnyProvider;
+        use zeph_llm::mock::MockProvider;
+
+        let provider = AnyProvider::Mock(MockProvider::with_responses(vec![
+            "вердикт} нет {ответа".to_owned(),
+        ]));
+        let cluster = vec![(1_i64, "fact".to_owned())];
+        assert!(propose_merge_op(&provider, &cluster, 30).await.is_none());
     }
 }

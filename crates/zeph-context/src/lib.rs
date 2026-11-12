@@ -25,6 +25,8 @@
 //! - [`typed_page`] — typed page classification and minimum-fidelity invariants for compaction
 //! - [`error`] — [`error::AssemblerError`]
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 pub mod assembler;
 pub mod budget;
 pub mod compression_feedback;

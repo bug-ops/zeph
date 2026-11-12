@@ -793,18 +793,7 @@ fn build_transcript_prompt(messages: &[Message]) -> String {
     for (i, msg) in messages.iter().enumerate() {
         use std::fmt::Write as _;
         let role = format!("{:?}", msg.role);
-        // Truncate at a char boundary to avoid invalid UTF-8 slices.
-        let content: std::borrow::Cow<str> =
-            if msg.content.chars().count() > MAX_TRANSCRIPT_MESSAGE_CHARS {
-                msg.content
-                    .char_indices()
-                    .nth(MAX_TRANSCRIPT_MESSAGE_CHARS)
-                    .map_or(msg.content.as_str().into(), |(byte_idx, _)| {
-                        msg.content[..byte_idx].into()
-                    })
-            } else {
-                msg.content.as_str().into()
-            };
+        let content = zeph_common::text::truncate_chars(&msg.content, MAX_TRANSCRIPT_MESSAGE_CHARS);
         let _ = writeln!(prompt, "[{}] {}: {}", i + 1, role, content);
     }
     prompt.push_str("\nEvaluate this turn and return JSON.");
@@ -829,9 +818,8 @@ fn parse_self_judge_response(response: &str) -> Option<SelfJudgeOutcome> {
     }
 
     // Try to extract the first `{…}` span.
-    if let (Some(start), Some(end)) = (stripped.find('{'), stripped.rfind('}'))
-        && end > start
-        && let Ok(v) = serde_json::from_str::<SelfJudgeOutcome>(&stripped[start..=end])
+    if let Some(span) = zeph_common::llm_response::extract_json_object_slice(stripped)
+        && let Ok(v) = serde_json::from_str::<SelfJudgeOutcome>(span)
     {
         return Some(v);
     }
@@ -876,11 +864,8 @@ fn trim_to_three_sentences(text: &str) -> String {
     };
 
     let result: String = text.chars().take(char_limit).collect();
-    // Hard cap on byte length (chars already limited, but enforce once more).
-    match result.char_indices().nth(MAX_CHARS) {
-        Some((byte_idx, _)) => result[..byte_idx].to_owned(),
-        None => result,
-    }
+    // Hard cap on length (chars already limited, but enforce once more).
+    zeph_common::text::truncate_chars(&result, MAX_CHARS).to_owned()
 }
 
 #[cfg(test)]
@@ -935,6 +920,12 @@ mod tests {
         let response = r#"Here is the evaluation: {"success":true,"reasoning_chain":"chain","task_hint":"hint"} — done."#;
         let outcome = parse_self_judge_response(response).unwrap();
         assert!(outcome.success);
+    }
+
+    #[test]
+    fn parse_inverted_braces_returns_none_without_panic() {
+        assert!(parse_self_judge_response("no} verdict {").is_none());
+        assert!(parse_self_judge_response("вердикт} нет {ответа").is_none());
     }
 
     #[test]

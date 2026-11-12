@@ -247,6 +247,45 @@ pub enum ClaimSource {
     /// `compress_context`, `request_compaction`): the call did run, its text is authored by
     /// the harness, and it is a real result.
     ContextManagement,
+    /// Message relayed from a sibling sub-agent through the peer mailbox: the body is
+    /// authored by another model and may carry content that sibling fetched.
+    PeerMessage,
+}
+
+impl ClaimSource {
+    /// Trust tier of content produced by a tool with this provenance.
+    ///
+    /// Local executors map to `LocalUntrusted`; sources that relay third-party content (web,
+    /// MCP, A2A, memory retrieval) map to `ExternalUntrusted`. The match is exhaustive, so a
+    /// new variant must pick a tier.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::trust_level::TurnContextTrust;
+    /// use zeph_tools::ClaimSource;
+    ///
+    /// assert_eq!(ClaimSource::Shell.content_trust(), TurnContextTrust::LocalUntrusted);
+    /// assert_eq!(ClaimSource::Mcp.content_trust(), TurnContextTrust::ExternalUntrusted);
+    /// ```
+    #[must_use]
+    pub fn content_trust(self) -> zeph_common::trust_level::TurnContextTrust {
+        use zeph_common::trust_level::TurnContextTrust;
+        match self {
+            Self::Shell
+            | Self::FileSystem
+            | Self::CodeSearch
+            | Self::Diagnostics
+            | Self::Moderation
+            | Self::ContextManagement => TurnContextTrust::LocalUntrusted,
+            Self::WebScrape
+            | Self::WebSearch
+            | Self::Mcp
+            | Self::A2a
+            | Self::Memory
+            | Self::PeerMessage => TurnContextTrust::ExternalUntrusted,
+        }
+    }
 }
 
 /// Why a harness-authored placeholder result was produced instead of running a tool.

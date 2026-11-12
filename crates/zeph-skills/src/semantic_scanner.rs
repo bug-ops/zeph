@@ -239,6 +239,10 @@ fn build_user_prompt(skill_name: &str, declared_purpose: &str, body: &str) -> St
 /// If the content fits, returns it unchanged with `truncated = false`.
 /// Otherwise, returns the first half + last half of the allowed budget so that
 /// both the frontmatter (head) and any tail payload are included in the scan.
+#[expect(
+    clippy::string_slice,
+    reason = "offsets come from floor_char_boundary on the same string"
+)]
 fn sample_content(content: &str) -> (String, bool) {
     let bytes = content.as_bytes();
     if bytes.len() <= MAX_SCAN_BYTES {

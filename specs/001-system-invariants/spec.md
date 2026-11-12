@@ -302,7 +302,7 @@ Every new feature MUST be wired at all applicable integration points:
 - Use `Arc<dyn RuntimeLayer>` not `Box<dyn RuntimeLayer>` in agent struct
 - Return `Result<Option<MessageId>>` from `remember()` — never `Result<MessageId>`
 
-- Keep `#![cfg_attr(not(test), warn(clippy::string_slice))]` in `zeph-tools`, `zeph-channels`, `zeph-core`, `zeph-a2a` and `zeph-gateway` (#6998): byte-index slicing of `str` uses `zeph_common::text::truncate_to_bytes_ref`, `.get(..)` with a named fallback, or a justified `#[expect(clippy::string_slice, reason = "...")]` when the index comes from a boundary-returning API on the same string
+- Keep `#![cfg_attr(not(test), warn(clippy::string_slice))]` in `zeph-tools`, `zeph-channels`, `zeph-core`, `zeph-a2a`, `zeph-gateway` (#6998), `zeph-common`, `zeph-memory`, `zeph-llm`, `zeph-subagent`, `zeph-context`, `zeph-mcp`, `zeph-agent-persistence`, `zeph-agent-feedback`, `zeph-session`, `zeph-sanitizer` and `zeph-skills` (#7011): byte-index slicing of `str` uses `zeph_common::text::truncate_to_bytes_ref`, `.get(..)` with a named fallback, or a justified `#[expect(clippy::string_slice, reason = "...")]` when the index comes from a boundary-returning API on the same string
 
 ### Ask First
 - Adding a new `MessagePart` variant (breaks serialization compatibility)

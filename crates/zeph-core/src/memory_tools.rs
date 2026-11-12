@@ -372,7 +372,7 @@ impl ToolExecutor for MemoryToolExecutor {
 
                 let recalled = self
                     .memory
-                    .recall(&params.query, limit, filter)
+                    .recall(&params.query, limit, filter, None)
                     .await
                     .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
 

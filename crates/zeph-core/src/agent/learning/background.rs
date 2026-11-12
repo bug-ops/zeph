@@ -7,21 +7,6 @@ use zeph_llm::provider::MessageMetadata;
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
 
-/// Drop guard that sends an empty string to `status_tx` when dropped, clearing the TUI spinner.
-pub(super) struct ClearStatusOnDrop(pub Option<zeph_llm::status::StatusSender>);
-
-impl Drop for ClearStatusOnDrop {
-    fn drop(&mut self) {
-        if let Some(ref tx) = self.0 {
-            let _ = tx.clear();
-        }
-    }
-}
-
-pub(super) fn defer_clear_status(tx: Option<zeph_llm::status::StatusSender>) -> ClearStatusOnDrop {
-    ClearStatusOnDrop(tx)
-}
-
 #[tracing::instrument(name = "core.learning.write_skill_file", skip_all, level = "debug")]
 pub(super) async fn write_skill_file(
     skill_paths: &[PathBuf],
@@ -80,12 +65,10 @@ pub(super) struct AriseTaskArgs {
     pub auto_activate: bool,
     pub max_versions: u32,
     pub domain_success_gate: bool,
-    pub status_tx: Option<zeph_llm::status::StatusSender>,
 }
 
 #[tracing::instrument(name = "core.learning.arise_trace_task", skip_all, level = "debug")]
 pub(super) async fn arise_trace_task(args: AriseTaskArgs) {
-    let _clear_status = defer_clear_status(args.status_tx.clone());
     let prompt = zeph_skills::evolution::build_trace_improvement_prompt(
         &args.skill_name,
         &args.skill_body,
@@ -278,12 +261,10 @@ pub(super) struct StemTaskArgs {
     pub retention_days: u32,
     pub max_auto_sections: u32,
     pub skill_paths: Vec<PathBuf>,
-    pub status_tx: Option<zeph_llm::status::StatusSender>,
 }
 
 #[tracing::instrument(name = "core.learning.stem_detection_task", skip_all, level = "debug")]
 pub(super) async fn stem_detection_task(args: StemTaskArgs) {
-    let _clear_status = defer_clear_status(args.status_tx.clone());
     if let Err(e) = args
         .memory
         .sqlite()
@@ -408,12 +389,10 @@ pub(super) struct ErlTaskArgs {
     pub task_summary: String,
     pub tool_calls_str: String,
     pub dedup_threshold: f32,
-    pub status_tx: Option<zeph_llm::status::StatusSender>,
 }
 
 #[tracing::instrument(name = "core.learning.erl_reflection_task", skip_all, level = "debug")]
 pub(super) async fn erl_reflection_task(args: ErlTaskArgs) {
-    let _clear_status = defer_clear_status(args.status_tx.clone());
     let prompt = zeph_skills::erl::build_reflection_extract_prompt(
         &args.task_summary,
         &args.tool_calls_str,

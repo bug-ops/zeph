@@ -9,6 +9,8 @@
 //! It has no `zeph-*` dependencies. The optional `treesitter` feature adds tree-sitter
 //! query constants and helpers.
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 pub mod anchor;
 pub mod audit;
 pub mod clock;

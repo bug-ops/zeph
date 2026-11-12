@@ -161,7 +161,7 @@ AND the daemon run is logged with: facts_promoted, facts_demoted, run_duration_m
 | FR-003 | `access_frequency` for a fact SHALL be tracked in a new `fact_access_log` SQLite table: one row per (fact_id, turn_id) access event; the signal value is `log(1 + access_count)` normalized to `[0.0, 1.0]` across the candidate set | must |
 | FR-004 | WHEN a fact is returned to the agent loop (included in the context window) THE SYSTEM SHALL insert one row into `fact_access_log(fact_id, accessed_at, session_id)` | must |
 | FR-005 | `causal_distance` for a fact SHALL be computed as the minimum number of causal-type edges in the MAGMA graph between the fact's source entity and the current goal entity; if no goal entity is set, `causal_distance` defaults to a neutral value `neutral_causal_distance` (default 5) | must |
-| FR-006 | Goal entity resolution SHALL use the most recently mentioned goal node from the agent's active context (sourced from `TurnContext.current_goal_entity_id`); if absent, the causal distance signal contribution is zero regardless of weight | must |
+| FR-006 | Goal entity resolution SHALL use the most recently mentioned goal node from the agent's active context (the graph entity matching the text of the single Active `/goal`, resolved off the turn path with `find_seed_entities` at `structural_weight = 0.0` and carried as `ContextAssemblyView.goal_anchor`); if absent or not yet resolved, the causal distance signal contribution is zero regardless of weight | must |
 | FR-007 | `novelty` SHALL be computed as `exp(-λ_novelty × days_since_agent_init)` where `days_since_agent_init` is the fact's `created_at` minus the session start timestamp | must |
 | FR-008 | Signal weights SHALL be normalized to sum to 1.0 at startup; if the configured weights do not sum to 1.0, the system SHALL normalize them and log a `WARN` | must |
 | FR-009 | Config flag `[memory.five_signal] enabled` SHALL gate all five-signal code paths; when `false`, SYNAPSE uses the existing two-signal formula unchanged | must |
@@ -236,7 +236,7 @@ alters `messages` table. Wrapped in `BEGIN IMMEDIATE; ... COMMIT;`.
 
 | Scenario | Expected Behavior |
 |----------|-------------------|
-| `TurnContext.current_goal_entity_id` is not set | Causal distance signal contribution = 0 regardless of `w_causal`; no BFS is run and no store query is made |
+| No goal anchor is resolved (no Active goal, graph disabled, anchor pending, unresolved or exhausted) | Causal distance signal contribution = 0 regardless of `w_causal`; no BFS is run and no store query is made |
 | Goal entity is set (#7003) | Recall resolves each candidate message to its graph entities via `GraphStore::entity_ids_for_messages` (`graph_edges.episode_id` = message id, `valid_to IS NULL`), runs the causal BFS from the goal entity to those entities and takes the minimum distance per message; a message with no entity gets `neutral_causal_distance`. Message ids and entity ids are different id spaces and are never mixed |
 | MAGMA graph has no causal-type edges | All facts receive `neutral_causal_distance`; causal signal is uniform and has no discriminating effect |
 | `fact_access_log` insert fails (SQLite I/O error) | Log `WARN`; continue agent turn; access count tracking is best-effort |
@@ -377,11 +377,18 @@ AND SYNAPSE latency is indistinguishable from the pre-spec baseline
 ## 12. Open Questions
 
 > [!question]
-> - **Goal entity sourcing**: FR-006 requires `TurnContext.current_goal_entity_id`.
->   This field does not currently exist in `TurnContext`. It must be defined — either
->   extracted from the current task description via a lightweight NER pass, or set
->   explicitly by the orchestration layer. The mechanism for goal entity resolution
->   must be agreed before FR-005 and FR-006 can be implemented.
+> - **Goal entity sourcing** (resolved, #7012): only an explicit Active `/goal` is a source;
+>   `compression.current_task_goal` is excluded on purpose because it is LLM-extracted and changes
+>   per compaction. `TurnContext` carries no goal field. `zeph-core` keeps a goal-anchor state
+>   (`Idle`, `Pending`, `Resolved`, `Unresolved` with 1/2/4/8 turn backoff, `Exhausted` after 5
+>   failures until the goal changes) resolved through the background supervisor under
+>   `timeouts.embedding_seconds`; write-back is compare-and-set on an attempt token. Context
+>   assembly reads it synchronously and never awaits. Goal text is immutable per goal id.
+>   Backoff and in-flight expiry are counted in context assemblies (one tick per `prepare_context`
+>   call, not `TurnId`); a `Pending` or `Refreshing` slot whose task never reports back expires after
+>   8 assemblies. A `Resolved` anchor is revalidated every 64 assemblies while it keeps being served
+>   (`Refreshing`): the same entity or a different one replaces it, no match demotes it to `Unresolved`,
+>   and a timeout, error or abort keeps the current anchor.
 > - **LongMemEval-S benchmark adapter**: the ≥ 15pp improvement target (SC-002) requires
 >   an adapter in `zeph-bench` that replicates the LongMemEval-S evaluation protocol
 >   against Zeph's retrieval stack. This adapter does not yet exist and must be built
@@ -413,7 +420,7 @@ Key implementation details:
 
 | Question | Resolution |
 |---|---|
-| Goal entity sourcing | `causal goal entity` type added to MAGMA graph; wired as causal anchor (commit #4418) |
+| Goal entity sourcing | No dedicated goal entity type exists; the anchor is the entity best matching the Active goal text (#7012, see FR-006) |
 | LongMemEval-S adapter | Deferred to `zeph-bench`; synthetic fixtures used for AC validation |
 
 ## 14. See Also

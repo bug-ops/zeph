@@ -17,7 +17,7 @@ use super::{RouterProvider, RouterStrategy, messages_contain_image, strip_image_
 use crate::embed::owned_strs;
 use crate::error::LlmError;
 use crate::provider::{ChatResponse, ChatStream, LlmFuture, LlmProvider, Message, ToolDefinition};
-use crate::status::StatusSender;
+use crate::status::StatusReporter;
 use zeph_common::math::cosine_similarity;
 
 const EMBED_MAX_RETRIES: u32 = 3;
@@ -32,16 +32,14 @@ fn record_fallback_error(
     provider_name: &str,
     error: &LlmError,
     elapsed_ms: u64,
-    status_tx: Option<&StatusSender>,
+    status: &mut StatusReporter,
     log_msg: &'static str,
 ) {
     router.record_availability(provider_name, false, elapsed_ms);
     if error.is_rate_limited() {
         router.record_availability(provider_name, false, 0);
     }
-    if let Some(tx) = status_tx {
-        let _ = tx.set(format!("router: {provider_name} failed, falling back"));
-    }
+    status.show(format!("router: {provider_name} failed, falling back"));
     tracing::warn!(provider = provider_name, error = %error, "{}", log_msg);
 }
 
@@ -93,6 +91,7 @@ impl LlmProvider for RouterProvider {
                 return router.bandit_chat(&messages, status_tx).await;
             }
             let providers = router.ordered_providers();
+            let mut status = StatusReporter::new(status_tx);
 
             // Per-turn embedding cache: avoids re-embedding the same text across quality
             // gate and ASI update within a single chat() call.
@@ -222,7 +221,7 @@ impl LlmProvider for RouterProvider {
                             p.name(),
                             &e,
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
-                            status_tx.as_ref(),
+                            &mut status,
                             "router fallback",
                         );
                         last_err = Some(e);
@@ -279,6 +278,7 @@ impl LlmProvider for RouterProvider {
                 return Ok(stream);
             }
             let providers = router.ordered_providers();
+            let mut status = StatusReporter::new(status_tx);
             // Preserve the most recent error across the fallback loop so an exhausted
             // loop surfaces the actionable diagnostic instead of a generic `NoProviders`.
             let mut last_err: Option<LlmError> = None;
@@ -314,7 +314,7 @@ impl LlmProvider for RouterProvider {
                             p.name(),
                             &e,
                             u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
-                            status_tx.as_ref(),
+                            &mut status,
                             "router stream fallback",
                         );
                         last_err = Some(e);
@@ -360,6 +360,7 @@ impl LlmProvider for RouterProvider {
         let embed_timeout_ms = self.embed_timeout_ms;
         let model = self.model_identifier().to_owned();
         let fut = Box::pin(async move {
+            let mut status = StatusReporter::new(status_tx);
             // Preserve the most recent error across the fallback loop so an exhausted
             // loop surfaces the actionable diagnostic instead of a generic `NoProviders`.
             let mut last_err: Option<LlmError> = None;
@@ -430,12 +431,7 @@ impl LlmProvider for RouterProvider {
                                 false,
                                 u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                             );
-                            if let Some(ref tx) = status_tx {
-                                let _ = tx.set(format!(
-                                    "router: {} embed failed, falling back",
-                                    p.name()
-                                ));
-                            }
+                            status.show(format!("router: {} embed failed, falling back", p.name()));
                             tracing::warn!(provider = p.name(), error = %e, "router embed fallback");
                             last_err = Some(e);
                             break;
@@ -445,12 +441,10 @@ impl LlmProvider for RouterProvider {
                 // All retries exhausted for this provider (rate-limited every time).
                 if matches!(last_err, Some(ref e) if e.is_rate_limited()) {
                     router.record_availability(p.name(), false, 0);
-                    if let Some(ref tx) = status_tx {
-                        let _ = tx.set(format!(
-                            "router: {} embed rate limited, falling back",
-                            p.name()
-                        ));
-                    }
+                    status.show(format!(
+                        "router: {} embed rate limited, falling back",
+                        p.name()
+                    ));
                     tracing::warn!(
                         provider = p.name(),
                         "embed: rate limit retries exhausted, falling back"
@@ -478,6 +472,7 @@ impl LlmProvider for RouterProvider {
         let embed_timeout_ms = self.embed_timeout_ms;
         let model = self.model_identifier().to_owned();
         let fut = Box::pin(async move {
+            let mut status = StatusReporter::new(status_tx);
             // Acquire embed semaphore permit before any HTTP work to cap concurrency.
             let _permit = if let Some(ref sem) = semaphore {
                 Some(sem.acquire().await.map_err(|_| LlmError::NoProviders)?)
@@ -553,12 +548,10 @@ impl LlmProvider for RouterProvider {
                                 false,
                                 u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                             );
-                            if let Some(ref tx) = status_tx {
-                                let _ = tx.set(format!(
-                                    "router: {} embed_batch failed, falling back",
-                                    p.name()
-                                ));
-                            }
+                            status.show(format!(
+                                "router: {} embed_batch failed, falling back",
+                                p.name()
+                            ));
                             tracing::warn!(
                                 provider = p.name(),
                                 error = %e,
@@ -572,12 +565,10 @@ impl LlmProvider for RouterProvider {
                 // All retries exhausted for this provider (rate-limited every time).
                 if matches!(last_err, Some(ref e) if e.is_rate_limited()) {
                     router.record_availability(p.name(), false, 0);
-                    if let Some(ref tx) = status_tx {
-                        let _ = tx.set(format!(
-                            "router: {} embed_batch rate limited, falling back",
-                            p.name()
-                        ));
-                    }
+                    status.show(format!(
+                        "router: {} embed_batch rate limited, falling back",
+                        p.name()
+                    ));
                     tracing::warn!(
                         provider = p.name(),
                         "embed_batch: rate limit retries exhausted, falling back"
@@ -658,6 +649,7 @@ impl LlmProvider for RouterProvider {
         let router = self.clone();
         let model = self.model_identifier().to_owned();
         let fut = Box::pin(async move {
+            let mut status = StatusReporter::new(status_tx);
             // spec-072 C3: an Image part must never reach a provider whose own
             // `supports_vision()` is `false` — computed once, applied per-provider below
             // (never per-router-aggregate) since `RouterProvider` can dispatch to any
@@ -773,12 +765,10 @@ impl LlmProvider for RouterProvider {
                         if e.is_rate_limited() {
                             router.record_availability(p.name(), false, 0);
                         }
-                        if let Some(ref tx) = status_tx {
-                            let _ = tx.set(format!(
-                                "router: {} tool call failed, falling back",
-                                p.name()
-                            ));
-                        }
+                        status.show(format!(
+                            "router: {} tool call failed, falling back",
+                            p.name()
+                        ));
                         tracing::warn!(provider = p.name(), error = %e, "router tool fallback");
                         last_err = Some(e);
                     }

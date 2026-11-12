@@ -91,9 +91,7 @@ where
                 attempt + 1,
                 max_retries
             );
-            if let Some(tx) = status_tx {
-                let _ = tx.set(msg.clone());
-            }
+            let _backoff_status = status_tx.map(|tx| tx.scope(msg.clone()));
             tracing::warn!("{msg}");
             tokio::time::sleep(delay).await;
             continue;

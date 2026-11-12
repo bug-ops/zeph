@@ -23,6 +23,7 @@
 mod algorithms;
 mod corrections;
 mod cross_session;
+mod goal_anchor;
 mod graph;
 pub(crate) mod importance;
 pub mod persona;

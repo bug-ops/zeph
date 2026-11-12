@@ -460,6 +460,8 @@ pub(crate) struct SecurityState {
     /// `advance_turn()` MUST be called once per turn, before `PolicyGateExecutor::check_policy`.
     /// Never expose score, level, or alerts to any LLM-callable surface.
     pub(crate) trajectory: crate::agent::trajectory::TrajectorySentinel,
+    /// Suppresses repeat user notices while the risk level stays unchanged.
+    pub(crate) trajectory_alert_edge: crate::agent::trajectory::AlertEdge,
     /// Shared risk-level slot for `PolicyGateExecutor` (spec 050).
     ///
     /// Written by the agent loop after each turn's `sentinel.current_risk()` call.

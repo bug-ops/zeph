@@ -745,27 +745,33 @@ pub fn has_meaningful_content(content: &str) -> bool {
             break;
         };
 
-        if !remaining[..start].trim().is_empty() {
+        let Some((head, tag_and_rest)) = remaining.split_at_checked(start) else {
+            return true;
+        };
+        if !head.trim().is_empty() {
             return true;
         }
 
-        let after_prefix = &remaining[start + prefix.len()..];
-        let Some(close) = after_prefix.find(']') else {
+        let Some(after_prefix) = tag_and_rest.get(prefix.len()..) else {
+            return true;
+        };
+        let Some(after_tag) = after_prefix
+            .find(']')
+            .and_then(|close| after_prefix.get(close + 1..))
+        else {
             return true; // Malformed tag — treat as meaningful.
         };
 
-        let tag_end = start + prefix.len() + close + 1;
-
         if prefix == "[tool_result: " || prefix == "[tool output: " {
-            let body = remaining[tag_end..].trim_start_matches('\n');
+            let body = after_tag.trim_start_matches('\n');
             let next_tag = PREFIXES
                 .iter()
                 .filter_map(|p| body.find(p))
                 .min()
                 .unwrap_or(body.len());
-            remaining = &body[next_tag..];
+            remaining = body.get(next_tag..).unwrap_or_default();
         } else {
-            remaining = &remaining[tag_end..];
+            remaining = after_tag;
         }
     }
 

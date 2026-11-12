@@ -177,6 +177,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (still 0.15, requires `testcontainers` `^0.27`). Also reverted `zeph-llm`'s `reqwest012` alias
   back to `reqwest` 0.12, which the same grouped update incorrectly bumped to 0.13 — it exists
   specifically to match `ollama-rs`'s own pinned `reqwest` 0.12 dependency.
+- `zeph-memory`: the query router no longer aborts on non-ASCII queries (#7008)
+- `zeph-common`, `zeph-memory`: JSON object extraction from LLM responses no longer aborts when a closing brace precedes the opening one (#7009)
+- `zeph-subagent`: the MEMORY.md 200-line cut no longer aborts on CRLF content with multi-byte characters (#7010)
+- `zeph-memory`, `zeph-llm`, `zeph-subagent`, `zeph-context`, `zeph-mcp`, `zeph-common`, `zeph-agent-persistence`, `zeph-agent-feedback`, `zeph-session`, `zeph-sanitizer`, `zeph-skills`: remaining request-path string slices are boundary-safe and `clippy::string_slice` is enforced there (#7011)
+- `zeph-memory`, `zeph-core`, `zeph-context`: the goal entity anchors recall, and `graph_edges.episode_id` is indexed (#7012)
+- `zeph-subagent`, `zeph-tools`, `zeph-memory`: transcript import labels a transcript with the highest trust of its recorded tool results, so web and MCP results are no longer imported as `LocalUntrusted` (#7013)
+- `zeph-core`: foreground, resume, durable-replay and `/agent status` sub-agent text, peer-message notices and the inbox are secret-scrubbed like the background notice, and sub-agent status lines are scrubbed before the 120-char cut (#7014)
+- `zeph-subagent`, `zeph-tools`: `check_messages` peer-relayed content is tagged `ExternalUntrusted` in the transcript (new `ClaimSource::PeerMessage`) (#7013)
+- `zeph-llm`, `zeph-mcp`, `zeph-tui`, `zeph`: OAuth URLs are delivered as ordered notices instead of colliding in one status slot, and a turn clear no longer hides a background status (#7016)
+- `zeph-tui`, `zeph-llm`, `zeph-core`: background status keeps the spinner but no longer makes the agent look busy (Ctrl-C, stall detection); set-only status producers use scoped statuses or notices (#7016)
 
 ## [0.22.5] - 2026-09-18
 

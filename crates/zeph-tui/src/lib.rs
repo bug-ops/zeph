@@ -52,6 +52,7 @@ pub mod layout;
 pub mod metrics;
 pub mod render_cache;
 pub(crate) mod session;
+pub(crate) mod status_board;
 #[cfg(test)]
 pub mod test_utils;
 pub mod theme;
@@ -246,7 +247,7 @@ async fn tui_loop(
             // Animate while the agent is busy OR background/external requests are
             // inflight, so the violet Network wave keeps moving even when the agent
             // itself is idle.
-            DirtyState::AnimationOnly => app.is_agent_busy() || app.background_inflight() > 0,
+            DirtyState::AnimationOnly => app.has_activity() || app.background_inflight() > 0,
             DirtyState::Full => true,
         };
 

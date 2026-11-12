@@ -187,8 +187,11 @@ impl ToolResultCompressor {
             .passthrough_threshold
             .saturating_mul(4)
             .saturating_sub(TRUNCATION_MARKER.len());
-        let cut = text.floor_char_boundary(byte_limit.min(text.len()));
-        let truncated = format!("{}{}", &text[..cut], TRUNCATION_MARKER);
+        let truncated = format!(
+            "{}{}",
+            zeph_common::text::truncate_to_bytes_ref(text, byte_limit),
+            TRUNCATION_MARKER
+        );
         let compressed_tokens = tc.count_tokens(&truncated);
 
         CompressedToolResult {
@@ -280,10 +283,10 @@ impl ToolResultCompressor {
             let target_tokens = current.saturating_sub(excess.min(current));
             // target_tokens == 0 means we'd remove the entire result — keep a minimal stub.
             let byte_limit = target_tokens.max(1).saturating_mul(4);
-            let cut = results[idx]
-                .text
-                .floor_char_boundary(byte_limit.min(results[idx].text.len()));
-            let trimmed = format!("{} [...truncated]", &results[idx].text[..cut]);
+            let trimmed = format!(
+                "{} [...truncated]",
+                zeph_common::text::truncate_to_bytes_ref(&results[idx].text, byte_limit)
+            );
             let new_tokens = tc.count_tokens(&trimmed);
             remaining = remaining.saturating_sub(current).saturating_add(new_tokens);
             results[idx].compressed_tokens = new_tokens;

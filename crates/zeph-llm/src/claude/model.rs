@@ -165,10 +165,9 @@ impl ClaudeModel {
     /// are matched (`sonnet-5-5` is Sonnet 5.5, not Sonnet 5).
     pub(super) fn from_model_id(id: &str) -> Self {
         let lower = id.to_ascii_lowercase();
-        let Some(start) = lower.find("claude-") else {
+        let Some((_, rest)) = lower.split_once("claude-") else {
             return Self::Unknown;
         };
-        let rest = &lower[start + "claude-".len()..];
         let rest = rest.split(['@', ':']).next().unwrap_or(rest);
         let mut tokens: Vec<&str> = rest.split('-').collect();
         if tokens.last().is_some_and(|t| is_date_stamp(t)) {

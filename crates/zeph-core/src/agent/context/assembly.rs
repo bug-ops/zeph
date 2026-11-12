@@ -321,12 +321,16 @@ impl<C: Channel> Agent<C> {
         let provider = self.provider.clone();
         let tc = self.runtime.metrics.token_counter.clone();
         let sanitizer = self.services.security.sanitizer.clone();
-        let status_tx = self.services.session.status_tx.clone();
         let task_supervisor = Arc::clone(&self.runtime.lifecycle.task_supervisor);
-        if let Some(tx) = &self.services.session.status_tx {
-            let _ = tx.set("Generating session digest...");
-        }
+        // Owned by the task: dropped on completion, abort or cancellation, so the status clears.
+        let status_scope = self
+            .services
+            .session
+            .status_tx
+            .as_ref()
+            .map(|tx| tx.scope("Generating session digest..."));
         let digest_future = async move {
+            let _status_scope = status_scope;
             if let (Some(mem), Some(cid)) = (memory, conversation_id) {
                 super::super::session_digest::generate_and_store_digest(
                     &provider,
@@ -338,9 +342,6 @@ impl<C: Channel> Agent<C> {
                     &sanitizer,
                 )
                 .await;
-            }
-            if let Some(tx) = status_tx {
-                let _ = tx.clear();
             }
         };
         drop(
@@ -701,6 +702,8 @@ impl<C: Channel> Agent<C> {
             }
         });
 
+        let goal_anchor = self.goal_anchor_for_turn();
+
         let mut security_sink = SecuritySink(&mut self.runtime.metrics.metrics_tx);
 
         // Snapshot MemCoT semantic state before constructing the view (requires async read).
@@ -751,6 +754,7 @@ impl<C: Channel> Agent<C> {
             memcot_config: self.services.memory.extraction.memcot_config.clone(),
             memcot_state,
             tree_config: self.services.memory.subsystems.tree_config.clone(),
+            goal_anchor,
             last_skills_prompt: &mut self.services.skill.last_skills_prompt,
             active_skill_names: &mut self.services.skill.active_skill_names,
             skill_registry: Arc::clone(&self.services.skill.registry),

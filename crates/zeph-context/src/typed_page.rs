@@ -406,6 +406,10 @@ fn check_json_structural_key(original: &str, compacted: &str) -> bool {
 /// An empty `key` carries no structural information to verify, so it always passes
 /// — preserving the prior permissive behavior for `{"": ...}` rather than turning a
 /// vacuous case into a spurious fidelity violation.
+#[expect(
+    clippy::string_slice,
+    reason = "index derived from a char boundary API on the same string"
+)]
 fn key_appears_as_word(haystack: &str, key: &str) -> bool {
     if key.is_empty() {
         return true;

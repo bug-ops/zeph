@@ -30,6 +30,8 @@
 //!   triggers a judge call, rate-limited to `judge_rate_limit` calls per `judge_rate_window_secs`
 //!   seconds (configurable via `LearningConfig`).
 
+#![cfg_attr(not(test), warn(clippy::string_slice))]
+
 use std::collections::VecDeque;
 use std::sync::LazyLock;
 use std::time::Duration;

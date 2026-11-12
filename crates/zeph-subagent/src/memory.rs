@@ -194,21 +194,7 @@ pub async fn load_memory_content(dir: &Path) -> Option<String> {
         return None;
     }
 
-    // Truncate to the first MEMORY_INJECT_LINES lines without full Vec allocation (REV-MED-01).
-    let mut line_count = 0usize;
-    let mut byte_offset = 0usize;
-    let mut truncated = false;
-    for line in content.lines() {
-        line_count += 1;
-        if line_count > MEMORY_INJECT_LINES {
-            truncated = true;
-            break;
-        }
-        byte_offset += line.len() + 1; // +1 for newline
-    }
-
-    let result = if truncated {
-        let head = content[..byte_offset.min(content.len())].trim_end_matches('\n');
+    let result = if let Some(head) = head_if_over_line_limit(&content, MEMORY_INJECT_LINES) {
         format!(
             "{head}\n\n[... truncated at {MEMORY_INJECT_LINES} lines. \
              See full file at {}]",
@@ -219,6 +205,21 @@ pub async fn load_memory_content(dir: &Path) -> Option<String> {
     };
 
     Some(result)
+}
+
+/// Returns the first `max_lines` lines of `content` (without the trailing line break) when more
+/// content follows them, `None` when `content` fits within the limit.
+///
+/// The cut offset is the real byte position of the `max_lines`-th `\n`, so CRLF content and
+/// multi-byte characters cannot move it off a char boundary.
+fn head_if_over_line_limit(content: &str, max_lines: usize) -> Option<&str> {
+    let (cut, _) = content.match_indices('\n').nth(max_lines.checked_sub(1)?)?;
+    if cut + 1 >= content.len() {
+        return None;
+    }
+    content
+        .get(..cut)
+        .map(|head| head.trim_end_matches(['\r', '\n']))
 }
 
 /// Escape `<agent-memory>` and `</agent-memory>` tags from memory content.
@@ -429,6 +430,26 @@ mod tests {
         // Truncated content has 200 data lines + 1 truncation marker line.
         assert!(line_count <= 202, "expected <= 202 lines, got {line_count}");
         assert!(content.contains("truncated at 200 lines"));
+    }
+
+    #[tokio::test]
+    async fn load_truncates_crlf_multibyte_content_without_panic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lines: String = (0..300).map(|i| format!("строка {i} ключ\r\n")).collect();
+        std::fs::write(tmp.path().join("MEMORY.md"), &lines).unwrap();
+        let content = load_memory_content(tmp.path()).await.unwrap();
+        assert!(content.contains("строка 199 ключ"));
+        assert!(!content.contains("строка 200 ключ"));
+        assert!(content.contains("truncated at 200 lines"));
+    }
+
+    #[test]
+    fn head_if_over_line_limit_boundaries() {
+        assert_eq!(head_if_over_line_limit("a\nb\n", 2), None);
+        assert_eq!(head_if_over_line_limit("a\nb", 2), None);
+        assert_eq!(head_if_over_line_limit("a\r\nb\r\nc", 2), Some("a\r\nb"));
+        assert_eq!(head_if_over_line_limit("a\nb\n\n", 2), Some("a\nb"));
+        assert_eq!(head_if_over_line_limit("a\nb", 0), None);
     }
 
     #[tokio::test]

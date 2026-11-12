@@ -6,6 +6,7 @@
 // `cargo fuzz`); default-codegen-units CI builds stay under the limit. Same pattern
 // as zeph-core, zeph-orchestration, zeph-durable, zeph-acp, zeph-bench.
 #![recursion_limit = "256"]
+#![cfg_attr(not(test), warn(clippy::string_slice))]
 
 //! LLM provider abstraction and backend implementations for the Zeph agent.
 //!

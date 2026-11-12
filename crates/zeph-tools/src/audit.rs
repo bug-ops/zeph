@@ -757,6 +757,7 @@ mod tests {
             (ClaimSource::WebScrape, "\"web_scrape\""),
             (ClaimSource::Mcp, "\"mcp\""),
             (ClaimSource::A2a, "\"a2a\""),
+            (ClaimSource::PeerMessage, "\"peer_message\""),
             (ClaimSource::CodeSearch, "\"code_search\""),
             (ClaimSource::Diagnostics, "\"diagnostics\""),
             (ClaimSource::Memory, "\"memory\""),

@@ -55,6 +55,10 @@ const SANITIZE_PATTERNS: &[(&str, &str)] = &[
 ];
 
 /// Case-insensitive replacement of `pattern` (given in lowercase) with `replacement` in `src`.
+#[expect(
+    clippy::string_slice,
+    reason = "indices come from find on the ASCII-lowercased copy of the same string, which preserves boundaries"
+)]
 fn replace_case_insensitive(src: &str, pattern: &str, replacement: &str) -> String {
     let lower = src.to_ascii_lowercase();
     let mut out = String::with_capacity(src.len());
@@ -116,7 +120,7 @@ pub fn sanitize_skill_text(text: &str) -> String {
     let mut replacements: Vec<(usize, usize, String)> = Vec::new();
     for marker in INJECTION_MARKERS {
         let mut search_start = 0;
-        while let Some(pos) = lower[search_start..].find(marker) {
+        while let Some(pos) = lower.get(search_start..).and_then(|tail| tail.find(marker)) {
             let abs_pos = search_start + pos;
             replacements.push((
                 abs_pos,
@@ -145,11 +149,11 @@ pub fn sanitize_skill_text(text: &str) -> String {
         if *start >= out.len() || *end > out.len() {
             continue;
         }
-        result.push_str(&out[cursor..*start]);
+        result.push_str(out.get(cursor..*start).unwrap_or_default());
         result.push_str(replacement);
         cursor = *end;
     }
-    result.push_str(&out[cursor..]);
+    result.push_str(out.get(cursor..).unwrap_or_default());
     out = result;
     out
 }
@@ -224,12 +228,13 @@ pub fn sanitize_skill_metadata(text: &str, max_len: usize) -> String {
         .collect();
     let joined = filtered.join("\n");
 
-    // UTF-8-safe truncation (stable since Rust 1.91 via floor_char_boundary).
     if joined.len() <= max_len {
         return joined;
     }
-    let boundary = joined.floor_char_boundary(max_len);
-    format!("{}[...]", &joined[..boundary])
+    format!(
+        "{}[...]",
+        zeph_common::text::truncate_to_bytes_ref(&joined, max_len)
+    )
 }
 
 /// Wrap a sanitized description in data boundary tags for prompt injection.

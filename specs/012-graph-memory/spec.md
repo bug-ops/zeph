@@ -426,6 +426,12 @@ deployments sensitive to graph-recall latency/cost should benchmark before upgra
 
 ---
 
+## Episode lookup index (#7012)
+
+`GraphStore::entity_ids_for_messages` filters `graph_edges` by `episode_id IN (...) AND valid_to IS NULL`. Migration 118 adds the partial index `idx_graph_edges_episode_active ON graph_edges(episode_id) WHERE valid_to IS NULL` on both backends. The column name (`episode_id` holds a message id; see `source_message_id`) is tracked by #7015, and the index must move with the column if it is renamed.
+
+`SemanticMemory::resolve_goal_anchor` maps the Active goal text to a graph entity (`find_seed_entities`, `structural_weight = 0.0`, top-1) for the causal-distance signal (spec 004-18 FR-006).
+
 ## Source trust on graph rows (#6953)
 
 `graph_entities` and `graph_edges` carry `trust_level SMALLINT NULL` (migration 117); `Entity.trust_level` / `Edge.trust_level` are `Option<TurnContextTrust>`. Semantics, backfill and merge rules are normative in spec 067 (FR-005, FR-006).

@@ -183,18 +183,15 @@ impl IndexWatcher {
                         batch_start = None;
                         tracing::trace!("debounce fired, reindexing {} paths", paths.len());
                         for path in paths {
-                            if let Some(ref tx) = status_tx {
+                            let _status = status_tx.as_ref().map(|tx| {
                                 let name = path.file_name().map_or_else(
                                     || path.display().to_string(),
                                     |n| n.to_string_lossy().into_owned(),
                                 );
-                                let _ = tx.set(format!("Re-indexing {name}..."));
-                            }
+                                tx.scope(format!("Re-indexing {name}..."))
+                            });
                             if let Err(e) = indexer.reindex_file(&root, &path).await {
                                 tracing::warn!(path = %path.display(), "reindex failed: {e:#}");
-                            }
-                            if let Some(ref tx) = status_tx {
-                                let _ = tx.clear();
                             }
                         }
                     }

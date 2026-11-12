@@ -23,13 +23,13 @@ pub(crate) fn parse_sqlite_datetime_to_unix(s: &str) -> Option<i64> {
     if s.len() < 19 {
         return None;
     }
-    let year: i64 = s[0..4].parse().ok()?;
-    let month: i64 = s[5..7].parse().ok()?;
-    let day: i64 = s[8..10].parse().ok()?;
-    let hour: i64 = s[11..13].parse().ok()?;
-    let min: i64 = s[14..16].parse().ok()?;
+    let year: i64 = s.get(0..4)?.parse().ok()?;
+    let month: i64 = s.get(5..7)?.parse().ok()?;
+    let day: i64 = s.get(8..10)?.parse().ok()?;
+    let hour: i64 = s.get(11..13)?.parse().ok()?;
+    let min: i64 = s.get(14..16)?.parse().ok()?;
     // Only parse the base seconds; ignore fractional seconds and timezone suffix.
-    let sec: i64 = s[17..19].parse().ok()?;
+    let sec: i64 = s.get(17..19)?.parse().ok()?;
 
     // Days since Unix epoch (1970-01-01) via civil calendar algorithm.
     // Reference: https://howardhinnant.github.io/date_algorithms.html#days_from_civil
@@ -113,6 +113,14 @@ mod tests {
         assert_eq!(
             parse_sqlite_datetime_to_unix("1970-01-01 00:00:00+05:30"),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn non_ascii_input_returns_none_without_panic() {
+        assert_eq!(
+            parse_sqlite_datetime_to_unix("дата и время: сегодня утром"),
+            None
         );
     }
 

@@ -194,7 +194,7 @@ Status messages: short, present continuous tense, no punctuation except `…`.
 - MCP child process stderr must be suppressed: `McpManager::with_suppress_stderr(true)`
 - Streaming output: `send_chunk` appends to current message buffer, `send` finalizes
 - Tool events (`send_tool_start`, `send_tool_output`) update the metrics panel, not the chat
-- Status clears arrive as a typed `Channel::clear_status` (`StatusUpdate::Clear`), not an empty string; `TuiChannel` overrides it, sending the typed `AgentEvent::ClearStatus` (`AgentEvent::Status("")` no longer clears: it sets an empty label), which removes the spinner/status text (`[[007-channels/spec]]` Typed Status Protocol, #6988). A tool `ToolEvent::Completed.success` is `!ToolStatus::is_failure()`, so a non-zero exit renders as failed and exit 0 with stderr output renders as success (`[[006-tools/spec]]`)
+- Status clears arrive as a typed `Channel::clear_status` (`StatusUpdate::Clear`), not an empty string; `TuiChannel` overrides it, sending the typed `AgentEvent::ClearStatus` (`AgentEvent::Status("")` no longer clears: it sets an empty label), which clears the turn lane of the status board (`[[007-channels/spec]]` Typed Status Protocol, #6988). The status bar shows the most recently set of 10 per-lane slots (`Turn`, `Background`, `Bootstrap`, `Warmup`, `CodeIndex`, `DeepLink`, `Refresh`, `FileIndex`, `TranscriptLoad`, `ThemeLoad`); a clear hides only its own lane, "agent busy" (Ctrl-C cancel vs quit, the quit hint, stall detection) follows the `Turn` lane and streaming only (`App::is_agent_busy`, via `BoardActivity { Idle, Background, Turn }`), the spinner, status text and animation follow any lane (`App::has_activity`), and a background-only status renders as the Background wave and never as Stalled. External producers address the first six non-turn lanes through `AgentEvent::LaneStatus` (#7016). `AgentEvent::Notice(String)` renders as a System chat line and never collapses. A tool `ToolEvent::Completed.success` is `!ToolStatus::is_failure()`, so a non-zero exit renders as failed and exit 0 with stderr output renders as success (`[[006-tools/spec]]`)
 
 ## Metrics Pipeline
 
@@ -347,7 +347,7 @@ These commands are intercepted by the TUI app before forwarding to the agent. Th
 
 ### `SessionSlot` Fields
 
-`SessionSlot` owns: `messages`, `scroll_offset`, `render_cache`, `input`, `cursor_position`, `input_mode`, `input_history`, `history_index`, `draft_input`, `paste_state`, `view_target`, `transcript_cache`, `pending_transcript`, `show_splash`, `plan_view_active`, `status_label`.
+`SessionSlot` owns: `messages`, `scroll_offset`, `render_cache`, `input`, `cursor_position`, `input_mode`, `input_history`, `history_index`, `draft_input`, `paste_state`, `view_target`, `transcript_cache`, `pending_transcript`, `show_splash`, `plan_view_active`, `status` (a per-lane `StatusBoard`).
 
 ### Key Invariants (SessionRegistry)
 

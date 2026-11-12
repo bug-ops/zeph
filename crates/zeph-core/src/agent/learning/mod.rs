@@ -208,6 +208,19 @@ impl<C: Channel> Agent<C> {
         true
     }
 
+    /// Like [`try_spawn_learning_task`](Self::try_spawn_learning_task), but ties `status` to the
+    /// task: the status is cleared when the task ends, or at once when the spawn is skipped.
+    pub(super) fn try_spawn_learning_task_scoped(
+        &mut self,
+        status: Option<zeph_llm::status::StatusScope>,
+        fut: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> bool {
+        self.try_spawn_learning_task(async move {
+            let _status = status;
+            fut.await;
+        })
+    }
+
     /// Fetches skill outcome stats and applies them to `metrics.skill_confidence`. Used by
     /// callers that don't already have the stats in scope (`record_skill_outcomes`,
     /// `flush_skill_outcomes`). `rebuild_system_prompt` instead calls

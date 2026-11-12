@@ -19,15 +19,6 @@ pub fn compute_importance(content: &str, role: &str) -> f64 {
     raw.clamp(0.0, 1.0)
 }
 
-/// Return the byte offset of the `n`-th character boundary, or `s.len()` if shorter.
-///
-/// This avoids `&s[..n]` panicking when `n` falls mid-UTF-8 sequence.
-fn char_byte_boundary(s: &str, n: usize) -> usize {
-    s.char_indices()
-        .nth(n)
-        .map_or(s.len(), |(byte_offset, _)| byte_offset)
-}
-
 /// Detect explicit salience markers in content.
 ///
 /// Returns 1.0 if any marker found at start or line-start, 0.0 otherwise.
@@ -43,13 +34,10 @@ fn marker_score(content: &str) -> f64 {
     ];
 
     let content_lower = content.to_lowercase();
-    // Find safe byte boundaries at Unicode char boundaries to avoid mid-char slice panics.
-    let search_end = char_byte_boundary(&content_lower, 500);
-    let searchable = &content_lower[..search_end];
+    let searchable = zeph_common::text::truncate_chars(&content_lower, 500);
 
     // Check start of content (first 200 chars)
-    let start_end = char_byte_boundary(searchable, 200);
-    let start_section = &searchable[..start_end];
+    let start_section = zeph_common::text::truncate_chars(searchable, 200);
     for marker in &markers {
         if start_section.starts_with(marker) || start_section.trim_start().starts_with(marker) {
             return 1.0;
@@ -197,24 +185,6 @@ mod tests {
         let tail = "é".repeat(300);
         let content = format!("remember: {tail}");
         assert!((marker_score(&content) - 1.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_char_byte_boundary_within() {
-        // "abc" — 3 chars, 3 bytes; boundary at 2 should be byte offset 2.
-        assert_eq!(char_byte_boundary("abc", 2), 2);
-    }
-
-    #[test]
-    fn test_char_byte_boundary_beyond() {
-        // n > string length should return s.len()
-        assert_eq!(char_byte_boundary("hi", 100), 2);
-    }
-
-    #[test]
-    fn test_char_byte_boundary_multibyte() {
-        // "éé" = 4 bytes; boundary at char 1 = byte offset 2.
-        assert_eq!(char_byte_boundary("éé", 1), 2);
     }
 
     #[test]
