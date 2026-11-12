@@ -350,7 +350,7 @@ impl Channel for TuiChannel {
             tool_name: event.tool_name,
             command: event.display.clone(),
             output: event.display.clone(),
-            success: !event.is_error,
+            success: !event.status.is_failure(),
             diff: event.diff,
             filter_stats: event.filter_stats,
             kept_lines: event.kept_lines,
@@ -783,7 +783,7 @@ mod tests {
             tool_call_id: zeph_common::ToolExecutionId::generate(),
 
             terminal_id: None,
-            is_error: false,
+            status: zeph_core::ToolStatus::Success,
             parent_tool_use_id: None,
             raw_response: None,
             started_at: None,
@@ -812,7 +812,7 @@ mod tests {
             tool_call_id: zeph_common::ToolExecutionId::generate(),
 
             terminal_id: None,
-            is_error: false,
+            status: zeph_core::ToolStatus::Success,
             parent_tool_use_id: None,
             raw_response: None,
             started_at: None,
@@ -825,6 +825,42 @@ mod tests {
             matches!(evt, AgentEvent::ToolOutput { ref tool_name, .. } if tool_name == "read"),
             "expected ToolOutput"
         );
+    }
+
+    #[tokio::test]
+    async fn send_tool_output_marker_follows_status_is_failure() {
+        use zeph_core::ToolStatus;
+        use zeph_core::channel::ToolOutputEvent;
+        let exit_3 = ToolStatus::from_exit_code(3);
+        let cases = [
+            (ToolStatus::Success, true),
+            (exit_3, false),
+            (ToolStatus::Failed, false),
+        ];
+        for (status, expect_success) in cases {
+            let (mut ch, _user_tx, mut agent_rx) = make_channel();
+            ch.send_tool_output(ToolOutputEvent {
+                tool_name: "bash".into(),
+                display: "out".into(),
+                diff: None,
+                filter_stats: None,
+                kept_lines: None,
+                locations: None,
+                tool_call_id: zeph_common::ToolExecutionId::generate(),
+                terminal_id: None,
+                status,
+                parent_tool_use_id: None,
+                raw_response: None,
+                started_at: None,
+            })
+            .await
+            .unwrap();
+            let evt = agent_rx.recv().await.unwrap();
+            assert!(
+                matches!(evt, AgentEvent::ToolOutput { success, .. } if success == expect_success),
+                "{status:?} must render success={expect_success}"
+            );
+        }
     }
 
     /// Verify that non-critical send methods return `Ok(())` without blocking

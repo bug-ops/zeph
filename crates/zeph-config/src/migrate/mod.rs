@@ -32,9 +32,9 @@ pub use features::{
     migrate_orchestration_ensemble, migrate_orchestration_idle_timeout,
     migrate_orchestration_persistence, migrate_orchestration_whole_plan_verifier_timeout,
     migrate_rate_limit_advisory, migrate_skill_state_config, migrate_skill_trust_require_check,
-    migrate_skills_registry, migrate_telegram_expandable_blockquote_config, migrate_tui_delights,
-    migrate_tui_mouse, migrate_tui_panel_sizing, migrate_tui_theme_config,
-    migrate_tui_theme_defaults,
+    migrate_skills_registry, migrate_telegram_allowed_user_ids,
+    migrate_telegram_expandable_blockquote_config, migrate_tui_delights, migrate_tui_mouse,
+    migrate_tui_panel_sizing, migrate_tui_theme_config, migrate_tui_theme_defaults,
 };
 /// Crate-internal: re-exported only so `migrate/tests.rs` can reach it via `super::*`.
 #[cfg(test)]
@@ -53,10 +53,11 @@ pub use integrity::migrate_integrity_config;
 /// Advisory `GonkaGate` migration is crate-internal (registered via the [`MIGRATIONS`] registry).
 pub(crate) use llm::migrate_gonkagate_to_gonka;
 pub use llm::{
-    migrate_claude_compaction_trigger, migrate_cocoon_provider_notice, migrate_cocoon_show_balance,
-    migrate_embed_provider_rename, migrate_eval_model_to_provider, migrate_llm_stream_limits,
-    migrate_llm_to_providers, migrate_orchestration_orchestrator_provider,
-    migrate_planner_model_to_provider, migrate_provider_max_concurrent, migrate_stt_to_provider,
+    migrate_claude_compaction_trigger, migrate_claude_speed, migrate_cocoon_provider_notice,
+    migrate_cocoon_show_balance, migrate_embed_provider_rename, migrate_eval_model_to_provider,
+    migrate_llm_stream_limits, migrate_llm_to_providers,
+    migrate_orchestration_orchestrator_provider, migrate_planner_model_to_provider,
+    migrate_provider_max_concurrent, migrate_stt_to_provider,
 };
 pub use mcp::{
     migrate_mcp_elicitation_config, migrate_mcp_max_connect_attempts, migrate_mcp_media_config,
@@ -790,13 +791,14 @@ use steps::{
     MigrateAcpSubagentsConfig, MigrateAgentBudgetHint, MigrateAgentRetryToToolsRetry,
     MigrateAgentTimeReminder, MigrateAgentsDelegationMode, MigrateAgentsMaxSpawnsPerSession,
     MigrateAgentsPeerMessagingConfig, MigrateAutodreamConfig, MigrateCavemanConfig,
-    MigrateClaudeCompactionTrigger, MigrateCocoonProviderNotice, MigrateCocoonShowBalance,
-    MigrateCompressionPredictorConfig, MigrateCorrectionConfidenceCalibration, MigrateDatabaseUrl,
-    MigrateDeepLinkConfig, MigrateDurableConfig, MigrateDurableHwmAdvisory,
-    MigrateDurableKeyRotation, MigrateDurableSharedDb, MigrateDurableStaleRunningAfterSecs,
-    MigrateEgressConfig, MigrateEmbedProviderRename, MigrateEvalModelToProvider,
-    MigrateFidelityTimeoutDefaults, MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow,
-    MigrateForgettingConfig, MigrateGoalsAutoCheck, MigrateGoalsConfig, MigrateGonkagateToGonka,
+    MigrateClaudeCompactionTrigger, MigrateClaudeSpeed, MigrateCocoonProviderNotice,
+    MigrateCocoonShowBalance, MigrateCompressionPredictorConfig,
+    MigrateCorrectionConfidenceCalibration, MigrateDatabaseUrl, MigrateDeepLinkConfig,
+    MigrateDurableConfig, MigrateDurableHwmAdvisory, MigrateDurableKeyRotation,
+    MigrateDurableSharedDb, MigrateDurableStaleRunningAfterSecs, MigrateEgressConfig,
+    MigrateEmbedProviderRename, MigrateEvalModelToProvider, MigrateFidelityTimeoutDefaults,
+    MigrateFiveSignalConfig, MigrateFocusAutoConsolidateMinWindow, MigrateForgettingConfig,
+    MigrateGoalsAutoCheck, MigrateGoalsConfig, MigrateGonkagateToGonka,
     MigrateHooksPermissionDeniedConfig, MigrateHooksTurnComplete, MigrateIntegrityConfig,
     MigrateKnowledgeConfig, MigrateLlmStreamLimits, MigrateMagicDocsConfig,
     MigrateMcpElicitationConfig, MigrateMcpMaxConnectAttempts, MigrateMcpMediaConfig,
@@ -819,7 +821,8 @@ use steps::{
     MigrateSessionResumeConfig, MigrateShadowSentinelConfig, MigrateShellCheckpointsConfig,
     MigrateShellRiskChainWindowTurns, MigrateShellTransactional, MigrateSkillStateConfig,
     MigrateSkillTrustRequireCheck, MigrateSkillsRegistry, MigrateSttToProvider,
-    MigrateSupervisorConfig, MigrateTelegramExpandableBlockquoteConfig, MigrateTelemetryConfig,
+    MigrateSupervisorConfig, MigrateTelegramAllowedUserIds,
+    MigrateTelegramExpandableBlockquoteConfig, MigrateTelemetryConfig,
     MigrateToolsCompressionConfig, MigrateTraceMetadata, MigrateTuiDelights, MigrateTuiMouse,
     MigrateTuiPanelSizing, MigrateTuiThemeConfig, MigrateTuiThemeDefaults,
     MigrateUtilityHighGainTools, MigrateVigilConfig, MigrateWorktreeConfig,
@@ -1068,6 +1071,12 @@ pub static MIGRATIONS: std::sync::LazyLock<Vec<Box<dyn Migration + Send + Sync>>
             Box::new(MigrateCorrectionConfidenceCalibration),
             // Step 114 — add an advisory auto_check line under [goals] (spec 089, #6881)
             Box::new(MigrateGoalsAutoCheck),
+            // Step 115 — add advisory allowed_user_ids / allowed_bot_ids lines under [telegram]
+            // (spec 007-channels, #7036)
+            Box::new(MigrateTelegramAllowedUserIds),
+            // Step 116 — add an advisory speed hint to Claude [[llm.providers]] entries
+            // (spec 003-llm-providers, #7032)
+            Box::new(MigrateClaudeSpeed),
         ]
     });
 

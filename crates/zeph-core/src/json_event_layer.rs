@@ -69,7 +69,7 @@ impl RuntimeLayer for JsonEventLayer {
         let (output, is_error) = match result {
             Ok(Some(out)) => {
                 scrubbed_out = crate::redact::scrub_content(&out.summary);
-                (scrubbed_out.as_ref(), false)
+                (scrubbed_out.as_ref(), out.status.is_failure())
             }
             Ok(None) => ("", false),
             Err(e) => {
@@ -160,6 +160,40 @@ mod tests {
 
         assert_eq!(call_ids, vec!["call-a", "call-b"]);
         assert_eq!(result_ids, vec!["call-a", "call-b"]);
+    }
+
+    #[tokio::test]
+    async fn after_tool_is_error_follows_status_is_failure() {
+        use zeph_tools::ToolStatus;
+        let cases = [
+            (ToolStatus::Success, false),
+            (ToolStatus::from_exit_code(3), true),
+            (ToolStatus::Failed, true),
+        ];
+        for (status, expect_error) in cases {
+            let buf = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::new(JsonEventSink::with_writer(SharedBuffer(buf.clone())));
+            let layer = JsonEventLayer::new(sink);
+            let ctx = LayerContext {
+                conversation_id: None,
+                turn_number: 0,
+            };
+            let call = make_call("shell", "call-a");
+            let result: Result<Option<ToolOutput>, ToolError> = Ok(Some(ToolOutput {
+                summary: "out".into(),
+                status,
+                ..Default::default()
+            }));
+            layer.after_tool(&ctx, &call, &result).await;
+            let snapshot = buf.lock().unwrap().clone();
+            let line = String::from_utf8_lossy(&snapshot)
+                .lines()
+                .next()
+                .unwrap()
+                .to_owned();
+            let event: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(event["is_error"], expect_error, "{status:?}");
+        }
     }
 
     #[tokio::test]

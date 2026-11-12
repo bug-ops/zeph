@@ -8,6 +8,7 @@
 //! `&mut Agent` access is preserved.
 
 use tokio::time::{Duration, Instant};
+use zeph_common::GoalId;
 
 use crate::channel::Channel;
 use crate::goal::autonomous::{AutonomousState, SupervisorVerdict};
@@ -105,7 +106,7 @@ impl<C: Channel> Agent<C> {
             };
 
             (
-                s.goal_id.clone(),
+                s.goal_id,
                 s.goal_text.clone(),
                 s.max_turns,
                 s.turns_executed,
@@ -117,14 +118,14 @@ impl<C: Channel> Agent<C> {
 
         // F1: deferred supervisor retry path.
         if retry_supervisor_now {
-            self.run_supervisor_check(&goal_id, &goal_text).await;
+            self.run_supervisor_check(goal_id, &goal_text).await;
             return Ok(());
         }
 
         // Turn limit check.
         if turns_executed >= max_turns {
             tracing::info!(
-                goal_id,
+                %goal_id,
                 turns = turns_executed,
                 max_turns,
                 "autonomous: turn limit reached"
@@ -136,7 +137,7 @@ impl<C: Channel> Agent<C> {
 
         // Run a full turn with a synthetic user message.
         tracing::debug!(
-            goal_id,
+            %goal_id,
             turn = turns_executed + 1,
             "autonomous: running turn"
         );
@@ -154,7 +155,7 @@ impl<C: Channel> Agent<C> {
             Ok(result) => result?,
             Err(_elapsed) => {
                 tracing::warn!(
-                    goal_id,
+                    %goal_id,
                     timeout_secs = turn_timeout.as_secs(),
                     "autonomous: turn timed out"
                 );
@@ -199,7 +200,7 @@ impl<C: Channel> Agent<C> {
             if stuck_now {
                 s.stuck_count += 1;
                 tracing::debug!(
-                    goal_id,
+                    %goal_id,
                     stuck_count = s.stuck_count,
                     "autonomous: stuck heuristic fired"
                 );
@@ -225,7 +226,7 @@ impl<C: Channel> Agent<C> {
 
         // Supervisor check at configured intervals.
         if new_turns % verify_interval == 0 {
-            self.run_supervisor_check(&goal_id, &goal_text).await;
+            self.run_supervisor_check(goal_id, &goal_text).await;
         }
 
         Ok(())
@@ -233,7 +234,7 @@ impl<C: Channel> Agent<C> {
 
     /// Build a [`GoalSupervisor`] from the current config, call it, and apply the verdict.
     #[tracing::instrument(name = "core.agent.supervisor_check", skip_all, level = "debug")]
-    async fn run_supervisor_check(&mut self, goal_id: &str, goal_text: &str) {
+    async fn run_supervisor_check(&mut self, goal_id: GoalId, goal_text: &str) {
         // Clear any pending retry timestamp — we are running the check now.
         if let Some(s) = self.services.autonomous.session.as_mut() {
             s.supervisor_retry_at = None;
@@ -242,7 +243,7 @@ impl<C: Channel> Agent<C> {
         let supervisor = self.build_supervisor();
         let summary = self.build_conversation_summary();
 
-        tracing::debug!(goal_id, "autonomous: calling supervisor");
+        tracing::debug!(%goal_id, "autonomous: calling supervisor");
 
         {
             let Some(s) = self.services.autonomous.session.as_mut() else {
@@ -322,7 +323,7 @@ impl<C: Channel> Agent<C> {
     /// Apply the supervisor result, handling backoff and terminal transitions.
     async fn apply_supervisor_result(
         &mut self,
-        goal_id: &str,
+        goal_id: GoalId,
         goal_text: &str,
         result: Result<SupervisorVerdict, SupervisorError>,
     ) {
@@ -332,7 +333,7 @@ impl<C: Channel> Agent<C> {
             Ok(verdict) => {
                 let achieved = verdict.achieved;
                 tracing::info!(
-                    goal_id,
+                    %goal_id,
                     achieved,
                     confidence = verdict.confidence,
                     "autonomous: supervisor verdict"
@@ -364,7 +365,7 @@ impl<C: Channel> Agent<C> {
                 // F1: schedule a deferred retry instead of blocking with sleep.
                 // M3: retry uses the same supervisor provider as the initial call.
                 tracing::warn!(
-                    goal_id,
+                    %goal_id,
                     "autonomous: supervisor rate-limited, scheduling retry in 5s"
                 );
                 if let Some(s) = self.services.autonomous.session.as_mut() {
@@ -377,7 +378,7 @@ impl<C: Channel> Agent<C> {
                 // run_supervisor_check directly, skipping the normal turn.
             }
             Err(e) => {
-                tracing::warn!(goal_id, error = %e, "autonomous: supervisor error");
+                tracing::warn!(%goal_id, error = %e, "autonomous: supervisor error");
                 self.increment_supervisor_fail_count(goal_id, max_supervisor_fails)
                     .await;
             }
@@ -385,7 +386,7 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Increment the supervisor failure counter; pause the session after reaching the limit.
-    async fn increment_supervisor_fail_count(&mut self, goal_id: &str, limit: u32) {
+    async fn increment_supervisor_fail_count(&mut self, goal_id: GoalId, limit: u32) {
         let reached_limit = {
             let Some(s) = self.services.autonomous.session.as_mut() else {
                 return;
@@ -399,7 +400,7 @@ impl<C: Channel> Agent<C> {
                  Session paused. Use `/goal resume --auto` to retry."
             );
             tracing::warn!(
-                goal_id,
+                %goal_id,
                 "autonomous: supervisor failed {limit} times, pausing"
             );
             self.finish_autonomous_session(AutonomousState::Stuck, &msg)
@@ -435,7 +436,7 @@ impl<C: Channel> Agent<C> {
             return;
         };
         self.services.autonomous_registry.upsert(
-            &s.goal_id,
+            s.goal_id,
             &s.goal_text,
             s.state,
             s.turns_executed,
@@ -642,7 +643,7 @@ mod tests {
 
     #[test]
     fn backoff_increments_and_returns_false_below_limit() {
-        let mut s = crate::goal::autonomous::AutonomousSession::new("id", "text", 10);
+        let mut s = crate::goal::autonomous::AutonomousSession::new(GoalId::new_v4(), "text", 10);
         let limit = 3;
         assert!(!apply_supervisor_backoff(&mut s, limit));
         assert_eq!(s.supervisor_fail_count, 1);
@@ -655,7 +656,7 @@ mod tests {
 
     #[test]
     fn backoff_returns_true_at_limit() {
-        let mut s = crate::goal::autonomous::AutonomousSession::new("id", "text", 10);
+        let mut s = crate::goal::autonomous::AutonomousSession::new(GoalId::new_v4(), "text", 10);
         let limit = 2;
         apply_supervisor_backoff(&mut s, limit);
         let reached = apply_supervisor_backoff(&mut s, limit);
@@ -665,20 +666,20 @@ mod tests {
 
     #[test]
     fn backoff_limit_one_fires_immediately() {
-        let mut s = crate::goal::autonomous::AutonomousSession::new("id", "text", 10);
+        let mut s = crate::goal::autonomous::AutonomousSession::new(GoalId::new_v4(), "text", 10);
         assert!(apply_supervisor_backoff(&mut s, 1));
     }
 
     #[test]
     fn backoff_limit_zero_fires_immediately() {
         // limit=0 means every failure should trigger a pause.
-        let mut s = crate::goal::autonomous::AutonomousSession::new("id", "text", 10);
+        let mut s = crate::goal::autonomous::AutonomousSession::new(GoalId::new_v4(), "text", 10);
         assert!(apply_supervisor_backoff(&mut s, 0));
     }
 
     #[test]
     fn backoff_state_is_running_below_limit() {
-        let mut s = crate::goal::autonomous::AutonomousSession::new("id", "text", 10);
+        let mut s = crate::goal::autonomous::AutonomousSession::new(GoalId::new_v4(), "text", 10);
         apply_supervisor_backoff(&mut s, 5);
         assert_eq!(s.state, AutonomousState::Running);
     }

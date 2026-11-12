@@ -833,3 +833,33 @@ fn inject_active_skill_env_clears_after_call() {
     assert!(calls[0].is_some(), "first call must set env");
     assert!(calls[1].is_none(), "second call must clear env");
 }
+
+#[test]
+fn causal_context_summary_counts_chars_not_bytes() {
+    use crate::agent::agent_tests::{
+        MockChannel, MockToolExecutor, create_test_registry, mock_provider,
+    };
+    use zeph_llm::provider::{Message, MessageMetadata, MessagePart, Role};
+
+    let mut agent = crate::agent::Agent::new(
+        mock_provider(vec![]),
+        MockChannel::new(vec![]),
+        create_test_registry(),
+        None,
+        5,
+        MockToolExecutor::no_tools(),
+    );
+    // 400 Cyrillic chars = 800 bytes: under the 500-char limit, over a 500-byte limit.
+    let text = "ж".repeat(400);
+    for role in [Role::User, Role::Assistant] {
+        agent.msg.messages.push(Message {
+            role,
+            content: text.clone(),
+            parts: vec![MessagePart::Text { text: text.clone() }],
+            metadata: MessageMetadata::default(),
+        });
+    }
+
+    let summary = agent.build_causal_context_summary();
+    assert_eq!(summary, format!("User: {text}\nAssistant: {text}"));
+}

@@ -513,6 +513,13 @@ achievement. Returns a JSON verdict `{ achieved: bool, reason: String }`.
 `Arc<Mutex<HashMap<GoalId, AutonomousGoalState>>>` for fleet view and orphan detection.
 Orphaned goals (from crashed sessions) are detected and marked on startup.
 
+### Typed Goal Ids and Counters (#7042)
+
+- `zeph_common::GoalId` (UUID v4 newtype) is the only goal identifier type across `GoalStore`, `Goal`/`GoalSnapshot`, `AutonomousSession`/`AutonomousRegistry`, the goal anchor, and `zeph-commands` (`GoalSnapshot`, `FleetEntry`). Built only by `GoalStore::create` (`GoalId::new_v4`) or by parsing a DB row; `short()` is the 8-hex display form.
+- The `zeph_goals.id` column stays `TEXT`; `GoalRow::into_goal` parses it (`GoalError::InvalidId` on failure). `GoalId` implements no sqlx traits.
+- Goal counters (`token_budget`, `turns_used`, `tokens_used`) are `u64`; decoding negative values or binding values above `i64::MAX` returns `GoalError::CounterOutOfRange`, never a silent clamp or wrap.
+- NEVER pass a goal id as `String`/`&str` across module boundaries.
+
 ### GoalConfig Extensions
 
 Seven new fields added to `GoalConfig` (#4320, #4355):

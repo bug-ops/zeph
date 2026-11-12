@@ -66,9 +66,7 @@ fn render_overlay(overlay: &zeph_plugins::ResolvedOverlay) -> String {
             out.push('\n');
         }
     }
-    out.push_str(
-        "  Note: overlay values shown against default config — run with --config for live intersection.",
-    );
+    out.push_str("  Note: overlay values shown against default config, not the live config.");
     out
 }
 

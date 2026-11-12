@@ -165,7 +165,8 @@ pub struct NliConfig {
     #[serde(default = "default_nli_timeout_ms")]
     pub timeout_ms: u64,
 
-    /// Maximum characters of content sent to the NLI provider (default: 2048).
+    /// Maximum Unicode scalar values (chars, not bytes) of content sent to the NLI provider
+    /// (default: 2048).
     #[serde(default = "default_nli_max_content_len")]
     pub max_content_len: usize,
 }

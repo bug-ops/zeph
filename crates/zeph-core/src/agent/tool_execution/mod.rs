@@ -336,7 +336,7 @@ impl<C: Channel> Agent<C> {
         ) {
             match memory
                 .sqlite()
-                .save_overflow(conv_id.0, output.as_bytes())
+                .save_overflow(conv_id, output.as_bytes())
                 .await
             {
                 Ok(uuid) => format!(
@@ -725,13 +725,7 @@ impl<C: Channel> Agent<C> {
             }
         }
 
-        let truncate = |s: &str| {
-            if s.len() <= MAX_CHARS {
-                s.to_owned()
-            } else {
-                zeph_common::text::truncate_to_bytes_ref(s, MAX_CHARS).to_owned()
-            }
-        };
+        let truncate = |s: &str| zeph_common::text::truncate_chars(s, MAX_CHARS).to_owned();
 
         let user_part = last_user.map_or_else(String::new, truncate);
         let assistant_part = last_assistant.map_or_else(String::new, truncate);

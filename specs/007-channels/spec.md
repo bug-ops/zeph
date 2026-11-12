@@ -358,9 +358,14 @@ fail-closed check.
 
 - Discord and Slack MUST refuse to start (fail closed) when their identity allowlist(s)
   are entirely empty — mirroring Telegram's pre-existing policy; NEVER silently run open
-- Telegram, Discord, and Slack MUST share one authorization primitive
+- Discord and Slack MUST share one authorization primitive
   (`zeph_channels::auth`) for both the startup gate and the per-message check — no adapter
   may hand-roll its own allowlist check
+- Telegram authorizes through `TelegramAllowlist` (fail-closed, keyed on the numeric `from.id`):
+  the id allowlist is checked first; a username in the legacy `allowed_users`/`allowed_bots` list
+  is only a fallback and logs a WARN (once per sender id per process); an empty allowlist NEVER
+  means "allow all"; `bot_to_bot = true` requires a non-empty bot list (`allowed_bot_ids` or
+  `allowed_bots`) or startup fails (#7036)
 - Breaking-but-safe: existing Discord/Slack configs with an empty allowlist fail to start
   until an allowlist is configured; there is no opt-out config field
 

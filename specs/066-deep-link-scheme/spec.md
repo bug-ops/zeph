@@ -117,7 +117,9 @@ the child session (or before exec'ing into bootstrap). At startup of `url-open`,
 if `ZEPH_URL_OPEN_DEPTH` is already set to `"1"`, print
 `"deep-link dispatch loop detected; exiting"` and exit(1).
 
-This env var check is the sole mechanism. No other loop-prevention is needed because
+The check and the `set_var` run in `main` (`src/main.rs`, `guard_url_open_depth`) before any
+thread is spawned, so the environment write cannot race with other threads (#7025); the pure
+decision is `url_open_depth`. This env var check is the sole mechanism. No other loop-prevention is needed because
 the registration templates are fixed strings (`url-open "%u"` / `"%1"`) and cannot
 themselves emit `zeph://` URIs.
 
@@ -249,7 +251,7 @@ Full registration support tracked in follow-up issue (OQ-1).
 | ID | Invariant | Where enforced |
 |---|---|---|
 | INV-CWD | cwd validation order: decode → absolute → canonicalize → case-fold → denylist → allowlist → is_dir | `validate.rs` |
-| INV-LOOP | url-open checks ZEPH_URL_OPEN_DEPTH before dispatching; sets it before launching child | `runner.rs` |
+| INV-LOOP | url-open checks ZEPH_URL_OPEN_DEPTH before dispatching; sets it before launching child; runs on the main thread before the runtime exists | `main.rs` |
 | INV-TRUST | prompt from deep link always carries `ContentTrustLevel::ExternalUntrusted` (from `zeph-sanitizer/src/types.rs`) | `runner.rs` enqueue path (Phase 2) |
 | INV-NOAUTO | auto-escalation params (`auto`, `-y`) are silently dropped + WARN logged | `parse_deep_link` |
 | INV-SYNC | `parse_deep_link` is sync, panic-free, no I/O, no zeph-* deps | `deep_link.rs` |

@@ -143,7 +143,7 @@ pub use zeph_sanitizer::{
     ContentIsolationConfig, ContentSanitizer, ContentSource, ContentSourceKind, ContentTrustLevel,
     InjectionFlag, QuarantineConfig, SanitizedContent,
 };
-pub use zeph_tools::executor::DiffData;
+pub use zeph_tools::executor::{DiffData, ToolStatus};
 
 // Re-export vault module to preserve internal import paths (e.g., `crate::vault::VaultProvider`).
 pub mod vault {

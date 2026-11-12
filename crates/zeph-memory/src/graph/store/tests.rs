@@ -4,7 +4,7 @@
 use super::*;
 use crate::graph::types::{EdgeType, GraphOrigin, GraphProvenance};
 use crate::store::SqliteStore;
-use crate::types::{EdgeId, EntityId};
+use crate::types::{CommunityId, ConversationId, EdgeId, EntityId, EpisodeId};
 #[allow(unused_imports)]
 use zeph_db::sql;
 
@@ -382,7 +382,7 @@ async fn upsert_community_insert_and_update() {
         )
         .await
         .unwrap();
-    assert!(id1 > 0);
+    assert!(id1.get() > 0);
     let id2 = gs
         .upsert_community(
             "clusterA",
@@ -682,7 +682,10 @@ async fn find_community_by_id_found_and_not_found() {
     assert!(found.is_some());
     assert_eq!(found.unwrap().name, "grp");
 
-    let missing = gs.find_community_by_id(9999).await.unwrap();
+    let missing = gs
+        .find_community_by_id(CommunityId::new(9999))
+        .await
+        .unwrap();
     assert!(missing.is_none());
 }
 
@@ -3808,7 +3811,7 @@ async fn apply_hebbian_increment_times_out_on_pool_starvation() {
 // ── GAAMA episode tests ────────────────────────────────────────────────────────
 
 /// Insert a conversation row and return its id (satisfies `FK` in `graph_episodes`).
-async fn insert_conversation(gs: &GraphStore) -> i64 {
+async fn insert_conversation(gs: &GraphStore) -> ConversationId {
     sqlx::query_scalar(sql!(
         "INSERT INTO conversations DEFAULT VALUES RETURNING id"
     ))
@@ -3822,7 +3825,7 @@ async fn ensure_episode_creates_and_returns_id() {
     let gs = setup().await;
     let conv_id = insert_conversation(&gs).await;
     let ep_id = gs.ensure_episode(conv_id).await.unwrap();
-    assert!(ep_id > 0);
+    assert!(ep_id.get() > 0);
 }
 
 #[tokio::test]
@@ -3901,7 +3904,7 @@ async fn entity_in_multiple_episodes() {
 
     let episodes = gs.episodes_for_entity(entity_id).await.unwrap();
     assert_eq!(episodes.len(), 2);
-    let ids: Vec<i64> = episodes.iter().map(|e| e.id).collect();
+    let ids: Vec<EpisodeId> = episodes.iter().map(|e| e.id).collect();
     assert!(ids.contains(&ep1));
     assert!(ids.contains(&ep2));
 }
@@ -3974,7 +3977,7 @@ async fn episode_cascade_delete_on_conversation_delete() {
 async fn ensure_episode_zero_conversation_id_is_rejected() {
     // conversation_id=0 does not satisfy the FK (no row with id=0 in conversations).
     let gs = setup().await;
-    let result = gs.ensure_episode(0).await;
+    let result = gs.ensure_episode(ConversationId(0)).await;
     match result {
         Ok(_) | Err(crate::error::MemoryError::Sqlx(_)) => {} // FK off or FK violation — both acceptable
         Err(e) => panic!("unexpected error: {e:?}"),

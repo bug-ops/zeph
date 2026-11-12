@@ -147,9 +147,13 @@ impl McpToolExecutor {
         let has_images = content
             .iter()
             .any(|b| matches!(b, rmcp::model::ContentBlock::Image(_)));
-        if has_images {
-            self.set_status("Decoding MCP image\u{2026}");
-        }
+        let _status = has_images
+            .then(|| {
+                self.status_tx
+                    .as_ref()
+                    .map(|tx| tx.scope("Decoding MCP image\u{2026}"))
+            })
+            .flatten();
 
         let mut media = Vec::new();
         for block in content {
@@ -201,25 +205,7 @@ impl McpToolExecutor {
                 }
             }
         }
-        if has_images {
-            self.clear_status();
-        }
         media
-    }
-
-    /// Show `text` via [`Self::status_tx`], when attached. Best-effort: a closed receiver only
-    /// means nobody is watching.
-    fn set_status(&self, text: &'static str) {
-        if let Some(ref tx) = self.status_tx {
-            let _ = tx.set(text);
-        }
-    }
-
-    /// Clear the status set by [`Self::set_status`], when a sender is attached.
-    fn clear_status(&self) {
-        if let Some(ref tx) = self.status_tx {
-            let _ = tx.clear();
-        }
     }
 
     /// Log an accepted MCP media validation via the tool audit path (spec-072 AC-14).

@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
+use zeph_common::GoalId;
 use zeph_memory::EntityId;
 
 use super::agent_supervisor::TaskClass;
@@ -51,42 +52,42 @@ struct AnchorAttempt(u64);
 enum GoalAnchorState {
     Idle,
     Pending {
-        goal_id: String,
+        goal_id: GoalId,
         attempt: AnchorAttempt,
         prior_failures: u8,
         spawned_at: AssemblyTick,
     },
     Resolved {
-        goal_id: String,
+        goal_id: GoalId,
         entity: EntityId,
         resolved_at: AssemblyTick,
     },
     /// Serving the cached `entity` while a revalidation runs.
     Refreshing {
-        goal_id: String,
+        goal_id: GoalId,
         entity: EntityId,
         attempt: AnchorAttempt,
         spawned_at: AssemblyTick,
     },
     Unresolved {
-        goal_id: String,
+        goal_id: GoalId,
         failures: NonZeroU8,
         retry_at: AssemblyTick,
     },
     Exhausted {
-        goal_id: String,
+        goal_id: GoalId,
     },
 }
 
 impl GoalAnchorState {
-    fn goal_id(&self) -> Option<&str> {
+    fn goal_id(&self) -> Option<GoalId> {
         match self {
             Self::Idle => None,
             Self::Pending { goal_id, .. }
             | Self::Resolved { goal_id, .. }
             | Self::Refreshing { goal_id, .. }
             | Self::Unresolved { goal_id, .. }
-            | Self::Exhausted { goal_id } => Some(goal_id),
+            | Self::Exhausted { goal_id } => Some(*goal_id),
         }
     }
 
@@ -98,16 +99,14 @@ impl GoalAnchorState {
     }
 
     /// State after the `failures`-th consecutive failure, with 1, 2, 4, 8 assembly backoff.
-    fn after_failure(goal_id: &str, failures: u8, now: AssemblyTick) -> Self {
+    fn after_failure(goal_id: GoalId, failures: u8, now: AssemblyTick) -> Self {
         match NonZeroU8::new(failures).filter(|n| n.get() < MAX_FAILURES) {
             Some(failures) => Self::Unresolved {
-                goal_id: goal_id.to_owned(),
+                goal_id,
                 failures,
                 retry_at: now.after(1_u64 << (failures.get() - 1)),
             },
-            None => Self::Exhausted {
-                goal_id: goal_id.to_owned(),
-            },
+            None => Self::Exhausted { goal_id },
         }
     }
 }
@@ -122,7 +121,7 @@ struct Inner {
 /// Work handed out by [`GoalAnchor::poll`] when a (re)resolution must be started.
 #[derive(Debug, Clone)]
 pub(crate) struct ResolveTicket {
-    goal_id: String,
+    goal_id: GoalId,
     goal_text: String,
     attempt: AnchorAttempt,
     prior: GoalAnchorState,
@@ -173,7 +172,7 @@ impl GoalAnchor {
     /// `goal` is `(id, text)` of the active goal, `None` when no goal is active (which resets
     /// the slot). Every call advances the slot's clock by one assembly. A `Resolved` anchor is
     /// served while it is revalidated in the background.
-    pub(crate) fn poll(&self, goal: Option<(&str, &str)>) -> AnchorPoll {
+    pub(crate) fn poll(&self, goal: Option<(GoalId, &str)>) -> AnchorPoll {
         let mut inner = self.inner.lock();
         inner.now = inner.now.after(1);
         let now = inner.now;
@@ -209,13 +208,13 @@ impl GoalAnchor {
         inner.next_attempt += 1;
         let next = match anchor {
             Some(entity) => GoalAnchorState::Refreshing {
-                goal_id: goal_id.to_owned(),
+                goal_id,
                 entity,
                 attempt,
                 spawned_at: now,
             },
             None => GoalAnchorState::Pending {
-                goal_id: goal_id.to_owned(),
+                goal_id,
                 attempt,
                 prior_failures,
                 spawned_at: now,
@@ -225,7 +224,7 @@ impl GoalAnchor {
         AnchorPoll {
             anchor,
             ticket: Some(ResolveTicket {
-                goal_id: goal_id.to_owned(),
+                goal_id,
                 goal_text: goal_text.to_owned(),
                 attempt,
                 prior,
@@ -234,7 +233,7 @@ impl GoalAnchor {
     }
 
     /// A task that never reported back (aborted before its first poll) must not wedge the slot.
-    fn expire_in_flight(state: &mut GoalAnchorState, goal_id: &str, now: AssemblyTick) {
+    fn expire_in_flight(state: &mut GoalAnchorState, goal_id: GoalId, now: AssemblyTick) {
         match state {
             GoalAnchorState::Pending {
                 prior_failures,
@@ -247,7 +246,7 @@ impl GoalAnchor {
                 entity, spawned_at, ..
             } if now.since(*spawned_at) > STALE_IN_FLIGHT => {
                 *state = GoalAnchorState::Resolved {
-                    goal_id: goal_id.to_owned(),
+                    goal_id,
                     entity: *entity,
                     resolved_at: now,
                 };
@@ -259,7 +258,7 @@ impl GoalAnchor {
     /// Undo a ticket whose task was not accepted by the supervisor; the attempt is not counted.
     pub(crate) fn cancel(&self, ticket: ResolveTicket) {
         let mut inner = self.inner.lock();
-        if inner.state.goal_id() == Some(ticket.goal_id.as_str())
+        if inner.state.goal_id() == Some(ticket.goal_id)
             && inner.state.in_flight_attempt() == Some(ticket.attempt)
         {
             inner.state = ticket.prior;
@@ -268,17 +267,17 @@ impl GoalAnchor {
 
     /// Compare-and-set write-back: applies only while the slot is still in flight for this
     /// exact goal and attempt.
-    fn settle(&self, goal_id: &str, attempt: AnchorAttempt, outcome: Outcome) {
+    fn settle(&self, goal_id: GoalId, attempt: AnchorAttempt, outcome: Outcome) {
         let mut inner = self.inner.lock();
         let now = inner.now;
         if inner.state.goal_id() != Some(goal_id)
             || inner.state.in_flight_attempt() != Some(attempt)
         {
-            tracing::debug!(goal_id, "goal anchor: stale resolution result dropped");
+            tracing::debug!(%goal_id, "goal anchor: stale resolution result dropped");
             return;
         }
         let resolved = |entity| GoalAnchorState::Resolved {
-            goal_id: goal_id.to_owned(),
+            goal_id,
             entity,
             resolved_at: now,
         };
@@ -302,7 +301,7 @@ impl GoalAnchor {
     /// settles as a transient failure.
     pub(crate) fn resolve_with<W>(
         &self,
-        ticket: ResolveTicket,
+        ticket: &ResolveTicket,
         timeout: Duration,
         work: W,
     ) -> impl Future<Output = ()> + Send + 'static
@@ -310,11 +309,12 @@ impl GoalAnchor {
         W: Future<Output = Result<Option<EntityId>, zeph_memory::MemoryError>> + Send + 'static,
     {
         let anchor = self.clone();
+        let (goal_id, attempt) = (ticket.goal_id, ticket.attempt);
         async move {
             let mut guard = PendingGuard {
                 anchor,
-                goal_id: ticket.goal_id,
-                attempt: ticket.attempt,
+                goal_id,
+                attempt,
                 armed: true,
             };
             let outcome = match tokio::time::timeout(timeout, work).await {
@@ -340,7 +340,7 @@ impl GoalAnchor {
 /// Settles an abandoned resolution as a transient failure so no in-flight state outlives its task.
 struct PendingGuard {
     anchor: GoalAnchor,
-    goal_id: String,
+    goal_id: GoalId,
     attempt: AnchorAttempt,
     armed: bool,
 }
@@ -348,7 +348,7 @@ struct PendingGuard {
 impl PendingGuard {
     fn finish(&mut self, outcome: Outcome) {
         self.armed = false;
-        self.anchor.settle(&self.goal_id, self.attempt, outcome);
+        self.anchor.settle(self.goal_id, self.attempt, outcome);
     }
 }
 
@@ -377,12 +377,12 @@ impl<C: Channel> Agent<C> {
             .as_ref()
             .and_then(|accounting| accounting.snapshot());
         let slot = self.services.memory.persistence.goal_anchor.clone();
-        let poll = slot.poll(snapshot.as_ref().map(|g| (g.id.as_str(), g.text.as_str())));
+        let poll = slot.poll(snapshot.as_ref().map(|g| (g.id, g.text.as_str())));
         if let Some(ticket) = poll.ticket {
             let timeout = Duration::from_secs(self.runtime.config.timeouts.embedding_seconds);
             let goal_text = ticket.goal_text.clone();
             let work = async move { memory.resolve_goal_anchor(&goal_text).await };
-            let fut = slot.resolve_with(ticket.clone(), timeout, work);
+            let fut = slot.resolve_with(&ticket, timeout, work);
             let accepted =
                 self.runtime
                     .lifecycle
@@ -402,6 +402,10 @@ mod tests {
 
     type Work = Result<Option<EntityId>, zeph_memory::MemoryError>;
 
+    fn g(n: u8) -> GoalId {
+        GoalId::parse(&format!("00000000-0000-0000-0000-{n:012}")).unwrap()
+    }
+
     fn entity(raw: i64) -> EntityId {
         serde_json::from_value(serde_json::json!(raw)).unwrap()
     }
@@ -410,24 +414,24 @@ mod tests {
         slot.inner.lock().state.clone()
     }
 
-    fn start(slot: &GoalAnchor, goal: &str) -> ResolveTicket {
+    fn start(slot: &GoalAnchor, goal: GoalId) -> ResolveTicket {
         slot.poll(Some((goal, "text")))
             .ticket
             .expect("a resolution must start")
     }
 
     fn settle(slot: &GoalAnchor, t: &ResolveTicket, outcome: Outcome) {
-        slot.settle(&t.goal_id, t.attempt, outcome);
+        slot.settle(t.goal_id, t.attempt, outcome);
     }
 
-    fn resolved_slot(goal: &str, raw: i64) -> GoalAnchor {
+    fn resolved_slot(goal: GoalId, raw: i64) -> GoalAnchor {
         let slot = GoalAnchor::default();
         let t = start(&slot, goal);
         settle(&slot, &t, Outcome::Found(entity(raw)));
         slot
     }
 
-    fn age_until_revalidation(slot: &GoalAnchor, goal: &str) -> ResolveTicket {
+    fn age_until_revalidation(slot: &GoalAnchor, goal: GoalId) -> ResolveTicket {
         for _ in 0..REVALIDATE_AFTER - 1 {
             assert!(slot.poll(Some((goal, "t"))).ticket.is_none());
         }
@@ -439,23 +443,23 @@ mod tests {
     #[test]
     fn idle_poll_starts_one_resolution_and_marks_pending() {
         let slot = GoalAnchor::default();
-        let ticket = start(&slot, "g1");
+        let ticket = start(&slot, g(1));
         assert!(matches!(state(&slot), GoalAnchorState::Pending { .. }));
-        assert!(slot.poll(Some(("g1", "text"))).ticket.is_none());
+        assert!(slot.poll(Some((g(1), "text"))).ticket.is_none());
         drop(ticket);
     }
 
     #[test]
     fn found_entity_is_served_without_new_resolution() {
-        let slot = resolved_slot("g1", 7);
-        let poll = slot.poll(Some(("g1", "text")));
+        let slot = resolved_slot(g(1), 7);
+        let poll = slot.poll(Some((g(1), "text")));
         assert_eq!(poll.anchor, Some(entity(7)));
         assert!(poll.ticket.is_none());
     }
 
     #[test]
     fn no_active_goal_resets_slot() {
-        let slot = resolved_slot("g1", 7);
+        let slot = resolved_slot(g(1), 7);
         assert!(slot.poll(None).anchor.is_none());
         assert_eq!(state(&slot), GoalAnchorState::Idle);
     }
@@ -463,27 +467,27 @@ mod tests {
     #[test]
     fn failures_back_off_1_2_4_8_then_exhaust() {
         let slot = GoalAnchor::default();
-        let mut ticket = start(&slot, "g1");
+        let mut ticket = start(&slot, g(1));
         for wait in [1_u64, 2, 4, 8] {
             settle(&slot, &ticket, Outcome::NotFound);
             for _ in 1..wait {
                 assert!(
-                    slot.poll(Some(("g1", "t"))).ticket.is_none(),
+                    slot.poll(Some((g(1), "t"))).ticket.is_none(),
                     "still backing off"
                 );
             }
             ticket = slot
-                .poll(Some(("g1", "t")))
+                .poll(Some((g(1), "t")))
                 .ticket
                 .expect("retry after backoff");
         }
         settle(&slot, &ticket, Outcome::NotFound);
         assert!(matches!(state(&slot), GoalAnchorState::Exhausted { .. }));
         for _ in 0..20 {
-            assert!(slot.poll(Some(("g1", "t"))).ticket.is_none());
+            assert!(slot.poll(Some((g(1), "t"))).ticket.is_none());
         }
         assert!(
-            slot.poll(Some(("g2", "t"))).ticket.is_some(),
+            slot.poll(Some((g(2), "t"))).ticket.is_some(),
             "new goal retries"
         );
     }
@@ -491,9 +495,9 @@ mod tests {
     #[test]
     fn stale_attempt_write_is_ignored() {
         let slot = GoalAnchor::default();
-        let first = start(&slot, "g1");
+        let first = start(&slot, g(1));
         slot.cancel(first.clone());
-        let second = start(&slot, "g1");
+        let second = start(&slot, g(1));
         settle(&slot, &first, Outcome::Found(entity(1)));
         assert!(matches!(state(&slot), GoalAnchorState::Pending { .. }));
         drop(second);
@@ -502,21 +506,21 @@ mod tests {
     #[test]
     fn goal_switch_during_flight_keeps_new_goal_state() {
         let slot = GoalAnchor::default();
-        let a = start(&slot, "A");
-        let b = start(&slot, "B");
+        let a = start(&slot, g(10));
+        let b = start(&slot, g(11));
         settle(&slot, &a, Outcome::Found(entity(1)));
         assert!(matches!(
             state(&slot),
-            GoalAnchorState::Pending { ref goal_id, .. } if goal_id == "B"
+            GoalAnchorState::Pending { ref goal_id, .. } if *goal_id == g(11)
         ));
         settle(&slot, &b, Outcome::Found(entity(2)));
-        assert_eq!(slot.poll(Some(("B", "t"))).anchor, Some(entity(2)));
+        assert_eq!(slot.poll(Some((g(11), "t"))).anchor, Some(entity(2)));
     }
 
     #[test]
     fn cancel_restores_prior_state_without_counting() {
         let slot = GoalAnchor::default();
-        let t = start(&slot, "g1");
+        let t = start(&slot, g(1));
         slot.cancel(t);
         assert_eq!(state(&slot), GoalAnchorState::Idle);
     }
@@ -524,12 +528,8 @@ mod tests {
     #[tokio::test]
     async fn overflow_dropped_future_does_not_count_as_failure() {
         let slot = GoalAnchor::default();
-        let t = start(&slot, "g1");
-        let fut = slot.resolve_with(
-            t.clone(),
-            Duration::from_secs(1),
-            std::future::pending::<Work>(),
-        );
+        let t = start(&slot, g(1));
+        let fut = slot.resolve_with(&t, Duration::from_secs(1), std::future::pending::<Work>());
         drop(fut);
         slot.cancel(t);
         assert_eq!(state(&slot), GoalAnchorState::Idle);
@@ -538,9 +538,9 @@ mod tests {
     #[tokio::test]
     async fn aborted_task_settles_unresolved_never_pending() {
         let slot = GoalAnchor::default();
-        let t = start(&slot, "g1");
+        let t = start(&slot, g(1));
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-        let fut = slot.resolve_with(t, Duration::from_secs(60), async move {
+        let fut = slot.resolve_with(&t, Duration::from_secs(60), async move {
             let _ = started_tx.send(());
             std::future::pending::<Work>().await
         });
@@ -557,9 +557,13 @@ mod tests {
     #[tokio::test]
     async fn timeout_counts_as_failure() {
         let slot = GoalAnchor::default();
-        let t = start(&slot, "g1");
-        slot.resolve_with(t, Duration::from_millis(10), std::future::pending::<Work>())
-            .await;
+        let t = start(&slot, g(1));
+        slot.resolve_with(
+            &t,
+            Duration::from_millis(10),
+            std::future::pending::<Work>(),
+        )
+        .await;
         assert!(matches!(
             state(&slot),
             GoalAnchorState::Unresolved { failures, .. } if failures.get() == 1
@@ -569,68 +573,68 @@ mod tests {
     #[tokio::test]
     async fn found_result_resolves_slot() {
         let slot = GoalAnchor::default();
-        let t = start(&slot, "g1");
-        slot.resolve_with(t, Duration::from_secs(1), async { Ok(Some(entity(9))) })
+        let t = start(&slot, g(1));
+        slot.resolve_with(&t, Duration::from_secs(1), async { Ok(Some(entity(9))) })
             .await;
-        assert_eq!(slot.poll(Some(("g1", "t"))).anchor, Some(entity(9)));
+        assert_eq!(slot.poll(Some((g(1), "t"))).anchor, Some(entity(9)));
     }
 
     #[test]
     fn never_reporting_pending_expires_as_failure() {
         let slot = GoalAnchor::default();
-        let _lost = start(&slot, "g1");
+        let _lost = start(&slot, g(1));
         let mut respawned = false;
         for _ in 0..(STALE_IN_FLIGHT + 4) {
-            respawned |= slot.poll(Some(("g1", "t"))).ticket.is_some();
+            respawned |= slot.poll(Some((g(1), "t"))).ticket.is_some();
         }
         assert!(respawned, "a lost task must not wedge the slot in Pending");
     }
 
     #[test]
     fn resolved_anchor_is_revalidated_while_still_served() {
-        let slot = resolved_slot("g1", 7);
-        let _ticket = age_until_revalidation(&slot, "g1");
+        let slot = resolved_slot(g(1), 7);
+        let _ticket = age_until_revalidation(&slot, g(1));
         assert!(matches!(state(&slot), GoalAnchorState::Refreshing { .. }));
-        let poll = slot.poll(Some(("g1", "t")));
+        let poll = slot.poll(Some((g(1), "t")));
         assert_eq!(poll.anchor, Some(entity(7)), "cached anchor keeps serving");
         assert!(poll.ticket.is_none(), "one revalidation at a time");
     }
 
     #[test]
     fn refresh_found_different_entity_replaces_anchor() {
-        let slot = resolved_slot("g1", 7);
-        let t = age_until_revalidation(&slot, "g1");
+        let slot = resolved_slot(g(1), 7);
+        let t = age_until_revalidation(&slot, g(1));
         settle(&slot, &t, Outcome::Found(entity(8)));
-        assert_eq!(slot.poll(Some(("g1", "t"))).anchor, Some(entity(8)));
+        assert_eq!(slot.poll(Some((g(1), "t"))).anchor, Some(entity(8)));
     }
 
     #[test]
     fn refresh_not_found_drops_anchor_to_unresolved() {
-        let slot = resolved_slot("g1", 7);
-        let t = age_until_revalidation(&slot, "g1");
+        let slot = resolved_slot(g(1), 7);
+        let t = age_until_revalidation(&slot, g(1));
         settle(&slot, &t, Outcome::NotFound);
         assert!(matches!(
             state(&slot),
             GoalAnchorState::Unresolved { failures, .. } if failures.get() == 1
         ));
-        assert!(slot.poll(Some(("g1", "t"))).anchor.is_none());
+        assert!(slot.poll(Some((g(1), "t"))).anchor.is_none());
     }
 
     #[test]
     fn refresh_transient_failure_keeps_current_anchor() {
-        let slot = resolved_slot("g1", 7);
-        let t = age_until_revalidation(&slot, "g1");
+        let slot = resolved_slot(g(1), 7);
+        let t = age_until_revalidation(&slot, g(1));
         settle(&slot, &t, Outcome::Transient);
         assert!(matches!(state(&slot), GoalAnchorState::Resolved { .. }));
-        assert_eq!(slot.poll(Some(("g1", "t"))).anchor, Some(entity(7)));
+        assert_eq!(slot.poll(Some((g(1), "t"))).anchor, Some(entity(7)));
     }
 
     #[tokio::test]
     async fn aborted_refresh_keeps_current_anchor() {
-        let slot = resolved_slot("g1", 7);
-        let t = age_until_revalidation(&slot, "g1");
+        let slot = resolved_slot(g(1), 7);
+        let t = age_until_revalidation(&slot, g(1));
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-        let handle = tokio::spawn(slot.resolve_with(t, Duration::from_secs(60), async move {
+        let handle = tokio::spawn(slot.resolve_with(&t, Duration::from_secs(60), async move {
             let _ = started_tx.send(());
             std::future::pending::<Work>().await
         }));
@@ -642,10 +646,10 @@ mod tests {
 
     #[test]
     fn lost_refresh_expires_back_to_resolved() {
-        let slot = resolved_slot("g1", 7);
-        let _lost = age_until_revalidation(&slot, "g1");
+        let slot = resolved_slot(g(1), 7);
+        let _lost = age_until_revalidation(&slot, g(1));
         for _ in 0..=STALE_IN_FLIGHT {
-            slot.poll(Some(("g1", "t")));
+            slot.poll(Some((g(1), "t")));
         }
         assert!(matches!(state(&slot), GoalAnchorState::Resolved { .. }));
     }

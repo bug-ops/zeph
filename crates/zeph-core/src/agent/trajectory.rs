@@ -404,7 +404,7 @@ impl TrajectorySentinel {
             return cached;
         }
         let mut score: f32 = 0.0;
-        let decay = self.cfg.decay_per_turn;
+        let decay = self.cfg.decay_per_turn.get();
         for &(turn, signal) in &self.buf {
             #[allow(clippy::cast_precision_loss)]
             let age =
@@ -460,7 +460,7 @@ impl TrajectorySentinel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zeph_config::TrajectorySentinelConfig;
+    use zeph_config::{TrajectorySentinelConfig, UnitUpperClosed};
 
     fn default_sentinel() -> TrajectorySentinel {
         TrajectorySentinel::new(TrajectorySentinelConfig::default())
@@ -564,7 +564,7 @@ mod tests {
         let cfg = TrajectorySentinelConfig {
             auto_recover_after_turns: 4,
             window_turns: 30,
-            decay_per_turn: 1.0,
+            decay_per_turn: UnitUpperClosed::literal(1.0),
             ..Default::default()
         };
         let mut s = TrajectorySentinel::new(cfg);
@@ -695,31 +695,6 @@ mod tests {
             0,
             "signals outside window must be evicted"
         );
-    }
-
-    #[test]
-    fn trajectory_config_validation_decay_bounds() {
-        let cfg_zero = TrajectorySentinelConfig {
-            decay_per_turn: 0.0,
-            ..Default::default()
-        };
-        assert!(
-            cfg_zero.validate().is_err(),
-            "decay=0.0 must fail validation"
-        );
-        let cfg_over = TrajectorySentinelConfig {
-            decay_per_turn: 1.1,
-            ..Default::default()
-        };
-        assert!(
-            cfg_over.validate().is_err(),
-            "decay>1.0 must fail validation"
-        );
-        let cfg_ok = TrajectorySentinelConfig {
-            decay_per_turn: 0.85,
-            ..Default::default()
-        };
-        assert!(cfg_ok.validate().is_ok());
     }
 
     #[test]

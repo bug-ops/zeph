@@ -517,7 +517,7 @@ mod tests {
                 kept_lines: None,
                 locations: None,
                 tool_call_id: zeph_common::ToolExecutionId::new("x").unwrap(),
-                is_error: false,
+                status: zeph_core::ToolStatus::Success,
                 terminal_id: None,
                 parent_tool_use_id: None,
                 raw_response: None,

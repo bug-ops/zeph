@@ -98,19 +98,6 @@ fn build_cascade_router_config(
     }
 }
 
-/// Clamp a `CoE` threshold to `[0.0, 1.0]` and warn on invalid values.
-fn validate_coe_threshold(name: &str, value: f64) -> f64 {
-    if value.is_nan() || value.is_infinite() || !(0.0..=1.0).contains(&value) {
-        tracing::warn!(
-            field = name,
-            value,
-            "coe: threshold out of [0.0, 1.0] — clamping to valid range"
-        );
-        return value.clamp(0.0, 1.0);
-    }
-    value
-}
-
 /// Attach `CoE` to a `RouterProvider` if `[llm.coe]` is configured and enabled.
 ///
 /// Skips silently when the secondary or embed provider cannot be resolved.
@@ -142,9 +129,9 @@ fn apply_coe(router: RouterProvider, config: &Config) -> RouterProvider {
             .and_then(|e| build_provider_from_entry(e, config, None).ok())
     };
     if let (Some(sec), Some(emb)) = (secondary, embed) {
-        let intra = validate_coe_threshold("intra_threshold", coe_cfg.intra_threshold);
-        let inter = validate_coe_threshold("inter_threshold", coe_cfg.inter_threshold);
-        let shadow = validate_coe_threshold("shadow_sample_rate", coe_cfg.shadow_sample_rate);
+        let intra = coe_cfg.intra_threshold.get();
+        let inter = coe_cfg.inter_threshold.get();
+        let shadow = coe_cfg.shadow_sample_rate.get();
         let router_coe = RouterCoeConfig {
             intra_threshold: intra,
             inter_threshold: inter,
@@ -256,14 +243,7 @@ fn apply_routing_signals(router: RouterProvider, config: &Config) -> RouterProvi
 
     // Quality gate.
     if let Some(threshold) = router_cfg.and_then(|r| r.quality_gate) {
-        if threshold.is_finite() && threshold > 0.0 && threshold <= 1.0 {
-            router = router.with_quality_gate(threshold);
-        } else {
-            tracing::warn!(
-                quality_gate = threshold,
-                "quality_gate must be in (0.0, 1.0], ignoring"
-            );
-        }
+        router = router.with_quality_gate(threshold.get());
     }
 
     // Embed concurrency semaphore.

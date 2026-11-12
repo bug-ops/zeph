@@ -554,8 +554,11 @@ avoid false positives on unrelated 40-char strings) — regardless of registrati
 the sub-agent live-transcript forward pipeline and the background sub-agent completion notice;
 The one ordered pipeline lives in `zeph_common::secret_redact` (`scrub_secret_shapes`, then `scrub_secrets` = URL credentials + shapes, then `scrub_content` = secrets + paths, plus `sanitize_paths`); `zeph_sanitizer::scrub_secret_shapes` re-exports it, `zeph-core::redact::{redact_secrets, scrub_content, sanitize_paths}` delegate to it, and `zeph-memory` persists trajectory, session digest and compression-failure text through `scrub_content` (the former `redact_sensitive` is removed), so the pass list is defined once. Provider-bound passes use `scrub_secrets`; `scrub_content` is for persisted and displayed text only (#6968). GitHub App tokens (`ghs_`/`ghu_`/`ghr_`, `GITHUB_APP_TOKEN_PATTERN`), AWS STS key ids (`ASIA...`, `AWS_STS_ACCESS_KEY_ID_PATTERN`) and Telegram bot tokens (`TELEGRAM_BOT_TOKEN_PATTERN`) are matched by length-bound shape so `ghs_config` and `ASIAN_` stay intact; `xapp-`, `rk_live_` and `rk_test_` are prefixes (distinctive tier). The prefix pass compiles
 `zeph_common::secrets::SECRET_TOKEN_PATTERN`: a boundary group (start, a non-alphanumeric
-character, a literal escape `\[nrtbf0v]`, `\xXX`, `\uXXXX` or a percent escape `%XX`) followed by the
-prefix alternation and the token body, replaced with `${1}[REDACTED]`. The boundary keeps
+character, a literal escape `\[nrtbf0v]`, `\xXX`, `\uXXXX`, a percent escape `%XX`, an ANSI SGR
+sequence `ESC[..m` or a quoted-printable `=3D`) followed by the prefix alternation and the token
+body (which stops at ESC), replaced with `${1}[REDACTED]`. `AWS_STS_ACCESS_KEY_ID_PATTERN` accepts
+the same ANSI and `=3D` left boundaries, and `AWS_SECRET_KEY_PATTERN` tolerates an ANSI SGR
+sequence between the separator and the value (#7028). The boundary keeps
 escaped forms found in JSON and `repr` output redactable while a prefix glued inside a word
 (`disk-usage`, `abcsk-x`) is not a secret; a unit test pins the literal to the escaped
 `SECRET_PREFIXES` join. A second tier catches a prefix that directly follows an alphanumeric

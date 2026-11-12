@@ -29,7 +29,9 @@ pub use candle::{
     CandleConfig, CandleDevice, CandleInlineConfig, CandleSource, GenerationParams, MAX_TOKENS_CAP,
 };
 pub use compaction::{CompactionTrigger, CompactionTriggerError};
-pub use entry::{CocoonPricing, GonkaNode, ProviderEntry, ProviderOverrides, validate_pool};
+pub use entry::{
+    CocoonPricing, GonkaNode, ProviderEntry, ProviderOverrides, ServiceSpeed, validate_pool,
+};
 pub use llm::{
     FAST_TIER_MODEL_HINTS, LlmConfig, ProviderKind, StreamLimits, SttConfig, default_stt_language,
 };

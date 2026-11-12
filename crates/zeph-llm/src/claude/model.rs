@@ -59,6 +59,8 @@ pub(super) enum ClaudeModel {
     Mythos5,
     /// Claude Mythos 5.1.
     Mythos51,
+    /// Claude Mythos 5.2.
+    Mythos52,
     /// Any Claude model older than 4.6 (Claude 3.x, Sonnet 4/4.5, Opus 4/4.1/4.5).
     Legacy,
     /// An identifier that does not match a known generation; treated conservatively.
@@ -95,6 +97,8 @@ pub(super) struct ModelCapabilities {
     pub mid_conversation_system: bool,
     /// Needs the `context-1m-2025-08-07` beta to reach a 1M window.
     pub needs_1m_beta: bool,
+    /// Accepts the top-level `speed: "fast"` request field (fast mode, GA without a beta header).
+    pub supports_fast_mode: bool,
     /// Context window without any beta, `None` when unknown.
     pub native_window: Option<NonZeroU32>,
 }
@@ -129,6 +133,7 @@ impl ModelCapabilities {
         needs_1m_beta: false,
         structured_outputs: false,
         mid_conversation_system: false,
+        supports_fast_mode: false,
         native_window: None,
     };
 
@@ -200,6 +205,7 @@ impl ClaudeModel {
             ("fable", (Some(5), Some(2))) => Self::Fable52,
             ("mythos", (Some(5), None | Some(0))) => Self::Mythos5,
             ("mythos", (Some(5), Some(1))) => Self::Mythos51,
+            ("mythos", (Some(5), Some(2))) => Self::Mythos52,
             _ => Self::Unknown,
         }
     }
@@ -242,8 +248,13 @@ impl ClaudeModel {
                 mid_conversation_system: true,
                 ..ModelCapabilities::GEN5
             },
-            Self::Opus55 | Self::Sonnet55 | Self::Fable51 | Self::Fable52 => ModelCapabilities {
+            Self::Sonnet55 | Self::Fable51 => ModelCapabilities {
                 mid_conversation_system: true,
+                ..ModelCapabilities::GEN5_BOUND
+            },
+            Self::Opus55 | Self::Fable52 | Self::Mythos52 => ModelCapabilities {
+                mid_conversation_system: true,
+                supports_fast_mode: true,
                 ..ModelCapabilities::GEN5_BOUND
             },
             Self::Haiku55 => ModelCapabilities {
@@ -303,6 +314,12 @@ mod tests {
             ("claude-fable-5-3", ClaudeModel::Unknown),
             ("claude-mythos-5", ClaudeModel::Mythos5),
             ("claude-mythos-5-1", ClaudeModel::Mythos51),
+            ("claude-mythos-5-2", ClaudeModel::Mythos52),
+            ("claude-mythos-5-2-20261109", ClaudeModel::Mythos52),
+            ("claude-mythos-5-2@20261109", ClaudeModel::Mythos52),
+            ("anthropic.claude-mythos-5-2-v1:0", ClaudeModel::Mythos52),
+            ("us.anthropic.claude-mythos-5-2", ClaudeModel::Mythos52),
+            ("claude-mythos-5-3", ClaudeModel::Unknown),
             ("anthropic.claude-opus-5-5-v1:0", ClaudeModel::Opus55),
             ("us.anthropic.claude-sonnet-5-5", ClaudeModel::Sonnet55),
             ("claude-sonnet-4-5@20250929", ClaudeModel::Legacy),
@@ -327,6 +344,46 @@ mod tests {
         assert_eq!(a.forbids_forced_tool_choice, b.forbids_forced_tool_choice);
         assert_eq!(a.mid_conversation_system, b.mid_conversation_system);
         assert!(a.preserved_thinking && a.mid_conversation_system);
+    }
+
+    #[test]
+    fn mythos_52_shares_fable_52_capabilities() {
+        let m = ClaudeModel::Mythos52.capabilities();
+        let f = ClaudeModel::Fable52.capabilities();
+        assert_ne!(
+            m.native_window,
+            ClaudeModel::Unknown.capabilities().native_window
+        );
+        assert_eq!(m.native_window, Some(WINDOW_1M));
+        assert!(!m.needs_1m_beta && m.thinking_always_on);
+        assert_eq!(m.preserved_thinking, f.preserved_thinking);
+        assert_eq!(m.structured_outputs, f.structured_outputs);
+        assert_eq!(m.forbids_forced_tool_choice, f.forbids_forced_tool_choice);
+        assert_eq!(m.mid_conversation_system, f.mid_conversation_system);
+        assert_eq!(m.supports_fast_mode, f.supports_fast_mode);
+    }
+
+    #[test]
+    fn fast_mode_capability_matrix() {
+        for m in [
+            ClaudeModel::Fable52,
+            ClaudeModel::Mythos52,
+            ClaudeModel::Opus55,
+        ] {
+            assert!(m.capabilities().supports_fast_mode, "{m:?}");
+        }
+        for m in [
+            ClaudeModel::Opus48,
+            ClaudeModel::Opus5,
+            ClaudeModel::Fable51,
+            ClaudeModel::Mythos51,
+            ClaudeModel::Sonnet55,
+            ClaudeModel::Haiku55,
+            ClaudeModel::Legacy,
+            ClaudeModel::Unknown,
+        ] {
+            assert!(!m.capabilities().supports_fast_mode, "{m:?}");
+        }
     }
 
     #[test]
@@ -363,6 +420,7 @@ mod tests {
             ClaudeModel::Fable51,
             ClaudeModel::Fable52,
             ClaudeModel::Mythos51,
+            ClaudeModel::Mythos52,
         ] {
             assert!(m.capabilities().forbids_forced_tool_choice, "{m:?}");
         }
@@ -387,6 +445,7 @@ mod tests {
             ClaudeModel::Fable52,
             ClaudeModel::Mythos5,
             ClaudeModel::Mythos51,
+            ClaudeModel::Mythos52,
             ClaudeModel::Sonnet55,
         ] {
             assert!(m.capabilities().mid_conversation_system, "{m:?}");

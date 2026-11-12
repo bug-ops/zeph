@@ -20,6 +20,7 @@ use zeph_llm::provider::{LlmProvider as _, Message, Role};
 use crate::error::MemoryError;
 use crate::store::SqliteStore;
 use crate::store::persona::PersonaFactRow;
+use crate::types::ConversationId;
 
 const EXTRACTION_SYSTEM_PROMPT: &str = "\
 You are a persona fact extractor. Given a list of user messages and any existing persona \
@@ -97,7 +98,7 @@ pub async fn extract_persona_facts(
     provider: &AnyProvider,
     user_messages: &[&str],
     config: &PersonaExtractionConfig,
-    conversation_id: Option<i64>,
+    conversation_id: Option<ConversationId>,
 ) -> Result<usize, MemoryError> {
     if !config.enabled || user_messages.len() < config.min_messages {
         return Ok(0);

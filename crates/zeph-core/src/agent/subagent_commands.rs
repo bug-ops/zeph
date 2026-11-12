@@ -8,6 +8,7 @@
 //! sub-agents, and construction of the bounded parent-message context handed to a
 //! freshly spawned sub-agent.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use zeph_sanitizer::pii::PiiFilter;
@@ -15,12 +16,39 @@ use zeph_sanitizer::secret_mask::SecretMaskRegistry;
 use zeph_sanitizer::secret_shape::scrub_secret_shapes;
 use zeph_tools::registry::ToolDef;
 
+use super::builder::build_pre_execution_verifiers;
 use super::{Agent, error};
 use crate::channel::Channel;
 
 /// Number of trailing forwarded-transcript lines surfaced per subagent in
 /// [`crate::metrics::SubAgentMetrics::live_transcript`] (issue #6359, FR-005).
 const LIVE_TRANSCRIPT_TAIL_LINES: usize = 20;
+
+/// Combine the permission-policy allowlist with the channel tool allowlist (#7035).
+///
+/// `policy` already holds `normalize_tool_id` forms. The parent matches channel names exactly,
+/// while the sub-agent's executor matches normalized names, so only channel entries already in
+/// canonical form are kept: mapping `Bash(cargo *)` to `bash` would widen the sub-agent beyond
+/// the parent. A present side always narrows: `None` on one side yields the other side, never
+/// `None` (fail-open).
+fn inherit_tool_allowlist(
+    policy: Option<HashSet<String>>,
+    channel: Option<&[String]>,
+) -> Option<HashSet<String>> {
+    let channel: Option<HashSet<String>> = channel.map(|names| {
+        names
+            .iter()
+            .filter(|n| zeph_subagent::normalize_tool_id(n) == n.as_str())
+            .cloned()
+            .collect()
+    });
+    match (policy, channel) {
+        (None, None) => None,
+        (Some(p), None) => Some(p),
+        (None, Some(c)) => Some(c),
+        (Some(p), Some(c)) => Some(p.intersection(&c).cloned().collect()),
+    }
+}
 
 impl<C: Channel> Agent<C> {
     /// Resolve a sub-agent's requested vault-secret key against the custom secrets already
@@ -810,11 +838,11 @@ impl<C: Channel> Agent<C> {
         // Built before borrowing `subagent_manager` mutably below (build_spawn_context takes
         // `&self`). Previously this call site passed `None`, which meant resumed sub-agents
         // never got a `debug_dump_sink` — their LLM calls went uncaptured by `--debug-dump`
-        // even though fresh spawns correctly wired it (#6391). `resume()` only reads
-        // `max_trust_level`/`inherited_tool_allowlist`/`network_denied`/`debug_dump_sink` off
-        // `spawn_context` (see `manager/spawn.rs::resume`) — the first three are already at
-        // `build_spawn_context`'s top-level defaults (`None`/`None`/`false`, identical to what
-        // `None` produced here), so this only changes `debug_dump_sink` for this call site.
+        // even though fresh spawns correctly wired it (#6391). `resume()` reads
+        // `max_trust_level`/`inherited_tool_allowlist`/`network_denied`/`debug_dump_sink`/
+        // `pre_execution_verifiers` off `spawn_context` (see `manager/spawn.rs::resume`). The
+        // allowlist carries the parent's permission-policy and channel allowlists (#7035) and
+        // the verifiers carry a grounding-URL snapshot taken now, at resume time.
         let spawn_ctx = self.build_spawn_context(&cfg);
         let mgr = self.services.orchestration.subagent_manager.as_mut()?;
         let (task_id, _) = match mgr
@@ -1116,16 +1144,29 @@ impl<C: Channel> Agent<C> {
             // child, and an unrestricted-by-rules parent would give the child no runtime
             // gating at all. See `effective_tool_allowlist`'s own doc comment for the full
             // narrowing algorithm and its edge cases.
-            inherited_tool_allowlist: self
-                .runtime
-                .config
-                .permission_policy
-                .effective_tool_allowlist(
-                    self.tool_executor
-                        .tool_definitions_erased()
-                        .into_iter()
-                        .map(|d| zeph_subagent::normalize_tool_id(d.id.as_ref())),
-                ),
+            inherited_tool_allowlist: inherit_tool_allowlist(
+                self.runtime
+                    .config
+                    .permission_policy
+                    .effective_tool_allowlist(
+                        self.tool_executor
+                            .tool_definitions_erased()
+                            .into_iter()
+                            .map(|d| zeph_subagent::normalize_tool_id(d.id.as_ref())),
+                    ),
+                self.runtime.config.channel_tool_allowlist.as_deref(),
+            ),
+            // #7035: the sub-agent loop runs the same pre-dispatch verifiers as this agent. The
+            // grounding URL set is a frozen copy: the parent clears its own set every turn,
+            // which must not change what a long-lived sub-agent may fetch. Task-prompt URLs
+            // are deliberately not added (the prompt may be LLM-authored).
+            pre_execution_verifiers: build_pre_execution_verifiers(
+                &self.runtime.config.security.pre_execution_verify,
+                Arc::new(parking_lot::RwLock::new(
+                    self.services.security.user_provided_urls.read().clone(),
+                )),
+            )
+            .into(),
             ..Default::default()
         }
     }
@@ -2157,6 +2198,144 @@ mod tests {
             .expect("a wholesale-denied bash tool must produce a narrowed Some(set)");
         assert!(!allowlist.contains("bash"));
         assert!(allowlist.contains("read"));
+    }
+
+    #[test]
+    fn build_spawn_context_applies_channel_allowlist_under_default_policy() {
+        // Default permission policy yields `None`; a naive `Option` combinator would keep
+        // `None` and let the sub-agent call tools the parent blocks on this channel (#7035).
+        let provider = mock_provider(vec![]);
+        let channel = MockChannel::new(vec![]);
+        let registry = create_test_registry();
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            registry,
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.runtime.config.channel_tool_allowlist = Some(vec!["read".to_owned()]);
+
+        let ctx = agent.build_spawn_context(&zeph_config::SubAgentConfig::default());
+        let expected: std::collections::HashSet<String> = ["read".to_owned()].into();
+        assert_eq!(ctx.inherited_tool_allowlist, Some(expected));
+    }
+
+    #[test]
+    fn build_spawn_context_rebuilds_the_parents_verifier_list() {
+        let agent = verifier_agent();
+        let ctx = agent.build_spawn_context(&zeph_config::SubAgentConfig::default());
+        assert!(
+            !ctx.pre_execution_verifiers.is_empty(),
+            "default config enables the pre-execution verifiers"
+        );
+        let names = |v: &[Box<dyn zeph_tools::PreExecutionVerifier>]| {
+            v.iter().map(|x| x.name()).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(&ctx.pre_execution_verifiers),
+            names(&agent.tool_orchestrator.pre_execution_verifiers)
+        );
+    }
+
+    fn verifier_agent() -> Agent<MockChannel> {
+        Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_security(
+            zeph_config::SecurityConfig::default(),
+            zeph_config::TimeoutConfig::default(),
+        )
+    }
+
+    fn fetch_blocked(verifiers: &[Box<dyn zeph_tools::PreExecutionVerifier>], url: &str) -> bool {
+        verifiers.iter().any(|v| {
+            matches!(
+                v.verify("fetch", &serde_json::json!({ "url": url })),
+                zeph_tools::VerificationResult::Block { .. }
+            )
+        })
+    }
+
+    #[test]
+    fn spawn_context_grounding_set_is_frozen_at_spawn() {
+        const URL_A: &str = "https://example.com/a";
+        const URL_B: &str = "https://example.com/b";
+        let agent = verifier_agent();
+        agent
+            .services
+            .security
+            .user_provided_urls
+            .write()
+            .insert(URL_A.to_owned());
+
+        let ctx = agent.build_spawn_context(&zeph_config::SubAgentConfig::default());
+
+        // The parent clears its set every turn; the sub-agent's snapshot must not follow.
+        agent.services.security.user_provided_urls.write().clear();
+        assert!(fetch_blocked(
+            &agent.tool_orchestrator.pre_execution_verifiers,
+            URL_A
+        ));
+        assert!(!fetch_blocked(&ctx.pre_execution_verifiers, URL_A));
+
+        // A URL the parent learns after spawn is not grounded for the sub-agent.
+        agent
+            .services
+            .security
+            .user_provided_urls
+            .write()
+            .insert(URL_B.to_owned());
+        assert!(fetch_blocked(&ctx.pre_execution_verifiers, URL_B));
+    }
+
+    #[test]
+    fn inherit_tool_allowlist_covers_all_four_arms_and_drops_non_canonical_channel_names() {
+        let set =
+            |names: &[&str]| -> HashSet<String> { names.iter().map(|n| (*n).to_owned()).collect() };
+        assert_eq!(inherit_tool_allowlist(None, None), None);
+        assert_eq!(
+            inherit_tool_allowlist(Some(set(&["read"])), None),
+            Some(set(&["read"]))
+        );
+        assert_eq!(
+            inherit_tool_allowlist(None, Some(&["read".to_owned()])),
+            Some(set(&["read"]))
+        );
+        // The parent matches names exactly, so a non-canonical entry never authorizes a tool.
+        assert_eq!(
+            inherit_tool_allowlist(None, Some(&["Bash(cargo *)".to_owned()])),
+            Some(HashSet::new())
+        );
+        assert_eq!(
+            inherit_tool_allowlist(None, Some(&["READ".to_owned()])),
+            Some(HashSet::new())
+        );
+        assert_eq!(
+            inherit_tool_allowlist(
+                Some(set(&["read", "bash"])),
+                Some(&["READ".to_owned(), "write".to_owned()])
+            ),
+            Some(HashSet::new())
+        );
+        assert_eq!(
+            inherit_tool_allowlist(
+                Some(set(&["read", "bash"])),
+                Some(&["read".to_owned(), "write".to_owned()])
+            ),
+            Some(set(&["read"]))
+        );
+        assert_eq!(
+            inherit_tool_allowlist(None, Some(&[])),
+            Some(HashSet::new()),
+            "an empty channel list blocks everything, like the parent"
+        );
     }
 
     // ── build_spawn_context: trust-level constraint propagation (#6493) ─────

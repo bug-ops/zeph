@@ -29,6 +29,7 @@ axum = { workspace = true }
 crossterm.workspace = true
 futures = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
+parking_lot.workspace = true
 pulldown-cmark.workspace = true
 reqwest = { workspace = true, features = ["rustls", "json"] }
 serde = { workspace = true, features = ["derive"] }

@@ -587,8 +587,8 @@ pub(crate) async fn fetch_graph_facts(
     // Fuse MemCoT semantic state into the recall query (spec §A8: state ≤ 2 × query.len()).
     let fused_query;
     let effective_query = if let Some(ref state) = memory.memcot_state {
-        let max_state_chars = 2 * query.len();
-        let state_slice = zeph_common::text::truncate_to_bytes_ref(state, max_state_chars);
+        let max_state_bytes = 2 * query.len();
+        let state_slice = zeph_common::text::truncate_to_bytes_ref(state, max_state_bytes);
         fused_query = format!("[state] {state_slice}\n{query}");
         &fused_query as &str
     } else {

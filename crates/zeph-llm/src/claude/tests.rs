@@ -188,6 +188,7 @@ fn request_body_serializes_without_system() {
         output_config: None,
         temperature: None,
         context_management: None,
+        speed: None,
     };
     let json = serde_json::to_string(&body).unwrap();
     assert!(!json.contains("system"));
@@ -216,6 +217,7 @@ fn request_body_serializes_with_system_blocks() {
         output_config: None,
         temperature: None,
         context_management: None,
+        speed: None,
     };
     let json = serde_json::to_string(&body).unwrap();
     assert!(json.contains("\"system\""));
@@ -236,6 +238,7 @@ fn request_body_serializes_stream_true() {
         output_config: None,
         temperature: None,
         context_management: None,
+        speed: None,
     };
     let json = serde_json::to_string(&body).unwrap();
     assert!(json.contains("\"stream\":true"));
@@ -307,6 +310,7 @@ fn request_body_serializes_with_stream_false_omits_stream() {
         output_config: None,
         temperature: None,
         context_management: None,
+        speed: None,
     };
     let json = serde_json::to_string(&body).unwrap();
     assert!(!json.contains("stream"));
@@ -3147,6 +3151,7 @@ fn context_window_is_capped_at_200k_unless_extended() {
         ("claude-sonnet-4-6", Some(200_000), Some(1_000_000)),
         ("claude-fable-5-1", Some(200_000), Some(1_000_000)),
         ("claude-fable-5-2", Some(200_000), Some(1_000_000)),
+        ("claude-mythos-5-2", Some(200_000), Some(1_000_000)),
         ("claude-haiku-5-5", Some(200_000), Some(1_000_000)),
         ("claude-haiku-4-5-20251001", Some(200_000), Some(200_000)),
         ("claude-sonnet-4-5-20250929", Some(200_000), Some(1_000_000)),
@@ -4410,6 +4415,7 @@ fn thinking_binding_follows_the_preserved_thinking_capability() {
         "claude-sonnet-5-5",
         "claude-fable-5-1",
         "claude-fable-5-2",
+        "claude-mythos-5-2",
         "claude-haiku-5-5",
     ];
     let unbound = [
@@ -4483,4 +4489,78 @@ async fn auxiliary_usage_is_not_rebilled_on_later_requests() {
         None,
         "a later (failed) stream request must not expose the previous compaction"
     );
+}
+
+// --- fast mode (`speed`) ---
+
+fn speed_json(
+    model: &str,
+    speed: zeph_config::ServiceSpeed,
+    with_tools: bool,
+) -> serde_json::Value {
+    let provider = ClaudeProvider::new("k".into(), model.into(), 1024).with_speed(speed);
+    let messages = vec![Message::from_legacy(Role::User, "hi")];
+    let tools = if with_tools {
+        vec![ToolDefinition {
+            name: "t".into(),
+            description: "d".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            output_schema: None,
+        }]
+    } else {
+        Vec::new()
+    };
+    provider.debug_request_json(&messages, &tools, false)
+}
+
+#[test]
+fn fast_speed_is_sent_only_to_capable_models() {
+    use zeph_config::ServiceSpeed::Fast;
+    for model in ["claude-fable-5-2", "claude-opus-5-5", "claude-mythos-5-2"] {
+        for with_tools in [false, true] {
+            let body = speed_json(model, Fast, with_tools);
+            assert_eq!(body["speed"], "fast", "{model} tools={with_tools}");
+        }
+    }
+    for model in [
+        "claude-opus-4-8",
+        "claude-opus-5",
+        "claude-sonnet-5-5",
+        "claude-fable-5-1",
+        "claude-haiku-4-5-20251001",
+        "claude-future-9",
+    ] {
+        for with_tools in [false, true] {
+            let body = speed_json(model, Fast, with_tools);
+            assert!(body.get("speed").is_none(), "{model} tools={with_tools}");
+        }
+    }
+}
+
+#[test]
+fn standard_speed_leaves_body_byte_identical() {
+    use zeph_config::ServiceSpeed::Standard;
+    for model in ["claude-fable-5-2", "claude-opus-5-5"] {
+        let plain = ClaudeProvider::new("k".into(), model.into(), 1024);
+        let messages = vec![Message::from_legacy(Role::User, "hi")];
+        assert_eq!(
+            plain.debug_request_json(&messages, &[], false),
+            speed_json(model, Standard, false)
+        );
+        assert!(speed_json(model, Standard, false).get("speed").is_none());
+    }
+}
+
+#[test]
+fn response_usage_reports_effective_speed() {
+    use zeph_config::ServiceSpeed::{Fast, Standard};
+    let record = |provider: &ClaudeProvider| {
+        provider.usage.record(Some(ResponseUsage::default()));
+        provider.last_response_usage().map(|u| u.speed)
+    };
+    let fast = ClaudeProvider::new("k".into(), "claude-fable-5-2".into(), 1024).with_speed(Fast);
+    assert_eq!(record(&fast), Some(Fast));
+    let unsupported =
+        ClaudeProvider::new("k".into(), "claude-opus-4-8".into(), 1024).with_speed(Fast);
+    assert_eq!(record(&unsupported), Some(Standard));
 }

@@ -211,14 +211,8 @@ impl<C: Channel + Send + 'static> MemoryAccess for Agent<C> {
                     .await
                     .unwrap_or((0, String::new()));
 
-                let (body, truncated) = if text.len() > MAX_DISPLAY_CHARS {
-                    (
-                        zeph_common::text::truncate_to_bytes_ref(&text, MAX_DISPLAY_CHARS),
-                        true,
-                    )
-                } else {
-                    (text.as_str(), false)
-                };
+                let body = zeph_common::text::truncate_chars(&text, MAX_DISPLAY_CHARS);
+                let truncated = body.len() < text.len();
 
                 let mut output =
                     format!("Compression Guidelines (v{version}, updated {created_at}):\n\n{body}");

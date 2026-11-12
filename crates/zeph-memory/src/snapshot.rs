@@ -47,7 +47,7 @@ pub struct MessageSnapshot {
     /// `SQLite` row ID.
     pub id: i64,
     /// Parent conversation ID.
-    pub conversation_id: i64,
+    pub conversation_id: ConversationId,
     /// Message role (`"user"`, `"assistant"`, `"system"`).
     pub role: String,
     /// Flattened text content.
@@ -64,7 +64,7 @@ pub struct SummarySnapshot {
     /// `SQLite` row ID.
     pub id: i64,
     /// Parent conversation ID.
-    pub conversation_id: i64,
+    pub conversation_id: ConversationId,
     /// Summary text.
     pub content: String,
     /// Inclusive lower bound of the summarised message range.
@@ -122,7 +122,7 @@ pub async fn export_snapshot(sqlite: &SqliteStore) -> Result<MemorySnapshot, Mem
             .map(
                 |(id, role, content, parts_json, created_at)| MessageSnapshot {
                     id,
-                    conversation_id: cid_raw,
+                    conversation_id: cid,
                     role,
                     content,
                     parts_json,
@@ -145,7 +145,7 @@ pub async fn export_snapshot(sqlite: &SqliteStore) -> Result<MemorySnapshot, Mem
                 )| {
                     SummarySnapshot {
                         id,
-                        conversation_id: conversation_id.0,
+                        conversation_id,
                         content,
                         first_message_id: first_message_id.map(|m| m.0),
                         last_message_id: last_message_id.map(|m| m.0),

@@ -128,24 +128,7 @@ impl<C: Channel> Agent<C> {
         self.context_manager.prune_protect_tokens = config.memory.prune_protect_tokens;
         self.context_manager.compression = config.memory.compression.clone();
         self.context_manager.routing = config.memory.store_routing.clone();
-        // Resolve routing_classifier_provider from the provider pool (#2484).
-        self.context_manager.store_routing_provider = if config
-            .memory
-            .store_routing
-            .routing_classifier_provider
-            .is_empty()
-        {
-            None
-        } else {
-            let resolved = self.resolve_background_provider(
-                config
-                    .memory
-                    .store_routing
-                    .routing_classifier_provider
-                    .as_str(),
-            );
-            Some(std::sync::Arc::new(resolved))
-        };
+        self.refresh_store_routing_provider();
         self.services
             .memory
             .persistence

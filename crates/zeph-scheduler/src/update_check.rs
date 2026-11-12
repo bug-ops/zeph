@@ -7,12 +7,17 @@ use std::pin::Pin;
 use semver::Version;
 use serde::Deserialize;
 use tokio::sync::mpsc;
+use zeph_common::http::{BodyLimit, BodyReadError, read_capped};
 
 use crate::error::SchedulerError;
 use crate::task::TaskHandler;
 
 const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/bug-ops/zeph/releases/latest";
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+const MAX_RESPONSE: BodyLimit = match BodyLimit::new(MAX_RESPONSE_BYTES) {
+    Some(limit) => limit,
+    None => panic!("response limit must be non-zero"),
+};
 
 /// [`TaskHandler`] that polls the GitHub releases API for a newer Zeph version.
 ///
@@ -141,20 +146,17 @@ impl TaskHandler for UpdateCheckHandler {
                 return Ok(());
             }
 
-            let bytes = match resp.bytes().await {
+            let bytes = match read_capped(resp, MAX_RESPONSE).await {
                 Ok(b) => b,
+                Err(BodyReadError::TooLarge { limit }) => {
+                    tracing::warn!("update check: response body exceeds {limit} bytes, skipping");
+                    return Ok(());
+                }
                 Err(e) => {
                     tracing::warn!("update check: failed to read response body: {e}");
                     return Ok(());
                 }
             };
-            if bytes.len() > MAX_RESPONSE_BYTES {
-                tracing::warn!(
-                    "update check: response body too large ({} bytes), skipping",
-                    bytes.len()
-                );
-                return Ok(());
-            }
             let info: ReleaseInfo = match serde_json::from_slice(&bytes) {
                 Ok(v) => v,
                 Err(e) => {

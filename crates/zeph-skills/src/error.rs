@@ -49,7 +49,7 @@ pub enum SkillError {
     Invalid(String),
 
     /// A skill with the given name was not found in the registry.
-    #[error("skill not found: {0}")]
+    #[error("skill not found: {0:?}")]
     NotFound(String),
 
     /// A skill with the given name already exists at the target location.
@@ -84,4 +84,17 @@ pub enum SkillError {
     /// Catch-all for errors that do not fit the above categories.
     #[error("{0}")]
     Other(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SkillError;
+
+    #[test]
+    fn not_found_display_escapes_control_characters() {
+        let msg = SkillError::NotFound("bad\x1b[31mname\nX".into()).to_string();
+        assert!(!msg.contains('\x1b'));
+        assert!(!msg.contains('\n'));
+        assert_eq!(msg, "skill not found: \"bad\\u{1b}[31mname\\nX\"");
+    }
 }

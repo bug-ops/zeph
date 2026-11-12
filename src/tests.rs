@@ -93,11 +93,13 @@ async fn create_channel_telegram_without_token() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
     config.telegram = Some(zeph_core::config::TelegramConfig {
         token: None,
+        allowed_user_ids: vec![],
         allowed_users: vec![],
         skills: zeph_core::config::ChannelSkillsConfig::default(),
         stream_interval_ms: 3000,
         guest_mode: false,
         bot_to_bot: false,
+        allowed_bot_ids: vec![],
         allowed_bots: vec![],
         max_bot_chain_depth: 3,
         expandable_blockquote_min_lines: 10,
@@ -109,8 +111,8 @@ async fn create_channel_telegram_without_token() {
 
 #[test]
 fn any_channel_debug_telegram() {
-    use zeph_channels::telegram::TelegramChannel;
-    let tg = TelegramChannel::new("test_token".to_string(), vec![]);
+    use zeph_channels::telegram::{TelegramAllowlist, TelegramChannel};
+    let tg = TelegramChannel::new("test_token".to_string(), TelegramAllowlist::default());
     let ch = AnyChannel::Telegram(tg);
     let debug = format!("{ch:?}");
     assert!(debug.contains("Telegram"));
@@ -118,8 +120,11 @@ fn any_channel_debug_telegram() {
 
 #[tokio::test]
 async fn any_channel_telegram_send_typing() {
-    use zeph_channels::telegram::TelegramChannel;
-    let tg = TelegramChannel::new("invalid_token_for_test".to_string(), vec![]);
+    use zeph_channels::telegram::{TelegramAllowlist, TelegramChannel};
+    let tg = TelegramChannel::new(
+        "invalid_token_for_test".to_string(),
+        TelegramAllowlist::default(),
+    );
     let mut ch = AnyChannel::Telegram(tg);
     let _result = ch.send_typing().await;
 }
@@ -129,11 +134,13 @@ async fn create_channel_telegram_with_token() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
     config.telegram = Some(zeph_core::config::TelegramConfig {
         token: Some("test_token".to_string()),
+        allowed_user_ids: vec![],
         allowed_users: vec!["testuser".to_string()],
         skills: zeph_core::config::ChannelSkillsConfig::default(),
         stream_interval_ms: 3000,
         guest_mode: false,
         bot_to_bot: false,
+        allowed_bot_ids: vec![],
         allowed_bots: vec![],
         max_bot_chain_depth: 3,
         expandable_blockquote_min_lines: 10,
@@ -153,11 +160,13 @@ async fn create_channel_telegram_wires_guest_mode_and_bot_to_bot_from_config() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
     config.telegram = Some(zeph_core::config::TelegramConfig {
         token: Some("test_token".to_string()),
+        allowed_user_ids: vec![],
         allowed_users: vec!["testuser".to_string()],
         skills: zeph_core::config::ChannelSkillsConfig::default(),
         stream_interval_ms: 3000,
         guest_mode: true,
         bot_to_bot: true,
+        allowed_bot_ids: vec![],
         allowed_bots: vec!["@friendlybot".to_string()],
         max_bot_chain_depth: 5,
         expandable_blockquote_min_lines: 10,
@@ -169,7 +178,7 @@ async fn create_channel_telegram_wires_guest_mode_and_bot_to_bot_from_config() {
     assert!(debug.contains("guest_mode: true"), "debug: {debug}");
     assert!(debug.contains("bot_to_bot: true"), "debug: {debug}");
     assert!(debug.contains("max_bot_chain_depth: 5"), "debug: {debug}");
-    assert!(debug.contains("allowed_bots_count: 1"), "debug: {debug}");
+    assert!(debug.contains("friendlybot"), "debug: {debug}");
 }
 
 #[cfg(feature = "discord")]
@@ -214,12 +223,14 @@ async fn create_channel_telegram_with_empty_allowed_users_errors() {
     let mut config = Config::load(Path::new("/nonexistent")).unwrap();
     config.telegram = Some(zeph_core::config::TelegramConfig {
         token: Some("test_token2".to_string()),
+        allowed_user_ids: vec![],
         allowed_users: vec![],
         skills: zeph_core::config::ChannelSkillsConfig::default(),
         allowed_tools: None,
         stream_interval_ms: 3000,
         guest_mode: false,
         bot_to_bot: false,
+        allowed_bot_ids: vec![],
         allowed_bots: vec![],
         max_bot_chain_depth: 3,
         expandable_blockquote_min_lines: 10,
@@ -232,6 +243,48 @@ async fn create_channel_telegram_with_empty_allowed_users_errors() {
             .to_string()
             .contains("telegram allowlist must not be empty")
     );
+}
+
+#[tokio::test]
+async fn create_channel_telegram_bot_to_bot_without_bot_allowlist_errors() {
+    let mut config = Config::load(Path::new("/nonexistent")).unwrap();
+    config.telegram = Some(zeph_core::config::TelegramConfig {
+        token: Some("test_token3".to_string()),
+        allowed_user_ids: vec![zeph_config::TelegramUserId(1)],
+        allowed_users: vec![],
+        skills: zeph_core::config::ChannelSkillsConfig::default(),
+        allowed_tools: None,
+        stream_interval_ms: 3000,
+        guest_mode: false,
+        bot_to_bot: true,
+        allowed_bot_ids: vec![],
+        allowed_bots: vec![],
+        max_bot_chain_depth: 3,
+        expandable_blockquote_min_lines: 10,
+    });
+    let result = create_channel(&config).await;
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("bot_to_bot requires")
+    );
+}
+
+#[test]
+fn parse_telegram_user_ids_accepts_numbers_and_rejects_usernames() {
+    use crate::init::parse_telegram_user_ids;
+    use zeph_config::TelegramUserId;
+
+    assert_eq!(
+        parse_telegram_user_ids(" 1, 22 ,,").unwrap(),
+        vec![TelegramUserId(1), TelegramUserId(22)]
+    );
+    assert_eq!(
+        parse_telegram_user_ids("").unwrap(),
+        Vec::<TelegramUserId>::new()
+    );
+    assert!(parse_telegram_user_ids("alice").is_err());
 }
 
 #[test]
@@ -416,12 +469,15 @@ fn build_config_telegram_channel() {
     let state = WizardState {
         channel: ChannelChoice::Telegram,
         telegram_token: Some("tok".into()),
-        telegram_users: vec!["alice".into()],
+        telegram_user_ids: vec![zeph_config::TelegramUserId(42)],
         ..WizardState::default()
     };
     let config = build_config(&state);
     assert!(config.telegram.is_some());
-    assert_eq!(config.telegram.unwrap().allowed_users, vec!["alice"]);
+    assert_eq!(
+        config.telegram.unwrap().allowed_user_ids,
+        vec![zeph_config::TelegramUserId(42)]
+    );
 }
 
 #[test]

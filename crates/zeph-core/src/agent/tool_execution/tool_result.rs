@@ -11,6 +11,15 @@ use crate::agent::Agent;
 use crate::channel::{Channel, ToolOutputEvent};
 use crate::overflow_tools::OverflowToolExecutor;
 
+/// Display outcome for channels: an `Err` renders as [`zeph_tools::ToolStatus::Failed`], an `Ok`
+/// keeps its typed status. Independent of the `Err`-only wire `is_error` flag.
+fn display_status(outcome: ToolResultKind) -> zeph_tools::ToolStatus {
+    match outcome {
+        ToolResultKind::Err => zeph_tools::ToolStatus::Failed,
+        ToolResultKind::Ok(status) => status,
+    }
+}
+
 /// Skill failure kind for an `Ok` result, derived from the typed status and never from text.
 fn failure_kind_for_status(status: zeph_tools::ToolStatus) -> FailureKind {
     match status {
@@ -478,7 +487,7 @@ impl<C: Channel> Agent<C> {
                 kept_lines,
                 locations,
                 tool_call_id: tool_call_id.clone(),
-                is_error,
+                status: display_status(outcome),
                 terminal_id: None,
                 parent_tool_use_id: self.services.session.parent_tool_use_id.clone(),
                 raw_response: None,
@@ -679,5 +688,32 @@ impl<C: Channel> Agent<C> {
             .tool_state
             .last_tool_per_skill
             .insert(skill_name, tool_name.to_owned());
+    }
+}
+
+#[cfg(test)]
+mod display_status_tests {
+    use zeph_tools::ToolStatus;
+
+    use super::*;
+
+    #[test]
+    fn display_status_marks_non_zero_exit_and_failed_as_failures() {
+        for status in [ToolStatus::from_exit_code(3), ToolStatus::Failed] {
+            assert!(display_status(ToolResultKind::Ok(status)).is_failure());
+        }
+        assert!(display_status(ToolResultKind::Err).is_failure());
+    }
+
+    #[test]
+    fn display_status_keeps_success_with_output_as_success() {
+        assert!(!display_status(ToolResultKind::Ok(ToolStatus::Success)).is_failure());
+    }
+
+    #[test]
+    fn wire_is_error_stays_err_only_for_non_zero_exit() {
+        let outcome = ToolResultKind::Ok(ToolStatus::from_exit_code(3));
+        assert!(!outcome.is_wire_error());
+        assert!(display_status(outcome).is_failure());
     }
 }

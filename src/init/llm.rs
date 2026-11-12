@@ -227,6 +227,17 @@ pub(super) fn step_llm_provider(state: &mut WizardState, use_age: bool) -> anyho
                 .with_prompt("Enable 1M extended context? (long-context pricing above 200K tokens)")
                 .default(false)
                 .interact()?;
+            state.speed = if Confirm::new()
+                .with_prompt(
+                    "Enable fast mode? (2x price; applies only to claude-fable-5-2, claude-mythos-5-2, claude-opus-5-5)",
+                )
+                .default(false)
+                .interact()?
+            {
+                zeph_config::ServiceSpeed::Fast
+            } else {
+                zeph_config::ServiceSpeed::Standard
+            };
         }
         2 => {
             state.provider = Some(ProviderKind::OpenAi);

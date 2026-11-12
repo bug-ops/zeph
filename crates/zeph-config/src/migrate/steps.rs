@@ -94,7 +94,7 @@ use super::{
     migrate_agent_time_reminder, migrate_agents_delegation_mode,
     migrate_agents_max_spawns_per_session, migrate_agents_peer_messaging_config,
     migrate_autodream_config, migrate_caveman_config, migrate_claude_compaction_trigger,
-    migrate_cocoon_provider_notice, migrate_cocoon_show_balance,
+    migrate_claude_speed, migrate_cocoon_provider_notice, migrate_cocoon_show_balance,
     migrate_compression_predictor_config, migrate_correction_confidence_calibration,
     migrate_database_url, migrate_deep_link_config, migrate_durable_config,
     migrate_durable_hwm_advisory, migrate_durable_key_rotation, migrate_durable_shared_db,
@@ -129,9 +129,9 @@ use super::{
     migrate_shell_checkpoints_config, migrate_shell_risk_chain_window_turns,
     migrate_shell_transactional, migrate_skill_state_config, migrate_skill_trust_require_check,
     migrate_skills_registry, migrate_stt_to_provider, migrate_supervisor_config,
-    migrate_telegram_expandable_blockquote_config, migrate_telemetry_config,
-    migrate_tools_compression_config, migrate_trace_metadata, migrate_tui_delights,
-    migrate_tui_mouse, migrate_tui_panel_sizing, migrate_tui_theme_config,
+    migrate_telegram_allowed_user_ids, migrate_telegram_expandable_blockquote_config,
+    migrate_telemetry_config, migrate_tools_compression_config, migrate_trace_metadata,
+    migrate_tui_delights, migrate_tui_mouse, migrate_tui_panel_sizing, migrate_tui_theme_config,
     migrate_tui_theme_defaults, migrate_utility_high_gain_tools, migrate_vigil_config,
     migrate_worktree_config, migrate_worktree_git_timeout, migrate_worktree_quota_fields,
 };
@@ -1471,5 +1471,31 @@ impl Migration for MigrateGoalsAutoCheck {
 
     fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
         migrate_goals_auto_check(toml_src)
+    }
+}
+
+/// Step 115 — add advisory `allowed_user_ids` / `allowed_bot_ids` lines under `[telegram]`
+/// (spec 007-channels, issue #7036).
+pub(super) struct MigrateTelegramAllowedUserIds;
+impl Migration for MigrateTelegramAllowedUserIds {
+    fn name(&self) -> &'static str {
+        "migrate_telegram_allowed_user_ids"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_telegram_allowed_user_ids(toml_src)
+    }
+}
+
+/// Step 116 — add an advisory `speed` hint to Claude `[[llm.providers]]` entries
+/// (spec 003-llm-providers, issue #7032).
+pub(super) struct MigrateClaudeSpeed;
+impl Migration for MigrateClaudeSpeed {
+    fn name(&self) -> &'static str {
+        "migrate_claude_speed"
+    }
+
+    fn apply(&self, toml_src: &str) -> Result<MigrationResult, MigrateError> {
+        migrate_claude_speed(toml_src)
     }
 }

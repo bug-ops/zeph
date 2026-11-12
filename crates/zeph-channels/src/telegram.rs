@@ -8,8 +8,9 @@
 //!
 //! # Key design decisions
 //!
-//! * **Access control** — messages from users not in `allowed_users` are
-//!   dropped at the dispatcher level, before they reach the agent.
+//! * **Access control** — messages from senders not in the [`TelegramAllowlist`] are
+//!   dropped at the dispatcher level, before they reach the agent. Senders are matched
+//!   by their numeric `from.id`; a username match is a warn-logged legacy fallback.
 //! * **Streaming via edit-on-interval** — chunks are accumulated and the bot
 //!   edits a single Telegram message at most once every 3 seconds, staying
 //!   within Telegram's rate limits while still providing progressive output.
@@ -43,12 +44,169 @@ use zeph_core::channel::{
     Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage, ElicitationField,
     ElicitationFieldType, ElicitationRequest, ElicitationResponse, StatusText,
 };
+use zeph_core::config::{TelegramConfig, TelegramUserId};
 
 const MAX_MESSAGE_LEN: usize = 4096;
 const MAX_IMAGE_BYTES: u32 = 20 * 1024 * 1024;
 const MAX_TRACKED_CHATS: usize = 1000;
 
 type BotReplyCounters = Arc<Mutex<HashMap<ChatId, u32>>>;
+
+/// A Telegram sender as seen on an incoming update.
+#[derive(Debug, Clone, Copy)]
+struct Sender<'a> {
+    id: TelegramUserId,
+    username: Option<&'a str>,
+}
+
+/// How a sender matched an [`IdentityList`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatchKind {
+    Id,
+    LegacyUsername,
+}
+
+/// Numeric ids plus legacy usernames that identify one class of senders.
+#[derive(Debug, Clone, Default)]
+struct IdentityList {
+    ids: Vec<TelegramUserId>,
+    usernames: Vec<String>,
+}
+
+impl IdentityList {
+    fn new(ids: Vec<TelegramUserId>, usernames: Vec<String>) -> Self {
+        let usernames = usernames
+            .into_iter()
+            .map(|u| u.trim_start_matches('@').to_owned())
+            .filter(|u| !u.is_empty())
+            .collect();
+        Self { ids, usernames }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.ids.is_empty() && self.usernames.is_empty()
+    }
+
+    fn find(&self, sender: Sender<'_>) -> Option<MatchKind> {
+        if self.ids.contains(&sender.id) {
+            return Some(MatchKind::Id);
+        }
+        sender
+            .username
+            .map(|u| u.trim_start_matches('@'))
+            .filter(|u| self.usernames.iter().any(|a| a == u))
+            .map(|_| MatchKind::LegacyUsername)
+    }
+}
+
+/// Fail-closed allowlist of the humans and bots permitted to drive a [`TelegramChannel`].
+///
+/// Senders are authorized by their numeric Telegram id, which cannot be reassigned.
+/// Usernames are mutable and transferable, so they remain only as a legacy fallback that
+/// logs a warning on every match. An empty list never means "allow all":
+/// [`TelegramChannel::start`] rejects an allowlist with no human entries, and one with no
+/// bot entries when bot-to-bot is enabled.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_channels::telegram::TelegramAllowlist;
+/// use zeph_core::config::TelegramUserId;
+///
+/// let allowlist = TelegramAllowlist::new(vec![TelegramUserId(42)], Vec::new());
+/// assert!(allowlist.validate(false).is_ok());
+/// assert!(allowlist.validate(true).is_err());
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct TelegramAllowlist {
+    users: IdentityList,
+    bots: IdentityList,
+    /// Ids already warned about, so legacy-username matches log once per process.
+    warned: Arc<parking_lot::Mutex<std::collections::HashSet<TelegramUserId>>>,
+}
+
+impl TelegramAllowlist {
+    /// Creates an allowlist of permitted humans, by numeric id and legacy username.
+    #[must_use]
+    pub fn new(user_ids: Vec<TelegramUserId>, usernames: Vec<String>) -> Self {
+        Self {
+            users: IdentityList::new(user_ids, usernames),
+            bots: IdentityList::default(),
+            warned: Arc::default(),
+        }
+    }
+
+    /// Adds the bots permitted when bot-to-bot is enabled, by numeric id and legacy username.
+    #[must_use]
+    pub fn with_bots(mut self, bot_ids: Vec<TelegramUserId>, usernames: Vec<String>) -> Self {
+        self.bots = IdentityList::new(bot_ids, usernames);
+        self
+    }
+
+    /// Builds the allowlist from the `[telegram]` config section.
+    #[must_use]
+    pub fn from_config(cfg: &TelegramConfig) -> Self {
+        Self::new(cfg.allowed_user_ids.clone(), cfg.allowed_users.clone())
+            .with_bots(cfg.allowed_bot_ids.clone(), cfg.allowed_bots.clone())
+    }
+
+    /// Checks that the allowlist is safe to run with.
+    ///
+    /// Logs a warning when legacy usernames are configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChannelError::Other`] when no humans are allowed, or when `bot_to_bot` is
+    /// enabled and no bots are allowed.
+    pub fn validate(&self, bot_to_bot: bool) -> Result<(), ChannelError> {
+        if self.users.is_empty() {
+            tracing::error!("telegram: allowlist is empty; refusing to start an open channel");
+            return Err(ChannelError::Other(
+                "telegram allowlist must not be empty".into(),
+            ));
+        }
+        if bot_to_bot && self.bots.is_empty() {
+            tracing::error!("telegram: bot_to_bot requires a non-empty bot allowlist");
+            return Err(ChannelError::Other(
+                "telegram bot_to_bot requires allowed_bot_ids or allowed_bots".into(),
+            ));
+        }
+        if !self.users.usernames.is_empty() || !self.bots.usernames.is_empty() {
+            tracing::warn!(
+                "telegram: username allowlist entries are mutable and transferable; \
+                 migrate to allowed_user_ids / allowed_bot_ids"
+            );
+        }
+        Ok(())
+    }
+
+    fn authorize_user(&self, sender: Sender<'_>) -> bool {
+        self.authorize(&self.users, sender, "user")
+    }
+
+    fn authorize_bot(&self, sender: Sender<'_>) -> bool {
+        self.authorize(&self.bots, sender, "bot")
+    }
+
+    fn authorize(&self, list: &IdentityList, sender: Sender<'_>, kind: &str) -> bool {
+        match list.find(sender) {
+            Some(MatchKind::Id) => true,
+            Some(MatchKind::LegacyUsername) => {
+                // Short critical section, never held across an await.
+                let first = self.warned.lock().insert(sender.id);
+                if first {
+                    tracing::warn!(
+                        id = sender.id.0,
+                        kind,
+                        "authorized by mutable username; add the numeric id to the allowlist"
+                    );
+                }
+                true
+            }
+            None => false,
+        }
+    }
+}
 
 /// Telegram channel adapter using [teloxide](https://docs.rs/teloxide).
 ///
@@ -67,10 +225,9 @@ type BotReplyCounters = Arc<Mutex<HashMap<ChatId, u32>>>;
 ///
 /// # Access control
 ///
-/// The bot only accepts messages from usernames listed in `allowed_users`.
-/// Messages from any other user are silently dropped.  Passing an empty
-/// `allowed_users` list is treated as a configuration error and [`start`]
-/// will return `Err`.
+/// The bot only accepts messages from senders in its [`TelegramAllowlist`], matched by
+/// numeric Telegram id. Messages from any other sender are silently dropped. An empty
+/// allowlist is treated as a configuration error and [`start`] will return `Err`.
 ///
 /// # Built-in commands
 ///
@@ -84,10 +241,11 @@ type BotReplyCounters = Arc<Mutex<HashMap<ChatId, u32>>>;
 /// # Examples
 ///
 /// ```rust,no_run
-/// use zeph_channels::telegram::TelegramChannel;
+/// use zeph_channels::telegram::{TelegramAllowlist, TelegramChannel};
+/// use zeph_core::config::TelegramUserId;
 ///
 /// let token = std::env::var("TELEGRAM_BOT_TOKEN").unwrap();
-/// let allowed = vec!["my_username".to_string()];
+/// let allowed = TelegramAllowlist::new(vec![TelegramUserId(123_456_789)], Vec::new());
 /// let channel = TelegramChannel::new(token, allowed)
 ///     .with_stream_interval(std::time::Duration::from_millis(2000))
 ///     .start()
@@ -101,7 +259,7 @@ pub struct TelegramChannel {
     bot: Bot,
     chat_id: Option<ChatId>,
     rx: mpsc::Receiver<IncomingMessage>,
-    allowed_users: Vec<String>,
+    allowlist: Arc<TelegramAllowlist>,
     buffer: StreamingBuffer,
     message_id: Option<MessageId>,
     /// Raw Bot API 10.0 client for methods not yet covered by teloxide.
@@ -115,8 +273,6 @@ pub struct TelegramChannel {
     /// Set to `true` by the background task when `setManagedBotAccessSettings` succeeds.
     /// Remains `false` if the API call fails, disabling bot-to-bot processing.
     bot_to_bot_active: Arc<AtomicBool>,
-    /// Allowlist of bot usernames permitted when `bot_to_bot = true`. Empty = all bots.
-    allowed_bots: Vec<String>,
     /// Maximum consecutive bot replies per chat before dropping.
     max_bot_chain_depth: u32,
     /// Blockquotes with this many lines or more render as an expandable
@@ -138,7 +294,7 @@ impl std::fmt::Debug for TelegramChannel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TelegramChannel")
             .field("chat_id", &self.chat_id)
-            .field("allowed_users", &self.allowed_users)
+            .field("allowlist", &self.allowlist)
             .field("accumulated_len", &self.buffer.len())
             .field("guest_mode", &self.guest_mode)
             .field("bot_to_bot", &self.bot_to_bot)
@@ -146,7 +302,6 @@ impl std::fmt::Debug for TelegramChannel {
                 "bot_to_bot_active",
                 &self.bot_to_bot_active.load(Ordering::Relaxed),
             )
-            .field("allowed_bots_count", &self.allowed_bots.len())
             .field("max_bot_chain_depth", &self.max_bot_chain_depth)
             .field(
                 "expandable_blockquote_min_lines",
@@ -177,15 +332,15 @@ impl TelegramChannel {
     /// # Arguments
     ///
     /// * `token` — Telegram bot token obtained from [@BotFather](https://t.me/BotFather).
-    /// * `allowed_users` — Telegram usernames (without `@`) that are permitted
-    ///   to interact with the bot.  Must not be empty when [`start`] is called.
+    /// * `allowlist` — senders permitted to interact with the bot. Must contain at least
+    ///   one human when [`start`] is called.
     ///
     /// Use [`with_stream_interval`] to change the default 3-second streaming edit interval.
     ///
     /// [`start`]: TelegramChannel::start
     /// [`with_stream_interval`]: TelegramChannel::with_stream_interval
     #[must_use]
-    pub fn new(token: impl Into<String>, allowed_users: Vec<String>) -> Self {
+    pub fn new(token: impl Into<String>, allowlist: TelegramAllowlist) -> Self {
         let token = token.into();
         let bot = Bot::new(&token);
         let api_ext = TelegramApiClient::new(&token);
@@ -194,7 +349,7 @@ impl TelegramChannel {
             bot,
             chat_id: None,
             rx,
-            allowed_users,
+            allowlist: Arc::new(allowlist),
             buffer: StreamingBuffer::new(Duration::from_secs(3)),
             message_id: None,
             api_ext,
@@ -202,7 +357,6 @@ impl TelegramChannel {
             guest_query_id: None,
             bot_to_bot: false,
             bot_to_bot_active: Arc::new(AtomicBool::new(false)),
-            allowed_bots: Vec::new(),
             max_bot_chain_depth: 1,
             expandable_blockquote_min_lines:
                 crate::markdown::DEFAULT_EXPANDABLE_BLOCKQUOTE_MIN_LINES,
@@ -265,12 +419,13 @@ impl TelegramChannel {
     /// Enable bot-to-bot communication (Bot API 10.0).
     ///
     /// * `enabled` — whether to accept messages from other bots.
-    /// * `allowed` — bot usernames (with `@` prefix) allowed to interact. Empty = all bots.
     /// * `max_depth` — maximum consecutive bot replies before dropping to prevent loops.
+    ///
+    /// The permitted bots come from the [`TelegramAllowlist`]; [`start`](Self::start) fails
+    /// when this is enabled and that list is empty.
     #[must_use]
-    pub fn with_bot_to_bot(mut self, enabled: bool, allowed: Vec<String>, max_depth: u32) -> Self {
+    pub fn with_bot_to_bot(mut self, enabled: bool, max_depth: u32) -> Self {
         self.bot_to_bot = enabled;
-        self.allowed_bots = allowed;
         self.max_bot_chain_depth = max_depth;
         self
     }
@@ -329,7 +484,7 @@ impl TelegramChannel {
     /// Returns an error if the bot cannot be initialized.
     #[allow(clippy::too_many_lines)]
     pub fn start(mut self) -> Result<Self, ChannelError> {
-        crate::auth::require_configured_allowlist("telegram", &[&self.allowed_users])?;
+        self.allowlist.validate(self.bot_to_bot)?;
 
         // Bot-to-Bot: register capability with Telegram (non-fatal, fire-and-forget).
         // bot_to_bot_active starts as false; the spawned task sets it to true only on success.
@@ -382,7 +537,7 @@ impl TelegramChannel {
         if self.guest_mode {
             let token = self.bot.token().to_owned();
             let (proxy_url, proxy_handle) =
-                spawn_guest_proxy(&token, tx.clone(), self.allowed_users.clone())?;
+                spawn_guest_proxy(&token, tx.clone(), self.allowlist.clone())?;
             let proxy_url = reqwest::Url::parse(&proxy_url)
                 .map_err(|e| ChannelError::Other(format!("guest proxy URL parse error: {e}")))?;
             self.bot = self.bot.clone().set_api_url(proxy_url);
@@ -390,10 +545,9 @@ impl TelegramChannel {
         }
 
         let bot = self.bot.clone();
-        let allowed = self.allowed_users.clone();
+        let allowed = self.allowlist.clone();
         let bot_to_bot = self.bot_to_bot;
         let bot_to_bot_active = self.bot_to_bot_active.clone();
-        let allowed_bots = self.allowed_bots.clone();
         let max_bot_chain_depth = self.max_bot_chain_depth;
         let bot_reply_counters = self.bot_reply_counters.clone();
 
@@ -409,14 +563,12 @@ impl TelegramChannel {
             let tx = tx_for_factory.clone();
             let bot_to_bot = bot_to_bot;
             let bot_to_bot_active = bot_to_bot_active_for_factory.clone();
-            let allowed_bots = allowed_bots.clone();
             let max_bot_chain_depth = max_bot_chain_depth;
             let bot_reply_counters = bot_reply_counters.clone();
             async move {
                 let handler = Update::filter_message().endpoint(move |msg: Message, bot: Bot| {
                     let tx = tx.clone();
                     let allowed = allowed.clone();
-                    let allowed_bots = allowed_bots.clone();
                     let bot_reply_counters = bot_reply_counters.clone();
                     let bot_to_bot_active = bot_to_bot_active.clone();
                     async move {
@@ -427,7 +579,6 @@ impl TelegramChannel {
                             allowed,
                             bot_to_bot,
                             bot_to_bot_active,
-                            allowed_bots,
                             max_bot_chain_depth,
                             bot_reply_counters,
                         )
@@ -473,13 +624,13 @@ impl TelegramChannel {
     /// either avoid those code paths or configure a mock HTTP server via
     /// `Bot::set_api_url`.
     #[cfg(test)]
-    fn new_test(allowed_users: Vec<String>) -> (Self, mpsc::Sender<IncomingMessage>) {
+    fn new_test(allowlist: TelegramAllowlist) -> (Self, mpsc::Sender<IncomingMessage>) {
         let (tx, rx) = mpsc::channel(64);
         let channel = Self {
             bot: Bot::new("test_token"),
             chat_id: None,
             rx,
-            allowed_users,
+            allowlist: Arc::new(allowlist),
             buffer: StreamingBuffer::new(Duration::from_secs(3)),
             message_id: None,
             api_ext: TelegramApiClient::new("test_token"),
@@ -487,7 +638,6 @@ impl TelegramChannel {
             guest_query_id: None,
             bot_to_bot: false,
             bot_to_bot_active: Arc::new(AtomicBool::new(false)),
-            allowed_bots: Vec::new(),
             max_bot_chain_depth: 1,
             expandable_blockquote_min_lines:
                 crate::markdown::DEFAULT_EXPANDABLE_BLOCKQUOTE_MIN_LINES,
@@ -625,27 +775,6 @@ impl TelegramChannel {
     }
 }
 
-/// Returns `true` when `username` appears in `allowed`.
-///
-/// Delegates to the shared [`crate::auth::is_identity_allowed`] primitive.
-/// `start()` rejects empty lists before the listener is spawned via
-/// [`crate::auth::require_configured_allowlist`], so in practice `allowed` is
-/// never empty at call time.
-fn is_user_authorized(username: Option<&str>, allowed: &[String]) -> bool {
-    crate::auth::is_identity_allowed(username, allowed)
-}
-
-/// Returns `true` when `username` is in `allowed_bots` or the list is empty.
-fn is_bot_authorized(username: Option<&str>, allowed_bots: &[String]) -> bool {
-    allowed_bots.is_empty()
-        || username.is_some_and(|u| {
-            allowed_bots.iter().any(|a| {
-                // Compare with or without "@" prefix
-                a.trim_start_matches('@') == u.trim_start_matches('@')
-            })
-        })
-}
-
 /// Increments the consecutive bot-reply counter for `chat_id` and returns the new depth.
 ///
 /// Evicts one arbitrary entry when at capacity to bound memory usage.
@@ -678,7 +807,7 @@ struct GuestProxyState {
     upstream: String,
     client: reqwest::Client,
     tx: mpsc::Sender<IncomingMessage>,
-    allowed_users: Vec<String>,
+    allowlist: Arc<TelegramAllowlist>,
 }
 
 /// Guest Mode transparent HTTP proxy.
@@ -696,7 +825,7 @@ struct GuestProxyState {
 fn spawn_guest_proxy(
     token: &str,
     tx: mpsc::Sender<IncomingMessage>,
-    allowed_users: Vec<String>,
+    allowlist: Arc<TelegramAllowlist>,
 ) -> Result<(String, tokio::task::JoinHandle<()>), ChannelError> {
     let upstream = format!("https://api.telegram.org/bot{token}");
     let client = reqwest::Client::builder()
@@ -708,7 +837,7 @@ fn spawn_guest_proxy(
         upstream,
         client,
         tx,
-        allowed_users,
+        allowlist,
     };
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0")
@@ -854,7 +983,7 @@ async fn proxy_handler(State(state): State<GuestProxyState>, req: Request<Body>)
     {
         for update in result {
             if let Some(gm_val) = update.get("guest_message") {
-                extract_and_forward_guest_message(gm_val, &state.tx, &state.allowed_users).await;
+                extract_and_forward_guest_message(gm_val, &state.tx, &state.allowlist).await;
             }
         }
     }
@@ -872,7 +1001,7 @@ async fn proxy_handler(State(state): State<GuestProxyState>, req: Request<Body>)
 async fn extract_and_forward_guest_message(
     gm_val: &serde_json::Value,
     tx: &mpsc::Sender<IncomingMessage>,
-    allowed_users: &[String],
+    allowlist: &TelegramAllowlist,
 ) {
     let gm: GuestMessage = match serde_json::from_value(gm_val.clone()) {
         Ok(m) => m,
@@ -883,8 +1012,17 @@ async fn extract_and_forward_guest_message(
     };
 
     let caller_username = gm.guest_bot_caller_user.username.as_deref();
-    if !is_user_authorized(caller_username, allowed_users) {
+    let authorized = u64::try_from(gm.guest_bot_caller_user.id)
+        .map(TelegramUserId)
+        .is_ok_and(|id| {
+            allowlist.authorize_user(Sender {
+                id,
+                username: caller_username,
+            })
+        });
+    if !authorized {
         tracing::warn!(
+            id = gm.guest_bot_caller_user.id,
             username = ?caller_username,
             "guest_message from unauthorized user — dropped"
         );
@@ -960,10 +1098,9 @@ async fn handle_telegram_message(
     bot: Bot,
     msg: Message,
     tx: mpsc::Sender<IncomingMessage>,
-    allowed: Vec<String>,
+    allowlist: Arc<TelegramAllowlist>,
     bot_to_bot: bool,
     bot_to_bot_active: Arc<AtomicBool>,
-    allowed_bots: Vec<String>,
     max_bot_chain_depth: u32,
     bot_reply_counters: BotReplyCounters,
 ) -> Result<(), teloxide::RequestError> {
@@ -975,7 +1112,13 @@ async fn handle_telegram_message(
             return respond(());
         }
         let sender_username = msg.from.as_ref().and_then(|u| u.username.as_deref());
-        if !is_bot_authorized(sender_username, &allowed_bots) {
+        let sender_id = msg.from.as_ref().map(|u| TelegramUserId(u.id.0));
+        if !sender_id.is_some_and(|id| {
+            allowlist.authorize_bot(Sender {
+                id,
+                username: sender_username,
+            })
+        }) {
             tracing::warn!(sender = ?sender_username, "rejected message from unauthorized bot");
             return respond(());
         }
@@ -1009,8 +1152,12 @@ async fn handle_telegram_message(
         reset_bot_depth(&bot_reply_counters, msg.chat.id);
 
         let username = msg.from.as_ref().and_then(|u| u.username.as_deref());
-        if !is_user_authorized(username, &allowed) {
-            tracing::warn!("rejected message from unauthorized user: {:?}", username);
+        let sender_id = msg.from.as_ref().map(|u| TelegramUserId(u.id.0));
+        if !sender_id.is_some_and(|id| allowlist.authorize_user(Sender { id, username })) {
+            tracing::warn!(
+                id = ?sender_id.map(|id| id.0),
+                "rejected message from unauthorized user: {:?}", username
+            );
             return respond(());
         }
     }
@@ -1639,7 +1786,7 @@ mod tests {
     /// real Telegram endpoint.
     async fn make_mocked_channel(
         server: &MockServer,
-        allowed_users: Vec<String>,
+        allowlist: TelegramAllowlist,
     ) -> (TelegramChannel, mpsc::Sender<IncomingMessage>) {
         Mock::given(any())
             .respond_with(ResponseTemplate::new(200).set_body_json(tg_ok_message()))
@@ -1653,7 +1800,7 @@ mod tests {
             bot,
             chat_id: Some(ChatId(1)),
             rx,
-            allowed_users,
+            allowlist: Arc::new(allowlist),
             buffer: StreamingBuffer::new(Duration::from_secs(3)),
             message_id: None,
             api_ext: TelegramApiClient::with_base_url(server.uri()),
@@ -1661,7 +1808,6 @@ mod tests {
             guest_query_id: None,
             bot_to_bot: false,
             bot_to_bot_active: Arc::new(AtomicBool::new(false)),
-            allowed_bots: Vec::new(),
             max_bot_chain_depth: 1,
             expandable_blockquote_min_lines:
                 crate::markdown::DEFAULT_EXPANDABLE_BLOCKQUOTE_MIN_LINES,
@@ -1686,24 +1832,95 @@ mod tests {
     // Pure-function unit tests (no async, no network)
     // ---------------------------------------------------------------------------
 
-    #[test]
-    fn is_user_authorized_empty_allowed_permits_all() {
-        assert!(is_user_authorized(None, &[]));
-        assert!(is_user_authorized(Some("anyone"), &[]));
+    fn allow_user(id: u64) -> TelegramAllowlist {
+        TelegramAllowlist::new(vec![TelegramUserId(id)], Vec::new())
+    }
+
+    fn sender(id: u64, username: Option<&str>) -> Sender<'_> {
+        Sender {
+            id: TelegramUserId(id),
+            username,
+        }
     }
 
     #[test]
-    fn is_user_authorized_known_user_is_permitted() {
-        let allowed = vec!["alice".to_string(), "bob".to_string()];
-        assert!(is_user_authorized(Some("alice"), &allowed));
-        assert!(is_user_authorized(Some("bob"), &allowed));
+    fn user_authorized_by_numeric_id() {
+        let allowlist = allow_user(7);
+        assert!(allowlist.authorize_user(sender(7, None)));
+        assert!(allowlist.authorize_user(sender(7, Some("renamed"))));
+        assert!(!allowlist.authorize_user(sender(8, None)));
     }
 
     #[test]
-    fn is_user_authorized_unknown_user_is_rejected() {
-        let allowed = vec!["alice".to_string()];
-        assert!(!is_user_authorized(Some("eve"), &allowed));
-        assert!(!is_user_authorized(None, &allowed));
+    fn empty_allowlist_authorizes_nobody() {
+        let allowlist = TelegramAllowlist::default();
+        assert!(!allowlist.authorize_user(sender(1, Some("anyone"))));
+        assert!(!allowlist.authorize_bot(sender(1, Some("anybot"))));
+    }
+
+    #[test]
+    fn id_only_config_rejects_old_username() {
+        let allowlist = allow_user(7);
+        assert!(!allowlist.authorize_user(sender(99, Some("alice_dev"))));
+    }
+
+    #[test]
+    fn renamed_username_attacker_is_rejected_when_ids_configured() {
+        // alice (id 7) renamed away from alice_dev; an attacker (id 99) claims the name.
+        let allowlist = allow_user(7);
+        assert!(allowlist.authorize_user(sender(7, Some("alice"))));
+        assert!(!allowlist.authorize_user(sender(99, Some("alice_dev"))));
+    }
+
+    #[test]
+    fn legacy_username_warning_is_deduplicated_per_sender() {
+        let allowlist = TelegramAllowlist::new(Vec::new(), vec!["alice".to_string()]);
+        assert!(allowlist.authorize_user(sender(5, Some("alice"))));
+        assert!(allowlist.authorize_user(sender(5, Some("alice"))));
+        assert_eq!(allowlist.warned.lock().len(), 1);
+    }
+
+    #[test]
+    fn legacy_username_fallback_still_authorizes() {
+        let allowlist = TelegramAllowlist::new(Vec::new(), vec!["alice".to_string()]);
+        assert!(allowlist.authorize_user(sender(5, Some("alice"))));
+        assert!(!allowlist.authorize_user(sender(5, Some("eve"))));
+        assert!(!allowlist.authorize_user(sender(5, None)));
+    }
+
+    #[test]
+    fn bot_authorized_by_id_or_prefixed_username() {
+        let allowlist =
+            allow_user(1).with_bots(vec![TelegramUserId(500)], vec!["@trusted".to_string()]);
+        assert!(allowlist.authorize_bot(sender(500, None)));
+        assert!(allowlist.authorize_bot(sender(501, Some("trusted"))));
+        assert!(!allowlist.authorize_bot(sender(502, Some("evil"))));
+        assert!(!allowlist.authorize_bot(sender(503, None)));
+    }
+
+    #[test]
+    fn validate_rejects_bot_to_bot_without_bot_allowlist() {
+        let allowlist = allow_user(1);
+        assert!(allowlist.validate(false).is_ok());
+        assert_matches!(allowlist.validate(true), Err(ChannelError::Other(_)));
+        let with_bots = allowlist.with_bots(vec![TelegramUserId(2)], Vec::new());
+        assert!(with_bots.validate(true).is_ok());
+    }
+
+    #[test]
+    fn from_config_maps_all_four_lists() {
+        let cfg: TelegramConfig = serde_json::from_value(serde_json::json!({
+            "allowed_user_ids": [1],
+            "allowed_users": ["alice"],
+            "allowed_bot_ids": [2],
+            "allowed_bots": ["@bot"],
+        }))
+        .unwrap();
+        let allowlist = TelegramAllowlist::from_config(&cfg);
+        assert!(allowlist.authorize_user(sender(1, None)));
+        assert!(allowlist.authorize_user(sender(9, Some("alice"))));
+        assert!(allowlist.authorize_bot(sender(2, None)));
+        assert!(allowlist.authorize_bot(sender(9, Some("bot"))));
     }
 
     #[test]
@@ -1716,7 +1933,7 @@ mod tests {
 
     #[test]
     fn buffer_should_flush_on_first_chunk() {
-        let channel = TelegramChannel::new("test_token".to_string(), Vec::new());
+        let channel = TelegramChannel::new("test_token".to_string(), TelegramAllowlist::default());
         assert!(channel.buffer.should_flush());
     }
 
@@ -1731,7 +1948,8 @@ mod tests {
 
     #[test]
     fn buffer_should_not_flush_within_threshold() {
-        let mut channel = TelegramChannel::new("test_token".to_string(), Vec::new());
+        let mut channel =
+            TelegramChannel::new("test_token".to_string(), TelegramAllowlist::default());
         channel.buffer.push("x");
         channel.buffer.mark_flushed();
         assert!(!channel.buffer.should_flush());
@@ -1750,7 +1968,7 @@ mod tests {
     #[test]
     fn with_stream_interval_clamps_below_500ms() {
         // Verify clamping doesn't panic and builder succeeds
-        let channel = TelegramChannel::new("test_token".to_string(), Vec::new())
+        let channel = TelegramChannel::new("test_token".to_string(), TelegramAllowlist::default())
             .with_stream_interval(Duration::from_millis(100));
         // After clamping to 500ms, buffer should be ready to flush (no last_edit yet)
         assert!(channel.buffer.should_flush());
@@ -1759,7 +1977,7 @@ mod tests {
     #[test]
     fn with_stream_interval_default_is_3s() {
         // Just verify the builder compiles and returns a valid channel
-        let channel = TelegramChannel::new("test_token", Vec::new());
+        let channel = TelegramChannel::new("test_token", TelegramAllowlist::default());
         assert!(channel.buffer.should_flush()); // no prior edit
     }
 
@@ -1776,8 +1994,17 @@ mod tests {
     }
 
     #[test]
+    fn start_rejects_bot_to_bot_with_empty_bot_allowlist() {
+        let result = TelegramChannel::new("test_token".to_string(), allow_user(1))
+            .with_bot_to_bot(true, 3)
+            .start();
+        assert_matches!(result.unwrap_err(), ChannelError::Other(_));
+    }
+
+    #[test]
     fn start_rejects_empty_allowed_users() {
-        let result = TelegramChannel::new("test_token".to_string(), Vec::new()).start();
+        let result =
+            TelegramChannel::new("test_token".to_string(), TelegramAllowlist::default()).start();
         assert!(result.is_err());
         assert_matches!(result.unwrap_err(), ChannelError::Other(_));
     }
@@ -1788,7 +2015,7 @@ mod tests {
 
     #[tokio::test]
     async fn recv_returns_channel_message_when_injected() {
-        let (mut channel, tx) = TelegramChannel::new_test(vec![]);
+        let (mut channel, tx) = TelegramChannel::new_test(TelegramAllowlist::default());
         tx.send(plain_message("hello world")).await.unwrap();
         let msg = channel.recv().await.unwrap().unwrap();
         assert_eq!(msg.text, "hello world");
@@ -1802,13 +2029,13 @@ mod tests {
     /// `requires_input_sanitization`, not at the channel adapter.
     #[test]
     fn requires_input_sanitization_is_true() {
-        let channel = TelegramChannel::new("test_token".to_string(), Vec::new());
+        let channel = TelegramChannel::new("test_token".to_string(), TelegramAllowlist::default());
         assert!(channel.requires_input_sanitization());
     }
 
     #[tokio::test]
     async fn recv_reset_command_routed_correctly() {
-        let (mut channel, tx) = TelegramChannel::new_test(vec![]);
+        let (mut channel, tx) = TelegramChannel::new_test(TelegramAllowlist::default());
         tx.send(plain_message("/reset")).await.unwrap();
         let msg = channel.recv().await.unwrap().unwrap();
         assert_eq!(msg.text, "/reset");
@@ -1816,7 +2043,7 @@ mod tests {
 
     #[tokio::test]
     async fn recv_skills_command_routed_correctly() {
-        let (mut channel, tx) = TelegramChannel::new_test(vec![]);
+        let (mut channel, tx) = TelegramChannel::new_test(TelegramAllowlist::default());
         tx.send(plain_message("/skills")).await.unwrap();
         let msg = channel.recv().await.unwrap().unwrap();
         assert_eq!(msg.text, "/skills");
@@ -1824,7 +2051,7 @@ mod tests {
 
     #[tokio::test]
     async fn recv_unknown_command_passed_through() {
-        let (mut channel, tx) = TelegramChannel::new_test(vec![]);
+        let (mut channel, tx) = TelegramChannel::new_test(TelegramAllowlist::default());
         tx.send(plain_message("/unknown_cmd arg")).await.unwrap();
         let msg = channel.recv().await.unwrap().unwrap();
         assert_eq!(msg.text, "/unknown_cmd arg");
@@ -1832,7 +2059,7 @@ mod tests {
 
     #[tokio::test]
     async fn recv_returns_none_when_sender_dropped() {
-        let (mut channel, tx) = TelegramChannel::new_test(vec![]);
+        let (mut channel, tx) = TelegramChannel::new_test(TelegramAllowlist::default());
         drop(tx);
         let result = channel.recv().await.unwrap();
         assert!(result.is_none());
@@ -1844,7 +2071,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_chunk_accumulates_text_without_api_call() {
-        let (mut channel, _tx) = TelegramChannel::new_test(vec![]);
+        let (mut channel, _tx) = TelegramChannel::new_test(TelegramAllowlist::default());
         // Suppress the API call by marking flushed (throttle active).
         channel.buffer.push("seed");
         channel.buffer.mark_flushed();
@@ -1858,7 +2085,7 @@ mod tests {
 
     #[tokio::test]
     async fn flush_chunks_clears_state_when_no_accumulated_and_no_message_id() {
-        let (mut channel, _tx) = TelegramChannel::new_test(vec![]);
+        let (mut channel, _tx) = TelegramChannel::new_test(TelegramAllowlist::default());
         // buffer is empty and message_id is None — no API call expected.
         channel.buffer.mark_flushed();
 
@@ -1874,7 +2101,7 @@ mod tests {
     #[tokio::test]
     async fn flush_chunks_sends_when_accumulated_but_message_id_is_none() {
         let server = MockServer::start().await;
-        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, _tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
 
         // Suppress the periodic send by marking buffer as flushed (interval not elapsed).
         channel.buffer.push("short reply");
@@ -1899,7 +2126,7 @@ mod tests {
     #[tokio::test]
     async fn recv_start_consumed_internally_without_returning_to_caller() {
         let server = MockServer::start().await;
-        let (mut channel, tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
 
         // /start is consumed; recv() loops and waits for the next message.
         tx.send(plain_message("/start")).await.unwrap();
@@ -1916,7 +2143,7 @@ mod tests {
     #[tokio::test]
     async fn flush_chunks_calls_edit_and_clears_state_when_message_id_set() {
         let server = MockServer::start().await;
-        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, _tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
 
         channel.buffer.push("partial response");
         channel.buffer.mark_flushed();
@@ -1936,7 +2163,7 @@ mod tests {
     #[tokio::test]
     async fn send_status_posts_message_when_chat_active() {
         let server = MockServer::start().await;
-        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, _tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
 
         channel
             .send_status(&StatusText::new("Searching memory…").unwrap())
@@ -1953,7 +2180,7 @@ mod tests {
     #[tokio::test]
     async fn clear_status_is_noop() {
         let server = MockServer::start().await;
-        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, _tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
 
         channel.clear_status().await.unwrap();
 
@@ -1967,7 +2194,7 @@ mod tests {
     #[tokio::test]
     async fn send_status_noop_without_active_chat() {
         let server = MockServer::start().await;
-        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, _tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
         channel.chat_id = None;
 
         channel
@@ -1985,7 +2212,7 @@ mod tests {
     #[tokio::test]
     async fn send_status_noop_in_guest_context() {
         let server = MockServer::start().await;
-        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, _tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
         channel.guest_query_id = Some("qid".to_string());
 
         channel
@@ -2071,7 +2298,7 @@ mod tests {
     async fn confirm_skips_message_from_different_chat_and_accepts_initiator() {
         let server = MockServer::start().await;
         // make_mocked_channel sets chat_id = Some(ChatId(1))
-        let (mut channel, tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
 
         // Message from a different user (chat 2) arrives first.
         tx.send(message_from_chat("yes", 2)).await.unwrap();
@@ -2089,7 +2316,7 @@ mod tests {
     #[tokio::test]
     async fn confirm_accepts_initiator_non_yes_reply() {
         let server = MockServer::start().await;
-        let (mut channel, tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
 
         tx.send(message_from_chat("no", 1)).await.unwrap();
 
@@ -2104,7 +2331,7 @@ mod tests {
     #[tokio::test]
     async fn send_or_edit_splits_long_message_into_multiple_sends() {
         let server = MockServer::start().await;
-        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, _tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
 
         // Build text that exceeds MAX_MESSAGE_LEN after markdown_to_telegram pass.
         // Plain ASCII repeated is safe: markdown_to_telegram won't expand it beyond itself.
@@ -2125,7 +2352,7 @@ mod tests {
     #[tokio::test]
     async fn send_or_edit_single_message_when_within_limit() {
         let server = MockServer::start().await;
-        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, _tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
 
         channel.buffer.push("short text");
 
@@ -2144,7 +2371,7 @@ mod tests {
     #[tokio::test]
     async fn send_or_edit_splits_when_edit_overflows() {
         let server = MockServer::start().await;
-        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, _tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
 
         // Pre-set a message_id to trigger the edit branch.
         channel.message_id = Some(teloxide::types::MessageId(42));
@@ -2195,7 +2422,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, _tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
 
         channel
             .send("hello")
@@ -2222,7 +2449,7 @@ mod tests {
     #[tokio::test]
     async fn elicit_happy_path_string_field_returns_accepted() {
         let server = MockServer::start().await;
-        let (mut channel, tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
 
         let request = ElicitationRequest {
             server_name: "test-server".to_owned(),
@@ -2251,7 +2478,7 @@ mod tests {
     #[tokio::test]
     async fn elicit_field_key_uses_raw_name_not_sanitized() {
         let server = MockServer::start().await;
-        let (mut channel, tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
 
         // Field name contains a space — the old sanitize_field_key would strip it to "passphrase".
         let request = ElicitationRequest {
@@ -2286,7 +2513,7 @@ mod tests {
     #[tokio::test]
     async fn elicit_cancel_command_returns_cancelled() {
         let server = MockServer::start().await;
-        let (mut channel, tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
 
         let request = ElicitationRequest {
             server_name: "test-server".to_owned(),
@@ -2321,31 +2548,6 @@ mod tests {
             result.is_err(),
             "expected Err(Elapsed) for elicitation timeout, got recv result"
         );
-    }
-
-    // ---------------------------------------------------------------------------
-    // is_bot_authorized — pure function tests
-    // ---------------------------------------------------------------------------
-
-    #[test]
-    fn is_bot_authorized_empty_list_permits_all() {
-        assert!(is_bot_authorized(None, &[]));
-        assert!(is_bot_authorized(Some("@any_bot"), &[]));
-    }
-
-    #[test]
-    fn is_bot_authorized_known_bot_permitted() {
-        let allowed = vec!["@trusted".to_string()];
-        assert!(is_bot_authorized(Some("@trusted"), &allowed));
-        // Without @ prefix on the username side
-        assert!(is_bot_authorized(Some("trusted"), &allowed));
-    }
-
-    #[test]
-    fn is_bot_authorized_unknown_bot_rejected() {
-        let allowed = vec!["@trusted".to_string()];
-        assert!(!is_bot_authorized(Some("@evil"), &allowed));
-        assert!(!is_bot_authorized(None, &allowed));
     }
 
     // ---------------------------------------------------------------------------
@@ -2397,7 +2599,7 @@ mod tests {
 
     #[tokio::test]
     async fn guest_context_stored_on_recv() {
-        let (mut channel, tx) = TelegramChannel::new_test(vec!["alice".to_string()]);
+        let (mut channel, tx) = TelegramChannel::new_test(allow_user(1));
         tx.send(IncomingMessage {
             chat_id: ChatId(1),
             text: "hello".to_string(),
@@ -2414,7 +2616,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_chunk_does_not_call_api_in_guest_context() {
-        let (mut channel, _tx) = TelegramChannel::new_test(vec![]);
+        let (mut channel, _tx) = TelegramChannel::new_test(TelegramAllowlist::default());
         channel.guest_query_id = Some("qid".to_string());
         // buffer has no last_edit so should_flush() returns true — but guest guard prevents API call
 
@@ -2444,7 +2646,7 @@ mod tests {
             })));
         let answer_handle = server.register_as_scoped(answer_mock).await;
 
-        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, _tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
         channel.guest_query_id = Some("qid42".to_string());
         channel.buffer.push("response text");
 
@@ -2475,7 +2677,7 @@ mod tests {
             })));
         let answer_handle = server.register_as_scoped(answer_mock).await;
 
-        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, _tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
         channel.guest_query_id = Some("qid42".to_string());
         channel
             .buffer
@@ -2523,7 +2725,8 @@ mod tests {
                 "result": {"message_id": 1, "chat_id": 2}
             })));
         let guest_handle = guest_server.register_as_scoped(guest_mock).await;
-        let (mut guest_channel, _tx) = make_mocked_channel(&guest_server, vec![]).await;
+        let (mut guest_channel, _tx) =
+            make_mocked_channel(&guest_server, TelegramAllowlist::default()).await;
         guest_channel.guest_query_id = Some("qid".to_string());
         guest_channel.buffer.push(input);
         guest_channel.flush_chunks().await.unwrap();
@@ -2538,7 +2741,8 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(tg_ok_message()))
             .mount(&regular_server)
             .await;
-        let (mut regular_channel, _tx2) = make_mocked_channel(&regular_server, vec![]).await;
+        let (mut regular_channel, _tx2) =
+            make_mocked_channel(&regular_server, TelegramAllowlist::default()).await;
         regular_channel.send(input).await.unwrap();
         let regular_requests = regular_server.received_requests().await.unwrap();
         let send_req = regular_requests
@@ -2568,7 +2772,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(tg_ok_message()))
             .mount(&server)
             .await;
-        let (mut channel, _tx) = make_mocked_channel(&server, vec![]).await;
+        let (mut channel, _tx) = make_mocked_channel(&server, TelegramAllowlist::default()).await;
         channel = channel.with_expandable_blockquote_min_lines(3);
 
         let quote = "> line 1\n> line 2\n> line 3";
@@ -2607,10 +2811,9 @@ mod tests {
             bot,
             msg,
             tx.clone(),
-            vec!["human".to_string()],
+            Arc::new(allow_user(1)),
             false, // bot_to_bot disabled
             bot_to_bot_active,
-            vec![],
             3,
             bot_reply_counters,
         )
@@ -2623,6 +2826,75 @@ mod tests {
             rx.recv().await.is_none(),
             "bot message must be dropped when bot_to_bot=false"
         );
+    }
+
+    fn text_message(from_id: u64, is_bot: bool, username: &str) -> Message {
+        serde_json::from_value(serde_json::json!({
+            "message_id": 1,
+            "date": 1_700_000_000_i64,
+            "chat": {"id": 1, "type": "private"},
+            "from": {
+                "id": from_id,
+                "is_bot": is_bot,
+                "first_name": "X",
+                "username": username
+            },
+            "text": "hi"
+        }))
+        .unwrap()
+    }
+
+    async fn deliver(msg: Message, allowlist: TelegramAllowlist, bot_to_bot: bool) -> bool {
+        let (tx, mut rx) = mpsc::channel::<IncomingMessage>(8);
+        let counters: BotReplyCounters = Arc::new(Mutex::new(HashMap::new()));
+        handle_telegram_message(
+            Bot::new("test_token"),
+            msg,
+            tx.clone(),
+            Arc::new(allowlist),
+            bot_to_bot,
+            Arc::new(AtomicBool::new(bot_to_bot)),
+            3,
+            counters,
+        )
+        .await
+        .unwrap();
+        drop(tx);
+        rx.recv().await.is_some()
+    }
+
+    #[tokio::test]
+    async fn handler_accepts_allowed_id_and_rejects_renamed_username_claimant() {
+        assert!(deliver(text_message(7, false, "alice"), allow_user(7), false).await);
+        assert!(!deliver(text_message(99, false, "alice_dev"), allow_user(7), false).await);
+    }
+
+    #[tokio::test]
+    async fn handler_bot_to_bot_requires_allowlisted_bot() {
+        let allowlist = allow_user(1).with_bots(vec![TelegramUserId(500)], Vec::new());
+        assert!(deliver(text_message(500, true, "good_bot"), allowlist.clone(), true).await);
+        assert!(!deliver(text_message(501, true, "evil_bot"), allowlist, true).await);
+        assert!(!deliver(text_message(500, true, "good_bot"), allow_user(1), true).await);
+    }
+
+    #[tokio::test]
+    async fn guest_message_authorized_by_numeric_id() {
+        let gm = |id: i64, username: &str| {
+            serde_json::json!({
+                "guest_query_id": "q1",
+                "text": "hi",
+                "guest_bot_caller_user": {"id": id, "is_bot": false, "first_name": "X", "username": username},
+                "guest_bot_caller_chat": {"id": 1, "type": "private"}
+            })
+        };
+        let (tx, mut rx) = mpsc::channel::<IncomingMessage>(8);
+        let allowlist = allow_user(7);
+        extract_and_forward_guest_message(&gm(7, "alice"), &tx, &allowlist).await;
+        extract_and_forward_guest_message(&gm(99, "alice_dev"), &tx, &allowlist).await;
+        extract_and_forward_guest_message(&gm(-5, "alice"), &tx, &allowlist).await;
+        drop(tx);
+        assert!(rx.recv().await.is_some());
+        assert!(rx.recv().await.is_none(), "only the allowlisted id passes");
     }
 
     // ---------------------------------------------------------------------------
@@ -2648,7 +2920,7 @@ mod tests {
         // new_test creates a channel with a real Bot pointed at a dummy URL.
         // The bot won't be called because we immediately check the registry
         // before the spawned dispatcher has time to make a request.
-        let (channel, _tx) = TelegramChannel::new_test(vec!["user".to_string()]);
+        let (channel, _tx) = TelegramChannel::new_test(allow_user(1));
         let channel = channel.with_supervisor(sup.clone());
 
         // start() spawns the telegram_listener task via supervisor.

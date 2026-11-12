@@ -9,7 +9,7 @@ use std::str::FromStr;
 use zeph_common::trust_level::TurnContextTrust;
 
 use crate::sqlite_time::parse_sqlite_datetime_to_unix;
-use crate::types::{EdgeId, EntityId, MessageId};
+use crate::types::{CommunityId, ConversationId, EdgeId, EntityId, EpisodeId, MessageId};
 
 /// MAGMA edge type: the semantic category of a relationship between two entities.
 ///
@@ -251,7 +251,7 @@ impl Edge {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Community {
     /// `SQLite` row ID.
-    pub id: i64,
+    pub id: CommunityId,
     /// Short name for the community (e.g. `"Rust toolchain"`).
     pub name: String,
     /// LLM-generated summary of what the community's entities share.
@@ -423,8 +423,8 @@ pub(crate) fn decode_trust_level(
 /// more salient than facts from older episodes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Episode {
-    pub id: i64,
-    pub conversation_id: i64,
+    pub id: EpisodeId,
+    pub conversation_id: ConversationId,
     pub created_at: String,
     pub closed_at: Option<String>,
 }
@@ -435,7 +435,7 @@ pub struct ScoredEntity {
     pub entity: Entity,
     pub fts_score: f32,
     pub structural_score: f32,
-    pub community_id: Option<i64>,
+    pub community_id: Option<CommunityId>,
 }
 
 /// A recalled fact from the knowledge graph, ready for context injection.

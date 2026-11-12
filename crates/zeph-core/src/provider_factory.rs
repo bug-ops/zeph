@@ -301,6 +301,7 @@ fn build_claude_provider(
         .with_server_compaction(entry.server_compaction)
         .with_server_compaction_trigger(entry.server_compaction_trigger_tokens)
         .with_prompt_cache_ttl(entry.prompt_cache_ttl)
+        .with_speed(entry.speed)
         .with_stream_limits(config.llm.stream_limits.clone())
         .with_output_schema_forwarding(
             config.mcp.forward_output_schema,

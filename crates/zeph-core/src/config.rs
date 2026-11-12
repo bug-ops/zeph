@@ -23,7 +23,7 @@ pub use zeph_config::{
     SchedulerDaemonConfig, SchedulerSecurityConfig, SecurityConfig, SemanticConfig, SessionsConfig,
     SidequestConfig, SkillFilter, SkillPromptMode, SkillsConfig, SlackConfig, StoreRoutingConfig,
     StoreRoutingStrategy, SttConfig, SubAgentConfig, SubAgentLifecycleHooks, SubagentHooks,
-    TaskSupervisorConfig, TelegramConfig, TimeoutConfig, ToolDiscoveryConfig,
+    TaskSupervisorConfig, TelegramConfig, TelegramUserId, TimeoutConfig, ToolDiscoveryConfig,
     ToolDiscoveryStrategyConfig, ToolFilterConfig, ToolPolicy, TraceConfig, TrustConfig, TuiConfig,
     VaultConfig, VectorBackend,
 };

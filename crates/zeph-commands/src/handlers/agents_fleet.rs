@@ -19,8 +19,8 @@ use crate::{CommandError, CommandHandler, CommandOutput, SlashCategory};
 /// [`format_fleet_section`] for display.
 #[derive(Debug, Clone)]
 pub struct FleetEntry {
-    /// UUID string of the goal.
-    pub goal_id: String,
+    /// Goal identifier.
+    pub goal_id: zeph_common::GoalId,
     /// First 80 characters of goal text (may be followed by `…`).
     pub goal_text_short: String,
     /// Current autonomous state.
@@ -43,10 +43,11 @@ pub struct FleetEntry {
 /// ```rust
 /// use std::time::Duration;
 /// use zeph_commands::handlers::agents_fleet::{FleetEntry, format_fleet_section};
+/// use zeph_common::GoalId;
 /// use zeph_config::autonomous::AutonomousState;
 ///
 /// let entries = vec![FleetEntry {
-///     goal_id: "a1b2c3d4".to_owned(),
+///     goal_id: GoalId::parse("a1b2c3d4-0000-4000-8000-000000000000").unwrap(),
 ///     goal_text_short: "Deploy the new API".to_owned(),
 ///     state: AutonomousState::Running,
 ///     turns_executed: 12,
@@ -56,7 +57,7 @@ pub struct FleetEntry {
 ///
 /// let out = format_fleet_section(&entries);
 /// assert!(out.contains("Autonomous Goals:"));
-/// assert!(out.contains("a1b2c"));
+/// assert!(out.contains("a1b2c3d4"));
 /// assert!(out.contains("running"));
 /// assert!(out.contains("12/20"));
 /// ```
@@ -74,7 +75,7 @@ pub fn format_fleet_section(entries: &[FleetEntry]) -> String {
     );
 
     for e in entries {
-        let short_id = e.goal_id.get(..8).unwrap_or(&e.goal_id);
+        let short_id = e.goal_id.short();
         let elapsed = format_elapsed(e.elapsed);
         let _ = writeln!(
             out,
@@ -172,7 +173,8 @@ mod tests {
         secs: u64,
     ) -> FleetEntry {
         FleetEntry {
-            goal_id: id.to_owned(),
+            goal_id: zeph_common::GoalId::parse(&format!("{id}-0000-4000-8000-000000000000"))
+                .unwrap(),
             goal_text_short: text.to_owned(),
             state,
             turns_executed: turns,
@@ -189,7 +191,7 @@ mod tests {
     #[test]
     fn single_running_entry_contains_expected_fields() {
         let entries = vec![entry(
-            "a1b2c3d4e5",
+            "a1b2c3d4",
             "Deploy the new API",
             AutonomousState::Running,
             12,

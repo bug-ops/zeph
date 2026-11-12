@@ -664,6 +664,13 @@ impl StreamUsage {
 
 // ── Request body types ────────────────────────────────────────────────────────
 
+/// Wire value of the top-level `speed` field; only fast mode is ever sent.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum SpeedWire {
+    Fast,
+}
+
 #[derive(Serialize)]
 pub(super) struct RequestBody<'a> {
     pub model: &'a str,
@@ -681,6 +688,8 @@ pub(super) struct RequestBody<'a> {
     pub temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_management: Option<ContextManagement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<SpeedWire>,
 }
 
 #[derive(Serialize)]
@@ -700,6 +709,8 @@ pub(super) struct VisionRequestBody<'a> {
     pub temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_management: Option<ContextManagement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<SpeedWire>,
 }
 
 #[derive(Serialize)]
@@ -720,6 +731,8 @@ pub(super) struct ToolRequestBody<'a> {
     pub temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_management: Option<ContextManagement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<SpeedWire>,
 }
 
 #[derive(Serialize)]
@@ -746,6 +759,8 @@ pub(super) struct TypedToolRequestBody<'a> {
     pub temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_management: Option<ContextManagement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<SpeedWire>,
 }
 
 /// Structured-output request: the response text is constrained by `output_config.format`.
@@ -761,6 +776,8 @@ pub(super) struct StructuredTextRequestBody<'a> {
     pub output_config: OutputConfig,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<SpeedWire>,
 }
 
 /// Wire `tool_choice`: force one named tool, or let the model decide.

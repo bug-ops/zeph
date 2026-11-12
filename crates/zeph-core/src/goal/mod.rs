@@ -39,22 +39,23 @@ pub use store::{GoalError, GoalStore};
 pub use supervisor::GoalSupervisor;
 
 use chrono::{DateTime, Utc};
+use zeph_common::GoalId;
 
 /// A persisted long-horizon goal row.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Goal {
-    /// Unique identifier (UUID v4 string).
-    pub id: String,
+    /// Unique identifier.
+    pub id: GoalId,
     /// User-provided goal text (max `[goals] max_text_chars` chars at creation time).
     pub text: String,
     /// Current FSM status.
     pub status: GoalStatus,
     /// Optional token budget. `None` means unlimited.
-    pub token_budget: Option<i64>,
+    pub token_budget: Option<u64>,
     /// Number of conversation turns completed under this goal.
-    pub turns_used: i64,
+    pub turns_used: u64,
     /// Total tokens consumed across all turns under this goal.
-    pub tokens_used: i64,
+    pub tokens_used: u64,
     /// When the goal was created.
     pub created_at: DateTime<Utc>,
     /// Last mutation time; used as a CAS guard for stale-update detection.
@@ -68,8 +69,8 @@ pub struct Goal {
 /// Carries only what TUI and command handlers need, without pulling `zeph-core` into `zeph-tui`.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GoalSnapshot {
-    /// UUID string of the goal.
-    pub id: String,
+    /// Goal identifier.
+    pub id: GoalId,
     /// Goal text, pre-validated to fit within `max_text_chars`.
     pub text: String,
     /// Current FSM status.
@@ -88,9 +89,9 @@ impl From<Goal> for GoalSnapshot {
             id: g.id,
             text: g.text,
             status: g.status,
-            turns_used: g.turns_used.max(0).cast_unsigned(),
-            tokens_used: g.tokens_used.max(0).cast_unsigned(),
-            token_budget: g.token_budget.map(|b| b.max(0).cast_unsigned()),
+            turns_used: g.turns_used,
+            tokens_used: g.tokens_used,
+            token_budget: g.token_budget,
         }
     }
 }

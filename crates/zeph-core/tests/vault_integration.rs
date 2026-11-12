@@ -76,12 +76,14 @@ async fn age_vault_injects_token_into_existing_telegram_config() {
     // Pre-populate the telegram section (simulates an explicit [telegram] block in TOML).
     config.telegram = Some(zeph_core::config::TelegramConfig {
         token: None,
+        allowed_user_ids: vec![],
         allowed_users: vec!["test_user".to_owned()],
         skills: zeph_core::config::ChannelSkillsConfig::default(),
         allowed_tools: None,
         stream_interval_ms: 3000,
         guest_mode: false,
         bot_to_bot: false,
+        allowed_bot_ids: vec![],
         allowed_bots: vec![],
         max_bot_chain_depth: 3,
         expandable_blockquote_min_lines: 10,

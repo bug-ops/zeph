@@ -82,14 +82,14 @@ use self::request::{
 };
 use self::types::{
     AnthropicContentBlock, AnthropicTool, ApiMessage, BlockBinding, CompactTrigger, ContextEdit,
-    ContextManagement, OutputConfig, OutputFormat, RequestBody, StructuredApiMessage,
+    ContextManagement, OutputConfig, OutputFormat, RequestBody, SpeedWire, StructuredApiMessage,
     StructuredTextRequestBody, SystemContentBlock, ThinkingParam, ThinkingType, ToolApiResponse,
     ToolChoice, ToolRequestBody, TypedToolRequestBody, VisionRequestBody,
 };
 use crate::error::check_refusal;
 
 use self::types::budget_to_effort;
-use zeph_config::{CacheTtl, CompactionTrigger, ThinkingConfig, ThinkingEffort};
+use zeph_config::{CacheTtl, CompactionTrigger, ServiceSpeed, ThinkingConfig, ThinkingEffort};
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -147,6 +147,8 @@ pub struct ClaudeProvider {
     enable_extended_context: bool,
     /// Prompt cache TTL variant. `None` means default (~5 min ephemeral).
     prompt_cache_ttl: Option<CacheTtl>,
+    /// Effective service speed: `Fast` only when the model supports it (see [`Self::with_speed`]).
+    speed: ServiceSpeed,
     /// SSE buffer size caps (tool JSON, thinking, compaction). Sourced from config.
     stream_limits: zeph_config::StreamLimits,
     /// Name reported by [`LlmProvider::name`]. Defaults to `"claude"`; set the TOML-configured
@@ -186,6 +188,7 @@ impl fmt::Debug for ClaudeProvider {
             .field("model_kind", &self.model_kind)
             .field("enable_extended_context", &self.enable_extended_context)
             .field("prompt_cache_ttl", &self.prompt_cache_ttl)
+            .field("speed", &self.speed)
             .field("stream_limits", &self.stream_limits)
             .field("forward_output_schema", &self.forward_output_schema)
             .field("output_schema_hint_bytes", &self.output_schema_hint_bytes)
@@ -220,6 +223,7 @@ impl Clone for ClaudeProvider {
             model_kind: self.model_kind,
             enable_extended_context: self.enable_extended_context,
             prompt_cache_ttl: self.prompt_cache_ttl,
+            speed: self.speed,
             forward_output_schema: self.forward_output_schema,
             output_schema_hint_bytes: self.output_schema_hint_bytes,
             max_tool_description_bytes: self.max_tool_description_bytes,
@@ -373,6 +377,7 @@ fn record_api_usage(tracker: &UsageTracker, usage: &types::ApiUsage) {
         }),
         reasoning: None,
         auxiliary: usage.auxiliary(),
+        speed: ServiceSpeed::Standard,
     }));
 }
 
@@ -489,6 +494,7 @@ impl ClaudeProvider {
             model_kind,
             enable_extended_context: false,
             prompt_cache_ttl: None,
+            speed: ServiceSpeed::Standard,
             stream_limits: zeph_config::StreamLimits::default(),
             provider_name: "claude".to_owned(),
             api_url: API_URL.to_owned(),
@@ -751,6 +757,34 @@ impl ClaudeProvider {
         }
         self.prompt_cache_ttl = ttl;
         self
+    }
+
+    /// Request a service speed tier for every message call.
+    ///
+    /// `Fast` is applied only when the model supports fast mode (2x price); otherwise a warning
+    /// is logged once here and the provider stays at standard speed, so the `speed` field can
+    /// never reach a model that does not accept it.
+    #[must_use]
+    pub fn with_speed(mut self, speed: ServiceSpeed) -> Self {
+        self.speed = match speed {
+            ServiceSpeed::Fast if !self.capabilities().supports_fast_mode => {
+                tracing::warn!(
+                    model = %self.model,
+                    "fast mode requested but the model does not support it; using standard speed"
+                );
+                ServiceSpeed::Standard
+            }
+            other => other,
+        };
+        self
+    }
+
+    /// Wire `speed` member for request bodies; `None` unless fast mode is active.
+    fn speed_wire(&self) -> Option<SpeedWire> {
+        match self.speed {
+            ServiceSpeed::Fast => Some(SpeedWire::Fast),
+            ServiceSpeed::Standard => None,
+        }
     }
 
     /// Override SSE streaming buffer caps (tool JSON, thinking, compaction).
@@ -1405,6 +1439,7 @@ impl ClaudeProvider {
                 output_config,
                 temperature,
                 context_management: None,
+                speed: self.speed_wire(),
             };
             let mut req = self
                 .client
@@ -1429,6 +1464,7 @@ impl ClaudeProvider {
             output_config,
             temperature,
             context_management: None,
+            speed: self.speed_wire(),
         };
 
         let mut req = self
@@ -1553,6 +1589,7 @@ impl ClaudeProvider {
                 output_config,
                 temperature,
                 context_management: self.context_management(),
+                speed: self.speed_wire(),
             };
             let beta = self.beta_header(has_tools);
             let response = send_with_retry(
@@ -1661,6 +1698,7 @@ impl ClaudeProvider {
             output_config,
             temperature,
             context_management: None,
+            speed: self.speed_wire(),
         };
         loop {
             let beta = self.beta_header(true);
@@ -1744,6 +1782,7 @@ impl ClaudeProvider {
             thinking: thinking_param,
             output_config,
             temperature,
+            speed: self.speed_wire(),
         };
         loop {
             let beta = self.beta_header(false);
@@ -1945,7 +1984,10 @@ impl LlmProvider for ClaudeProvider {
     }
 
     fn last_response_usage(&self) -> Option<crate::provider::ResponseUsage> {
-        self.usage.last()
+        self.usage.last().map(|usage| ResponseUsage {
+            speed: self.speed,
+            ..usage
+        })
     }
 
     fn last_ttft_ms(&self) -> Option<u64> {
@@ -2001,6 +2043,7 @@ impl LlmProvider for ClaudeProvider {
                 output_config,
                 temperature,
                 context_management: self.context_management(),
+                speed: self.speed_wire(),
             };
             return serde_json::to_value(&body)
                 .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }));
@@ -2023,6 +2066,7 @@ impl LlmProvider for ClaudeProvider {
                 output_config,
                 temperature,
                 context_management: None,
+                speed: self.speed_wire(),
             };
             return serde_json::to_value(&body)
                 .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }));
@@ -2039,6 +2083,7 @@ impl LlmProvider for ClaudeProvider {
             output_config,
             temperature,
             context_management: None,
+            speed: self.speed_wire(),
         };
         serde_json::to_value(&body)
             .unwrap_or_else(|e| serde_json::json!({ "serialization_error": e.to_string() }))
@@ -2079,6 +2124,7 @@ impl LlmProvider for ClaudeProvider {
                 output_config,
                 temperature,
                 context_management: self.context_management(),
+                speed: self.speed_wire(),
             };
             let beta = self.beta_header(has_tools);
             let response = send_with_retry(

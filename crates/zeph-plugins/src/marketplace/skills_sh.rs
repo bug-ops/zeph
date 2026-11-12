@@ -76,6 +76,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use tracing::Instrument as _;
+use zeph_common::http::{BodyLimit, BodyReadError, read_capped, read_prefix};
 use zeph_common::secret::Secret;
 
 use super::{PackageArchive, RegistryClient, RegistryEntry, RegistryError, materialize_package};
@@ -89,10 +90,21 @@ pub const DEFAULT_BASE_URL: &str = "https://www.skills.sh";
 /// JSON skill packages are source text (`SKILL.md` plus a handful of small scripts) — a few
 /// MiB is ample headroom. Mirrors the spirit of [`crate::manager::MAX_ARCHIVE_BYTES`] (52 MiB
 /// for binary plugin archives), scaled down for a text-only payload. Checked against
-/// `Content-Length` before the body is read, matching the pre-check pattern in
-/// `crate::manager::registry::download_and_extract` (review fix #2 — this path previously read
-/// an unbounded body into memory).
-const MAX_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
+/// `Content-Length` before the body is read and enforced while streaming, so chunked responses
+/// are bounded too.
+const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
+const MAX_RESPONSE: BodyLimit = non_zero_limit(MAX_RESPONSE_BYTES);
+
+/// Maximum number of bytes of a non-2xx response body kept for diagnostics.
+const MAX_ERROR_BODY: BodyLimit = non_zero_limit(4 * 1024);
+
+const fn non_zero_limit(bytes: usize) -> BodyLimit {
+    match BodyLimit::new(bytes) {
+        Some(limit) => limit,
+        None => panic!("body limit must be non-zero"),
+    }
+}
 
 /// [`RegistryClient`] implementation targeting the public skills.sh registry.
 ///
@@ -215,34 +227,35 @@ impl SkillsShClient {
             return Err(RegistryError::NotFound(url.to_owned()));
         }
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(RegistryError::Backend {
-                status: status.as_u16(),
-                body,
-            });
+            return Err(backend_error(response).await);
         }
-        reject_oversized(&response)?;
-        response
-            .text()
-            .await
-            .map_err(|e| RegistryError::Request(e.to_string()))
+        read_text(response).await
     }
 }
 
-/// Reject a response whose declared `Content-Length` exceeds [`MAX_RESPONSE_BYTES`] before the
-/// body is read into memory (review fix #2). A missing `Content-Length` (chunked transfer) is
-/// allowed through unchecked, matching the same tradeoff `download_and_extract` makes for
-/// binary archives — a fully adversarial chunked-transfer cap would require switching to a
-/// streaming read, which is disproportionate for this text-only JSON payload class.
-fn reject_oversized(response: &reqwest::Response) -> Result<(), RegistryError> {
-    if let Some(len) = response.content_length()
-        && len > MAX_RESPONSE_BYTES
-    {
-        return Err(RegistryError::TooLarge(format!(
-            "response declared {len} bytes (max {MAX_RESPONSE_BYTES})"
-        )));
+/// Builds a [`RegistryError::Backend`] from a non-2xx response, keeping at most
+/// [`MAX_ERROR_BODY`] bytes of its body.
+async fn backend_error(response: reqwest::Response) -> RegistryError {
+    let status = response.status().as_u16();
+    let raw = read_prefix(response, MAX_ERROR_BODY).await;
+    RegistryError::Backend {
+        status,
+        body: String::from_utf8_lossy(&raw).into_owned(),
     }
-    Ok(())
+}
+
+/// Reads a success response as text, rejecting it as soon as the declared length or the bytes
+/// received exceed [`MAX_RESPONSE_BYTES`].
+async fn read_text(response: reqwest::Response) -> Result<String, RegistryError> {
+    let bytes = read_capped(response, MAX_RESPONSE)
+        .await
+        .map_err(|e| match e {
+            BodyReadError::TooLarge { limit } => {
+                RegistryError::TooLarge(format!("response exceeded {limit} bytes"))
+            }
+            BodyReadError::Transport(e) => RegistryError::Request(e.to_string()),
+        })?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn classify_send_error(e: &reqwest::Error) -> RegistryError {
@@ -294,17 +307,9 @@ impl RegistryClient for SkillsShClient {
                     return Err(RegistryError::AuthRequired);
                 }
                 if !status.is_success() {
-                    let body = response.text().await.unwrap_or_default();
-                    return Err(RegistryError::Backend {
-                        status: status.as_u16(),
-                        body,
-                    });
+                    return Err(backend_error(response).await);
                 }
-                reject_oversized(&response)?;
-                let text = response
-                    .text()
-                    .await
-                    .map_err(|e| RegistryError::Request(e.to_string()))?;
+                let text = read_text(response).await?;
                 let parsed: SearchResponse = serde_json::from_str(&text)
                     .map_err(|e| RegistryError::InvalidResponse(e.to_string()))?;
 
@@ -552,9 +557,9 @@ mod tests {
         // A real oversized body (hyper enforces Content-Length/body-length coherence server
         // side, so a lying header alone panics the mock server task instead of exercising the
         // client's pre-check) — rejection must fire from the Content-Length header alone,
-        // before `.text()` reads the (large) body, which this test cannot directly observe but
-        // is exercised by construction: reject_oversized runs before the `.text()` call.
-        let oversized = vec![b' '; usize::try_from(MAX_RESPONSE_BYTES + 1).unwrap()];
+        // before the body is read, which this test cannot directly observe but
+        // is exercised by construction: `read_capped` checks the header first.
+        let oversized = vec![b' '; MAX_RESPONSE_BYTES + 1];
         Mock::given(method("GET"))
             .and(path("/api/v1/skills/search"))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(oversized))
@@ -572,6 +577,24 @@ mod tests {
         let client = SkillsShClient::new("http://127.0.0.1:0", None, 1);
         let err = client.search("x").await.unwrap_err();
         assert!(matches!(err, RegistryError::Request(_)));
+    }
+
+    #[tokio::test]
+    async fn search_error_body_is_capped() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/skills/search"))
+            .respond_with(ResponseTemplate::new(500).set_body_bytes(vec![b'e'; 64 * 1024]))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server, None);
+        let err = client.search("x").await.unwrap_err();
+        let RegistryError::Backend { status, body } = err else {
+            panic!("expected Backend error, got {err:?}");
+        };
+        assert_eq!(status, 500);
+        assert_eq!(body.len(), MAX_ERROR_BODY.get());
     }
 
     #[tokio::test]
@@ -668,7 +691,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_rejects_oversized_detail_response() {
         let server = MockServer::start().await;
-        let oversized = vec![b' '; usize::try_from(MAX_RESPONSE_BYTES + 1).unwrap()];
+        let oversized = vec![b' '; MAX_RESPONSE_BYTES + 1];
         Mock::given(method("GET"))
             .and(path("/api/v1/skills/acme/huge"))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(oversized))

@@ -702,8 +702,8 @@ pub struct SubAgentConfig {
     /// limit.  The tighter of the two limits always applies.
     #[serde(default = "default_max_parent_messages")]
     pub max_parent_messages: usize,
-    /// Maximum character count for the `Summary` and `LastAssistantTurn` context injection
-    /// modes.
+    /// Maximum count of Unicode scalar values (chars, not bytes) for the `Summary` and
+    /// `LastAssistantTurn` context injection modes.
     ///
     /// When `context_injection_mode = "summary"`, the extracted summary is truncated to this
     /// many characters at a UTF-8 char boundary before being prepended to the sub-agent's task

@@ -283,7 +283,7 @@ impl ToolOutputArchive for AgentArchive {
                         {
                             continue;
                         }
-                        match sqlite.save_archive(cid.0, body.as_bytes()).await {
+                        match sqlite.save_archive(cid, body.as_bytes()).await {
                             Ok(uuid) => {
                                 let bytes = body.len();
                                 refs.push(format!(

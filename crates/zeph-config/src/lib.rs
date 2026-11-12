@@ -127,9 +127,9 @@ pub use calibration::{
 pub use channels::{
     A2aClientConfig, A2aServerConfig, CardTrustPolicy, ChannelSkillsConfig, DiscordConfig,
     IbctKeyConfig, McpConfig, McpMediaConfig, McpOAuthConfig, McpPolicy, McpServerConfig,
-    McpTrustLevel, OAuthTokenStorage, RateLimit, SlackConfig, TelegramConfig, ToolDiscoveryConfig,
-    ToolDiscoveryStrategyConfig, ToolPruningConfig, TrustCalibrationConfig, TrustedAgentKey,
-    is_skill_allowed, oauth_vault_key,
+    McpTrustLevel, OAuthTokenStorage, RateLimit, SlackConfig, TelegramConfig, TelegramUserId,
+    ToolDiscoveryConfig, ToolDiscoveryStrategyConfig, ToolPruningConfig, TrustCalibrationConfig,
+    TrustedAgentKey, is_skill_allowed, oauth_vault_key,
 };
 pub use cli::{CliConfig, LoopConfig};
 pub use cocoon::CocoonConfig;
@@ -191,7 +191,8 @@ pub use providers::{
     CompactionTriggerError, ComplexityRoutingConfig, FAST_TIER_MODEL_HINTS, GeminiThinkingLevel,
     GenerationParams, GonkaNode, LlmConfig, LlmRoutingStrategy, MAX_TOKENS_CAP, ProviderEntry,
     ProviderKind, ProviderName, ProviderOverrides, RouterConfig, RouterStrategyConfig,
-    StreamLimits, SttConfig, ThinkingConfig, ThinkingEffort, TierMapping, validate_pool,
+    ServiceSpeed, StreamLimits, SttConfig, ThinkingConfig, ThinkingEffort, TierMapping,
+    validate_pool,
 };
 pub use quality::{QualityConfig, TriggerPolicy};
 pub use rate_limit::RateLimitConfig;

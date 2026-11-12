@@ -21,7 +21,7 @@ use zeph_tools::registry::ToolDef;
 
 use serial_test::serial;
 
-use crate::agent_loop::{AgentLoopArgs, make_message, run_agent_loop};
+use crate::agent_loop::{AgentLoopArgs, ToolGates, make_message, run_agent_loop};
 use crate::def::{MemoryScope, ModelSpec, ToolPolicy};
 use crate::filter::FilteredToolExecutor;
 use crate::manager::CredentialScrub;
@@ -2883,6 +2883,7 @@ fn make_agent_loop_args(
         forward: None,
         secret_registry: None,
         tool_grants: std::sync::Arc::new(std::sync::Mutex::new(PermissionGrants::default())),
+        gates: ToolGates::default(),
     }
 }
 
@@ -3046,6 +3047,7 @@ async fn run_agent_loop_publishes_failed_status_on_llm_call_timeout() {
         forward: None,
         secret_registry: None,
         tool_grants: std::sync::Arc::new(std::sync::Mutex::new(PermissionGrants::default())),
+        gates: ToolGates::default(),
     };
 
     let result = run_agent_loop(args).await;
@@ -3211,6 +3213,7 @@ async fn run_agent_loop_finalizes_transcript_anchor_on_llm_error_exit_path() {
         forward: None,
         secret_registry: None,
         tool_grants: std::sync::Arc::new(std::sync::Mutex::new(PermissionGrants::default())),
+        gates: ToolGates::default(),
     };
 
     let result = run_agent_loop(args).await;
@@ -4244,6 +4247,22 @@ fn build_context_summary_newlines_in_user_message_are_collapsed() {
         !summary.contains('\n'),
         "newlines must be collapsed to spaces in summary"
     );
+}
+
+#[test]
+fn build_context_summary_limits_count_chars_not_bytes() {
+    use zeph_llm::provider::{Message, Role};
+
+    // 'é' is 2 bytes; a byte limit of 80 would keep only 40 of them.
+    let msgs = vec![Message {
+        role: Role::User,
+        content: "é".repeat(100),
+        parts: vec![],
+        ..Message::default()
+    }];
+
+    let summary = build_context_summary(&msgs, 600);
+    assert_eq!(summary.chars().count(), 80);
 }
 
 // ── Phase 2: MCP tool annotation tests (#2581) ────────────────────────────

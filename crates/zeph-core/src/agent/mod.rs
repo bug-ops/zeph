@@ -698,12 +698,12 @@ impl<C: Channel> Agent<C> {
             if let Some((cancelled_id, new_id)) = self.services.autonomous.flush_pending_start() {
                 if let Some(cid) = cancelled_id {
                     tracing::info!(
-                        goal_id = cid,
+                        goal_id = %cid,
                         "autonomous: previous session cancelled for new goal"
                     );
                 }
                 self.sync_registry_entry();
-                tracing::info!(goal_id = new_id, "autonomous: session started");
+                tracing::info!(goal_id = %new_id, "autonomous: session started");
             }
 
             // Post-dispatch learning hook for `/skill reject` / `/feedback` is triggered

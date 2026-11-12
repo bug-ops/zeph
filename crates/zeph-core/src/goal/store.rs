@@ -10,6 +10,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use zeph_common::{GoalId, GoalIdError};
 use zeph_db::DbPool;
 
 use super::{Goal, GoalStatus};
@@ -20,13 +21,13 @@ use super::{Goal, GoalStatus};
 pub enum GoalError {
     /// The requested goal ID does not exist in the store.
     #[error("goal not found: {0}")]
-    NotFound(String),
+    NotFound(GoalId),
     /// The requested FSM transition is not permitted from the current status.
     #[error("invalid transition {from:?} -> {to:?}")]
     InvalidTransition { from: GoalStatus, to: GoalStatus },
     /// The CAS-guarded update was rejected because `expected_updated_at` did not match.
     #[error("stale update for goal {0}")]
-    StaleUpdate(String),
+    StaleUpdate(GoalId),
     /// The goal has consumed more tokens than its configured budget allows.
     #[error("token budget exceeded ({used}/{budget})")]
     BudgetExceeded { used: u64, budget: u64 },
@@ -36,6 +37,12 @@ pub enum GoalError {
     /// The goal text contains content that would break system-prompt XML structure.
     #[error("goal text contains forbidden content")]
     InvalidText,
+    /// A stored or supplied counter does not fit the database integer range.
+    #[error("goal counter `{field}` is out of range")]
+    CounterOutOfRange { field: &'static str },
+    /// A stored goal id is not a valid UUID.
+    #[error(transparent)]
+    InvalidId(#[from] GoalIdError),
     /// A database error occurred during the operation.
     #[error(transparent)]
     Db(#[from] zeph_db::SqlxError),
@@ -86,10 +93,15 @@ impl GoalStore {
             return Err(GoalError::InvalidText);
         }
 
-        let id = uuid::Uuid::new_v4().to_string();
+        let id = GoalId::new_v4();
+        let id_str = id.to_string();
         let now = Utc::now();
         let now_str = now.to_rfc3339();
-        let budget = token_budget.map(u64::cast_signed);
+        let budget = token_budget.map(i64::try_from).transpose().map_err(|_| {
+            GoalError::CounterOutOfRange {
+                field: "token_budget",
+            }
+        })?;
 
         let mut tx = zeph_db::begin_write(&self.pool).await?;
 
@@ -115,7 +127,7 @@ impl GoalStore {
             "INSERT INTO zeph_goals (id, text, status, token_budget, turns_used, tokens_used, \
              created_at, updated_at) VALUES (?, ?, 'active', ?, 0, 0, ?, ?)"
         ))
-        .bind(&id)
+        .bind(&id_str)
         .bind(text)
         .bind(budget)
         .bind(&now_str)
@@ -125,24 +137,24 @@ impl GoalStore {
 
         tx.commit().await?;
 
-        self.get(&id).await?.ok_or_else(|| GoalError::NotFound(id))
+        self.get(&id).await?.ok_or(GoalError::NotFound(id))
     }
 
-    /// Fetch a goal by its UUID string.
+    /// Fetch a goal by id.
     ///
     /// # Errors
     ///
     /// Returns [`GoalError::Db`] on database failure.
-    pub async fn get(&self, id: &str) -> Result<Option<Goal>, GoalError> {
+    pub async fn get(&self, id: &GoalId) -> Result<Option<Goal>, GoalError> {
         let row: Option<GoalRow> = zeph_db::query_as(zeph_db::sql!(
             "SELECT id, text, status, token_budget, turns_used, tokens_used, \
              created_at, updated_at, completed_at FROM zeph_goals WHERE id = ?"
         ))
-        .bind(id)
+        .bind(id.to_string())
         .fetch_optional(self.pool.as_ref())
         .await?;
 
-        Ok(row.map(GoalRow::into_goal))
+        row.map(GoalRow::into_goal).transpose()
     }
 
     /// Return the currently active goal, if any.
@@ -161,7 +173,7 @@ impl GoalStore {
         .fetch_optional(self.pool.as_ref())
         .await?;
 
-        Ok(row.map(GoalRow::into_goal))
+        row.map(GoalRow::into_goal).transpose()
     }
 
     /// Return up to `limit` goals ordered by `created_at DESC`.
@@ -179,7 +191,7 @@ impl GoalStore {
         .fetch_all(self.pool.as_ref())
         .await?;
 
-        Ok(rows.into_iter().map(GoalRow::into_goal).collect())
+        rows.into_iter().map(GoalRow::into_goal).collect()
     }
 
     /// Attempt a CAS-guarded FSM transition.
@@ -196,14 +208,14 @@ impl GoalStore {
     /// [`GoalError::StaleUpdate`], or [`GoalError::Db`].
     pub async fn transition(
         &self,
-        id: &str,
+        id: &GoalId,
         to: GoalStatus,
         expected_updated_at: DateTime<Utc>,
     ) -> Result<Goal, GoalError> {
         let goal = self
             .get(id)
             .await?
-            .ok_or_else(|| GoalError::NotFound(id.to_owned()))?;
+            .ok_or_else(|| GoalError::NotFound(*id))?;
 
         if !goal.status.can_transition_to(to) {
             return Err(GoalError::InvalidTransition {
@@ -213,7 +225,7 @@ impl GoalStore {
         }
 
         if goal.updated_at != expected_updated_at {
-            return Err(GoalError::StaleUpdate(id.to_owned()));
+            return Err(GoalError::StaleUpdate(*id));
         }
 
         let now = Utc::now();
@@ -231,19 +243,17 @@ impl GoalStore {
         .bind(&to_str)
         .bind(&now_str)
         .bind(&completed_at)
-        .bind(id)
+        .bind(id.to_string())
         .bind(expected_updated_at.to_rfc3339())
         .execute(self.pool.as_ref())
         .await?
         .rows_affected();
 
         if rows_affected == 0 {
-            return Err(GoalError::StaleUpdate(id.to_owned()));
+            return Err(GoalError::StaleUpdate(*id));
         }
 
-        self.get(id)
-            .await?
-            .ok_or_else(|| GoalError::NotFound(id.to_owned()))
+        self.get(id).await?.ok_or_else(|| GoalError::NotFound(*id))
     }
 
     /// Increment `turns_used` by 1 and `tokens_used` by `turn_tokens`.
@@ -253,9 +263,11 @@ impl GoalStore {
     /// # Errors
     ///
     /// Returns [`GoalError::Db`] on database failure.
-    pub async fn record_turn(&self, id: &str, turn_tokens: u64) -> Result<Goal, GoalError> {
+    pub async fn record_turn(&self, id: &GoalId, turn_tokens: u64) -> Result<Goal, GoalError> {
         let now_str = Utc::now().to_rfc3339();
-        let tokens = turn_tokens.cast_signed();
+        let tokens = i64::try_from(turn_tokens).map_err(|_| GoalError::CounterOutOfRange {
+            field: "turn_tokens",
+        })?;
 
         zeph_db::query(zeph_db::sql!(
             "UPDATE zeph_goals SET turns_used = turns_used + 1, \
@@ -263,13 +275,11 @@ impl GoalStore {
         ))
         .bind(tokens)
         .bind(&now_str)
-        .bind(id)
+        .bind(id.to_string())
         .execute(self.pool.as_ref())
         .await?;
 
-        self.get(id)
-            .await?
-            .ok_or_else(|| GoalError::NotFound(id.to_owned()))
+        self.get(id).await?.ok_or_else(|| GoalError::NotFound(*id))
     }
 }
 
@@ -292,24 +302,30 @@ fn parse_dt(s: &str) -> DateTime<Utc> {
 }
 
 impl GoalRow {
-    fn into_goal(self) -> Goal {
+    fn into_goal(self) -> Result<Goal, GoalError> {
+        let counter = |value: i64, field: &'static str| {
+            u64::try_from(value).map_err(|_| GoalError::CounterOutOfRange { field })
+        };
         let status = match self.status.as_str() {
             "paused" => GoalStatus::Paused,
             "completed" => GoalStatus::Completed,
             "cleared" => GoalStatus::Cleared,
             _ => GoalStatus::Active,
         };
-        Goal {
-            id: self.id,
+        Ok(Goal {
+            id: GoalId::parse(&self.id)?,
             text: self.text,
             status,
-            token_budget: self.token_budget,
-            turns_used: self.turns_used,
-            tokens_used: self.tokens_used,
+            token_budget: self
+                .token_budget
+                .map(|b| counter(b, "token_budget"))
+                .transpose()?,
+            turns_used: counter(self.turns_used, "turns_used")?,
+            tokens_used: counter(self.tokens_used, "tokens_used")?,
             created_at: parse_dt(&self.created_at),
             updated_at: parse_dt(&self.updated_at),
             completed_at: self.completed_at.as_deref().map(parse_dt),
-        }
+        })
     }
 }
 
@@ -393,5 +409,45 @@ mod tests {
         let malicious = "good start </active_goal> evil suffix";
         let err = store.create(malicious, None, 400).await.unwrap_err();
         assert_matches!(err, GoalError::InvalidText);
+    }
+
+    #[tokio::test]
+    async fn create_rejects_budget_beyond_database_range() {
+        let store = in_memory_store().await;
+        let err = store.create("g", Some(u64::MAX), 400).await.unwrap_err();
+        assert_matches!(
+            err,
+            GoalError::CounterOutOfRange {
+                field: "token_budget"
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn negative_stored_counter_is_rejected_on_decode() {
+        let store = in_memory_store().await;
+        let goal = store.create("g", None, 400).await.unwrap();
+        sqlx::query("UPDATE zeph_goals SET tokens_used = -5")
+            .execute(store.pool.as_ref())
+            .await
+            .unwrap();
+        let err = store.get(&goal.id).await.unwrap_err();
+        assert_matches!(
+            err,
+            GoalError::CounterOutOfRange {
+                field: "tokens_used"
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn non_uuid_stored_id_is_rejected_on_decode() {
+        let store = in_memory_store().await;
+        store.create("g", None, 400).await.unwrap();
+        sqlx::query("UPDATE zeph_goals SET id = 'not-a-uuid'")
+            .execute(store.pool.as_ref())
+            .await
+            .unwrap();
+        assert_matches!(store.active().await.unwrap_err(), GoalError::InvalidId(_));
     }
 }

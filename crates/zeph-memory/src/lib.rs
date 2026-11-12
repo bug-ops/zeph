@@ -283,8 +283,8 @@ pub use tiers::{TierPromotionConfig, start_tier_promotion_loop};
 pub use token_counter::TokenCounter;
 pub use tokio_util::sync::CancellationToken;
 pub use types::{
-    CandidateId, ConversationId, EdgeId, EntityId, ExperienceId, MemSceneId, MemoryTier, MessageId,
-    UsageRecord, UsageSource,
+    CandidateId, CommunityId, ConversationId, EdgeId, EntityId, EpisodeId, ExperienceId,
+    MemSceneId, MemoryTier, MessageId, UsageRecord, UsageSource,
 };
 pub use vector_store::{
     FieldCondition, FieldValue, ScoredVectorPoint, VectorFilter, VectorPoint, VectorStore,

@@ -18,7 +18,7 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{Message, Role};
 
 use crate::error::MemoryError;
-use crate::types::{EdgeId, EntityId};
+use crate::types::{CommunityId, EdgeId, EntityId};
 
 use super::store::GraphStore;
 use super::types::{Edge, Entity};
@@ -221,7 +221,7 @@ fn classify_communities(
     edge_facts_map: &HashMap<(EntityId, EntityId), Vec<String>>,
     edge_id_map: &HashMap<(EntityId, EntityId), Vec<EdgeId>>,
     entity_name_map: &HashMap<EntityId, &str>,
-    stored_fingerprints: &HashMap<String, i64>,
+    stored_fingerprints: &HashMap<String, CommunityId>,
     sorted_labels: &[usize],
 ) -> ClassifyResult {
     let mut to_summarize: Vec<CommunityData> = Vec::new();
@@ -448,7 +448,7 @@ pub async fn detect_communities(
 pub async fn assign_to_community(
     store: &GraphStore,
     entity_id: EntityId,
-) -> Result<Option<i64>, MemoryError> {
+) -> Result<Option<CommunityId>, MemoryError> {
     let edges = store.edges_for_entity(entity_id).await?;
     if edges.is_empty() {
         return Ok(None);
@@ -465,7 +465,7 @@ pub async fn assign_to_community(
         })
         .collect();
 
-    let mut community_votes: HashMap<i64, usize> = HashMap::new();
+    let mut community_votes: HashMap<CommunityId, usize> = HashMap::new();
     for &nbr_id in &neighbor_ids {
         if let Some(community) = store.community_for_entity(nbr_id).await? {
             *community_votes.entry(community.id).or_insert(0) += 1;
@@ -948,7 +948,7 @@ mod tests {
         entity_name_map.insert(eid(1), "Entity\u{115F}One");
         entity_name_map.insert(eid(2), "Entity\u{1160}Two\u{17B4}");
 
-        let stored_fingerprints: HashMap<String, i64> = HashMap::new();
+        let stored_fingerprints: HashMap<String, CommunityId> = HashMap::new();
         let sorted_labels = vec![0usize];
 
         let result = classify_communities(
@@ -1009,7 +1009,7 @@ mod tests {
         entity_name_map.insert(eid(1), "A");
         entity_name_map.insert(eid(2), "B");
 
-        let stored_fingerprints: HashMap<String, i64> = HashMap::new();
+        let stored_fingerprints: HashMap<String, CommunityId> = HashMap::new();
         let sorted_labels = vec![0usize];
 
         let result = classify_communities(
@@ -1051,7 +1051,7 @@ mod tests {
         );
         entity_name_map.insert(eid(2), "Second\tEntity");
 
-        let stored_fingerprints: HashMap<String, i64> = HashMap::new();
+        let stored_fingerprints: HashMap<String, CommunityId> = HashMap::new();
         let sorted_labels = vec![0usize];
 
         let result = classify_communities(

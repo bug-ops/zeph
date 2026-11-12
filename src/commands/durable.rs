@@ -2861,7 +2861,7 @@ mod tests {
         assert!(
             result.is_ok(),
             "a consistent (config ∧ vault) previous-key pair must build a cipher: {}",
-            result.err().map(|e| e.to_string()).unwrap_or_default()
+            result.err().map_or_default(|e| e.to_string())
         );
     }
 
@@ -2885,7 +2885,7 @@ mod tests {
         assert!(
             result.is_ok(),
             "no declared rotation window must build a cipher with no previous slot: {}",
-            result.err().map(|e| e.to_string()).unwrap_or_default()
+            result.err().map_or_default(|e| e.to_string())
         );
     }
 

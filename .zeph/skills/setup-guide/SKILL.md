@@ -104,7 +104,7 @@ Budget: total token limit for context (0 = unlimited). Split: 15% summaries, 25%
 export ZEPH_TELEGRAM_TOKEN=123456:ABC-DEF...
 ```
 
-Config: `telegram.token` (prefer env var for security). Access control via `telegram.allowed_users` in config.
+Config: `telegram.token` (prefer env var for security). Access control via `telegram.allowed_user_ids` (numeric Telegram ids) in config; `allowed_users` usernames are a warn-logged legacy fallback.
 
 ## A2A Server
 

@@ -87,7 +87,7 @@ SO THAT multiple AI agents can collaborate in a shared Telegram chat.
 
 ```
 GIVEN telegram.bot_to_bot = true
-AND the sending bot's username is in allowed_bots (or allowed_bots is empty)
+AND the sending bot's numeric id is in allowed_bot_ids (or its username is in legacy allowed_bots)
 WHEN a bot sends a message in a chat where Zeph is active
 THEN Zeph processes the message and responds normally
 ```
@@ -147,11 +147,11 @@ THEN Zeph drops the message without processing or logging an error
 | FR-003 | WHEN `setManagedBotAccessSettings` fails at startup THE SYSTEM SHALL log a warning and continue; the failure SHALL NOT prevent the channel from starting | must |
 | FR-004 | WHEN a message arrives from a sender where `User.is_bot = true` THE SYSTEM SHALL set `IncomingMessage.is_from_bot = true` | must |
 | FR-005 | WHEN `is_from_bot = true` and `bot_to_bot = false` THE SYSTEM SHALL silently drop the message | must |
-| FR-006 | WHEN `is_from_bot = true` and `bot_to_bot = true` THE SYSTEM SHALL check the sender's username against `allowed_bots`; if the list is non-empty and the sender is absent, drop the message | must |
+| FR-006 | WHEN `is_from_bot = true` and `bot_to_bot = true` THE SYSTEM SHALL check the sender's numeric id against `allowed_bot_ids` (username match against legacy `allowed_bots` is a warn-logged fallback); if the sender is absent, drop the message | must |
 | FR-007 | WHEN processing an authorized bot message THE SYSTEM SHALL compute the reply chain depth by walking `Message.reply_to_message` links | must |
 | FR-008 | WHEN reply chain depth ≥ `max_bot_chain_depth` THE SYSTEM SHALL drop the message, log a warning with depth and message ID, and send no response | must |
 | FR-009 | WHEN reply chain depth < `max_bot_chain_depth` THE SYSTEM SHALL process and respond to the bot message normally | must |
-| FR-010 | WHEN `allowed_bots` is empty and `bot_to_bot = true` THE SYSTEM SHALL accept messages from all bots (no username restriction) | must |
+| FR-010 | WHEN `bot_to_bot = true` and both `allowed_bot_ids` and `allowed_bots` are empty THE SYSTEM SHALL refuse to start (fail-closed); an empty list never admits all bots (#7036, breaking) | must |
 | FR-011 | THE SYSTEM SHALL expose `is_from_bot: bool` on `ChannelMessage` so that skills and tool executors can branch on bot origin | should |
 
 ---
@@ -176,7 +176,8 @@ THEN Zeph drops the message without processing or logging an error
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `bot_to_bot` | `bool` | `false` | Enable receiving messages from other bots |
-| `allowed_bots` | `Vec<String>` | `[]` | Bot usernames allowed to interact; empty means all bots |
+| `allowed_bot_ids` | `Vec<u64>` | `[]` | Numeric ids of bots allowed to interact; required (with `allowed_bots`) when `bot_to_bot = true` |
+| `allowed_bots` | `Vec<String>` | `[]` | Legacy bot usernames; warn-logged fallback |
 | `max_bot_chain_depth` | `u32` | `3` | Maximum reply chain depth before response is dropped |
 
 ### `IncomingMessage` (new field)
@@ -268,7 +269,7 @@ incoming message received
            │
            └─ bot_to_bot = true
                   │
-                  ├─ allowed_bots non-empty AND sender NOT in list → SILENT DROP
+                  ├─ sender id NOT in allowed_bot_ids AND username NOT in allowed_bots → SILENT DROP
                   │
                   └─ authorized
                          │
@@ -292,9 +293,10 @@ incoming message received
 # When false (default), all bot-originated messages are silently ignored.
 bot_to_bot = false
 
-# Bot usernames allowed to send messages to Zeph when bot_to_bot = true.
-# Empty list (default) allows all bots. Entries should include the @ prefix.
-# Example: allowed_bots = ["@my_orchestrator_bot", "@pipeline_bot"]
+# Numeric ids of bots allowed to send messages to Zeph when bot_to_bot = true.
+# An empty allowlist is rejected at startup (fail-closed).
+allowed_bot_ids = [987654321]
+# Legacy usernames (mutable; a match logs a warning). The @ prefix is optional.
 allowed_bots = []
 
 # Maximum reply chain depth before Zeph stops responding.
@@ -379,7 +381,7 @@ max_bot_chain_depth = 3
 ## 15. Acceptance Criteria (Issue #3730) — Implemented in PR #3748
 
 - [x] `bot_to_bot = false` (default): bot ignores messages from other bots (existing behavior preserved)
-- [x] `bot_to_bot = true`: bot responds to bots in `allowed_bots` (or all bots if list is empty)
+- [x] `bot_to_bot = true`: bot responds only to bots in `allowed_bot_ids` / `allowed_bots`; an empty list fails startup (#7036)
 - [x] `setManagedBotAccessSettings` called at startup when `bot_to_bot = true`
 - [x] `setManagedBotAccessSettings` NOT called when `bot_to_bot = false`
 - [x] Reply chain depth tracked; responses dropped when depth ≥ `max_bot_chain_depth`

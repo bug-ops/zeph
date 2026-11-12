@@ -17,16 +17,17 @@ use zeph_llm::provider::{Message, MessagePart, Role};
 /// ```no_run
 /// use zeph_agent_persistence::graph::build_graph_extraction_config;
 /// use zeph_config::memory::GraphConfig;
+/// use zeph_memory::ConversationId;
 ///
 /// let cfg = GraphConfig::default();
-/// let extraction_cfg = build_graph_extraction_config(&cfg, Some(42), 5, Some(3));
-/// assert_eq!(extraction_cfg.conversation_id, Some(42));
+/// let extraction_cfg = build_graph_extraction_config(&cfg, Some(ConversationId(42)), 5, Some(3));
+/// assert_eq!(extraction_cfg.conversation_id, Some(ConversationId(42)));
 /// assert_eq!(extraction_cfg.turn_index, Some(3));
 /// ```
 #[must_use]
 pub fn build_graph_extraction_config(
     cfg: &zeph_config::memory::GraphConfig,
-    conversation_id: Option<i64>,
+    conversation_id: Option<zeph_memory::ConversationId>,
     embed_timeout_secs: u64,
     turn_index: Option<u32>,
 ) -> zeph_memory::semantic::GraphExtractionConfig {
@@ -105,6 +106,7 @@ pub fn collect_context_messages(messages: &[Message]) -> Vec<String> {
 mod tests {
     use super::*;
     use zeph_llm::provider::MessageMetadata;
+    use zeph_memory::ConversationId;
 
     fn user_msg(content: &str) -> Message {
         Message {
@@ -148,9 +150,9 @@ mod tests {
     #[test]
     fn build_graph_extraction_config_threads_conversation_id_and_embed_timeout() {
         let cfg = zeph_config::memory::GraphConfig::default();
-        let extraction_cfg = build_graph_extraction_config(&cfg, Some(7), 42, None);
+        let extraction_cfg = build_graph_extraction_config(&cfg, Some(ConversationId(7)), 42, None);
 
-        assert_eq!(extraction_cfg.conversation_id, Some(7));
+        assert_eq!(extraction_cfg.conversation_id, Some(ConversationId(7)));
         assert_eq!(extraction_cfg.embed_timeout_secs, 42);
     }
 
@@ -159,7 +161,8 @@ mod tests {
     #[test]
     fn build_graph_extraction_config_threads_turn_index() {
         let cfg = zeph_config::memory::GraphConfig::default();
-        let extraction_cfg = build_graph_extraction_config(&cfg, Some(7), 5, Some(12));
+        let extraction_cfg =
+            build_graph_extraction_config(&cfg, Some(ConversationId(7)), 5, Some(12));
 
         assert_eq!(extraction_cfg.turn_index, Some(12));
     }

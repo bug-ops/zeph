@@ -12,8 +12,9 @@ use std::path::Component;
 use std::sync::Arc;
 
 use agent_client_protocol as acp;
-use futures::{FutureExt as _, StreamExt as _};
+use futures::FutureExt as _;
 use tokio::sync::mpsc;
+use zeph_common::http::{BodyLimit, BodyReadError, read_capped};
 use zeph_core::channel::ChannelMessage;
 #[cfg(test)]
 use zeph_core::{ContentIsolationConfig, ContentSanitizer};
@@ -42,6 +43,10 @@ const SUPPORTED_IMAGE_MIMES: &[&str] = &[
 
 /// Maximum bytes fetched from an HTTP resource link.
 const MAX_RESOURCE_BYTES: usize = 1_048_576; // 1 MiB
+const MAX_RESOURCE_LIMIT: BodyLimit = match BodyLimit::new(MAX_RESOURCE_BYTES) {
+    Some(limit) => limit,
+    None => panic!("resource limit must be non-zero"),
+};
 /// Timeout for HTTP resource link fetch.
 const RESOURCE_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -178,19 +183,16 @@ async fn resolve_resource_link(
             )));
         }
 
-        // Stream up to MAX_RESOURCE_BYTES to avoid unbounded memory use.
-        let mut body = resp.bytes_stream();
-        let mut buf = Vec::with_capacity(4096);
-        while let Some(chunk) = body.next().await {
-            let chunk = chunk.map_err(|e| {
-                crate::error::AcpError::ResourceLink(format!("HTTP read error: {e}"))
+        let buf = read_capped(resp, MAX_RESOURCE_LIMIT)
+            .await
+            .map_err(|e| match e {
+                BodyReadError::TooLarge { limit } => crate::error::AcpError::ResourceLink(format!(
+                    "HTTP content exceeds size limit ({limit} bytes): {uri}"
+                )),
+                BodyReadError::Transport(e) => {
+                    crate::error::AcpError::ResourceLink(format!("HTTP read error: {e}"))
+                }
             })?;
-            if buf.len() + chunk.len() > MAX_RESOURCE_BYTES {
-                buf.extend_from_slice(&chunk[..MAX_RESOURCE_BYTES.saturating_sub(buf.len())]);
-                break;
-            }
-            buf.extend_from_slice(&chunk);
-        }
 
         String::from_utf8(buf).map_err(|_| {
             crate::error::AcpError::ResourceLink(format!(

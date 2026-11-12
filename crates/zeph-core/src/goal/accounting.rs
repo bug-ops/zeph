@@ -11,12 +11,13 @@
 use std::sync::Arc;
 
 use parking_lot::Mutex;
+use zeph_common::GoalId;
 
 use super::{Goal, GoalSnapshot, GoalStatus, GoalStore, store::GoalError};
 
 /// Cached state for the current active goal.
 struct CachedGoal {
-    id: String,
+    id: GoalId,
     text: String,
     status: GoalStatus,
     token_budget: Option<u64>,
@@ -62,7 +63,7 @@ impl GoalAccounting {
             id: g.id,
             text: g.text,
             status: g.status,
-            token_budget: g.token_budget.map(|b| b.max(0).cast_unsigned()),
+            token_budget: g.token_budget,
         });
         Ok(())
     }
@@ -78,7 +79,7 @@ impl GoalAccounting {
             return None;
         }
         Some(GoalSnapshot {
-            id: cached.id.clone(),
+            id: cached.id,
             text: cached.text.clone(),
             status: cached.status,
             turns_used: 0,
@@ -107,7 +108,7 @@ impl GoalAccounting {
             if cached.status != GoalStatus::Active {
                 return;
             }
-            cached.id.clone()
+            cached.id
         };
 
         let store = Arc::clone(&self.store);
@@ -122,11 +123,8 @@ impl GoalAccounting {
                         "goal accounting: turn recorded"
                     );
                     // Auto-pause when token budget exceeded.
-                    if let (Some(budget), tokens_used) = (
-                        updated.token_budget,
-                        updated.tokens_used.max(0).cast_unsigned(),
-                    ) {
-                        let budget = budget.max(0).cast_unsigned();
+                    if let Some(budget) = updated.token_budget {
+                        let tokens_used = updated.tokens_used;
                         if tokens_used >= budget {
                             tracing::warn!(
                                 goal_id = %goal_id,

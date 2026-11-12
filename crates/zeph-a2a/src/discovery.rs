@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
 
-use crate::body_limit::{BodyLimit, read_capped};
+use crate::body_limit::AGENT_CARD;
 use crate::card_signing::{SignatureVerification, TrustedKey, verify_card_signatures};
 use crate::error::A2aError;
 use crate::types::AgentCard;
+use zeph_common::http::read_capped;
 
 // TODO(#6932): 1.0.0 serves /.well-known/agent-card.json — needs version-aware
 // fetch/fallback before pure-1.0.0 peers are discoverable (#5928 follow-up).
@@ -280,9 +281,9 @@ impl AgentRegistry {
                 }
 
                 let bytes =
-                    read_capped(resp, BodyLimit::AGENT_CARD)
+                    read_capped(resp, AGENT_CARD)
                         .await
-                        .map_err(|e| match e {
+                        .map_err(|e| match A2aError::from(e) {
                             e @ A2aError::BodyTooLarge { .. } => e,
                             e => A2aError::Discovery {
                                 url: url.clone(),

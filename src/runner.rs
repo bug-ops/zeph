@@ -2424,7 +2424,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     let overflow_executor = zeph_core::overflow_tools::OverflowToolExecutor::new(
         std::sync::Arc::new(memory.sqlite().clone()),
     )
-    .with_conversation(conversation_id.0);
+    .with_conversation(conversation_id);
     let (skill_loader_executor, skill_invoke_executor, trust_snapshot, turn_trust_floor) =
         agent_setup::build_skill_executors(&registry);
     let base: std::sync::Arc<dyn zeph_tools::ErasedToolExecutor> =
@@ -4482,7 +4482,6 @@ fn parse_plugin_url_arg(raw: &str) -> (&str, Option<&str>) {
 /// Pre-process a `zeph://` URI before entering the normal bootstrap path (TASK-5).
 ///
 /// This function implements:
-/// - INV-LOOP: loop detection via `ZEPH_URL_OPEN_DEPTH`.
 /// - URI parsing and CWD / model / prompt validation.
 /// - Prompt confirmation gate (INV-TRUST, INV-NOTTY).
 /// - Mutation of `cli` so that subsequent bootstrap code picks up the right working directory,
@@ -4495,28 +4494,12 @@ fn parse_plugin_url_arg(raw: &str) -> (&str, Option<&str>) {
 /// value is not in scope here, and exiting directly would bypass `TracingGuards::drop`'s flush
 /// logic (#6698). All validation failures are reported to the caller through this return value
 /// rather than `Err`, since none of them are unexpected I/O errors.
-// SAFETY: set_var is called synchronously during single-threaded startup, before
-// any spawned task reads ZEPH_URL_OPEN_DEPTH. The tokio runtime is active at this
-// point, but no spawned tasks read this env var on this call path — the guard is
-// a one-time write.
-#[allow(unsafe_code)]
 fn handle_url_open(
     uri: String,
     config_override: Option<&std::path::Path>,
     cli: &mut crate::cli::Cli,
 ) -> Option<i32> {
     use crate::url_scheme::prompt::ConfirmResult;
-    // INV-LOOP: prevent re-entrant dispatch.
-    if std::env::var("ZEPH_URL_OPEN_DEPTH").as_deref() == Ok("1") {
-        eprintln!("deep-link dispatch loop detected; exiting");
-        return Some(1);
-    }
-    // Set the depth marker before any child process is launched.
-    #[allow(clippy::disallowed_methods)]
-    unsafe {
-        std::env::set_var("ZEPH_URL_OPEN_DEPTH", "1");
-    }
-
     // Parse the deep-link URI.
     let deep_link = match parse_deep_link(&uri) {
         Ok(dl) => dl,
@@ -4723,27 +4706,6 @@ mod deep_link_tests {
     /// to `Config::default()`, independent of any ambient config file or `ZEPH_CONFIG`.
     fn missing_config_path(tmp: &std::path::Path) -> std::path::PathBuf {
         tmp.join("missing-config.toml")
-    }
-
-    #[test]
-    #[allow(unsafe_code)]
-    fn handle_url_open_returns_exit_code_on_reentrant_dispatch() {
-        // SAFETY: nextest runs each test in its own process, so this env mutation cannot
-        // race with another test.
-        #[allow(clippy::disallowed_methods)]
-        unsafe {
-            std::env::set_var("ZEPH_URL_OPEN_DEPTH", "1");
-        }
-        let mut cli = crate::cli::Cli::default();
-        let result = super::handle_url_open("zeph://new-session".to_owned(), None, &mut cli);
-        #[allow(clippy::disallowed_methods)]
-        unsafe {
-            std::env::remove_var("ZEPH_URL_OPEN_DEPTH");
-        }
-        assert!(
-            matches!(result, Some(1)),
-            "expected Some(1) on re-entrant dispatch (INV-LOOP), got {result:?}"
-        );
     }
 
     #[test]

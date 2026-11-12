@@ -26,6 +26,7 @@ use serde::Deserialize;
 use url::Url;
 
 use zeph_common::ToolName;
+use zeph_common::http::{BodyLimit, BodyReadError, read_capped};
 
 use zeph_sanitizer::IpiFilter;
 
@@ -35,6 +36,29 @@ use crate::executor::{
     ClaimSource, ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params,
 };
 use crate::net::{check_domain_policy, validate_url};
+
+/// Reads `resp` while enforcing `max_body_bytes` as the body is streamed, not after it is buffered.
+///
+/// A configured limit of zero rejects every body, matching the previous post-read comparison.
+async fn read_body_capped(
+    resp: reqwest::Response,
+    max_body_bytes: usize,
+) -> Result<Vec<u8>, BodyReadError> {
+    let Some(limit) = BodyLimit::new(max_body_bytes) else {
+        return Err(BodyReadError::TooLarge {
+            limit: max_body_bytes,
+        });
+    };
+    read_capped(resp, limit).await
+}
+
+fn body_read_error(e: BodyReadError) -> ToolError {
+    let message = match e {
+        BodyReadError::TooLarge { limit } => format!("response too large (max: {limit} bytes)"),
+        BodyReadError::Transport(e) => e.to_string(),
+    };
+    ToolError::Execution(std::io::Error::other(message))
+}
 
 /// Strips userinfo (`user:pass@`) and sensitive query params from a URL for safe logging.
 ///
@@ -931,41 +955,35 @@ impl WebScrapeExecutor {
                 });
             }
 
-            let bytes = resp
-                .bytes()
-                .await
-                .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
-
-            if bytes.len() > self.max_body_bytes {
-                if self.egress_config.enabled {
-                    #[allow(clippy::cast_possible_truncation)]
-                    let duration_ms = hop_start.elapsed().as_millis() as u64;
-                    let event = EgressEvent {
-                        timestamp: chrono_now(),
-                        kind: "egress",
-                        correlation_id: correlation_id.to_owned(),
-                        tool: tool.into(),
-                        url: redact_url_for_log(&current_url),
-                        host: current_host.clone(),
-                        method: "GET".to_owned(),
-                        status: Some(status.as_u16()),
-                        duration_ms,
-                        response_bytes: bytes.len(),
-                        blocked: false,
-                        block_reason: None,
-                        caller_id: caller_id.clone(),
-                        skill_name: skill_name.clone(),
+            let bytes = match read_body_capped(resp, self.max_body_bytes).await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    if matches!(e, BodyReadError::TooLarge { .. }) && self.egress_config.enabled {
                         #[allow(clippy::cast_possible_truncation)]
-                        hop: hop as u8,
-                    };
-                    self.log_egress_event(&event).await;
+                        let duration_ms = hop_start.elapsed().as_millis() as u64;
+                        let event = EgressEvent {
+                            timestamp: chrono_now(),
+                            kind: "egress",
+                            correlation_id: correlation_id.to_owned(),
+                            tool: tool.into(),
+                            url: redact_url_for_log(&current_url),
+                            host: current_host.clone(),
+                            method: "GET".to_owned(),
+                            status: Some(status.as_u16()),
+                            duration_ms,
+                            response_bytes: self.max_body_bytes,
+                            blocked: false,
+                            block_reason: None,
+                            caller_id: caller_id.clone(),
+                            skill_name: skill_name.clone(),
+                            #[allow(clippy::cast_possible_truncation)]
+                            hop: hop as u8,
+                        };
+                        self.log_egress_event(&event).await;
+                    }
+                    return Err(body_read_error(e));
                 }
-                return Err(ToolError::Execution(std::io::Error::other(format!(
-                    "response too large: {} bytes (max: {})",
-                    bytes.len(),
-                    self.max_body_bytes,
-                ))));
-            }
+            };
 
             // Success — emit egress event.
             if self.egress_config.enabled {
@@ -997,7 +1015,7 @@ impl WebScrapeExecutor {
                 self.log_egress_event(&event).await;
             }
 
-            return String::from_utf8(bytes.to_vec())
+            return String::from_utf8(bytes)
                 .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())));
         }
 
@@ -1540,20 +1558,11 @@ mod tests {
                 ))));
             }
 
-            let bytes = resp
-                .bytes()
+            let bytes = read_body_capped(resp, executor.max_body_bytes)
                 .await
-                .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
+                .map_err(body_read_error)?;
 
-            if bytes.len() > executor.max_body_bytes {
-                return Err(ToolError::Execution(std::io::Error::other(format!(
-                    "response too large: {} bytes (max: {})",
-                    bytes.len(),
-                    executor.max_body_bytes,
-                ))));
-            }
-
-            return String::from_utf8(bytes.to_vec())
+            return String::from_utf8(bytes)
                 .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())));
         }
 
@@ -1786,7 +1795,10 @@ mod tests {
             .await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("too large"), "expected too-large error: {msg}");
+        assert!(
+            msg.contains("too large") && msg.contains("max: 10 bytes"),
+            "expected too-large error naming the limit: {msg}"
+        );
     }
 
     #[test]

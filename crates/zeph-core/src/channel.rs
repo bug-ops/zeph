@@ -753,8 +753,9 @@ pub struct ToolOutputEvent {
     pub locations: Option<Vec<String>>,
     /// Execution id matching the corresponding `ToolStartEvent`.
     pub tool_call_id: zeph_common::ToolExecutionId,
-    /// Whether this output represents an error.
-    pub is_error: bool,
+    /// Typed outcome of the tool call; display consumers derive failure from
+    /// [`crate::ToolStatus::is_failure`], unlike the `Err`-only wire `is_error` flag.
+    pub status: crate::ToolStatus,
     /// Terminal ID for shell tool calls routed through the IDE terminal.
     pub terminal_id: Option<String>,
     /// Set when this tool output belongs to a subagent; unvalidated ACP-peer input naming the parent call.
@@ -1445,7 +1446,7 @@ mod tests {
                 locations: None,
                 tool_call_id: id.clone(),
                 terminal_id: None,
-                is_error: false,
+                status: crate::ToolStatus::Success,
                 parent_tool_use_id: None,
                 raw_response: None,
                 started_at: None,
@@ -1462,7 +1463,7 @@ mod tests {
                 assert!(data.kept_lines.is_none());
                 assert!(data.locations.is_none());
                 assert_eq!(data.tool_call_id, id);
-                assert!(!data.is_error);
+                assert!(!data.status.is_failure());
                 assert!(data.terminal_id.is_none());
                 assert!(data.parent_tool_use_id.is_none());
                 assert!(data.raw_response.is_none());
@@ -1692,7 +1693,7 @@ mod tests {
             locations: None,
             tool_call_id: zeph_common::ToolExecutionId::new("id").unwrap(),
             terminal_id: None,
-            is_error: false,
+            status: crate::ToolStatus::Success,
             parent_tool_use_id: None,
             raw_response: None,
             started_at: None,

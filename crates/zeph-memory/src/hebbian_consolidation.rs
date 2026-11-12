@@ -31,21 +31,9 @@ use zeph_llm::provider::{LlmProvider as _, Message, Role};
 
 use crate::error::MemoryError;
 use crate::store::SqliteStore;
+use crate::types::EntityId;
 
 // ── Internal helpers ───────────────────────────────────────────────────────────
-
-/// Drop guard that clears the TUI spinner by sending an empty string when dropped.
-///
-/// Ensures the spinner is cleared on every exit path — success, error, or cancellation.
-struct ClearStatusOnDrop(Option<zeph_llm::status::StatusSender>);
-
-impl Drop for ClearStatusOnDrop {
-    fn drop(&mut self) {
-        if let Some(ref tx) = self.0 {
-            let _ = tx.clear();
-        }
-    }
-}
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -64,7 +52,7 @@ pub struct HebbianConsolidationOutcome {
 #[derive(Debug, Clone)]
 pub struct HebbianConsolidationCandidate {
     /// Entity row identifier (`graph_entities.id`).
-    pub entity_id: i64,
+    pub entity_id: EntityId,
     /// Number of active edges incident to this entity.
     pub degree: u64,
     /// Average Hebbian weight across incident edges.
@@ -108,7 +96,7 @@ pub async fn find_candidates(
     limit: usize,
 ) -> Result<Vec<HebbianConsolidationCandidate>, MemoryError> {
     // Degree counts only active (non-expired) edges; expired edges have `valid_to IS NOT NULL`.
-    let rows: Vec<(i64, i64, f64, f64)> = zeph_db::query_as(sql!(
+    let rows: Vec<(EntityId, i64, f64, f64)> = zeph_db::query_as(sql!(
         "SELECT e.id,
                 COUNT(ed.id)        AS degree,
                 AVG(ed.weight)      AS avg_weight,
@@ -153,7 +141,7 @@ pub async fn find_candidates(
 /// Returns an error if the database query fails or times out.
 pub async fn collect_neighbors(
     pool: &zeph_db::DbPool,
-    entity_id: i64,
+    entity_id: EntityId,
     max_neighbors: usize,
 ) -> Result<Vec<String>, MemoryError> {
     // One hop from entity_id via active edges in either direction.
@@ -176,7 +164,7 @@ pub async fn collect_neighbors(
         .await
         .map_err(|_| {
             tracing::warn!(
-                entity_id,
+                %entity_id,
                 "hebbian_consolidation: collect_neighbors timed out after 10s"
             );
             MemoryError::Timeout("collect_neighbors".into())
@@ -259,7 +247,7 @@ pub async fn distill_cluster(
 /// Returns an error if the database transaction fails or times out.
 pub async fn insert_graph_rule_and_mark(
     pool: &zeph_db::DbPool,
-    anchor_id: i64,
+    anchor_id: EntityId,
     outcome: &HebbianConsolidationOutcome,
 ) -> Result<(), MemoryError> {
     let now = chrono::Utc::now().timestamp();
@@ -269,7 +257,7 @@ pub async fn insert_graph_rule_and_mark(
         .await
         .map_err(|_| {
             tracing::warn!(
-                anchor_id,
+                %anchor_id,
                 "hebbian_consolidation: begin transaction timed out after 10s"
             );
             MemoryError::Timeout("insert_graph_rule_and_mark: begin".into())
@@ -290,7 +278,7 @@ pub async fn insert_graph_rule_and_mark(
         .await
         .map_err(|_| {
             tracing::warn!(
-                anchor_id,
+                %anchor_id,
                 "hebbian_consolidation: INSERT graph_rules timed out after 10s"
             );
             MemoryError::Timeout("insert_graph_rule_and_mark: insert".into())
@@ -307,7 +295,7 @@ pub async fn insert_graph_rule_and_mark(
         .await
         .map_err(|_| {
             tracing::warn!(
-                anchor_id,
+                %anchor_id,
                 "hebbian_consolidation: UPDATE graph_entities timed out after 10s"
             );
             MemoryError::Timeout("insert_graph_rule_and_mark: update".into())
@@ -334,12 +322,7 @@ pub async fn run_consolidation_sweep(
     status_tx: Option<&zeph_llm::status::StatusSender>,
     cancel: &CancellationToken,
 ) -> Result<u32, MemoryError> {
-    // Guard clears the spinner on every exit path (success, early return on error, cancellation).
-    let _clear_status = ClearStatusOnDrop(status_tx.cloned());
-
-    if let Some(tx) = status_tx {
-        let _ = tx.set("Consolidating memory clusters\u{2026}");
-    }
+    let _status = status_tx.map(|tx| tx.scope("Consolidating memory clusters\u{2026}"));
 
     let now = chrono::Utc::now().timestamp();
     let cooldown_secs = i64::try_from(config.consolidation_cooldown_secs).unwrap_or(i64::MAX);
@@ -376,7 +359,7 @@ pub async fn run_consolidation_sweep(
                 Ok(n) => n,
                 Err(e) => {
                     tracing::warn!(
-                        entity_id = candidate.entity_id,
+                        entity_id = %candidate.entity_id,
                         error = %e,
                         "hebbian_consolidation: failed to collect neighbours, skipping"
                     );
@@ -387,7 +370,7 @@ pub async fn run_consolidation_sweep(
 
         if neighbors.is_empty() {
             tracing::debug!(
-                entity_id = candidate.entity_id,
+                entity_id = %candidate.entity_id,
                 "hebbian_consolidation: no summaries in neighbourhood, skipping"
             );
             continue;
@@ -405,7 +388,7 @@ pub async fn run_consolidation_sweep(
 
         let Some(outcome) = outcome else {
             tracing::debug!(
-                entity_id = candidate.entity_id,
+                entity_id = %candidate.entity_id,
                 "hebbian_consolidation: LLM returned no outcome, skipping"
             );
             continue;
@@ -421,7 +404,7 @@ pub async fn run_consolidation_sweep(
             Ok(()) => {
                 consolidated += 1;
                 tracing::info!(
-                    entity_id = candidate.entity_id,
+                    entity_id = %candidate.entity_id,
                     score = candidate.score,
                     confidence = outcome.confidence,
                     "hebbian_consolidation: rule inserted"
@@ -429,7 +412,7 @@ pub async fn run_consolidation_sweep(
             }
             Err(e) => {
                 tracing::warn!(
-                    entity_id = candidate.entity_id,
+                    entity_id = %candidate.entity_id,
                     error = %e,
                     "hebbian_consolidation: failed to insert rule"
                 );
@@ -517,8 +500,8 @@ mod tests {
         name: &str,
         edge_count: usize,
         weight: f64,
-    ) -> i64 {
-        let entity_id: i64 = zeph_db::query_scalar(sql!(
+    ) -> EntityId {
+        let entity_id: EntityId = zeph_db::query_scalar(sql!(
             "INSERT INTO graph_entities (name, canonical_name, entity_type)
              VALUES (?, ?, 'concept')
              RETURNING id"

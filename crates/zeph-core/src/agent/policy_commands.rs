@@ -82,7 +82,7 @@ impl<C: Channel> Agent<C> {
             return "Usage: /policy check [--trust-level <level>] <tool> [args_json]".to_owned();
         }
 
-        let args_json = remaining.get(1..).map(|s| s.join(" ")).unwrap_or_default();
+        let args_json = remaining.get(1..).map_or_default(|s| s.join(" "));
         let params: serde_json::Map<String, serde_json::Value> = if args_json.is_empty() {
             serde_json::Map::new()
         } else {

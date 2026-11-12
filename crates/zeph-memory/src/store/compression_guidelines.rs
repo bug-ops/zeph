@@ -7,7 +7,7 @@
 use zeph_db::sql;
 
 use zeph_common::secret_redact::scrub_secrets;
-use zeph_common::text::truncate_to_bytes_ref;
+use zeph_common::text::truncate_chars;
 
 use crate::error::MemoryError;
 use crate::store::SqliteStore;
@@ -29,7 +29,7 @@ pub struct CompressionFailurePair {
 const MAX_FIELD_CHARS: usize = 4096;
 
 fn truncate_field(s: &str) -> &str {
-    truncate_to_bytes_ref(s, MAX_FIELD_CHARS)
+    truncate_chars(s, MAX_FIELD_CHARS)
 }
 
 impl SqliteStore {
@@ -437,6 +437,14 @@ mod tests {
 
     use super::*;
     use zeph_common::secret_redact::scrub_content;
+
+    #[test]
+    fn truncate_field_counts_chars_not_bytes() {
+        let text = "ж".repeat(MAX_FIELD_CHARS);
+        assert_eq!(truncate_field(&text), text);
+        let longer = "ж".repeat(MAX_FIELD_CHARS + 10);
+        assert_eq!(truncate_field(&longer).chars().count(), MAX_FIELD_CHARS);
+    }
 
     // pool_size=1 is required: SQLite :memory: creates an isolated database per
     // connection, so multiple connections would each see an empty schema.
@@ -865,7 +873,7 @@ mod tests {
     async fn truncate_field_respects_char_boundary() {
         let s = "а".repeat(5000); // Cyrillic 'а', 2 bytes each
         let truncated = truncate_field(&s);
-        assert!(truncated.len() <= MAX_FIELD_CHARS);
+        assert_eq!(truncated.chars().count(), MAX_FIELD_CHARS);
         assert!(s.is_char_boundary(truncated.len()));
     }
 

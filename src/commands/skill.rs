@@ -237,7 +237,7 @@ pub(crate) async fn handle_skill_command(
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
                 match row {
-                    None => anyhow::bail!("skill \"{name}\" not found in trust database"),
+                    None => anyhow::bail!("skill {name:?} not found in trust database"),
                     Some(r) if r.blake3_hash != current_hash => {
                         anyhow::bail!(
                             "hash mismatch for \"{name}\" — run `zeph skill verify {name}` first"
@@ -257,7 +257,7 @@ pub(crate) async fn handle_skill_command(
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             if !updated {
-                anyhow::bail!("skill \"{name}\" not found in trust database");
+                anyhow::bail!("skill {name:?} not found in trust database");
             }
             println!("Trust level for \"{name}\" set to {trust_level}.");
 
@@ -295,7 +295,7 @@ pub(crate) async fn handle_skill_command(
             if updated {
                 println!("Skill \"{name}\" blocked.");
             } else {
-                anyhow::bail!("skill \"{name}\" not found in trust database");
+                anyhow::bail!("skill {name:?} not found in trust database");
             }
         }
 
@@ -310,7 +310,7 @@ pub(crate) async fn handle_skill_command(
             if updated {
                 println!("Skill \"{name}\" unblocked (set to quarantined).");
             } else {
-                anyhow::bail!("skill \"{name}\" not found in trust database");
+                anyhow::bail!("skill {name:?} not found in trust database");
             }
         }
 
@@ -460,13 +460,13 @@ pub(crate) async fn handle_skill_command(
                 .all_meta()
                 .into_iter()
                 .find(|m| m.name == name)
-                .ok_or_else(|| anyhow::anyhow!("skill '{name}' not found"))?;
+                .ok_or_else(|| anyhow::anyhow!("skill {name:?} not found"))?;
             let skill_file = meta.skill_dir.join("SKILL.md");
             match zeph_skills::loader::load_skill_state_strict(&skill_file)? {
                 Some(schema) => {
                     println!("{}", serde_json::to_string_pretty(&schema.input_schema())?);
                 }
-                None => println!("skill '{name}' declares no state block"),
+                None => println!("skill {name:?} declares no state block"),
             }
         }
 

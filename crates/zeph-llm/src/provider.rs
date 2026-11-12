@@ -218,6 +218,8 @@ pub struct ResponseUsage {
     pub reasoning: Option<u64>,
     /// Usage billed outside the top-level counters (server compaction iterations).
     pub auxiliary: Option<AuxiliaryUsage>,
+    /// Service speed the request was sent with; drives the price tier.
+    pub speed: zeph_config::ServiceSpeed,
 }
 
 impl ResponseUsage {
@@ -238,6 +240,7 @@ impl ResponseUsage {
             }),
             reasoning: (reasoning > 0).then_some(reasoning),
             auxiliary: None,
+            speed: zeph_config::ServiceSpeed::Standard,
         }
     }
 }
@@ -2046,7 +2049,7 @@ impl Message {
 ///
 /// impl LlmProvider for EchoProvider {
 ///     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
-///         Ok(messages.last().map(|m| m.content.clone()).unwrap_or_default())
+///         Ok(messages.last().map_or_default(|m| m.content.clone()))
 ///     }
 ///
 ///     async fn chat_stream(&self, messages: &[Message]) -> Result<ChatStream, LlmError> {

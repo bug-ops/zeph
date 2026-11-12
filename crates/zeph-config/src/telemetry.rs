@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::fraction::UnitClosed64;
+
 fn default_trace_dir() -> PathBuf {
     PathBuf::from(".local/traces")
 }
@@ -18,8 +20,8 @@ fn default_service_name() -> String {
     "zeph-agent".into()
 }
 
-fn default_sample_rate() -> f64 {
-    1.0
+fn default_sample_rate() -> UnitClosed64 {
+    UnitClosed64::literal(1.0)
 }
 
 fn default_system_metrics_interval_secs() -> u64 {
@@ -114,7 +116,7 @@ pub struct TelemetryConfig {
     /// creation rates. Use [`otel_filter`][TelemetryConfig::otel_filter] (an `EnvFilter`
     /// applied before spans are created) to prevent the OTLP feedback loop.
     #[serde(default = "default_sample_rate")]
-    pub sample_rate: f64,
+    pub sample_rate: UnitClosed64,
     /// Optional base filter directive for the OTLP tracing layer.
     ///
     /// Accepts the same syntax as `RUST_LOG` / `EnvFilter` (e.g. `"info"`, `"debug,myapp=trace"`).
@@ -206,7 +208,18 @@ mod tests {
         assert!(!cfg.include_args);
         assert!(cfg.otlp_endpoint.is_none());
         assert_eq!(cfg.service_name, "zeph-agent");
-        assert!((cfg.sample_rate - 1.0).abs() < f64::EPSILON);
+        assert!((cfg.sample_rate.get() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn sample_rate_rejects_out_of_range_and_nan() {
+        for bad in ["nan", "1.5", "-0.1"] {
+            let toml = format!("sample_rate = {bad}");
+            assert!(
+                toml::from_str::<TelemetryConfig>(&toml).is_err(),
+                "sample_rate = {bad} must be rejected"
+            );
+        }
     }
 
     #[test]

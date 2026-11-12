@@ -245,7 +245,7 @@ error type instead.
 
 ### Response body size caps (#6984, #6983)
 
-`crates/zeph-a2a/src/body_limit.rs`. Every peer response read in `zeph-a2a` is bounded; a hostile or broken peer can no longer make the client buffer an unbounded body. `BodyLimit(NonZeroUsize)` constants (no config knob):
+`crates/zeph-a2a/src/body_limit.rs`. Every peer response read in `zeph-a2a` is bounded; a hostile or broken peer can no longer make the client buffer an unbounded body. The reader itself lives in `zeph_common::http` (`BodyLimit`, `read_capped`, `read_prefix`, `BodyReadError`; #7041); `zeph-a2a` keeps the four limits as `BodyLimit` constants (no config knob), `cap_event_size`, and `From<BodyReadError> for A2aError`:
 
 | Limit | Bytes | Applied at |
 |---|---|---|
@@ -254,8 +254,9 @@ error type instead.
 | `SSE_EVENT` | 4 MiB | one SSE event of `stream_message` (`cap_event_size`, applied before `.eventsource()`) |
 | `ERROR_BODY` | 4 KiB | error-response prefix |
 
-- `read_capped(resp, limit)` checks `Content-Length` first, then accumulates chunks; exceeding the limit returns `A2aError::BodyTooLarge { limit }`. Span `a2a.client.read_capped`.
-- `read_prefix(resp, limit)` never fails: it returns up to `limit` bytes, used for error bodies, which are then decoded lossily and cut to 256 bytes at a char boundary with `zeph_common::text::truncate_to_bytes`.
+- `zeph_common::http::read_capped(resp, limit)` checks `Content-Length` first, then accumulates chunks; exceeding the limit returns `BodyReadError::TooLarge`, mapped to `A2aError::BodyTooLarge { limit }`. Span `common.http.read_capped`.
+- `A2aError::Stream` carries the bare cause: its `Display` supplies the single `SSE stream error:` prefix (#7049).
+- `zeph_common::http::read_prefix(resp, limit)` never fails: it returns up to `limit` bytes, used for error bodies, which are then decoded lossily and cut to 256 bytes at a char boundary with `zeph_common::text::truncate_to_bytes`.
 - `cap_event_size(stream, limit)` counts bytes since the last blank line (LF, CRLF or CR; chunk-split safe); on overflow the stream yields one `BodyTooLarge` and ends.
 
 ### Key Invariants

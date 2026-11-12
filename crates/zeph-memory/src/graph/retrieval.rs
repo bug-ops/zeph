@@ -8,7 +8,7 @@ use zeph_db::sql;
 
 use crate::embedding_store::EmbeddingStore;
 use crate::error::MemoryError;
-use crate::types::{EdgeId, EntityId};
+use crate::types::{CommunityId, EdgeId, EntityId};
 
 use super::activation::{ActivatedFact, SpreadingActivation, SpreadingActivationParams};
 use super::store::GraphStore;
@@ -332,7 +332,7 @@ pub(crate) async fn find_seed_entities(
     #[cfg(any(feature = "sqlite", feature = "postgres"))]
     let community_ids = store.entity_community_ids(&entity_ids).await?;
     #[cfg(not(any(feature = "sqlite", feature = "postgres")))]
-    let community_ids: HashMap<EntityId, i64> = HashMap::new();
+    let community_ids: HashMap<EntityId, CommunityId> = HashMap::new();
 
     // Step 5: compute hybrid scores.
     let fts_weight = 1.0 - structural_weight;
@@ -361,7 +361,7 @@ pub(crate) async fn find_seed_entities(
     let capped: Vec<&ScoredEntity> = if community_cap == 0 {
         scored.iter().collect()
     } else {
-        let mut community_counts: HashMap<i64, usize> = HashMap::new();
+        let mut community_counts: HashMap<CommunityId, usize> = HashMap::new();
         let mut result: Vec<&ScoredEntity> = Vec::new();
         for se in &scored {
             match se.community_id {

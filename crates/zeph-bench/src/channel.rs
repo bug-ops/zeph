@@ -472,7 +472,7 @@ mod tests {
             locations: None,
             tool_call_id: zeph_common::ToolExecutionId::new("tc-1").unwrap(),
             terminal_id: None,
-            is_error: false,
+            status: zeph_core::ToolStatus::Success,
             parent_tool_use_id: None,
             raw_response: None,
             started_at: None,
