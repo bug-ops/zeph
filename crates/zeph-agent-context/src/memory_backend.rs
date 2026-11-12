@@ -593,7 +593,7 @@ mod tests {
     fn make_trajectory_row() -> TrajectoryEntryRow {
         TrajectoryEntryRow {
             id: 1,
-            conversation_id: Some(42),
+            conversation_id: Some(ConversationId(42)),
             turn_index: 5,
             kind: "procedural".to_owned(),
             intent: "read a file".to_owned(),

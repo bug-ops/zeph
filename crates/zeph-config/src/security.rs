@@ -10,6 +10,7 @@ use crate::providers::ProviderName;
 use crate::tools::{AutonomyLevel, PreExecutionVerifierConfig};
 
 use crate::defaults::default_true;
+use crate::fraction::UnitUpperClosed;
 use crate::vigil::VigilConfig;
 
 /// Fine-grained controls for the skill body scanner.
@@ -159,8 +160,8 @@ impl Default for TrustConfig {
 
 // ── Trajectory Sentinel ──────────────────────────────────────────────────────
 
-fn default_decay_per_turn() -> f32 {
-    0.85
+fn default_decay_per_turn() -> UnitUpperClosed {
+    UnitUpperClosed::literal(0.85)
 }
 fn default_window_turns() -> u32 {
     8
@@ -215,7 +216,7 @@ pub struct TrajectorySentinelConfig {
     ///
     /// Must be in `(0.0, 1.0]`. Default 0.85 gives a half-life of ≈ 4.3 turns.
     #[serde(default = "default_decay_per_turn")]
-    pub decay_per_turn: f32,
+    pub decay_per_turn: UnitUpperClosed,
     /// Number of past turns to keep in the signal buffer.
     ///
     /// Older signals are evicted once the buffer exceeds this size. Default 8.
@@ -277,12 +278,6 @@ impl TrajectorySentinelConfig {
     /// Returns a description of the first validation failure found.
     #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), String> {
-        if self.decay_per_turn <= 0.0 || self.decay_per_turn > 1.0 {
-            return Err(format!(
-                "trajectory.decay_per_turn must be in (0.0, 1.0]; got {}",
-                self.decay_per_turn
-            ));
-        }
         if self.elevated_at >= self.high_at {
             return Err(format!(
                 "trajectory: elevated_at ({}) must be < high_at ({})",
@@ -303,16 +298,15 @@ impl TrajectorySentinelConfig {
             ));
         }
         // Advisory: warn when subagent_inheritance_factor deviates from calibrated value.
-        if self.decay_per_turn < 1.0 {
-            let ideal = self
-                .decay_per_turn
-                .powf(0.5_f32.ln() / self.decay_per_turn.ln());
+        let decay = self.decay_per_turn.get();
+        if decay < 1.0 {
+            let ideal = decay.powf(0.5_f32.ln() / decay.ln());
             if (self.subagent_inheritance_factor - ideal).abs() > 0.1 {
                 // Not a hard error — warn only.
                 tracing::warn!(
                     configured = self.subagent_inheritance_factor,
                     ideal = ideal,
-                    decay = self.decay_per_turn,
+                    decay = decay,
                     "trajectory.subagent_inheritance_factor deviates from calibrated value by more than 0.1"
                 );
             }
@@ -662,6 +656,19 @@ impl Default for TimeoutConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decay_per_turn_rejects_out_of_range_and_nan() {
+        for bad in ["nan", "1.1", "0.0", "-0.5"] {
+            let toml = format!("decay_per_turn = {bad}");
+            assert!(
+                toml::from_str::<TrajectorySentinelConfig>(&toml).is_err(),
+                "decay_per_turn = {bad} must be rejected"
+            );
+        }
+        let cfg: TrajectorySentinelConfig = toml::from_str("decay_per_turn = 1.0").unwrap();
+        assert!(cfg.validate().is_ok());
+    }
 
     #[test]
     fn trust_config_default_has_scan_on_load_true() {

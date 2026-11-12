@@ -150,18 +150,77 @@ use cli::Cli;
 // debugging, leaving headroom as `Config` grows new fields over time.
 const MAIN_THREAD_STACK_SIZE: usize = 32 * 1024 * 1024;
 
+const URL_OPEN_DEPTH_VAR: &str = "ZEPH_URL_OPEN_DEPTH";
+
+/// Re-entrancy state of a `zeph url-open` dispatch (INV-LOOP).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UrlOpenDepth {
+    /// No enclosing `url-open` dispatch is running.
+    Fresh,
+    /// The depth marker is already set: this process was launched by a `url-open` dispatch.
+    Reentrant,
+}
+
+fn url_open_depth(marker: Option<&str>) -> UrlOpenDepth {
+    if marker == Some("1") {
+        UrlOpenDepth::Reentrant
+    } else {
+        UrlOpenDepth::Fresh
+    }
+}
+
+/// Apply the INV-LOOP guard for `zeph url-open`: exit on re-entrant dispatch, otherwise mark
+/// the environment so child processes launched by the dispatch see the marker.
+///
+/// Must run on the main thread before any other thread (including the tokio runtime) exists.
+#[allow(unsafe_code)]
+fn guard_url_open_depth() {
+    let marker = std::env::var(URL_OPEN_DEPTH_VAR).ok();
+    if url_open_depth(marker.as_deref()) == UrlOpenDepth::Reentrant {
+        eprintln!("deep-link dispatch loop detected; exiting");
+        std::process::exit(1);
+    }
+    // SAFETY: called from `main` before `zeph-main` or the tokio runtime is spawned, so no
+    // other thread exists that could read or write the process environment concurrently.
+    #[allow(clippy::disallowed_methods)]
+    unsafe {
+        std::env::set_var(URL_OPEN_DEPTH_VAR, "1");
+    }
+}
+
 fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    if matches!(cli.command, Some(cli::Command::UrlOpen { .. })) {
+        guard_url_open_depth();
+    }
     std::thread::Builder::new()
         .name("zeph-main".into())
         .stack_size(MAIN_THREAD_STACK_SIZE)
-        .spawn(|| {
+        .spawn(move || {
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?
-                .block_on(Box::pin(runner::run(Cli::parse())))
+                .block_on(Box::pin(runner::run(cli)))
         })?
         .join()
         .expect("zeph-main thread panicked")
+}
+
+#[cfg(test)]
+mod url_open_depth_tests {
+    use super::{UrlOpenDepth, url_open_depth};
+
+    #[test]
+    fn marker_one_is_reentrant() {
+        assert_eq!(url_open_depth(Some("1")), UrlOpenDepth::Reentrant);
+    }
+
+    #[test]
+    fn missing_or_other_marker_is_fresh() {
+        assert_eq!(url_open_depth(None), UrlOpenDepth::Fresh);
+        assert_eq!(url_open_depth(Some("0")), UrlOpenDepth::Fresh);
+        assert_eq!(url_open_depth(Some("")), UrlOpenDepth::Fresh);
+    }
 }
 
 #[cfg(test)]

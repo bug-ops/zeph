@@ -19,7 +19,7 @@ Default channel. Reads from stdin, writes to stdout with immediate streaming. Pe
 
 ## Telegram Channel
 
-See [Run via Telegram](../guides/telegram.md) for the setup guide. User whitelisting required (`allowed_users` must not be empty). MarkdownV2 formatting, voice/image support, 10s streaming throttle, 4096 char message splitting.
+See [Run via Telegram](../guides/telegram.md) for the setup guide. User whitelisting required by numeric Telegram id (`allowed_user_ids`; legacy `allowed_users` usernames log a warning). MarkdownV2 formatting, voice/image support, 10s streaming throttle, 4096 char message splitting.
 
 ## Discord Channel
 

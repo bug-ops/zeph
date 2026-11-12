@@ -132,6 +132,23 @@ Memory is organized in three tiers; retrieval strategy adapts to query complexit
 Complexity classification via [[023-complexity-triage-routing/spec]]; same signal applied to memory tier selection.
 See [[004-14-memory-tiering-rfc-decision]] for design rationale.
 
+### Store Routing Classifier Provider
+
+`[memory.store_routing] strategy = "llm" | "hybrid"` uses the provider named by `routing_classifier_provider` from the first turn (#7046). `ContextManager::store_routing_provider` is derived by one private helper, `Agent::refresh_store_routing_provider`.
+
+- **FR-001** A non-empty `routing_classifier_provider` is resolved from the `[[llm.providers]]` pool (`resolve_background_provider`) before the first turn.
+- **FR-002** An empty name with strategy `llm`/`hybrid` resolves to the main provider, at startup and on reload.
+- **FR-003** An unknown name falls back to the main provider with a single startup WARN (the `resolve_background_provider` convention), not a per-turn WARN. The named lookup is skipped while the provider pool is still empty; the `with_provider_pool` refresh performs it.
+- **FR-004** Startup and reload share the helper. It runs from `with_routing`, `with_provider_pool`, and config reload, so builder call order does not matter.
+- **FR-005** Strategy `heuristic` or `enabled = false` resolves no classifier provider (`None`).
+
+Wiring: CLI/TUI (`src/runner.rs`), daemon (`src/daemon.rs`), and ACP (`SharedAgentDeps.store_routing`, `src/acp.rs`) all call `.with_routing(config.memory.store_routing.clone())`. The HTTP `serve` agent factory is excluded: it never wires store routing (tracked follow-up), so it always uses the heuristic router.
+
+Invariants:
+- Startup and reload produce the same `store_routing_provider` for the same config.
+- NEVER resolve the provider only in the reload path, duplicate the resolution block, or rely on a per-turn WARN as the only misconfiguration signal.
+- Changing the unknown-name failure policy is an "Ask First" decision.
+
 ---
 
 ## Skill Promotion Pathways

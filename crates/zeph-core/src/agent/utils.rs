@@ -336,6 +336,8 @@ impl<C: Channel> Agent<C> {
     /// of `input_tokens`, so it cannot inflate the context size derived from them.
     pub(crate) fn record_cost_and_cache(&self, input_tokens: u64, output_tokens: u64) {
         let usage = self.provider.last_response_usage();
+        let speed = usage.map_or_else(Default::default, |u| u.speed);
+        self.update_metrics(|m| m.service_speed = speed);
         self.record_cost(input_tokens, output_tokens, usage);
     }
 
@@ -346,6 +348,7 @@ impl<C: Channel> Agent<C> {
     pub(crate) fn record_background_cost(&self, input_tokens: u64, output_tokens: u64) {
         let usage = self.provider.last_response_usage().map(|u| ResponseUsage {
             auxiliary: None,
+            speed: zeph_config::ServiceSpeed::Standard,
             ..u
         });
         self.record_cost(input_tokens, output_tokens, usage);
@@ -357,6 +360,7 @@ impl<C: Channel> Agent<C> {
             read: cache_read,
         } = usage.and_then(|u| u.cache).unwrap_or_default();
         let auxiliary = usage.and_then(|u| u.auxiliary).unwrap_or_default();
+        let speed = usage.map_or_else(Default::default, |u| u.speed);
 
         if let Some(ref tracker) = self.runtime.metrics.cost_tracker {
             let provider_name = if self.runtime.config.active_provider_name.is_empty() {
@@ -372,6 +376,7 @@ impl<C: Channel> Agent<C> {
                 cache_read,
                 cache_write,
                 output_tokens,
+                speed,
             );
             if auxiliary != AuxiliaryUsage::default() {
                 tracker.record_auxiliary_usage(
@@ -379,6 +384,7 @@ impl<C: Channel> Agent<C> {
                     self.provider.provider_kind_str(),
                     &self.runtime.config.model_name,
                     auxiliary,
+                    speed,
                 );
             }
             let breakdown = tracker.provider_breakdown();
@@ -439,6 +445,7 @@ impl<C: Channel> Agent<C> {
         } = usage.and_then(|u| u.cache).unwrap_or_default();
         let auxiliary = usage.and_then(|u| u.auxiliary).unwrap_or_default();
         let reasoning_tokens = usage.and_then(|u| u.reasoning);
+        let speed = usage.map_or_else(Default::default, |u| u.speed);
         // Issue #6549 S1: prefer the true first-content-token time captured at the SSE stream
         // consumption point (speculative-decoding path) over the provider-level TTFB proxy —
         // `stream_ttft_ms` is `Some` only when this call actually streamed.
@@ -448,13 +455,15 @@ impl<C: Channel> Agent<C> {
         } else {
             self.runtime.config.active_provider_name.as_str()
         };
-        let cost_cents = tracker.price_of(
-            &self.runtime.config.model_name,
-            input_tokens,
-            cache_read,
-            cache_write,
-            output_tokens,
-        ) + tracker.price_of_auxiliary(&self.runtime.config.model_name, auxiliary);
+        let cost_cents =
+            tracker.price_of(
+                &self.runtime.config.model_name,
+                input_tokens,
+                cache_read,
+                cache_write,
+                output_tokens,
+                speed,
+            ) + tracker.price_of_auxiliary(&self.runtime.config.model_name, auxiliary, speed);
         // Generation-window throughput: only derivable once TTFT/TTFB is known and the
         // remaining window (latency - ttft) is positive.
         let tokens_per_sec = ttft_ms.and_then(|ttft| {

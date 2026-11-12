@@ -316,9 +316,10 @@ async fn pre_execution_verifier_refuses_destructive_call_on_inline_path() {
         executor,
     );
     agent.tool_orchestrator.pre_execution_verifiers =
-        vec![Box::new(zeph_tools::DestructiveCommandVerifier::new(
+        std::sync::Arc::from(vec![Box::new(zeph_tools::DestructiveCommandVerifier::new(
             &zeph_tools::DestructiveVerifierConfig::default(),
-        ))];
+        ))
+            as Box<dyn zeph_tools::PreExecutionVerifier>]);
 
     let outcome = agent.run_inline_tool_loop("go", 5, None).await.unwrap();
 
@@ -338,9 +339,10 @@ async fn pre_execution_verifier_lets_harmless_command_through() {
         executor,
     );
     agent.tool_orchestrator.pre_execution_verifiers =
-        vec![Box::new(zeph_tools::DestructiveCommandVerifier::new(
+        std::sync::Arc::from(vec![Box::new(zeph_tools::DestructiveCommandVerifier::new(
             &zeph_tools::DestructiveVerifierConfig::default(),
-        ))];
+        ))
+            as Box<dyn zeph_tools::PreExecutionVerifier>]);
 
     let outcome = agent.run_inline_tool_loop("go", 5, None).await.unwrap();
 

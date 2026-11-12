@@ -566,11 +566,7 @@ pub async fn run_focus_auto_consolidation(
                 "focus auto-consolidation provider error: {e}"
             ))) as Box<dyn std::error::Error + Send + Sync>
         })?;
-    let truncated = if raw.len() <= max_chars {
-        raw
-    } else {
-        zeph_common::text::truncate_to_bytes(&raw, max_chars)
-    };
+    let truncated = zeph_common::text::truncate_chars(&raw, max_chars).to_owned();
     if truncated.is_empty() {
         return Ok(None);
     }

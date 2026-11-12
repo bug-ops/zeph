@@ -826,7 +826,25 @@ A sub-agent's final text is produced by an LLM that may have read web or MCP con
 
 ---
 
-## 22. See Also
+## 22. Sub-Agent Pre-Dispatch Policy Gates (#7035)
+
+The sub-agent loop (`handle_tool_step`, `crates/zeph-subagent/src/agent_loop.rs`) runs the parent's agent-level pre-dispatch gates, which are not part of the shared executor chain. Order per call: `GrantKind::Tool` check, exfiltration URL flagging (flag-only), pre-execution verifiers, `PreToolUse` hooks, dispatch.
+
+- `SpawnContext.pre_execution_verifiers` (`Arc<[Box<dyn PreExecutionVerifier>]>`) is rebuilt from the parent's config by `build_pre_execution_verifiers` in `build_spawn_context` (same factory as the parent's own list) and carried by both `spawn` and `resume` into the loop's `ToolGates`. The first `Block` returns an `is_error` tool result with the text of the parent's `GateRefusal::PreExecutionBlocked`; the executor is not called
+- URLs found in tool output that carried injection flags are remembered per loop (normalized as in the parent); a later call whose arguments reuse one logs a WARN and is not blocked
+- The parent's channel tool allowlist narrows `inherited_tool_allowlist` (`inherit_tool_allowlist`): only channel names already in `normalize_tool_id` form are kept (the parent matches names exactly, so mapping `Bash(cargo *)` to `bash` would widen the sub-agent), and a present side never collapses to `None`
+- Sub-agent blocks are WARN-only: no `pre_execution_blocks` metric, security event or audit row
+
+### Key Invariants
+
+- NEVER dispatch a sub-agent tool call before the verifier list has run; an empty list is allowed only when the parent has none
+- NEVER combine the policy allowlist and the channel allowlist with an `Option` combinator that returns `None` when either side is `None`
+- A new `SpawnContext` construction path MUST fill `pre_execution_verifiers` from the parent; nested spawns MUST clone the `Arc`
+- `UrlGroundingVerifier` now applies to sub-agent and orchestrated `fetch` calls, with a frozen snapshot of the parent's `user_provided_urls` taken at spawn, resume or scheduler dispatch (`build_pre_execution_verifiers`); later parent changes, including the per-turn clear, do not reach the sub-agent, and task-prompt URLs are not added
+
+---
+
+## 23. See Also
 
 - [[constitution]] — project principles
 - [[002-agent-loop/spec]] — parent agent loop that uses `SubAgentManager`

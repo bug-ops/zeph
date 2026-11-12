@@ -407,7 +407,7 @@ fn tool_output_to_updates(data: zeph_core::ToolOutputData) -> Vec<SessionUpdate>
     let diff = data.diff;
     let locations = data.locations;
     let tool_call_id = data.tool_call_id.as_str().to_owned();
-    let is_error = data.is_error;
+    let is_error = data.status.is_failure();
     let terminal_id = data.terminal_id;
     let parent_tool_use_id = data.parent_tool_use_id;
     let raw_response = data.raw_response;
@@ -551,6 +551,54 @@ pub(super) fn loopback_event_to_updates(event: LoopbackEvent) -> Vec<SessionUpda
         // Stop hints are consumed directly in the prompt() loop and must not reach here.
         LoopbackEvent::Stop(_) => vec![],
         _ => vec![],
+    }
+}
+
+#[cfg(test)]
+mod tool_status_tests {
+    use super::*;
+    use zeph_core::ToolStatus;
+
+    fn output(status: ToolStatus) -> zeph_core::ToolOutputData {
+        zeph_core::ToolOutputData {
+            tool_name: "bash".into(),
+            display: "out".into(),
+            diff: None,
+            filter_stats: None,
+            kept_lines: None,
+            locations: None,
+            tool_call_id: zeph_common::ToolExecutionId::generate(),
+            status,
+            terminal_id: None,
+            parent_tool_use_id: None,
+            raw_response: None,
+            started_at: None,
+        }
+    }
+
+    fn final_status(status: ToolStatus) -> Option<ToolCallStatus> {
+        tool_output_to_updates(output(status))
+            .into_iter()
+            .find_map(|u| match u {
+                SessionUpdate::ToolCallUpdate(update) => update.fields.status,
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn non_zero_exit_and_failed_report_failed() {
+        assert_eq!(
+            final_status(ToolStatus::from_exit_code(3)),
+            Some(ToolCallStatus::Failed)
+        );
+        assert_eq!(
+            final_status(ToolStatus::Failed),
+            Some(ToolCallStatus::Failed)
+        );
+        assert_eq!(
+            final_status(ToolStatus::Success),
+            Some(ToolCallStatus::Completed)
+        );
     }
 }
 

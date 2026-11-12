@@ -212,7 +212,7 @@ character.
 
 ## Claude Model Capabilities, Window Ceiling and Server Compaction (#6822, #6825)
 
-`ClaudeModel` (`claude/model.rs`) is a closed enum parsed once from the model id by `from_model_id`: provider prefixes (`anthropic.`, `us.anthropic.`), `@date` / `-v1:0` suffixes and `-YYYYMMDD` stamps are ignored, and the longest numeric version wins (`sonnet-5-5` is Sonnet 5.5, not Sonnet 5). `capabilities()` is one exhaustive match, so a new variant forces every capability to be decided. Variants: Haiku45, Haiku55, Sonnet46, Sonnet5, Sonnet55, Opus46, Opus47, Opus48, Opus5, Opus55, Fable5, Fable51, Fable52, Mythos5, Mythos51, Legacy (anything older than 4.6 except Haiku 4.5), Unknown.
+`ClaudeModel` (`claude/model.rs`) is a closed enum parsed once from the model id by `from_model_id`: provider prefixes (`anthropic.`, `us.anthropic.`), `@date` / `-v1:0` suffixes and `-YYYYMMDD` stamps are ignored, and the longest numeric version wins (`sonnet-5-5` is Sonnet 5.5, not Sonnet 5). `capabilities()` is one exhaustive match, so a new variant forces every capability to be decided. Variants: Haiku45, Haiku55, Sonnet46, Sonnet5, Sonnet55, Opus46, Opus47, Opus48, Opus5, Opus55, Fable5, Fable51, Fable52, Mythos5, Mythos51, Mythos52, Legacy (anything older than 4.6 except Haiku 4.5), Unknown.
 
 | Capability | Models |
 |---|---|
@@ -220,16 +220,21 @@ character.
 | `rejects_prefill` | Sonnet46, Opus47+, all 5.x, Fable, Mythos, Haiku55, Unknown (Opus46 only while thinking is on) |
 | `rejects_sampling` (`temperature` is never sent) | Opus47+, all 5.x, Fable, Mythos, Haiku55, Unknown |
 | `thinking_always_on` (`max_tokens` is floored at 16 000 even without a thinking config) | Opus5, Opus55, Sonnet5, Sonnet55, Haiku55, Fable, Mythos |
-| `forbids_forced_tool_choice` | Opus55, Sonnet55, Fable51, Fable52, Mythos51, Unknown |
-| `preserved_thinking` (`block_binding: drop_block`) | Fable51, Fable52, Opus55, Sonnet55, Haiku55 |
+| `forbids_forced_tool_choice` | Opus55, Sonnet55, Fable51, Fable52, Mythos51, Mythos52, Unknown |
+| `preserved_thinking` (`block_binding: drop_block`) | Fable51, Fable52, Mythos52, Opus55, Sonnet55, Haiku55 |
 | `server_compaction` | every 4.6+ model, Fable, Mythos, Haiku55; not Haiku45, Legacy or Unknown |
 | `needs_interleaved_beta` (with `Extended` thinking and tools) | Sonnet46 |
 | `extended_ttl_beta` (`extended-cache-ttl-2025-04-25` with `prompt_cache_ttl = "1h"`) | Legacy, Haiku45 |
-| `structured_outputs` (`chat_typed` uses `output_config.format`) | Opus55, Sonnet55, Fable51, Fable52, Mythos51 |
+| `structured_outputs` (`chat_typed` uses `output_config.format`) | Opus55, Sonnet55, Fable51, Fable52, Mythos51, Mythos52 |
+| `supports_fast_mode` (top-level `speed: "fast"` accepted; never sent otherwise, see Fast mode below) | Opus55, Fable52, Mythos52 |
 | `needs_1m_beta` (`context-1m-2025-08-07`) | Legacy only |
 | `native_window` | 1M for 4.6+, 5.x, Fable, Mythos, Haiku55; 200k for Haiku45 and Legacy (1M with `needs_1m_beta`); none for Unknown |
 
-**Fable 5.2 (`claude-fable-5-2`, #6980)**: `ClaudeModel::Fable52` shares the Fable 5.1 surface (same `GEN5_BOUND` arm as `Opus55 | Sonnet55 | Fable51`); parsed by `("fable", (Some(5), Some(2)))`, including dated, Vertex `@date` and Bedrock ids. Native 1M window. Pricing in `zeph-core/src/cost.rs` (cents per 1k tokens): input 0.8 ($8/M), output 4.0 ($40/M), cache read 0.02 ($0.20/M, ratio 0.025), cache write 1.25x input. A model id absent from the pricing table logs the existing one-shot unpriced WARN (`CostTracker::unpriced_models_warned`); `claude-mythos-5-2` is intentionally not added. A future `claude-fable-5-3` parses to `Unknown` until added.
+**Fable 5.2 (`claude-fable-5-2`, #6980)**: `ClaudeModel::Fable52` shares the Fable 5.1 surface (same `GEN5_BOUND` arm as `Opus55 | Sonnet55 | Fable51`); parsed by `("fable", (Some(5), Some(2)))`, including dated, Vertex `@date` and Bedrock ids. Native 1M window. Pricing in `zeph-core/src/cost.rs` (cents per 1k tokens): input 0.8 ($8/M), output 4.0 ($40/M), cache read 0.02 ($0.20/M, ratio 0.025), cache write 1.25x input. A model id absent from the pricing table logs the existing one-shot unpriced WARN (`CostTracker::unpriced_models_warned`); A future `claude-fable-5-3` parses to `Unknown` until added.
+
+**Mythos 5.2 (`claude-mythos-5-2`, #7031)**: `ClaudeModel::Mythos52` takes the Fable 5.2 capability set (`GEN5_BOUND` + `mid_conversation_system`, native 1M window), per Anthropic's statement that Mythos 5.2 has the same capabilities and constraints as Fable 5.2 (documentation source, no live probe: access-gated). `Mythos5` and `Mythos51` arms are unchanged. Pricing (cents per 1k tokens): Mythos 5.2 input 0.8 / output 4.0 / cache read ratio 0.025; Mythos 5.1 1.0 / 5.0 / ratio 0.025; Mythos 5 1.0 / 5.0 / ratio 0.1.
+
+**Fast mode (`speed`, #7032)**: `[[llm.providers]]` `speed = "standard" | "fast"` (`zeph_config::ServiceSpeed`, default standard, only valid for `type = "claude"`). `ClaudeProvider::with_speed` collapses `Fast` to `Standard` with one WARN when `ModelCapabilities.supports_fast_mode` is false, so the wire `speed: "fast"` member (all five request body structs, `skip_serializing_if` none) can never reach an unsupported model (notably Opus 4.8, whose fast mode is removed 2026-11-30). No beta header is sent. `ResponseUsage.speed` carries the effective speed; `CostTracker::price_of`/`record_usage`/`price_of_auxiliary` take it and use a separate fast price table (Opus 5.5 0.8/4.0/ratio 0.05; Fable 5.2 and Mythos 5.2 1.6/8.0/ratio 0.025; cache write stays 1.25x the doubled input); a model without a fast row bills at the standard price with one WARN. Background cost (`record_background_cost`) and ensemble-member usage are billed at standard. The TUI status bar shows `fast` while the main provider's last call was fast. Out of scope: CLI flag, `/speed`, 400 latch/retry, Opus 5 beta header, parsing `usage.speed`.
 
 `Unknown` is conservative: no `budget_tokens`, prefill or sampling parameters, `tool_choice: auto`, no implicit thinking parameter, no beta header, no server compaction, no context window.
 

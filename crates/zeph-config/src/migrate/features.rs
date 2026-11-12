@@ -1511,3 +1511,80 @@ mod telegram_expandable_blockquote_tests {
         assert_eq!(second.output, first.output);
     }
 }
+
+/// Step 115 — add advisory numeric-id allowlist lines to an existing active `[telegram]` table
+/// (spec `007-channels`, issue #7036).
+///
+/// Telegram usernames are mutable and transferable, so authorization now keys on the numeric
+/// `from.id`; `allowed_users` stays as a warn-logged legacy fallback. Skipped when
+/// `allowed_user_ids` is already present (active or commented) or `[telegram]` is absent.
+///
+/// # Errors
+///
+/// Never returns `Err`; the `Result` matches the `Migration` trait signature.
+pub fn migrate_telegram_allowed_user_ids(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let present = section_body(toml_src, "telegram").lines().any(|l| {
+        l.trim()
+            .trim_start_matches('#')
+            .trim()
+            .starts_with("allowed_user_ids")
+    });
+    if !section_header_present(toml_src, "telegram") || present {
+        return Ok(MigrationResult {
+            output: toml_src.to_owned(),
+            changed_count: 0,
+            sections_changed: Vec::new(),
+        });
+    }
+
+    let comment = "# Numeric Telegram user ids (stable); usernames in allowed_users are a legacy \
+         fallback and log a warning on match (#7036).\n\
+         # allowed_user_ids = [123456789]\n\
+         # With bot_to_bot = true, list the trusted bots here; an empty list is rejected at startup.\n\
+         # allowed_bot_ids = [987654321]\n";
+    Ok(MigrationResult {
+        output: insert_after_section(toml_src, "telegram", comment),
+        changed_count: 1,
+        sections_changed: vec!["telegram".to_owned()],
+    })
+}
+
+#[cfg(test)]
+mod telegram_allowed_user_ids_tests {
+    use super::*;
+
+    #[test]
+    fn appends_advisory_ids_once() {
+        let base = "[telegram]\ntoken = \"tok\"\nallowed_users = [\"alice\"]\n";
+        let first = migrate_telegram_allowed_user_ids(base).unwrap();
+        assert_eq!(first.changed_count, 1);
+        assert!(first.output.contains("# allowed_user_ids = [123456789]"));
+        assert!(first.output.contains("# allowed_bot_ids = [987654321]"));
+        let second = migrate_telegram_allowed_user_ids(&first.output).unwrap();
+        assert_eq!(second.changed_count, 0);
+        assert_eq!(second.output, first.output);
+    }
+
+    #[test]
+    fn noop_without_telegram_section() {
+        let base = "[agent]\nname = \"zeph\"\n";
+        let result = migrate_telegram_allowed_user_ids(base).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, base);
+    }
+
+    #[test]
+    fn noop_when_ids_already_configured() {
+        let base = "[telegram]\ntoken = \"tok\"\nallowed_user_ids = [1]\n";
+        let result = migrate_telegram_allowed_user_ids(base).unwrap();
+        assert_eq!(result.changed_count, 0);
+        assert_eq!(result.output, base);
+    }
+
+    #[test]
+    fn output_still_parses_as_toml() {
+        let base = "[telegram]\ntoken = \"tok\"\n";
+        let result = migrate_telegram_allowed_user_ids(base).unwrap();
+        assert!(toml::from_str::<toml::Table>(&result.output).is_ok());
+    }
+}

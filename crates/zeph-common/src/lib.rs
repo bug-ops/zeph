@@ -22,6 +22,9 @@ pub mod fidelity;
 pub mod fs_secure;
 pub mod hash;
 pub mod hash_chain;
+#[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
+pub mod http;
 #[cfg(feature = "http-middleware")]
 pub mod http_middleware;
 pub mod llm_response;
@@ -71,9 +74,9 @@ pub use text::format_tokens;
 pub use trust_level::SkillTrustLevel;
 pub use turn_trust_floor::TurnTrustFloor;
 pub use types::{
-    EmptyToolExecutionId, ProviderName, SessionId, SessionIdError, SkillCategory,
-    SkillCategoryError, SkillName, SkillNameError, StopHint, SubgoalId, ToolCallId, ToolDefinition,
-    ToolExecutionId, ToolName,
+    EmptyToolExecutionId, GoalId, GoalIdError, ProviderName, SessionId, SessionIdError,
+    SkillCategory, SkillCategoryError, SkillName, SkillNameError, StopHint, SubgoalId, ToolCallId,
+    ToolDefinition, ToolExecutionId, ToolName,
 };
 
 #[cfg(feature = "treesitter")]

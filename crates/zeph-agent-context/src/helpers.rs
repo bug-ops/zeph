@@ -46,14 +46,6 @@ pub const SESSION_DIGEST_PREFIX: &str = "[Session digest from previous interacti
 /// System message prefix for document RAG results.
 pub const DOCUMENT_RAG_PREFIX: &str = "## Relevant documents\n";
 
-/// Truncate `s` to at most `max_chars` Unicode scalar values.
-///
-/// Delegates to `zeph_common::text::truncate_to_chars` which respects UTF-8 boundaries.
-#[must_use]
-pub fn truncate_chars(s: &str, max_chars: usize) -> String {
-    zeph_common::text::truncate_to_chars(s, max_chars)
-}
-
 /// Format a user correction as a single bullet point for injection into the system prompt.
 ///
 /// The `correction_text` must already be scrubbed by the caller before being passed here.
@@ -62,7 +54,7 @@ pub fn truncate_chars(s: &str, max_chars: usize) -> String {
 pub fn format_correction_note(correction_text: &str) -> String {
     format!(
         "- Past user correction: \"{}\"",
-        truncate_chars(correction_text, 200)
+        zeph_common::text::truncate_to_chars(correction_text, 200)
     )
 }
 

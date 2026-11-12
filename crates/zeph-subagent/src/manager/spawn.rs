@@ -20,7 +20,7 @@ use super::SubAgentHandle;
 use super::SubAgentManager;
 use super::SubAgentStatus;
 use super::worktree::WorktreeCleanupGuard;
-use crate::agent_loop::{AgentLoopArgs, run_agent_loop};
+use crate::agent_loop::{AgentLoopArgs, ToolGates, run_agent_loop};
 use crate::cwd_guard::CwdRestoreGuard;
 use crate::def::{MemoryScope, PermissionMode, SubAgentDef, ToolPolicy};
 use crate::error::SubAgentError;
@@ -510,8 +510,7 @@ pub(crate) fn apply_context_injection(
                     // full content into the sub-agent's task prompt unbounded. A zero cap falls
                     // back to the bare task prompt, consistent with `Summary` mode's
                     // `summary.is_empty()` fallback below, rather than emitting an empty header.
-                    let truncated =
-                        zeph_common::text::truncate_to_bytes_ref(content, summary_max_chars);
+                    let truncated = zeph_common::text::truncate_chars(content, summary_max_chars);
                     format!(
                         "Parent agent context (last response):\n{truncated}\n\n---\n\nTask: \
                          {task_prompt}"
@@ -543,7 +542,7 @@ pub(crate) fn build_context_summary(parent_messages: &[Message], max_chars: usiz
         let text = user_msg.content.replace('\n', " ");
         let text = text.trim();
         if !text.is_empty() {
-            parts.push(zeph_common::text::truncate_to_bytes_ref(text, GOAL_CHARS).to_owned());
+            parts.push(zeph_common::text::truncate_chars(text, GOAL_CHARS).to_owned());
         }
     }
 
@@ -571,7 +570,7 @@ pub(crate) fn build_context_summary(parent_messages: &[Message], max_chars: usiz
                 return None;
             }
             let text = raw.replace('\n', " ");
-            Some(zeph_common::text::truncate_to_bytes_ref(&text, DECISION_CHARS).to_owned())
+            Some(zeph_common::text::truncate_chars(&text, DECISION_CHARS).to_owned())
         })
         .collect();
 
@@ -582,7 +581,7 @@ pub(crate) fn build_context_summary(parent_messages: &[Message], max_chars: usiz
     }
 
     let joined = parts.join("; ");
-    zeph_common::text::truncate_to_bytes_ref(&joined, max_chars).to_owned()
+    zeph_common::text::truncate_chars(&joined, max_chars).to_owned()
 }
 
 /// Publishes a terminal `Failed` status before an early return from the cwd-lock/worktree
@@ -899,6 +898,10 @@ impl SubAgentManager {
 
         let task_id_for_loop = task_id.clone();
         let task_id_for_worktree = task_id.clone();
+        let tool_gates = ToolGates::new(
+            Arc::clone(&ctx.pre_execution_verifiers),
+            zeph_sanitizer::exfiltration::ExfiltrationGuard::new(ctx.exfiltration_guard.clone()),
+        );
         let agent_loop_args = AgentLoopArgs {
             provider,
             executor,
@@ -928,6 +931,7 @@ impl SubAgentManager {
             forward: forward_sender,
             secret_registry: self.secret_registry.clone(),
             tool_grants: tool_grants_for_loop,
+            gates: tool_gates,
         };
 
         let join_handle = self.spawn_agent_task(Arc::from(task_id.as_str()), move || async move {
@@ -1454,6 +1458,15 @@ impl SubAgentManager {
         // Cloned before the `move` closure below (same reason as `debug_dump_sink_for_loop`
         // above): `self` cannot be captured by the `'static` task closure.
         let secret_registry_for_loop = self.secret_registry.clone();
+        let tool_gates = ToolGates::new(
+            spawn_context.map_or_else(
+                || Arc::from(Vec::new()),
+                |ctx| Arc::clone(&ctx.pre_execution_verifiers),
+            ),
+            zeph_sanitizer::exfiltration::ExfiltrationGuard::new(
+                resolve_resume_exfiltration_guard_config(spawn_context),
+            ),
+        );
         let join_handle = self.spawn_agent_task(Arc::from(new_task_id.as_str()), move || {
             run_agent_loop(AgentLoopArgs {
                 provider,
@@ -1486,6 +1499,7 @@ impl SubAgentManager {
                 forward: forward_sender,
                 secret_registry: secret_registry_for_loop,
                 tool_grants: tool_grants_for_loop,
+                gates: tool_gates,
             })
         });
 

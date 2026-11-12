@@ -283,9 +283,7 @@ impl GoalCheckJob {
             return GoalCheckOutcome::NoCondition;
         };
 
-        if let Some(tx) = &self.status_tx {
-            let _ = tx.set(STATUS_VERIFYING);
-        }
+        let status = self.status_tx.as_ref().map(|tx| tx.scope(STATUS_VERIFYING));
         let result = self
             .supervisor
             .verify(&condition, &self.summary, &self.recent_actions)
@@ -295,9 +293,7 @@ impl GoalCheckJob {
                 trigger = self.trigger.label()
             ))
             .await;
-        if let Some(tx) = &self.status_tx {
-            let _ = tx.clear();
-        }
+        drop(status);
         GoalCheckOutcome::Report(format_report(
             self.trigger,
             source,
@@ -581,6 +577,23 @@ mod tests {
         assert_eq!(rx.next().await, Some(zeph_llm::status::StatusUpdate::Clear));
     }
 
+    #[tokio::test]
+    async fn cancelled_run_still_clears_status() {
+        let (tx, mut rx) = zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Agent);
+        let provider = MockProvider::with_responses(vec![
+            r#"{"achieved":false,"reasoning":"no","confidence":0.5}"#.into(),
+        ])
+        .with_delay(5_000);
+        let mut j = job("cond", None, provider);
+        j.status_tx = Some(tx);
+        let cancelled = tokio::time::timeout(Duration::from_millis(50), j.run()).await;
+        assert!(
+            cancelled.is_err(),
+            "run must still be awaiting the verifier"
+        );
+        assert_eq!(rx.next().await, Some(zeph_llm::status::StatusUpdate::Clear));
+    }
+
     fn agent_with_verdict(json: &str) -> Agent<crate::agent::agent_tests::MockChannel> {
         use crate::agent::agent_tests::{
             MockChannel, MockToolExecutor, create_test_registry, mock_provider,
@@ -598,7 +611,10 @@ mod tests {
     #[tokio::test]
     async fn goal_check_rejected_during_autonomous_session() {
         let mut agent = agent_with_verdict("{}");
-        agent.services.autonomous.start_session("g1", "goal", 5);
+        agent
+            .services
+            .autonomous
+            .start_session(zeph_common::GoalId::new_v4(), "goal", 5);
         let out = agent.goal_check("anything").await.unwrap();
         assert!(out.contains("/goal status"), "{out}");
         assert!(agent.services.autonomous.session.is_some());

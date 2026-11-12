@@ -42,7 +42,7 @@ tree-sitter-typescript.workspace = true
 unicode-normalization.workspace = true
 url.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
-zeph-common = { workspace = true, features = ["treesitter"] }
+zeph-common = { workspace = true, features = ["http", "treesitter"] }
 zeph-config.workspace = true
 zeph-db.workspace = true
 zeph-llm.workspace = true

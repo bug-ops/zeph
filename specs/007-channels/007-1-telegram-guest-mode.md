@@ -86,7 +86,7 @@ SO THAT I can get AI assistance without adding the bot to the chat.
 
 ```
 GIVEN telegram.guest_mode = true
-AND the user is in allowed_users (or allowed_users is empty)
+AND the caller's numeric id is in allowed_user_ids (or its username is in legacy allowed_users)
 WHEN the user @mentions Zeph in any Telegram chat
 THEN Zeph processes the tagged message and responds via answerGuestQuery within
      the same session, with a system prompt annotation indicating guest context
@@ -129,8 +129,8 @@ THEN Zeph drops the update without processing or logging an error
 |----|-------------|----------|
 | FR-001 | WHEN `telegram.guest_mode = false` THE SYSTEM SHALL ignore all `guest_message` updates without error | must |
 | FR-002 | WHEN `telegram.guest_mode = true` THE SYSTEM SHALL register a dispatcher handler for the `guest_message` update type | must |
-| FR-003 | WHEN a `guest_message` update is received THE SYSTEM SHALL extract `guest_bot_caller_user` and check it against `allowed_users`; if the check fails, the update SHALL be silently dropped | must |
-| FR-004 | WHEN `allowed_users` is empty and `guest_mode = true` THE SYSTEM SHALL accept guest messages from any user | must |
+| FR-003 | WHEN a `guest_message` update is received THE SYSTEM SHALL extract `guest_bot_caller_user` and check its numeric `id` against `allowed_user_ids` (a username match against legacy `allowed_users` is a warn-logged fallback); if the check fails, the update SHALL be silently dropped | must |
+| FR-004 | WHEN both `allowed_user_ids` and `allowed_users` are empty THE SYSTEM SHALL refuse to start (fail-closed); an empty allowlist never admits any user | must |
 | FR-005 | WHEN processing a guest message THE SYSTEM SHALL set `guest_query_id` on `IncomingMessage` to the opaque ID from the update | must |
 | FR-006 | WHEN `guest_query_id` is present on the outbound message THE SYSTEM SHALL route the response through `TelegramApiClient::answer_guest_query` instead of `send_message` / `edit_message_text` | must |
 | FR-007 | WHEN in guest context THE SYSTEM SHALL accumulate the full LLM response before sending (no streaming edits) | must |
@@ -253,8 +253,9 @@ guest_message received
 guest_mode = false
 ```
 
-The `allowed_users` field already present in `TelegramConfig` is reused for
-guest-message authorization — no new field is needed.
+The `allowed_user_ids` / `allowed_users` allowlist of `TelegramConfig` is reused for
+guest-message authorization — no new field is needed. Authorization is by numeric id
+first; the username fallback logs a warning (#7036).
 
 ---
 

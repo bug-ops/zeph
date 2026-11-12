@@ -9,8 +9,8 @@ use super::*;
 fn migrations_registry_has_all_steps() {
     assert_eq!(
         MIGRATIONS.len(),
-        114,
-        "MIGRATIONS registry must contain all 114 sequential steps"
+        116,
+        "MIGRATIONS registry must contain all 116 sequential steps"
     );
     for m in MIGRATIONS.iter() {
         assert!(
@@ -2210,7 +2210,7 @@ fn migrate_focus_auto_consolidate_noop_when_only_commented_section() {
 
 #[test]
 fn registry_has_fifty_entries() {
-    assert_eq!(MIGRATIONS.len(), 114);
+    assert_eq!(MIGRATIONS.len(), 116);
 }
 
 /// Mirrors the SC-003 wire-X-into-registry check below for `MigrateTuiPanelSizing` (#6675):
@@ -2420,6 +2420,8 @@ fn registry_preserves_order_matches_dispatch() {
         "migrate_skill_state_config",
         "migrate_correction_confidence_calibration",
         "migrate_goals_auto_check",
+        "migrate_telegram_allowed_user_ids",
+        "migrate_claude_speed",
     ];
     let actual: Vec<&str> = MIGRATIONS.iter().map(|m| m.name()).collect();
     assert_eq!(actual, expected);
@@ -5690,5 +5692,33 @@ fn migrate_goals_auto_check_respects_existing_key_in_section_only() {
     assert_eq!(
         migrate_goals_auto_check(elsewhere).unwrap().changed_count,
         1
+    );
+}
+
+#[test]
+fn migrate_claude_speed_adds_hint_once_to_claude_entries_only() {
+    let src = "[[llm.providers]]\ntype = \"claude\"\nmodel = \"claude-opus-5-5\"\n\n[[llm.providers]]\ntype = \"ollama\"\n";
+    let first = migrate_claude_speed(src).unwrap();
+    assert_eq!(first.changed_count, 1);
+    assert_eq!(first.output.matches("# optional: speed").count(), 1);
+    let parsed: toml::Value = toml::from_str(&first.output).unwrap();
+    assert_eq!(
+        parsed["llm"]["providers"][0]["type"].as_str(),
+        Some("claude")
+    );
+    let second = migrate_claude_speed(&first.output).unwrap();
+    assert_eq!(second.changed_count, 0);
+    assert_eq!(second.output, first.output);
+}
+
+#[test]
+fn migrate_claude_speed_skips_entries_with_speed_and_missing_providers() {
+    let set = "[[llm.providers]]\ntype = \"claude\"\nspeed = \"fast\"\n";
+    assert_eq!(migrate_claude_speed(set).unwrap().changed_count, 0);
+    assert_eq!(
+        migrate_claude_speed("[agent]\nname = \"z\"\n")
+            .unwrap()
+            .changed_count,
+        0
     );
 }

@@ -5,12 +5,13 @@ use zeph_db::{ActiveDialect, query, query_as, query_scalar, sql};
 
 use super::SqliteStore;
 use crate::error::MemoryError;
+use crate::types::ConversationId;
 use zeph_common::secret_redact::scrub_content;
 
 /// Input for inserting a trajectory entry.
 #[derive(Debug, Clone)]
 pub struct NewTrajectoryEntry<'a> {
-    pub conversation_id: Option<i64>,
+    pub conversation_id: Option<ConversationId>,
     pub turn_index: i64,
     pub kind: &'a str,
     pub intent: &'a str,
@@ -23,7 +24,7 @@ pub struct NewTrajectoryEntry<'a> {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct TrajectoryEntryRow {
     pub id: i64,
-    pub conversation_id: Option<i64>,
+    pub conversation_id: Option<ConversationId>,
     pub turn_index: i64,
     pub kind: String,
     pub intent: String,
@@ -147,7 +148,7 @@ impl SqliteStore {
     /// Returns an error if the query fails.
     pub async fn trajectory_last_extracted_message_id(
         &self,
-        conversation_id: i64,
+        conversation_id: ConversationId,
     ) -> Result<i64, MemoryError> {
         let id: Option<i64> = query_scalar(sql!(
             "SELECT last_extracted_message_id
@@ -168,7 +169,7 @@ impl SqliteStore {
     /// Returns an error if the query fails.
     pub async fn set_trajectory_last_extracted_message_id(
         &self,
-        conversation_id: i64,
+        conversation_id: ConversationId,
         message_id: i64,
     ) -> Result<(), MemoryError> {
         let now = <ActiveDialect as zeph_db::dialect::Dialect>::NOW;
@@ -265,8 +266,8 @@ mod tests {
     async fn trajectory_meta_per_conversation_tracking() {
         let store = make_store().await;
         // Two conversations — create real rows to satisfy FK.
-        let cid1 = store.create_conversation().await.expect("create conv 1").0;
-        let cid2 = store.create_conversation().await.expect("create conv 2").0;
+        let cid1 = store.create_conversation().await.expect("create conv 1");
+        let cid2 = store.create_conversation().await.expect("create conv 2");
 
         // Initial value is 0 for both.
         assert_eq!(
@@ -323,7 +324,7 @@ mod tests {
     #[tokio::test]
     async fn trajectory_meta_upsert_idempotent() {
         let store = make_store().await;
-        let cid = store.create_conversation().await.expect("create conv").0;
+        let cid = store.create_conversation().await.expect("create conv");
 
         store
             .set_trajectory_last_extracted_message_id(cid, 10)

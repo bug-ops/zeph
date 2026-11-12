@@ -12,6 +12,8 @@
 use serde::{Deserialize, Serialize};
 use zeph_common::ProviderName;
 
+use crate::fraction::{UnitClosed64, UnitUpperClosed};
+
 use super::default_true;
 
 fn default_cascade_quality_threshold() -> f64 {
@@ -147,7 +149,7 @@ pub struct RouterConfig {
     /// Only applies to Thompson and EMA strategies. Cascade uses its own quality classifier.
     /// Fail-open: embedding errors disable the gate for that request.
     #[serde(default)]
-    pub quality_gate: Option<f32>,
+    pub quality_gate: Option<UnitUpperClosed>,
     /// Agent Stability Index configuration. Disabled by default.
     #[serde(default)]
     pub asi: Option<AsiConfig>,
@@ -523,11 +525,11 @@ pub struct CoeConfig {
     /// Enable `CoE`. When `false`, the struct is ignored.
     pub enabled: bool,
     /// Mean negative log-prob threshold; responses above this trigger intra escalation.
-    pub intra_threshold: f64,
+    pub intra_threshold: UnitClosed64,
     /// Divergence threshold in `[0.0, 1.0]`.
-    pub inter_threshold: f64,
+    pub inter_threshold: UnitClosed64,
     /// Baseline rate at which secondary is called even when intra is low.
-    pub shadow_sample_rate: f64,
+    pub shadow_sample_rate: UnitClosed64,
     /// Provider name from `[[llm.providers]]` used as the escalation target.
     pub secondary_provider: ProviderName,
     /// Provider name for inter-divergence embeddings. Empty → inherit bandit's embedding provider.
@@ -538,11 +540,52 @@ impl Default for CoeConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            intra_threshold: 0.8,
-            inter_threshold: 0.20,
-            shadow_sample_rate: 0.1,
+            intra_threshold: UnitClosed64::literal(0.8),
+            inter_threshold: UnitClosed64::literal(0.20),
+            shadow_sample_rate: UnitClosed64::literal(0.1),
             secondary_provider: ProviderName::default(),
             embedding_provider: ProviderName::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod fraction_field_tests {
+    use super::*;
+
+    #[test]
+    fn coe_thresholds_reject_out_of_range_and_nan() {
+        for field in ["intra_threshold", "inter_threshold", "shadow_sample_rate"] {
+            for bad in ["nan", "1.5", "-0.1"] {
+                let toml = format!("{field} = {bad}");
+                assert!(
+                    toml::from_str::<CoeConfig>(&toml).is_err(),
+                    "{field} = {bad} must be rejected"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn coe_thresholds_accept_boundaries() {
+        let cfg: CoeConfig = toml::from_str(
+            "intra_threshold = 0.0\ninter_threshold = 1.0\nshadow_sample_rate = 0.5",
+        )
+        .unwrap();
+        assert!(cfg.intra_threshold.get().abs() < f64::EPSILON);
+        assert!((cfg.inter_threshold.get() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn quality_gate_rejects_out_of_range_and_nan() {
+        for bad in ["nan", "1.5", "-0.1", "0.0"] {
+            let toml = format!("quality_gate = {bad}");
+            assert!(
+                toml::from_str::<RouterConfig>(&toml).is_err(),
+                "quality_gate = {bad} must be rejected"
+            );
+        }
+        let cfg: RouterConfig = toml::from_str("quality_gate = 0.8").unwrap();
+        assert!(cfg.quality_gate.is_some());
     }
 }

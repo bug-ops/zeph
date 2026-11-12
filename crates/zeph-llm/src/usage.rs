@@ -110,6 +110,7 @@ mod tests {
             }),
             reasoning: Some(5),
             auxiliary: Some(AuxiliaryUsage::default()),
+            speed: zeph_config::ServiceSpeed::Standard,
         }));
         tracker.record(Some(ResponseUsage {
             input: 10,

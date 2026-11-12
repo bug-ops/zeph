@@ -23,6 +23,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-config`: `Fraction` unit-interval float type validated at parse time, with no `Default`; replaces the `de_unit_*` and `validate()` float checks (breaking: threshold fields change type; invalid values fail at load) (#7007)
 - `zeph-llm`, `zeph-mcp`: `StatusSender::urgent_notice` second queue so MCP OAuth URLs survive notice bursts (#7023) (#7030)
 - `zeph`: `zeph doctor` flags a group- or world-accessible default log directory and `--fix` restricts it to owner-only (#6944) (#7030)
+- `zeph-llm`, `zeph-core`: Claude Mythos 5.2 (`claude-mythos-5-2`) model support and pricing (#7031) (#PR)
+- `zeph-config`, `zeph-llm`, `zeph-core`, `zeph-tui`, `zeph`: opt-in Claude fast mode (`speed = "fast"`, `ServiceSpeed`, capability gate, fast-mode pricing, `--init` prompt, `--migrate-config` step 116, TUI `fast` tag) (#7032) (#PR)
+- `zeph-common`: `http` module (`BodyLimit`, `read_capped`, `read_prefix`) moved from `zeph-a2a`; `zeph-tools`, `zeph-scheduler`, `zeph-plugins`, `zeph-mcp`, `zeph-acp` cap their HTTP response bodies with it (#7041) (#PR)
+- `zeph-common`, `zeph-core`, `zeph-commands`: typed `GoalId` and unsigned goal counters (breaking: `GoalId` replaces `String` ids) (#7042) (#PR)
+- `zeph-memory`, `zeph-agent-persistence`, `zeph-core`: `EpisodeId` and `CommunityId` newtypes, `ConversationId` serde (breaking) (#7043) (#PR)
+- `zeph-config`, `zeph-channels`, `zeph`: Telegram `allowed_user_ids` and `allowed_bot_ids` numeric-id allowlists, `--init` prompt and `--migrate-config` step 115 (#7036) (#PR)
 
 ### Changed
 
@@ -73,6 +79,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `docs`: spec 010 unsafe registry covers binary-crate sites and records the `runner.rs` `set_var` violation (#6974) (#7030)
 - `workspace`: `clippy::string_slice` enabled in the remaining library crates and the root binary; unchecked byte-offset string slices replaced with boundary-safe APIs (#7020) (#7030)
 - `workspace`: use `Path::is_empty`, `bool::ok_or` and `Duration::from_hours` where the MSRV allows (#6992) (#7030)
+- `zeph-channels`, `zeph-config`: Telegram `bot_to_bot` fails closed and needs a non-empty bot list, empty means all is removed, numeric ids are checked first and a username fallback only logs a WARN (breaking; a listed username still authorizes) (#7036) (#PR)
+- `zeph-config`, `zeph`, `zeph-core`: `llm.coe.*` thresholds, `llm.router.quality_gate`, `telemetry.sample_rate` and `security.trajectory.decay_per_turn` are `Fraction` fields; NaN, out-of-range and 0.0 (`quality_gate`, `decay_per_turn`) fail config load instead of being clamped (breaking) (#7038) (#PR)
+- `zeph-acp`, `zeph-common`, `zeph-a2a`: ACP `ResourceLink` bodies over 1 MiB are rejected instead of truncated (breaking); the capped reader moves to `zeph_common::http` (#7041) (#PR)
+- `zeph-core`, `zeph-tui`, `zeph-acp`, `zeph-channels`: `ToolOutputEvent.status` (`ToolStatus`) replaces `is_error`; JSON `tool_result.is_error`, ACP tool status and the TUI failure marker follow `is_failure()` (breaking) (#7048) (#PR)
+- `zeph-sanitizer`, `zeph-context`, `zeph-agent-context`, `zeph-memory`, `zeph-core`, `zeph-subagent`: NLI, causal-IPI, compaction, guidelines and sub-agent summary limits count chars, not bytes; `zeph-llm` embed limits and `pii_ner_max_chars` stay bytes (#7039) (#PR)
+- `zeph-subagent`, `zeph-core`: sub-agents run the pre-execution verifiers, inherit the channel tool allowlist and flag exfil URLs; sub-agent and orchestrated `fetch` is gated by URL grounding (#7035) (#PR)
+- `zeph-core`, `zeph`: the `store_routing` classifier provider is resolved at startup in CLI, daemon and ACP (#7046) (#PR)
+- `zeph-memory`, `zeph-core`: graph edge writes use `BEGIN IMMEDIATE`; documents with failed edge writes are not ledgered and re-run (#7047) (#PR)
+- `zeph`: `url-open` re-entrancy guard runs in `main` before the runtime starts (#7025) (#PR)
+- `zeph-llm`, `zeph-mcp`, `zeph-core`: status scopes replace manual clear-on-drop guards (#7040) (#PR)
+- `workspace`: `map_or_default` in `zeph-mcp`, `zeph-core`, `zeph` (#7044) (#PR)
 
 ### Fixed
 
@@ -207,6 +224,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-common`: AWS STS access key ids glued to underscores are redacted (#6948) (#7030)
 - `zeph-memory`: clippy `assert_is_empty` lints in the Postgres integration tests (#6966) (#7030)
 - `workspace`: regression tests for MCP `isError` status, chat `clear_status`, the recall causal error branch and goal id truncation (#7017) (#7030)
+- `zeph-common`: STS key ids, AWS secrets and prefixed tokens after an ANSI sequence or quoted-printable `=3D` are redacted (#7028) (#PR)
+- `zeph-a2a`: SSE stream errors carry a single `A2aError::Stream` prefix (#7049) (#PR)
+- `zeph`, `zeph-core`: `plugin list --overlay` resolves against the loaded config (#7050) (#PR)
 
 ### Security
 
@@ -214,6 +234,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `zeph-plugins`, `zeph-common`: the plugin integrity lock file opens with `O_NOFOLLOW`/`O_NONBLOCK` and is checked and chmodded on the same descriptor (#6960) (#7030)
 - `zeph`: rotated log files are pre-created owner-only in custom log directories (#6950) (#7030)
 - `zeph-core`: sub-agent completion and status notices are masked through the secret registry and PII filter like live forwarding (#7021) (#7030)
+
+- `zeph-skills`, `zeph`: skill not-found errors escape control characters in the echoed name (#7051) (#PR)
 
 
 ## [0.22.5] - 2026-09-18

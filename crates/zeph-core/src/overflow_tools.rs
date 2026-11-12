@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use zeph_memory::ConversationId;
 use zeph_memory::store::SqliteStore;
 use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput, deserialize_params};
 use zeph_tools::registry::{InvocationHint, ToolDef};
@@ -15,7 +16,7 @@ struct ReadOverflowParams {
 
 pub struct OverflowToolExecutor {
     sqlite: Arc<SqliteStore>,
-    conversation_id: Option<i64>,
+    conversation_id: Option<ConversationId>,
 }
 
 impl OverflowToolExecutor {
@@ -30,7 +31,7 @@ impl OverflowToolExecutor {
     }
 
     #[must_use]
-    pub fn with_conversation(mut self, conversation_id: i64) -> Self {
+    pub fn with_conversation(mut self, conversation_id: ConversationId) -> Self {
         self.conversation_id = Some(conversation_id);
         self
     }
@@ -116,7 +117,7 @@ mod tests {
     use std::assert_matches;
     use zeph_memory::store::SqliteStore;
 
-    async fn make_store_with_conv() -> (Arc<SqliteStore>, i64) {
+    async fn make_store_with_conv() -> (Arc<SqliteStore>, ConversationId) {
         let store = SqliteStore::new(":memory:")
             .await
             .expect("SqliteStore::new");
@@ -124,7 +125,7 @@ mod tests {
             .create_conversation()
             .await
             .expect("create_conversation");
-        (Arc::new(store), cid.0)
+        (Arc::new(store), cid)
     }
 
     fn make_call(id: &str) -> ToolCall {
@@ -265,8 +266,7 @@ mod tests {
         let cid2 = store
             .create_conversation()
             .await
-            .expect("create_conversation")
-            .0;
+            .expect("create_conversation");
         let uuid = store.save_overflow(cid1, b"secret").await.expect("save");
         // Executor bound to cid2 must not retrieve cid1's overflow.
         let exec = OverflowToolExecutor::new(Arc::clone(&store)).with_conversation(cid2);

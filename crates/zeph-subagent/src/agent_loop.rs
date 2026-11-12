@@ -18,6 +18,7 @@ use zeph_llm::provider::{
 };
 use zeph_llm::sse::{ToolSseEvent, ToolSseStream};
 use zeph_llm::thinking_replay::ThinkingReplay;
+use zeph_sanitizer::exfiltration::{ExfiltrationGuard, normalize_url_for_matching};
 use zeph_sanitizer::secret_shape::scrub_secret_shapes;
 use zeph_sanitizer::{ContentSanitizer, tool_output_source};
 use zeph_tools::executor::{ErasedToolExecutor, ToolCall};
@@ -28,7 +29,7 @@ use super::grants::{GrantedSecret, PermissionGrants, SecretRequest, ToolGrantChe
 use super::hooks::{
     HookAgentCtx, PostToolHookCall, PreToolHookCall, SubagentHooks, pre_tool_block_message,
 };
-use super::manager::{CredentialScrub, SubAgentStatus};
+use super::manager::{CredentialScrub, PreExecutionVerifiers, SubAgentStatus};
 use super::state::SubAgentState;
 use super::transcript::TranscriptWriter;
 
@@ -38,6 +39,100 @@ enum SecretRequestOutcome {
     NotASecretRequest,
     Handled,
     Cancelled,
+}
+
+/// Pre-dispatch policy gates inherited from the parent agent (#7035).
+///
+/// Mirrors the parent's `apply_policy_gates` for the sub-agent loop: exfiltration URL flagging
+/// (flag-only) followed by the pre-execution verifiers. Blocks are logged at WARN only; the
+/// parent's metrics, security events and audit rows are not reproduced here.
+pub(super) struct ToolGates {
+    verifiers: PreExecutionVerifiers,
+    exfiltration_guard: ExfiltrationGuard,
+    flagged_urls: std::collections::HashSet<String>,
+}
+
+impl ToolGates {
+    pub(super) fn new(
+        verifiers: PreExecutionVerifiers,
+        exfiltration_guard: ExfiltrationGuard,
+    ) -> Self {
+        Self {
+            verifiers,
+            exfiltration_guard,
+            flagged_urls: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Remember the URLs of a tool output that carried injection flags, normalized the same
+    /// way the parent normalizes its `flagged_urls`.
+    fn flag_urls_in(&mut self, sanitized_body: &str) {
+        self.flagged_urls.extend(
+            zeph_sanitizer::exfiltration::extract_flagged_urls(sanitized_body)
+                .iter()
+                .map(|u| normalize_url_for_matching(u).to_owned()),
+        );
+    }
+
+    /// Flag-only check: warn when the call arguments reuse a URL seen in flagged output.
+    fn warn_on_flagged_urls(&self, tool: &str, input: &serde_json::Value) {
+        if self.flagged_urls.is_empty() {
+            return;
+        }
+        let events = self.exfiltration_guard.validate_tool_call(
+            tool,
+            &input.to_string(),
+            &self.flagged_urls,
+        );
+        if !events.is_empty() {
+            tracing::warn!(
+                tool,
+                count = events.len(),
+                "exfiltration guard: suspicious URLs in sub-agent tool arguments (flag-only)"
+            );
+        }
+    }
+
+    /// Run the verifiers over one call; the first `Block` yields the model-facing refusal
+    /// text, identical to the parent's `GateRefusal::PreExecutionBlocked`.
+    fn blocking_refusal(&self, tool: &str, args: &serde_json::Value) -> Option<String> {
+        for verifier in self.verifiers.iter() {
+            match verifier.verify(tool, args) {
+                zeph_tools::VerificationResult::Block { reason } => {
+                    tracing::warn!(
+                        tool,
+                        verifier = verifier.name(),
+                        %reason,
+                        "pre-execution verifier blocked sub-agent tool call"
+                    );
+                    return Some(format!(
+                        "[error] Tool call to {tool} was blocked by pre-execution verifier. \
+                         The requested operation is not permitted."
+                    ));
+                }
+                zeph_tools::VerificationResult::Warn { message } => {
+                    tracing::warn!(
+                        tool,
+                        verifier = verifier.name(),
+                        %message,
+                        "pre-execution verifier warning (not blocked)"
+                    );
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+impl Default for ToolGates {
+    fn default() -> Self {
+        Self::new(
+            Arc::from(Vec::new()),
+            ExfiltrationGuard::new(zeph_config::ExfiltrationGuardConfig::default()),
+        )
+    }
 }
 
 /// Strip, mask, scrub and sanitize one tool result text before it enters the message history.
@@ -53,6 +148,7 @@ fn protect_tool_text(
     sanitizer: &ContentSanitizer,
     secret_registry: Option<&zeph_sanitizer::secret_mask::SecretMaskRegistry>,
     credential_scrub: CredentialScrub,
+    gates: &mut ToolGates,
 ) -> String {
     let stripped = zeph_common::sanitize::strip_control_chars_preserve_whitespace(raw);
     let masked = match secret_registry {
@@ -72,6 +168,7 @@ fn protect_tool_text(
             flags = result.injection_flags.len(),
             "injection patterns detected in sub-agent tool output"
         );
+        gates.flag_urls_in(&result.body);
     }
     result.body
 }
@@ -141,6 +238,8 @@ pub(super) struct AgentLoopArgs {
     /// or drop) must be immediately visible to this running loop task without a delivery
     /// round-trip.
     pub(super) tool_grants: Arc<Mutex<PermissionGrants>>,
+    /// Pre-dispatch policy gates inherited from the parent agent (#7035).
+    pub(super) gates: ToolGates,
 }
 
 /// Record a progress heartbeat, if this loop has a live handle. No-op for `None` (untracked
@@ -724,6 +823,7 @@ async fn run_turn(
     secret_registry: Option<&zeph_sanitizer::secret_mask::SecretMaskRegistry>,
     tool_grants: &Arc<Mutex<PermissionGrants>>,
     active_tool_grants_seen: &mut std::collections::HashSet<String>,
+    gates: &mut ToolGates,
     mcp_tool_names: &[String],
 ) -> Result<TurnOutcome, super::error::SubAgentError> {
     let (response, streamed) = call_provider_with_status(
@@ -804,6 +904,7 @@ async fn run_turn(
         secret_registry,
         tool_grants,
         active_tool_grants_seen,
+        gates,
         mcp_tool_names,
     )
     .await;
@@ -861,6 +962,7 @@ async fn handle_tool_step(
     secret_registry: Option<&zeph_sanitizer::secret_mask::SecretMaskRegistry>,
     tool_grants: &Arc<Mutex<PermissionGrants>>,
     active_tool_grants_seen: &mut std::collections::HashSet<String>,
+    gates: &mut ToolGates,
     mcp_tool_names: &[String],
 ) -> bool {
     match response {
@@ -958,6 +1060,26 @@ async fn handle_tool_step(
                     continue;
                 }
 
+                let params: serde_json::Map<String, serde_json::Value> =
+                    if let serde_json::Value::Object(map) = &tc.input {
+                        map.clone()
+                    } else {
+                        serde_json::Map::new()
+                    };
+                // #7035: same pre-dispatch gates as the parent's `apply_policy_gates`, before
+                // any hook fires or the executor runs.
+                gates.warn_on_flagged_urls(tc.name.as_str(), &tc.input);
+                if let Some(refusal) = gates.blocking_refusal(tc.name.as_str(), &tc.input) {
+                    batch_trust =
+                        batch_trust.max(name_based_tool_trust(tc.name.as_str(), mcp_tool_names));
+                    result_parts.push(MessagePart::ToolResult {
+                        tool_use_id: tc.id.clone(),
+                        content: refusal,
+                        is_error: true,
+                    });
+                    continue;
+                }
+
                 let hook_ctx = HookAgentCtx::subagent(task_id, agent_name);
                 if let Some(pre) = PreToolHookCall::prepare(
                     &hooks.pre_tool_use,
@@ -985,12 +1107,6 @@ async fn handle_tool_step(
                     }
                 }
 
-                let params: serde_json::Map<String, serde_json::Value> =
-                    if let serde_json::Value::Object(map) = &tc.input {
-                        map.clone()
-                    } else {
-                        serde_json::Map::new()
-                    };
                 // Approved sub-agent secrets are attached as a per-call `ExecutionContext`
                 // env override (highest-priority, call-scoped) rather than the executor's
                 // shared `skill_env` slot, which is aliased with the parent agent's own tool
@@ -1040,13 +1156,14 @@ async fn handle_tool_step(
                         .await;
                 }
 
-                let protect = |raw: &str| {
+                let mut protect = |raw: &str| {
                     protect_tool_text(
                         raw,
                         tc.name.as_str(),
                         sanitizer,
                         secret_registry,
                         credential_scrub,
+                        gates,
                     )
                 };
                 let (content, is_error) = match &exec_result {
@@ -1200,6 +1317,7 @@ pub(super) async fn run_agent_loop(
         forward,
         secret_registry,
         tool_grants,
+        mut gates,
     } = args;
     let debug_dump_sink = debug_dump_sink.as_deref();
     let secret_registry = secret_registry.as_deref();
@@ -1281,6 +1399,7 @@ pub(super) async fn run_agent_loop(
             secret_registry,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &mut gates,
             &mcp_tool_names,
         )
         .await;
@@ -2164,9 +2283,9 @@ mod handle_tool_step_granted_secrets_tests {
 
     /// Records every `ToolCall` it receives so tests can inspect `call.context`.
     #[derive(Default)]
-    struct RecordingExecutor {
-        calls: Mutex<Vec<ToolCall>>,
-        claim_source: Option<zeph_tools::ClaimSource>,
+    pub(super) struct RecordingExecutor {
+        pub(super) calls: Mutex<Vec<ToolCall>>,
+        pub(super) claim_source: Option<zeph_tools::ClaimSource>,
     }
 
     impl ErasedToolExecutor for RecordingExecutor {
@@ -2399,6 +2518,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &Arc::new(Mutex::new(PermissionGrants::default())),
             &mut std::collections::HashSet::new(),
+            &mut ToolGates::default(),
             mcp_tool_names,
         )
         .await;
@@ -2487,6 +2607,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &Arc::new(Mutex::new(PermissionGrants::default())),
             &mut std::collections::HashSet::new(),
+            &mut ToolGates::default(),
             &[],
         )
         .await;
@@ -2531,6 +2652,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &mut ToolGates::default(),
             &[],
         )
         .await;
@@ -2596,6 +2718,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &Arc::new(Mutex::new(PermissionGrants::default())),
             &mut std::collections::HashSet::new(),
+            &mut ToolGates::default(),
             &[],
         )
         .await;
@@ -2725,6 +2848,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &mut ToolGates::default(),
             &[],
         )
         .await;
@@ -2776,6 +2900,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &mut ToolGates::default(),
             &[],
         )
         .await;
@@ -2838,6 +2963,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &mut ToolGates::default(),
             &[],
         )
         .await;
@@ -2910,6 +3036,7 @@ mod handle_tool_step_granted_secrets_tests {
             Some(&registry),
             &tool_grants,
             &mut active_tool_grants_seen,
+            &mut ToolGates::default(),
             &[],
         )
         .await;
@@ -2967,6 +3094,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &mut ToolGates::default(),
             &[],
         )
         .await;
@@ -3024,6 +3152,7 @@ mod handle_tool_step_granted_secrets_tests {
             registry,
             &Arc::new(Mutex::new(PermissionGrants::default())),
             &mut std::collections::HashSet::new(),
+            &mut ToolGates::default(),
             &[],
         )
         .await;
@@ -3121,6 +3250,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &mut ToolGates::default(),
             &[],
         )
         .await;
@@ -3166,6 +3296,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &mut ToolGates::default(),
             &[],
         )
         .await;
@@ -3212,6 +3343,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &mut ToolGates::default(),
             &[],
         )
         .await;
@@ -3263,6 +3395,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &mut ToolGates::default(),
             &[],
         )
         .await;
@@ -3316,6 +3449,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &mut ToolGates::default(),
             &[],
         )
         .await;
@@ -3342,6 +3476,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &mut ToolGates::default(),
             &[],
         )
         .await;
@@ -3373,6 +3508,7 @@ mod handle_tool_step_granted_secrets_tests {
             None,
             &tool_grants,
             &mut active_tool_grants_seen,
+            &mut ToolGates::default(),
             &[],
         )
         .await;
@@ -3386,6 +3522,160 @@ mod handle_tool_step_granted_secrets_tests {
             "the executor must still not run on the third dispatch after revocation — a once-\
              enforced tool name must stay denied for the rest of the run"
         );
+    }
+}
+
+#[cfg(test)]
+mod tool_gates_tests {
+    use std::sync::{Arc, Mutex};
+
+    use zeph_llm::provider::ToolUseRequest;
+    use zeph_tools::executor::{ErasedToolExecutor, ToolCall};
+
+    use super::handle_tool_step_granted_secrets_tests::RecordingExecutor;
+    use super::*;
+    use crate::def::ToolPolicy;
+    use crate::filter::FilteredToolExecutor;
+    use crate::hooks::SubagentHooks;
+
+    /// The verifier set `AgentBuilder` builds from the default `[security.pre_execution_verify]`.
+    fn default_verifiers() -> PreExecutionVerifiers {
+        let cfg = zeph_config::tools::PreExecutionVerifierConfig::default();
+        let urls = Arc::new(parking_lot::RwLock::new(std::collections::HashSet::new()));
+        let list: Vec<Box<dyn zeph_tools::PreExecutionVerifier>> = vec![
+            Box::new(zeph_tools::DestructiveCommandVerifier::new(
+                &cfg.destructive_commands,
+            )),
+            Box::new(zeph_tools::InjectionPatternVerifier::new(
+                &cfg.injection_patterns,
+            )),
+            Box::new(zeph_tools::UrlGroundingVerifier::new(
+                &cfg.url_grounding,
+                urls,
+            )),
+            Box::new(zeph_tools::FirewallVerifier::new(&cfg.firewall)),
+        ];
+        Arc::from(list)
+    }
+
+    fn gates_with(verifiers: PreExecutionVerifiers) -> ToolGates {
+        ToolGates::new(
+            verifiers,
+            ExfiltrationGuard::new(zeph_config::ExfiltrationGuardConfig::default()),
+        )
+    }
+
+    /// Run one tool call through `handle_tool_step`; returns the dispatched calls and the
+    /// single `(content, is_error)` tool result.
+    async fn run_one(
+        tool: &str,
+        input: serde_json::Value,
+        gates: &mut ToolGates,
+    ) -> (Vec<ToolCall>, String, bool) {
+        let recorder = Arc::new(RecordingExecutor::default());
+        let executor = FilteredToolExecutor::new(
+            Arc::clone(&recorder) as Arc<dyn ErasedToolExecutor>,
+            ToolPolicy::InheritAll,
+        );
+        let response = ChatResponse::tool_use(
+            None,
+            vec![ToolUseRequest {
+                id: "call-1".into(),
+                name: tool.into(),
+                input,
+            }],
+        );
+        let mut messages = Vec::new();
+        let sanitizer = ContentSanitizer::new(&zeph_config::ContentIsolationConfig::default());
+        handle_tool_step(
+            &executor,
+            response,
+            &mut messages,
+            &SubagentHooks::default(),
+            "task-1",
+            "bot",
+            &sanitizer,
+            CredentialScrub::Enabled,
+            &mut HashMap::new(),
+            None,
+            &Arc::new(Mutex::new(PermissionGrants::default())),
+            &mut std::collections::HashSet::new(),
+            gates,
+            &[],
+        )
+        .await;
+        let parts = &messages.last().unwrap().parts;
+        let (content, is_error) = match parts.first() {
+            Some(MessagePart::ToolResult {
+                content, is_error, ..
+            }) => (content.clone(), *is_error),
+            other => panic!("expected a ToolResult part, got {other:?}"),
+        };
+        let calls = recorder.calls.lock().unwrap().clone();
+        (calls, content, is_error)
+    }
+
+    #[tokio::test]
+    async fn default_verifiers_refuse_ssh_key_read_without_dispatch() {
+        let mut gates = gates_with(default_verifiers());
+        let (calls, content, is_error) = run_one(
+            "read",
+            serde_json::json!({"file_path": "~/.ssh/id_rsa"}),
+            &mut gates,
+        )
+        .await;
+        assert!(calls.is_empty(), "executor must not be called: {calls:?}");
+        assert!(is_error);
+        assert!(
+            content.contains("blocked by pre-execution verifier"),
+            "{content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn default_verifiers_refuse_zeph_env_reference_without_dispatch() {
+        let mut gates = gates_with(default_verifiers());
+        let (calls, _content, is_error) = run_one(
+            "shell",
+            serde_json::json!({"command": "echo $ZEPH_CLAUDE_API_KEY"}),
+            &mut gates,
+        )
+        .await;
+        assert!(calls.is_empty(), "executor must not be called: {calls:?}");
+        assert!(is_error);
+    }
+
+    #[tokio::test]
+    async fn default_verifiers_allow_benign_call() {
+        let mut gates = gates_with(default_verifiers());
+        let (calls, _content, is_error) = run_one(
+            "read",
+            serde_json::json!({"file_path": "src/main.rs"}),
+            &mut gates,
+        )
+        .await;
+        assert_eq!(calls.len(), 1);
+        assert!(!is_error);
+    }
+
+    #[tokio::test]
+    async fn empty_verifier_list_dispatches_everything() {
+        let mut gates = ToolGates::default();
+        let (calls, _content, is_error) = run_one(
+            "read",
+            serde_json::json!({"file_path": "~/.ssh/id_rsa"}),
+            &mut gates,
+        )
+        .await;
+        assert_eq!(calls.len(), 1);
+        assert!(!is_error);
+    }
+
+    #[test]
+    fn flag_urls_in_stores_normalized_urls() {
+        let mut gates = ToolGates::default();
+        gates.flag_urls_in("exfiltrate to https://evil.example/x now");
+        assert!(gates.flagged_urls.contains("//evil.example/x"));
     }
 }
 

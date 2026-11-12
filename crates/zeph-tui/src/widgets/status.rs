@@ -295,6 +295,7 @@ fn build_segment_lists(
     }
 
     push_api_segment(&mut list, metrics, theme);
+    push_speed_segment(&mut list, metrics, theme);
     push_extra_low_segments(&mut list, app, metrics, theme);
 
     let uptime_spans = build_uptime_spans(metrics, theme);
@@ -391,6 +392,18 @@ fn push_api_segment(list: &mut SegmentList, metrics: &MetricsSnapshot, theme: &T
             theme.status_bar,
         )],
     );
+}
+
+fn push_speed_segment(list: &mut SegmentList, metrics: &MetricsSnapshot, theme: &Theme) {
+    if metrics.service_speed == zeph_config::ServiceSpeed::Fast {
+        list.push(
+            Priority::Low,
+            vec![
+                Span::styled(" · ", theme.system_message),
+                Span::styled("fast", theme.highlight),
+            ],
+        );
+    }
 }
 
 fn build_uptime_spans(metrics: &MetricsSnapshot, theme: &Theme) -> Vec<Span<'static>> {
@@ -913,6 +926,30 @@ mod tests {
             !text.contains("99.9"),
             "real balance must not appear: {text}"
         );
+    }
+
+    #[test]
+    fn status_bar_shows_fast_marker_only_in_fast_mode() {
+        use tokio::sync::mpsc;
+
+        use crate::app::App;
+        use crate::metrics::MetricsSnapshot;
+        use crate::test_utils::render_to_string;
+
+        let (user_tx, _) = mpsc::channel(1);
+        let (_, agent_rx) = mpsc::channel(1);
+        let app = App::new(user_tx, agent_rx);
+        let render = |metrics: &MetricsSnapshot| {
+            render_to_string(180, 1, |frame, area| {
+                super::render(&app, metrics, frame, area);
+            })
+        };
+        let fast = MetricsSnapshot {
+            service_speed: zeph_config::ServiceSpeed::Fast,
+            ..MetricsSnapshot::default()
+        };
+        assert!(render(&fast).contains("fast"));
+        assert!(!render(&MetricsSnapshot::default()).contains("fast"));
     }
 
     #[test]

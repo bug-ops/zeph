@@ -93,8 +93,8 @@ impl GoalStatusView {
 /// and metrics bridge. Contains only display-relevant fields.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GoalSnapshot {
-    /// UUID string of the goal.
-    pub id: String,
+    /// Goal identifier.
+    pub id: zeph_common::GoalId,
     /// Goal text, pre-validated to fit within `max_text_chars`.
     pub text: String,
     /// Current FSM status.

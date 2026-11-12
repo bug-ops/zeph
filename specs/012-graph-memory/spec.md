@@ -421,8 +421,13 @@ deployments sensitive to graph-recall latency/cost should benchmark before upgra
 - `CandidateId` (module-private field, `get()`) types `implicit_conflict_candidates.id` and `ActivatedFact.conflict_candidate_id`, replacing the raw `i64` and the earlier stop line.
 
 - NEVER construct an `EntityId` from a raw `i64` outside `types.rs` except through the single justified `pub(crate)` decode constructor
-- NEVER widen a new public `GraphStore` method to raw `i64` ids; use `EntityId` / `EdgeId`
+- NEVER widen a new public `GraphStore` method to raw `i64` ids; use `EntityId` / `EdgeId` / `EpisodeId` / `CommunityId` / `ConversationId`
 - `Edge::synthetic_anchor(EntityId)` and the `EdgeId(0)` sentinel stay inside `zeph-memory`
+
+### Episode, community and conversation ids (#7043)
+
+- `EpisodeId` (`graph_episodes.id`) and `CommunityId` (`graph_communities.id`) are built like `EdgeId` (`pub(crate)` field, `new`/`get`, `Display`, `sqlx(transparent)`, serde transparent). `ConversationId` gains serde derives and replaces raw `i64` conversation ids across `zeph-memory` public signatures (graph, snapshot, trajectory, overflow, persona). `HebbianConsolidationCandidate::entity_id` is `EntityId`. DB columns are unchanged; no migration.
+- Graph edge writes (`insert_edge_typed`, `insert_or_supersede_*`, implicit-conflict staging) open `BEGIN IMMEDIATE` through `zeph_db::begin_write` (#7047); extraction counts non-validation edge write failures in `ExtractionStats.edges_failed`.
 
 ---
 

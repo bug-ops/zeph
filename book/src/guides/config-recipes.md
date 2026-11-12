@@ -298,7 +298,7 @@ backend = "age"  # reads ZEPH_CLAUDE_API_KEY and ZEPH_TELEGRAM_BOT_TOKEN from th
 
 [telegram]
 # token = "your-bot-token"  # or store via `zeph vault set ZEPH_TELEGRAM_BOT_TOKEN ...`
-allowed_users = ["yourusername"]  # restrict access — do not leave empty on a public server
+allowed_user_ids = [123456789]  # numeric Telegram user ids — do not leave empty on a public server
 
 [memory]
 history_limit = 50  # longer history for async messaging patterns
@@ -311,7 +311,7 @@ enabled = true         # keep the process alive and restart on crash
 pid_file = "~/.zeph/zeph.pid"
 ```
 
-> **Warning:** Always set `allowed_users`. An open bot with tool execution enabled is a security
+> **Warning:** Always set `allowed_user_ids`. An open bot with tool execution enabled is a security
 > risk. See [Security](../reference/security.md).
 
 Run in background: `zeph --config config.toml &` or use a systemd service.

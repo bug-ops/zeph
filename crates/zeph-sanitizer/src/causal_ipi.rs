@@ -203,8 +203,7 @@ impl TurnCausalAnalyzer {
                 // Bound probe response to probe_max_chars to cap Levenshtein cost and
                 // prevent unbounded responses from distorting deviation scores.
                 let bounded =
-                    zeph_common::text::truncate_to_bytes_ref(trimmed, self.probe_max_chars)
-                        .to_owned();
+                    zeph_common::text::truncate_chars(trimmed, self.probe_max_chars).to_owned();
                 Ok(bounded)
             }
             Ok(Err(e)) => Err(CausalIpiError::LlmError(e)),

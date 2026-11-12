@@ -80,6 +80,40 @@ pub enum BuildError {
     MissingProviders,
 }
 
+/// Build the pre-execution verifier list from `[security.pre_execution_verify]`.
+///
+/// The parent agent passes its shared `user_provided_urls`; `build_spawn_context` passes a
+/// frozen copy so a long-lived sub-agent does not follow the parent's per-turn URL set (#7035).
+pub(super) fn build_pre_execution_verifiers(
+    cfg: &zeph_config::tools::PreExecutionVerifierConfig,
+    user_urls: Arc<RwLock<std::collections::HashSet<String>>>,
+) -> Vec<Box<dyn zeph_tools::PreExecutionVerifier>> {
+    let mut verifiers: Vec<Box<dyn zeph_tools::PreExecutionVerifier>> = Vec::new();
+    if !cfg.enabled {
+        return verifiers;
+    }
+    if cfg.destructive_commands.enabled {
+        verifiers.push(Box::new(zeph_tools::DestructiveCommandVerifier::new(
+            &cfg.destructive_commands,
+        )));
+    }
+    if cfg.injection_patterns.enabled {
+        verifiers.push(Box::new(zeph_tools::InjectionPatternVerifier::new(
+            &cfg.injection_patterns,
+        )));
+    }
+    if cfg.url_grounding.enabled {
+        verifiers.push(Box::new(zeph_tools::UrlGroundingVerifier::new(
+            &cfg.url_grounding,
+            user_urls,
+        )));
+    }
+    if cfg.firewall.enabled {
+        verifiers.push(Box::new(zeph_tools::FirewallVerifier::new(&cfg.firewall)));
+    }
+    verifiers
+}
+
 /// Skill-subsystem config values applied identically at every `Agent` construction entry point.
 ///
 /// Bundles the fields consumed by [`Agent::with_skill_matching_config`],
@@ -868,6 +902,7 @@ impl<C: Channel> Agent<C> {
     ) -> Self {
         self.runtime.providers.provider_pool = pool;
         self.runtime.providers.provider_config_snapshot = Some(snapshot);
+        self.refresh_store_routing_provider();
         self
     }
 
@@ -1174,29 +1209,11 @@ impl<C: Channel> Agent<C> {
         // Stored on ToolOrchestrator (not SecurityState) — verifiers inspect tool arguments
         // at dispatch time, consistent with repeat-detection and rate-limiting which also
         // live on ToolOrchestrator. SecurityState hosts zeph-core::sanitizer types only.
-        let mut verifiers: Vec<Box<dyn zeph_tools::PreExecutionVerifier>> = Vec::new();
-        if security.pre_execution_verify.enabled {
-            let dcfg = &security.pre_execution_verify.destructive_commands;
-            if dcfg.enabled {
-                verifiers.push(Box::new(zeph_tools::DestructiveCommandVerifier::new(dcfg)));
-            }
-            let icfg = &security.pre_execution_verify.injection_patterns;
-            if icfg.enabled {
-                verifiers.push(Box::new(zeph_tools::InjectionPatternVerifier::new(icfg)));
-            }
-            let ucfg = &security.pre_execution_verify.url_grounding;
-            if ucfg.enabled {
-                verifiers.push(Box::new(zeph_tools::UrlGroundingVerifier::new(
-                    ucfg,
-                    std::sync::Arc::clone(&self.services.security.user_provided_urls),
-                )));
-            }
-            let fcfg = &security.pre_execution_verify.firewall;
-            if fcfg.enabled {
-                verifiers.push(Box::new(zeph_tools::FirewallVerifier::new(fcfg)));
-            }
-        }
-        self.tool_orchestrator.pre_execution_verifiers = verifiers;
+        self.tool_orchestrator.pre_execution_verifiers = build_pre_execution_verifiers(
+            &security.pre_execution_verify,
+            Arc::clone(&self.services.security.user_provided_urls),
+        )
+        .into();
 
         self.services.security.response_verifier =
             zeph_sanitizer::response_verifier::ResponseVerifier::new(
@@ -1694,7 +1711,33 @@ impl<C: Channel> Agent<C> {
     #[must_use]
     pub fn with_routing(mut self, routing: StoreRoutingConfig) -> Self {
         self.context_manager.routing = routing;
+        self.refresh_store_routing_provider();
         self
+    }
+
+    /// Resolve the classifier provider for `llm`/`hybrid` store routing from the current
+    /// routing config and provider pool.
+    ///
+    /// Runs from both [`with_routing`][Self::with_routing] and
+    /// [`with_provider_pool`][Self::with_provider_pool] (and config hot reload) so the builder
+    /// call order does not matter. A named lookup is skipped while the pool is still empty;
+    /// the later `with_provider_pool` refresh performs it, including the unknown-name warning.
+    pub(crate) fn refresh_store_routing_provider(&mut self) {
+        use zeph_config::StoreRoutingStrategy;
+
+        let routing = &self.context_manager.routing;
+        let uses_llm = routing.enabled
+            && matches!(
+                routing.strategy,
+                StoreRoutingStrategy::Llm | StoreRoutingStrategy::Hybrid
+            );
+        let name = routing.routing_classifier_provider.as_str();
+        self.context_manager.store_routing_provider =
+            if !uses_llm || (!name.is_empty() && self.runtime.providers.provider_pool.is_empty()) {
+                None
+            } else {
+                Some(Arc::new(self.resolve_background_provider(name)))
+            };
     }
 
     /// Configure `Focus` and `SideQuest` LLM-driven context management (#1850, #1885).
@@ -3277,6 +3320,89 @@ mod tests {
             StoreRoutingStrategy::Heuristic,
             "routing strategy must be set by with_routing"
         );
+    }
+
+    fn llm_routing(strategy: StoreRoutingStrategy, provider: &str) -> StoreRoutingConfig {
+        StoreRoutingConfig {
+            enabled: true,
+            strategy,
+            routing_classifier_provider: provider.into(),
+            ..StoreRoutingConfig::default()
+        }
+    }
+
+    fn named_pool_and_snapshot() -> (
+        Vec<ProviderEntry>,
+        crate::agent::state::ProviderConfigSnapshot,
+    ) {
+        let snapshot = crate::agent::state::ProviderConfigSnapshot {
+            claude_api_key: None,
+            openai_api_key: None,
+            gemini_api_key: None,
+            compatible_api_keys: std::collections::HashMap::new(),
+            llm_request_timeout_secs: 30,
+            embedding_model: String::new(),
+            gonka_private_key: None,
+            gonka_address: None,
+            cocoon_access_hash: None,
+        };
+        let entry = ProviderEntry {
+            name: Some("router".into()),
+            model: Some("llama3.2".into()),
+            ..Default::default()
+        };
+        (vec![entry], snapshot)
+    }
+
+    #[test]
+    fn store_routing_provider_resolved_for_either_call_order() {
+        use zeph_llm::provider::LlmProvider;
+
+        let (pool, snapshot) = named_pool_and_snapshot();
+        let routing = llm_routing(StoreRoutingStrategy::Llm, "router");
+
+        let routing_first = make_agent()
+            .with_routing(routing.clone())
+            .with_provider_pool(pool.clone(), snapshot.clone());
+        let pool_first = make_agent()
+            .with_provider_pool(pool, snapshot)
+            .with_routing(routing);
+        let resolved_name = |agent: &Agent<MockChannel>| {
+            agent
+                .context_manager
+                .store_routing_provider
+                .as_ref()
+                .expect("llm routing must resolve a provider at startup")
+                .name()
+                .to_owned()
+        };
+        assert_eq!(resolved_name(&routing_first), "router");
+        assert_eq!(resolved_name(&pool_first), "router");
+    }
+
+    #[test]
+    fn store_routing_provider_empty_name_uses_main_and_heuristic_is_none() {
+        let agent = make_agent().with_routing(llm_routing(StoreRoutingStrategy::Hybrid, ""));
+        assert!(agent.context_manager.store_routing_provider.is_some());
+
+        let agent = make_agent().with_routing(llm_routing(StoreRoutingStrategy::Heuristic, ""));
+        assert!(agent.context_manager.store_routing_provider.is_none());
+
+        let disabled = StoreRoutingConfig {
+            enabled: false,
+            ..llm_routing(StoreRoutingStrategy::Llm, "")
+        };
+        let agent = make_agent().with_routing(disabled);
+        assert!(agent.context_manager.store_routing_provider.is_none());
+    }
+
+    #[test]
+    fn store_routing_provider_unknown_name_falls_back_to_main_after_pool() {
+        let (pool, snapshot) = named_pool_and_snapshot();
+        let agent = make_agent()
+            .with_routing(llm_routing(StoreRoutingStrategy::Llm, "missing"))
+            .with_provider_pool(pool, snapshot);
+        assert!(agent.context_manager.store_routing_provider.is_some());
     }
 
     #[test]

@@ -5,14 +5,13 @@ use crate::cli::PluginCommand;
 
 /// Prints the resolved overlay summary for the plugins directory.
 ///
-/// Displays contributing and skipped plugins accurately. Does NOT show the
-/// post-intersection merged `allowed_commands` values — those depend on the
-/// live `Config` base, which is not available here. Users who want the merged
-/// live values should inspect `tools.shell.allowed_commands` in `config.toml`
-/// after startup (logged at INFO level on first reload).
-fn print_overlay_section(plugins_dir: &std::path::Path) -> anyhow::Result<()> {
-    let mut cfg = zeph_core::config::Config::default();
-    let overlay = zeph_plugins::apply_plugin_config_overlays(&mut cfg, plugins_dir)
+/// The overlay is resolved against the loaded `config` (mutated in place), so the merge
+/// reflects the live base (including `--config`) rather than `Config::default()`.
+fn print_overlay_section(
+    config: &mut zeph_core::config::Config,
+    plugins_dir: &std::path::Path,
+) -> anyhow::Result<()> {
+    let overlay = zeph_plugins::apply_plugin_config_overlays(config, plugins_dir)
         .map_err(|e| anyhow::anyhow!("overlay resolution failed: {e}"))?;
 
     if overlay.source_plugins.is_empty()
@@ -46,10 +45,6 @@ fn print_overlay_section(plugins_dir: &std::path::Path) -> anyhow::Result<()> {
             println!("    - {reason}");
         }
     }
-
-    println!(
-        "  Note: overlay values shown against default config — run with --config for live intersection."
-    );
 
     Ok(())
 }
@@ -90,7 +85,8 @@ pub(crate) async fn handle_plugin_command(
     match cmd {
         PluginCommand::List { overlay } => {
             if overlay {
-                print_overlay_section(&plugins_dir)?;
+                let mut overlay_config = load_config_or_default(&config_file)?;
+                print_overlay_section(&mut overlay_config, &plugins_dir)?;
             } else {
                 let installed = mgr.list_installed()?;
                 if installed.is_empty() {
@@ -442,5 +438,23 @@ mod registry_tests {
             .await
             .unwrap_err();
         assert_eq!(err.to_string(), REGISTRY_NOT_CONFIGURED_MSG);
+    }
+
+    #[test]
+    fn overlay_section_resolves_against_the_passed_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let plugin_dir = dir.path().join("narrow");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(
+            plugin_dir.join(".plugin.toml"),
+            "[plugin]\nname = \"narrow\"\nversion = \"0.1.0\"\n\n[config.tools]\nallowed_commands = [\"a\"]",
+        )
+        .unwrap();
+        let mut config = zeph_core::config::Config::default();
+        config.tools.shell.allowed_commands = vec!["a".to_owned(), "b".to_owned()];
+
+        print_overlay_section(&mut config, dir.path()).unwrap();
+
+        assert_eq!(config.tools.shell.allowed_commands, vec!["a".to_owned()]);
     }
 }

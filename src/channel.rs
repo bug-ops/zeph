@@ -10,7 +10,7 @@ use zeph_channels::JsonCliChannel;
 use zeph_channels::discord::DiscordChannel;
 #[cfg(feature = "slack")]
 use zeph_channels::slack::SlackChannel;
-use zeph_channels::telegram::TelegramChannel;
+use zeph_channels::telegram::{TelegramAllowlist, TelegramChannel};
 use zeph_common::TaskSupervisor;
 
 use crate::execution_mode::ExecutionMode;
@@ -249,17 +249,13 @@ pub(crate) async fn create_channel_inner(
 
     if let Some(token) = config.telegram.as_ref().and_then(|t| t.token.clone()) {
         let tg_cfg = config.telegram.as_ref().unwrap();
-        let allowed = tg_cfg.allowed_users.clone();
+        let allowlist = TelegramAllowlist::from_config(tg_cfg);
         let stream_interval = std::time::Duration::from_millis(tg_cfg.stream_interval_ms);
-        let mut tg = TelegramChannel::new(token, allowed)
+        let mut tg = TelegramChannel::new(token, allowlist)
             .with_stream_interval(stream_interval)
             .with_expandable_blockquote_min_lines(tg_cfg.expandable_blockquote_min_lines)
             .with_guest_mode(tg_cfg.guest_mode)
-            .with_bot_to_bot(
-                tg_cfg.bot_to_bot,
-                tg_cfg.allowed_bots.clone(),
-                tg_cfg.max_bot_chain_depth,
-            );
+            .with_bot_to_bot(tg_cfg.bot_to_bot, tg_cfg.max_bot_chain_depth);
         if let Some(sup) = supervisor {
             tg = tg.with_supervisor(sup);
         }
@@ -421,7 +417,7 @@ mod tests {
             kept_lines: None,
             locations: None,
             tool_call_id: zeph_common::ToolExecutionId::new("x").unwrap(),
-            is_error: false,
+            status: zeph_core::ToolStatus::Success,
             terminal_id: None,
             parent_tool_use_id: None,
             raw_response: None,

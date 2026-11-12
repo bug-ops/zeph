@@ -405,6 +405,44 @@ mod tests {
     }
 
     #[test]
+    fn keys_after_ansi_or_quoted_printable_marker_are_redacted() {
+        let sts = "ASIAIOSFODNN7EXAMPLE";
+        let secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        let akia = "AKIAIOSFODNN7EXAMPLE";
+        let ghp = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
+        assert_eq!(
+            scrub_secret_shapes(&format!("\x1b[32m{sts}\x1b[0m")),
+            "\x1b[32m[REDACTED]\x1b[0m"
+        );
+        assert_eq!(
+            scrub_secret_shapes(&format!("key=3D{sts} end")),
+            "key=3D[REDACTED] end"
+        );
+        assert_eq!(
+            scrub_secret_shapes(&format!("aws_secret_access_key=\x1b[33m{secret}\x1b[0m")),
+            "aws_secret_access_key=\x1b[33m[REDACTED]\x1b[0m"
+        );
+        for token in [akia, ghp, "sk-short"] {
+            assert_eq!(
+                scrub_secret_shapes(&format!("\x1b[31m{token}\x1b[0m")),
+                "\x1b[31m[REDACTED]\x1b[0m",
+                "ansi-prefixed {token}"
+            );
+            assert_eq!(
+                scrub_secret_shapes(&format!("tok=3D{token}")),
+                "tok=3D[REDACTED]",
+                "qp-prefixed {token}"
+            );
+        }
+    }
+
+    #[test]
+    fn ansi_boundary_leaves_plain_text_intact() {
+        let result = scrub_secret_shapes("\x1b[32mdisk-usage ok\x1b[0m");
+        assert!(matches!(result, Cow::Borrowed(_)), "{result}");
+    }
+
+    #[test]
     fn identifiers_resembling_new_prefixes_stay_intact() {
         for text in [
             "ASIAN_countries",

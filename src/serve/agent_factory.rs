@@ -647,7 +647,7 @@ pub(super) fn compose_session_tool_tree(
     };
     let overflow_executor =
         zeph_core::overflow_tools::OverflowToolExecutor::new(Arc::new(memory.sqlite().clone()))
-            .with_conversation(conversation_id.0);
+            .with_conversation(conversation_id);
     let (skill_loader_executor, skill_invoke_executor, trust_snapshot, turn_trust_floor) =
         crate::agent_setup::build_skill_executors(registry);
     let composed: Arc<dyn ErasedToolExecutor> = Arc::new(zeph_tools::CompositeExecutor::new(

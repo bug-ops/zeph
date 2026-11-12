@@ -51,6 +51,37 @@ pub struct CocoonPricing {
     pub completion_cents_per_1k: f64,
 }
 
+/// Claude service speed tier requested for every message call of a provider entry.
+///
+/// `Fast` asks for faster output at doubled price and is honoured only by models whose
+/// capability set allows it; other models run at standard speed.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_config::ServiceSpeed;
+///
+/// assert_eq!(ServiceSpeed::default(), ServiceSpeed::Standard);
+/// assert!(ServiceSpeed::Standard.is_standard());
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ServiceSpeed {
+    /// Regular speed and price.
+    #[default]
+    Standard,
+    /// Fast mode: up to 2.5x output speed at 2x price.
+    Fast,
+}
+
+impl ServiceSpeed {
+    /// Whether this is the default tier (used to skip serialization).
+    #[must_use]
+    pub fn is_standard(&self) -> bool {
+        matches!(self, Self::Standard)
+    }
+}
+
 /// Unified provider entry: one struct replaces `CloudLlmConfig`, `OpenAiConfig`,
 /// `GeminiConfig`, `OllamaConfig`, `CompatibleConfig`, and `OrchestratorProviderConfig`.
 ///
@@ -122,6 +153,10 @@ pub struct ProviderEntry {
     /// Set to `"1h"` to enable the extended 1-hour TTL (beta, ~2× write cost).
     #[serde(default)]
     pub prompt_cache_ttl: Option<CacheTtl>,
+    /// Service speed tier. `"fast"` is accepted only for `type = "claude"` and is sent only to
+    /// models that support fast mode (2x price); other models ignore it with a warning.
+    #[serde(default, skip_serializing_if = "ServiceSpeed::is_standard")]
+    pub speed: ServiceSpeed,
 
     // --- OpenAI-specific ---
     #[serde(default)]
@@ -234,6 +269,7 @@ impl Default for ProviderEntry {
             server_compaction_trigger_tokens: None,
             enable_extended_context: false,
             prompt_cache_ttl: None,
+            speed: ServiceSpeed::Standard,
             reasoning_effort: None,
             thinking_level: None,
             thinking_budget: None,
@@ -275,6 +311,7 @@ impl std::fmt::Debug for ProviderEntry {
             )
             .field("enable_extended_context", &self.enable_extended_context)
             .field("prompt_cache_ttl", &self.prompt_cache_ttl)
+            .field("speed", &self.speed)
             .field("reasoning_effort", &self.reasoning_effort)
             .field("thinking_level", &self.thinking_level)
             .field("thinking_budget", &self.thinking_budget)
@@ -414,6 +451,13 @@ impl ProviderEntry {
                     )));
                 }
             }
+        }
+
+        if self.speed == ServiceSpeed::Fast && self.provider_type != ProviderKind::Claude {
+            return Err(ConfigError::Validation(format!(
+                "[[llm.providers]] entry '{}': `speed = \"fast\"` is only supported for type=\"claude\"",
+                self.effective_name()
+            )));
         }
 
         // B1: warn on irrelevant fields.
@@ -666,6 +710,37 @@ mod tests {
         let dbg = format!("{entry:?}");
         assert!(!dbg.contains("sk-SUPERSECRET"));
         assert!(dbg.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn fast_speed_requires_claude_provider() {
+        for kind in [
+            ProviderKind::Ollama,
+            ProviderKind::OpenAi,
+            ProviderKind::Gemini,
+        ] {
+            let entry = ProviderEntry {
+                provider_type: kind,
+                speed: ServiceSpeed::Fast,
+                ..ProviderEntry::default()
+            };
+            assert!(entry.validate().is_err(), "{kind:?}");
+        }
+        let claude = ProviderEntry {
+            provider_type: ProviderKind::Claude,
+            speed: ServiceSpeed::Fast,
+            ..ProviderEntry::default()
+        };
+        assert!(claude.validate().is_ok());
+    }
+
+    #[test]
+    fn speed_defaults_to_standard_and_is_skipped_when_serialized() {
+        let entry: ProviderEntry = toml::from_str("type = \"claude\"").unwrap();
+        assert_eq!(entry.speed, ServiceSpeed::Standard);
+        assert!(!toml::to_string(&entry).unwrap().contains("speed"));
+        let fast: ProviderEntry = toml::from_str("type = \"claude\"\nspeed = \"fast\"").unwrap();
+        assert_eq!(fast.speed, ServiceSpeed::Fast);
     }
 
     #[test]

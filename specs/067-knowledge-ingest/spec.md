@@ -317,6 +317,7 @@ Ingest is a simple/medium task → default config points it at the `fast` provid
 - **NEVER** present the content-hash ledger as protection against extraction drift.
 - **NEVER** hardcode the ingest model.
 - **NEVER** run ingest synchronously inside a live agent turn.
+- **NEVER** ledger a document whose edge writes failed, or drop an edge write error below WARN (#7047).
 
 ---
 
@@ -327,6 +328,7 @@ Ingest is a simple/medium task → default config points it at the `fast` provid
 | Empty / no artifacts found for a `--source` | Report 0 documents, exit 0, no rows written |
 | Malformed transcript JSONL line | Skip the line (warn), continue the file; report skipped count |
 | LLM extraction failure on one document | Log WARN, mark document failed in `IngestReport`, do NOT mark ledger, continue batch |
+| Edge write fails (database error, `SQLITE_BUSY`, FK violation; #7047) | Counted in `ExtractionStats.edges_failed` and logged at WARN; any `edges_failed > 0` marks the document `Failed` in `IngestReport` and skips the ledger, so a re-run reprocesses it. Graph edge/supersede transactions use `BEGIN IMMEDIATE` (`zeph_db::begin_write`) so concurrent documents (default concurrency 3) serialize on the write lock instead of failing at lock upgrade. No retry loop |
 | Re-run after model upgrade (drift) | Unchanged inputs skipped (ledger); operator may `rollback <batch>` then re-ingest to supersede (INV-5) |
 | Partial batch interrupted (Ctrl-C) | Already-extracted documents are in the ledger + tagged with `batch_id`; re-run resumes the rest; `rollback` removes the partial batch cleanly |
 | Source path outside project root | Fail fast with `MemoryError::Ingest` "source outside project root" (FR-042 / INV-6) |

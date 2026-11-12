@@ -405,9 +405,12 @@ impl<C: Channel> Agent<C> {
         }
 
         // --- Step 3: TUI status ---
-        if let Some(ref tx) = self.services.session.status_tx {
-            let _ = tx.set("Resetting conversation...");
-        }
+        let _status = self
+            .services
+            .session
+            .status_tx
+            .as_ref()
+            .map(|tx| tx.scope("Resetting conversation..."));
 
         // --- Steps 4-9: reset session-scoped state shared with the conversation-swap path ---
         let discarded = self.reset_session_scoped_state(keep_plan);
@@ -432,11 +435,7 @@ impl<C: Channel> Agent<C> {
             acc.reset_session_counters().await;
         }
 
-        // --- Step 11: clear TUI status ---
-        if let Some(ref tx) = self.services.session.status_tx {
-            let _ = tx.clear();
-        }
-
+        // --- Step 11: TUI status clears when `_status` drops ---
         Ok((old_conversation_id, new_conversation_id))
     }
 
@@ -525,9 +524,12 @@ impl<C: Channel> Agent<C> {
         .await
         .map_err(|e| super::super::error::AgentError::ContextError(e.to_string()))?;
 
-        if let Some(ref tx) = self.services.session.status_tx {
-            let _ = tx.set("Replaying conversation...");
-        }
+        let _status = self
+            .services
+            .session
+            .status_tx
+            .as_ref()
+            .map(|tx| tx.scope("Replaying conversation..."));
 
         let old_conversation_id = self.services.memory.persistence.conversation_id;
         self.spawn_outgoing_digest(old_conversation_id);
@@ -593,10 +595,6 @@ impl<C: Channel> Agent<C> {
                 session_id.clone(),
             ));
             self.services.session.session_sink = Some(sink);
-        }
-
-        if let Some(ref tx) = self.services.session.status_tx {
-            let _ = tx.clear();
         }
 
         Ok(())
@@ -2464,7 +2462,7 @@ impl<C: Channel> Agent<C> {
         let safe_text = html_escape_goal(&text);
         drop(tracing::info_span!("core.context.inject_goal", goal_id = %snap.id).entered());
         prompt.push_str("\n\n<active_goal id=\"");
-        prompt.push_str(&snap.id);
+        prompt.push_str(&snap.id.to_string());
         prompt.push_str("\">\n");
         prompt.push_str(&safe_text);
         prompt.push_str("\n</active_goal>");

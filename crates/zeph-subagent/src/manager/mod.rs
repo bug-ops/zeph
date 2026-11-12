@@ -314,7 +314,26 @@ pub struct SpawnContext {
     /// agent boundary, so `check_messages` scans them the same way parent-turn LLM output is
     /// scanned. Defaults to [`zeph_config::ExfiltrationGuardConfig::default`].
     pub exfiltration_guard: zeph_config::ExfiltrationGuardConfig,
+
+    /// Pre-execution verifiers the parent agent runs before dispatching a tool call, shared
+    /// with the sub-agent loop so it applies the same gates (#7035).
+    ///
+    /// An empty list (the default) disables verification for the spawn: `zeph-core`'s
+    /// `build_spawn_context` always fills it from the parent, so only tests and embedders
+    /// that deliberately opt out leave it empty.
+    ///
+    /// # Caller responsibility for nested spawns
+    ///
+    /// Like [`max_trust_level`][Self::max_trust_level], this field does **not** propagate
+    /// automatically — a sub-agent that spawns its own children must clone the `Arc` from its
+    /// received `SpawnContext`, or the grandchild runs without the verifiers.
+    pub pre_execution_verifiers: PreExecutionVerifiers,
 }
+
+/// Shared, immutable list of pre-execution verifiers (`FirewallVerifier`,
+/// `DestructiveCommandVerifier`, ...), built once by the parent agent and cloned by `Arc` into
+/// every sub-agent loop.
+pub type PreExecutionVerifiers = Arc<[Box<dyn zeph_tools::PreExecutionVerifier>]>;
 
 /// Intersect two optional tool allowlists, preserving the "narrow only" invariant shared by
 /// [`SpawnContext::inherited_tool_allowlist`] and `TaskNode::tool_allowlist` (#6526/#6527):

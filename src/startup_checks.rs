@@ -83,11 +83,13 @@ mod tests {
         let cfg = Config {
             telegram: Some(TelegramConfig {
                 token: Some("tok".into()),
+                allowed_user_ids: vec![],
                 allowed_users: vec![],
                 skills: ChannelSkillsConfig::default(),
                 stream_interval_ms: 3000,
                 guest_mode: false,
                 bot_to_bot: false,
+                allowed_bot_ids: vec![],
                 allowed_bots: vec![],
                 max_bot_chain_depth: 3,
                 expandable_blockquote_min_lines: 10,

@@ -9,7 +9,6 @@
 
 use std::time::Duration;
 
-use futures::StreamExt;
 use rmcp::transport::auth::{
     OAuthHttpClient, OAuthHttpClientError, OAuthHttpClientFuture, OAuthHttpRedirectPolicy,
     OAuthHttpRequest,
@@ -17,6 +16,7 @@ use rmcp::transport::auth::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use url::Url;
 
+use zeph_common::http::{BodyLimit, BodyReadError, read_capped};
 use zeph_common::net::resolve_and_validate;
 
 use crate::error::McpError;
@@ -26,7 +26,10 @@ const DEFAULT_OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Response body cap mirroring rmcp's internal `ReqwestOAuthHttpClient` limit (not
 /// exported by rmcp, so re-declared here to match).
-const MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
+const MAX_OAUTH_HTTP_RESPONSE_BODY: BodyLimit = match BodyLimit::new(1024 * 1024) {
+    Some(limit) => limit,
+    None => panic!("body limit must be non-zero"),
+};
 
 /// Maximum redirect hops [`PinningOAuthHttpClient::execute`] follows for a single
 /// `OAuthHttpRedirectPolicy::Follow` request before giving up.
@@ -191,17 +194,14 @@ impl PinningOAuthHttpClient {
             resp_builder = resp_builder.header(name, value);
         }
 
-        let mut body = Vec::new();
-        let mut body_stream = response.bytes_stream();
-        while let Some(chunk) = body_stream.next().await {
-            let chunk = chunk.map_err(|e| OAuthHttpClientError::from(e.to_string()))?;
-            if chunk.len() > MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES.saturating_sub(body.len()) {
-                return Err(OAuthHttpClientError::from(format!(
-                    "OAuth HTTP response body exceeds {MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES} bytes"
-                )));
-            }
-            body.extend_from_slice(&chunk);
-        }
+        let body = read_capped(response, MAX_OAUTH_HTTP_RESPONSE_BODY)
+            .await
+            .map_err(|e| match e {
+                BodyReadError::TooLarge { limit } => OAuthHttpClientError::from(format!(
+                    "OAuth HTTP response body exceeds {limit} bytes"
+                )),
+                BodyReadError::Transport(e) => OAuthHttpClientError::from(e.to_string()),
+            })?;
 
         resp_builder
             .body(body)
@@ -386,7 +386,7 @@ pub async fn await_oauth_callback(
         let first_line = request.lines().next().unwrap_or_default();
         let path = first_line.split_whitespace().nth(1).unwrap_or_default();
 
-        let query = path.split_once('?').map(|(_, q)| q).unwrap_or_default();
+        let query = path.split_once('?').map_or_default(|(_, q)| q);
 
         let (code, state) = parse_callback_params(query, server_id)?;
 

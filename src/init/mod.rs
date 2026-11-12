@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use dialoguer::{Confirm, Input, Password, Select};
 use zeph_config::{
-    BgIsolation, GeminiThinkingLevel, ThinkingConfig, VaultBackend, WorktreeBaseRef,
+    BgIsolation, GeminiThinkingLevel, TelegramUserId, ThinkingConfig, VaultBackend, WorktreeBaseRef,
 };
 use zeph_core::config::{
     AcpConfig, ChannelSkillsConfig, Config, DiscordConfig, LlmConfig, LlmRoutingStrategy,
@@ -15,6 +15,24 @@ use zeph_core::config::{
 };
 use zeph_subagent::def::{MemoryScope, PermissionMode};
 use zeroize::Zeroizing;
+
+/// Parses a comma-separated list of numeric Telegram user ids; blank entries are skipped.
+///
+/// # Errors
+///
+/// Returns a message naming the first entry that is not a valid unsigned integer.
+pub(crate) fn parse_telegram_user_ids(input: &str) -> Result<Vec<TelegramUserId>, String> {
+    input
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            s.parse::<u64>()
+                .map(TelegramUserId)
+                .map_err(|_| format!("'{s}' is not a numeric Telegram user id"))
+        })
+        .collect()
+}
 
 pub(super) mod agents;
 pub(super) mod durable;
@@ -55,7 +73,7 @@ pub(crate) struct WizardState {
     pub(crate) semantic_enabled: bool,
     pub(crate) channel: ChannelChoice,
     pub(crate) telegram_token: Option<String>,
-    pub(crate) telegram_users: Vec<String>,
+    pub(crate) telegram_user_ids: Vec<TelegramUserId>,
     pub(crate) telegram_stream_interval_ms: u64,
     pub(crate) discord_token: Option<String>,
     pub(crate) discord_app_id: Option<String>,
@@ -95,6 +113,7 @@ pub(crate) struct WizardState {
     pub(crate) acp_default_temperature_preset: zeph_config::AcpTemperaturePreset,
     pub(crate) thinking: Option<ThinkingConfig>,
     pub(crate) enable_extended_context: bool,
+    pub(crate) speed: zeph_config::ServiceSpeed,
     /// Default `reasoning_effort` for `OpenAI`/Compatible providers (`"low"|"medium"|"high"`).
     /// Claude and Gemini configure their equivalent reasoning depth via `thinking` /
     /// `gemini_thinking_level` above — this field is `OpenAI`-specific to avoid two
@@ -425,7 +444,7 @@ impl Default for WizardState {
             semantic_enabled: false,
             channel: ChannelChoice::default(),
             telegram_token: None,
-            telegram_users: Vec::new(),
+            telegram_user_ids: Vec::new(),
             telegram_stream_interval_ms: 3000,
             discord_token: None,
             discord_app_id: None,
@@ -457,6 +476,7 @@ impl Default for WizardState {
             acp_default_temperature_preset: zeph_config::AcpTemperaturePreset::default(),
             thinking: None,
             enable_extended_context: false,
+            speed: zeph_config::ServiceSpeed::Standard,
             reasoning_effort: None,
             agents_enabled: true,
             agents_delegation_mode: zeph_config::DelegationMode::default(),
@@ -760,15 +780,13 @@ fn step_channel(state: &mut WizardState) -> anyhow::Result<()> {
                         .interact()?,
                 );
             }
-            let users: String = Input::new()
-                .with_prompt("Allowed usernames (comma-separated)")
+            let ids: String = Input::new()
+                .with_prompt("Allowed numeric Telegram user ids (comma-separated)")
                 .default(String::new())
+                .validate_with(|input: &String| parse_telegram_user_ids(input).map(|_| ()))
                 .interact_text()?;
-            state.telegram_users = users
-                .split(',')
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty())
-                .collect();
+            state.telegram_user_ids =
+                parse_telegram_user_ids(&ids).map_err(|e| anyhow::anyhow!(e))?;
             let interval_ms: u64 = Input::new()
                 .with_prompt(
                     "Streaming edit interval in ms (rate-limit safe: >=2000, minimum enforced: 500)",
@@ -987,6 +1005,7 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
                 .then_some(state.server_compaction_trigger)
                 .flatten(),
             enable_extended_context: state.enable_extended_context,
+            speed: state.speed,
             reasoning_effort: state.reasoning_effort.clone(),
             thinking_level: state.gemini_thinking_level,
             vision_model: state.vision_model.clone().filter(|s| !s.is_empty()),
@@ -1190,12 +1209,14 @@ pub(crate) fn build_config(state: &WizardState) -> Config {
         ChannelChoice::Telegram => {
             config.telegram = Some(TelegramConfig {
                 token: None,
-                allowed_users: state.telegram_users.clone(),
+                allowed_user_ids: state.telegram_user_ids.clone(),
+                allowed_users: vec![],
                 skills: ChannelSkillsConfig::default(),
                 allowed_tools: None,
                 stream_interval_ms: state.telegram_stream_interval_ms,
                 guest_mode: false,
                 bot_to_bot: false,
+                allowed_bot_ids: vec![],
                 allowed_bots: vec![],
                 max_bot_chain_depth: 3,
                 expandable_blockquote_min_lines: 10,

@@ -18,7 +18,7 @@ use zeph_db::{ActiveDialect, DbPool, numbered_placeholder, placeholder_list};
 
 use crate::error::MemoryError;
 use crate::graph::conflict::{ApexMetrics, SUPERSEDE_DEPTH_CAP};
-use crate::types::{EdgeId, EntityId, MessageId};
+use crate::types::{CommunityId, ConversationId, EdgeId, EntityId, EpisodeId, MessageId};
 
 use super::types::{
     Community, Edge, EdgeType, Entity, EntityAlias, EntityType, GraphProvenance, ProvenanceColumns,
@@ -625,7 +625,7 @@ impl GraphStore {
         // between existence check and write. The unique partial index uq_graph_edges_active
         // covers (source, target, relation, edge_type) WHERE valid_to IS NULL; SQLite does not
         // support ON CONFLICT DO UPDATE against partial indexes, so we keep two statements.
-        let mut tx = zeph_db::begin(&self.pool).await?;
+        let mut tx = zeph_db::begin_write(&self.pool).await?;
 
         let existing: Option<(i64, f64, f64, f64)> = zeph_db::query_as(sql!(
             "SELECT id, confidence, CAST(confidence_fast AS DOUBLE PRECISION),
@@ -1027,9 +1027,9 @@ impl GraphStore {
         summary: &str,
         entity_ids: &[EntityId],
         fingerprint: Option<&str>,
-    ) -> Result<i64, MemoryError> {
+    ) -> Result<CommunityId, MemoryError> {
         let entity_ids_json = serde_json::to_string(entity_ids)?;
-        let id: i64 = zeph_db::query_scalar(sql!(
+        let id: CommunityId = zeph_db::query_scalar(sql!(
             "INSERT INTO graph_communities (name, summary, entity_ids, fingerprint)
              VALUES (?, ?, ?, ?)
              ON CONFLICT(name) DO UPDATE SET
@@ -1055,8 +1055,10 @@ impl GraphStore {
     ///
     /// Returns an error if the database query fails.
     #[tracing::instrument(name = "memory.graph.store.community_fingerprints", skip_all)]
-    pub async fn community_fingerprints(&self) -> Result<HashMap<String, i64>, MemoryError> {
-        let rows: Vec<(String, i64)> = zeph_db::query_as(sql!(
+    pub async fn community_fingerprints(
+        &self,
+    ) -> Result<HashMap<String, CommunityId>, MemoryError> {
+        let rows: Vec<(String, CommunityId)> = zeph_db::query_as(sql!(
             "SELECT fingerprint, id FROM graph_communities WHERE fingerprint IS NOT NULL"
         ))
         .fetch_all(&self.pool)
@@ -1070,7 +1072,7 @@ impl GraphStore {
     ///
     /// Returns an error if the database query fails.
     #[tracing::instrument(name = "memory.graph.store.delete_community_by_id", skip_all)]
-    pub async fn delete_community_by_id(&self, id: i64) -> Result<(), MemoryError> {
+    pub async fn delete_community_by_id(&self, id: CommunityId) -> Result<(), MemoryError> {
         zeph_db::query(sql!("DELETE FROM graph_communities WHERE id = ?"))
             .bind(id)
             .execute(&self.pool)
@@ -1087,7 +1089,7 @@ impl GraphStore {
     ///
     /// Returns an error if the database query fails.
     #[tracing::instrument(name = "memory.graph.store.clear_community_fingerprint", skip_all)]
-    pub async fn clear_community_fingerprint(&self, id: i64) -> Result<(), MemoryError> {
+    pub async fn clear_community_fingerprint(&self, id: CommunityId) -> Result<(), MemoryError> {
         zeph_db::query(sql!(
             "UPDATE graph_communities SET fingerprint = NULL WHERE id = ?"
         ))
@@ -1264,7 +1266,10 @@ impl GraphStore {
     ///
     /// Returns an error if the database query fails or JSON parsing fails.
     #[tracing::instrument(name = "memory.graph.store.find_community_by_id", skip_all)]
-    pub async fn find_community_by_id(&self, id: i64) -> Result<Option<Community>, MemoryError> {
+    pub async fn find_community_by_id(
+        &self,
+        id: CommunityId,
+    ) -> Result<Option<Community>, MemoryError> {
         let raw = format!(
             "SELECT {} FROM graph_communities WHERE id = ?",
             community_select_cols("")
@@ -1439,23 +1444,23 @@ impl GraphStore {
     pub async fn entity_community_ids(
         &self,
         entity_ids: &[EntityId],
-    ) -> Result<HashMap<EntityId, i64>, MemoryError> {
+    ) -> Result<HashMap<EntityId, CommunityId>, MemoryError> {
         if entity_ids.is_empty() {
             return Ok(HashMap::new());
         }
 
-        let mut result: HashMap<EntityId, i64> = HashMap::new();
+        let mut result: HashMap<EntityId, CommunityId> = HashMap::new();
         for chunk in entity_ids.chunks(SQLITE_BATCH_LIMIT_2X) {
             let placeholders = placeholder_list(1, chunk.len());
 
             let community_sql = community_ids_sql(&placeholders);
             let mut query =
-                zeph_db::query_as::<_, (EntityId, i64)>(sqlx::AssertSqlSafe(community_sql));
+                zeph_db::query_as::<_, (EntityId, CommunityId)>(sqlx::AssertSqlSafe(community_sql));
             for id in chunk {
                 query = query.bind(*id);
             }
 
-            let rows: Vec<(EntityId, i64)> = query.fetch_all(&self.pool).await?;
+            let rows: Vec<(EntityId, CommunityId)> = query.fetch_all(&self.pool).await?;
             result.extend(rows);
         }
 
@@ -2597,7 +2602,7 @@ fn edge_from_row(row: EdgeRow) -> Result<Edge, MemoryError> {
 
 #[derive(zeph_db::FromRow)]
 struct CommunityRow {
-    id: i64,
+    id: CommunityId,
     name: String,
     summary: String,
     entity_ids: String,
@@ -2648,7 +2653,10 @@ impl GraphStore {
     ///
     /// Returns an error if the database query fails.
     #[tracing::instrument(name = "memory.graph.store.ensure_episode", skip_all)]
-    pub async fn ensure_episode(&self, conversation_id: i64) -> Result<i64, MemoryError> {
+    pub async fn ensure_episode(
+        &self,
+        conversation_id: ConversationId,
+    ) -> Result<EpisodeId, MemoryError> {
         // Ensure the conversation row exists before inserting into graph_episodes,
         // which has a FK referencing conversations(id). On a fresh database the agent
         // may run graph extraction before the conversation row is committed.
@@ -2660,7 +2668,7 @@ impl GraphStore {
         .execute(&self.pool)
         .await?;
 
-        let id: i64 = zeph_db::query_scalar(sql!(
+        let id: EpisodeId = zeph_db::query_scalar(sql!(
             "INSERT INTO graph_episodes (conversation_id)
              VALUES (?)
              ON CONFLICT(conversation_id) DO UPDATE SET conversation_id = excluded.conversation_id
@@ -2682,7 +2690,7 @@ impl GraphStore {
     #[tracing::instrument(name = "memory.graph.store.link_entity_to_episode", skip_all)]
     pub async fn link_entity_to_episode(
         &self,
-        episode_id: i64,
+        episode_id: EpisodeId,
         entity_id: EntityId,
     ) -> Result<(), MemoryError> {
         zeph_db::query(sql!(
@@ -2709,8 +2717,8 @@ impl GraphStore {
     ) -> Result<Vec<super::types::Episode>, MemoryError> {
         #[derive(zeph_db::FromRow)]
         struct EpisodeRow {
-            id: i64,
-            conversation_id: i64,
+            id: EpisodeId,
+            conversation_id: ConversationId,
             created_at: String,
             closed_at: Option<String>,
         }
@@ -2834,7 +2842,7 @@ impl GraphStore {
         let edge_type_str = edge_type.as_str();
         let episode_raw: Option<i64> = episode_id.map(|m| m.0);
 
-        let mut tx = zeph_db::begin(&self.pool).await?;
+        let mut tx = zeph_db::begin_write(&self.pool).await?;
 
         if let Some(existing_id) = find_identical_active_edge(
             &mut tx,
@@ -3035,7 +3043,7 @@ impl GraphStore {
 
                     if !candidates.is_empty() {
                         let ttl = det.candidate_ttl_days();
-                        match zeph_db::begin(&self.pool).await {
+                        match zeph_db::begin_write(&self.pool).await {
                             Ok(mut tx) => {
                                 match det.stage_candidates(&candidates, &mut tx, ttl).await {
                                     Ok(()) => {

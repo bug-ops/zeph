@@ -11,10 +11,11 @@ use eventsource_stream::Eventsource;
 use futures_core::Stream;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio_stream::StreamExt;
+use zeph_common::http::{read_capped, read_prefix};
 use zeph_common::net::resolve_and_validate;
 use zeph_common::text::truncate_to_bytes;
 
-use crate::body_limit::{BodyLimit, cap_event_size, read_capped, read_prefix};
+use crate::body_limit::{ERROR_BODY, RPC_RESPONSE, SSE_EVENT, cap_event_size};
 use crate::error::A2aError;
 use crate::ibct::{Ibct, IbctKey, ibct_scope_origin};
 use crate::jsonrpc::{
@@ -364,12 +365,9 @@ impl A2aClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let raw = tokio::time::timeout(
-                Duration::from_secs(5),
-                read_prefix(resp, BodyLimit::ERROR_BODY),
-            )
-            .await
-            .unwrap_or_default();
+            let raw = tokio::time::timeout(Duration::from_secs(5), read_prefix(resp, ERROR_BODY))
+                .await
+                .unwrap_or_default();
             let body = String::from_utf8_lossy(&raw);
             // Truncate body to avoid leaking large upstream error responses.
             let truncated = if body.len() > ERROR_BODY_SNIPPET_BYTES {
@@ -380,7 +378,7 @@ impl A2aClient {
             return Err(A2aError::Stream(format!("HTTP {status}: {truncated}")));
         }
 
-        let event_stream = cap_event_size(resp.bytes_stream(), BodyLimit::SSE_EVENT).eventsource();
+        let event_stream = cap_event_size(resp.bytes_stream(), SSE_EVENT).eventsource();
         let mapped = event_stream.filter_map(|event| match event {
             Ok(event) => {
                 if event.data.is_empty() || event.data == "[DONE]" {
@@ -396,7 +394,7 @@ impl A2aClient {
                     )))),
                 }
             }
-            Err(e) => Some(Err(A2aError::Stream(format!("SSE stream error: {e}")))),
+            Err(e) => Some(Err(A2aError::Stream(e.to_string()))),
         });
 
         Ok(Box::pin(mapped))
@@ -536,7 +534,9 @@ impl A2aClient {
         }
         let body = tokio::time::timeout(self.request_timeout, async {
             let resp = req.send().await?;
-            read_capped(resp, BodyLimit::RPC_RESPONSE).await
+            read_capped(resp, RPC_RESPONSE)
+                .await
+                .map_err(A2aError::from)
         })
         .await
         .map_err(|_| A2aError::Timeout(self.request_timeout))??;
@@ -1571,7 +1571,8 @@ mod wiremock_tests {
             .await
             .unwrap();
         let first = stream.next().await.expect("one error item");
-        assert!(first.is_err());
+        let text = first.expect_err("oversized event must error").to_string();
+        assert_eq!(text.matches("SSE stream error").count(), 1, "{text}");
         assert!(stream.next().await.is_none());
     }
 }

@@ -59,7 +59,7 @@ tower-http = { workspace = true, features = ["cors", "limit"], optional = true }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 zeph-commands.workspace = true
-zeph-common.workspace = true
+zeph-common = { workspace = true, features = ["http"] }
 zeph-config.workspace = true
 zeph-core.workspace = true
 zeph-llm.workspace = true

@@ -1051,6 +1051,80 @@ pub struct ToolDefinition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SubgoalId(pub u32);
 
+/// Unique identifier of a long-horizon goal (UUID v4).
+///
+/// Built only by [`GoalId::new_v4`] (goal creation) or [`GoalId::parse`] (database row and
+/// user input boundaries), so a goal id cannot be confused with a session id, a conversation
+/// id, or plain goal text. Serializes as its hyphenated UUID string.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::GoalId;
+///
+/// let id = GoalId::new_v4();
+/// assert_eq!(GoalId::parse(&id.to_string()).unwrap(), id);
+/// assert_eq!(id.short().len(), 8);
+/// assert!(GoalId::parse("not-a-uuid").is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GoalId(uuid::Uuid);
+
+/// Error returned by [`GoalId::parse`] for a string that is not a valid UUID.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("invalid goal id: {0}")]
+pub struct GoalIdError(#[from] uuid::Error);
+
+impl GoalId {
+    /// Generate a fresh random goal id.
+    #[must_use]
+    pub fn new_v4() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+
+    /// Parse a goal id from its UUID text form.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GoalIdError`] when `s` is not a valid UUID.
+    pub fn parse(s: &str) -> Result<Self, GoalIdError> {
+        Ok(Self(uuid::Uuid::parse_str(s)?))
+    }
+
+    /// First 8 hex digits of the id, for compact display.
+    #[must_use]
+    pub fn short(&self) -> String {
+        format!("{:08x}", self.0.as_u128() >> 96)
+    }
+}
+
+impl fmt::Display for GoalId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0.hyphenated(), f)
+    }
+}
+
+impl FromStr for GoalId {
+    type Err = GoalIdError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
+impl Serialize for GoalId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for GoalId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Self::parse(&s).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Reason why the agent turn ended early.
 ///
 /// Emitted by the agent loop when a non-default terminal condition is detected.
@@ -1076,6 +1150,29 @@ pub enum StopHint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn goal_id_short_is_first_eight_hex_digits() {
+        let id = GoalId::parse("a1b2c3d4-0000-4000-8000-000000000000").unwrap();
+        assert_eq!(id.short(), "a1b2c3d4");
+        let leading_zero = GoalId::parse("0000abcd-0000-4000-8000-000000000000").unwrap();
+        assert_eq!(leading_zero.short(), "0000abcd");
+    }
+
+    #[test]
+    fn goal_id_serde_round_trips_as_string() {
+        let id = GoalId::new_v4();
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, format!("\"{id}\""));
+        assert_eq!(serde_json::from_str::<GoalId>(&json).unwrap(), id);
+        assert!(serde_json::from_str::<GoalId>("\"nope\"").is_err());
+    }
+
+    #[test]
+    fn goal_id_parse_rejects_non_uuid() {
+        assert!("".parse::<GoalId>().is_err());
+        assert!("a\u{e9}\u{e9}\u{e9}".parse::<GoalId>().is_err());
+    }
 
     #[test]
     fn tool_name_construction_and_equality() {

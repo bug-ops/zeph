@@ -137,6 +137,7 @@ THEN the same hex string is returned (deterministic)
 | FR-009 | WHEN `trust_level::SkillTrustLevel` is evaluated THEN the system SHALL express the Untrusted/Provisional/Trusted trust gradient | must |
 | FR-010 | WHEN `sanitize` utilities are called THEN the system SHALL provide content sanitization helpers usable by any crate without depending on `zeph-sanitizer` | should |
 | FR-011 | WHEN `BlockingSpawner::spawn_blocking_named` is called THEN the system SHALL dispatch the closure to the OS blocking thread pool with the given `Arc<str>` task name | must |
+| FR-012 | WHEN the `http` feature is enabled THEN `http::read_capped` / `http::read_prefix` SHALL bound a `reqwest::Response` body by a `BodyLimit(NonZeroUsize)`: `Content-Length` above the limit is rejected before any body byte is read, otherwise the read aborts at the first chunk crossing the limit (`BodyReadError::TooLarge`); `read_prefix` never fails (#7041) | must |
 
 ---
 
@@ -168,6 +169,7 @@ THEN the same hex string is returned (deterministic)
 | `PolicyMessage` | Message for policy evaluation | Role + content |
 | `PolicyRole` | Role in policy context | `User`, `Assistant` |
 | `BlockingSpawner` | Trait for dispatching blocking tasks by name | `spawn_blocking_named(name: Arc<str>, f: Box<dyn FnOnce() + Send + 'static>)` |
+| `http::BodyLimit` / `http::BodyReadError` | Non-zero byte cap for a response body and its closed error enum (`TooLarge { limit }`, `Transport`); feature `http` (optional `reqwest`) | `BodyLimit::new(usize) -> Option<_>`, `from_non_zero`, `get`; `read_capped`, `read_prefix` |
 
 ---
 
@@ -208,6 +210,7 @@ THEN the same hex string is returned (deterministic)
 - Add a dependency on any `zeph-*` crate
 - Derive `Clone` on `Secret`
 - Use `unsafe` blocks
+- Buffer a remote HTTP response body with `resp.bytes()` / `resp.text()` before a size check; use `http::read_capped` or `http::read_prefix`
 - Use `&'static str` or `Box::leak` for task names — always `Arc<str>`
 
 ---

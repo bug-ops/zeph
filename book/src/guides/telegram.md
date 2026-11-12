@@ -19,14 +19,14 @@ Deploy Zeph as a Telegram bot with streaming responses, MarkdownV2 formatting, u
    zeph --vault age
    ```
 
-3. **Required** — restrict access to specific usernames:
+3. **Required** — restrict access to specific numeric Telegram user ids (message `@userinfobot` to find yours):
 
    ```toml
    [telegram]
-   allowed_users = ["your_username"]
+   allowed_user_ids = [123456789]
    ```
 
-   The bot refuses to start without at least one allowed user. Messages from unauthorized users are silently rejected.
+   The bot refuses to start without at least one allowed user. Messages from unauthorized users are silently rejected. Usernames in `allowed_users` still work as a legacy fallback but are mutable and transferable, so a match logs a warning; run `zeph --migrate-config` to add the id keys.
 
 ## Bot Commands
 
@@ -113,7 +113,7 @@ Bot-to-Bot mode allows Zeph to receive and respond to messages relayed from othe
 ```toml
 [telegram]
 bot_to_bot = true
-allowed_bots = ["@specialist_bot", "@analyzer_bot"]
+allowed_bot_ids = [111111111, 222222222]
 max_bot_chain_depth = 3
 ```
 
@@ -122,7 +122,8 @@ max_bot_chain_depth = 3
 | Field | Description |
 |-------|-------------|
 | `bot_to_bot` | Enable bot-to-bot mode (default: false) |
-| `allowed_bots` | List of bot usernames allowed to send messages to this bot |
+| `allowed_bot_ids` | Numeric ids of bots allowed to send messages to this bot. Required: with `bot_to_bot = true` an empty list (and empty legacy `allowed_bots`) fails startup |
+| `allowed_bots` | Legacy bot usernames; a match logs a warning |
 | `max_bot_chain_depth` | Maximum number of consecutive bot replies before cutting the chain (default: 3) |
 
 When enabled, Zeph registers with Telegram via `setManagedBotAccessSettings` on startup and tracks consecutive bot-to-bot reply depth to prevent circular loops. Messages from unauthorized bots are silently rejected.

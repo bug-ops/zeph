@@ -5,113 +5,40 @@
 //!
 //! A peer is untrusted: without a cap, a hostile or compromised peer can stream gigabytes
 //! inside the request timeout. Every body read by [`crate::A2aClient`] and
-//! [`crate::AgentRegistry`] goes through [`read_capped`], [`read_prefix`] or
-//! [`cap_event_size`].
+//! [`crate::AgentRegistry`] goes through [`zeph_common::http::read_capped`],
+//! [`zeph_common::http::read_prefix`] or [`cap_event_size`], using the limits defined here.
 
 use std::future::ready;
-use std::num::NonZeroUsize;
 
 use futures::StreamExt;
 use futures_core::Stream;
+use zeph_common::http::{BodyLimit, BodyReadError};
 
 use crate::error::A2aError;
 
-/// Maximum number of bytes accepted for one kind of peer-supplied payload.
-///
-/// Zero is unrepresentable: a limit that rejects every body is a configuration bug, not a limit.
-///
-/// # Examples
-///
-/// ```
-/// use zeph_a2a::body_limit::BodyLimit;
-///
-/// assert_eq!(BodyLimit::AGENT_CARD.get(), 256 * 1024);
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BodyLimit(NonZeroUsize);
-
-const fn non_zero(n: usize) -> NonZeroUsize {
-    match NonZeroUsize::new(n) {
-        Some(v) => v,
+const fn limit(bytes: usize) -> BodyLimit {
+    match BodyLimit::new(bytes) {
+        Some(l) => l,
         None => panic!("body limit must be non-zero"),
     }
 }
 
-impl BodyLimit {
-    /// Agent card served at `/.well-known/agent.json`: 256 KiB.
-    pub const AGENT_CARD: Self = Self(non_zero(256 * 1024));
-    /// JSON-RPC response body: 16 MiB.
-    pub const RPC_RESPONSE: Self = Self(non_zero(16 * 1024 * 1024));
-    /// One server-sent event, from its first byte to the terminating blank line: 4 MiB.
-    pub const SSE_EVENT: Self = Self(non_zero(4 * 1024 * 1024));
-    /// Non-2xx error body kept for diagnostics: 4 KiB.
-    pub const ERROR_BODY: Self = Self(non_zero(4 * 1024));
+/// Agent card served at `/.well-known/agent.json`: 256 KiB.
+pub const AGENT_CARD: BodyLimit = limit(256 * 1024);
+/// JSON-RPC response body: 16 MiB.
+pub const RPC_RESPONSE: BodyLimit = limit(16 * 1024 * 1024);
+/// One server-sent event, from its first byte to the terminating blank line: 4 MiB.
+pub const SSE_EVENT: BodyLimit = limit(4 * 1024 * 1024);
+/// Non-2xx error body kept for diagnostics: 4 KiB.
+pub const ERROR_BODY: BodyLimit = limit(4 * 1024);
 
-    /// Builds a limit from a byte count, or `None` when it is zero.
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) const fn new(bytes: usize) -> Option<Self> {
-        match NonZeroUsize::new(bytes) {
-            Some(v) => Some(Self(v)),
-            None => None,
+impl From<BodyReadError> for A2aError {
+    fn from(e: BodyReadError) -> Self {
+        match e {
+            BodyReadError::TooLarge { limit } => Self::BodyTooLarge { limit },
+            BodyReadError::Transport(e) => Self::Http(e),
         }
     }
-
-    /// The limit in bytes.
-    #[must_use]
-    pub const fn get(self) -> usize {
-        self.0.get()
-    }
-}
-
-/// Reads the whole body of `resp`, failing as soon as it exceeds `limit`.
-///
-/// A declared `Content-Length` above the limit is rejected before any body byte is read;
-/// otherwise chunks are accumulated and the read aborts at the first chunk that crosses the limit.
-///
-/// # Errors
-///
-/// [`A2aError::BodyTooLarge`] when the limit is exceeded, [`A2aError::Http`] on transport errors.
-#[tracing::instrument(name = "a2a.client.read_capped", skip_all, fields(limit = limit.get()), err)]
-pub async fn read_capped(
-    mut resp: reqwest::Response,
-    limit: BodyLimit,
-) -> Result<Vec<u8>, A2aError> {
-    let max = limit.get();
-    if resp
-        .content_length()
-        .is_some_and(|len| usize::try_from(len).map_or(true, |len| len > max))
-    {
-        return Err(A2aError::BodyTooLarge { limit: max });
-    }
-    let mut body = Vec::new();
-    while let Some(chunk) = resp.chunk().await? {
-        if body.len() + chunk.len() > max {
-            return Err(A2aError::BodyTooLarge { limit: max });
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(body)
-}
-
-/// Reads at most `limit` bytes of `resp` for diagnostics; never fails.
-///
-/// Transport errors and an over-long body both just end the read, so the result is the best-effort
-/// prefix received so far.
-#[tracing::instrument(name = "a2a.client.read_prefix", skip_all, fields(limit = limit.get()))]
-pub async fn read_prefix(mut resp: reqwest::Response, limit: BodyLimit) -> Vec<u8> {
-    let max = limit.get();
-    let mut body = Vec::new();
-    while body.len() < max {
-        match resp.chunk().await {
-            Ok(Some(chunk)) => {
-                let take = chunk.len().min(max - body.len());
-                body.extend_from_slice(&chunk[..take]);
-            }
-            Ok(None) | Err(_) => break,
-        }
-    }
-    body
 }
 
 /// Tracks the size of the SSE event currently being received, across arbitrary chunk splits.
@@ -175,12 +102,12 @@ impl EventSizeTracker {
 /// ```
 /// use futures::StreamExt;
 /// use zeph_a2a::A2aError;
-/// use zeph_a2a::body_limit::{BodyLimit, cap_event_size};
+/// use zeph_a2a::body_limit::{ERROR_BODY, cap_event_size};
 ///
 /// # #[tokio::main(flavor = "current_thread")]
 /// # async fn main() {
 /// let chunks = tokio_stream::iter(vec![Ok::<_, A2aError>(vec![b'x'; 5000])]);
-/// let mut capped = Box::pin(cap_event_size(chunks, BodyLimit::ERROR_BODY));
+/// let mut capped = Box::pin(cap_event_size(chunks, ERROR_BODY));
 /// assert!(capped.next().await.unwrap().is_err());
 /// assert!(capped.next().await.is_none());
 /// # }

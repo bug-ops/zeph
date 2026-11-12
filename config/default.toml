@@ -104,6 +104,7 @@ embedding_model = "qwen3-embedding"
 # enable_extended_context = false       # lift the 200k window ceiling to the model's native 1M window
 # prompt_cache_ttl = "1h"              # "1h" = extended TTL (writes ~2× cost; beta header only on legacy models and Haiku 4.5); omit for default ~5 min
 # thinking = { mode = "adaptive", effort = "medium" }
+# speed = "fast"                        # fast mode (2x price) for claude-fable-5-2 / claude-mythos-5-2 / claude-opus-5-5; ignored with a warning on other models
 
 # OpenAI / Azure
 # [[llm.providers]]
@@ -1086,8 +1087,13 @@ circuit_breaker_cooldown_secs = 30
 
 # [telegram]
 # token = "your-bot-token"
-# Allowed usernames (empty = allow all except for /start command)
-# allowed_users = ["username1", "username2"]
+# Numeric Telegram user ids allowed to use the bot (stable identity; required unless allowed_users is set).
+# allowed_user_ids = [123456789]
+# Legacy: usernames are mutable and transferable; a match logs a warning. Prefer allowed_user_ids.
+# allowed_users = ["username1"]
+# bot_to_bot = true requires a non-empty bot allowlist (an empty list is rejected at startup).
+# allowed_bot_ids = [987654321]
+# allowed_bots = ["@my_bot"]
 # Blockquotes with this many lines or more render as an expandable (collapsed-by-default)
 # blockquote (Bot API 10.1 expandable_blockquote). 0 disables the expandable form entirely.
 # expandable_blockquote_min_lines = 10

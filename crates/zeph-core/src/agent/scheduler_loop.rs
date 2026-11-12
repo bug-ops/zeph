@@ -1390,6 +1390,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                                                     0,
                                                     0,
                                                     usage.output_tokens,
+                                                    zeph_config::ServiceSpeed::Standard,
                                                 );
 
                                                 // Issue #6549: durable ledger row, priced via
@@ -1400,6 +1401,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                                                     0,
                                                     0,
                                                     usage.output_tokens,
+                                                    zeph_config::ServiceSpeed::Standard,
                                                 );
                                                 let (ttft_ms, reasoning_tokens) = member_provider
                                                     .map_or((None, None), |(_, p)| {

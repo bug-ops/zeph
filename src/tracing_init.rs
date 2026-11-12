@@ -899,18 +899,7 @@ fn build_otlp_layer(
         }
     }
 
-    let sample_rate = {
-        let r = telemetry.sample_rate;
-        if (0.0..=1.0).contains(&r) {
-            r
-        } else {
-            let clamped = r.clamp(0.0, 1.0);
-            eprintln!(
-                "[zeph] warning: telemetry.sample_rate {r} is outside [0.0, 1.0]; clamping to {clamped}"
-            );
-            clamped
-        }
-    };
+    let sample_rate = telemetry.sample_rate.get();
 
     // #2996: set a 3-second export timeout so the process does not block indefinitely
     // when the OTLP collector is unreachable.
@@ -1313,30 +1302,6 @@ mod tests {
         assert!(layers.is_empty(), "no layer should be appended");
     }
 
-    /// Verify that the `sample_rate` clamp expression correctly bounds values to `[0.0, 1.0]`.
-    /// The clamp logic runs before the network exporter is built — no live collector required.
-    #[cfg(feature = "otel")]
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn build_otlp_layer_sample_rate_out_of_range_is_clamped() {
-        let clamp = |r: f64| {
-            if (0.0..=1.0).contains(&r) {
-                r
-            } else {
-                r.clamp(0.0, 1.0)
-            }
-        };
-        assert_eq!(clamp(50.0), 1.0, "value > 1.0 must clamp to 1.0");
-        assert_eq!(clamp(-0.5), 0.0, "negative value must clamp to 0.0");
-        assert_eq!(
-            clamp(0.5),
-            0.5,
-            "in-range value must pass through unchanged"
-        );
-        assert_eq!(clamp(0.0), 0.0, "boundary 0.0 must pass through unchanged");
-        assert_eq!(clamp(1.0), 1.0, "boundary 1.0 must pass through unchanged");
-    }
-
     /// Verify that the OTLP `EnvFilter` string is constructed correctly and suppresses
     /// transport-layer crates at `warn` level.
     ///
@@ -1475,7 +1440,7 @@ mod tests {
         let telemetry = TelemetryConfig {
             enabled: true,
             backend: TelemetryBackend::Otlp,
-            sample_rate: 1.0,
+            sample_rate: zeph_config::UnitClosed64::literal(1.0),
             otlp_endpoint: Some("http://localhost:4317".into()),
             ..TelemetryConfig::default()
         };

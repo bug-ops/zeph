@@ -29,7 +29,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 tracing.workspace = true
-zeph-common.workspace = true
+zeph-common = { workspace = true, features = ["http"] }
 zeph-config.workspace = true
 zeph-db.workspace = true
 zeph-durable.workspace = true

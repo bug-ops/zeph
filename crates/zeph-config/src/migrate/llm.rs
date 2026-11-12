@@ -1322,3 +1322,64 @@ pub fn migrate_claude_compaction_trigger(toml_src: &str) -> Result<MigrationResu
         sections_changed: vec!["llm.providers".to_owned()],
     })
 }
+
+/// Step 116: add an advisory `speed` hint to Claude provider entries.
+///
+/// The hint is a trailing comment on the entry's `type` line, so the active config is
+/// unchanged and standard speed keeps applying. Entries that set `speed` or already carry a
+/// comment on the `type` line are skipped, which makes the step idempotent.
+///
+/// # Errors
+///
+/// Returns [`MigrateError::Parse`] when `toml_src` is not valid TOML.
+pub fn migrate_claude_speed(toml_src: &str) -> Result<MigrationResult, MigrateError> {
+    let unchanged = || MigrationResult {
+        output: toml_src.to_owned(),
+        changed_count: 0,
+        sections_changed: Vec::new(),
+    };
+    let mut doc = toml_src.parse::<toml_edit::DocumentMut>()?;
+    let Some(providers) = doc
+        .get_mut("llm")
+        .and_then(toml_edit::Item::as_table_mut)
+        .and_then(|llm| llm.get_mut("providers"))
+        .and_then(toml_edit::Item::as_array_of_tables_mut)
+    else {
+        return Ok(unchanged());
+    };
+
+    let mut changed_count = 0;
+    for entry in providers.iter_mut() {
+        if entry.contains_key("speed") {
+            continue;
+        }
+        let Some(value) = entry
+            .get_mut("type")
+            .and_then(toml_edit::Item::as_value_mut)
+            .filter(|v| v.as_str() == Some("claude"))
+        else {
+            continue;
+        };
+        let has_comment = value
+            .decor()
+            .suffix()
+            .and_then(toml_edit::RawString::as_str)
+            .is_some_and(|s| s.contains('#'));
+        if has_comment {
+            continue;
+        }
+        value.decor_mut().set_suffix(
+            " # optional: speed = \"fast\" (2x price; claude-fable-5-2, claude-mythos-5-2, claude-opus-5-5)",
+        );
+        changed_count += 1;
+    }
+
+    if changed_count == 0 {
+        return Ok(unchanged());
+    }
+    Ok(MigrationResult {
+        output: doc.to_string(),
+        changed_count,
+        sections_changed: vec!["llm.providers".to_owned()],
+    })
+}

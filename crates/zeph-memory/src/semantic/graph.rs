@@ -20,7 +20,7 @@ use crate::error::MemoryError;
 use crate::graph::extractor::ExtractionResult as ExtractorResult;
 use crate::graph::resolver::{MAX_RELATION_BYTES, sanitize_fact, sanitize_relation};
 use crate::graph::types::GraphProvenance;
-use crate::types::EntityId;
+use crate::types::{ConversationId, EntityId};
 use crate::vector_store::VectorFilter;
 
 use super::SemanticMemory;
@@ -65,7 +65,7 @@ pub struct GraphExtractionConfig {
     pub belief_revision_similarity_threshold: f32,
     /// GAAMA episode linking: `conversation_id` to link extracted entities to their episode.
     /// `None` disables episode linking for this extraction pass.
-    pub conversation_id: Option<i64>,
+    pub conversation_id: Option<ConversationId>,
     /// APEX-MEM: use `insert_or_supersede` instead of `resolve_edge_typed`. Default: `false`.
     pub apex_mem_enabled: bool,
     /// LLM call timeout for extraction, in seconds. Default: `30`.
@@ -146,6 +146,10 @@ impl Default for GraphExtractionConfig {
 pub struct ExtractionStats {
     pub entities_upserted: usize,
     pub edges_inserted: usize,
+    /// Edges that reached the store but failed to persist (database error, FK violation).
+    ///
+    /// Excludes edges dropped by validation (unresolved endpoints, self-loops, write-gate).
+    pub edges_failed: usize,
 }
 
 /// Result returned from `extract_and_store`, combining stats with entity IDs needed for linking.
@@ -590,7 +594,7 @@ pub async fn extract_and_store(
 
     let (entity_name_to_id, entities_upserted) =
         upsert_entities(&resolver, &result.entities, config.provenance.as_ref()).await;
-    let edges_inserted = insert_edges(&resolver, &result.edges, &entity_name_to_id, &config).await;
+    let edge_counts = insert_edges(&resolver, &result.edges, &entity_name_to_id, &config).await;
 
     #[cfg(any(feature = "sqlite", feature = "postgres"))]
     store.checkpoint_wal().await?;
@@ -603,13 +607,14 @@ pub async fn extract_and_store(
     {
         let span = tracing::Span::current();
         span.record("entities", entities_upserted);
-        span.record("edges", edges_inserted);
+        span.record("edges", edge_counts.inserted);
     }
 
     Ok(ExtractionResult {
         stats: ExtractionStats {
             entities_upserted,
-            edges_inserted,
+            edges_inserted: edge_counts.inserted,
+            edges_failed: edge_counts.failed,
         },
         entity_ids: new_entity_ids,
     })
@@ -688,17 +693,24 @@ fn is_low_signal_relation(relation: &str) -> bool {
     LOW_SIGNAL.iter().any(|&s| relation.eq_ignore_ascii_case(s))
 }
 
+/// Outcome counters of an [`insert_edges`] pass.
+#[derive(Debug, Default, Clone, Copy)]
+struct EdgeInsertCounts {
+    inserted: usize,
+    failed: usize,
+}
+
 /// Insert extracted edges that have both endpoints in `name_to_id`.
 ///
-/// Returns the number of edges actually inserted.
+/// Returns how many edges were inserted and how many failed to persist.
 #[allow(clippy::too_many_lines)]
 async fn insert_edges(
     resolver: &crate::graph::EntityResolver<'_>,
     edges: &[crate::graph::extractor::ExtractedEdge],
     name_to_id: &std::collections::HashMap<String, EntityId>,
     config: &GraphExtractionConfig,
-) -> usize {
-    let mut edges_inserted = 0usize;
+) -> EdgeInsertCounts {
+    let mut counts = EdgeInsertCounts::default();
     for edge in edges {
         // MemORAI write-gate: drop low-signal edges below the relevance threshold (#3709).
         if let Some(min_rel) = config.write_gate_min_relevance {
@@ -769,7 +781,7 @@ async fn insert_edges(
                 )
                 .await
             {
-                Ok(_) => edges_inserted += 1,
+                Ok(_) => counts.inserted += 1,
                 Err(e) if e.is_foreign_key_violation() => {
                     // A resolved entity id was rejected as an FK target — this drops a
                     // user-requested fact permanently and must not be silent (#5801).
@@ -778,9 +790,11 @@ async fn insert_edges(
                         target = %tgt_id,
                         "graph: edge insert (apex) rejected by FK constraint, dropping edge: {e:#}"
                     );
+                    counts.failed += 1;
                 }
                 Err(e) => {
-                    tracing::debug!("graph: skipping edge (apex): {e:#}");
+                    tracing::warn!("graph: edge insert (apex) failed, dropping edge: {e:#}");
+                    counts.failed += 1;
                 }
             }
         } else {
@@ -805,7 +819,7 @@ async fn insert_edges(
                 )
                 .await
             {
-                Ok(Some(_)) => edges_inserted += 1,
+                Ok(Some(_)) => counts.inserted += 1,
                 Ok(None) => {} // deduplicated
                 Err(e) if e.is_foreign_key_violation() => {
                     // A resolved entity id was rejected as an FK target — this drops a
@@ -815,14 +829,16 @@ async fn insert_edges(
                         target = %tgt_id,
                         "graph: edge insert rejected by FK constraint, dropping edge: {e:#}"
                     );
+                    counts.failed += 1;
                 }
                 Err(e) => {
-                    tracing::debug!("graph: skipping edge: {e:#}");
+                    tracing::warn!("graph: edge insert failed, dropping edge: {e:#}");
+                    counts.failed += 1;
                 }
             }
         }
     }
-    edges_inserted
+    counts
 }
 
 /// Link extracted entities to their GAAMA episode when a conversation ID is configured.
@@ -1475,6 +1491,13 @@ impl SemanticMemory {
                     )
                     .await
                     {
+                        Ok(result) if result.stats.edges_failed > 0 => DocOutcome::Failed {
+                            uri,
+                            reason: format!(
+                                "{} edge(s) failed to persist; document not ledgered",
+                                result.stats.edges_failed
+                            ),
+                        },
                         Ok(result) => {
                             let entities = result.stats.entities_upserted;
                             let edges = result.stats.edges_inserted;
@@ -2878,7 +2901,12 @@ mod tests {
             ..Default::default()
         };
 
-        let inserted = super::insert_edges(&resolver, &edges, &name_to_id, &config).await;
+        let counts = super::insert_edges(&resolver, &edges, &name_to_id, &config).await;
+        let inserted = counts.inserted;
+        assert_eq!(
+            counts.failed, 1,
+            "FK-rejected edge must be counted as failed"
+        );
 
         assert_eq!(
             inserted, 0,
@@ -2919,7 +2947,12 @@ mod tests {
             ..Default::default()
         };
 
-        let inserted = super::insert_edges(&resolver, &edges, &name_to_id, &config).await;
+        let counts = super::insert_edges(&resolver, &edges, &name_to_id, &config).await;
+        let inserted = counts.inserted;
+        assert_eq!(
+            counts.failed, 1,
+            "FK-rejected edge must be counted as failed"
+        );
 
         assert_eq!(
             inserted, 0,
@@ -2929,5 +2962,107 @@ mod tests {
             logs_contain("graph: edge insert rejected by FK constraint, dropping edge"),
             "legacy-path FK-violation WARN must fire when both endpoints are locally nonexistent"
         );
+    }
+
+    // ── #7047: concurrent edge writes must not be lost to SQLITE_BUSY ───────────
+
+    fn edge_extraction_json(n: usize) -> String {
+        format!(
+            r#"{{"entities":[{{"name":"Src{n}","type":"tool","summary":"s"}},{{"name":"Dst{n}","type":"tool","summary":"d"}}],"edges":[{{"source":"Src{n}","target":"Dst{n}","relation":"uses","fact":"Src{n} uses Dst{n}","edge_type":"semantic","confidence":0.9}}]}}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn concurrent_extractions_on_file_db_lose_no_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        for round in 0..8 {
+            let path = dir.path().join(format!("round{round}.db"));
+            let sqlite = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
+            let pool = sqlite.pool().clone();
+
+            let runs = (0..3).map(|n| {
+                let provider =
+                    AnyProvider::Mock(zeph_llm::mock::MockProvider::with_responses(vec![
+                        edge_extraction_json(n),
+                    ]));
+                extract_and_store(
+                    format!("doc {n}"),
+                    vec![],
+                    provider,
+                    pool.clone(),
+                    GraphExtractionConfig {
+                        max_entities: 10,
+                        max_edges: 10,
+                        extraction_timeout_secs: 10,
+                        ..Default::default()
+                    },
+                    None,
+                    None,
+                )
+            });
+            let results = futures::future::join_all(runs).await;
+            for r in results {
+                let stats = r.unwrap().stats;
+                assert_eq!(stats.edges_inserted, 1, "round {round}");
+                assert_eq!(stats.edges_failed, 0, "round {round}");
+            }
+            let edges: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM graph_edges")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(
+                edges, 3,
+                "round {round}: every concurrent edge must persist"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ingest_fails_and_skips_ledger_when_edge_store_errors() {
+        use super::IngestBatchConfig;
+        use crate::graph::ingest::ImportBatchId;
+
+        let memory = make_semantic_memory(Some(&edge_extraction_json(0))).await;
+        let pool = memory.sqlite().pool().clone();
+        sqlx::query("DROP TABLE graph_edges")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let batch_id = ImportBatchId::new();
+        let doc = make_doc("Src0 uses Dst0.", "task-edge-fail", &batch_id);
+        let report = memory
+            .ingest_documents(
+                vec![doc],
+                IngestBatchConfig {
+                    extraction: GraphExtractionConfig {
+                        max_entities: 10,
+                        max_edges: 10,
+                        extraction_timeout_secs: 10,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                batch_id,
+                1,
+                None,
+                None,
+            )
+            .await
+            .expect("batch returns Ok with per-document failures");
+
+        assert_eq!(report.succeeded, 0);
+        assert_eq!(
+            report.failed.len(),
+            1,
+            "edge store error must fail the document"
+        );
+        assert!(report.failed[0].reason.contains("edge(s) failed"));
+
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM knowledge_ingest_ledger")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 0, "failed document must not be ledgered");
     }
 }

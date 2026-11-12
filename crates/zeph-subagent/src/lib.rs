@@ -89,8 +89,8 @@ pub use hooks::{
     matching_hooks, pre_tool_block_message,
 };
 pub use manager::{
-    CredentialScrub, SpawnContext, SpawnOrigin, SubAgentHandle, SubAgentManager, SubAgentStatus,
-    intersect_allowlists,
+    CredentialScrub, PreExecutionVerifiers, SpawnContext, SpawnOrigin, SubAgentHandle,
+    SubAgentManager, SubAgentStatus, intersect_allowlists,
 };
 pub use memory::{ensure_memory_dir, load_memory_content};
 pub use resolve::resolve_agent_paths;

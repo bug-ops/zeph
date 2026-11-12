@@ -130,6 +130,7 @@ pub struct ShellOutputEnvelope {
 - `aborts_dependants()` drives: tier-loop `failed_ids` (dependant calls are skipped) and the inline-loop `ToolCallSummary.ok` (`!(Err || aborts_dependants() || HookBlocked)`), hence whether a `RunInline` DAG task ends `Failed` (`[[009-orchestration/spec]]`).
 - Wire `is_error` differs between loops for the same non-zero exit (R9, intentional, do not "fix" in #6993): the tier-loop `ToolResult.is_error` stays `Err`-only (`false` for `NonZeroExit`); the inline-loop wire `is_error` is `true` (follows `is_failure()`), while `ok` stays `true` in both loops.
 - Agent-answered built-ins (`BuiltinReply`): a disabled `request_compaction`, an inactive or rejected `skill_state_patch` reply carry `ToolStatus::Failed`; a recorded patch is `Success` (#7005).
+- Display outcome (#7048): `ToolOutputEvent` carries the typed `status: ToolStatus` (no `is_error` bool); the producer maps `Err` to `Failed` and keeps the `Ok` status. TUI marker, ACP `ToolCallStatus` and the JSON CLI `tool_result.is_error` follow `status.is_failure()`; the wire `ToolResult.is_error` (R9) is unchanged.
 - MCP tool results (#7000): `CallToolResult.is_error == Some(true)` maps to `ToolStatus::Failed`; absent or `false` maps to `Success`. Summary and media rendering are unchanged, so the `is_failure()` consumers above see MCP-reported errors.
 - Exit 0 is never an `Err` and never a failure, whatever the output text says (stderr progress, `[error]` text, "permission denied" in data).
 

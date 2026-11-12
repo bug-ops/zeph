@@ -630,8 +630,13 @@ max_input_chars = 4096
 
 # [telegram]
 # token = "your-bot-token"
-# Allowed usernames (empty = allow all except for /start command)
-# allowed_users = ["username1", "username2"]
+# Numeric Telegram user ids allowed to use the bot (stable identity; required unless allowed_users is set).
+# allowed_user_ids = [123456789]
+# Legacy: usernames are mutable and transferable; a match logs a warning. Prefer allowed_user_ids.
+# allowed_users = ["username1"]
+# bot_to_bot = true requires a non-empty bot allowlist (an empty list is rejected at startup).
+# allowed_bot_ids = [987654321]
+# allowed_bots = ["@my_bot"]
 
 [timeouts]
 # LLM chat completion timeout in seconds

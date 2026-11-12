@@ -436,6 +436,8 @@ pub struct MetricsSnapshot {
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
     pub cost_spent_cents: f64,
+    /// Effective service speed of the main provider's last call (drives the TUI `fast` marker).
+    pub service_speed: zeph_config::ServiceSpeed,
     /// Cost per successful task in cents. `None` until at least one task completes.
     pub cost_cps_cents: Option<f64>,
     /// Number of successful tasks recorded today.

@@ -5,6 +5,7 @@ use zeph_db::{ActiveDialect, query, query_as, query_scalar, sql};
 
 use super::SqliteStore;
 use crate::error::MemoryError;
+use crate::types::ConversationId;
 
 /// A single persona fact row from the `persona_memory` table.
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -14,7 +15,7 @@ pub struct PersonaFactRow {
     pub content: String,
     pub confidence: f64,
     pub evidence_count: i32,
-    pub source_conversation_id: Option<i64>,
+    pub source_conversation_id: Option<ConversationId>,
     pub supersedes_id: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
@@ -37,7 +38,7 @@ impl SqliteStore {
         category: &str,
         content: &str,
         confidence: f64,
-        source_conversation_id: Option<i64>,
+        source_conversation_id: Option<ConversationId>,
         supersedes_id: Option<i64>,
     ) -> Result<i64, MemoryError> {
         // Guard against stale/invalid conversation IDs: if the referenced conversation
@@ -350,7 +351,13 @@ mod tests {
         let store = make_store().await;
         // Conversation ID 9999 does not exist — upsert must succeed and store NULL.
         let id = store
-            .upsert_persona_fact("preference", "I prefer Vim", 0.8, Some(9999), None)
+            .upsert_persona_fact(
+                "preference",
+                "I prefer Vim",
+                0.8,
+                Some(ConversationId(9999)),
+                None,
+            )
             .await
             .expect("upsert with invalid source_conversation_id");
         assert!(id > 0);
@@ -370,8 +377,7 @@ mod tests {
         let cid = store
             .create_conversation()
             .await
-            .expect("create_conversation")
-            .0;
+            .expect("create_conversation");
         let id = store
             .upsert_persona_fact("preference", "I prefer Emacs", 0.7, Some(cid), None)
             .await

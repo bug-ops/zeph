@@ -74,8 +74,21 @@ impl std::str::FromStr for MemoryTier {
 /// let id = ConversationId(42);
 /// assert_eq!(id.to_string(), "42");
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, sqlx::Type)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    sqlx::Type,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[sqlx(transparent)]
+#[serde(transparent)]
 pub struct ConversationId(pub i64);
 
 impl std::fmt::Display for ConversationId {
@@ -269,6 +282,108 @@ impl EdgeId {
 }
 
 impl std::fmt::Display for EdgeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Strongly typed wrapper for `graph_episodes.id` row IDs.
+///
+/// Keeps episode ids from being mixed with [`EntityId`], [`CommunityId`] or
+/// [`ConversationId`] at graph-store API boundaries.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_memory::EpisodeId;
+///
+/// let id = EpisodeId::new(3);
+/// assert_eq!(id.get(), 3);
+/// assert_eq!(id.to_string(), "3");
+/// ```
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    sqlx::Type,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[sqlx(transparent)]
+#[serde(transparent)]
+pub struct EpisodeId(pub(crate) i64);
+
+impl EpisodeId {
+    /// Wrap a raw `graph_episodes.id` value.
+    #[must_use]
+    pub const fn new(raw: i64) -> Self {
+        Self(raw)
+    }
+
+    /// The raw `graph_episodes.id` value.
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for EpisodeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Strongly typed wrapper for `graph_communities.id` row IDs.
+///
+/// Keeps community ids from being mixed with [`EntityId`] or [`EpisodeId`] at graph-store
+/// API boundaries.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_memory::CommunityId;
+///
+/// let id = CommunityId::new(5);
+/// assert_eq!(id.get(), 5);
+/// assert_eq!(id.to_string(), "5");
+/// ```
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    sqlx::Type,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[sqlx(transparent)]
+#[serde(transparent)]
+pub struct CommunityId(pub(crate) i64);
+
+impl CommunityId {
+    /// Wrap a raw `graph_communities.id` value.
+    #[must_use]
+    pub const fn new(raw: i64) -> Self {
+        Self(raw)
+    }
+
+    /// The raw `graph_communities.id` value.
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for CommunityId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }

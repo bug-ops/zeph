@@ -55,7 +55,7 @@ async fn goal_status(accounting: &GoalAccounting) -> Result<String, CommandError
             );
             Ok(format!(
                 "Active goal [{}]: {}\n  status: {}\n  turns: {}\n{}",
-                zeph_common::text::truncate_to_bytes_ref(&g.id, 8),
+                g.id.short(),
                 g.text,
                 g.status,
                 g.turns_used,
@@ -80,7 +80,7 @@ async fn goal_create(
     default_budget: Option<u64>,
     autonomous_enabled: bool,
     autonomous_max_turns: u32,
-) -> Result<(String, Option<(String, String, u32)>), CommandError> {
+) -> Result<(String, Option<(zeph_common::GoalId, String, u32)>), CommandError> {
     let rest = args.strip_prefix("create").unwrap_or("").trim();
 
     // Strip --auto / --turns before passing text to the budget parser.
@@ -117,7 +117,7 @@ async fn goal_create(
         Ok(g) => {
             let _ = accounting.refresh().await;
             let auto_start = if is_auto {
-                Some((g.id.clone(), g.text.clone(), max_turns))
+                Some((g.id, g.text.clone(), max_turns))
             } else {
                 None
             };
@@ -127,11 +127,7 @@ async fn goal_create(
                 ""
             };
             Ok((
-                format!(
-                    "Goal created [{}]: {}{auto_note}",
-                    zeph_common::text::truncate_to_bytes_ref(&g.id, 8),
-                    g.text
-                ),
+                format!("Goal created [{}]: {}{auto_note}", g.id.short(), g.text),
                 auto_start,
             ))
         }
@@ -155,10 +151,7 @@ async fn goal_pause(
             {
                 Ok(_) => {
                     let _ = accounting.refresh().await;
-                    Ok(format!(
-                        "Goal [{}] paused.",
-                        zeph_common::text::truncate_to_bytes_ref(&g.id, 8)
-                    ))
+                    Ok(format!("Goal [{}] paused.", g.id.short()))
                 }
                 Err(crate::goal::store::GoalError::StaleUpdate(_)) => {
                     let current = accounting.get_active().await.ok().flatten();
@@ -191,11 +184,7 @@ async fn goal_resume(
             {
                 Ok(_) => {
                     let _ = accounting.refresh().await;
-                    Ok(format!(
-                        "Goal [{}] resumed: {}",
-                        zeph_common::text::truncate_to_bytes_ref(&g.id, 8),
-                        g.text
-                    ))
+                    Ok(format!("Goal [{}] resumed: {}", g.id.short(), g.text))
                 }
                 Err(crate::goal::store::GoalError::StaleUpdate(_)) => {
                     Ok("Goal state changed concurrently — please retry.".to_owned())
@@ -219,10 +208,7 @@ async fn goal_complete(
             {
                 Ok(_) => {
                     let _ = accounting.refresh().await;
-                    Ok(format!(
-                        "Goal [{}] marked complete.",
-                        zeph_common::text::truncate_to_bytes_ref(&g.id, 8)
-                    ))
+                    Ok(format!("Goal [{}] marked complete.", g.id.short()))
                 }
                 Err(e) => Ok(format!("Complete failed: {e}")),
             }
@@ -248,10 +234,7 @@ async fn goal_clear(
             {
                 Ok(_) => {
                     let _ = accounting.refresh().await;
-                    Ok(format!(
-                        "Goal [{}] cleared.",
-                        zeph_common::text::truncate_to_bytes_ref(&g.id, 8)
-                    ))
+                    Ok(format!("Goal [{}] cleared.", g.id.short()))
                 }
                 Err(e) => Ok(format!("Clear failed: {e}")),
             }
@@ -272,7 +255,7 @@ async fn goal_list(store: &GoalStore) -> Result<String, CommandError> {
             format_args!(
                 "  {} [{}] {} — {} turns\n",
                 g.status.badge_symbol(),
-                zeph_common::text::truncate_to_bytes_ref(&g.id, 8),
+                g.id.short(),
                 g.text,
                 g.turns_used
             ),
@@ -447,7 +430,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn goal_list_truncates_a_multibyte_id_on_a_char_boundary() {
+    async fn goal_list_shows_the_short_goal_id() {
         let pool = zeph_db::DbConfig {
             url: ":memory:".to_owned(),
             pool_size: 1,
@@ -456,8 +439,7 @@ mod tests {
         .await
         .unwrap();
         zeph_db::run_migrations(&pool).await.unwrap();
-        // 11 bytes: byte 8 falls inside the fourth two-byte char.
-        let id = "a\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}";
+        let id = "abcdef12-0000-4000-8000-000000000000";
         let now = chrono::Utc::now().to_rfc3339();
         zeph_db::query(zeph_db::sql!(
             "INSERT INTO zeph_goals (id, text, status, token_budget, turns_used, tokens_used, \
@@ -473,6 +455,6 @@ mod tests {
         let out = goal_list(&crate::goal::GoalStore::new(std::sync::Arc::new(pool)))
             .await
             .unwrap();
-        assert!(out.contains("[a\u{e9}\u{e9}\u{e9}]"), "{out}");
+        assert!(out.contains("[abcdef12]"), "{out}");
     }
 }

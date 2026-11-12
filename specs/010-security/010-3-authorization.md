@@ -33,6 +33,7 @@ Zeph's authorization layer enforces what operations the agent is allowed to perf
 
 **Always:**
 - All tool execution checked against `PolicyEnforcer` deny/allow rules before execution
+- The agent-level pre-dispatch gates (pre-execution verifiers, exfiltration URL flagging, channel tool allowlist) apply to the main loop, the inline orchestration loop and the sub-agent loop alike; see [[044-subagent-lifecycle/spec]] section 22 (#7035)
 - Shell commands checked against the blocklist unconditionally — **before** `PermissionPolicy` evaluation
 - HTTP requests validated via `validate_url()` — private IP ranges blocked by default
 - Authorization failures logged to audit trail with full context

@@ -127,7 +127,29 @@ mod tests {
         assert!(!cfg.guest_mode);
         assert!(!cfg.bot_to_bot);
         assert_eq!(cfg.allowed_bots, [] as [String; 0]);
+        assert_eq!(cfg.allowed_user_ids, Vec::<TelegramUserId>::new());
+        assert_eq!(cfg.allowed_bot_ids, Vec::<TelegramUserId>::new());
         assert_eq!(cfg.max_bot_chain_depth, 1);
+    }
+
+    #[test]
+    fn telegram_config_parses_numeric_ids() {
+        let src = r"
+allowed_user_ids = [111, 222]
+allowed_bot_ids = [333]
+";
+        let cfg: TelegramConfig = toml::from_str(src).unwrap();
+        assert_eq!(
+            cfg.allowed_user_ids,
+            vec![TelegramUserId(111), TelegramUserId(222)]
+        );
+        assert_eq!(cfg.allowed_bot_ids, vec![TelegramUserId(333)]);
+    }
+
+    #[test]
+    fn telegram_config_rejects_string_user_id() {
+        let src = r#"allowed_user_ids = ["alice"]"#;
+        assert!(toml::from_str::<TelegramConfig>(src).is_err());
     }
 
     #[test]
@@ -388,12 +410,14 @@ max_bot_chain_depth = 5
     fn telegram_config_serialize_omits_token() {
         let cfg = TelegramConfig {
             token: Some("real-secret-value".into()),
+            allowed_user_ids: Vec::new(),
             allowed_users: Vec::new(),
             skills: ChannelSkillsConfig::default(),
             allowed_tools: None,
             stream_interval_ms: default_stream_interval_ms(),
             guest_mode: false,
             bot_to_bot: false,
+            allowed_bot_ids: Vec::new(),
             allowed_bots: Vec::new(),
             max_bot_chain_depth: default_max_bot_chain_depth(),
             expandable_blockquote_min_lines: default_expandable_blockquote_min_lines(),
@@ -535,6 +559,23 @@ fn default_expandable_blockquote_min_lines() -> u32 {
     10
 }
 
+/// Numeric Telegram user or bot id (`from.id`).
+///
+/// Unlike a username, the id is stable and cannot be claimed by another account.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_config::TelegramUserId;
+///
+/// let id: TelegramUserId = toml::from_str::<std::collections::HashMap<String, TelegramUserId>>("id = 42")
+///     .unwrap()["id"];
+/// assert_eq!(id, TelegramUserId(42));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct TelegramUserId(pub u64);
+
 /// Telegram channel configuration, nested under `[telegram]` in TOML.
 ///
 /// When present, Zeph connects to Telegram as a bot using the provided token.
@@ -544,11 +585,11 @@ fn default_expandable_blockquote_min_lines() -> u32 {
 ///
 /// ```toml
 /// [telegram]
-/// allowed_users = ["myusername"]
+/// allowed_user_ids = [123456789]
 /// stream_interval_ms = 3000
 /// guest_mode = true
 /// bot_to_bot = true
-/// allowed_bots = ["@my_bot"]
+/// allowed_bot_ids = [987654321]
 /// max_bot_chain_depth = 1
 /// expandable_blockquote_min_lines = 10
 /// ```
@@ -565,10 +606,17 @@ pub struct TelegramConfig {
     /// hand-edited `config.toml` still load.
     #[serde(skip_serializing)]
     pub token: Option<String>,
-    /// Telegram usernames allowed to interact with the bot.
+    /// Numeric Telegram user ids allowed to interact with the bot.
     ///
-    /// Must not be empty: the channel refuses to start (fail-closed) rather
-    /// than run open to any sender when unconfigured.
+    /// The stable, non-reassignable identity and the primary check. At least one of
+    /// `allowed_user_ids` or `allowed_users` must be non-empty: the channel refuses to
+    /// start (fail-closed) rather than run open to any sender when unconfigured.
+    #[serde(default)]
+    pub allowed_user_ids: Vec<TelegramUserId>,
+    /// Legacy Telegram usernames allowed to interact with the bot.
+    ///
+    /// Usernames are mutable and transferable, so a match here logs a warning; prefer
+    /// [`allowed_user_ids`](Self::allowed_user_ids).
     #[serde(default)]
     pub allowed_users: Vec<String>,
     /// Skill allowlist for this channel.
@@ -595,9 +643,16 @@ pub struct TelegramConfig {
     /// When `false` (default), messages where `from.is_bot = true` are silently dropped.
     #[serde(default)]
     pub bot_to_bot: bool,
-    /// Bot usernames allowed to interact when `bot_to_bot = true`.
+    /// Numeric Telegram ids of bots allowed to interact when `bot_to_bot = true`.
     ///
-    /// Empty list (default) allows all bots. Include the `@` prefix (e.g. `"@my_bot"`).
+    /// With `bot_to_bot = true` at least one of `allowed_bot_ids` or `allowed_bots` must be
+    /// non-empty: the channel refuses to start rather than admit any bot.
+    #[serde(default)]
+    pub allowed_bot_ids: Vec<TelegramUserId>,
+    /// Legacy bot usernames allowed when `bot_to_bot = true`; the `@` prefix is optional.
+    ///
+    /// Usernames are mutable, so a match logs a warning; prefer
+    /// [`allowed_bot_ids`](Self::allowed_bot_ids).
     #[serde(default)]
     pub allowed_bots: Vec<String>,
     /// Maximum reply chain depth before Zeph stops responding to bot messages.
@@ -625,12 +680,14 @@ impl std::fmt::Debug for TelegramConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TelegramConfig")
             .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
+            .field("allowed_user_ids", &self.allowed_user_ids)
             .field("allowed_users", &self.allowed_users)
             .field("skills", &self.skills)
             .field("allowed_tools", &self.allowed_tools)
             .field("stream_interval_ms", &self.stream_interval_ms)
             .field("guest_mode", &self.guest_mode)
             .field("bot_to_bot", &self.bot_to_bot)
+            .field("allowed_bot_ids", &self.allowed_bot_ids)
             .field("allowed_bots_count", &self.allowed_bots.len())
             .field("max_bot_chain_depth", &self.max_bot_chain_depth)
             .field(

@@ -208,7 +208,7 @@ impl NliSanitizer {
     }
 
     fn truncate_content(content: &str, max_chars: usize) -> &str {
-        zeph_common::text::truncate_to_bytes_ref(content, max_chars)
+        zeph_common::text::truncate_chars(content, max_chars)
     }
 
     fn build_nli_prompt(content: &str) -> String {
@@ -332,6 +332,16 @@ mod tests {
         assert!(
             std::str::from_utf8(result.as_bytes()).is_ok(),
             "must be valid UTF-8"
+        );
+    }
+
+    #[test]
+    fn truncate_content_counts_chars_not_bytes() {
+        let text = "ж".repeat(2000);
+        assert_eq!(NliSanitizer::truncate_content(&text, 2048), text);
+        assert_eq!(
+            NliSanitizer::truncate_content(&text, 1500).chars().count(),
+            1500
         );
     }
 

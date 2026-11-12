@@ -10857,6 +10857,7 @@ dependencies = [
  "crossterm",
  "futures",
  "hmac 0.13.0",
+ "parking_lot 0.13.0",
  "pulldown-cmark",
  "reqwest 0.13.5",
  "serde",
@@ -10885,6 +10886,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "zeph-common",
  "zeph-config",
 ]
 
@@ -10900,6 +10902,7 @@ dependencies = [
  "parking_lot 0.13.0",
  "proptest",
  "regex",
+ "reqwest 0.13.5",
  "rustix",
  "schemars 1.2.3",
  "serde",

@@ -13,6 +13,7 @@ use std::time::Instant;
 use parking_lot::Mutex;
 use tokio::time::{Duration, Instant as TokioInstant, Interval};
 use tokio_util::sync::CancellationToken;
+use zeph_common::GoalId;
 
 pub use zeph_config::autonomous::AutonomousState;
 
@@ -34,7 +35,7 @@ pub struct SupervisorVerdict {
 /// At most one instance exists at a time, held inside [`AutonomousDriver::session`].
 pub struct AutonomousSession {
     /// UUID of the [`crate::goal::Goal`] being executed.
-    pub goal_id: String,
+    pub goal_id: GoalId,
     /// Cached goal text used for synthetic message injection.
     pub goal_text: String,
     /// Current FSM state.
@@ -60,9 +61,9 @@ pub struct AutonomousSession {
 impl AutonomousSession {
     /// Create a new session in [`AutonomousState::Running`].
     #[must_use]
-    pub fn new(goal_id: impl Into<String>, goal_text: impl Into<String>, max_turns: u32) -> Self {
+    pub fn new(goal_id: GoalId, goal_text: impl Into<String>, max_turns: u32) -> Self {
         Self {
-            goal_id: goal_id.into(),
+            goal_id,
             goal_text: goal_text.into(),
             state: AutonomousState::Running,
             turns_executed: 0,
@@ -117,7 +118,7 @@ pub struct AutonomousDriver {
     /// directly (borrow conflict with `&mut Agent`). Instead it writes
     /// `(goal_id, goal_text, max_turns)` here. The main agent loop calls
     /// `flush_pending_start()` after each command handler returns to actually start the session.
-    pub pending_start_arc: Arc<Mutex<Option<(String, String, u32)>>>,
+    pub pending_start_arc: Arc<Mutex<Option<(GoalId, String, u32)>>>,
 }
 
 impl AutonomousDriver {
@@ -150,10 +151,10 @@ impl AutonomousDriver {
     ///
     /// Returns `None` when no pending start was queued.
     #[must_use]
-    pub fn flush_pending_start(&mut self) -> Option<(Option<String>, String)> {
+    pub fn flush_pending_start(&mut self) -> Option<(Option<GoalId>, GoalId)> {
         let pending = self.pending_start_arc.lock().take()?;
         let (goal_id, goal_text, max_turns) = pending;
-        let new_id = goal_id.clone();
+        let new_id = goal_id;
         let cancelled = self.start_session(goal_id, goal_text, max_turns);
         Some((cancelled, new_id))
     }
@@ -187,10 +188,10 @@ impl AutonomousDriver {
     /// notify the user.
     pub fn start_session(
         &mut self,
-        goal_id: impl Into<String>,
+        goal_id: GoalId,
         goal_text: impl Into<String>,
         max_turns: u32,
-    ) -> Option<String> {
+    ) -> Option<GoalId> {
         let prev = self.session.take();
         let cancelled_id = prev.map(|s| {
             s.cancel.cancel();
@@ -203,11 +204,11 @@ impl AutonomousDriver {
     /// Abort the current session (if any), setting state to [`AutonomousState::Aborted`].
     ///
     /// Returns the goal ID that was aborted, or `None` if no session was active.
-    pub fn abort(&mut self) -> Option<String> {
+    pub fn abort(&mut self) -> Option<GoalId> {
         let s = self.session.as_mut()?;
         s.cancel.cancel();
         s.state = AutonomousState::Aborted;
-        let id = s.goal_id.clone();
+        let id = s.goal_id;
         self.session = None;
         Some(id)
     }
@@ -217,9 +218,13 @@ impl AutonomousDriver {
 mod tests {
     use super::*;
 
+    fn gid() -> GoalId {
+        GoalId::new_v4()
+    }
+
     #[test]
     fn initial_state_is_running() {
-        let s = AutonomousSession::new("id1", "do something", 10);
+        let s = AutonomousSession::new(gid(), "do something", 10);
         assert_eq!(s.state, AutonomousState::Running);
         assert_eq!(s.turns_executed, 0);
         assert!(!s.is_terminal());
@@ -233,7 +238,7 @@ mod tests {
             AutonomousState::Aborted,
             AutonomousState::Failed,
         ] {
-            let mut s = AutonomousSession::new("id", "text", 5);
+            let mut s = AutonomousSession::new(gid(), "text", 5);
             s.state = terminal;
             assert!(s.is_terminal(), "{terminal} should be terminal");
         }
@@ -242,7 +247,7 @@ mod tests {
     #[test]
     fn running_and_verifying_are_not_terminal() {
         for non_terminal in [AutonomousState::Running, AutonomousState::Verifying] {
-            let mut s = AutonomousSession::new("id", "text", 5);
+            let mut s = AutonomousSession::new(gid(), "text", 5);
             s.state = non_terminal;
             assert!(!s.is_terminal(), "{non_terminal} should not be terminal");
         }
@@ -253,7 +258,7 @@ mod tests {
         let mut driver = AutonomousDriver::new(Duration::from_millis(100));
         assert!(!driver.should_tick(), "no session → no tick");
 
-        driver.start_session("id", "text", 5);
+        driver.start_session(gid(), "text", 5);
         assert!(driver.should_tick(), "Running session → tick");
 
         if let Some(ref mut s) = driver.session {
@@ -270,17 +275,19 @@ mod tests {
     #[test]
     fn start_session_cancels_previous() {
         let mut driver = AutonomousDriver::new(Duration::from_millis(100));
-        driver.start_session("id1", "first", 10);
+        let first = gid();
+        driver.start_session(first, "first", 10);
         let prev_cancel = driver.session.as_ref().unwrap().cancel.clone();
         assert!(!prev_cancel.is_cancelled());
 
-        let cancelled = driver.start_session("id2", "second", 5);
-        assert_eq!(cancelled.as_deref(), Some("id1"));
+        let second = gid();
+        let cancelled = driver.start_session(second, "second", 5);
+        assert_eq!(cancelled, Some(first));
         assert!(
             prev_cancel.is_cancelled(),
             "previous token must be cancelled"
         );
-        assert_eq!(driver.session.as_ref().unwrap().goal_id, "id2");
+        assert_eq!(driver.session.as_ref().unwrap().goal_id, second);
     }
 
     #[test]
@@ -288,15 +295,15 @@ mod tests {
         let mut driver = AutonomousDriver::new(Duration::from_millis(100));
         assert_eq!(driver.abort(), None);
 
-        driver.start_session("id3", "text", 5);
-        let id = driver.abort();
-        assert_eq!(id.as_deref(), Some("id3"));
+        let id3 = gid();
+        driver.start_session(id3, "text", 5);
+        assert_eq!(driver.abort(), Some(id3));
         assert!(driver.session.is_none());
     }
 
     #[test]
     fn stuck_detection_logic() {
-        let mut s = AutonomousSession::new("id", "text", 10);
+        let mut s = AutonomousSession::new(gid(), "text", 10);
         assert_eq!(s.stuck_count, 0);
 
         // Simulate two stuck turns, not yet at limit.
@@ -311,7 +318,7 @@ mod tests {
 
     #[test]
     fn supervisor_fail_count_resets_on_success() {
-        let mut s = AutonomousSession::new("id", "text", 10);
+        let mut s = AutonomousSession::new(gid(), "text", 10);
         s.supervisor_fail_count = 2;
         // Simulate a successful verification call resetting the counter.
         s.supervisor_fail_count = 0;
@@ -339,7 +346,7 @@ mod tests {
     #[test]
     fn no_cancelled_id_on_first_start() {
         let mut driver = AutonomousDriver::new(Duration::from_millis(100));
-        let prev = driver.start_session("id1", "text", 5);
+        let prev = driver.start_session(gid(), "text", 5);
         assert!(prev.is_none(), "no prior session → no cancelled id");
     }
 }

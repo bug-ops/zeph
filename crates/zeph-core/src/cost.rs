@@ -7,6 +7,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use thiserror::Error;
+use zeph_config::ServiceSpeed;
 use zeph_llm::provider::AuxiliaryUsage;
 
 #[derive(Debug, Error)]
@@ -60,7 +61,9 @@ struct CostState {
 
 pub struct CostTracker {
     pricing: HashMap<String, ModelPricing>,
+    fast_pricing: HashMap<String, ModelPricing>,
     unpriced_models_warned: Mutex<HashSet<String>>,
+    fast_unpriced_warned: Mutex<HashSet<String>>,
     state: Arc<Mutex<CostState>>,
     max_daily_cents: f64,
     enabled: bool,
@@ -149,6 +152,15 @@ fn default_pricing() -> HashMap<String, ModelPricing> {
         "claude-fable-5-2".into(),
         claude_pricing_with_cache_read(0.8, 4.0, 0.025),
     );
+    m.insert("claude-mythos-5".into(), claude_pricing(1.0, 5.0));
+    m.insert(
+        "claude-mythos-5-1".into(),
+        claude_pricing_with_cache_read(1.0, 5.0, 0.025),
+    );
+    m.insert(
+        "claude-mythos-5-2".into(),
+        claude_pricing_with_cache_read(0.8, 4.0, 0.025),
+    );
     // OpenAI
     m.insert("gpt-4o".into(), openai_pricing(0.25, 1.0));
     m.insert("gpt-4o-mini".into(), openai_pricing(0.015, 0.06));
@@ -156,6 +168,24 @@ fn default_pricing() -> HashMap<String, ModelPricing> {
     m.insert("gpt-5".into(), openai_pricing(0.125, 1.0));
     // GPT-5 mini ($0.25/$2 per 1M tokens)
     m.insert("gpt-5-mini".into(), openai_pricing(0.025, 0.2));
+    m
+}
+
+/// Fast-mode price rows: twice the standard row of the same model; cache multipliers stack.
+fn default_fast_pricing() -> HashMap<String, ModelPricing> {
+    let mut m = HashMap::new();
+    m.insert(
+        "claude-opus-5-5".into(),
+        claude_pricing_with_cache_read(0.8, 4.0, 0.05),
+    );
+    m.insert(
+        "claude-fable-5-2".into(),
+        claude_pricing_with_cache_read(1.6, 8.0, 0.025),
+    );
+    m.insert(
+        "claude-mythos-5-2".into(),
+        claude_pricing_with_cache_read(1.6, 8.0, 0.025),
+    );
     m
 }
 
@@ -174,7 +204,9 @@ impl CostTracker {
     pub fn new(enabled: bool, max_daily_cents: f64) -> Self {
         Self {
             pricing: default_pricing(),
+            fast_pricing: default_fast_pricing(),
             unpriced_models_warned: Mutex::new(HashSet::new()),
+            fast_unpriced_warned: Mutex::new(HashSet::new()),
             state: Arc::new(Mutex::new(CostState {
                 spent_cents: 0.0,
                 day: current_day(),
@@ -194,10 +226,23 @@ impl CostTracker {
 
     /// Resolves `model` to its pricing entry, falling back to the id without a `-YYYYMMDD`
     /// snapshot suffix.
-    fn pricing_for(&self, model: &str) -> Option<&ModelPricing> {
-        self.pricing
+    fn pricing_for(&self, model: &str, speed: ServiceSpeed) -> Option<&ModelPricing> {
+        let table = match speed {
+            ServiceSpeed::Fast => &self.fast_pricing,
+            ServiceSpeed::Standard => &self.pricing,
+        };
+        let found = table
             .get(model)
-            .or_else(|| self.pricing.get(strip_date_suffix(model)))
+            .or_else(|| table.get(strip_date_suffix(model)));
+        if found.is_none() && speed == ServiceSpeed::Fast {
+            let mut warned = self.fast_unpriced_warned.lock();
+            if !warned.contains(model) {
+                warned.insert(model.to_owned());
+                tracing::warn!(model, "no fast-mode price row; billing at standard price");
+            }
+            return self.pricing_for(model, ServiceSpeed::Standard);
+        }
+        found
     }
 
     /// Compute the cost in cents for a single LLM call's token counts, without recording it.
@@ -216,8 +261,9 @@ impl CostTracker {
         cache_read_tokens: u64,
         cache_write_tokens: u64,
         output_tokens: u64,
+        speed: ServiceSpeed,
     ) -> f64 {
-        let Some(pricing) = self.pricing_for(model) else {
+        let Some(pricing) = self.pricing_for(model, speed) else {
             return 0.0;
         };
         #[allow(clippy::cast_precision_loss)]
@@ -231,13 +277,19 @@ impl CostTracker {
 
     /// Cents billed for usage outside the top-level request counters (see [`AuxiliaryUsage`]).
     #[must_use]
-    pub fn price_of_auxiliary(&self, model: &str, usage: AuxiliaryUsage) -> f64 {
+    pub fn price_of_auxiliary(
+        &self,
+        model: &str,
+        usage: AuxiliaryUsage,
+        speed: ServiceSpeed,
+    ) -> f64 {
         self.price_of(
             model,
             usage.input,
             usage.cache_read,
             usage.cache_creation,
             usage.output,
+            speed,
         )
     }
 
@@ -252,6 +304,7 @@ impl CostTracker {
         provider_kind: &str,
         model: &str,
         usage: AuxiliaryUsage,
+        speed: ServiceSpeed,
     ) {
         self.add_usage(
             provider_name,
@@ -263,6 +316,7 @@ impl CostTracker {
                 cache_write: usage.cache_creation,
                 output: usage.output,
             },
+            speed,
             0,
         );
     }
@@ -286,6 +340,7 @@ impl CostTracker {
         cache_read_tokens: u64,
         cache_write_tokens: u64,
         output_tokens: u64,
+        speed: ServiceSpeed,
     ) {
         self.add_usage(
             provider_name,
@@ -297,6 +352,7 @@ impl CostTracker {
                 cache_write: cache_write_tokens,
                 output: output_tokens,
             },
+            speed,
             1,
         );
     }
@@ -308,6 +364,7 @@ impl CostTracker {
         provider_kind: &str,
         model: &str,
         tokens: UsageTokens,
+        speed: ServiceSpeed,
         requests: u64,
     ) {
         let UsageTokens {
@@ -319,7 +376,7 @@ impl CostTracker {
         if !self.enabled {
             return;
         }
-        if self.pricing_for(model).is_none() {
+        if self.pricing_for(model, ServiceSpeed::Standard).is_none() {
             let is_local = matches!(provider_kind, "ollama" | "candle" | "local");
             if is_local {
                 tracing::debug!(model, "local model; cost recorded as zero");
@@ -336,6 +393,7 @@ impl CostTracker {
             cache_read_tokens,
             cache_write_tokens,
             output_tokens,
+            speed,
         );
 
         let mut state = self.state.lock();
@@ -434,7 +492,16 @@ mod tests {
     use super::*;
 
     fn record(tracker: &CostTracker, provider: &str, model: &str, input: u64, output: u64) {
-        tracker.record_usage(provider, "cloud", model, input, 0, 0, output);
+        tracker.record_usage(
+            provider,
+            "cloud",
+            model,
+            input,
+            0,
+            0,
+            output,
+            ServiceSpeed::Standard,
+        );
     }
 
     #[test]
@@ -508,6 +575,7 @@ mod tests {
             0,
             0,
             5000,
+            ServiceSpeed::Standard,
         );
         assert!((tracker.current_spend() - 0.0).abs() < 0.001);
     }
@@ -524,6 +592,7 @@ mod tests {
             0,
             0,
             5000,
+            ServiceSpeed::Standard,
         );
         assert!((tracker.current_spend() - 0.0).abs() < 0.001);
     }
@@ -542,7 +611,7 @@ mod tests {
     #[test]
     fn price_of_matches_record_usage_for_known_model() {
         let tracker = CostTracker::new(true, 1000.0);
-        let expected = tracker.price_of("gpt-4o", 1000, 0, 0, 1000);
+        let expected = tracker.price_of("gpt-4o", 1000, 0, 0, 1000, ServiceSpeed::Standard);
         record(&tracker, "openai", "gpt-4o", 1000, 1000);
         assert!(
             (tracker.current_spend() - expected).abs() < 1e-9,
@@ -554,7 +623,14 @@ mod tests {
     #[test]
     fn price_of_zero_for_unpriced_model_matches_record_usage_fallback() {
         let tracker = CostTracker::new(true, 1000.0);
-        let price = tracker.price_of("totally-unknown-model", 5000, 0, 0, 5000);
+        let price = tracker.price_of(
+            "totally-unknown-model",
+            5000,
+            0,
+            0,
+            5000,
+            ServiceSpeed::Standard,
+        );
         assert!(
             (price - 0.0).abs() < 1e-9,
             "unpriced model must price at zero"
@@ -569,7 +645,7 @@ mod tests {
         let tracker = CostTracker::new(true, 1000.0);
         // Mirrors cache_write_cost_included_in_total: claude-opus-4-6 cache_write = 125% of
         // prompt price (0.5 cents/1k) -> 1000 tokens = 0.625 cents.
-        let price = tracker.price_of("claude-opus-4-6", 0, 0, 1000, 0);
+        let price = tracker.price_of("claude-opus-4-6", 0, 0, 1000, 0, ServiceSpeed::Standard);
         assert!((price - 0.625).abs() < 0.001);
     }
 
@@ -669,6 +745,7 @@ mod tests {
             1000,
             0,
             0,
+            ServiceSpeed::Standard,
         );
         let spend = tracker.current_spend();
         assert!(spend > 0.0, "cache read should contribute to cost");
@@ -680,14 +757,25 @@ mod tests {
         // Claude pricing: cache_write = 125% of prompt price
         // claude-opus-4-6: prompt = 0.5 cents/1k
         // 1000 cache_write tokens = (0.5 * 1.25 * 1000) / 1000 = 0.625 cents
-        tracker.record_usage("claude-provider", "cloud", "claude-opus-4-6", 0, 0, 1000, 0);
+        tracker.record_usage(
+            "claude-provider",
+            "cloud",
+            "claude-opus-4-6",
+            0,
+            0,
+            1000,
+            0,
+            ServiceSpeed::Standard,
+        );
         let cost = tracker.current_spend();
         assert!((cost - 0.625).abs() < 0.001);
     }
 
     #[test]
     fn opus_4_8_prices_like_retained_opus_4_6() {
-        let price = |model: &str| CostTracker::new(true, 1000.0).price_of(model, 1000, 0, 0, 1000);
+        let price = |model: &str| {
+            CostTracker::new(true, 1000.0).price_of(model, 1000, 0, 0, 1000, ServiceSpeed::Standard)
+        };
         assert!((price("claude-opus-4-8") - price("claude-opus-4-6")).abs() < f64::EPSILON);
         assert!(price("claude-opus-4-8") > 0.0);
     }
@@ -705,10 +793,13 @@ mod tests {
             ("claude-fable-5", 10.0, 50.0),
             ("claude-fable-5-1", 10.0, 50.0),
             ("claude-fable-5-2", 8.0, 40.0),
+            ("claude-mythos-5", 10.0, 50.0),
+            ("claude-mythos-5-1", 10.0, 50.0),
+            ("claude-mythos-5-2", 8.0, 40.0),
         ];
         for (model, input, output) in rows {
             let expected = (input + output) / 10.0;
-            let got = tracker.price_of(model, 1000, 0, 0, 1000);
+            let got = tracker.price_of(model, 1000, 0, 0, 1000, ServiceSpeed::Standard);
             assert!(
                 (got - expected).abs() < 1e-9,
                 "{model}: {got} != {expected}"
@@ -719,26 +810,51 @@ mod tests {
     #[test]
     fn cache_read_ratio_is_model_specific() {
         let tracker = CostTracker::new(true, 1000.0);
-        let read = |model: &str| tracker.price_of(model, 0, 1000, 0, 0);
+        let read = |model: &str| tracker.price_of(model, 0, 1000, 0, 0, ServiceSpeed::Standard);
         assert!((read("claude-sonnet-5-5") - 0.02).abs() < 1e-9);
         assert!((read("claude-opus-5-5") - 0.02).abs() < 1e-9);
         assert!((read("claude-fable-5-1") - 0.025).abs() < 1e-9);
         assert!((read("claude-fable-5-2") - 0.02).abs() < 1e-9);
+        assert!((read("claude-mythos-5") - 0.1).abs() < 1e-9);
+        assert!((read("claude-mythos-5-1") - 0.025).abs() < 1e-9);
+        assert!((read("claude-mythos-5-2") - 0.02).abs() < 1e-9);
     }
 
     #[test]
     fn dated_snapshot_id_resolves_to_base_entry() {
         let tracker = CostTracker::new(true, 1000.0);
         assert!(
-            (tracker.price_of("claude-sonnet-5-5-20261001", 1000, 0, 0, 0)
-                - tracker.price_of("claude-sonnet-5-5", 1000, 0, 0, 0))
+            (tracker.price_of(
+                "claude-sonnet-5-5-20261001",
+                1000,
+                0,
+                0,
+                0,
+                ServiceSpeed::Standard
+            ) - tracker.price_of("claude-sonnet-5-5", 1000, 0, 0, 0, ServiceSpeed::Standard))
             .abs()
                 < f64::EPSILON
         );
-        assert!(tracker.price_of("claude-sonnet-5-5-20261001", 1000, 0, 0, 0) > 0.0);
+        assert!(
+            tracker.price_of(
+                "claude-sonnet-5-5-20261001",
+                1000,
+                0,
+                0,
+                0,
+                ServiceSpeed::Standard
+            ) > 0.0
+        );
         assert!(
             tracker
-                .price_of("claude-unknown-20261001", 1000, 0, 0, 0)
+                .price_of(
+                    "claude-unknown-20261001",
+                    1000,
+                    0,
+                    0,
+                    0,
+                    ServiceSpeed::Standard
+                )
                 .abs()
                 < 1e-9
         );
@@ -748,9 +864,27 @@ mod tests {
     fn unknown_model_warns_once_per_model_id() {
         let tracker = CostTracker::new(true, 1000.0);
         for _ in 0..3 {
-            tracker.record_usage("p", "cloud", "mystery-model", 10, 0, 0, 10);
+            tracker.record_usage(
+                "p",
+                "cloud",
+                "mystery-model",
+                10,
+                0,
+                0,
+                10,
+                ServiceSpeed::Standard,
+            );
         }
-        tracker.record_usage("p", "cloud", "other-mystery", 10, 0, 0, 10);
+        tracker.record_usage(
+            "p",
+            "cloud",
+            "other-mystery",
+            10,
+            0,
+            0,
+            10,
+            ServiceSpeed::Standard,
+        );
         let warned = tracker.unpriced_models_warned.lock();
         assert_eq!(warned.len(), 2);
     }
@@ -758,7 +892,16 @@ mod tests {
     #[test]
     fn auxiliary_usage_adds_cost_without_counting_a_request() {
         let tracker = CostTracker::new(true, 1000.0);
-        tracker.record_usage("claude", "cloud", "claude-sonnet-5-5", 1000, 0, 0, 1000);
+        tracker.record_usage(
+            "claude",
+            "cloud",
+            "claude-sonnet-5-5",
+            1000,
+            0,
+            0,
+            1000,
+            ServiceSpeed::Standard,
+        );
         let base = tracker.current_spend();
         let aux = AuxiliaryUsage {
             input: 2000,
@@ -766,8 +909,14 @@ mod tests {
             cache_creation: 0,
             cache_read: 0,
         };
-        tracker.record_auxiliary_usage("claude", "cloud", "claude-sonnet-5-5", aux);
-        let expected = tracker.price_of_auxiliary("claude-sonnet-5-5", aux);
+        tracker.record_auxiliary_usage(
+            "claude",
+            "cloud",
+            "claude-sonnet-5-5",
+            aux,
+            ServiceSpeed::Standard,
+        );
+        let expected = tracker.price_of_auxiliary("claude-sonnet-5-5", aux, ServiceSpeed::Standard);
         assert!(expected > 0.0);
         assert!((tracker.current_spend() - base - expected).abs() < 1e-9);
         let breakdown = tracker.provider_breakdown();
@@ -787,6 +936,7 @@ mod tests {
             0,
             0,
             1000,
+            ServiceSpeed::Standard,
         );
         assert!(tracker.provider_breakdown().is_empty());
     }
@@ -826,5 +976,80 @@ mod tests {
         assert!(tracker.check_budget().is_ok());
         assert_eq!(tracker.successful_tasks(), 0);
         assert!(tracker.cps().is_none());
+    }
+    #[test]
+    fn dated_mythos_snapshot_prices_like_base() {
+        let tracker = CostTracker::new(true, 1000.0);
+        let std = ServiceSpeed::Standard;
+        assert!(
+            (tracker.price_of("claude-mythos-5-2-20261109", 1000, 0, 0, 1000, std)
+                - tracker.price_of("claude-mythos-5-2", 1000, 0, 0, 1000, std))
+            .abs()
+                < f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn fast_mode_prices_at_double_standard_with_stacked_cache() {
+        let tracker = CostTracker::new(true, 1000.0);
+        for model in ["claude-opus-5-5", "claude-fable-5-2", "claude-mythos-5-2"] {
+            for (input, cache_read, cache_write, output) in [
+                (1000, 0, 0, 0),
+                (0, 1000, 0, 0),
+                (0, 0, 1000, 0),
+                (0, 0, 0, 1000),
+            ] {
+                let std = tracker.price_of(
+                    model,
+                    input,
+                    cache_read,
+                    cache_write,
+                    output,
+                    ServiceSpeed::Standard,
+                );
+                let fast = tracker.price_of(
+                    model,
+                    input,
+                    cache_read,
+                    cache_write,
+                    output,
+                    ServiceSpeed::Fast,
+                );
+                assert!((fast - 2.0 * std).abs() < 1e-9, "{model}: {fast} vs {std}");
+            }
+        }
+    }
+
+    #[test]
+    fn fast_mode_without_row_falls_back_to_standard_price() {
+        let tracker = CostTracker::new(true, 1000.0);
+        let std = tracker.price_of(
+            "claude-sonnet-5-5",
+            1000,
+            0,
+            0,
+            1000,
+            ServiceSpeed::Standard,
+        );
+        let fast = tracker.price_of("claude-sonnet-5-5", 1000, 0, 0, 1000, ServiceSpeed::Fast);
+        assert!((fast - std).abs() < f64::EPSILON);
+        assert!(fast > 0.0);
+    }
+
+    #[test]
+    fn record_usage_applies_fast_price() {
+        let tracker = CostTracker::new(true, 1000.0);
+        tracker.record_usage(
+            "p",
+            "cloud",
+            "claude-fable-5-2",
+            1000,
+            0,
+            0,
+            1000,
+            ServiceSpeed::Fast,
+        );
+        // (1.6 + 8.0) cents
+        assert!((tracker.current_spend() - 9.6).abs() < 1e-9);
     }
 }

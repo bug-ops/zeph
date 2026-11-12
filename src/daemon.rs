@@ -477,6 +477,7 @@ where
     )
     .with_embedding_provider(deps.embedding_provider.clone())
     .with_provider_pool(config.llm.providers.clone(), deps.provider_config_snapshot)
+    .with_routing(config.memory.store_routing.clone())
     .with_safe_mode(config.cli.safe_mode)
     .with_clock(deps.clock)
     .with_allowed_paths(
@@ -857,7 +858,7 @@ pub(crate) async fn run_daemon(
     let overflow_executor = zeph_core::overflow_tools::OverflowToolExecutor::new(
         std::sync::Arc::new(memory.sqlite().clone()),
     )
-    .with_conversation(conversation_id.0);
+    .with_conversation(conversation_id);
     let (skill_loader_executor, skill_invoke_executor, trust_snapshot, turn_trust_floor) =
         agent_setup::build_skill_executors(&registry);
     // Hoisted out of the composite-executor block below (rather than resolved twice) so it can

@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use tracing::error;
+use zeph_common::GoalId;
 
 use super::autonomous::{AutonomousState, SupervisorVerdict};
 
@@ -22,8 +23,8 @@ use super::autonomous::{AutonomousState, SupervisorVerdict};
 /// [`AutonomousRegistry::list`].
 #[derive(Debug, Clone)]
 pub struct SessionSnapshot {
-    /// Goal ID (UUID string).
-    pub goal_id: String,
+    /// Goal ID.
+    pub goal_id: GoalId,
     /// First 80 characters of goal text (for display).
     pub goal_text_short: String,
     /// Current session state.
@@ -54,7 +55,7 @@ pub struct SessionSnapshot {
 /// ```
 #[derive(Clone, Default)]
 pub struct AutonomousRegistry {
-    inner: Arc<Mutex<HashMap<String, RegistryEntry>>>,
+    inner: Arc<Mutex<HashMap<GoalId, RegistryEntry>>>,
 }
 
 struct RegistryEntry {
@@ -80,7 +81,7 @@ impl AutonomousRegistry {
     #[allow(clippy::too_many_arguments)]
     pub fn upsert(
         &self,
-        goal_id: impl Into<String>,
+        goal_id: GoalId,
         goal_text: impl Into<String>,
         state: AutonomousState,
         turns_executed: u32,
@@ -88,7 +89,6 @@ impl AutonomousRegistry {
         started_at: Instant,
         last_verdict: Option<SupervisorVerdict>,
     ) {
-        let goal_id = goal_id.into();
         let entry = RegistryEntry {
             goal_text: goal_text.into(),
             state,
@@ -105,7 +105,7 @@ impl AutonomousRegistry {
     }
 
     /// Remove a session entry.
-    pub fn remove(&self, goal_id: &str) {
+    pub fn remove(&self, goal_id: &GoalId) {
         let mut map = self.inner.lock().unwrap_or_else(|e| {
             error!("AutonomousRegistry::remove: mutex poisoned, recovering guard");
             e.into_inner()
@@ -133,7 +133,7 @@ impl AutonomousRegistry {
                     e.goal_text.clone()
                 };
                 SessionSnapshot {
-                    goal_id: id.clone(),
+                    goal_id: *id,
                     goal_text_short: short,
                     state: e.state,
                     turns_executed: e.turns_executed,
@@ -150,6 +150,10 @@ impl AutonomousRegistry {
 mod tests {
     use super::*;
 
+    fn gid() -> GoalId {
+        GoalId::new_v4()
+    }
+
     #[test]
     fn empty_by_default() {
         let reg = AutonomousRegistry::new();
@@ -159,8 +163,9 @@ mod tests {
     #[test]
     fn upsert_and_list() {
         let reg = AutonomousRegistry::new();
+        let id1 = gid();
         reg.upsert(
-            "id1",
+            id1,
             "do something useful",
             AutonomousState::Running,
             3,
@@ -170,7 +175,7 @@ mod tests {
         );
         let list = reg.list();
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].goal_id, "id1");
+        assert_eq!(list[0].goal_id, id1);
         assert_eq!(list[0].state, AutonomousState::Running);
         assert_eq!(list[0].turns_executed, 3);
     }
@@ -178,8 +183,9 @@ mod tests {
     #[test]
     fn remove_clears_entry() {
         let reg = AutonomousRegistry::new();
+        let id2 = gid();
         reg.upsert(
-            "id2",
+            id2,
             "text",
             AutonomousState::Running,
             0,
@@ -188,7 +194,7 @@ mod tests {
             None,
         );
         assert_eq!(reg.list().len(), 1);
-        reg.remove("id2");
+        reg.remove(&id2);
         assert!(reg.list().is_empty());
     }
 
@@ -197,7 +203,7 @@ mod tests {
         let reg = AutonomousRegistry::new();
         let long_text = "a".repeat(200);
         reg.upsert(
-            "id3",
+            gid(),
             long_text,
             AutonomousState::Running,
             0,
@@ -215,8 +221,9 @@ mod tests {
     #[test]
     fn upsert_overwrites_existing_entry() {
         let reg = AutonomousRegistry::new();
+        let id5 = gid();
         reg.upsert(
-            "id5",
+            id5,
             "original text",
             AutonomousState::Running,
             1,
@@ -225,7 +232,7 @@ mod tests {
             None,
         );
         reg.upsert(
-            "id5",
+            id5,
             "updated text",
             AutonomousState::Verifying,
             5,
@@ -242,7 +249,7 @@ mod tests {
     #[test]
     fn remove_nonexistent_is_noop() {
         let reg = AutonomousRegistry::new();
-        reg.remove("does-not-exist"); // must not panic
+        reg.remove(&gid()); // must not panic
         assert!(reg.list().is_empty());
     }
 
@@ -251,7 +258,7 @@ mod tests {
         let reg = AutonomousRegistry::new();
         let reg2 = reg.clone();
         reg.upsert(
-            "id4",
+            gid(),
             "shared",
             AutonomousState::Running,
             0,

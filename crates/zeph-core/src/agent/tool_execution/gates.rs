@@ -197,7 +197,7 @@ impl<C: Channel> Agent<C> {
                 continue;
             }
             let args_value = serde_json::Value::Object(call.params.clone());
-            for verifier in &self.tool_orchestrator.pre_execution_verifiers {
+            for verifier in self.tool_orchestrator.pre_execution_verifiers.iter() {
                 match verifier.verify(call.tool_id.as_str(), &args_value) {
                     zeph_tools::VerificationResult::Block { reason } => {
                         tracing::warn!(

@@ -7,6 +7,7 @@ use zeph_db::sql;
 
 use crate::error::MemoryError;
 use crate::store::SqliteStore;
+use crate::types::ConversationId;
 
 /// `now() - N seconds` expression, dialect-selected at compile time.
 ///
@@ -29,7 +30,7 @@ impl SqliteStore {
     /// Returns an error if the database insert fails.
     pub async fn save_overflow(
         &self,
-        conversation_id: i64,
+        conversation_id: ConversationId,
         content: &[u8],
     ) -> Result<String, MemoryError> {
         let id = Uuid::new_v4().to_string();
@@ -57,7 +58,7 @@ impl SqliteStore {
     /// Returns an error if the database insert fails.
     pub async fn save_archive(
         &self,
-        conversation_id: i64,
+        conversation_id: ConversationId,
         content: &[u8],
     ) -> Result<String, MemoryError> {
         let id = Uuid::new_v4().to_string();
@@ -84,7 +85,7 @@ impl SqliteStore {
     pub async fn load_overflow(
         &self,
         id: &str,
-        conversation_id: i64,
+        conversation_id: ConversationId,
     ) -> Result<Option<Vec<u8>>, MemoryError> {
         let row: Option<(Vec<u8>,)> = zeph_db::query_as(sql!(
             "SELECT content FROM tool_overflow WHERE id = ? AND conversation_id = ?"
@@ -125,7 +126,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns an error if the database query fails.
-    pub async fn overflow_size(&self, conversation_id: i64) -> Result<u64, MemoryError> {
+    pub async fn overflow_size(&self, conversation_id: ConversationId) -> Result<u64, MemoryError> {
         let total: Option<i64> = zeph_db::query_scalar(sql!(
             "SELECT COALESCE(SUM(byte_size), 0) FROM tool_overflow WHERE conversation_id = ?"
         ))
@@ -165,7 +166,7 @@ mod tests {
         }
     }
 
-    async fn make_store() -> (SqliteStore, i64) {
+    async fn make_store() -> (SqliteStore, ConversationId) {
         let store = SqliteStore::new(":memory:")
             .await
             .expect("SqliteStore::new");
@@ -173,7 +174,7 @@ mod tests {
             .create_conversation()
             .await
             .expect("create_conversation");
-        (store, cid.0)
+        (store, cid)
     }
 
     #[tokio::test]
@@ -201,8 +202,7 @@ mod tests {
         let cid2 = store
             .create_conversation()
             .await
-            .expect("create_conversation")
-            .0;
+            .expect("create_conversation");
         let id = store.save_overflow(cid1, b"secret").await.expect("save");
         // Loading with a different conversation_id must return None.
         let loaded = store.load_overflow(&id, cid2).await.expect("load");

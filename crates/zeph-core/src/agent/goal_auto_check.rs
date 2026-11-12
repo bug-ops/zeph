@@ -341,7 +341,11 @@ mod tests {
         )
         .await;
         assert_skips(
-            |a| drop(a.services.autonomous.start_session("g1", "goal", 5)),
+            |a| {
+                a.services
+                    .autonomous
+                    .start_session(zeph_common::GoalId::new_v4(), "goal", 5);
+            },
             TurnOrigin::User,
             false,
         )

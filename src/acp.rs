@@ -545,6 +545,9 @@ pub(crate) struct SharedAgentDeps {
     /// as `memory.graph.extract_provider`) can find named providers (#5450).
     provider_pool: Vec<zeph_core::config::ProviderEntry>,
     provider_config_snapshot: zeph_core::ProviderConfigSnapshot,
+    /// `[memory.store_routing]`, wired into each session's `Agent` via `with_routing` so
+    /// `llm`/`hybrid` strategies resolve their classifier provider at startup (#7046).
+    store_routing: zeph_core::config::StoreRoutingConfig,
     focus_config: zeph_core::config::FocusConfig,
     sidequest_config: zeph_core::config::SidequestConfig,
     trajectory_config: zeph_core::config::TrajectoryConfig,
@@ -1319,6 +1322,7 @@ async fn build_acp_deps(
         resume_token_counter: resume_token_counter_built,
         provider_pool: config.llm.providers.clone(),
         provider_config_snapshot,
+        store_routing: config.memory.store_routing.clone(),
         focus_config: config.agent.focus.clone(),
         sidequest_config: config.memory.sidequest.clone(),
         trajectory_config: config.memory.trajectory.clone(),
@@ -1515,6 +1519,7 @@ where
     category_config: zeph_core::config::CategoryConfig,
     provider_pool: Vec<zeph_core::config::ProviderEntry>,
     provider_config_snapshot: zeph_core::ProviderConfigSnapshot,
+    store_routing: zeph_core::config::StoreRoutingConfig,
     shutdown_summary: bool,
     shutdown_summary_min_messages: usize,
     shutdown_summary_max_messages: usize,
@@ -1598,6 +1603,7 @@ where
     .with_focus_and_sidequest_config(deps.focus_config, deps.sidequest_config)
     .with_trajectory_and_category_config(deps.trajectory_config, deps.category_config)
     .with_provider_pool(deps.provider_pool, deps.provider_config_snapshot)
+    .with_routing(deps.store_routing)
     .with_embedding_provider(deps.embedding_provider)
     .with_shutdown_summary_config(
         deps.shutdown_summary,
@@ -1783,7 +1789,7 @@ async fn spawn_acp_agent(
         let mut ex =
             zeph_core::overflow_tools::OverflowToolExecutor::new(Arc::new(memory.sqlite().clone()));
         if let Some(cid) = session_ctx.conversation_id {
-            ex = ex.with_conversation(cid.0);
+            ex = ex.with_conversation(cid);
         }
         ex
     };
@@ -2179,6 +2185,7 @@ async fn spawn_acp_agent(
         category_config: d.category_config.clone(),
         provider_pool,
         provider_config_snapshot,
+        store_routing: d.store_routing.clone(),
         shutdown_summary,
         shutdown_summary_min_messages,
         shutdown_summary_max_messages,
@@ -5582,6 +5589,7 @@ mod tests {
             category_config: zeph_core::config::CategoryConfig::default(),
             provider_pool: Vec::new(),
             provider_config_snapshot: zeph_core::ProviderConfigSnapshot::default(),
+            store_routing: zeph_core::config::StoreRoutingConfig::default(),
             shutdown_summary: false,
             shutdown_summary_min_messages: 0,
             shutdown_summary_max_messages: 0,

@@ -144,6 +144,7 @@ max_tokens = 4096
 # thinking = { type = "enabled", budget_tokens = 10000 }
 # server_compaction = false
 # enable_extended_context = false
+# speed = "fast"   # Claude fast mode (2x price); only on models that support it
 ```
 
 No separate `[llm.cloud]` section. All Claude-specific fields live inside the entry.
@@ -278,6 +279,9 @@ pub struct ProviderEntry {
     pub server_compaction: bool,
     #[serde(default)]
     pub enable_extended_context: bool,
+    /// `ServiceSpeed::Standard` (default) or `Fast`; `Fast` fails validation on non-Claude entries.
+    #[serde(default, skip_serializing_if = "ServiceSpeed::is_standard")]
+    pub speed: ServiceSpeed,
 
     // --- OpenAI-specific ---
     #[serde(default)]

@@ -89,11 +89,7 @@ impl<C: Channel> Agent<C> {
         let turn_index = u32::try_from(self.services.sidequest.turn_counter).unwrap_or(u32::MAX);
         let extraction_cfg = build_graph_extraction_config(
             cfg,
-            self.services
-                .memory
-                .persistence
-                .conversation_id
-                .map(|c| c.0),
+            self.services.memory.persistence.conversation_id,
             embed_timeout_secs,
             Some(turn_index),
         );
@@ -300,12 +296,7 @@ impl<C: Channel> Agent<C> {
 
         let provider = self.resolve_background_provider(cfg.persona_provider.as_str());
         let store = memory.sqlite().clone();
-        let conversation_id = self
-            .services
-            .memory
-            .persistence
-            .conversation_id
-            .map(|c| c.0);
+        let conversation_id = self.services.memory.persistence.conversation_id;
 
         self.runtime.lifecycle.supervisor.spawn(
             super::super::agent_supervisor::TaskClass::Enrichment,
@@ -346,9 +337,8 @@ impl<C: Channel> Agent<C> {
             return;
         };
 
-        let conversation_id = match self.services.memory.persistence.conversation_id {
-            Some(cid) => cid.0,
-            None => return,
+        let Some(conversation_id) = self.services.memory.persistence.conversation_id else {
+            return;
         };
 
         let tail_start = self.msg.messages.len().saturating_sub(cfg.max_messages);
@@ -425,7 +415,7 @@ impl<C: Channel> Agent<C> {
 
                 tracing::debug!(
                     count = entries.len(),
-                    conversation_id,
+                    conversation_id = %conversation_id,
                     "trajectory extraction complete"
                 );
             },

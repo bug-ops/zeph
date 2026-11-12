@@ -17,6 +17,7 @@ serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
+zeph-common.workspace = true
 zeph-config.workspace = true
 
 [dev-dependencies]
