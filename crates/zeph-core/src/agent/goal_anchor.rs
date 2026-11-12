@@ -650,6 +650,7 @@ mod tests {
         assert!(matches!(state(&slot), GoalAnchorState::Resolved { .. }));
     }
 
+    #[cfg(feature = "sqlite")]
     mod agent {
         use std::sync::Arc;
 
