@@ -541,6 +541,51 @@ pub(crate) fn test_tool_def(id: &'static str) -> zeph_tools::registry::ToolDef {
     }
 }
 
+/// MCP tool `github`/`create_issue` as the real registry produces it.
+pub(crate) fn github_mcp_tool() -> zeph_mcp::McpTool {
+    zeph_mcp::McpTool {
+        server_id: "github".into(),
+        name: "create_issue".into(),
+        description: String::new(),
+        input_schema: serde_json::json!({}),
+        output_schema: None,
+        security_meta: zeph_config::mcp_security::ToolSecurityMeta::default(),
+    }
+}
+
+/// The sanitized dispatch id of [`github_mcp_tool`] and a registry containing it.
+pub(crate) fn github_mcp_tool_ids() -> (String, zeph_tools::McpToolIds) {
+    let tool = github_mcp_tool();
+    let id = tool.sanitized_id();
+    assert_eq!(id, "github_create_issue");
+    let mut ids = zeph_tools::McpToolIds::default();
+    ids.insert(id.clone(), Some(tool.server_id));
+    (id, ids)
+}
+
+/// Resolved classification of an unregistered native local tool.
+pub(crate) fn local_resolved_source() -> zeph_tools::ResolvedToolSource {
+    zeph_tools::ResolvedToolSource::resolve(
+        "bash",
+        None,
+        None,
+        &zeph_tools::McpToolIds::default(),
+        zeph_tools::BodyAuthor::Tool,
+    )
+}
+
+/// Executor-side definition of an MCP tool, as `McpToolExecutor::tool_definitions` reports it.
+pub(crate) fn mcp_tool_def(id: &str, server_id: &str) -> zeph_tools::registry::ToolDef {
+    zeph_tools::registry::ToolDef {
+        id: id.to_owned().into(),
+        description: "mcp tool".into(),
+        schema: schemars::Schema::default(),
+        invocation: zeph_tools::registry::InvocationHint::ToolCall,
+        output_schema: None,
+        server_id: Some(server_id.to_owned()),
+    }
+}
+
 pub(crate) fn create_test_registry() -> SkillRegistry {
     let temp_dir = tempfile::tempdir().unwrap();
     let skill_dir = temp_dir.path().join("test-skill");

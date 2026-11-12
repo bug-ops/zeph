@@ -24,9 +24,10 @@ use crate::tool::McpTool;
 /// # Security invariant
 ///
 /// [`execute_tool_call`](McpToolExecutor::execute_tool_call) sets
-/// `ToolOutput::tool_name` to [`McpTool::qualified_name`] (i.e. `"server_id:name"`).
-/// The `':'` in the name is the signal used by `zeph-core`'s `sanitize_tool_output()`
-/// to route responses through the quarantine pipeline. Do not change this.
+/// `ToolOutput::tool_name` to [`McpTool::qualified_name`] (i.e. `"server_id:name"`) and
+/// `ToolOutput::claim_source` to `ClaimSource::Mcp`. The qualified name is for display and audit
+/// only: `zeph-core` classifies results by registry membership of the sanitized id and by the
+/// claim source, never by the shape of the name.
 ///
 /// # Fenced-block execution
 ///
@@ -327,10 +328,8 @@ impl ToolExecutor for McpToolExecutor {
     async fn execute_tool_call(&self, call: &ToolCall) -> Result<Option<ToolOutput>, ToolError> {
         // Lookup by sanitized_id because the LLM sees sanitized names (no ':' character).
         //
-        // IMPORTANT: ToolOutput.tool_name MUST be set to qualified_name() (not sanitized_id()).
-        // sanitize_tool_output() in zeph-core classifies tool output as external/untrusted MCP
-        // content by checking tool_name.contains(':').  Breaking this invariant would silently
-        // route MCP responses through the local/trusted pipeline, bypassing quarantine.
+        // ToolOutput.tool_name is set to qualified_name() for display and audit only. Trust
+        // classification keys on the sanitized-id registry and ClaimSource::Mcp, not on the name.
         let found = {
             let tools = self.tools.read();
             tools
@@ -414,7 +413,7 @@ impl ToolExecutor for McpToolExecutor {
         }
 
         Ok(Some(ToolOutput {
-            // SECURITY: Use qualified format so quarantine routing works (tool_name must contain ':').
+            // Display name only; trust classification uses ClaimSource::Mcp.
             tool_name: ToolName::new("mcp:fenced_block"),
             summary: outputs.join("\n\n"),
             blocks_executed,
@@ -483,6 +482,7 @@ fn tool_output(
         media,
         max_result_size_chars,
         status: tool_status(result),
+        replayed_from: None,
     }
 }
 

@@ -32,6 +32,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `zeph-sanitizer`, `zeph-tools`, `zeph-memory`, `zeph-common`: `tool_output_source` takes a `ToolProvenance` argument; new `McpToolIds` registry, `ResolvedToolSource` and `ToolResultSource`; the overflow store (`save_overflow`/`save_archive`/`load_overflow`) records and returns the result classification (migration 120) (breaking) (#7068)
+- `zeph-tools`: `ToolOutput` gains a public `replayed_from` field (breaking for struct literals without `..Default::default()`) (#7068)
+- `zeph-core`: `VigilGate::verify` takes a `VigilExemption` argument (breaking) (#7068)
 - `zeph-tools`, `zeph-channels`, `zeph-core`, `zeph-tui`, `zeph-acp`: `ToolExecutionId` newtype (no `Default`) for agent-side tool-execution ids; `Channel::send_diff` takes `&ToolExecutionId` and the JSON event `id` is `null` when absent (breaking) (#6978)
 - `zeph-context`, `zeph-agent-context`, `zeph-core`: nothing sent to the provider is path-masked, only secrets and URL credentials are redacted; debug dumps still show `[PATH]` (#6978)
 - `zeph-memory`, `zeph-common`, `zeph-agent-context`: graph recall carries `trust_level` (`GraphFact.trust`, NULL is `ExternalUntrusted`) and labels untrusted facts per line; `TurnContextTrust` moves to `zeph-common` (breaking: `Entity`/`Edge`/`GraphFact` literals gain `trust`) (#6978)

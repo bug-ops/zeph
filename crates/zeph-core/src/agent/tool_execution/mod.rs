@@ -67,7 +67,7 @@ struct ToolDispatchContext {
     /// once per dispatch batch from the tool registry. Reused by both the cache-lookup gate
     /// (`is_cacheable`) and the cache-store gate later in `apply_tier_results`, so the tier
     /// loop never re-scans the registry per call or per tier (#5733 follow-up, M1).
-    mcp_tool_ids: std::collections::HashSet<String>,
+    mcp_tool_ids: zeph_tools::McpToolIds,
     /// MAGE trajectory risk gate (spec 004-19 FR-005).
     ///
     /// When `Some((score, top_signals))`, all tool calls in this batch are blocked with
@@ -307,6 +307,7 @@ impl<C: Channel> Agent<C> {
         &self,
         output: &str,
         per_call_override: Option<usize>,
+        source: &zeph_tools::ResolvedToolSource,
     ) -> String {
         let overflow_config = &self.tool_orchestrator.overflow_config;
         // Server-requested size is clamped to the operator ceiling, then the effective
@@ -336,7 +337,7 @@ impl<C: Channel> Agent<C> {
         ) {
             match memory
                 .sqlite()
-                .save_overflow(conv_id, output.as_bytes())
+                .save_overflow(conv_id, output.as_bytes(), source.source())
                 .await
             {
                 Ok(uuid) => format!(
@@ -1003,6 +1004,7 @@ impl<C: Channel> Agent<C> {
         &mut self,
         tool_name: &str,
         body: String,
+        exemption: crate::agent::vigil::VigilExemption,
     ) -> (String, Option<VigilOutcome>) {
         // Subagent exemption (FR-009) is structural: spawned subagents never receive a gate.
         let Some(ref gate) = self.services.security.vigil else {
@@ -1016,7 +1018,7 @@ impl<C: Channel> Agent<C> {
             .as_deref()
             .unwrap_or_default();
 
-        let verdict = gate.verify(intent, tool_name, &body);
+        let verdict = gate.verify(intent, tool_name, &body, exemption);
 
         let crate::agent::vigil::VigilVerdict::Flagged {
             ref reason, action, ..

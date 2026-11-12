@@ -360,6 +360,167 @@ impl TranscriptTrustSchema {
     }
 }
 
+/// Which executor family authored a tool result body.
+///
+/// Provenance comes from the executor registry or from the executor's own claim, never from
+/// the shape of the tool name. There is intentionally no ordering: combine two observations
+/// with [`ToolProvenance::join`], which lets `Mcp` win.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::trust_level::ToolProvenance;
+///
+/// assert_eq!(ToolProvenance::Native.join(ToolProvenance::Mcp), ToolProvenance::Mcp);
+/// assert_eq!(ToolProvenance::Native.join(ToolProvenance::Native), ToolProvenance::Native);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ToolProvenance {
+    /// A built-in executor, or text authored by the agent harness itself.
+    Native,
+    /// A tool served by an MCP server; the body is server-controlled.
+    Mcp,
+}
+
+impl ToolProvenance {
+    /// Combine two provenance observations of the same call; fails safe towards [`Self::Mcp`].
+    #[must_use]
+    pub const fn join(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Native, Self::Native) => Self::Native,
+            (Self::Mcp, _) | (_, Self::Mcp) => Self::Mcp,
+        }
+    }
+}
+
+/// Kind of a built-in tool whose output is classified by tool name.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::trust_level::NativeToolKind;
+///
+/// assert_ne!(NativeToolKind::Web, NativeToolKind::Local);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NativeToolKind {
+    /// Local executors: shell, file system, skills, diagnostics.
+    Local,
+    /// Web fetch and search.
+    Web,
+    /// Memory retrieval.
+    Memory,
+}
+
+/// Untrusted content tier of an archived body; `Trusted` is unrepresentable.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::trust_level::{TurnContextTrust, UntrustedTier};
+///
+/// assert_eq!(UntrustedTier::from(TurnContextTrust::Trusted), UntrustedTier::Local);
+/// assert_eq!(UntrustedTier::from_message_tier(None), UntrustedTier::External);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UntrustedTier {
+    /// Output of local executors.
+    Local,
+    /// External sources.
+    External,
+}
+
+impl UntrustedTier {
+    /// Tier recorded on a message: an absent or out-of-range byte maps to `External`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_common::trust_level::UntrustedTier;
+    ///
+    /// assert_eq!(UntrustedTier::from_message_tier(Some(1)), UntrustedTier::Local);
+    /// assert_eq!(UntrustedTier::from_message_tier(Some(200)), UntrustedTier::External);
+    /// ```
+    #[must_use]
+    pub fn from_message_tier(tier: Option<u8>) -> Self {
+        tier.and_then(TurnContextTrust::from_u8)
+            .map_or(Self::External, Self::from)
+    }
+
+    /// The matching [`TurnContextTrust`].
+    #[must_use]
+    pub const fn trust(self) -> TurnContextTrust {
+        match self {
+            Self::Local => TurnContextTrust::LocalUntrusted,
+            Self::External => TurnContextTrust::ExternalUntrusted,
+        }
+    }
+}
+
+impl From<TurnContextTrust> for UntrustedTier {
+    fn from(trust: TurnContextTrust) -> Self {
+        match trust {
+            TurnContextTrust::Trusted | TurnContextTrust::LocalUntrusted => Self::Local,
+            TurnContextTrust::ExternalUntrusted => Self::External,
+        }
+    }
+}
+
+/// How a tool result was classified, live and when stored for a later replay.
+///
+/// The same value drives the live classification and the persisted overflow row, so a replayed
+/// body re-enters context with the classification of the original result. `Trusted` is
+/// unrepresentable: every variant is an untrusted tier.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::trust_level::{NativeToolKind, ToolProvenance, ToolResultSource, TurnContextTrust};
+///
+/// let mcp = ToolResultSource::Mcp { server_id: Some("github".into()) };
+/// assert_eq!(mcp.provenance(), ToolProvenance::Mcp);
+/// assert_eq!(mcp.trust(), TurnContextTrust::ExternalUntrusted);
+/// assert_eq!(
+///     ToolResultSource::Native(NativeToolKind::Local).trust(),
+///     TurnContextTrust::LocalUntrusted
+/// );
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolResultSource {
+    /// Built-in tool of the given kind.
+    Native(NativeToolKind),
+    /// MCP-served tool; `server_id` is `None` when the serving server is unknown.
+    Mcp {
+        /// Id of the serving MCP server, when known.
+        server_id: Option<String>,
+    },
+    /// Post-sanitize context text archived at compaction time; only its tier is known.
+    Archived(UntrustedTier),
+}
+
+impl ToolResultSource {
+    /// Provenance of the body. Archived text already passed the live pipeline, so it is `Native`.
+    #[must_use]
+    pub const fn provenance(&self) -> ToolProvenance {
+        match self {
+            Self::Mcp { .. } => ToolProvenance::Mcp,
+            Self::Native(_) | Self::Archived(_) => ToolProvenance::Native,
+        }
+    }
+
+    /// Content-trust tier of the body.
+    #[must_use]
+    pub const fn trust(&self) -> TurnContextTrust {
+        match self {
+            Self::Native(NativeToolKind::Local) => TurnContextTrust::LocalUntrusted,
+            Self::Native(NativeToolKind::Web | NativeToolKind::Memory) | Self::Mcp { .. } => {
+                TurnContextTrust::ExternalUntrusted
+            }
+            Self::Archived(tier) => tier.trust(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,6 +626,92 @@ mod tests {
         assert_eq!(
             TranscriptTrustSchema::legacy(),
             TranscriptTrustSchema::Legacy
+        );
+    }
+
+    #[test]
+    fn tool_provenance_join_truth_table() {
+        use ToolProvenance::{Mcp, Native};
+        assert_eq!(Native.join(Native), Native);
+        assert_eq!(Native.join(Mcp), Mcp);
+        assert_eq!(Mcp.join(Native), Mcp);
+        assert_eq!(Mcp.join(Mcp), Mcp);
+    }
+
+    #[test]
+    fn tool_result_source_provenance_and_trust_per_variant() {
+        use NativeToolKind::{Local, Memory, Web};
+        let cases = [
+            (
+                ToolResultSource::Native(Local),
+                ToolProvenance::Native,
+                TurnContextTrust::LocalUntrusted,
+            ),
+            (
+                ToolResultSource::Native(Web),
+                ToolProvenance::Native,
+                TurnContextTrust::ExternalUntrusted,
+            ),
+            (
+                ToolResultSource::Native(Memory),
+                ToolProvenance::Native,
+                TurnContextTrust::ExternalUntrusted,
+            ),
+            (
+                ToolResultSource::Mcp { server_id: None },
+                ToolProvenance::Mcp,
+                TurnContextTrust::ExternalUntrusted,
+            ),
+            (
+                ToolResultSource::Archived(UntrustedTier::Local),
+                ToolProvenance::Native,
+                TurnContextTrust::LocalUntrusted,
+            ),
+            (
+                ToolResultSource::Archived(UntrustedTier::External),
+                ToolProvenance::Native,
+                TurnContextTrust::ExternalUntrusted,
+            ),
+        ];
+        for (source, provenance, trust) in cases {
+            assert_eq!(source.provenance(), provenance, "{source:?}");
+            assert_eq!(source.trust(), trust, "{source:?}");
+        }
+    }
+
+    #[test]
+    fn untrusted_tier_conversion_never_yields_trusted() {
+        assert_eq!(
+            UntrustedTier::from(TurnContextTrust::Trusted),
+            UntrustedTier::Local
+        );
+        assert_eq!(
+            UntrustedTier::from(TurnContextTrust::LocalUntrusted),
+            UntrustedTier::Local
+        );
+        assert_eq!(
+            UntrustedTier::from(TurnContextTrust::ExternalUntrusted),
+            UntrustedTier::External
+        );
+    }
+
+    #[test]
+    fn message_tier_none_or_out_of_range_is_external() {
+        assert_eq!(
+            UntrustedTier::from_message_tier(None),
+            UntrustedTier::External
+        );
+        assert_eq!(
+            UntrustedTier::from_message_tier(Some(3)),
+            UntrustedTier::External
+        );
+        assert_eq!(
+            UntrustedTier::from_message_tier(Some(0)),
+            UntrustedTier::Local
+        );
+        assert_eq!(
+            UntrustedTier::from_message_tier(Some(2)),
+            UntrustedTier::External
         );
     }
 }

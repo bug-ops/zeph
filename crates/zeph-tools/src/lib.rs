@@ -93,6 +93,7 @@ pub mod shadow_probe;
 pub mod shell;
 pub mod time;
 pub mod tool_filter;
+mod tool_source;
 pub mod trust_gate;
 pub mod trust_level;
 pub mod utility;
@@ -140,7 +141,7 @@ pub use net::is_private_ip;
 pub use permissions::PermissionPolicy;
 pub use policy::{PolicyCompileError, PolicyContext, PolicyDecision, PolicyEnforcer};
 pub use policy_gate::{PolicyGateExecutor, RiskSignalQueue, TrajectoryRiskSlot};
-pub use registry::ToolRegistry;
+pub use registry::{McpToolIds, ToolRegistry};
 pub use risk_chain::{RiskChainAccumulator, RiskChainVerdict, RiskTag};
 #[cfg(target_os = "macos")]
 pub use sandbox::MacosSandbox;
@@ -169,6 +170,7 @@ pub use shell::{
 };
 pub use time::GetCurrentTimeExecutor;
 pub use tool_filter::ToolFilter;
+pub use tool_source::{BodyAuthor, ResolvedToolSource};
 pub use trust_gate::TrustGateExecutor;
 pub use trust_level::SkillTrustLevel;
 pub use utility::{

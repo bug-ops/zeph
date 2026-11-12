@@ -17,7 +17,7 @@ pub use zeph_config::mcp_security::{
 /// # Qualified vs sanitized names
 ///
 /// - [`qualified_name`](McpTool::qualified_name) — `"server_id:name"` — used for logging,
-///   Qdrant keys, and quarantine routing (the `':'` character signals external MCP content).
+///   Qdrant keys, and audit entries. It is a display name, not a trust signal.
 /// - [`sanitized_id`](McpTool::sanitized_id) — `[a-zA-Z0-9_-]{1,128}` — used as the tool
 ///   identifier in LLM API calls, where colons are not allowed.
 ///
@@ -203,9 +203,9 @@ pub fn detect_collisions<S: std::hash::BuildHasher>(
 impl McpTool {
     /// Return the fully-qualified tool name in `"server_id:name"` format.
     ///
-    /// This format is used for Qdrant keys, logging, and quarantine routing.
-    /// The presence of `':'` in the name is the signal used by `zeph-core`'s
-    /// `sanitize_tool_output()` to classify output as external (MCP) content.
+    /// This format is a display name used for Qdrant keys, logging and audit entries. It is not
+    /// a trust signal: `zeph-core` classifies results by registry membership of the
+    /// [`sanitized_id`](McpTool::sanitized_id) and by the executor's claim source.
     ///
     /// # Examples
     ///

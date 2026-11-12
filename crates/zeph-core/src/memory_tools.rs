@@ -128,6 +128,9 @@ pub struct MemoryToolExecutor {
 }
 
 impl MemoryToolExecutor {
+    /// Tool id of the write-time memory save tool.
+    pub const SAVE_TOOL_NAME: &'static str = "memory_save";
+
     /// Create with default validator and persistent (non-ephemeral) semantics.
     #[must_use]
     pub fn new(memory: Arc<SemanticMemory>, conversation_id: ConversationId) -> Self {
@@ -287,7 +290,7 @@ impl MemoryToolExecutor {
         {
             let preview: String = params.content.chars().take(120).collect();
             let entry = zeph_tools::AuditEntry::memory_write(
-                "memory_save",
+                Self::SAVE_TOOL_NAME,
                 format!("save: {preview}"),
                 None,
                 Some(trust_level.as_str()),
@@ -313,7 +316,7 @@ impl MemoryToolExecutor {
         };
 
         Ok(Some(ToolOutput {
-            tool_name: zeph_common::ToolName::new("memory_save"),
+            tool_name: zeph_common::ToolName::new(Self::SAVE_TOOL_NAME),
             summary,
             blocks_executed: 1,
             filter_stats: None,
@@ -340,7 +343,7 @@ impl ToolExecutor for MemoryToolExecutor {
                 server_id: None,
             },
             ToolDef {
-                id: "memory_save".into(),
+                id: Self::SAVE_TOOL_NAME.into(),
                 description: "Save a fact or note to long-term memory for cross-session recall. Use sparingly for key decisions, user preferences, or critical context worth remembering across sessions.\n\nParameters: content (string, required) - concise, self-contained fact or note; role (string, optional) - message role label (default: \"assistant\")\nReturns: confirmation with saved entry ID\nErrors: Execution on database failure; InvalidParams if content is empty\nExample: {\"content\": \"User prefers JSON output over YAML\", \"role\": \"assistant\"}".into(),
                 schema: schemars::schema_for!(MemorySaveParams),
                 invocation: InvocationHint::ToolCall,
@@ -431,7 +434,7 @@ impl ToolExecutor for MemoryToolExecutor {
                     ..Default::default()
                 }))
             }
-            "memory_save" => {
+            Self::SAVE_TOOL_NAME => {
                 let params: MemorySaveParams = deserialize_params(&call.params)?;
 
                 // Write-time consent gate (issue #6490, MemGhost): require interactive
@@ -465,7 +468,7 @@ impl ToolExecutor for MemoryToolExecutor {
     }
 
     fn requires_confirmation(&self, call: &ToolCall) -> bool {
-        if call.tool_id.as_str() != "memory_save" {
+        if call.tool_id.as_str() != Self::SAVE_TOOL_NAME {
             return false;
         }
         let Some(gate) = &self.consent_gate else {
@@ -482,7 +485,7 @@ impl ToolExecutor for MemoryToolExecutor {
         &self,
         call: &ToolCall,
     ) -> Result<Option<ToolOutput>, ToolError> {
-        if call.tool_id.as_str() == "memory_save" {
+        if call.tool_id.as_str() == Self::SAVE_TOOL_NAME {
             let params: MemorySaveParams = deserialize_params(&call.params)?;
             return self.do_memory_save(&params).await;
         }

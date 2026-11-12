@@ -261,7 +261,8 @@ impl<C: Channel> Agent<C> {
         // merely ahead of `memory_save`'s own future, since tier calls execute concurrently
         // via `join_all` and `MemoryToolExecutor` cannot observe `self.msg` to check for
         // itself. See `ratchet_memory_consent_trust_for_dispatch`'s doc comment.
-        self.ratchet_memory_consent_trust_for_dispatch(tool_calls);
+        let mcp_tool_ids = self.batch_mcp_tool_ids();
+        self.ratchet_memory_consent_trust_for_dispatch(tool_calls, &mcp_tool_ids);
 
         // Build calls, assign IDs, run exfiltration guard, gate checks (pre-exec/utility/
         // quota/repeat/cache), and inject skill env. Extracted to keep this function under
@@ -281,7 +282,7 @@ impl<C: Channel> Agent<C> {
             mage_escalate,
             mut early_stop_hints,
             window_exhausted,
-        } = self.prepare_tool_dispatch(tool_calls);
+        } = self.prepare_tool_dispatch(tool_calls, mcp_tool_ids);
 
         let max_retries = self.tool_orchestrator.max_tool_retries;
         // Clamp to 1 to prevent Semaphore(0) deadlock when config is set to 0.
@@ -360,6 +361,7 @@ impl<C: Channel> Agent<C> {
             causal_pre_response,
             pending_focus_checkpoint,
             pending_system_hints,
+            &mcp_tool_ids,
         )
         .await?;
 
@@ -442,6 +444,7 @@ impl<C: Channel> Agent<C> {
     fn prepare_tool_dispatch(
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
+        mcp_tool_ids: zeph_tools::McpToolIds,
     ) -> ToolDispatchContext {
         let tafc_enabled = self.tool_orchestrator.tafc.enabled;
         // PAAC secret unmasking (#5437): resolved once per dispatch batch (Arc clone, cheap)
@@ -566,19 +569,9 @@ impl<C: Channel> Agent<C> {
             .repeat
             .check_and_push(&repeat_entries, &exempt);
 
-        // Resolved once per dispatch batch and threaded through `ToolDispatchContext` so both
-        // the cache-lookup gate below and the cache-store gate later in `apply_tier_results`
-        // share one registry scan instead of each re-scanning `tool_definitions_erased()`
-        // per call/per tier (#5733 follow-up, M1). Also sidesteps a borrow-checker conflict:
-        // capturing a whole-`self` method inside the closure below would conflict with that
-        // closure's existing `&mut self.tool_orchestrator` borrow.
-        let mcp_tool_ids: std::collections::HashSet<String> = self
-            .tool_executor
-            .tool_definitions_erased()
-            .into_iter()
-            .filter(zeph_tools::registry::ToolDef::is_mcp_tool)
-            .map(|d| d.id.into_owned())
-            .collect();
+        // `mcp_tool_ids` is resolved once per dispatch batch by the caller and threaded through
+        // `ToolDispatchContext`, so the cache-lookup gate below, the cache-store gate in
+        // `apply_tier_results`, the trust ratchet and sanitization share one registry scan.
 
         // Cache lookup: hits pre-built before dispatch; cache store happens after join_all.
         let cache_hits: Vec<Option<zeph_tools::ToolOutput>> = calls
@@ -646,7 +639,7 @@ impl<C: Channel> Agent<C> {
         args_hashes: &[u64],
         repeat_blocked: &[bool],
         cache_hits: &[Option<zeph_tools::ToolOutput>],
-        mcp_tool_ids: &std::collections::HashSet<String>,
+        mcp_tool_ids: &zeph_tools::McpToolIds,
         max_parallel: usize,
         cancel: &tokio_util::sync::CancellationToken,
         tool_call_ids: &[zeph_common::ToolExecutionId],
@@ -815,7 +808,7 @@ impl<C: Channel> Agent<C> {
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
         tool_call_ids: &[zeph_common::ToolExecutionId],
         tool_started_ats: &mut [std::time::Instant],
-        mcp_tool_ids: &std::collections::HashSet<String>,
+        mcp_tool_ids: &zeph_tools::McpToolIds,
         speculative: &std::collections::HashSet<usize>,
     ) -> Result<(), crate::agent::error::AgentError> {
         let tier_start = std::time::Instant::now();
@@ -1440,7 +1433,7 @@ impl<C: Channel> Agent<C> {
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
         calls: &[ToolCall],
         cache_hits: &[Option<zeph_tools::ToolOutput>],
-        mcp_tool_ids: &std::collections::HashSet<String>,
+        mcp_tool_ids: &zeph_tools::McpToolIds,
         args_hashes: &[u64],
         tool_started_ats: &[std::time::Instant],
         max_parallel: usize,
@@ -1612,6 +1605,7 @@ impl<C: Channel> Agent<C> {
         causal_pre_response: Option<(String, String)>,
         pending_focus_checkpoint: Option<zeph_llm::provider::Message>,
         pending_system_hints: Vec<String>,
+        mcp_ids: &zeph_tools::McpToolIds,
     ) -> Result<(), crate::agent::error::AgentError> {
         self.tool_executor.set_skill_env(None);
 
@@ -1674,6 +1668,7 @@ impl<C: Channel> Agent<C> {
                 &mut images_attached_this_turn,
                 &mut batch_trust_level,
                 &mut batch_source_kind,
+                mcp_ids,
             )
             .await?;
         }

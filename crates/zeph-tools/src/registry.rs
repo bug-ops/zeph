@@ -4,6 +4,8 @@
 use std::borrow::Cow;
 use std::fmt::Write;
 
+use zeph_common::trust_level::ToolProvenance;
+
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvocationHint {
@@ -36,6 +38,87 @@ impl ToolDef {
     #[must_use]
     pub fn is_mcp_tool(&self) -> bool {
         self.server_id.is_some()
+    }
+}
+
+/// Per-batch registry of MCP dispatch ids, the authority for classifying a tool call's provenance.
+///
+/// Maps each sanitized MCP tool id (the id the model sees and the executor dispatches on) to the
+/// id of the serving MCP server. Provenance is looked up here, never derived from the shape of
+/// the tool name. Entries may be added from several sources (live executor definitions and a
+/// stored tool list); an id known to any source is treated as MCP.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::trust_level::ToolProvenance;
+/// use zeph_tools::McpToolIds;
+///
+/// let mut ids = McpToolIds::default();
+/// ids.insert("github_create_issue".into(), Some("github".into()));
+/// assert_eq!(ids.provenance("github_create_issue"), ToolProvenance::Mcp);
+/// assert_eq!(ids.provenance("bash"), ToolProvenance::Native);
+/// assert_eq!(ids.server_id("github_create_issue"), Some("github"));
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct McpToolIds(std::collections::HashMap<String, Option<String>>);
+
+impl McpToolIds {
+    /// Build the registry from tool definitions, keeping only MCP-served tools.
+    #[must_use]
+    pub fn from_definitions(defs: &[ToolDef]) -> Self {
+        let mut ids = Self::default();
+        for def in defs {
+            if let Some(server) = &def.server_id {
+                ids.insert(def.id.to_string(), Some(server.clone()));
+            }
+        }
+        ids
+    }
+
+    /// Register an MCP tool id with its serving server (`None` when only the id is known).
+    ///
+    /// The first known server id wins, matching dispatch (the first registered tool serves the
+    /// id); a later `None` or a different server never replaces it.
+    pub fn insert(&mut self, id: String, server_id: Option<String>) {
+        let slot = self.0.entry(id).or_insert(None);
+        if slot.is_none() {
+            *slot = server_id;
+        }
+    }
+
+    /// Register an MCP tool id whose server is unknown.
+    pub fn insert_id(&mut self, id: String) {
+        self.insert(id, None);
+    }
+
+    /// Merge every entry of `other` into `self`.
+    pub fn extend_from(&mut self, other: &Self) {
+        for (id, server) in &other.0 {
+            self.insert(id.clone(), server.clone());
+        }
+    }
+
+    /// Returns `true` when `id` is a registered MCP dispatch id.
+    #[must_use]
+    pub fn contains(&self, id: &str) -> bool {
+        self.0.contains_key(id)
+    }
+
+    /// Provenance of a call to the tool `id`: [`ToolProvenance::Mcp`] when registered.
+    #[must_use]
+    pub fn provenance(&self, id: &str) -> ToolProvenance {
+        if self.contains(id) {
+            ToolProvenance::Mcp
+        } else {
+            ToolProvenance::Native
+        }
+    }
+
+    /// Serving MCP server id for `id`, when registered and known.
+    #[must_use]
+    pub fn server_id(&self, id: &str) -> Option<&str> {
+        self.0.get(id)?.as_deref()
     }
 }
 
@@ -154,6 +237,53 @@ fn format_schema_params(out: &mut String, schema: &schemars::Schema) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeph_common::trust_level::ToolProvenance;
+
+    #[test]
+    fn mcp_tool_ids_known_server_not_overwritten_by_name_only_entry() {
+        let mut ids = McpToolIds::default();
+        ids.insert("github_create_issue".into(), Some("github".into()));
+        ids.insert_id("github_create_issue".into());
+        assert_eq!(ids.server_id("github_create_issue"), Some("github"));
+        ids.insert_id("other_tool".into());
+        assert_eq!(ids.provenance("other_tool"), ToolProvenance::Mcp);
+        assert_eq!(ids.server_id("other_tool"), None);
+    }
+
+    #[test]
+    fn mcp_tool_ids_from_definitions_skips_native_tools() {
+        let def = |id: &'static str, server: Option<&str>| ToolDef {
+            id: id.into(),
+            description: "".into(),
+            schema: schemars::schema_for!(String),
+            invocation: InvocationHint::ToolCall,
+            output_schema: None,
+            server_id: server.map(str::to_owned),
+        };
+        let ids = McpToolIds::from_definitions(&[
+            def("bash", None),
+            def("github_create_issue", Some("github")),
+        ]);
+        assert_eq!(ids.provenance("bash"), ToolProvenance::Native);
+        assert_eq!(ids.server_id("github_create_issue"), Some("github"));
+    }
+
+    #[test]
+    fn mcp_tool_ids_first_known_server_wins() {
+        let mut ids = McpToolIds::default();
+        ids.insert("shared_tool".into(), Some("first".into()));
+        ids.insert("shared_tool".into(), Some("second".into()));
+        assert_eq!(ids.server_id("shared_tool"), Some("first"));
+    }
+
+    #[test]
+    fn mcp_tool_ids_name_only_entry_gets_a_later_server() {
+        let mut ids = McpToolIds::default();
+        ids.insert_id("shared_tool".into());
+        ids.insert("shared_tool".into(), Some("github".into()));
+        assert_eq!(ids.server_id("shared_tool"), Some("github"));
+    }
+
     use crate::file::ReadParams;
     use crate::shell::BashParams;
 

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use zeph_llm::provider::{LlmProvider, MessagePart};
-use zeph_sanitizer::{ContentSource, ContentSourceKind};
 use zeph_skills::evolution::FailureKind;
 
 use super::sanitize::ToolOutputOrigin;
@@ -238,6 +237,7 @@ impl<C: Channel> Agent<C> {
         d.dump_tool_output(tool_name, &dump_content);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_tool_failure_outcomes(
         &mut self,
         output: &str,
@@ -246,6 +246,8 @@ impl<C: Channel> Agent<C> {
         is_quality_failure: bool,
         pending_outcomes: &mut Vec<crate::agent::learning::PendingSkillOutcome>,
         pending_reflection: &mut Option<String>,
+        tool_name: &str,
+        resolved: &zeph_tools::ResolvedToolSource,
     ) -> bool {
         if outcome.is_failure() {
             let kind = tool_err_category.take().map_or_else(
@@ -272,7 +274,7 @@ impl<C: Channel> Agent<C> {
                     .services
                     .security
                     .sanitizer
-                    .sanitize(output, ContentSource::new(ContentSourceKind::ToolResult))
+                    .sanitize(output, resolved.content_source(tool_name))
                     .body;
                 *pending_reflection = Some(sanitized_out);
             }
@@ -434,6 +436,7 @@ impl<C: Channel> Agent<C> {
         images_attached_this_turn: &mut usize,
         batch_trust_level: &mut zeph_sanitizer::ContentTrustLevel,
         batch_source_kind: &mut zeph_sanitizer::ContentSourceKind,
+        mcp_ids: &zeph_tools::McpToolIds,
     ) -> Result<(), crate::agent::error::AgentError> {
         let ToolResultClassification {
             output,
@@ -450,6 +453,7 @@ impl<C: Channel> Agent<C> {
             origin,
         } = self.classify_tool_result(tc, tool_result);
 
+        let resolved = origin.resolve(tc.name.as_str(), mcp_ids);
         let mut is_error = outcome.is_wire_error();
         self.record_tool_execution_telemetry(tc.name.as_str(), started_at, is_error, &output);
         self.record_gate_feedback(tc.name.as_str(), tool_err_category);
@@ -461,6 +465,8 @@ impl<C: Channel> Agent<C> {
             is_quality_failure,
             pending_outcomes,
             pending_reflection,
+            tc.name.as_str(),
+            &resolved,
         );
         let _ = self.record_anomaly_outcome(anomaly_outcome).await;
 
@@ -469,7 +475,7 @@ impl<C: Channel> Agent<C> {
         let processed = if tc.name == OverflowToolExecutor::TOOL_NAME {
             output.clone()
         } else {
-            self.maybe_summarize_tool_output(&output, max_result_size_chars)
+            self.maybe_summarize_tool_output(&output, max_result_size_chars, &resolved)
                 .await
         };
         let body = if let Some(ref stats) = inline_stats {
@@ -495,7 +501,11 @@ impl<C: Channel> Agent<C> {
             })
             .await?;
 
-        let (processed, vigil_outcome) = self.run_vigil_gate(tc.name.as_str(), processed);
+        let (processed, vigil_outcome) = self.run_vigil_gate(
+            tc.name.as_str(),
+            processed,
+            origin.vigil_exemption(&resolved),
+        );
         self.fire_vigil_audit_entry(tc.name.as_str(), vigil_outcome.as_ref());
 
         let (llm_content, tool_had_injection_flags) =
@@ -504,7 +514,7 @@ impl<C: Channel> Agent<C> {
                 (sentinel.clone(), false)
             } else {
                 let (body, flags, kind, trust) = self
-                    .sanitize_tool_output(&processed, tc.name.as_str(), origin)
+                    .sanitize_resolved(&processed, tc.name.as_str(), &origin, &resolved)
                     .await;
                 // Batch-level worst-case trust (issue #6490, MemGhost): the whole batch is
                 // persisted as one message, so its provenance tag reflects the least-trusted

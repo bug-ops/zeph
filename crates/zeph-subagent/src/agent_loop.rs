@@ -20,7 +20,8 @@ use zeph_llm::sse::{ToolSseEvent, ToolSseStream};
 use zeph_llm::thinking_replay::ThinkingReplay;
 use zeph_sanitizer::exfiltration::{ExfiltrationGuard, normalize_url_for_matching};
 use zeph_sanitizer::secret_shape::scrub_secret_shapes;
-use zeph_sanitizer::{ContentSanitizer, tool_output_source};
+use zeph_sanitizer::{ContentSanitizer, ContentSource};
+use zeph_tools::McpToolIds;
 use zeph_tools::executor::{ErasedToolExecutor, ToolCall};
 
 use super::filter::FilteredToolExecutor;
@@ -139,12 +140,13 @@ impl Default for ToolGates {
 ///
 /// Control and zero-width characters are stripped first so a secret interleaved with them
 /// cannot slip past the mask and the scrub and be reassembled by the sanitizer's own strip.
-/// Then: vault-secret mask, credential-shape scrub, content sanitizer with the source derived
-/// from the tool name.
+/// Then: vault-secret mask, credential-shape scrub, content sanitizer with the caller-resolved
+/// `source` (provenance is never derived from the tool name here).
 #[tracing::instrument(name = "subagent.tool.sanitize_result", skip_all, fields(tool = tool_name))]
 fn protect_tool_text(
     raw: &str,
     tool_name: &str,
+    source: ContentSource,
     sanitizer: &ContentSanitizer,
     secret_registry: Option<&zeph_sanitizer::secret_mask::SecretMaskRegistry>,
     credential_scrub: CredentialScrub,
@@ -161,7 +163,7 @@ fn protect_tool_text(
         CredentialScrub::Enabled => zeph_common::secret_redact::scrub_secrets(&masked),
         CredentialScrub::Disabled => masked,
     };
-    let result = sanitizer.sanitize(&scrubbed, tool_output_source(tool_name));
+    let result = sanitizer.sanitize(&scrubbed, source);
     if !result.injection_flags.is_empty() {
         tracing::warn!(
             tool = tool_name,
@@ -936,14 +938,28 @@ async fn run_turn(
     Ok(TurnOutcome::ToolCalled)
 }
 
-/// Trust tier of a tool result whose executor reported no provenance: MCP-served tools are
-/// external, anything else follows the tool-name classification.
-fn name_based_tool_trust(tool_name: &str, mcp_tool_names: &[String]) -> TurnContextTrust {
-    if mcp_tool_names.iter().any(|n| n == tool_name) {
-        TurnContextTrust::ExternalUntrusted
-    } else {
-        tool_output_source(tool_name).trust_level
+/// MCP dispatch ids for one tool-call batch: the live executor definitions that carry a server
+/// id joined with the spawn-time `mcp_tool_names` snapshot, which covers ids the live view no
+/// longer exposes.
+fn batch_mcp_tool_ids(executor: &FilteredToolExecutor, mcp_tool_names: &[String]) -> McpToolIds {
+    let mut ids = McpToolIds::from_definitions(&executor.tool_definitions_erased());
+    for name in mcp_tool_names {
+        ids.insert_id(name.clone());
     }
+    ids
+}
+
+/// Trust tier of the placeholder for a call the harness refused before it ran: the registry
+/// alone decides, through the same resolver as an executed result.
+fn refused_call_trust(tool_name: &str, mcp_ids: &McpToolIds) -> TurnContextTrust {
+    zeph_tools::ResolvedToolSource::resolve(
+        tool_name,
+        None,
+        None,
+        mcp_ids,
+        zeph_tools::BodyAuthor::Tool,
+    )
+    .trust()
 }
 
 // Returns `true` if no tool was called (loop should break).
@@ -979,6 +995,7 @@ async fn handle_tool_step(
 
             let mut result_parts: Vec<MessagePart> = Vec::new();
             let mut batch_trust = TurnContextTrust::LocalUntrusted;
+            let mcp_ids = batch_mcp_tool_ids(executor, mcp_tool_names);
             for tc in &tool_calls {
                 // #6567 (FR-001/FR-002/FR-003/NFR-001): a `GrantKind::Tool` grant for this tool
                 // name, if one exists, must still be active or the call is rejected outright —
@@ -1032,8 +1049,7 @@ async fn handle_tool_step(
                     ToolGrantCheck::NoGrant => active_tool_grants_seen.contains(tc.name.as_str()),
                 };
                 if tool_grant_rejected {
-                    batch_trust =
-                        batch_trust.max(name_based_tool_trust(tc.name.as_str(), mcp_tool_names));
+                    batch_trust = batch_trust.max(refused_call_trust(tc.name.as_str(), &mcp_ids));
                     // Deliberately NOT removed from `active_tool_grants_seen` here: this tool
                     // name was observed `Active` at least once, so it must stay enforced for
                     // the rest of the run (see the comment above) — removing it on rejection
@@ -1070,8 +1086,7 @@ async fn handle_tool_step(
                 // any hook fires or the executor runs.
                 gates.warn_on_flagged_urls(tc.name.as_str(), &tc.input);
                 if let Some(refusal) = gates.blocking_refusal(tc.name.as_str(), &tc.input) {
-                    batch_trust =
-                        batch_trust.max(name_based_tool_trust(tc.name.as_str(), mcp_tool_names));
+                    batch_trust = batch_trust.max(refused_call_trust(tc.name.as_str(), &mcp_ids));
                     result_parts.push(MessagePart::ToolResult {
                         tool_use_id: tc.id.clone(),
                         content: refusal,
@@ -1096,8 +1111,8 @@ async fn handle_tool_step(
                             task_id,
                             "PreToolUse hook blocked tool (fail_closed)"
                         );
-                        batch_trust = batch_trust
-                            .max(name_based_tool_trust(tc.name.as_str(), mcp_tool_names));
+                        batch_trust =
+                            batch_trust.max(refused_call_trust(tc.name.as_str(), &mcp_ids));
                         result_parts.push(MessagePart::ToolResult {
                             tool_use_id: tc.id.clone(),
                             content: pre_tool_block_message(tc.name.as_str()),
@@ -1156,10 +1171,21 @@ async fn handle_tool_step(
                         .await;
                 }
 
+                let produced = exec_result.as_ref().ok().and_then(Option::as_ref);
+                let claim = produced.and_then(|o| o.claim_source);
+                let resolved = zeph_tools::ResolvedToolSource::resolve(
+                    tc.name.as_str(),
+                    produced.and_then(|o| o.replayed_from.as_ref()),
+                    claim,
+                    &mcp_ids,
+                    zeph_tools::BodyAuthor::Tool,
+                );
+                let source = resolved.content_source(tc.name.as_str());
                 let mut protect = |raw: &str| {
                     protect_tool_text(
                         raw,
                         tc.name.as_str(),
+                        source.clone(),
                         sanitizer,
                         secret_registry,
                         credential_scrub,
@@ -1182,13 +1208,8 @@ async fn handle_tool_step(
                     }
                 };
 
-                let claim = exec_result
-                    .as_ref()
-                    .ok()
-                    .and_then(|o| o.as_ref())
-                    .and_then(|o| o.claim_source);
-                batch_trust = batch_trust.max(claim.map_or_else(
-                    || name_based_tool_trust(tc.name.as_str(), mcp_tool_names),
+                batch_trust = batch_trust.max(source.trust_level).max(claim.map_or(
+                    TurnContextTrust::Trusted,
                     zeph_tools::ClaimSource::content_trust,
                 ));
                 result_parts.push(MessagePart::ToolResult {
@@ -2286,6 +2307,9 @@ mod handle_tool_step_granted_secrets_tests {
     pub(super) struct RecordingExecutor {
         pub(super) calls: Mutex<Vec<ToolCall>>,
         pub(super) claim_source: Option<zeph_tools::ClaimSource>,
+        pub(super) definitions: Vec<ToolDef>,
+        pub(super) fail: bool,
+        pub(super) replayed_from: Option<zeph_common::trust_level::ToolResultSource>,
     }
 
     impl ErasedToolExecutor for RecordingExecutor {
@@ -2312,7 +2336,7 @@ mod handle_tool_step_granted_secrets_tests {
         }
 
         fn tool_definitions_erased(&self) -> Vec<ToolDef> {
-            vec![]
+            self.definitions.clone()
         }
 
         fn execute_tool_call_erased<'a>(
@@ -2324,6 +2348,11 @@ mod handle_tool_step_granted_secrets_tests {
             >,
         > {
             self.calls.lock().unwrap().push(call.clone());
+            if self.fail {
+                return Box::pin(std::future::ready(Err(ToolError::Execution(
+                    std::io::Error::other("upstream failure"),
+                ))));
+            }
             Box::pin(std::future::ready(Ok(Some(ToolOutput {
                 tool_name: call.tool_id.clone(),
                 summary: "ok".into(),
@@ -2335,6 +2364,7 @@ mod handle_tool_step_granted_secrets_tests {
                 locations: None,
                 raw_response: None,
                 claim_source: self.claim_source,
+                replayed_from: self.replayed_from.clone(),
                 ..Default::default()
             }))))
         }
@@ -2483,14 +2513,33 @@ mod handle_tool_step_granted_secrets_tests {
         )
     }
 
-    async fn recorded_batch_trust(
-        tool: &str,
+    #[derive(Default)]
+    struct BatchScenario<'a> {
         claim_source: Option<zeph_tools::ClaimSource>,
-        mcp_tool_names: &[String],
-    ) -> Option<u8> {
+        mcp_tool_names: &'a [String],
+        definitions: Vec<ToolDef>,
+        fail: bool,
+        replayed_from: Option<zeph_common::trust_level::ToolResultSource>,
+    }
+
+    fn mcp_def(id: &str) -> ToolDef {
+        ToolDef {
+            id: id.to_owned().into(),
+            description: "".into(),
+            schema: schemars::Schema::default(),
+            invocation: zeph_tools::registry::InvocationHint::ToolCall,
+            output_schema: None,
+            server_id: Some("github".to_owned()),
+        }
+    }
+
+    async fn recorded_batch(tool: &str, scenario: BatchScenario<'_>) -> (Option<u8>, String) {
         let executor = FilteredToolExecutor::new(
             Arc::new(RecordingExecutor {
-                claim_source,
+                claim_source: scenario.claim_source,
+                definitions: scenario.definitions,
+                fail: scenario.fail,
+                replayed_from: scenario.replayed_from,
                 ..Default::default()
             }) as Arc<dyn ErasedToolExecutor>,
             ToolPolicy::InheritAll,
@@ -2519,12 +2568,156 @@ mod handle_tool_step_granted_secrets_tests {
             &Arc::new(Mutex::new(PermissionGrants::default())),
             &mut std::collections::HashSet::new(),
             &mut ToolGates::default(),
-            mcp_tool_names,
+            scenario.mcp_tool_names,
         )
         .await;
         let result_msg = messages.last().unwrap();
         assert_eq!(result_msg.role, Role::User);
-        result_msg.metadata.trust_level
+        let content = result_msg
+            .parts
+            .iter()
+            .find_map(|p| match p {
+                MessagePart::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .expect("tool result part");
+        (result_msg.metadata.trust_level, content)
+    }
+
+    async fn recorded_batch_trust(
+        tool: &str,
+        claim_source: Option<zeph_tools::ClaimSource>,
+        mcp_tool_names: &[String],
+    ) -> Option<u8> {
+        recorded_batch(
+            tool,
+            BatchScenario {
+                claim_source,
+                mcp_tool_names,
+                ..Default::default()
+            },
+        )
+        .await
+        .0
+    }
+
+    fn external() -> u8 {
+        TurnContextTrust::ExternalUntrusted.as_u8()
+    }
+
+    /// Equals `McpTool { server_id: "github", name: "create_issue", .. }.sanitized_id()`.
+    fn github_create_issue_id() -> String {
+        "github_create_issue".to_owned()
+    }
+
+    #[tokio::test]
+    async fn registered_mcp_tool_without_claim_is_wrapped_as_external() {
+        let id = github_create_issue_id();
+        let names = [id.clone()];
+        let (trust, content) = recorded_batch(
+            &id,
+            BatchScenario {
+                mcp_tool_names: &names,
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(trust, Some(external()));
+        assert!(content.contains("<external-data"), "{content}");
+    }
+
+    #[tokio::test]
+    async fn mcp_claim_without_registry_entry_is_wrapped_as_external() {
+        let (trust, content) = recorded_batch(
+            &github_create_issue_id(),
+            BatchScenario {
+                claim_source: Some(zeph_tools::ClaimSource::Mcp),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(trust, Some(external()));
+        assert!(content.contains("<external-data"), "{content}");
+    }
+
+    #[tokio::test]
+    async fn registered_mcp_tool_error_text_is_wrapped_as_external() {
+        let id = github_create_issue_id();
+        let names = [id.clone()];
+        let (trust, content) = recorded_batch(
+            &id,
+            BatchScenario {
+                mcp_tool_names: &names,
+                fail: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(trust, Some(external()));
+        assert!(content.starts_with("[tool error]:"), "{content}");
+        assert!(content.contains("<external-data"), "{content}");
+    }
+
+    #[tokio::test]
+    async fn live_executor_mcp_definition_classifies_error_without_name_snapshot() {
+        let id = github_create_issue_id();
+        let (trust, content) = recorded_batch(
+            &id,
+            BatchScenario {
+                definitions: vec![mcp_def(&id)],
+                fail: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(trust, Some(external()));
+        assert!(content.contains("<external-data"), "{content}");
+    }
+
+    #[tokio::test]
+    async fn replayed_mcp_body_is_wrapped_as_external() {
+        let (trust, content) = recorded_batch(
+            "read_overflow",
+            BatchScenario {
+                replayed_from: Some(zeph_common::trust_level::ToolResultSource::Mcp {
+                    server_id: Some("github".to_owned()),
+                }),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(trust, Some(external()));
+        assert!(content.contains("<external-data"), "{content}");
+    }
+
+    #[tokio::test]
+    async fn replayed_native_web_body_keeps_its_external_tier() {
+        let (trust, content) = recorded_batch(
+            "read_overflow",
+            BatchScenario {
+                replayed_from: Some(zeph_common::trust_level::ToolResultSource::Native(
+                    zeph_common::trust_level::NativeToolKind::Web,
+                )),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(trust, Some(external()));
+        assert!(content.contains("<external-data"), "{content}");
+    }
+
+    #[tokio::test]
+    async fn unregistered_native_tool_error_is_not_wrapped_as_external() {
+        let (trust, content) = recorded_batch(
+            "shell",
+            BatchScenario {
+                fail: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_ne!(trust, Some(external()));
+        assert!(!content.contains("<external-data"), "{content}");
     }
 
     #[tokio::test]
@@ -2535,13 +2728,6 @@ mod handle_tool_step_granted_secrets_tests {
             &[],
         )
         .await;
-        assert_eq!(trust, Some(TurnContextTrust::ExternalUntrusted.as_u8()));
-    }
-
-    #[tokio::test]
-    async fn mcp_tool_without_claim_source_is_external_via_mcp_name_list() {
-        let names = ["github_create_issue".to_owned()];
-        let trust = recorded_batch_trust("github_create_issue", None, &names).await;
         assert_eq!(trust, Some(TurnContextTrust::ExternalUntrusted.as_u8()));
     }
 

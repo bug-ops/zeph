@@ -1803,6 +1803,7 @@ impl<C: crate::channel::Channel> Agent<C> {
                         )
                     };
 
+                    let mcp_tool_ids = self.batch_mcp_tool_ids();
                     let mut result_parts: Vec<MessagePart> = Vec::new();
                     for ((tc, call), refusal) in tool_calls.iter().zip(&calls).zip(refusals) {
                         // Built-ins are answered by the main loop, never the executor: an MCP
@@ -1884,7 +1885,12 @@ impl<C: crate::channel::Channel> Agent<C> {
                             ),
                         };
                         let (output, ..) = self
-                            .sanitize_tool_output(&raw_output, tc.name.as_str(), origin)
+                            .sanitize_tool_output(
+                                &raw_output,
+                                tc.name.as_str(),
+                                origin,
+                                &mcp_tool_ids,
+                            )
                             .await;
                         tool_trace.push(ToolCallSummary {
                             tool: tc.name.to_string(),

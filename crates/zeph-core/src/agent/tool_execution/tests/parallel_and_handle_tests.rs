@@ -335,6 +335,7 @@ async fn process_one_tool_result_blocked_is_error_with_policy_message() {
             &mut 0,
             &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             &mut zeph_sanitizer::ContentSourceKind::ToolResult,
+            &zeph_tools::McpToolIds::default(),
         )
         .await
         .unwrap();
@@ -382,6 +383,7 @@ async fn process_one_tool_result_cancelled_is_error() {
             &mut 0,
             &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             &mut zeph_sanitizer::ContentSourceKind::ToolResult,
+            &zeph_tools::McpToolIds::default(),
         )
         .await
         .unwrap();
@@ -426,6 +428,7 @@ async fn process_one_tool_result_sandbox_violation_is_error_with_sandbox_message
             &mut 0,
             &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             &mut zeph_sanitizer::ContentSourceKind::ToolResult,
+            &zeph_tools::McpToolIds::default(),
         )
         .await
         .unwrap();
@@ -476,6 +479,7 @@ async fn process_one_tool_result_ok_none_is_success_with_no_output_marker() {
             &mut 0,
             &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             &mut zeph_sanitizer::ContentSourceKind::ToolResult,
+            &zeph_tools::McpToolIds::default(),
         )
         .await
         .unwrap();
@@ -538,6 +542,7 @@ async fn process_one_tool_result_with_output_pushes_success_tool_result() {
             &mut 0,
             &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             &mut zeph_sanitizer::ContentSourceKind::ToolResult,
+            &zeph_tools::McpToolIds::default(),
         )
         .await
         .unwrap();
@@ -601,6 +606,7 @@ async fn process_one_tool_result_whitespace_only_output_is_still_success() {
             &mut 0,
             &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             &mut zeph_sanitizer::ContentSourceKind::ToolResult,
+            &zeph_tools::McpToolIds::default(),
         )
         .await
         .unwrap();
@@ -658,6 +664,7 @@ async fn process_one_tool_result_failing_status_records_tool_failure_outcome() {
             &mut 0,
             &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             &mut zeph_sanitizer::ContentSourceKind::ToolResult,
+            &zeph_tools::McpToolIds::default(),
         )
         .await
         .unwrap();

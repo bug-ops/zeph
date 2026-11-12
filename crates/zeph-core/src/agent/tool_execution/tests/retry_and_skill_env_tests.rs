@@ -115,6 +115,7 @@ async fn call_process_one_tool_result<C: crate::channel::Channel>(
             &mut 0,
             &mut zeph_sanitizer::ContentTrustLevel::Trusted,
             &mut zeph_sanitizer::ContentSourceKind::ToolResult,
+            &zeph_tools::McpToolIds::default(),
         )
         .await
         .unwrap();
@@ -190,7 +191,7 @@ async fn process_one_tool_result_emits_tool_start_then_output_via_loopback() {
             std::slice::from_ref(&tc),
             std::slice::from_ref(&tool_call_id),
             &mut started_ats,
-            &std::collections::HashSet::new(),
+            &zeph_tools::McpToolIds::default(),
             &std::collections::HashSet::new(),
         )
         .await

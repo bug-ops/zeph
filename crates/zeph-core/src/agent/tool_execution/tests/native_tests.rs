@@ -1285,8 +1285,8 @@ async fn stamp_and_send_tier_start_sets_is_mcp_from_mcp_tool_ids() {
         zeph_common::ToolExecutionId::new("id-native").unwrap(),
     ];
     let mut tool_started_ats = [Instant::now(), Instant::now()];
-    let mcp_tool_ids: std::collections::HashSet<String> =
-        std::iter::once("github_search_issues".to_string()).collect();
+    let mut mcp_tool_ids = zeph_tools::McpToolIds::default();
+    mcp_tool_ids.insert_id("github_search_issues".to_string());
 
     agent
         .stamp_and_send_tier_start(

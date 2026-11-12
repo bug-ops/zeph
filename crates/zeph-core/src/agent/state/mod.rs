@@ -179,7 +179,11 @@ pub(crate) struct SkillState {
 }
 
 pub(crate) struct McpState {
-    pub(crate) tools: Vec<zeph_mcp::McpTool>,
+    /// Full connected tool list. Private so `tool_ids` cannot drift: change it only through
+    /// [`McpState::set_tools`], [`McpState::extend_tools`] and [`McpState::retain_tools`].
+    tools: Vec<zeph_mcp::McpTool>,
+    /// MCP dispatch ids derived from `tools`, rebuilt by every mutator.
+    tool_ids: zeph_tools::McpToolIds,
     pub(crate) registry: Option<zeph_mcp::McpToolRegistry>,
     pub(crate) manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
     pub(crate) allowed_commands: Vec<String>,
@@ -1315,6 +1319,42 @@ impl MessageState {
 }
 
 impl McpState {
+    /// The full connected MCP tool list.
+    pub(crate) fn tools(&self) -> &[zeph_mcp::McpTool] {
+        &self.tools
+    }
+
+    /// MCP dispatch ids (with serving server) of the stored tool list.
+    pub(crate) fn tool_ids(&self) -> &zeph_tools::McpToolIds {
+        &self.tool_ids
+    }
+
+    /// Replace the stored tool list and rebuild the id registry.
+    pub(crate) fn set_tools(&mut self, tools: Vec<zeph_mcp::McpTool>) {
+        self.tools = tools;
+        self.rebuild_tool_ids();
+    }
+
+    /// Append tools and rebuild the id registry.
+    pub(crate) fn extend_tools(&mut self, tools: Vec<zeph_mcp::McpTool>) {
+        self.tools.extend(tools);
+        self.rebuild_tool_ids();
+    }
+
+    /// Keep only tools matching `keep` and rebuild the id registry.
+    pub(crate) fn retain_tools(&mut self, keep: impl FnMut(&zeph_mcp::McpTool) -> bool) {
+        self.tools.retain(keep);
+        self.rebuild_tool_ids();
+    }
+
+    fn rebuild_tool_ids(&mut self) {
+        let mut ids = zeph_tools::McpToolIds::default();
+        for tool in &self.tools {
+            ids.insert(tool.sanitized_id(), Some(tool.server_id.clone()));
+        }
+        self.tool_ids = ids;
+    }
+
     /// Write the **full** `self.tools` set to the shared executor `RwLock`.
     ///
     /// This is the first of two writers to `shared_tools`. Within a turn this method must run
@@ -1468,6 +1508,7 @@ impl Default for McpState {
     fn default() -> Self {
         Self {
             tools: Vec::new(),
+            tool_ids: zeph_tools::McpToolIds::default(),
             registry: None,
             manager: None,
             allowed_commands: Vec::new(),

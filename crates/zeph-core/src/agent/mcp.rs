@@ -69,7 +69,7 @@ impl<C: Channel> Agent<C> {
                         input_schemas_dropped: 0,
                         output_schemas_dropped: 0,
                     });
-                self.services.mcp.tools.extend(tools);
+                self.services.mcp.extend_tools(tools);
                 self.services.mcp.sync_executor_tools();
                 self.services.mcp.pruning_cache.reset();
                 // Defer rebuild to check_tool_refresh (next turn) so this method
@@ -106,7 +106,7 @@ impl<C: Channel> Agent<C> {
             let count = self
                 .services
                 .mcp
-                .tools
+                .tools()
                 .iter()
                 .filter(|t| t.server_id == *id)
                 .count();
@@ -128,7 +128,7 @@ impl<C: Channel> Agent<C> {
         let tools: Vec<_> = self
             .services
             .mcp
-            .tools
+            .tools()
             .iter()
             .filter(|t| t.server_id == server_id)
             .collect();
@@ -163,9 +163,9 @@ impl<C: Channel> Agent<C> {
 
         match manager.remove_server(server_id).await {
             Ok(()) => {
-                let before = self.services.mcp.tools.len();
-                self.services.mcp.tools.retain(|t| t.server_id != server_id);
-                let removed = before - self.services.mcp.tools.len();
+                let before = self.services.mcp.tools().len();
+                self.services.mcp.retain_tools(|t| t.server_id != server_id);
+                let removed = before - self.services.mcp.tools().len();
                 self.services
                     .mcp
                     .server_outcomes
@@ -205,13 +205,13 @@ impl<C: Channel> Agent<C> {
             .iter()
             .map(zeph_mcp::McpTool::qualified_name)
             .collect();
-        let mcp_total = self.services.mcp.tools.len();
+        let mcp_total = self.services.mcp.tools().len();
         let (mcp_server_count, mcp_connected_count) =
             if self.services.mcp.server_outcomes.is_empty() {
                 let connected = self
                     .services
                     .mcp
-                    .tools
+                    .tools()
                     .iter()
                     .map(|t| &t.server_id)
                     .collect::<std::collections::HashSet<_>>()
@@ -258,7 +258,7 @@ impl<C: Channel> Agent<C> {
 
     async fn match_mcp_tools(&self, query: &str) -> Vec<zeph_mcp::McpTool> {
         let Some(ref registry) = self.services.mcp.registry else {
-            return self.services.mcp.tools.clone();
+            return self.services.mcp.tools().to_vec();
         };
         let provider = self.embedding_provider.clone();
         let hits = registry
@@ -276,7 +276,7 @@ impl<C: Channel> Agent<C> {
     /// `McpToolRegistry::search` returns tools with an empty `input_schema` and default
     /// `security_meta` — the Qdrant payload only stores description fields, never the full
     /// schema (#5935). This replaces each hit with its live counterpart from
-    /// `self.services.mcp.tools`, matched by `(server_id, name)`, so the LLM prompt gets the
+    /// `self.services.mcp.tools()`, matched by `(server_id, name)`, so the LLM prompt gets the
     /// real `input_schema` instead of `{}`.
     ///
     /// A hit with no live match (server disconnected, tool removed since the last sync) is
@@ -288,7 +288,7 @@ impl<C: Channel> Agent<C> {
                 let live = self
                     .services
                     .mcp
-                    .tools
+                    .tools()
                     .iter()
                     .find(|t| t.server_id == hit.server_id && t.name == hit.name)
                     .cloned();
@@ -326,11 +326,11 @@ impl<C: Channel> Agent<C> {
             self.rebuild_semantic_index().await;
             self.sync_mcp_registry().await;
             self.refresh_shadow_sentinel_mcp_tool_ids();
-            let mcp_total = self.services.mcp.tools.len();
+            let mcp_total = self.services.mcp.tools().len();
             let mcp_servers = self
                 .services
                 .mcp
-                .tools
+                .tools()
                 .iter()
                 .map(|t| &t.server_id)
                 .collect::<std::collections::HashSet<_>>()
@@ -364,18 +364,18 @@ impl<C: Channel> Agent<C> {
             tools = new_tools.len(),
             "tools/list_changed: agent tool list refreshed"
         );
-        self.services.mcp.tools = new_tools;
+        self.services.mcp.set_tools(new_tools);
         self.services.mcp.sync_executor_tools();
         self.services.mcp.pruning_cache.reset();
         self.refresh_mcp_tool_ids();
         self.rebuild_semantic_index().await;
         self.sync_mcp_registry().await;
         self.refresh_shadow_sentinel_mcp_tool_ids();
-        let mcp_total = self.services.mcp.tools.len();
+        let mcp_total = self.services.mcp.tools().len();
         let mcp_servers = self
             .services
             .mcp
-            .tools
+            .tools()
             .iter()
             .map(|t| &t.server_id)
             .collect::<std::collections::HashSet<_>>()
@@ -400,7 +400,7 @@ impl<C: Channel> Agent<C> {
         let ids: std::collections::HashSet<String> = self
             .services
             .mcp
-            .tools
+            .tools()
             .iter()
             .map(zeph_mcp::McpTool::sanitized_id)
             .collect();
@@ -408,7 +408,7 @@ impl<C: Channel> Agent<C> {
     }
 
     /// Rebuilds `TrustGateExecutor`'s MCP tool-id registry (`self.services.security.mcp_tool_ids`)
-    /// from the current `self.services.mcp.tools`, using the same id derivation
+    /// from the current `self.services.mcp.tools()`, using the same id derivation
     /// (`McpTool::sanitized_id`) and replace-not-union semantics as the startup-time
     /// `register_mcp_tool_ids` (binary crate `agent_setup.rs`). Replace semantics correctly
     /// drop ids for servers that disconnected since the last refresh. A no-op when no handle
@@ -420,7 +420,7 @@ impl<C: Channel> Agent<C> {
         let ids: std::collections::HashSet<String> = self
             .services
             .mcp
-            .tools
+            .tools()
             .iter()
             .map(zeph_mcp::McpTool::sanitized_id)
             .collect();
@@ -434,8 +434,8 @@ impl<C: Channel> Agent<C> {
         if !self.embedding_provider.supports_embeddings() {
             return;
         }
-        // Clone tools before .await to avoid holding &self.services.mcp.tools across an await point.
-        let tools = self.services.mcp.tools.clone();
+        // Clone tools before .await to avoid holding &self.services.mcp.tools() across an await point.
+        let tools = self.services.mcp.tools().to_vec();
         let provider = self.embedding_provider.clone();
         let embedding_model = self.services.skill.embedding_model.clone();
         let embed_timeout =
@@ -594,7 +594,7 @@ impl<C: Channel> Agent<C> {
     }
 
     fn update_mcp_metrics(&mut self) {
-        let mcp_total = self.services.mcp.tools.len();
+        let mcp_total = self.services.mcp.tools().len();
         let mcp_server_count = self.services.mcp.server_outcomes.len();
         let mcp_connected_count = self
             .services
@@ -643,7 +643,7 @@ impl<C: Channel> Agent<C> {
             return;
         }
 
-        if self.services.mcp.tools.is_empty() {
+        if self.services.mcp.tools().is_empty() {
             self.services.mcp.semantic_index = None;
             return;
         }
@@ -674,13 +674,13 @@ impl<C: Channel> Agent<C> {
             })
         };
 
-        // Clone tools before .await to avoid holding &self.services.mcp.tools across an await point.
-        let tools = self.services.mcp.tools.clone();
+        // Clone tools before .await to avoid holding &self.services.mcp.tools() across an await point.
+        let tools = self.services.mcp.tools().to_vec();
         match zeph_mcp::SemanticToolIndex::build(&tools, &embed_fn).await {
             Ok(idx) => {
                 tracing::info!(
                     indexed = idx.len(),
-                    total = self.services.mcp.tools.len(),
+                    total = self.services.mcp.tools().len(),
                     "semantic tool index built"
                 );
                 self.services.mcp.semantic_index = Some(idx);
@@ -867,7 +867,7 @@ impl<C: Channel + Send + 'static> zeph_commands::McpAccess for Agent<C> {
                 let tools_snapshot: Vec<(String, String)> = self
                     .services
                     .mcp
-                    .tools
+                    .tools()
                     .iter()
                     .map(|t| (t.server_id.clone(), t.name.clone()))
                     .collect();
@@ -897,7 +897,7 @@ impl<C: Channel + Send + 'static> zeph_commands::McpAccess for Agent<C> {
                 let owned_tools: Vec<(String, String)> = if let Some(ref sid) = server_id {
                     self.services
                         .mcp
-                        .tools
+                        .tools()
                         .iter()
                         .filter(|t| &t.server_id == sid)
                         .map(|t| (t.name.clone(), t.description.clone()))
@@ -1097,7 +1097,10 @@ mod tests {
 
         let real_schema =
             serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}});
-        agent.services.mcp.tools = vec![test_mcp_tool("fs", "read_file", real_schema.clone())];
+        agent
+            .services
+            .mcp
+            .set_tools(vec![test_mcp_tool("fs", "read_file", real_schema.clone())]);
 
         // Shape of what McpToolRegistry::search actually returns: same (server_id, name),
         // empty schema/default security meta.
@@ -1120,7 +1123,11 @@ mod tests {
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
 
-        agent.services.mcp.tools = vec![test_mcp_tool("fs", "other_tool", serde_json::json!({}))];
+        agent.services.mcp.set_tools(vec![test_mcp_tool(
+            "fs",
+            "other_tool",
+            serde_json::json!({}),
+        )]);
 
         let stub = test_mcp_tool("fs", "read_file", serde_json::json!({}));
 
@@ -1144,10 +1151,10 @@ mod tests {
             serde_json::json!({"type": "object", "properties": {"a": {"type": "string"}}});
         let schema_c =
             serde_json::json!({"type": "object", "properties": {"c": {"type": "number"}}});
-        agent.services.mcp.tools = vec![
+        agent.services.mcp.set_tools(vec![
             test_mcp_tool("srv1", "tool_a", schema_a.clone()),
             test_mcp_tool("srv2", "tool_c", schema_c.clone()),
-        ];
+        ]);
 
         let hits = vec![
             test_mcp_tool("srv1", "tool_a", serde_json::json!({})),
@@ -1180,7 +1187,10 @@ mod tests {
             "properties": {"query": {"type": "string"}},
             "required": ["query"]
         });
-        agent.services.mcp.tools = vec![test_mcp_tool("search", "web_search", real_schema)];
+        agent
+            .services
+            .mcp
+            .set_tools(vec![test_mcp_tool("search", "web_search", real_schema)]);
 
         let stub = test_mcp_tool("search", "web_search", serde_json::json!({}));
         let rehydrated = agent.rehydrate_mcp_tools(vec![stub]);
@@ -1232,14 +1242,14 @@ mod tests {
         let registry = create_test_registry();
         let executor = MockToolExecutor::no_tools();
         let mut agent = Agent::new(provider, channel, registry, None, 5, executor);
-        agent.services.mcp.tools = vec![zeph_mcp::McpTool {
+        agent.services.mcp.set_tools(vec![zeph_mcp::McpTool {
             server_id: "srv".into(),
             name: "existing_tool".into(),
             description: String::new(),
             input_schema: serde_json::json!({}),
             output_schema: None,
             security_meta: zeph_config::mcp_security::ToolSecurityMeta::default(),
-        }];
+        }]);
 
         let (_tx, rx) = tokio::sync::watch::channel(Vec::<zeph_mcp::McpTool>::new());
         agent.services.mcp.tool_rx = Some(rx);
@@ -1271,7 +1281,7 @@ mod tests {
 
         agent.check_tool_refresh().await;
         assert_eq!(agent.services.mcp.tool_count(), 1);
-        assert_eq!(agent.services.mcp.tools[0].name, "refreshed_tool");
+        assert_eq!(agent.services.mcp.tools()[0].name, "refreshed_tool");
     }
 
     /// #5736 follow-up (S1): a server connected after startup via a `tools/list_changed`
@@ -1455,15 +1465,15 @@ mod tests {
         agent.services.security.mcp_tool_ids = Some(std::sync::Arc::clone(&handle));
 
         // Mirrors what handle_mcp_add/handle_mcp_remove already do before setting the flag:
-        // self.services.mcp.tools is updated first, then pending_semantic_rebuild = true.
-        agent.services.mcp.tools = vec![zeph_mcp::McpTool {
+        // self.services.mcp.tools() is updated first, then pending_semantic_rebuild = true.
+        agent.services.mcp.set_tools(vec![zeph_mcp::McpTool {
             server_id: "srv".into(),
             name: "added_tool".into(),
             description: String::new(),
             input_schema: serde_json::json!({}),
             output_schema: None,
             security_meta: zeph_config::mcp_security::ToolSecurityMeta::default(),
-        }];
+        }]);
         agent.services.mcp.pending_semantic_rebuild = true;
 
         agent.check_tool_refresh().await;
