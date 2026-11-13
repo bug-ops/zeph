@@ -1372,36 +1372,50 @@ impl<C: crate::channel::Channel> Agent<C> {
                                                     .ensemble_members
                                                     .iter()
                                                     .find(|(name, _)| name == &usage.member);
-                                                let (provider_kind, model) = member_provider
-                                                    .map_or(
-                                                        ("cloud", usage.member.as_str()),
-                                                        |(_, p)| {
-                                                            (
-                                                                p.provider_kind_str(),
-                                                                p.model_identifier(),
-                                                            )
-                                                        },
-                                                    );
-                                                tracker.record_usage(
-                                                    &usage.member,
-                                                    provider_kind,
-                                                    model,
+                                                let member_usage = member_provider
+                                                    .and_then(|(_, p)| p.last_response_usage())
+                                                    .map(|u| zeph_llm::provider::ResponseUsage {
+                                                        auxiliary: None,
+                                                        ..u
+                                                    });
+                                                let target = member_provider.map_or(
+                                                    super::utils::CostTarget {
+                                                        provider_name: &usage.member,
+                                                        kind: "cloud",
+                                                        model: usage.member.as_str(),
+                                                    },
+                                                    |(_, p)| {
+                                                        super::utils::CostTarget::serving(
+                                                            &usage.member,
+                                                            p,
+                                                        )
+                                                    },
+                                                );
+                                                let model = target.model;
+                                                self.record_cost_for(
+                                                    target,
                                                     usage.input_tokens,
-                                                    0,
-                                                    0,
                                                     usage.output_tokens,
-                                                    zeph_config::ServiceSpeed::Standard,
+                                                    member_usage,
                                                 );
 
                                                 // Issue #6549: durable ledger row, priced via
-                                                // the exact same tracker.price_of used above.
+                                                // the exact same tracker.price_of the fold used.
+                                                let zeph_llm::provider::CacheUsage {
+                                                    creation: cache_write,
+                                                    read: cache_read,
+                                                } = member_usage
+                                                    .and_then(|u| u.cache)
+                                                    .unwrap_or_default();
+                                                let speed = member_usage
+                                                    .map_or_else(Default::default, |u| u.speed);
                                                 let cost_cents = tracker.price_of(
                                                     model,
                                                     usage.input_tokens,
-                                                    0,
-                                                    0,
+                                                    cache_read,
+                                                    cache_write,
                                                     usage.output_tokens,
-                                                    zeph_config::ServiceSpeed::Standard,
+                                                    speed,
                                                 );
                                                 let (ttft_ms, reasoning_tokens) = member_provider
                                                     .map_or((None, None), |(_, p)| {
@@ -1424,8 +1438,8 @@ impl<C: crate::channel::Channel> Agent<C> {
                                                     model_name: model.to_owned(),
                                                     input_tokens: usage.input_tokens,
                                                     output_tokens: usage.output_tokens,
-                                                    cache_read_tokens: 0,
-                                                    cache_write_tokens: 0,
+                                                    cache_read_tokens: cache_read,
+                                                    cache_write_tokens: cache_write,
                                                     reasoning_tokens,
                                                     cost_cents,
                                                     latency_ms: verify_latency_ms,

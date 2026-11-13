@@ -11,6 +11,32 @@ use crate::metrics::{MetricsSnapshot, SECURITY_EVENT_CAP, SecurityEvent};
 use zeph_common::SecurityEventCategory;
 use zeph_tools::FilterStats;
 
+/// Who served a billed call: the provider name, its price family and the model that is priced.
+///
+/// Pricing and the per-provider cost breakdown follow the target, so a background or ensemble
+/// call served by another provider is billed at that provider's model and speed rather than the
+/// agent's primary model.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CostTarget<'a> {
+    pub provider_name: &'a str,
+    pub kind: &'a str,
+    pub model: &'a str,
+}
+
+impl<'a> CostTarget<'a> {
+    /// Target for a call served by `provider`, priced by its effective (router-resolved) model.
+    pub(crate) fn serving(
+        provider_name: &'a str,
+        provider: &'a zeph_llm::any::AnyProvider,
+    ) -> Self {
+        Self {
+            provider_name,
+            kind: provider.provider_kind_str(),
+            model: provider.effective_model_identifier(),
+        }
+    }
+}
+
 /// Fetch entity/edge/community counts from `store`, defaulting each to `0` on a per-metric error.
 ///
 /// Shared by [`Agent::sync_graph_counts`] and the background graph-count-sync tasks in
@@ -341,20 +367,55 @@ impl<C: Channel> Agent<C> {
         self.record_cost(input_tokens, output_tokens, usage);
     }
 
-    /// Like [`Self::record_cost_and_cache`] for background calls (planner, aggregator) made on
-    /// another provider: the main provider's last auxiliary usage belongs to its own earlier
-    /// call and must not be billed a second time.
+    /// Like [`Self::record_cost_and_cache`] for background calls (planner, aggregator) served by
+    /// `serving`: cache, reasoning and speed come from the serving provider's last response and
+    /// the call is priced at its effective model. Its auxiliary usage is dropped because when
+    /// `serving` is the main provider it belongs to an earlier, already billed call.
     #[cfg(feature = "scheduler")]
-    pub(crate) fn record_background_cost(&self, input_tokens: u64, output_tokens: u64) {
-        let usage = self.provider.last_response_usage().map(|u| ResponseUsage {
+    pub(crate) fn record_background_cost(
+        &self,
+        input_tokens: u64,
+        output_tokens: u64,
+        serving: &zeph_llm::any::AnyProvider,
+    ) {
+        let usage = serving.last_response_usage().map(|u| ResponseUsage {
             auxiliary: None,
-            speed: zeph_config::ServiceSpeed::Standard,
             ..u
         });
-        self.record_cost(input_tokens, output_tokens, usage);
+        self.record_cost_for(
+            CostTarget::serving(serving.name(), serving),
+            input_tokens,
+            output_tokens,
+            usage,
+        );
+    }
+
+    /// Target of the main turn: the agent's active provider name and configured model.
+    fn main_cost_target(&self) -> CostTarget<'_> {
+        let provider_name = if self.runtime.config.active_provider_name.is_empty() {
+            self.provider.name()
+        } else {
+            self.runtime.config.active_provider_name.as_str()
+        };
+        CostTarget {
+            provider_name,
+            kind: self.provider.provider_kind_str(),
+            model: &self.runtime.config.model_name,
+        }
     }
 
     fn record_cost(&self, input_tokens: u64, output_tokens: u64, usage: Option<ResponseUsage>) {
+        self.record_cost_for(self.main_cost_target(), input_tokens, output_tokens, usage);
+    }
+
+    /// Fold one call's usage into the cost tracker and billing totals, attributed to `target`.
+    pub(crate) fn record_cost_for(
+        &self,
+        target: CostTarget<'_>,
+        input_tokens: u64,
+        output_tokens: u64,
+        usage: Option<ResponseUsage>,
+    ) {
         let CacheUsage {
             creation: cache_write,
             read: cache_read,
@@ -363,15 +424,15 @@ impl<C: Channel> Agent<C> {
         let speed = usage.map_or_else(Default::default, |u| u.speed);
 
         if let Some(ref tracker) = self.runtime.metrics.cost_tracker {
-            let provider_name = if self.runtime.config.active_provider_name.is_empty() {
-                self.provider.name()
-            } else {
-                self.runtime.config.active_provider_name.as_str()
-            };
+            let CostTarget {
+                provider_name,
+                kind,
+                model,
+            } = target;
             tracker.record_usage(
                 provider_name,
-                self.provider.provider_kind_str(),
-                &self.runtime.config.model_name,
+                kind,
+                model,
                 input_tokens,
                 cache_read,
                 cache_write,
@@ -379,13 +440,7 @@ impl<C: Channel> Agent<C> {
                 speed,
             );
             if auxiliary != AuxiliaryUsage::default() {
-                tracker.record_auxiliary_usage(
-                    provider_name,
-                    self.provider.provider_kind_str(),
-                    &self.runtime.config.model_name,
-                    auxiliary,
-                    speed,
-                );
+                tracker.record_auxiliary_usage(provider_name, kind, model, auxiliary, speed);
             }
             let breakdown = tracker.provider_breakdown();
             self.update_metrics(|m| {
@@ -413,13 +468,11 @@ impl<C: Channel> Agent<C> {
     /// `last_ttft_ms`) — pass the exact [`zeph_llm::any::AnyProvider`]
     /// instance that served this call (e.g. `orchestrator_provider` for `plan.rs`'s
     /// planner/aggregator sites), since each provider clone owns an independent usage tracker.
-    /// Naming and pricing intentionally always resolve from `self.runtime.config`
-    /// (`active_provider_name`/`model_name`), matching [`Self::record_cost_and_cache`]'s
-    /// existing resolution exactly — mirroring its behavior is what keeps this row's cost
-    /// identical to the value that call folds into the live daily aggregate (M2), even though
-    /// that means a background call served by an alternate provider is still priced against
-    /// the agent's primary model config (pre-existing `record_cost_and_cache` behavior, not
-    /// changed here).
+    /// Naming and pricing resolve exactly as the matching cost fold does, which keeps this
+    /// row's cost identical to the value folded into the live daily aggregate (M2): a
+    /// conversation row uses the agent's configured provider and model
+    /// ([`Self::record_cost_and_cache`]); planner and aggregator rows use `provider` itself
+    /// ([`Self::record_background_cost`]).
     ///
     /// `message_id`/`conversation_id` are left to the caller: the turn-loop path fills
     /// `message_id` in only once the paired `messages` row is persisted; `plan.rs`/
@@ -450,20 +503,26 @@ impl<C: Channel> Agent<C> {
         // consumption point (speculative-decoding path) over the provider-level TTFB proxy —
         // `stream_ttft_ms` is `Some` only when this call actually streamed.
         let ttft_ms = stream_ttft_ms.or_else(|| provider.last_ttft_ms());
-        let provider_name = if self.runtime.config.active_provider_name.is_empty() {
-            self.provider.name()
-        } else {
-            self.runtime.config.active_provider_name.as_str()
+        let CostTarget {
+            provider_name,
+            model,
+            ..
+        } = match source {
+            zeph_memory::UsageSource::Conversation => self.main_cost_target(),
+            zeph_memory::UsageSource::Planner
+            | zeph_memory::UsageSource::Aggregator
+            | zeph_memory::UsageSource::EnsembleMember => {
+                CostTarget::serving(provider.name(), provider)
+            }
         };
-        let cost_cents =
-            tracker.price_of(
-                &self.runtime.config.model_name,
-                input_tokens,
-                cache_read,
-                cache_write,
-                output_tokens,
-                speed,
-            ) + tracker.price_of_auxiliary(&self.runtime.config.model_name, auxiliary, speed);
+        let cost_cents = tracker.price_of(
+            model,
+            input_tokens,
+            cache_read,
+            cache_write,
+            output_tokens,
+            speed,
+        ) + tracker.price_of_auxiliary(model, auxiliary, speed);
         // Generation-window throughput: only derivable once TTFT/TTFB is known and the
         // remaining window (latency - ttft) is positive.
         let tokens_per_sec = ttft_ms.and_then(|ttft| {
@@ -480,7 +539,7 @@ impl<C: Channel> Agent<C> {
             conversation_id,
             source,
             provider_name: provider_name.to_owned(),
-            model_name: self.runtime.config.model_name.clone(),
+            model_name: model.to_owned(),
             input_tokens: input_tokens.saturating_add(auxiliary.input),
             output_tokens: output_tokens.saturating_add(auxiliary.output),
             cache_read_tokens: cache_read.saturating_add(auxiliary.cache_read),
@@ -1247,6 +1306,83 @@ mod tests {
             plain_snap.completion_tokens + 600
         );
         assert_eq!(billed_snap.context_tokens, 1000);
+    }
+
+    #[cfg(feature = "scheduler")]
+    fn serving_fast_provider() -> zeph_llm::any::AnyProvider {
+        zeph_llm::any::AnyProvider::Mock(
+            zeph_llm::mock::MockProvider::with_responses(vec![])
+                .with_model_identifier("claude-opus-5-5")
+                .with_published_usage(zeph_llm::provider::ResponseUsage {
+                    cache: Some(zeph_llm::provider::CacheUsage {
+                        creation: 0,
+                        read: 1000,
+                    }),
+                    speed: zeph_config::ServiceSpeed::Fast,
+                    ..zeph_llm::provider::ResponseUsage::default()
+                }),
+        )
+    }
+
+    #[cfg(feature = "scheduler")]
+    #[tokio::test]
+    async fn background_cost_bills_serving_provider_model_speed_and_cache() {
+        use zeph_llm::provider::LlmProvider as _;
+
+        let (agent, rx) = billing_agent(None);
+        let serving = serving_fast_provider();
+        serving
+            .chat(&[zeph_llm::provider::Message::from_legacy(Role::User, "q")])
+            .await
+            .unwrap();
+
+        agent.record_background_cost(1000, 200, &serving);
+
+        let expected = crate::cost::CostTracker::new(true, 1000.0).price_of(
+            "claude-opus-5-5",
+            1000,
+            1000,
+            0,
+            200,
+            zeph_config::ServiceSpeed::Fast,
+        );
+        let snap = rx.borrow();
+        assert!(
+            (snap.cost_spent_cents - expected).abs() < 1e-9,
+            "{} vs {expected}",
+            snap.cost_spent_cents
+        );
+        assert_eq!(snap.cache_read_tokens, 1000);
+    }
+
+    #[cfg(feature = "scheduler")]
+    #[tokio::test]
+    async fn background_usage_record_prices_at_serving_provider_model() {
+        use zeph_llm::provider::LlmProvider as _;
+
+        let (agent, rx) = billing_agent(None);
+        let serving = serving_fast_provider();
+        serving
+            .chat(&[zeph_llm::provider::Message::from_legacy(Role::User, "q")])
+            .await
+            .unwrap();
+
+        agent.record_background_cost(1000, 200, &serving);
+        let record = agent
+            .build_usage_record(
+                &serving,
+                zeph_memory::UsageSource::Planner,
+                None,
+                None,
+                1000,
+                200,
+                50,
+                None,
+            )
+            .expect("cost tracker enabled");
+
+        assert_eq!(record.model_name, "claude-opus-5-5");
+        assert!((record.cost_cents - rx.borrow().cost_spent_cents).abs() < 1e-9);
     }
 
     #[test]
