@@ -1635,7 +1635,7 @@ where
 async fn spawn_acp_agent(
     d: std::sync::Arc<SharedAgentDeps>,
     mut channel: zeph_core::channel::LoopbackChannel,
-    acp_ctx: Option<zeph_acp::AcpContext>,
+    mut acp_ctx: Option<zeph_acp::AcpContext>,
     session_ctx: zeph_acp::SessionContext,
 ) {
     use std::sync::Arc;
@@ -1676,7 +1676,12 @@ async fn spawn_acp_agent(
     let code_qdrant_ops = d.code_qdrant_ops.clone();
     let shutdown_rx = d.shutdown_rx.clone();
     let config_path = d.config_path.clone();
-    let mcp_tools = d.mcp_tools.clone();
+    // The IDE's own MCP servers for this session join the shared tools, so the session's tool
+    // list (and its id registry) covers them from the first turn.
+    let mut mcp_tools = d.mcp_tools.clone();
+    if let Some(ctx) = acp_ctx.as_mut() {
+        mcp_tools.append(&mut ctx.ide_mcp_tools);
+    }
     let mcp_registry = d.mcp_registry.clone();
     let mcp_manager = Arc::clone(&d.mcp_manager);
     let mcp_config = d.mcp_config.clone();

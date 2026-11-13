@@ -49,6 +49,7 @@ impl ZephAcpAgentState {
             provider_factory: None,
             available_models: Arc::new(RwLock::new(Vec::new())),
             mcp_manager: None,
+            ide_mcp: Arc::new(super::ide_mcp::IdeMcpRegistry::new()),
             project_rules: Vec::new(),
             title_max_chars: 60,
             max_history: 100,

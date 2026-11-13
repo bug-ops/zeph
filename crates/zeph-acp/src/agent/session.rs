@@ -23,7 +23,6 @@ use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::LlmProvider as _;
 use zeph_memory::ConversationId;
 
-use crate::mcp_bridge::acp_mcp_servers_to_entries;
 use crate::terminal::AcpShellExecutor;
 
 #[cfg(feature = "unstable-session-usage")]
@@ -261,7 +260,7 @@ impl ZephAcpAgentState {
             (None, None)
         };
 
-        let acp_ctx = self
+        let mut acp_ctx = self
             .build_acp_context(
                 &session_id,
                 cx,
@@ -301,18 +300,12 @@ impl ZephAcpAgentState {
         }
 
         Self::spawn_notify_drainer(&entry, cx)?;
+        let attachment = self
+            .attach_ide_mcp_servers(&session_id, &args.mcp_servers)
+            .await;
+        acp_ctx.ide_mcp_tools = attachment.tools;
+        entry.ide_mcp_lease = attachment.lease;
         self.sessions.lock().insert(session_id.clone(), entry);
-
-        if let Some(ref manager) = self.mcp_manager {
-            let entries =
-                acp_mcp_servers_to_entries(&args.mcp_servers, self.timeouts.elicitation_secs);
-            for server_entry in entries {
-                let id = server_entry.id.clone();
-                if let Err(e) = manager.add_server(&server_entry).await {
-                    tracing::warn!(server_id = %id, error = %e, "failed to register IDE MCP server");
-                }
-            }
-        }
 
         let conversation_id = self.create_session_conversation(&session_id).await;
         let session_ctx = SessionContext {
@@ -482,7 +475,7 @@ impl ZephAcpAgentState {
         let provider_override: Arc<RwLock<Option<AnyProvider>>> = Arc::new(RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
         let (notify_tx, notify_rx) = mpsc::channel(256);
-        let acp_ctx = self
+        let mut acp_ctx = self
             .build_acp_context(
                 &args.session_id,
                 cx,
@@ -501,7 +494,7 @@ impl ZephAcpAgentState {
             &initial_model,
             self.model_config.default_temperature_preset,
         );
-        let entry = Self::make_session_entry(
+        let mut entry = Self::make_session_entry(
             handle,
             initial_model,
             session_cwd.clone(),
@@ -517,6 +510,11 @@ impl ZephAcpAgentState {
         );
 
         Self::spawn_notify_drainer(&entry, cx)?;
+        let attachment = self
+            .attach_ide_mcp_servers(&args.session_id, &args.mcp_servers)
+            .await;
+        acp_ctx.ide_mcp_tools = attachment.tools;
+        entry.ide_mcp_lease = attachment.lease;
 
         self.sessions.lock().insert(args.session_id.clone(), entry);
 
@@ -744,7 +742,7 @@ impl ZephAcpAgentState {
         let provider_override: Arc<RwLock<Option<AnyProvider>>> = Arc::new(RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
         let (notify_tx, notify_rx) = mpsc::channel(256);
-        let acp_ctx = self
+        let mut acp_ctx = self
             .build_acp_context(
                 &new_id,
                 cx,
@@ -759,7 +757,7 @@ impl ZephAcpAgentState {
         let shell_executor = acp_ctx.shell_executor.clone();
         let initial_model = inherited_model;
         self.prime_provider_override(&provider_override, &initial_model, inherited_preset);
-        let entry = Self::make_session_entry(
+        let mut entry = Self::make_session_entry(
             handle,
             initial_model.clone(),
             args.cwd.clone(),
@@ -775,6 +773,11 @@ impl ZephAcpAgentState {
         );
 
         Self::spawn_notify_drainer(&entry, cx)?;
+        let attachment = self
+            .attach_ide_mcp_servers(&new_id, &args.mcp_servers)
+            .await;
+        acp_ctx.ide_mcp_tools = attachment.tools;
+        entry.ide_mcp_lease = attachment.lease;
 
         self.sessions.lock().insert(new_id.clone(), entry);
 
@@ -876,7 +879,7 @@ impl ZephAcpAgentState {
         let provider_override: Arc<RwLock<Option<AnyProvider>>> = Arc::new(RwLock::new(None));
         let provider_override_for_ctx = Arc::clone(&provider_override);
         let (notify_tx, notify_rx) = mpsc::channel(256);
-        let acp_ctx = self
+        let mut acp_ctx = self
             .build_acp_context(
                 &args.session_id,
                 cx,
@@ -891,7 +894,7 @@ impl ZephAcpAgentState {
         let shell_executor = acp_ctx.shell_executor.clone();
         let initial_model = inherited_model;
         self.prime_provider_override(&provider_override, &initial_model, inherited_preset);
-        let entry = Self::make_session_entry(
+        let mut entry = Self::make_session_entry(
             handle,
             initial_model,
             args.cwd.clone(),
@@ -907,6 +910,11 @@ impl ZephAcpAgentState {
         );
 
         Self::spawn_notify_drainer(&entry, cx)?;
+        let attachment = self
+            .attach_ide_mcp_servers(&args.session_id, &args.mcp_servers)
+            .await;
+        acp_ctx.ide_mcp_tools = attachment.tools;
+        entry.ide_mcp_lease = attachment.lease;
 
         self.sessions.lock().insert(args.session_id.clone(), entry);
 
@@ -1356,6 +1364,7 @@ impl ZephAcpAgentState {
             temperature_preset: Mutex::new(config.temperature_preset),
             shell_executor,
             agent_loop_handle: Mutex::new(None),
+            ide_mcp_lease: None,
             #[cfg(feature = "unstable-elicitation")]
             elicitation_bridge_handle: None,
             #[cfg(feature = "unstable-session-usage")]
