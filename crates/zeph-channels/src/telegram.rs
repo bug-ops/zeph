@@ -40,6 +40,7 @@ use teloxide::prelude::*;
 use teloxide::types::{BotCommand, ChatAction, MessageId, ParseMode};
 use tokio::sync::mpsc;
 use zeph_common::TaskSupervisor;
+use zeph_common::http::{BodyLimit, BodyReadError, read_capped};
 use zeph_core::channel::{
     Attachment, AttachmentKind, Channel, ChannelError, ChannelMessage, ElicitationField,
     ElicitationFieldType, ElicitationRequest, ElicitationResponse, StatusText,
@@ -49,6 +50,9 @@ use zeph_core::config::{TelegramConfig, TelegramUserId};
 const MAX_MESSAGE_LEN: usize = 4096;
 const MAX_IMAGE_BYTES: u32 = 20 * 1024 * 1024;
 const MAX_TRACKED_CHATS: usize = 1000;
+/// Cap on one upstream response body buffered by the guest proxy; matches the Bot API 20 MB
+/// file download limit, since the proxy also carries `bot.download_file` traffic.
+const MAX_GUEST_UPSTREAM_BODY: BodyLimit = BodyLimit::from_const(20 * 1024 * 1024);
 
 type BotReplyCounters = Arc<Mutex<HashMap<ChatId, u32>>>;
 
@@ -808,6 +812,7 @@ struct GuestProxyState {
     client: reqwest::Client,
     tx: mpsc::Sender<IncomingMessage>,
     allowlist: Arc<TelegramAllowlist>,
+    body_limit: BodyLimit,
 }
 
 /// Guest Mode transparent HTTP proxy.
@@ -838,6 +843,7 @@ fn spawn_guest_proxy(
         client,
         tx,
         allowlist,
+        body_limit: MAX_GUEST_UPSTREAM_BODY,
     };
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0")
@@ -962,9 +968,16 @@ async fn proxy_handler(State(state): State<GuestProxyState>, req: Request<Body>)
 
     let status = upstream_resp.status();
     let resp_headers = upstream_resp.headers().clone();
-    let resp_bytes = match upstream_resp.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
+    let resp_bytes = match read_capped(upstream_resp, state.body_limit).await {
+        Ok(b) => axum::body::Bytes::from(b),
+        Err(BodyReadError::TooLarge { limit }) => {
+            tracing::warn!(
+                limit,
+                "guest proxy: upstream response exceeded the body cap"
+            );
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+        Err(BodyReadError::Transport(e)) => {
             tracing::warn!(
                 "guest proxy: failed to read upstream response: {}",
                 e.without_url()
@@ -2939,5 +2952,50 @@ mod tests {
         );
 
         cancel.cancel();
+    }
+
+    async fn proxy_response(
+        server: &MockServer,
+        body_len: usize,
+        limit: BodyLimit,
+    ) -> axum::response::Response {
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'x'; body_len]))
+            .mount(server)
+            .await;
+        let (tx, _rx) = mpsc::channel(1);
+        let state = GuestProxyState {
+            upstream: format!("{}/bottoken", server.uri()),
+            client: reqwest::Client::new(),
+            tx,
+            allowlist: Arc::new(TelegramAllowlist::default()),
+            body_limit: limit,
+        };
+        let req = Request::builder()
+            .uri("/bottoken/bottoken/getMe")
+            .body(Body::empty())
+            .expect("valid request");
+        proxy_handler(State(state), req).await
+    }
+
+    #[tokio::test]
+    async fn guest_proxy_forwards_body_within_cap() {
+        let server = MockServer::start().await;
+        let resp = proxy_response(&server, 64, BodyLimit::from_const(64)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+        assert_eq!(bytes.len(), 64);
+    }
+
+    #[tokio::test]
+    async fn guest_proxy_rejects_upstream_body_over_cap() {
+        let server = MockServer::start().await;
+        let resp = proxy_response(&server, 65, BodyLimit::from_const(64)).await;
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn guest_proxy_cap_covers_bot_api_file_downloads() {
+        assert!(MAX_GUEST_UPSTREAM_BODY.get() >= MAX_IMAGE_BYTES as usize);
     }
 }
