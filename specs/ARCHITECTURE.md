@@ -17,9 +17,9 @@ related:
 # Specs Architecture: Dependency Graph
 
 > [!note] Graph coverage — 2026-09 update
-> This dependency graph includes all specs 001–087. Coverage was extended per issue #6634
+> This dependency graph includes all specs 001–089. Coverage was extended per issue #6634
 > to include all 85 registered specifications as of that pass; specs 086 and 087 were added in a
-> later v0.22.5 spec-maintenance pass. Dependency edges were derived primarily from 
+> later v0.22.5 spec-maintenance pass, and specs 088 and 089 in the v0.23.0 pass. Dependency edges were derived primarily from 
 > each spec's front matter `related:` fields, with spot-checks against body-text cross-references 
 > and "Sources" sections. The graph represents known dependencies as of 2026-09; future maintainers 
 > should spot-check new specs' edges against their full source before publishing. For the most current details, see [[MOC-specs]].
@@ -122,6 +122,8 @@ graph TB
     085["085: Agent Identity"]
     086["086: Skill Execution State"]
     087["087: Subagent Peer Messaging"]
+    088["088: Prompt Cache Prefix Stability"]
+    089["089: Goal Self-Evaluation"]
     
     %% Layer 0 → Layer 1 (core foundation)
     001 --> 002
@@ -415,6 +417,15 @@ graph TB
     005 --> 086
     021 --> 086
     002 --> 086
+
+    003 --> 088
+    004 --> 088
+    005 --> 088
+    021 --> 088
+    082 --> 088
+
+    002 --> 089
+    039 --> 089
     
     048 --> 082
 
@@ -468,7 +479,7 @@ graph TB
     class 006,008,016,010,025 layer3
     class 020,029,031,018,028,017,019 layer4
     class 013,014,027,032,033,034 crosscutting
-    class 021,035,036,037,038,039,040,041,042,043,044,045,046,047,048,049,050,051,052,053,054,055,056,057,058,059,060,061,062,063,064,065,066,067,068,069,070,071,072,073,074,075,076,077,078,079,080,081,082,083,084,085,086,087 expanded
+    class 021,035,036,037,038,039,040,041,042,043,044,045,046,047,048,049,050,051,052,053,054,055,056,057,058,059,060,061,062,063,064,065,066,067,068,069,070,071,072,073,074,075,076,077,078,079,080,081,082,083,084,085,086,087,088,089 expanded
 ```
 
 ---
@@ -485,7 +496,7 @@ graph TB
 
 **Layer 4 (017-020, 028, 029, 031, 037, 041, 064, 078)** — Infrastructure & Persistence: Config, database, scheduling, hooks, indexing, gateway, durable execution, agent persistence.
 
-**Layer X (013, 014, 027, 032-034, 036, 038-039, 042-046, 048-052, 054-062, 063, 065-067, 069-077, 079-085, 086-087)** — Protocols, Specialized, & Extended Subsystems: ACP, A2A, runtime layers, handoff, vault, background tasks, slash commands, shared primitives, subagent lifecycle, protocol gaps, MARCH quality, CLI, SLM metrics, decomposition, security governance, LLM integrations (Gonka, Cocoon), speculation, feedback, AutoSkill pipeline, context-adaptive memory, worktrees, deep links, knowledge ingest, threat model, runtime controls, orchestration ensemble/HITL/node control, config flags, safe mode, plugin management, cross-thread store, transcript integrity, usage tracking, memory consent, identity isolation, skill execution state, subagent peer messaging.
+**Layer X (013, 014, 027, 032-034, 036, 038-039, 042-046, 048-052, 054-062, 063, 065-067, 069-077, 079-085, 086-089)** — Protocols, Specialized, & Extended Subsystems: ACP, A2A, runtime layers, handoff, vault, background tasks, slash commands, shared primitives, subagent lifecycle, protocol gaps, MARCH quality, CLI, SLM metrics, decomposition, security governance, LLM integrations (Gonka, Cocoon), speculation, feedback, AutoSkill pipeline, context-adaptive memory, worktrees, deep links, knowledge ingest, threat model, runtime controls, orchestration ensemble/HITL/node control, config flags, safe mode, plugin management, cross-thread store, transcript integrity, usage tracking, memory consent, identity isolation, skill execution state, subagent peer messaging, prompt cache prefix stability, goal self-evaluation.
 
 ---
 
@@ -498,7 +509,7 @@ graph TB
 | **2** | 007, 011, 026, 030, 035, 047, 068, 084 | I/O, telemetry & user interaction | Channel trait, TUI widgets, profiling, CLI modes |
 | **3** | 006, 008, 016, 010, 025, 040, 050, 053, 072 | Tool execution & safety | ToolExecutor trait, security gates, sanitizer, classifiers |
 | **4** | 020, 029, 031, 018, 028, 017, 019, 037, 041, 064, 078 | Infrastructure & persistence | Config, persistence, hooks, durable execution |
-| **X** | 013, 014, 027, 032, 033, 034, 036, 038, 039, 042, 043, 044, 045, 046, 048, 049, 051, 052, 054, 055, 056-061, 062, 063, 065, 066, 067, 069, 070, 071, 073, 074, 075, 076, 077, 079, 080, 081, 082, 083, 085, 086, 087 | Protocols, security, orchestration & specialized subsystems | ACP, A2A, handoff, vault, skills, orchestration, memory, LLM integrations |
+| **X** | 013, 014, 027, 032, 033, 034, 036, 038, 039, 042, 043, 044, 045, 046, 048, 049, 051, 052, 054, 055, 056-061, 062, 063, 065, 066, 067, 069, 070, 071, 073, 074, 075, 076, 077, 079, 080, 081, 082, 083, 085, 086, 087, 088, 089 | Protocols, security, orchestration & specialized subsystems | ACP, A2A, handoff, vault, skills, orchestration, memory, LLM integrations |
 
 ---
 

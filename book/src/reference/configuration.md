@@ -160,7 +160,7 @@ correction_min_similarity = 0.75      # Min cosine similarity for correction rec
 # cost_tiers = ["ollama", "claude"]   # Explicit cost ordering (cheapest first)
 
 # Quality gate for Thompson/EMA routing — post-selection embedding similarity check.
-# quality_gate = 0.0    # Cosine threshold; 0.0 = disabled (default: 0.0). Applies to thompson/ema only.
+# quality_gate = 0.0    # Cosine threshold in 0.0..=1.0; 0.0 = disabled (default: 0.0). NaN or out-of-range values fail config load. Applies to thompson/ema only.
 
 # ASI coherence tracking — penalizes providers with low response coherence.
 # [llm.routing.asi]
@@ -206,6 +206,7 @@ embedding_model = "qwen3-embedding"    # model for text embeddings
 # server_compaction_trigger_tokens = 140000  # Input tokens that trigger server compaction (minimum 50000); default 70% of the context window
 # enable_extended_context = false      # Lift the 200k window ceiling to the model's native window (1M on current models); sends context-1m-2025-08-07 only for legacy Sonnet 4/4.5
 # prompt_cache_ttl = "1h"              # "1h" = extended TTL beta (writes ~2× cost); omit or "ephemeral" for default ~5 min
+# speed = "fast"                       # Claude only: "standard" (default) or "fast" (up to 2.5x output speed at 2x price; Opus 5.5, Fable 5.2 and Mythos 5.2 only)
 # default = true
 
 # [[llm.providers]]

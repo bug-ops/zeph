@@ -207,6 +207,8 @@ zeph --migrate-config [--config path]
 ```
 Writes the migrated TOML back to the config file path.
 
+**Recent steps** (registry in `crates/zeph-config/src/migrate/mod.rs`, 116 sequential steps at v0.23.0): step 115 adds the Telegram `allowed_user_ids`/`allowed_bot_ids` numeric allowlists (#7036, see [[007-channels/spec]]); step 116 adds the advisory `speed` hint to Claude `[[llm.providers]]` entries (#7032, see [[003-llm-providers/spec]]); step 111 only writes the `context_layout` explanation comment (#6858, see [[088-prompt-cache-prefix-stability/spec]]).
+
 ---
 
 ## 6. Key Invariants

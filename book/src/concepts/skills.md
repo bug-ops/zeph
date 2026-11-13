@@ -16,6 +16,8 @@ This happens automatically on every message. You never activate skills manually.
 
 ## Bundled Skills
 
+Bundled skills are provisioned into the managed skills directory at startup. A skill is re-provisioned when its embedded version changes or when its embedded content changes (tracked by a `.bundled-hash` file next to `SKILL.md`), so content-only fixes ship without a version bump. Skills without a `.bundled` marker are treated as user-owned and are never touched.
+
 | Skill | Description |
 |-------|-------------|
 | `api-request` | HTTP API requests using curl |

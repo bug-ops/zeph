@@ -167,7 +167,7 @@ Manage plugin packages (collections of skills, MCP servers, and config overlays)
 | Subcommand | Description |
 |------------|-------------|
 | `plugin list` | List installed plugins with installation timestamps |
-| `plugin list --overlay` | Show which plugins are active and which were skipped (with reasons), including integrity check failures |
+| `plugin list --overlay` | Show which plugins are active and which were skipped (with reasons), including integrity check failures. Plugins without a recorded integrity digest still apply and are listed as unverified |
 | `plugin add <path>` | Install a plugin from a local directory path (must contain `plugin.toml`) |
 | `plugin remove <name>` | Remove an installed plugin by name |
 | `plugin disable <name> [--force]` | Disable a plugin (optional `--force` to skip confirmation and enforcement checks) |

@@ -60,7 +60,7 @@ business logic.
 
 | Crate | Store Type | Pool Source | Schema Strategy | SQLite-Specific Features |
 |-------|-----------|-------------|-----------------|--------------------------|
-| `zeph-memory` | `SqliteStore` | `SqlitePool` owned | `sqlx::migrate!("./migrations")` — 49 migration files | FTS5 virtual tables, `datetime('now')`, `AUTOINCREMENT`, `COLLATE NOCASE`, `PRAGMA wal_checkpoint`, `PRAGMA busy_timeout`, `PRAGMA journal_mode`, `BEGIN IMMEDIATE`, `INSERT OR IGNORE`, `INSERT OR REPLACE`, `RETURNING`, BLOB for vectors |
+| `zeph-memory` | `SqliteStore` | `SqlitePool` owned | `sqlx::migrate!("./migrations/sqlite")` in `zeph-db` — 119 migration files (latest `120_tool_overflow_source.sql`, #7068; numbering skips 103) | FTS5 virtual tables, `datetime('now')`, `AUTOINCREMENT`, `COLLATE NOCASE`, `PRAGMA wal_checkpoint`, `PRAGMA busy_timeout`, `PRAGMA journal_mode`, `BEGIN IMMEDIATE`, `INSERT OR IGNORE`, `INSERT OR REPLACE`, `RETURNING`, BLOB for vectors |
 | `zeph-memory` | `GraphStore` | `SqlitePool` clone | Shared migrations via `SqliteStore` | FTS5 (`graph_entities_fts`), `COLLATE NOCASE`, `datetime('now')`, `RETURNING` |
 | `zeph-memory` | `ResponseCache` | `SqlitePool` clone | Shared migrations | Unix timestamps as `i64` |
 | `zeph-memory` | `SqliteVectorStore` | `SqlitePool` clone | Shared migrations | BLOB storage for vectors, in-memory cosine similarity |

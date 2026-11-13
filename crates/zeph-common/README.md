@@ -17,6 +17,7 @@ Provides foundational utilities used across multiple Zeph crates: Unicode-safe s
 |--------|-------------|
 | `text` | Unicode-safe string truncation — `truncate_chars`, `truncate_to_chars`, `truncate_to_bytes`, `truncate_to_bytes_ref` |
 | `net` | Network helpers — `is_private_ip()` for IPv4/IPv6 private range detection; used by the SSRF guard in `zeph-tools` and `zeph-acp` |
+| `http` | Capped HTTP response-body readers — `BodyLimit`, `read_capped`, `read_prefix`; shared by `zeph-a2a`, `zeph-tools`, `zeph-scheduler`, `zeph-plugins`, `zeph-mcp`, and `zeph-acp` to bound memory use on untrusted responses |
 | `sanitize` | Low-level sanitization primitives (null byte stripping, control character removal) |
 | `fs_secure` | Secure file I/O helpers — `open_private_truncate`, `append_private`, `write_private`, `atomic_write_private`; all create files with mode `0o600` independent of process umask; `atomic_write_private` uses `O_EXCL` on the temp file and fsyncs before rename for crash safety |
 | `secrets` | Canonical secret-token, path-prefix, and secret-shape constants (`SECRET_PREFIXES`, `PATH_PREFIXES`, `BEARER_TOKEN_PATTERN`, `JWT_PATTERN`, `PEM_PRIVATE_KEY_PATTERN`, `AWS_SECRET_KEY_PATTERN`) shared by redaction layers across crates — the single source of truth so `zeph-core::redact` and `zeph-memory` compression guidelines can't drift apart |

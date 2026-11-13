@@ -18,6 +18,7 @@ Implements the Agent-to-Agent (A2A) protocol over JSON-RPC 2.0, enabling Zeph to
 - **card** — `AgentCardBuilder` for constructing agent capability cards; includes `protocolVersion` field set to `A2A_PROTOCOL_VERSION` constant (`"0.2.1"`) in the default card served at `/.well-known/agent.json`
 - **discovery** — `AgentRegistry` for agent lookup and registration, with an optional card-signing + URL-origin trust policy applied in `discover()` (see below)
 - **card_signing** — `SigAlg`, `SignatureVerification`, `TrustedKey` for A2A 1.0.0 `AgentCardSignature` verification (requires `card-signing`)
+- **body caps** — agent cards, JSON-RPC responses, SSE events, and error bodies are read through capped readers; oversized bodies fail with `A2aError::BodyTooLarge`
 - **ibct** — `Ibct`, `IbctKey`, `IbctError` for invocation-bound capability tokens (requires `ibct`)
 - **jsonrpc** — JSON-RPC 2.0 request/response types
 - **types** — shared protocol types (Task, Message, Artifact, etc.)

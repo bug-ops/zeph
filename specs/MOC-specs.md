@@ -180,6 +180,18 @@ status: moc
 ### Agent Identity in the Shared Data Model
 - [[085-agent-identity-data-isolation/spec|Agent Identity Data Isolation]] — multi-agent database isolation ([[031-database-abstraction/spec]]): `agent_id` resolution order (config or hostname-derived), IsolationMode (Isolated/Shared per subsystem), per-table defaults (conversations/messages isolated, graph/skills/cache shared by default), schema changes (migration 050 for SQLite/PostgreSQL with composite indexes + source_agent_id provenance tracking), AgentScope query layer pre-binding agent identity and isolation mode, configuration design (IsolationMode enum, per-subsystem SharedSubsystem overrides), concurrent migration safety (PostgreSQL advisory locks), impact on existing SQLite deployments (transparent 'default' agent), risks & mitigations (query verbosity, index coverage, data leakage, cross-agent operations, ID collisions, migration ordering), key invariants; extracted from [[031-database-abstraction/spec]] Section 18 [2026-07-27, #6632]
 
+### Skill Execution State
+- [[086-skill-execution-state/spec|Skill Execution State]] — opt-in `state:` SKILL.md frontmatter, `skill_state_patch` built-in tool and `<skill_state>` section for the replace context layout, sentinel-based clearing of absorbed tool results, `zeph skill state schema`, `/skill state`
+
+### Subagent Peer Messaging
+- [[087-subagent-peer-messaging/spec|Subagent Peer Messaging]] — `send_peer_message`/`check_messages`/`list_peers` tools and `/agent msg`/`/agent inbox`, deny-by-default `PeerRouter` scoped per spawn tree, bounded non-blocking mailboxes
+
+### Prompt Cache Prefix Stability
+- [[088-prompt-cache-prefix-stability/spec|Prompt Cache Prefix Stability]] — `[memory] context_layout` (`auto`/`replace`/`append`) pinned per conversation, append-only Claude request prefix, `MessagePart::TurnContext`/`RuntimeNote`, per-request `RequestPolicy`, `llm.claude.prefix_guard` span
+
+### Per-Turn Goal Self-Evaluation
+- [[089-per-turn-goal-self-evaluation/spec|Per-Turn Goal Self-Evaluation]] — `/goal check [condition]` advisory `GoalSupervisor::verify` call from any chat session, opt-in `[goals] auto_check` turn-end check
+
 ---
 
 ## System-Wide Features
@@ -299,6 +311,10 @@ status: moc
 | 083 | [[083-memory-write-consent-gate/spec\|Memory Write Consent Gate]] | specify | implemented |
 | 084 | [[084-tui-mention-picker/spec\|TUI Inline Mention Picker]] | specify | approved |
 | 085 | [[085-agent-identity-data-isolation/spec\|Agent Identity Data Isolation]] | specify | approved |
+| 086 | [[086-skill-execution-state/spec\|Skill Execution State]] | specify | approved |
+| 087 | [[087-subagent-peer-messaging/spec\|Subagent Peer Messaging]] | specify | implemented |
+| 088 | [[088-prompt-cache-prefix-stability/spec\|Prompt Cache Prefix Stability]] | specify | approved |
+| 089 | [[089-per-turn-goal-self-evaluation/spec\|Per-Turn Goal Self-Evaluation]] | specify | approved |
 
 ---
 

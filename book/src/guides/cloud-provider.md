@@ -25,6 +25,23 @@ max_tokens = 4096
 
 Claude does not support embeddings. Use a multi-provider setup to combine Claude chat with Ollama embeddings, or use OpenAI embeddings.
 
+### Model Support
+
+Zeph recognizes the Claude 5 family, including `claude-fable-5-2` (Fable 5.2) and `claude-mythos-5-2` (Mythos 5.2), with built-in pricing for cost tracking. Dated, Bedrock and Vertex style identifiers for these models resolve to the same capability set.
+
+### Fast Mode
+
+Fast mode asks Claude for up to 2.5x faster output at twice the price. It is opt-in per provider entry:
+
+```toml
+[[llm.providers]]
+type = "claude"
+model = "claude-fable-5-2"
+speed = "fast"          # default: "standard"
+```
+
+Fast mode is honored only by models that advertise it: Opus 5.5, Fable 5.2 and Mythos 5.2. On any other Claude model Zeph logs a warning and runs at standard speed. `speed = "fast"` on a non-Claude provider entry fails config validation. Cost tracking applies fast-mode pricing, and the TUI status bar shows a `fast` tag while the active provider runs in fast mode. The `--init` wizard asks for the speed when you pick a fast-capable model; `--migrate-config` adds the commented `speed` key to existing Claude entries.
+
 ### Server-Side Compaction
 
 Enable `server_compaction = true` to let the Claude API manage context length on the server side. When the context approaches the model's limit, Claude produces a compact summary in-place. Zeph surfaces the compaction event in the TUI and via the `server_compaction_events` metric.

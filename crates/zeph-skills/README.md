@@ -48,6 +48,7 @@ println!("{}", body);
 | `trace_extractor` | Extracts reusable skills from completed execution traces; `TraceExtractionResult::saved_skill_paths` reports each draft under the name actually written to disk |
 | `proactive` | `ProactiveExplorer` / `DomainLabel` — proactive skill surfacing ahead of explicit invocation |
 | `miner` | `SkillMiner` — GitHub repository mining for skill discovery (feature `miner`) |
+| `state` | Opt-in skill execution state (`state:` frontmatter, validated `SkillName`); inspect the schema with `zeph skill state schema` |
 | `stem` | STEM heuristic — detects repeated tool-call patterns and triggers automatic skill generation |
 | `erl` | Experiential Reflective Learning — extracts heuristics from completed execution traces |
 | `promoter` | Heuristic-to-skill promotion (`PromotionRecommendation`, `build_promotion_prompt`, `parse_promotion_response`) |

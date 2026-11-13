@@ -59,7 +59,7 @@ For a PostgreSQL build, the default `sqlite` feature must be disabled explicitly
 
 ```toml
 [dependencies]
-zeph-db = { version = "0.22", default-features = false, features = ["postgres"] }
+zeph-db = { version = "0.23", default-features = false, features = ["postgres"] }
 ```
 
 ## Feature Flags
