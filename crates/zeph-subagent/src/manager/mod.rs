@@ -18,7 +18,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use zeph_common::task_supervisor::BlockingHandle;
-use zeph_common::trust_level::TranscriptTrustSchema;
+use zeph_common::trust_level::{TranscriptTrustSchema, TurnContextTrust};
 use zeph_common::{SkillTrustLevel, TaskSupervisor};
 use zeph_config::ContentIsolationConfig;
 use zeph_llm::provider::Message;
@@ -326,6 +326,33 @@ pub struct SpawnContext {
     /// automatically — a sub-agent that spawns its own children must clone the `Arc` from its
     /// received `SpawnContext`, or the grandchild runs without the verifiers.
     pub pre_execution_verifiers: PreExecutionVerifiers,
+
+    /// Where the sub-agent loop records a pre-dispatch verifier block, so it leaves the same
+    /// metric, security event and audit row as a block in the parent loop (#7055).
+    ///
+    /// `None` (the default) keeps blocks WARN-only: only tests and embedders without metrics or
+    /// an audit log leave it empty. `zeph-core`'s `build_spawn_context` fills it from the parent.
+    ///
+    /// # Caller responsibility for nested spawns
+    ///
+    /// Like [`max_trust_level`][Self::max_trust_level], this field does **not** propagate
+    /// automatically — a sub-agent that spawns its own children must clone the `Arc` from its
+    /// received `SpawnContext`, or the grandchild's blocks go unrecorded.
+    pub block_sink: Option<Arc<dyn zeph_tools::PreDispatchBlockSink>>,
+
+    /// Highest trust tier tagged on the parent's full conversation context at spawn (#7027).
+    ///
+    /// Computed from the whole context, not the windowed
+    /// [`parent_messages`][Self::parent_messages], so a tagged tool result that the window
+    /// dropped still counts. Persisted in the transcript sidecar and folded into the knowledge
+    /// import trust decision. `None` when no message carried a tag.
+    ///
+    /// # Caller responsibility for nested spawns
+    ///
+    /// Like [`max_trust_level`][Self::max_trust_level], this field does **not** propagate
+    /// automatically — a sub-agent that spawns its own children must fold its own inherited
+    /// floor into the child's context.
+    pub inherited_trust: Option<TurnContextTrust>,
 }
 
 /// Shared, immutable list of pre-execution verifiers (`FirewallVerifier`,

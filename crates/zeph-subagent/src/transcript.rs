@@ -23,7 +23,7 @@ use zeph_common::hash_chain::{
     ChainHash, ChainKeyRing, KeyResolution, chain_next, genesis,
     verify_chained_prefix_with_checkpoint,
 };
-use zeph_common::trust_level::TranscriptTrustSchema;
+use zeph_common::trust_level::{TranscriptTrustSchema, TurnContextTrust};
 use zeph_llm::provider::{Message, MessagePart};
 
 use super::error::SubAgentError;
@@ -203,6 +203,46 @@ pub struct TranscriptMeta {
     /// [`TranscriptTrustSchema::Legacy`], so importers treat them as external content.
     #[serde(default = "TranscriptTrustSchema::legacy")]
     pub trust_schema: TranscriptTrustSchema,
+    /// Highest trust tier tagged on the context this session started from (the parent's
+    /// conversation at spawn, the earlier transcript on resume).
+    ///
+    /// Per-result markers only cover tool results written during the session, so an importer
+    /// folds this floor in: a transcript that may quote inherited external content is not
+    /// imported below it. `None` when the inherited context carried no trust tag, and for
+    /// sidecars written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherited_trust: Option<TurnContextTrust>,
+}
+
+/// Highest trust tier tagged on any of `messages`; `None` when no message carries a tag.
+///
+/// Untagged messages are ignored. Used for the trust floor a sub-agent inherits with its
+/// starting context.
+///
+/// # Examples
+///
+/// ```
+/// use zeph_common::trust_level::TurnContextTrust;
+/// use zeph_llm::provider::{Message, Role};
+/// use zeph_subagent::max_message_trust;
+///
+/// let mut tagged = Message::from_legacy(Role::User, "result");
+/// tagged.metadata.trust_level = Some(TurnContextTrust::ExternalUntrusted.as_u8());
+/// let untagged = Message::from_legacy(Role::Assistant, "reply");
+///
+/// assert_eq!(max_message_trust(&[untagged.clone()]), None);
+/// assert_eq!(
+///     max_message_trust(&[untagged, tagged]),
+///     Some(TurnContextTrust::ExternalUntrusted)
+/// );
+/// ```
+#[must_use]
+pub fn max_message_trust(messages: &[Message]) -> Option<TurnContextTrust> {
+    messages
+        .iter()
+        .filter_map(|m| m.metadata.trust_level)
+        .map(TurnContextTrust::from_u8_or_untrusted)
+        .max()
 }
 
 /// Appends [`TranscriptEntry`] lines to a JSONL transcript file.
@@ -540,6 +580,24 @@ impl TranscriptReader {
         serde_json::from_str(&content).map_err(|e| {
             SubAgentError::Transcript(format!("failed to parse meta '{}': {e}", path.display()))
         })
+    }
+
+    /// Async variant of [`load_meta`][Self::load_meta] that reads the sidecar on a
+    /// `spawn_blocking` thread so the Tokio executor is not stalled.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`load_meta`][Self::load_meta], plus [`SubAgentError::Transcript`] if the
+    /// blocking task panics.
+    pub async fn load_meta_async(
+        dir: &Path,
+        agent_id: &str,
+    ) -> Result<TranscriptMeta, SubAgentError> {
+        let dir = dir.to_owned();
+        let agent_id = agent_id.to_owned();
+        tokio::task::spawn_blocking(move || Self::load_meta(&dir, &agent_id))
+            .await
+            .map_err(|e| SubAgentError::Transcript(format!("spawn_blocking panicked: {e}")))?
     }
 
     /// Find the full agent ID by scanning `dir` for `.meta.json` files whose names
@@ -1021,6 +1079,7 @@ mod tests {
             resumed_from: None,
             turns_used: 2,
             trust_schema: TranscriptTrustSchema::PerResult,
+            inherited_trust: None,
         }
     }
 

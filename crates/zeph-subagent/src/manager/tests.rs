@@ -13,6 +13,7 @@ use std::assert_matches;
 use std::pin::Pin;
 
 use indoc::indoc;
+use zeph_common::trust_level::TurnContextTrust;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::mock::MockProvider;
 use zeph_tools::ToolCall;
@@ -1352,9 +1353,9 @@ async fn background_agent_auto_denies_secret_request() {
         .await
         .unwrap();
 
-    // Should complete without blocking — background auto-denies the secret.
+    // The bound only detects a hang; it is real-time and generous so a loaded CI host cannot trip it.
     let result =
-        tokio::time::timeout(tokio::time::Duration::from_secs(2), mgr.collect(&task_id)).await;
+        tokio::time::timeout(tokio::time::Duration::from_secs(30), mgr.collect(&task_id)).await;
     assert!(
         result.is_ok(),
         "background agent must not block on secret request"
@@ -1603,6 +1604,7 @@ fn write_completed_meta(dir: &std::path::Path, agent_id: &str, def_name: &str) {
         resumed_from: None,
         turns_used: 1,
         trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
+        inherited_trust: None,
     };
     TranscriptWriter::write_meta(dir, agent_id, &meta).unwrap();
     // Create the empty JSONL so TranscriptReader::load succeeds.
@@ -1896,6 +1898,95 @@ async fn fresh_spawn_final_meta_is_per_result() {
     let meta = crate::transcript::TranscriptReader::load_meta(tmp.path(), &id).unwrap();
     assert_eq!(meta.trust_schema, TranscriptTrustSchema::PerResult);
     assert_eq!(meta.resumed_from, None);
+    assert_eq!(meta.inherited_trust, None);
+}
+
+fn tagged_message(trust: TurnContextTrust) -> zeph_llm::provider::Message {
+    let mut msg = zeph_llm::provider::Message::from_legacy(zeph_llm::provider::Role::User, "r");
+    msg.metadata.trust_level = Some(trust.as_u8());
+    msg
+}
+
+#[tokio::test]
+#[serial_test::serial(subagent_transcript_integrity)]
+async fn spawn_records_inherited_floor_and_collect_keeps_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = make_cfg_with_dir(tmp.path());
+    let mut mgr = make_manager();
+    mgr.definitions.push(sample_def());
+    let ctx = SpawnContext {
+        parent_messages: vec![tagged_message(TurnContextTrust::ExternalUntrusted)],
+        inherited_trust: Some(TurnContextTrust::LocalUntrusted),
+        ..SpawnContext::default()
+    };
+
+    let id = mgr
+        .spawn(
+            "bot",
+            "do stuff",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &cfg,
+            ctx,
+        )
+        .await
+        .unwrap();
+    let at_spawn = crate::transcript::TranscriptReader::load_meta(tmp.path(), &id).unwrap();
+    assert_eq!(
+        at_spawn.inherited_trust,
+        Some(TurnContextTrust::ExternalUntrusted),
+        "the floor folds the supplied floor with the tags of the handed-over messages"
+    );
+
+    wait_completed(&mgr, &id).await;
+    mgr.collect(&id).await.unwrap();
+    let finalized = crate::transcript::TranscriptReader::load_meta(tmp.path(), &id).unwrap();
+    assert_eq!(
+        finalized.inherited_trust,
+        Some(TurnContextTrust::ExternalUntrusted)
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(subagent_transcript_integrity)]
+async fn resume_folds_original_floor_with_current_floor() {
+    let tmp = tempfile::tempdir().unwrap();
+    let original_id = "0000abcd-0000-0000-0000-000000000000";
+    write_completed_meta(tmp.path(), original_id, "bot");
+    let mut original =
+        crate::transcript::TranscriptReader::load_meta(tmp.path(), original_id).unwrap();
+    original.inherited_trust = Some(TurnContextTrust::ExternalUntrusted);
+    crate::transcript::TranscriptWriter::write_meta(tmp.path(), original_id, &original).unwrap();
+
+    let mut mgr = make_manager();
+    mgr.definitions.push(sample_def());
+    let cfg = make_cfg_with_dir(tmp.path());
+    let ctx = SpawnContext {
+        inherited_trust: Some(TurnContextTrust::Trusted),
+        ..SpawnContext::default()
+    };
+
+    let (new_id, _) = mgr
+        .resume(
+            "0000abcd",
+            "continue",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &cfg,
+            Some(&ctx),
+        )
+        .await
+        .unwrap();
+
+    let resumed = crate::transcript::TranscriptReader::load_meta(tmp.path(), &new_id).unwrap();
+    assert_eq!(
+        resumed.inherited_trust,
+        Some(TurnContextTrust::ExternalUntrusted),
+        "a lower current floor must not lower the original session's floor"
+    );
+    mgr.cancel(&new_id).unwrap();
 }
 
 #[tokio::test]

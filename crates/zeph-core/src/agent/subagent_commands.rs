@@ -1170,6 +1170,13 @@ impl<C: Channel> Agent<C> {
                 )),
             )
             .into(),
+            // #7055: a sub-agent's pre-dispatch block leaves the same metric, security event and
+            // audit row as one in this agent's own loop.
+            block_sink: Some(Arc::new(self.pre_dispatch_block_recorder())),
+            // #7027: floor of the parent's FULL context, not the windowed `parent_messages`, so a
+            // tagged tool result the window dropped (while a quoting assistant turn stayed) still
+            // counts.
+            inherited_trust: zeph_subagent::max_message_trust(&self.msg.messages),
             ..Default::default()
         }
     }
@@ -2239,6 +2246,110 @@ mod tests {
             names(&ctx.pre_execution_verifiers),
             names(&agent.tool_orchestrator.pre_execution_verifiers)
         );
+    }
+
+    #[test]
+    fn build_spawn_context_floor_covers_messages_the_window_dropped() {
+        use zeph_llm::provider::{Message, Role};
+
+        let mut agent = verifier_agent();
+        let mut tagged = Message::from_legacy(Role::User, "scraped page");
+        tagged.metadata.trust_level =
+            Some(zeph_common::trust_level::TurnContextTrust::ExternalUntrusted.as_u8());
+        agent.msg.messages.push(tagged);
+        for i in 0..6 {
+            agent
+                .msg
+                .messages
+                .push(Message::from_legacy(Role::Assistant, format!("reply {i}")));
+        }
+        let cfg = zeph_config::SubAgentConfig {
+            context_window_turns: 1,
+            ..zeph_config::SubAgentConfig::default()
+        };
+
+        let ctx = agent.build_spawn_context(&cfg);
+
+        assert!(
+            ctx.parent_messages
+                .iter()
+                .all(|m| m.metadata.trust_level.is_none()),
+            "the tagged message must be outside the handed-over window"
+        );
+        assert_eq!(
+            ctx.inherited_trust,
+            Some(zeph_common::trust_level::TurnContextTrust::ExternalUntrusted)
+        );
+    }
+
+    #[test]
+    fn build_spawn_context_floor_is_none_without_tagged_messages() {
+        let agent = verifier_agent();
+        let ctx = agent.build_spawn_context(&zeph_config::SubAgentConfig::default());
+        assert_eq!(ctx.inherited_trust, None);
+    }
+
+    #[tokio::test]
+    async fn spawn_context_block_sink_records_into_parent_metrics() {
+        let (tx, rx) = tokio::sync::watch::channel(crate::metrics::MetricsSnapshot::default());
+        let agent = verifier_agent().with_metrics(tx);
+        let ctx = agent.build_spawn_context(&zeph_config::SubAgentConfig::default());
+        let sink = ctx.block_sink.expect("the parent wires its recorder");
+
+        sink.record(zeph_tools::PreDispatchBlock {
+            tool: zeph_common::ToolName::new("read"),
+            verifier: "firewall",
+            reason: "blocked path".to_owned(),
+            args_json: "{}".to_owned(),
+            caller_id: None,
+            skill_name: None,
+        })
+        .await;
+
+        let snap = rx.borrow();
+        assert_eq!(snap.pre_execution_blocks, 1);
+        let event = snap.security_events.back().expect("a security event");
+        assert_eq!(
+            event.category,
+            zeph_common::SecurityEventCategory::PreExecutionBlock
+        );
+        assert_eq!(event.source, "read");
+        assert_eq!(event.detail, "firewall: blocked path");
+    }
+
+    #[tokio::test]
+    async fn spawn_context_block_sink_writes_an_audit_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let cfg = zeph_tools::AuditConfig {
+            enabled: true,
+            destination: zeph_tools::AuditDestination::File(path.clone()),
+            ..Default::default()
+        };
+        let logger = Arc::new(
+            zeph_tools::AuditLogger::from_config(&cfg, false)
+                .await
+                .unwrap(),
+        );
+        let agent = verifier_agent().with_audit_logger(Arc::clone(&logger));
+        let ctx = agent.build_spawn_context(&zeph_config::SubAgentConfig::default());
+
+        ctx.block_sink
+            .expect("the parent wires its recorder")
+            .record(zeph_tools::PreDispatchBlock {
+                tool: zeph_common::ToolName::new("read"),
+                verifier: "firewall",
+                reason: "blocked path".to_owned(),
+                args_json: r#"{"file_path":"/etc/passwd"}"#.to_owned(),
+                caller_id: None,
+                skill_name: None,
+            })
+            .await;
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("\"type\":\"blocked\""), "{content}");
+        assert!(content.contains("pre_execution_block"), "{content}");
+        assert!(content.contains("firewall: blocked path"), "{content}");
     }
 
     fn verifier_agent() -> Agent<MockChannel> {

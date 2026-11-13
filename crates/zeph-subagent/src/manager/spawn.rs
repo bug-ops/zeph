@@ -31,6 +31,7 @@ use crate::hooks::HookAgentCtx;
 use crate::hooks::fire_hooks;
 use crate::memory::{ensure_memory_dir, escape_memory_content, load_memory_content};
 use crate::state::SubAgentState;
+use crate::transcript::max_message_trust;
 
 use super::{CredentialScrub, SpawnContext};
 use crate::durable::{DurableResolverSeat, resolve_durable_promise};
@@ -768,6 +769,14 @@ impl SubAgentManager {
         let spawn_depth = ctx.spawn_depth;
         let mcp_tool_ids = ctx.mcp_tool_ids.clone();
         let parent_messages = ctx.parent_messages;
+        // Fold the tags of the messages actually handed over, so a context built without the
+        // parent's own floor (an embedder) still records what it inherited.
+        let inherited_trust = ctx
+            .inherited_trust
+            .into_iter()
+            .chain(max_message_trust(&parent_messages))
+            .max();
+        let block_sink = ctx.block_sink.clone();
         // INV-9: extract the resolver seat here so it enters only the background task closure.
         // It MUST NOT be accessible from the agent loop, tool executor, or LLM surface.
         let durable_resolver: Option<DurableResolverSeat> = ctx.durable_resolver;
@@ -870,6 +879,7 @@ impl SubAgentManager {
             &def.name,
             None,
             TranscriptTrustSchema::PerResult,
+            inherited_trust,
         );
 
         // Captured before `ctx.content_isolation` is moved into `agent_loop_args` below
@@ -888,6 +898,7 @@ impl SubAgentManager {
         let tool_gates = ToolGates::new(
             Arc::clone(&ctx.pre_execution_verifiers),
             zeph_sanitizer::exfiltration::ExfiltrationGuard::new(ctx.exfiltration_guard.clone()),
+            block_sink,
         );
         let agent_loop_args = AgentLoopArgs {
             provider,
@@ -1400,12 +1411,21 @@ impl SubAgentManager {
         let tool_grants_for_loop = Arc::clone(&grants);
 
         let trust_schema = meta.trust_schema;
+        // Floor of everything the resumed session starts from: the original session's own
+        // floor, the parent's current one, and the tags on the replayed history.
+        let inherited_trust = meta
+            .inherited_trust
+            .into_iter()
+            .chain(spawn_context.and_then(|ctx| ctx.inherited_trust))
+            .chain(max_message_trust(&initial_messages))
+            .max();
         let transcript_writer = self.create_transcript_writer(
             config,
             &new_task_id,
             &def.name,
             Some(&original_id),
             trust_schema,
+            inherited_trust,
         );
 
         let resumed_mcp_tool_ids = spawn_context.and_then(|ctx| ctx.mcp_tool_ids.clone());
@@ -1438,6 +1458,7 @@ impl SubAgentManager {
             zeph_sanitizer::exfiltration::ExfiltrationGuard::new(
                 resolve_resume_exfiltration_guard_config(spawn_context),
             ),
+            spawn_context.and_then(|ctx| ctx.block_sink.clone()),
         );
         let join_handle = self.spawn_agent_task(Arc::from(new_task_id.as_str()), move || {
             run_agent_loop(AgentLoopArgs {

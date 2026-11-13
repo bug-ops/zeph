@@ -98,6 +98,72 @@ impl GateRefusal {
     }
 }
 
+/// Records pre-dispatch verifier blocks into the agent's metrics, security events and audit log.
+///
+/// The one recorder behind both the parent loop's gates and the
+/// [`PreDispatchBlockSink`](zeph_tools::PreDispatchBlockSink) handed to sub-agents, so a block
+/// is recorded identically wherever it is raised. It owns clones of the handles it needs and
+/// does not borrow the agent, which lets a long-lived sub-agent loop hold it.
+#[derive(Clone)]
+pub(crate) struct PreDispatchBlockRecorder {
+    metrics_tx: Option<tokio::sync::watch::Sender<crate::metrics::MetricsSnapshot>>,
+    start_time: std::time::Instant,
+    audit_logger: Option<std::sync::Arc<zeph_tools::AuditLogger>>,
+}
+
+impl PreDispatchBlockRecorder {
+    /// Count the block and push a `PreExecutionBlock` security event.
+    fn note(&self, block: &zeph_tools::PreDispatchBlock) {
+        let Some(tx) = &self.metrics_tx else {
+            return;
+        };
+        let event = crate::metrics::SecurityEvent::new(
+            zeph_common::SecurityEventCategory::PreExecutionBlock,
+            block.tool.as_str(),
+            block.detail(),
+        );
+        let elapsed = self.start_time.elapsed().as_secs();
+        tx.send_modify(|m| {
+            m.uptime_seconds = elapsed;
+            m.pre_execution_blocks += 1;
+            if m.security_events.len() >= crate::metrics::SECURITY_EVENT_CAP {
+                m.security_events.pop_front();
+            }
+            m.security_events.push_back(event);
+        });
+    }
+
+    /// The logger and audit row for `block`, or `None` when auditing is disabled.
+    fn audit_entry(
+        &self,
+        block: &zeph_tools::PreDispatchBlock,
+    ) -> Option<(
+        std::sync::Arc<zeph_tools::AuditLogger>,
+        zeph_tools::AuditEntry,
+    )> {
+        self.audit_logger.as_ref().map(|logger| {
+            (
+                std::sync::Arc::clone(logger),
+                zeph_tools::AuditEntry::pre_execution_block(block),
+            )
+        })
+    }
+}
+
+impl zeph_tools::PreDispatchBlockSink for PreDispatchBlockRecorder {
+    fn record(
+        &self,
+        block: zeph_tools::PreDispatchBlock,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            self.note(&block);
+            if let Some((logger, entry)) = self.audit_entry(&block) {
+                logger.log(&entry).await;
+            }
+        })
+    }
+}
+
 impl<C: Channel> Agent<C> {
     #[cfg(feature = "scheduler")]
     /// Whether `tool` may be offered to and called by an inline orchestration task: it must pass
@@ -173,6 +239,15 @@ impl<C: Channel> Agent<C> {
             .collect()
     }
 
+    /// A recorder bound to this agent's metrics channel, start time and audit logger.
+    pub(in crate::agent) fn pre_dispatch_block_recorder(&self) -> PreDispatchBlockRecorder {
+        PreDispatchBlockRecorder {
+            metrics_tx: self.runtime.metrics.metrics_tx.clone(),
+            start_time: self.runtime.lifecycle.start_time,
+            audit_logger: self.tool_orchestrator.audit_logger.clone(),
+        }
+    }
+
     /// Run the batch-level policy gates in order — exfiltration URL flagging (flag-only),
     /// pre-execution verifiers, channel tool allowlist — and return one `blocked` flag per call.
     #[tracing::instrument(name = "core.tool.policy_gates", skip_all, level = "debug")]
@@ -192,6 +267,7 @@ impl<C: Channel> Agent<C> {
         if self.tool_orchestrator.pre_execution_verifiers.is_empty() {
             return pre_exec_blocked;
         }
+        let recorder = self.pre_dispatch_block_recorder();
         for (idx, call) in calls.iter().enumerate() {
             if self.is_gate_exempt(call.tool_id.as_str()) {
                 continue;
@@ -206,50 +282,16 @@ impl<C: Channel> Agent<C> {
                             %reason,
                             "pre-execution verifier blocked tool call"
                         );
-                        self.update_metrics(|m| m.pre_execution_blocks += 1);
-                        self.push_security_event(
-                            zeph_common::SecurityEventCategory::PreExecutionBlock,
-                            call.tool_id.as_str(),
-                            format!("{}: {}", verifier.name(), reason),
-                        );
-                        if let Some(ref logger) = self.tool_orchestrator.audit_logger {
-                            let args_json = serde_json::to_string(&args_value).unwrap_or_default();
-                            let entry = zeph_tools::AuditEntry {
-                                source_kind: None,
-                                trust_level: None,
-                                timestamp: zeph_tools::chrono_now(),
-                                tool: call.tool_id.clone(),
-                                command: args_json,
-                                result: zeph_tools::AuditResult::Blocked {
-                                    reason: format!("{}: {}", verifier.name(), reason),
-                                },
-                                duration_ms: 0,
-                                error_category: Some("pre_execution_block".to_owned()),
-                                error_domain: Some("security".to_owned()),
-                                error_phase: Some(
-                                    zeph_tools::error_taxonomy::ToolInvocationPhase::Setup
-                                        .label()
-                                        .to_owned(),
-                                ),
-                                claim_source: None,
-                                mcp_server_id: None,
-                                injection_flagged: false,
-                                embedding_anomalous: false,
-                                cross_boundary_mcp_to_acp: false,
-                                adversarial_policy_decision: None,
-                                exit_code: None,
-                                truncated: false,
-                                caller_id: call.caller_id.clone(),
-                                skill_name: call.skill_name.clone(),
-                                policy_match: None,
-                                correlation_id: None,
-                                vigil_risk: None,
-                                execution_env: None,
-                                resolved_cwd: None,
-                                scope_at_definition: None,
-                                scope_at_dispatch: None,
-                            };
-                            let logger = std::sync::Arc::clone(logger);
+                        let block = zeph_tools::PreDispatchBlock {
+                            tool: call.tool_id.clone(),
+                            verifier: verifier.name(),
+                            reason,
+                            args_json: serde_json::to_string(&args_value).unwrap_or_default(),
+                            caller_id: call.caller_id.clone(),
+                            skill_name: call.skill_name.clone(),
+                        };
+                        recorder.note(&block);
+                        if let Some((logger, entry)) = recorder.audit_entry(&block) {
                             self.runtime.lifecycle.supervisor.spawn(
                                 crate::agent::agent_supervisor::TaskClass::Telemetry,
                                 "audit-log",

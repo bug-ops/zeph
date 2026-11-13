@@ -177,8 +177,8 @@ pub use utility::{
     UtilityAction, UtilityContext, UtilityScore, UtilityScorer, has_explicit_tool_request,
 };
 pub use verifier::{
-    DestructiveCommandVerifier, FirewallVerifier, InjectionPatternVerifier, PreExecutionVerifier,
-    UrlGroundingVerifier, VerificationResult,
+    DestructiveCommandVerifier, FirewallVerifier, InjectionPatternVerifier, PreDispatchBlock,
+    PreDispatchBlockSink, PreExecutionVerifier, UrlGroundingVerifier, VerificationResult,
 };
 pub use zeph_common::ToolName;
 pub use zeph_config::tools::{

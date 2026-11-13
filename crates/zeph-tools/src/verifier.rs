@@ -63,6 +63,48 @@ pub trait PreExecutionVerifier: Send + Sync + std::fmt::Debug {
     fn name(&self) -> &'static str;
 }
 
+/// A tool call refused by a [`PreExecutionVerifier`] before dispatch.
+///
+/// The payload every [`PreDispatchBlockSink`] receives, so the parent loop and sub-agent loops
+/// record a block (metric, security event, audit row) from one shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreDispatchBlock {
+    /// Tool the model asked to call.
+    pub tool: zeph_common::ToolName,
+    /// [`PreExecutionVerifier::name`] of the verifier that blocked the call.
+    pub verifier: &'static str,
+    /// The verifier's reason for the block.
+    pub reason: String,
+    /// The call arguments serialized as JSON, kept for the audit row.
+    pub args_json: String,
+    /// Caller identity of the refused call, when it has one.
+    pub caller_id: Option<String>,
+    /// Skills active in the turn that issued the call.
+    pub skill_name: Option<Vec<String>>,
+}
+
+impl PreDispatchBlock {
+    /// `"{verifier}: {reason}"`, the detail text shared by the security event and the audit row.
+    #[must_use]
+    pub fn detail(&self) -> String {
+        format!("{}: {}", self.verifier, self.reason)
+    }
+}
+
+/// Receiver of [`PreDispatchBlock`]s raised outside the loop that owns the metrics and audit
+/// handles, such as a sub-agent loop recording into its parent agent's channels.
+///
+/// Implementors record every block they receive and must not fail the caller: recording is
+/// best effort and never changes the refusal the model sees. Callers may assume `record` is
+/// cheap enough to await on the tool-dispatch path.
+pub trait PreDispatchBlockSink: Send + Sync {
+    /// Record one block.
+    fn record(
+        &self,
+        block: PreDispatchBlock,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
+}
+
 // ---------------------------------------------------------------------------
 // DestructiveCommandVerifier
 // ---------------------------------------------------------------------------

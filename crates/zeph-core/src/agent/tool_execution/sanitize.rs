@@ -407,12 +407,7 @@ impl<C: Channel> Agent<C> {
     /// design — this is intentional; see `MemoryToolExecutor::current_trust_level`'s doc
     /// comment for the full rationale.
     pub(super) fn context_max_trust_level(&self) -> zeph_sanitizer::ContentTrustLevel {
-        self.msg
-            .messages
-            .iter()
-            .filter_map(|m| m.metadata.trust_level)
-            .map(zeph_sanitizer::ContentTrustLevel::from_u8_or_untrusted)
-            .max()
+        zeph_subagent::max_message_trust(&self.msg.messages)
             .unwrap_or(zeph_sanitizer::ContentTrustLevel::Trusted)
     }
 

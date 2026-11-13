@@ -22,7 +22,7 @@ use zeph_sanitizer::exfiltration::{ExfiltrationGuard, normalize_url_for_matching
 use zeph_sanitizer::secret_shape::scrub_secret_shapes;
 use zeph_sanitizer::{ContentSanitizer, ContentSource};
 use zeph_tools::executor::{ErasedToolExecutor, ToolCall};
-use zeph_tools::{McpToolIds, McpToolIdsHandle};
+use zeph_tools::{McpToolIds, McpToolIdsHandle, PreDispatchBlock, PreDispatchBlockSink, ToolName};
 
 use super::filter::FilteredToolExecutor;
 use super::forward::ForwardSender;
@@ -45,23 +45,27 @@ enum SecretRequestOutcome {
 /// Pre-dispatch policy gates inherited from the parent agent (#7035).
 ///
 /// Mirrors the parent's `apply_policy_gates` for the sub-agent loop: exfiltration URL flagging
-/// (flag-only) followed by the pre-execution verifiers. Blocks are logged at WARN only; the
-/// parent's metrics, security events and audit rows are not reproduced here.
+/// (flag-only) followed by the pre-execution verifiers. A block is logged at WARN and handed to
+/// the optional [`PreDispatchBlockSink`], which records the parent's metric, security event and
+/// audit row (#7055).
 pub(super) struct ToolGates {
     verifiers: PreExecutionVerifiers,
     exfiltration_guard: ExfiltrationGuard,
     flagged_urls: std::collections::HashSet<String>,
+    block_sink: Option<Arc<dyn PreDispatchBlockSink>>,
 }
 
 impl ToolGates {
     pub(super) fn new(
         verifiers: PreExecutionVerifiers,
         exfiltration_guard: ExfiltrationGuard,
+        block_sink: Option<Arc<dyn PreDispatchBlockSink>>,
     ) -> Self {
         Self {
             verifiers,
             exfiltration_guard,
             flagged_urls: std::collections::HashSet::new(),
+            block_sink,
         }
     }
 
@@ -94,26 +98,29 @@ impl ToolGates {
         }
     }
 
-    /// Run the verifiers over one call; the first `Block` yields the model-facing refusal
-    /// text, identical to the parent's `GateRefusal::PreExecutionBlocked`.
-    fn blocking_refusal(&self, tool: &str, args: &serde_json::Value) -> Option<String> {
+    /// Run the verifiers over one call; the first `Block` is returned for recording.
+    fn first_block(&self, tool: &ToolName, args: &serde_json::Value) -> Option<PreDispatchBlock> {
         for verifier in self.verifiers.iter() {
-            match verifier.verify(tool, args) {
+            match verifier.verify(tool.as_str(), args) {
                 zeph_tools::VerificationResult::Block { reason } => {
                     tracing::warn!(
-                        tool,
+                        tool = %tool,
                         verifier = verifier.name(),
                         %reason,
                         "pre-execution verifier blocked sub-agent tool call"
                     );
-                    return Some(format!(
-                        "[error] Tool call to {tool} was blocked by pre-execution verifier. \
-                         The requested operation is not permitted."
-                    ));
+                    return Some(PreDispatchBlock {
+                        tool: tool.clone(),
+                        verifier: verifier.name(),
+                        reason,
+                        args_json: args.to_string(),
+                        caller_id: None,
+                        skill_name: None,
+                    });
                 }
                 zeph_tools::VerificationResult::Warn { message } => {
                     tracing::warn!(
-                        tool,
+                        tool = %tool,
                         verifier = verifier.name(),
                         %message,
                         "pre-execution verifier warning (not blocked)"
@@ -124,6 +131,22 @@ impl ToolGates {
         }
         None
     }
+
+    /// Hand a block to the sink, if one is wired.
+    async fn record_block(&self, block: PreDispatchBlock) {
+        if let Some(sink) = &self.block_sink {
+            sink.record(block).await;
+        }
+    }
+}
+
+/// Model-facing refusal text for a call a verifier blocked, identical to the parent's
+/// `GateRefusal::PreExecutionBlocked`.
+fn pre_execution_refusal(tool: &str) -> String {
+    format!(
+        "[error] Tool call to {tool} was blocked by pre-execution verifier. \
+         The requested operation is not permitted."
+    )
 }
 
 #[cfg(test)]
@@ -132,6 +155,7 @@ impl Default for ToolGates {
         Self::new(
             Arc::from(Vec::new()),
             ExfiltrationGuard::new(zeph_config::ExfiltrationGuardConfig::default()),
+            None,
         )
     }
 }
@@ -1103,11 +1127,12 @@ async fn handle_tool_step(
                 // #7035: same pre-dispatch gates as the parent's `apply_policy_gates`, before
                 // any hook fires or the executor runs.
                 gates.warn_on_flagged_urls(tc.name.as_str(), &tc.input);
-                if let Some(refusal) = gates.blocking_refusal(tc.name.as_str(), &tc.input) {
+                if let Some(block) = gates.first_block(&tc.name, &tc.input) {
+                    gates.record_block(block).await;
                     batch_trust = batch_trust.max(refused_call_trust(tc.name.as_str(), &mcp_ids));
                     result_parts.push(MessagePart::ToolResult {
                         tool_use_id: tc.id.clone(),
-                        content: refusal,
+                        content: pre_execution_refusal(tc.name.as_str()),
                         is_error: true,
                     });
                     continue;
@@ -3801,10 +3826,32 @@ mod tool_gates_tests {
     }
 
     fn gates_with(verifiers: PreExecutionVerifiers) -> ToolGates {
+        gates_with_sink(verifiers, None)
+    }
+
+    fn gates_with_sink(
+        verifiers: PreExecutionVerifiers,
+        sink: Option<Arc<dyn PreDispatchBlockSink>>,
+    ) -> ToolGates {
         ToolGates::new(
             verifiers,
             ExfiltrationGuard::new(zeph_config::ExfiltrationGuardConfig::default()),
+            sink,
         )
+    }
+
+    #[derive(Default)]
+    struct RecordingSink {
+        blocks: Mutex<Vec<PreDispatchBlock>>,
+    }
+
+    impl PreDispatchBlockSink for RecordingSink {
+        fn record(
+            &self,
+            block: PreDispatchBlock,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+            Box::pin(async move { self.blocks.lock().unwrap().push(block) })
+        }
     }
 
     /// Run one tool call through `handle_tool_step`; returns the dispatched calls and the
@@ -3855,6 +3902,34 @@ mod tool_gates_tests {
         };
         let calls = recorder.calls.lock().unwrap().clone();
         (calls, content, is_error)
+    }
+
+    #[tokio::test]
+    async fn blocked_call_is_recorded_once_and_allowed_call_is_not() {
+        let sink = Arc::new(RecordingSink::default());
+        let mut gates = gates_with_sink(
+            default_verifiers(),
+            Some(Arc::clone(&sink) as Arc<dyn PreDispatchBlockSink>),
+        );
+
+        run_one(
+            "read",
+            serde_json::json!({"file_path": "~/.ssh/id_rsa"}),
+            &mut gates,
+        )
+        .await;
+        run_one(
+            "read",
+            serde_json::json!({"file_path": "src/main.rs"}),
+            &mut gates,
+        )
+        .await;
+
+        let blocks = sink.blocks.lock().unwrap();
+        assert_eq!(blocks.len(), 1, "{blocks:?}");
+        assert_eq!(blocks[0].tool.as_str(), "read");
+        assert_ne!(blocks[0].verifier, "");
+        assert!(blocks[0].args_json.contains(".ssh/id_rsa"));
     }
 
     #[tokio::test]
