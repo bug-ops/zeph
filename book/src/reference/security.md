@@ -517,6 +517,7 @@ Zeph tracks injection signals across consecutive tool calls within a single turn
 
 ### MCP/A2A Security Hardening
 
+- **Typed tool provenance**: the trust classification of a tool result comes from a typed tool source (a registry of MCP tool ids built at startup), not from the tool's name string, and the classification is stored with overflowed tool output so it survives replay from the overflow store
 - **Tool collision detection**: when multiple MCP servers expose tools with the same name, Zeph detects the collision and either prefixes with the server ID or blocks the duplicate
 - **SMCP lifecycle**: Secure MCP session lifecycle management with token-based authentication for dynamic server connections
 - **IBCT tokens**: Identity-Bound Capability Tokens for A2A agent authentication

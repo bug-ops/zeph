@@ -196,7 +196,7 @@ SQLite-backed `SemanticMemory`; `MemoryMode::Off` is the default.
 
 ```toml
 [dependencies]
-zeph-bench = "0.22"
+zeph-bench = "0.23"
 ```
 
 This crate is part of the [Zeph](https://github.com/bug-ops/zeph) workspace. See the

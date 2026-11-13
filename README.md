@@ -10,7 +10,7 @@
   [![CI](https://img.shields.io/github/actions/workflow/status/bug-ops/zeph/ci.yml?branch=main&label=CI)](https://github.com/bug-ops/zeph/actions)
   [![codecov](https://codecov.io/gh/bug-ops/zeph/graph/badge.svg?token=S5O0GR9U6G)](https://codecov.io/gh/bug-ops/zeph)
   [![MSRV](https://img.shields.io/badge/MSRV-1.98-blue)](https://www.rust-lang.org)
-  [![Tests](https://img.shields.io/badge/tests-15761-brightgreen)](https://github.com/bug-ops/zeph/actions)
+  [![Tests](https://img.shields.io/badge/tests-16776-brightgreen)](https://github.com/bug-ops/zeph/actions)
   [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-yellow.svg)](LICENSE)
 </div>
 
@@ -253,10 +253,11 @@ Builds run only what you need via [feature bundles](https://bug-ops.github.io/ze
 
 ```bash
 zeph init                    # generate config through the wizard
-zeph doctor                  # run preflight checks
+zeph doctor                  # run preflight checks (add --fix to tighten key, vault, and log-dir permissions)
 zeph --tui                   # launch the dashboard
 zeph ingest ./docs           # ingest documents into semantic memory
 zeph skill list              # inspect installed skills
+zeph skill state schema      # show the opt-in skill execution state schema
 zeph router stats            # inspect adaptive provider routing
 zeph memory export dump.json # export a memory snapshot
 ```

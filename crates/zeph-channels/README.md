@@ -43,6 +43,8 @@ Key fields in the `[telegram]` config section:
 | `expandable_blockquote_min_lines` | u32 | `10` | Blockquotes with at least this many lines render as Bot API 10.1 expandable (collapsed-by-default) quotes; `0` disables the expandable form |
 | `guest_mode` | bool | `false` | Enable Bot API 10.0 Guest Mode — surfaces guest messages via a local proxy |
 | `bot_to_bot` | bool | `false` | Enable Bot-to-Bot communication via `setManagedBotAccessSettings` |
+| `allowed_user_ids` | `Vec<u64>` | `[]` | Numeric Telegram user ids allowed to interact; stable alternative to usernames |
+| `allowed_bot_ids` | `Vec<u64>` | `[]` | Numeric Telegram bot ids allowed to interact when `bot_to_bot = true` |
 | `allowed_bots` | `Vec<String>` | `[]` | Bot usernames (with the `@` prefix, e.g. `"@my_bot"`) allowed to interact when `bot_to_bot = true`. **Empty means all bots are allowed**, not none |
 | `max_bot_chain_depth` | u32 | `1` | Max reply chain depth before Zeph stops responding to bot messages |
 
@@ -53,6 +55,8 @@ expandable_blockquote_min_lines = 10
 guest_mode                      = false
 bot_to_bot                      = false
 allowed_bots                    = ["@my_bot"]
+allowed_user_ids                = [111111111]
+allowed_bot_ids                 = [222222222]
 max_bot_chain_depth             = 1
 ```
 

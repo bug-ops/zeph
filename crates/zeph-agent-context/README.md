@@ -16,7 +16,7 @@ Provides `ContextService` — a stateless façade for context operations: memory
 
 ```toml
 [dependencies]
-zeph-agent-context = { version = "0.22", workspace = true }
+zeph-agent-context = { version = "0.23", workspace = true }
 ```
 
 > [!IMPORTANT]
@@ -107,7 +107,7 @@ The `self-check` feature was consolidated as always-on in v0.20.x — retrieved-
 compile unconditionally. The backend features (`sqlite`/`postgres`) select the storage layer; `index` is the only capability toggle.
 
 ```toml
-zeph-agent-context = { version = "0.22", workspace = true, features = ["index"] }
+zeph-agent-context = { version = "0.23", workspace = true, features = ["index"] }
 ```
 
 ## License

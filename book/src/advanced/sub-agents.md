@@ -136,11 +136,14 @@ The **meta sidecar** (`<agent_id>.meta.json`) stores structured metadata about t
   "started_at": "2026-03-05T10:00:00Z",
   "finished_at": "2026-03-05T10:01:38Z",
   "resumed_from": null,
-  "turns_used": 5
+  "turns_used": 5,
+  "trust_schema": "per_result"
 }
 ```
 
 When a session is resumed, the new meta sidecar records the original agent ID in `resumed_from`, creating a traceable chain.
+
+`trust_schema` is `per_result` when every tool result in the transcript carries its own trust marker. Transcripts written by older versions have no marker (`legacy`); on resume their tool results are imported as `external_untrusted`.
 
 Old transcript files are automatically cleaned up. When the file count exceeds `transcript_max_files`, the oldest transcripts (and their sidecars) are deleted on each spawn or resume.
 
@@ -650,6 +653,9 @@ stateDiagram-v2
 - Background agents auto-deny secret requests so the main session is never blocked
 - All grants are revoked on completion, cancellation, or crash
 - Secret key names are redacted in logs
+- Sub-agents run the same pre-execution verifiers as the main agent, inherit the channel tool allowlist, and flag exfiltration URLs; `fetch` calls from sub-agents and orchestrated tasks are gated by URL grounding
+- Sub-agent tool results are masked, credential-scrubbed and sanitized before they enter the sub-agent history
+- `PreToolUse` and `PostToolUse` hooks run through one shared dispatch for the main, inline and sub-agent loops; a failing `fail_closed` `PreToolUse` hook blocks the tool in every loop
 
 ## Hooks
 

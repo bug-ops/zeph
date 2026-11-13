@@ -232,6 +232,17 @@ prompt_cache_ttl = "1h"   # "ephemeral" (default) or "1h"
 > [!NOTE]
 > The 1-hour TTL costs approximately 2× more per cache write but dramatically reduces repeated-prefix costs for long sessions. Default `"ephemeral"` is byte-identical to the previous wire format — no rollout risk for existing deployments.
 
+## Claude fast mode
+
+A `type = "claude"` provider entry accepts `speed = "fast"` (`ServiceSpeed::Fast`: up to 2.5x output speed at 2x price). It is sent only to models whose capability set allows it; other models run at standard speed. Claude Fable 5.2 (`claude-fable-5-2`) and Mythos 5.2 (`claude-mythos-5-2`) are supported with pricing.
+
+```toml
+[[llm.providers]]
+type = "claude"
+model = "claude-sonnet-5"
+speed = "fast"   # "standard" (default) or "fast"
+```
+
 ## Gemini configuration
 
 ```toml
