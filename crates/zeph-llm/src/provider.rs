@@ -2406,18 +2406,12 @@ mod tests {
 
     #[test]
     fn logprobs_rejection_matches_400_and_capability_mismatch_only() {
-        assert!(is_logprobs_rejection(&LlmError::ApiError {
-            provider: "p".into(),
-            status: 400,
-        }));
+        assert!(is_logprobs_rejection(&LlmError::api_error("p", 400, "")));
         assert!(is_logprobs_rejection(&LlmError::ModelCapabilityMismatch {
             provider: "p".into(),
             message: "m".into(),
         }));
-        assert!(!is_logprobs_rejection(&LlmError::ApiError {
-            provider: "p".into(),
-            status: 500,
-        }));
+        assert!(!is_logprobs_rejection(&LlmError::api_error("p", 500, "")));
     }
 
     #[test]

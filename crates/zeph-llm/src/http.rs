@@ -53,10 +53,19 @@ pub(crate) async fn check_response(
     let status = response.status();
     let text = response.text().await.map_err(LlmError::Http)?;
     if !status.is_success() {
-        tracing::error!(%provider, %status, body = %text, "API error response");
+        log_api_error_body(provider, status, &text);
         return Err(map_error_response(status, &text, provider));
     }
     Ok(text)
+}
+
+/// Log a raw API error body at `debug` level with secret shapes scrubbed.
+///
+/// The user-visible cause travels in [`LlmError::ApiError`]; the raw body is diagnostic only, so
+/// it must not add an ERROR line per layer.
+pub(crate) fn log_api_error_body(provider: &str, status: reqwest::StatusCode, body: &str) {
+    let scrubbed = zeph_common::secret_redact::scrub_secret_shapes(body);
+    tracing::debug!(%provider, %status, body = %scrubbed, "API error response");
 }
 
 /// Extract the HTTP status code and response body text together.
@@ -81,10 +90,7 @@ pub(crate) fn map_error_response(
     if status == reqwest::StatusCode::BAD_REQUEST && body_is_context_length_error(body) {
         LlmError::ContextLengthExceeded
     } else {
-        LlmError::ApiError {
-            provider: provider.into(),
-            status: status.as_u16(),
-        }
+        LlmError::api_error(provider, status.as_u16(), body)
     }
 }
 
@@ -112,7 +118,7 @@ mod tests {
         );
         assert_matches!(
             err,
-            LlmError::ApiError { ref provider, status: 400 } if provider == "myprovider"
+            LlmError::ApiError { ref provider, status: 400, .. } if provider == "myprovider"
         );
     }
 
@@ -121,7 +127,7 @@ mod tests {
         let err = map_error_response(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "", "svc");
         assert_matches!(
             err,
-            LlmError::ApiError { ref provider, status: 500 } if provider == "svc"
+            LlmError::ApiError { ref provider, status: 500, .. } if provider == "svc"
         );
     }
 
@@ -130,7 +136,7 @@ mod tests {
         let err = map_error_response(reqwest::StatusCode::UNAUTHORIZED, "", "claude");
         assert_matches!(
             err,
-            LlmError::ApiError { ref provider, status: 401 } if provider == "claude"
+            LlmError::ApiError { ref provider, status: 401, .. } if provider == "claude"
         );
     }
 
@@ -139,7 +145,7 @@ mod tests {
         let err = map_error_response(reqwest::StatusCode::TOO_MANY_REQUESTS, "", "openai");
         assert_matches!(
             err,
-            LlmError::ApiError { ref provider, status: 429 } if provider == "openai"
+            LlmError::ApiError { ref provider, status: 429, .. } if provider == "openai"
         );
     }
 }

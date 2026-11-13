@@ -14,7 +14,7 @@ impl<C: Channel> Agent<C> {
         skip_all,
         level = "debug",
         fields(max_attempts),
-        err
+        err(level = "debug")
     )]
     pub(super) async fn call_chat_with_tools_retry(
         &mut self,
@@ -76,7 +76,12 @@ impl<C: Channel> Agent<C> {
         unreachable!("loop covers all attempts")
     }
 
-    #[tracing::instrument(name = "core.tool.call_chat", skip_all, level = "debug", err)]
+    #[tracing::instrument(
+        name = "core.tool.call_chat",
+        skip_all,
+        level = "debug",
+        err(level = "debug")
+    )]
     pub(super) async fn call_chat_with_tools(
         &mut self,
         tool_defs: &[ToolDefinition],
@@ -167,7 +172,12 @@ impl<C: Channel> Agent<C> {
         Ok(Some(result))
     }
 
-    #[tracing::instrument(name = "core.tool.dispatch_chat", skip_all, level = "debug", err)]
+    #[tracing::instrument(
+        name = "core.tool.dispatch_chat",
+        skip_all,
+        level = "debug",
+        err(level = "debug")
+    )]
     async fn dispatch_chat_with_tools(
         &mut self,
         tool_defs: &[ToolDefinition],

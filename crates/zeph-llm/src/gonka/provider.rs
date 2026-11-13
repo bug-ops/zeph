@@ -297,10 +297,7 @@ impl GonkaProvider {
                     let status = resp.status().as_u16();
                     tracing::warn!(status, endpoint = %endpoint.base_url, "gonka endpoint error");
                     self.pool.mark_failed(idx, Duration::from_secs(30));
-                    last_err = Some(LlmError::ApiError {
-                        provider: "gonka".into(),
-                        status,
-                    });
+                    last_err = Some(LlmError::api_error("gonka", status, ""));
                 }
                 Ok(Err(e)) => {
                     tracing::warn!(error = %e, endpoint = %endpoint.base_url, "gonka HTTP error");
@@ -411,7 +408,7 @@ impl LlmProvider for GonkaProvider {
         let text = response.text().await.map_err(LlmError::Http)?;
 
         if !status.is_success() {
-            tracing::error!("gonka API error {status}: {text}");
+            crate::http::log_api_error_body("gonka", status, &text);
             return Err(crate::http::map_error_response(status, &text, "gonka"));
         }
 
@@ -445,7 +442,7 @@ impl LlmProvider for GonkaProvider {
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.map_err(LlmError::Http)?;
-            tracing::error!("gonka streaming error {status}: {text}");
+            crate::http::log_api_error_body("gonka", status, &text);
             return Err(crate::http::map_error_response(status, &text, "gonka"));
         }
 
@@ -475,11 +472,8 @@ impl LlmProvider for GonkaProvider {
         let body_text = response.text().await.map_err(LlmError::Http)?;
 
         if !status.is_success() {
-            tracing::error!("gonka embed error {status}: {body_text}");
-            return Err(LlmError::ApiError {
-                provider: "gonka".into(),
-                status: status.as_u16(),
-            });
+            crate::http::log_api_error_body("gonka", status, &body_text);
+            return Err(LlmError::api_error("gonka", status.as_u16(), &body_text));
         }
 
         let resp: EmbeddingResponse = serde_json::from_str(&body_text)?;
@@ -519,11 +513,8 @@ impl LlmProvider for GonkaProvider {
         let body_text = response.text().await.map_err(LlmError::Http)?;
 
         if !status.is_success() {
-            tracing::error!("gonka embed_batch error {status}: {body_text}");
-            return Err(LlmError::ApiError {
-                provider: "gonka".into(),
-                status: status.as_u16(),
-            });
+            crate::http::log_api_error_body("gonka", status, &body_text);
+            return Err(LlmError::api_error("gonka", status.as_u16(), &body_text));
         }
 
         let resp: EmbeddingResponse = serde_json::from_str(&body_text)?;
@@ -576,11 +567,8 @@ impl LlmProvider for GonkaProvider {
 
         if !status.is_success() {
             let truncated: String = text.chars().take(256).collect();
-            tracing::error!("gonka API error {status}: {truncated}");
-            return Err(LlmError::ApiError {
-                provider: "gonka".into(),
-                status: status.as_u16(),
-            });
+            crate::http::log_api_error_body("gonka", status, &truncated);
+            return Err(LlmError::api_error("gonka", status.as_u16(), &truncated));
         }
 
         let result = self.inner.decode_tool_chat_response(&text, "gonka")?;
@@ -624,11 +612,8 @@ impl LlmProvider for GonkaProvider {
 
         if !status.is_success() {
             let truncated: String = text.chars().take(256).collect();
-            tracing::error!("gonka API error {status}: {truncated}");
-            return Err(LlmError::ApiError {
-                provider: "gonka".into(),
-                status: status.as_u16(),
-            });
+            crate::http::log_api_error_body("gonka", status, &truncated);
+            return Err(LlmError::api_error("gonka", status.as_u16(), &truncated));
         }
 
         let resp: OpenAiChatResponse = serde_json::from_str(&text)?;

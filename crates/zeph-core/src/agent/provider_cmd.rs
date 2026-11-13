@@ -426,6 +426,31 @@ impl<C: Channel> Agent<C> {
         lines.join("\n")
     }
 
+    /// Append the configured service speed and the speed the last response was billed at.
+    ///
+    /// The second value reflects the provider's capability downgrade, a latched `speed`
+    /// rejection and the API-reported `usage.speed`. Nothing is written for standard-speed
+    /// providers that have not answered yet.
+    fn write_speed_line(&self, out: &mut String, provider_name: &str) {
+        let configured = self
+            .runtime
+            .providers
+            .provider_pool
+            .iter()
+            .find(|e| e.effective_name().eq_ignore_ascii_case(provider_name))
+            .map_or(zeph_config::ServiceSpeed::Standard, |e| e.speed);
+        let last = self.provider.last_response_usage().map(|u| u.speed);
+        if configured.is_standard() && last.is_none_or(|s| s.is_standard()) {
+            return;
+        }
+        let last = last.map_or_else(|| "n/a".to_owned(), |s| format!("{s:?}").to_lowercase());
+        let _ = writeln!(
+            out,
+            "Speed: configured {}, last response {last}",
+            format!("{configured:?}").to_lowercase()
+        );
+    }
+
     fn provider_status_as_string(&self) -> String {
         let mut out = String::from("Current provider:\n\n");
         let display_name = if self.runtime.config.active_provider_name.is_empty() {
@@ -435,6 +460,7 @@ impl<C: Channel> Agent<C> {
         };
         let _ = writeln!(out, "Name:  {display_name}");
         let _ = writeln!(out, "Model: {}", self.runtime.config.model_name);
+        self.write_speed_line(&mut out, &display_name);
         if let Some(ref tx) = self.runtime.metrics.metrics_tx {
             let m = tx.borrow();
             let _ = writeln!(out, "API calls: {}", m.api_calls);
@@ -774,6 +800,23 @@ mod tests {
         let out = qa.agent.handle_provider_command_as_string("status").await;
         assert!(out.contains("Current provider:"));
         assert!(out.contains("test-model"));
+    }
+
+    #[tokio::test]
+    async fn provider_status_shows_speed_only_for_non_standard() {
+        let mut qa = QuickTestAgent::minimal("ok");
+        qa.agent.runtime.config.active_provider_name = "fastp".to_owned();
+        let out = qa.agent.handle_provider_command_as_string("status").await;
+        assert!(!out.contains("Speed:"), "{out}");
+
+        let mut entry = make_entry("fastp", ProviderKind::Claude, Some("claude-fable-5-2"));
+        entry.speed = zeph_config::ServiceSpeed::Fast;
+        qa.agent.runtime.providers.provider_pool = vec![entry];
+        let out = qa.agent.handle_provider_command_as_string("status").await;
+        assert!(
+            out.contains("Speed: configured fast, last response n/a"),
+            "{out}"
+        );
     }
 
     #[tokio::test]

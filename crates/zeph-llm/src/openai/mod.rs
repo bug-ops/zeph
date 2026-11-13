@@ -566,10 +566,7 @@ impl OpenAiProvider {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             tracing::debug!(status = %status, body = %body, "OpenAI list_models_remote error body");
-            return Err(LlmError::ApiError {
-                provider: "openai".into(),
-                status: status.as_u16(),
-            });
+            return Err(LlmError::api_error("openai", status.as_u16(), &body));
         }
 
         let page: serde_json::Value = resp.json().await?;
@@ -766,7 +763,7 @@ impl OpenAiProvider {
 
         if !status.is_success() {
             let text = response.text().await.map_err(LlmError::Http)?;
-            tracing::error!("OpenAI API streaming request error {status}: {text}");
+            crate::http::log_api_error_body("openai", status, &text);
             return Err(crate::http::map_error_response(status, &text, "openai"));
         }
 
@@ -869,17 +866,14 @@ impl LlmProvider for OpenAiProvider {
         let (status, body_text) = crate::http::read_response_body(response).await?;
 
         if !status.is_success() {
-            tracing::error!("OpenAI embedding API error {status}: {body_text}");
+            crate::http::log_api_error_body("openai", status, &body_text);
             if status == reqwest::StatusCode::BAD_REQUEST {
                 return Err(LlmError::InvalidInput {
                     provider: "openai".into(),
                     message: body_text,
                 });
             }
-            return Err(LlmError::ApiError {
-                provider: "openai".into(),
-                status: status.as_u16(),
-            });
+            return Err(LlmError::api_error("openai", status.as_u16(), &body_text));
         }
 
         let resp: EmbeddingResponse = serde_json::from_str(&body_text)?;
@@ -926,17 +920,14 @@ impl LlmProvider for OpenAiProvider {
         let (status, body_text) = crate::http::read_response_body(response).await?;
 
         if !status.is_success() {
-            tracing::error!("OpenAI batch embedding API error {status}: {body_text}");
+            crate::http::log_api_error_body("openai", status, &body_text);
             if status == reqwest::StatusCode::BAD_REQUEST {
                 return Err(LlmError::InvalidInput {
                     provider: "openai".into(),
                     message: body_text,
                 });
             }
-            return Err(LlmError::ApiError {
-                provider: "openai".into(),
-                status: status.as_u16(),
-            });
+            return Err(LlmError::api_error("openai", status.as_u16(), &body_text));
         }
 
         let resp: EmbeddingResponse = serde_json::from_str(&body_text)?;
@@ -1236,11 +1227,8 @@ impl LlmProvider for OpenAiProvider {
         }
 
         if !status.is_success() {
-            tracing::error!("OpenAI API error {status}: {text}");
-            return Err(LlmError::ApiError {
-                provider: "openai".into(),
-                status: status.as_u16(),
-            });
+            crate::http::log_api_error_body("openai", status, &text);
+            return Err(LlmError::api_error("openai", status.as_u16(), &text));
         }
 
         self.decode_tool_chat_response(&text, "openai")

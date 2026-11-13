@@ -79,6 +79,102 @@ fn refusal_suffix(category: Option<&RefusalCategory>) -> String {
     category.map_or_else(String::new, |c| format!(" (category: {c})"))
 }
 
+/// Provider-reported cause of a non-success HTTP response.
+///
+/// Parsed from the error body of Anthropic, `OpenAI`, Gemini and Ollama responses. Both fields are
+/// server-controlled: the message is passed through the secret scrubber, stripped of control
+/// characters and capped before it is stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiErrorDetail {
+    kind: Option<String>,
+    message: String,
+}
+
+impl ApiErrorDetail {
+    /// Maximum number of characters kept from the provider-supplied message.
+    pub const MAX_MESSAGE_CHARS: usize = 500;
+
+    /// Maximum number of characters kept from the provider-supplied error kind.
+    pub const MAX_KIND_CHARS: usize = 64;
+
+    /// Error type reported by the provider (for example `not_found_error`), when the body has one.
+    #[must_use]
+    pub fn kind(&self) -> Option<&str> {
+        self.kind.as_deref()
+    }
+
+    /// Scrubbed, length-capped message reported by the provider.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Parse the error body of a non-success response.
+    ///
+    /// Understands `{"error":{"type","message"}}` (Anthropic, `OpenAI`),
+    /// `{"error":{"status","message"}}` (Gemini) and `{"error":"..."}` (Ollama). Returns `None`
+    /// for any other shape or an empty message.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zeph_llm::ApiErrorDetail;
+    ///
+    /// let body = r#"{"type":"error","error":{"type":"not_found_error","message":"model: x"}}"#;
+    /// let detail = ApiErrorDetail::from_body(body).unwrap();
+    /// assert_eq!(detail.kind(), Some("not_found_error"));
+    /// assert_eq!(detail.message(), "model: x");
+    /// ```
+    #[must_use]
+    pub fn from_body(body: &str) -> Option<Self> {
+        let (kind, message) = match serde_json::from_str::<ErrorBody>(body).ok()? {
+            ErrorBody::Nested { error } => (error.kind.or(error.status), error.message),
+            ErrorBody::Flat { error } => (None, error),
+        };
+        let scrubbed = zeph_common::secret_redact::scrub_secret_shapes(&message);
+        let message = sanitize_provider_text(&scrubbed, Self::MAX_MESSAGE_CHARS);
+        if message.is_empty() {
+            return None;
+        }
+        Some(Self {
+            kind: kind
+                .map(|k| sanitize_provider_text(&k, Self::MAX_KIND_CHARS))
+                .filter(|k| !k.is_empty()),
+            message,
+        })
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum ErrorBody {
+    Nested { error: NestedError },
+    Flat { error: String },
+}
+
+#[derive(serde::Deserialize)]
+struct NestedError {
+    #[serde(rename = "type", default)]
+    kind: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    message: String,
+}
+
+const NOT_FOUND_HINT: &str = " (check the model id and account access)";
+
+fn api_error_suffix(status: u16, detail: Option<&ApiErrorDetail>) -> String {
+    let cause = match detail {
+        Some(d) => match d.kind() {
+            Some(kind) => format!(": {kind}: {}", d.message()),
+            None => format!(": {}", d.message()),
+        },
+        None => String::new(),
+    };
+    let hint = if status == 404 { NOT_FOUND_HINT } else { "" };
+    format!("{cause}{hint}")
+}
+
 /// Errors that can occur in any [`crate::provider::LlmProvider`] operation.
 ///
 /// Use the predicate methods ([`is_rate_limited`](Self::is_rate_limited),
@@ -201,8 +297,15 @@ pub enum LlmError {
     /// This covers non-retriable API failures such as authentication errors (401/403),
     /// server errors (500/503), and unexpected 4xx responses that are not `InvalidInput`,
     /// `RateLimited`, or `ContextLengthExceeded`. Callers should not retry on this error.
-    #[error("{provider} API request failed (status {status})")]
-    ApiError { provider: String, status: u16 },
+    ///
+    /// `detail` carries the provider's own error type and message (never the request body)
+    /// so the cause, such as an unknown model id, reaches the user.
+    #[error("{provider} API request failed (status {status}){}", api_error_suffix(*status, detail.as_ref()))]
+    ApiError {
+        provider: String,
+        status: u16,
+        detail: Option<ApiErrorDetail>,
+    },
 
     /// Catch-all for provider-specific errors that do not yet have a typed variant.
     ///
@@ -215,6 +318,18 @@ pub enum LlmError {
 }
 
 impl LlmError {
+    /// Build an [`LlmError::ApiError`], extracting the provider's error detail from `body`.
+    ///
+    /// Pass an empty `body` when the response body is unavailable.
+    #[must_use]
+    pub fn api_error(provider: impl Into<String>, status: u16, body: &str) -> Self {
+        Self::ApiError {
+            provider: provider.into(),
+            status,
+            detail: ApiErrorDetail::from_body(body),
+        }
+    }
+
     /// Returns true if this error indicates the context/prompt is too long for the model.
     ///
     /// Providers must return [`LlmError::ContextLengthExceeded`] directly; this predicate
@@ -317,6 +432,47 @@ pub type Result<T> = std::result::Result<T, LlmError>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_error_display_carries_kind_and_message_and_404_hint() {
+        let body =
+            r#"{"type":"error","error":{"type":"not_found_error","message":"model: claude-x"}}"#;
+        let e = LlmError::api_error("claude", 404, body);
+        assert_eq!(
+            e.to_string(),
+            "claude API request failed (status 404): not_found_error: model: claude-x (check the model id and account access)"
+        );
+    }
+
+    #[test]
+    fn api_error_without_body_keeps_status_only() {
+        assert_eq!(
+            LlmError::api_error("p", 500, "").to_string(),
+            "p API request failed (status 500)"
+        );
+    }
+
+    #[test]
+    fn detail_parses_gemini_and_ollama_shapes() {
+        let gemini = r#"{"error":{"code":400,"message":"bad key","status":"INVALID_ARGUMENT"}}"#;
+        let d = ApiErrorDetail::from_body(gemini).unwrap();
+        assert_eq!(d.kind(), Some("INVALID_ARGUMENT"));
+        let ollama = r#"{"error":"model 'x' not found"}"#;
+        let d = ApiErrorDetail::from_body(ollama).unwrap();
+        assert_eq!(d.kind(), None);
+        assert_eq!(d.message(), "model 'x' not found");
+        assert!(ApiErrorDetail::from_body("<html>").is_none());
+    }
+
+    #[test]
+    fn detail_message_is_scrubbed_and_capped() {
+        let body = serde_json::json!({"error": {"type": "invalid_request_error",
+            "message": format!("bad key sk-test-abcdefghijklmnop1234 {}", "x".repeat(2000))}})
+        .to_string();
+        let d = ApiErrorDetail::from_body(&body).unwrap();
+        assert!(!d.message().contains("abcdefghijklmnop1234"));
+        assert!(d.message().chars().count() <= ApiErrorDetail::MAX_MESSAGE_CHARS);
+    }
 
     #[test]
     fn context_length_exceeded_variant_is_detected() {
@@ -436,10 +592,7 @@ mod tests {
 
     #[test]
     fn api_error_display() {
-        let e = LlmError::ApiError {
-            provider: "claude".into(),
-            status: 503,
-        };
+        let e = LlmError::api_error("claude", 503, "");
         let s = e.to_string();
         assert!(s.contains("claude"));
         assert!(s.contains("503"));

@@ -2269,6 +2269,7 @@ fn store_cache_usage_updates_last_usage() {
         cache_creation_input_tokens: 0,
         cache_read_input_tokens: 0,
         iterations: Vec::new(),
+        speed: None,
     };
     provider.store_cache_usage(&usage);
 
@@ -4555,7 +4556,14 @@ fn standard_speed_leaves_body_byte_identical() {
 fn response_usage_reports_effective_speed() {
     use zeph_config::ServiceSpeed::{Fast, Standard};
     let record = |provider: &ClaudeProvider| {
-        provider.usage.record(Some(ResponseUsage::default()));
+        provider.store_cache_usage(&ApiUsage {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+            iterations: Vec::new(),
+            speed: None,
+        });
         provider.last_response_usage().map(|u| u.speed)
     };
     let fast = ClaudeProvider::new("k".into(), "claude-fable-5-2".into(), 1024).with_speed(Fast);
@@ -4563,4 +4571,154 @@ fn response_usage_reports_effective_speed() {
     let unsupported =
         ClaudeProvider::new("k".into(), "claude-opus-4-8".into(), 1024).with_speed(Fast);
     assert_eq!(record(&unsupported), Some(Standard));
+}
+
+// --- fast mode: `usage.speed` parsing and the rejection latch (#7063) ---
+
+fn speed_response(usage_speed: Option<&str>) -> wiremock::ResponseTemplate {
+    let mut usage = serde_json::json!({"input_tokens": 3, "output_tokens": 2});
+    if let Some(speed) = usage_speed {
+        usage["speed"] = speed.into();
+    }
+    wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "content": [{"type": "text", "text": "ok"}],
+        "stop_reason": "end_turn",
+        "usage": usage,
+    }))
+}
+
+async fn response_speed_for(usage_speed: Option<&str>) -> zeph_config::ServiceSpeed {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(speed_response(usage_speed))
+        .mount(&server)
+        .await;
+    let provider = ClaudeProvider::new("k".into(), "claude-fable-5-2".into(), 256)
+        .with_api_url(format!("{}/v1/messages", server.uri()))
+        .with_speed(zeph_config::ServiceSpeed::Fast);
+    let messages = vec![Message::from_legacy(Role::User, "hi")];
+    provider
+        .chat_with_tools(&messages, &[])
+        .await
+        .expect("request must succeed");
+    provider
+        .last_response_usage()
+        .expect("usage recorded")
+        .speed
+}
+
+#[tokio::test]
+async fn usage_speed_standard_overrides_configured_fast() {
+    use zeph_config::ServiceSpeed::Standard;
+    assert_eq!(response_speed_for(Some("standard")).await, Standard);
+}
+
+#[tokio::test]
+async fn usage_speed_fast_is_reported() {
+    use zeph_config::ServiceSpeed::Fast;
+    assert_eq!(response_speed_for(Some("fast")).await, Fast);
+}
+
+#[tokio::test]
+async fn unknown_or_missing_usage_speed_falls_back_to_configured() {
+    use zeph_config::ServiceSpeed::Fast;
+    assert_eq!(response_speed_for(Some("turbo")).await, Fast);
+    assert_eq!(response_speed_for(None).await, Fast);
+}
+
+#[tokio::test]
+async fn rejected_speed_parameter_latches_and_retries_once_without_it() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer};
+    use zeph_config::ServiceSpeed::{Fast, Standard};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(speed_response(None))
+        .up_to_n_times(1)
+        .with_priority(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(wiremock::matchers::body_partial_json(
+            serde_json::json!({"speed": "fast"}),
+        ))
+        .respond_with(wiremock::ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "type": "error",
+            "error": {"type": "invalid_request_error", "message": "speed: fast mode is not available"}
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+
+    let provider = ClaudeProvider::new("k".into(), "claude-fable-5-2".into(), 256)
+        .with_api_url(format!("{}/v1/messages", server.uri()))
+        .with_speed(Fast);
+    let messages = vec![Message::from_legacy(Role::User, "hi")];
+    provider
+        .chat_with_tools(&messages, &[])
+        .await
+        .expect("retry without speed must succeed");
+
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 2);
+    let first: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    let second: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    assert_eq!(first["speed"], "fast");
+    assert!(second.get("speed").is_none());
+    assert_eq!(
+        provider.last_response_usage().map(|u| u.speed),
+        Some(Standard)
+    );
+}
+
+#[test]
+fn speed_rejection_is_anchored_to_the_root_field() {
+    use super::beta::names_rejected_speed;
+    const BAD_REQUEST: reqwest::StatusCode = reqwest::StatusCode::BAD_REQUEST;
+    assert!(names_rejected_speed(
+        BAD_REQUEST,
+        "speed: Extra inputs are not permitted"
+    ));
+    assert!(!names_rejected_speed(BAD_REQUEST, "messages.0.speed: bad"));
+    assert!(!names_rejected_speed(BAD_REQUEST, "unrelated"));
+    assert!(!names_rejected_speed(
+        reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        "speed: x"
+    ));
+}
+
+#[tokio::test]
+async fn not_found_error_detail_reaches_the_user_message() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "type": "error",
+                "error": {"type": "not_found_error", "message": "model: claude-mythos-5-2"}
+            })),
+        )
+        .mount(&server)
+        .await;
+    let provider = ClaudeProvider::new("k".into(), "claude-mythos-5-2".into(), 256)
+        .with_api_url(format!("{}/v1/messages", server.uri()));
+    let messages = vec![Message::from_legacy(Role::User, "hi")];
+    let err = provider.chat_with_tools(&messages, &[]).await.unwrap_err();
+    let text = err.to_string();
+    assert!(text.contains("status 404"), "{text}");
+    assert!(
+        text.contains("not_found_error: model: claude-mythos-5-2"),
+        "{text}"
+    );
+    assert!(text.contains("check the model id"), "{text}");
 }

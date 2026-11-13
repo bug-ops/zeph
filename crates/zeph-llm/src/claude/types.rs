@@ -558,6 +558,34 @@ pub(crate) struct ApiUsage {
     /// final message iteration.
     #[serde(default)]
     pub iterations: Vec<UsageIteration>,
+    /// Speed tier the API reports it served the request at.
+    #[serde(default)]
+    pub speed: Option<ResponseSpeed>,
+}
+
+/// Speed tier reported in `usage.speed` of a response.
+///
+/// Deserialize-only and lenient: a value this build does not know becomes
+/// [`ResponseSpeed::Unknown`] instead of failing the whole response. It is kept apart from the
+/// request-only [`SpeedWire`], which can only express fast mode.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ResponseSpeed {
+    Standard,
+    Fast,
+    #[serde(other)]
+    Unknown,
+}
+
+impl ResponseSpeed {
+    /// The billing tier this report maps to; `None` for an unrecognised value.
+    pub(crate) fn service_speed(self) -> Option<zeph_config::ServiceSpeed> {
+        match self {
+            Self::Standard => Some(zeph_config::ServiceSpeed::Standard),
+            Self::Fast => Some(zeph_config::ServiceSpeed::Fast),
+            Self::Unknown => None,
+        }
+    }
 }
 
 /// One entry of `usage.iterations`.
@@ -631,6 +659,8 @@ pub(crate) struct StreamUsage {
     cache_read_input_tokens: Option<u64>,
     #[serde(default)]
     iterations: Vec<UsageIteration>,
+    #[serde(default)]
+    speed: Option<ResponseSpeed>,
 }
 
 impl StreamUsage {
@@ -648,6 +678,7 @@ impl StreamUsage {
         if !later.iterations.is_empty() {
             self.iterations = later.iterations;
         }
+        self.speed = later.speed.or(self.speed);
     }
 
     /// The merged counters as the non-streaming usage shape, unreported counters as zero.
@@ -658,6 +689,7 @@ impl StreamUsage {
             cache_creation_input_tokens: self.cache_creation_input_tokens.unwrap_or_default(),
             cache_read_input_tokens: self.cache_read_input_tokens.unwrap_or_default(),
             iterations: self.iterations.clone(),
+            speed: self.speed,
         }
     }
 }

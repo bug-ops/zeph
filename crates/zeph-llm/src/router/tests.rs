@@ -404,18 +404,12 @@ async fn cascade_all_providers_fail_preserves_last_error() {
 
     let p1 = AnyProvider::Mock(
         MockProvider::default()
-            .with_errors(vec![LlmError::ApiError {
-                provider: "p1".into(),
-                status: 500,
-            }])
+            .with_errors(vec![LlmError::api_error("p1", 500, "")])
             .with_name("p1"),
     );
     let p2 = AnyProvider::Mock(
         MockProvider::default()
-            .with_errors(vec![LlmError::ApiError {
-                provider: "p2".into(),
-                status: 503,
-            }])
+            .with_errors(vec![LlmError::api_error("p2", 503, "")])
             .with_name("p2"),
     );
 
@@ -424,7 +418,7 @@ async fn cascade_all_providers_fail_preserves_last_error() {
     let err = r.chat(&msgs).await.unwrap_err();
 
     assert!(
-        matches!(&err, LlmError::ApiError { provider, status } if provider == "p2" && *status == 503),
+        matches!(&err, LlmError::ApiError { provider, status, .. } if provider == "p2" && *status == 503),
         "expected the last provider's (p2) ApiError to survive exhaustion, got {err:?}"
     );
 }
@@ -1418,20 +1412,14 @@ async fn embed_all_providers_exhausted_preserves_last_error() {
 
     let p1 = AnyProvider::Mock({
         let mut m = MockProvider::default()
-            .with_errors(vec![LlmError::ApiError {
-                provider: "p1".into(),
-                status: 500,
-            }])
+            .with_errors(vec![LlmError::api_error("p1", 500, "")])
             .with_name("p1");
         m.supports_embeddings = true;
         m
     });
     let p2 = AnyProvider::Mock({
         let mut m = MockProvider::default()
-            .with_errors(vec![LlmError::ApiError {
-                provider: "p2".into(),
-                status: 503,
-            }])
+            .with_errors(vec![LlmError::api_error("p2", 503, "")])
             .with_name("p2");
         m.supports_embeddings = true;
         m
@@ -1441,7 +1429,7 @@ async fn embed_all_providers_exhausted_preserves_last_error() {
     let err = r.embed("text").await.unwrap_err();
 
     assert!(
-        matches!(&err, LlmError::ApiError { provider, status } if provider == "p2" && *status == 503),
+        matches!(&err, LlmError::ApiError { provider, status, .. } if provider == "p2" && *status == 503),
         "expected the last provider's (p2) ApiError to survive exhaustion, got {err:?}"
     );
 }
@@ -1455,20 +1443,14 @@ async fn embed_batch_all_providers_exhausted_preserves_last_error() {
 
     let p1 = AnyProvider::Mock({
         let mut m = MockProvider::default()
-            .with_errors(vec![LlmError::ApiError {
-                provider: "p1".into(),
-                status: 500,
-            }])
+            .with_errors(vec![LlmError::api_error("p1", 500, "")])
             .with_name("p1");
         m.supports_embeddings = true;
         m
     });
     let p2 = AnyProvider::Mock({
         let mut m = MockProvider::default()
-            .with_errors(vec![LlmError::ApiError {
-                provider: "p2".into(),
-                status: 503,
-            }])
+            .with_errors(vec![LlmError::api_error("p2", 503, "")])
             .with_name("p2");
         m.supports_embeddings = true;
         m
@@ -1478,7 +1460,7 @@ async fn embed_batch_all_providers_exhausted_preserves_last_error() {
     let err = r.embed_batch(&["text"]).await.unwrap_err();
 
     assert!(
-        matches!(&err, LlmError::ApiError { provider, status } if provider == "p2" && *status == 503),
+        matches!(&err, LlmError::ApiError { provider, status, .. } if provider == "p2" && *status == 503),
         "expected the last provider's (p2) ApiError to survive exhaustion, got {err:?}"
     );
 }
@@ -1875,18 +1857,12 @@ async fn chat_all_providers_exhausted_preserves_last_error() {
 
     let p1 = AnyProvider::Mock(
         MockProvider::default()
-            .with_errors(vec![LlmError::ApiError {
-                provider: "p1".into(),
-                status: 500,
-            }])
+            .with_errors(vec![LlmError::api_error("p1", 500, "")])
             .with_name("p1"),
     );
     let p2 = AnyProvider::Mock(
         MockProvider::default()
-            .with_errors(vec![LlmError::ApiError {
-                provider: "p2".into(),
-                status: 503,
-            }])
+            .with_errors(vec![LlmError::api_error("p2", 503, "")])
             .with_name("p2"),
     );
 
@@ -1894,7 +1870,7 @@ async fn chat_all_providers_exhausted_preserves_last_error() {
     let err = r.chat(&[]).await.unwrap_err();
 
     assert!(
-        matches!(&err, LlmError::ApiError { provider, status } if provider == "p2" && *status == 503),
+        matches!(&err, LlmError::ApiError { provider, status, .. } if provider == "p2" && *status == 503),
         "expected the last provider's (p2) ApiError to survive exhaustion, got {err:?}"
     );
 }
@@ -1908,24 +1884,20 @@ async fn chat_stream_all_providers_exhausted_preserves_last_error() {
 
     let p1 = AnyProvider::Mock(
         MockProvider::default()
-            .with_errors(vec![LlmError::ApiError {
-                provider: "p1".into(),
-                status: 500,
-            }])
+            .with_errors(vec![LlmError::api_error("p1", 500, "")])
             .with_name("p1"),
     );
     let p2 = AnyProvider::Mock(
         MockProvider::default()
-            .with_errors(vec![LlmError::ApiError {
-                provider: "p2".into(),
-                status: 503,
-            }])
+            .with_errors(vec![LlmError::api_error("p2", 503, "")])
             .with_name("p2"),
     );
 
     let r = RouterProvider::new(vec![p1, p2]);
     match r.chat_stream(&[]).await {
-        Err(LlmError::ApiError { provider, status }) => {
+        Err(LlmError::ApiError {
+            provider, status, ..
+        }) => {
             assert_eq!(provider, "p2");
             assert_eq!(status, 503);
         }

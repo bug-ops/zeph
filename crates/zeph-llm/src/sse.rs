@@ -7,7 +7,7 @@ use eventsource_stream::Eventsource;
 use serde::Deserialize;
 use tokio_stream::StreamExt;
 use zeph_common::ToolCallId;
-use zeph_config::StreamLimits;
+use zeph_config::{ServiceSpeed, StreamLimits};
 
 use crate::claude::StreamUsage;
 use crate::error::{LlmError, StopDetails, check_refusal};
@@ -86,6 +86,8 @@ struct ClaudeSseState {
     usage: Option<Arc<UsageTracker>>,
     /// Usage reported so far by `message_start` and `message_delta`, merged.
     stream_usage: StreamUsage,
+    /// Speed the request was sent with; used when the response reports none.
+    speed: ServiceSpeed,
 }
 
 /// Convert a Claude streaming response into a `ChatStream`.
@@ -94,12 +96,13 @@ pub(crate) fn claude_sse_to_stream(
     limits: &StreamLimits,
     provider: &str,
     usage: Arc<UsageTracker>,
+    speed: ServiceSpeed,
 ) -> ChatStream {
     let limits = limits.clone();
     let provider = provider.to_owned();
     let event_stream = response.bytes_stream().eventsource();
     let s = async_stream::stream! {
-        let mut state = ClaudeSseState { provider, usage: Some(usage), ..Default::default() };
+        let mut state = ClaudeSseState { provider, usage: Some(usage), speed, ..Default::default() };
         let mut pinned = std::pin::pin!(event_stream);
         while let Some(event) = pinned.next().await {
             match event {
@@ -125,12 +128,13 @@ pub(crate) fn claude_sse_to_tool_stream(
     limits: &StreamLimits,
     provider: &str,
     usage: Arc<UsageTracker>,
+    speed: ServiceSpeed,
 ) -> ToolSseStream {
     let limits = limits.clone();
     let provider = provider.to_owned();
     let event_stream = response.bytes_stream().eventsource();
     let s = async_stream::stream! {
-        let mut state = ClaudeSseState { provider, usage: Some(usage), ..Default::default() };
+        let mut state = ClaudeSseState { provider, usage: Some(usage), speed, ..Default::default() };
         let mut pinned = std::pin::pin!(event_stream);
         while let Some(event) = pinned.next().await {
             match event {
@@ -449,7 +453,7 @@ fn record_reported_usage(state: &mut ClaudeSseState, reported: Option<StreamUsag
         return;
     };
     state.stream_usage.merge(reported);
-    crate::claude::record_stream_usage(&tracker, &state.stream_usage);
+    crate::claude::record_stream_usage(&tracker, &state.stream_usage, state.speed);
 }
 
 /// Record the usage carried by a `message_start` event.

@@ -1993,7 +1993,12 @@ impl<C: Channel> Agent<C> {
         ))
     }
 
-    #[tracing::instrument(name = "core.tool.native_loop", skip_all, level = "debug", err)]
+    #[tracing::instrument(
+        name = "core.tool.native_loop",
+        skip_all,
+        level = "debug",
+        err(level = "debug")
+    )]
     pub(super) async fn process_response_native_tools(
         &mut self,
     ) -> Result<(), crate::agent::error::AgentError> {
@@ -2150,7 +2155,7 @@ impl<C: Channel> Agent<C> {
         skip_all,
         level = "debug",
         fields(iteration),
-        err
+        err(level = "debug")
     )]
     async fn process_single_native_turn(
         &mut self,

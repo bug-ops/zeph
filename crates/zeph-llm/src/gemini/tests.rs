@@ -174,7 +174,6 @@ fn test_error_response_parsing() {
             }
         }"#;
     let err: GeminiErrorResponse = serde_json::from_str(json).unwrap();
-    assert_eq!(err.error.code, 403);
     assert_eq!(err.error.status, "PERMISSION_DENIED");
     assert!(err.error.message.contains("API key"));
 }
