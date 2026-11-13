@@ -9,6 +9,8 @@ env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: ""
   CARGO_INCREMENTAL: "0"
+  # Lint gates run in ci.yml; artifact builds must not fail on build.warnings (proc-macro-error2 future-incompat note).
+  CARGO_BUILD_WARNINGS: "allow"
 
 permissions:
   contents: read

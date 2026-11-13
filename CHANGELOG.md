@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `ci`: release builds allow `build.warnings` (and pass it through to `cross`) so the `proc-macro-error2` future-incompat note no longer fails every target (#PR)
+
 ## [0.23.0] - 2026-11-13
 
 ### Added
