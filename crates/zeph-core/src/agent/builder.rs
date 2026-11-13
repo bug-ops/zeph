@@ -1704,6 +1704,15 @@ impl<C: Channel> Agent<C> {
         self
     }
 
+    /// Returns the memory store routing config this agent was built with.
+    ///
+    /// Lets callers outside `zeph-core` (e.g. entry-point wiring tests) verify that
+    /// [`with_routing`][Self::with_routing] reached the constructed agent.
+    #[must_use]
+    pub fn routing_config(&self) -> &StoreRoutingConfig {
+        &self.context_manager.routing
+    }
+
     /// Resolve the classifier provider for `llm`/`hybrid` store routing from the current
     /// routing config and provider pool.
     ///

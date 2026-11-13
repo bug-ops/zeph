@@ -354,6 +354,8 @@ pub(crate) async fn build_agent_factory(
         .with_session_sink(session_sink)
         .with_session_persistence_config(Some(deps.session_persistence_config))
         .with_provider_pool(deps.provider_pool, deps.provider_config_snapshot)
+        // #7056: `[memory.store_routing]`, matching src/runner.rs/src/acp.rs/src/daemon.rs.
+        .with_routing(deps.store_routing)
         // #5951: wire the self-check quality pipeline, matching src/runner.rs/src/acp.rs/
         // src/daemon.rs.
         .with_quality_pipeline(deps.quality_pipeline)
@@ -1082,6 +1084,7 @@ mod tests {
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
             hooks_config: zeph_config::HooksConfig::default(),
+            store_routing: zeph_core::config::StoreRoutingConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1191,6 +1194,7 @@ mod tests {
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
             hooks_config: zeph_config::HooksConfig::default(),
+            store_routing: zeph_core::config::StoreRoutingConfig::default(),
         };
 
         let (resume_banner, build_agent) =
@@ -1297,6 +1301,7 @@ mod tests {
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
             hooks_config: zeph_config::HooksConfig::default(),
+            store_routing: zeph_core::config::StoreRoutingConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1310,6 +1315,45 @@ mod tests {
             "the pool entry configured on ServeAgentDeps must be visible through the built \
              Agent's provider_pool; got: {output}"
         );
+    }
+
+    /// #7056 regression: `build_agent_factory` must call `Agent::with_routing` so
+    /// `[memory.store_routing]` reaches `/sessions*`-built agents like CLI/daemon/ACP ones.
+    #[tokio::test]
+    async fn build_agent_factory_wires_store_routing() {
+        use zeph_core::config::StoreRoutingStrategy;
+
+        let memory = make_memory().await;
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let session_id = zeph_common::SessionId::new("store-routing-test-session");
+        let config = zeph_core::config::Config::default();
+        let session_config = zeph_core::AgentSessionConfig::from_config(&config, 4096);
+        let (condenser, token_counter) = make_test_condenser();
+        let mut deps = make_gate_test_deps(
+            memory,
+            session_config,
+            condenser,
+            token_counter,
+            crate::agent_setup::PolicyGatePieces::default(),
+        );
+        deps.store_routing = zeph_core::config::StoreRoutingConfig {
+            enabled: true,
+            strategy: StoreRoutingStrategy::Hybrid,
+            confidence_threshold: 0.42,
+            ..zeph_core::config::StoreRoutingConfig::default()
+        };
+
+        let (_, build_agent) = Box::pin(build_agent_factory(deps, session_id, cid, false)).await;
+        let (channel, _handle) = zeph_core::LoopbackChannel::pair(8);
+        let agent = build_agent(channel);
+
+        let routing = agent.routing_config();
+        assert!(
+            routing.enabled,
+            "store_routing.enabled must reach the Agent"
+        );
+        assert_eq!(routing.strategy, StoreRoutingStrategy::Hybrid);
+        assert!((routing.confidence_threshold - 0.42).abs() < f32::EPSILON);
     }
 
     fn embed_fn_constant(text: &str) -> zeph_skills::matcher::EmbedFuture {
@@ -1428,6 +1472,7 @@ mod tests {
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
             hooks_config: zeph_config::HooksConfig::default(),
+            store_routing: zeph_core::config::StoreRoutingConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1549,6 +1594,7 @@ mod tests {
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
             hooks_config: zeph_config::HooksConfig::default(),
+            store_routing: zeph_core::config::StoreRoutingConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1669,6 +1715,7 @@ mod tests {
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
             hooks_config: zeph_config::HooksConfig::default(),
+            store_routing: zeph_core::config::StoreRoutingConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1786,6 +1833,7 @@ mod tests {
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
             hooks_config: zeph_config::HooksConfig::default(),
+            store_routing: zeph_core::config::StoreRoutingConfig::default(),
         };
 
         let (_, build_agent) =
@@ -1886,6 +1934,7 @@ mod tests {
             typed_pages_state: None,
             shadow_memory_config: zeph_config::TrajectoryRiskAccumulatorConfig::default(),
             hooks_config: zeph_config::HooksConfig::default(),
+            store_routing: zeph_core::config::StoreRoutingConfig::default(),
         }
     }
 

@@ -233,6 +233,10 @@ pub(crate) struct ServeAgentDeps {
     /// Gated on `safe_mode` at the `apply_security_pipeline` call site, matching the other three
     /// entry points.
     pub(crate) hooks_config: zeph_config::HooksConfig,
+    /// `config.memory.store_routing` (#7056), wired into every session's `Agent` via
+    /// `Agent::with_routing` so `[memory.store_routing]` takes effect for `/sessions*` agents,
+    /// matching `runner.rs`/`daemon.rs`/`acp.rs`.
+    pub(crate) store_routing: zeph_core::config::StoreRoutingConfig,
 }
 
 /// Assemble [`ServeAgentDeps`] once at `zeph serve-sessions` startup, plus the resolved bearer
@@ -654,6 +658,7 @@ pub(crate) async fn assemble_serve_deps(
         typed_pages_state,
         shadow_memory_config: config.memory.shadow_memory.clone(),
         hooks_config: config.hooks.clone(),
+        store_routing: config.memory.store_routing.clone(),
     })
 }
 
