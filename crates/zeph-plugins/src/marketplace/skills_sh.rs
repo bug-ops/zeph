@@ -94,17 +94,10 @@ pub const DEFAULT_BASE_URL: &str = "https://www.skills.sh";
 /// are bounded too.
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
-const MAX_RESPONSE: BodyLimit = non_zero_limit(MAX_RESPONSE_BYTES);
+const MAX_RESPONSE: BodyLimit = BodyLimit::from_const(MAX_RESPONSE_BYTES);
 
 /// Maximum number of bytes of a non-2xx response body kept for diagnostics.
-const MAX_ERROR_BODY: BodyLimit = non_zero_limit(4 * 1024);
-
-const fn non_zero_limit(bytes: usize) -> BodyLimit {
-    match BodyLimit::new(bytes) {
-        Some(limit) => limit,
-        None => panic!("body limit must be non-zero"),
-    }
-}
+const MAX_ERROR_BODY: BodyLimit = BodyLimit::from_const(4 * 1024);
 
 /// [`RegistryClient`] implementation targeting the public skills.sh registry.
 ///

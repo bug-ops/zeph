@@ -43,10 +43,7 @@ const SUPPORTED_IMAGE_MIMES: &[&str] = &[
 
 /// Maximum bytes fetched from an HTTP resource link.
 const MAX_RESOURCE_BYTES: usize = 1_048_576; // 1 MiB
-const MAX_RESOURCE_LIMIT: BodyLimit = match BodyLimit::new(MAX_RESOURCE_BYTES) {
-    Some(limit) => limit,
-    None => panic!("resource limit must be non-zero"),
-};
+const MAX_RESOURCE_LIMIT: BodyLimit = BodyLimit::from_const(MAX_RESOURCE_BYTES);
 /// Timeout for HTTP resource link fetch.
 const RESOURCE_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 

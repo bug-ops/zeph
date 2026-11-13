@@ -26,10 +26,7 @@ const DEFAULT_OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Response body cap mirroring rmcp's internal `ReqwestOAuthHttpClient` limit (not
 /// exported by rmcp, so re-declared here to match).
-const MAX_OAUTH_HTTP_RESPONSE_BODY: BodyLimit = match BodyLimit::new(1024 * 1024) {
-    Some(limit) => limit,
-    None => panic!("body limit must be non-zero"),
-};
+const MAX_OAUTH_HTTP_RESPONSE_BODY: BodyLimit = BodyLimit::from_const(1024 * 1024);
 
 /// Maximum redirect hops [`PinningOAuthHttpClient::execute`] follows for a single
 /// `OAuthHttpRedirectPolicy::Follow` request before giving up.
