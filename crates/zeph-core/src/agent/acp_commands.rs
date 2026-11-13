@@ -207,6 +207,11 @@ impl<C: Channel + Send + 'static> IntegrationAccess for Agent<C> {
         // Same reputation config the CLI/bootstrap paths use (spec-043, #5864) — threaded
         // through so `/plugins add` gets the identical typosquat check `zeph plugin add` does.
         let reputation_cfg = self.runtime.config.plugins_reputation.clone();
+        let plugins_dir = if self.runtime.lifecycle.plugins_dir.is_empty() {
+            zeph_plugins::PluginManager::default_plugins_dir()
+        } else {
+            self.runtime.lifecycle.plugins_dir.clone()
+        };
         // Collect manifest paths for ephemeral plugins. Reading the actual files is
         // deferred into the async block below to avoid blocking the tokio worker thread.
         let ephemeral_manifest_paths: Vec<std::path::PathBuf> = self
@@ -301,6 +306,7 @@ impl<C: Channel + Send + 'static> IntegrationAccess for Agent<C> {
                     base_shell_allowed,
                     ephemeral_names,
                     &reputation_cfg,
+                    plugins_dir,
                 )
             })
             .await
