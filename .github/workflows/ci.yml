@@ -158,10 +158,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - features: "desktop,ide,server,chat,pdf,scheduler,testing"
+          - args: --workspace --all-targets --features desktop,ide,server,chat,pdf,scheduler,testing
             label: desktop-ide-server-chat-pdf-scheduler
-          - features: bench
+          - args: --workspace --all-targets --features bench
             label: bench
+          # Non-default feature sets that ship code outside the curated set (#7026).
+          - args: --workspace --all-targets --features zeph-skills/miner
+            label: miner
+          # Mirror the build-tests-postgres archive invocations: plain
+          # `-p <crate> --features test-utils` trips zeph-db's compile_error!
+          # (sqlite + postgres both enabled).
+          - args: -p zeph-db --all-targets --no-default-features --features test-utils
+            label: test-utils-zeph-db
+          - args: -p zeph-memory --all-targets --no-default-features --features test-utils,jsonschema
+            label: test-utils-zeph-memory
+          - args: -p zeph-index --all-targets --no-default-features --features test-utils
+            label: test-utils-zeph-index
+          - args: -p zeph-orchestration --all-targets --no-default-features --features test-utils
+            label: test-utils-zeph-orchestration
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -172,7 +186,7 @@ jobs:
         with:
           shared-key: "ci"
       - name: Clippy
-        run: cargo clippy --profile ci --workspace --all-targets --features ${{ matrix.features }} -- -D warnings
+        run: cargo clippy --profile ci ${{ matrix.args }} -- -D warnings
 
   msrv:
     name: MSRV check (1.98, ${{ matrix.label }})
