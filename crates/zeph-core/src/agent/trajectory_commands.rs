@@ -172,7 +172,10 @@ async fn goal_resume(
     accounting: &GoalAccounting,
     store: &GoalStore,
 ) -> Result<String, CommandError> {
-    let goals = store.list(10).await.unwrap_or_default();
+    let goals = store
+        .list(10)
+        .await
+        .map_err(|e| CommandError::new(format!("Failed to list goals: {e}")))?;
     let paused = goals
         .into_iter()
         .find(|g| g.status == crate::goal::GoalStatus::Paused);
@@ -222,7 +225,10 @@ async fn goal_clear(
     accounting: &GoalAccounting,
     store: &GoalStore,
 ) -> Result<String, CommandError> {
-    let goals = store.list(10).await.unwrap_or_default();
+    let goals = store
+        .list(10)
+        .await
+        .map_err(|e| CommandError::new(format!("Failed to list goals: {e}")))?;
     let target = goals.into_iter().find(|g| {
         g.status == crate::goal::GoalStatus::Active || g.status == crate::goal::GoalStatus::Paused
     });
@@ -244,7 +250,10 @@ async fn goal_clear(
 }
 
 async fn goal_list(store: &GoalStore) -> Result<String, CommandError> {
-    let goals = store.list(20).await.unwrap_or_default();
+    let goals = store
+        .list(20)
+        .await
+        .map_err(|e| CommandError::new(format!("Failed to list goals: {e}")))?;
     if goals.is_empty() {
         return Ok("No goals recorded.".to_owned());
     }
@@ -456,5 +465,35 @@ mod tests {
             .await
             .unwrap();
         assert!(out.contains("[abcdef12]"), "{out}");
+    }
+
+    /// #7057: a corrupt row (non-UUID id) must surface as a command error, not as an empty list.
+    #[tokio::test]
+    async fn goal_list_resume_clear_propagate_store_errors() {
+        let pool = zeph_db::DbConfig {
+            url: ":memory:".to_owned(),
+            pool_size: 1,
+        }
+        .connect()
+        .await
+        .unwrap();
+        zeph_db::run_migrations(&pool).await.unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        zeph_db::query(zeph_db::sql!(
+            "INSERT INTO zeph_goals (id, text, status, token_budget, turns_used, tokens_used, \
+             created_at, updated_at) VALUES ('not-a-uuid', 'goal text', 'paused', NULL, 0, 0, ?, ?)"
+        ))
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let store = std::sync::Arc::new(crate::goal::GoalStore::new(std::sync::Arc::new(pool)));
+        let accounting = crate::goal::GoalAccounting::new(std::sync::Arc::clone(&store));
+
+        let err = goal_list(&store).await.unwrap_err();
+        assert!(err.0.contains("Failed to list goals"), "{err}");
+        assert!(goal_resume(&accounting, &store).await.is_err());
+        assert!(goal_clear(&accounting, &store).await.is_err());
     }
 }
