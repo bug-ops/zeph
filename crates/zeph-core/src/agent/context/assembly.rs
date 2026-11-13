@@ -3627,6 +3627,121 @@ mod tests {
         );
     }
 
+    fn memcot_accumulator() -> crate::agent::memcot::SemanticStateAccumulator {
+        crate::agent::memcot::SemanticStateAccumulator::new(Arc::new(
+            zeph_config::MemCotConfig::default(),
+        ))
+    }
+
+    #[tokio::test]
+    async fn reset_conversation_cancelled_mid_await_clears_status() {
+        let (tx, mut rx) = zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Agent);
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        agent.services.session.status_tx = Some(tx);
+        let acc = memcot_accumulator();
+        let guard = acc.state_write_guard_for_test().await;
+        agent.services.memory.extraction.memcot_accumulator = Some(acc);
+
+        let mut fut = Box::pin(agent.reset_conversation(false, true));
+        assert!(
+            futures::poll!(fut.as_mut()).is_pending(),
+            "reset must be blocked on the accumulator after raising its status"
+        );
+        drop(fut);
+        drop(guard);
+
+        let update = tokio::time::timeout(std::time::Duration::from_millis(100), rx.next())
+            .await
+            .expect("dropping the reset future must clear its status");
+        assert_eq!(update, Some(zeph_llm::status::StatusUpdate::Clear));
+    }
+
+    #[tokio::test]
+    async fn load_and_resume_cancelled_mid_await_clears_status() {
+        let memory = zeph_memory::semantic::SemanticMemory::new(
+            ":memory:",
+            "http://127.0.0.1:1",
+            None,
+            zeph_llm::any::AnyProvider::Mock(zeph_llm::mock::MockProvider::default()),
+            "test-model",
+        )
+        .await
+        .unwrap();
+        let cid = memory.sqlite().create_conversation().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().to_path_buf();
+        let store = zeph_session::SessionStore::new(memory.sqlite().pool().clone());
+        store.create("s1").await.unwrap();
+        let log = zeph_session::SessionEventLog::open(&zeph_session::session_dir(&data_dir, "s1"))
+            .await
+            .unwrap();
+        log.append(
+            None,
+            None,
+            zeph_session::SessionEvent::SessionStarted {
+                session_id: "s1".to_owned(),
+                cwd: "/repo".to_owned(),
+                provider_name: "claude".to_owned(),
+                model: "opus".to_owned(),
+                forked_from: None,
+            },
+        )
+        .await
+        .unwrap();
+        store
+            .update_seq("s1", log.last_seq().unwrap(), 1)
+            .await
+            .unwrap();
+        drop(log);
+        let session_config = zeph_config::SessionConfig {
+            enabled: true,
+            data_dir: data_dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+
+        let (tx, mut rx) = zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Agent);
+        let mut agent = Agent::new(
+            mock_provider(vec![]),
+            MockChannel::new(vec![]),
+            create_test_registry(),
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        )
+        .with_memory(Arc::new(memory), cid, 50, 5, 100)
+        .with_session_persistence_config(Some(session_config));
+        agent.services.session.status_tx = Some(tx);
+        let acc = memcot_accumulator();
+        let guard = acc.state_write_guard_for_test().await;
+        agent.services.memory.extraction.memcot_accumulator = Some(acc);
+
+        let session_id = zeph_common::SessionId::new("s1");
+        // Hydration does real I/O before the status is raised, so a single poll is not enough;
+        // the timeout drops the future once it is blocked on the held accumulator lock.
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            agent.load_and_resume_conversation(&session_id, cid),
+        )
+        .await;
+        assert!(
+            cancelled.is_err(),
+            "replay must be blocked on the accumulator after raising its status"
+        );
+        drop(guard);
+
+        let update = tokio::time::timeout(std::time::Duration::from_millis(100), rx.next())
+            .await
+            .expect("dropping the replay future must clear its status");
+        assert_eq!(update, Some(zeph_llm::status::StatusUpdate::Clear));
+    }
+
     #[tokio::test]
     async fn reset_conversation_aborts_background_handles_and_clears_history() {
         let mut agent = Agent::new(

@@ -180,27 +180,37 @@ async fn resolve_resource_link(
             )));
         }
 
-        let buf = read_capped(resp, MAX_RESOURCE_LIMIT)
-            .await
-            .map_err(|e| match e {
-                BodyReadError::TooLarge { limit } => crate::error::AcpError::ResourceLink(format!(
-                    "HTTP content exceeds size limit ({limit} bytes): {uri}"
-                )),
-                BodyReadError::Transport(e) => {
-                    crate::error::AcpError::ResourceLink(format!("HTTP read error: {e}"))
-                }
-            })?;
-
-        String::from_utf8(buf).map_err(|_| {
-            crate::error::AcpError::ResourceLink(format!(
-                "HTTP response body is not valid UTF-8: {uri}"
-            ))
-        })
+        read_text_body(resp, MAX_RESOURCE_LIMIT, uri).await
     } else {
         Err(crate::error::AcpError::ResourceLink(format!(
             "unsupported URI scheme in ResourceLink: {uri}"
         )))
     }
+}
+
+/// Read a `ResourceLink` HTTP body as UTF-8 text, enforcing `limit` while streaming.
+///
+/// Separate from the SSRF-guarded fetch in [`resolve_resource_link`] so the size cap and
+/// encoding checks can be tested against a local server; the address checks stay on the fetch path.
+async fn read_text_body(
+    resp: reqwest::Response,
+    limit: BodyLimit,
+    uri: &str,
+) -> Result<String, crate::error::AcpError> {
+    let buf = read_capped(resp, limit).await.map_err(|e| match e {
+        BodyReadError::TooLarge { limit } => crate::error::AcpError::ResourceLink(format!(
+            "HTTP content exceeds size limit ({limit} bytes): {uri}"
+        )),
+        BodyReadError::Transport(e) => {
+            crate::error::AcpError::ResourceLink(format!("HTTP read error: {e}"))
+        }
+    })?;
+
+    String::from_utf8(buf).map_err(|_| {
+        crate::error::AcpError::ResourceLink(format!(
+            "HTTP response body is not valid UTF-8: {uri}"
+        ))
+    })
 }
 
 /// Return value of [`ZephAcpAgentState::drain_agent_events`].
@@ -1197,5 +1207,61 @@ mod output_rx_leak_regression_tests {
                  other prompt for input {text:?}, got: {err}"
             );
         }
+    }
+}
+
+/// Tests for the `ResourceLink` HTTP body reader (#7064).
+#[cfg(test)]
+mod read_text_body_tests {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::TcpListener;
+
+    use super::*;
+
+    async fn respond_with(body: &'static [u8]) -> reqwest::Response {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut req = [0u8; 1024];
+            let _ = sock.read(&mut req).await;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            sock.write_all(head.as_bytes()).await.unwrap();
+            sock.write_all(body).await.unwrap();
+        });
+        reqwest::get(format!("http://{addr}/")).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn body_over_limit_is_rejected_with_size_message() {
+        let resp = respond_with(b"0123456789").await;
+        let err = read_text_body(resp, BodyLimit::from_const(4), "http://x/")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("exceeds size limit (4 bytes)"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn body_within_limit_is_returned_as_text() {
+        let resp = respond_with(b"hello").await;
+        let text = read_text_body(resp, BodyLimit::from_const(16), "http://x/")
+            .await
+            .unwrap();
+        assert_eq!(text, "hello");
+    }
+
+    #[tokio::test]
+    async fn non_utf8_body_is_rejected() {
+        let resp = respond_with(&[0xff, 0xfe, 0xfd]).await;
+        let err = read_text_body(resp, BodyLimit::from_const(16), "http://x/")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not valid UTF-8"), "got: {err}");
     }
 }

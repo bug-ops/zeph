@@ -693,6 +693,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn collect_media_cancelled_mid_decode_still_clears_status() {
+        let entry = media_entry("srv", true, crate::manager::McpTrustLevel::Untrusted);
+        let mgr = Arc::new(McpManager::new(
+            vec![entry],
+            vec![],
+            PolicyEnforcer::new(vec![]),
+        ));
+        let (_writer, tools) = McpToolList::new(vec![]);
+        let sanitizer = Arc::new(zeph_sanitizer::MediaSanitizer::new(
+            &zeph_config::McpMediaConfig::default(),
+        ));
+        let (tx, mut rx) = zeph_llm::status::status_channel(zeph_llm::status::StatusSource::Mcp);
+        let executor = McpToolExecutor::new(mgr, tools)
+            .with_media(sanitizer, 4)
+            .with_status_tx(tx);
+
+        let blocks = [png_image_block()];
+        let mut fut = Box::pin(executor.collect_media("srv", "tool", &blocks));
+        assert!(
+            futures::poll!(fut.as_mut()).is_pending(),
+            "decode must still be in flight after the first poll"
+        );
+        drop(fut);
+
+        let update = tokio::time::timeout(std::time::Duration::from_millis(100), rx.next())
+            .await
+            .expect("dropping the future must clear the decode status");
+        assert_eq!(update, Some(zeph_llm::status::StatusUpdate::Clear));
+    }
+
+    #[tokio::test]
     async fn collect_media_skips_status_when_no_images_in_result() {
         let entry = media_entry("srv", true, crate::manager::McpTrustLevel::Untrusted);
         let executor = executor_with_media(entry);
