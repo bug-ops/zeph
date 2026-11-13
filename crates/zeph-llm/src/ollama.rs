@@ -48,6 +48,8 @@ use ollama_rs::generation::images::Image as OllamaImage;
 use ollama_rs::generation::tools::{ToolFunctionInfo, ToolInfo, ToolType};
 use ollama_rs::models::ModelOptions;
 use std::future::Future;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_stream::StreamExt;
 
 use crate::provider::ResponseUsage;
@@ -284,6 +286,8 @@ pub struct OllamaProvider {
     /// tracking and provider selection can distinguish between multiple configured Ollama
     /// instances (#5859).
     provider_name: String,
+    /// Set once the server rejected a logprobs request; shared by clones, later calls omit it.
+    logprobs_rejected: Arc<AtomicBool>,
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -332,6 +336,7 @@ impl OllamaProvider {
             generation_overrides: None,
             usage: UsageTracker::default(),
             provider_name: "ollama".to_owned(),
+            logprobs_rejected: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -487,18 +492,31 @@ impl OllamaProvider {
         &self,
         request: &ChatMessageRequest,
         error_context: &str,
+        want_logprobs: bool,
     ) -> Result<ollama_rs::generation::chat::ChatMessageResponse, LlmError> {
         let url = format!("{}api/chat", self.client.url_str());
-        let body = chat_request_body(request, false)?;
+        let mut body = chat_request_body(request, false)?;
+        let logprobs = want_logprobs && !self.logprobs_rejected.load(Ordering::Relaxed);
+        if logprobs {
+            body["logprobs"] = serde_json::Value::Bool(true);
+        }
 
-        let response = send_with_retry(self.name(), MAX_RETRIES, None, Some(&self.usage), || {
-            send_with_transport_retry(|| self.http_client.post(&url).json(&body).send())
-        })
-        .await
-        .map_err(|e| wrap_transport_error(e, error_context))?;
-
-        let status = response.status();
-        let text = response.text().await.map_err(LlmError::Http)?;
+        let (mut status, mut text) = self.post_chat(&url, &body, error_context).await?;
+        if logprobs
+            && status == reqwest::StatusCode::BAD_REQUEST
+            && !crate::error::body_is_context_length_error(&text)
+        {
+            if let Some(obj) = body.as_object_mut() {
+                obj.remove("logprobs");
+            }
+            (status, text) = self.post_chat(&url, &body, error_context).await?;
+            if status.is_success() && !self.logprobs_rejected.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    provider = %self.provider_name,
+                    "server rejected logprobs; CoE intra-entropy disabled for this provider"
+                );
+            }
+        }
         if !status.is_success() {
             return Err(if crate::error::body_is_context_length_error(&text) {
                 LlmError::ContextLengthExceeded
@@ -508,6 +526,64 @@ impl OllamaProvider {
         }
 
         serde_json::from_str(&text).map_err(LlmError::Json)
+    }
+
+    async fn post_chat(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+        error_context: &str,
+    ) -> Result<(reqwest::StatusCode, String), LlmError> {
+        let response = send_with_retry(self.name(), MAX_RETRIES, None, Some(&self.usage), || {
+            send_with_transport_retry(|| self.http_client.post(url).json(body).send())
+        })
+        .await
+        .map_err(|e| wrap_transport_error(e, error_context))?;
+        let status = response.status();
+        let text = response.text().await.map_err(LlmError::Http)?;
+        Ok((status, text))
+    }
+
+    /// Non-streaming chat returning the text and, when requested and reported, the mean
+    /// negative log-probability of the generated tokens.
+    async fn chat_inner(
+        &self,
+        messages: &[Message],
+        want_logprobs: bool,
+    ) -> Result<(String, Option<f64>), LlmError> {
+        let visible = AgentVisible::new(messages);
+        let has_images = visible
+            .iter()
+            .any(|m| m.parts.iter().any(|p| matches!(p, MessagePart::Image(_))));
+        let model = if has_images {
+            self.vision_model.as_deref().unwrap_or(&self.model)
+        } else {
+            &self.model
+        };
+        let ollama_messages: Vec<ChatMessage> = visible.iter().map(convert_message).collect();
+
+        let mut request = ChatMessageRequest::new(model.to_owned(), ollama_messages);
+        if let Some(ref ov) = self.generation_overrides {
+            request = apply_generation_overrides(request, ov);
+        }
+
+        let response = self
+            .send_chat_request(&request, "Ollama chat request", want_logprobs)
+            .await?;
+
+        if let Some(ref fd) = response.final_data {
+            self.usage.record(Some(ResponseUsage {
+                input: fd.prompt_eval_count,
+                output: fd.eval_count,
+                ..ResponseUsage::default()
+            }));
+        }
+
+        let entropy = response
+            .logprobs
+            .as_ref()
+            .and_then(|lps| crate::provider::mean_negative_logprob(lps.iter().map(|l| l.logprob)));
+        Ok((response.message.content, entropy))
     }
 }
 
@@ -538,42 +614,15 @@ impl LlmProvider for OllamaProvider {
         fields(provider = self.name(), model = self.model_identifier())
     )]
     async fn chat(&self, messages: &[Message]) -> Result<String, LlmError> {
-        let visible = AgentVisible::new(messages);
-        let has_images = visible
-            .iter()
-            .any(|m| m.parts.iter().any(|p| matches!(p, MessagePart::Image(_))));
-        let model = if has_images {
-            self.vision_model.as_deref().unwrap_or(&self.model)
-        } else {
-            &self.model
-        };
-        let ollama_messages: Vec<ChatMessage> = visible.iter().map(convert_message).collect();
-
-        let mut request = ChatMessageRequest::new(model.to_owned(), ollama_messages);
-        if let Some(ref ov) = self.generation_overrides {
-            request = apply_generation_overrides(request, ov);
-        }
-
-        let response = self
-            .send_chat_request(&request, "Ollama chat request")
-            .await?;
-
-        if let Some(ref fd) = response.final_data {
-            self.usage.record(Some(ResponseUsage {
-                input: fd.prompt_eval_count,
-                output: fd.eval_count,
-                ..ResponseUsage::default()
-            }));
-        }
-
-        Ok(response.message.content)
+        Ok(self.chat_inner(messages, false).await?.0)
     }
 
     async fn chat_with_extras(
         &self,
         messages: &[Message],
     ) -> Result<(String, ChatExtras), LlmError> {
-        Ok((self.chat(messages).await?, ChatExtras::default()))
+        let (text, entropy) = self.chat_inner(messages, true).await?;
+        Ok((text, ChatExtras { entropy }))
     }
 
     #[tracing::instrument(
@@ -714,7 +763,7 @@ impl LlmProvider for OllamaProvider {
         }
 
         let response = self
-            .send_chat_request(&request, "Ollama chat_with_tools request")
+            .send_chat_request(&request, "Ollama chat_with_tools request", false)
             .await?;
 
         if let Some(ref fd) = response.final_data {
@@ -1406,6 +1455,104 @@ mod tests {
         }
     }
 
+    fn ollama_chat_response_with_logprobs(logprobs: &[f64]) -> wiremock::ResponseTemplate {
+        let lps: Vec<_> = logprobs
+            .iter()
+            .map(|lp| serde_json::json!({ "token": "t", "logprob": lp, "bytes": [116] }))
+            .collect();
+        wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "model": "test-model",
+            "created_at": "2024-01-01T00:00:00Z",
+            "message": { "role": "assistant", "content": "answer" },
+            "logprobs": lps,
+            "done": true,
+            "total_duration": 1,
+            "load_duration": 1,
+            "prompt_eval_count": 3,
+            "prompt_eval_duration": 1,
+            "eval_count": 2,
+            "eval_duration": 1
+        }))
+    }
+
+    #[tokio::test]
+    async fn chat_with_extras_requests_logprobs_and_reports_mean_nll() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(body_partial_json(serde_json::json!({ "logprobs": true })))
+            .respond_with(ollama_chat_response_with_logprobs(&[-0.5, -1.5]))
+            .mount(&server)
+            .await;
+
+        let provider = OllamaProvider::new(&server.uri(), "test-model".into(), "embed".into());
+        let (text, extras) = provider
+            .chat_with_extras(&chat_test_messages())
+            .await
+            .unwrap();
+        assert_eq!(text, "answer");
+        let entropy = extras.entropy.expect("entropy from logprobs");
+        assert!((entropy - 1.0).abs() < 1e-9, "{entropy}");
+    }
+
+    #[tokio::test]
+    async fn chat_never_requests_logprobs() {
+        use crate::testing::ollama_chat_response;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ollama_chat_response("ok"))
+            .mount(&server)
+            .await;
+
+        let provider = OllamaProvider::new(&server.uri(), "test-model".into(), "embed".into());
+        provider.chat(&chat_test_messages()).await.unwrap();
+        let requests = server.received_requests().await.unwrap();
+        assert!(!String::from_utf8_lossy(&requests[0].body).contains("logprobs"));
+    }
+
+    #[tokio::test]
+    async fn logprobs_rejection_retries_once_and_latches() {
+        use crate::testing::ollama_chat_response;
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(body_partial_json(serde_json::json!({ "logprobs": true })))
+            .respond_with(ResponseTemplate::new(400).set_body_string("logprobs unsupported"))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ollama_chat_response("plain"))
+            .mount(&server)
+            .await;
+
+        let provider = OllamaProvider::new(&server.uri(), "test-model".into(), "embed".into());
+        let (text, extras) = provider
+            .chat_with_extras(&chat_test_messages())
+            .await
+            .unwrap();
+        assert_eq!(text, "plain");
+        assert_eq!(extras.entropy, None);
+
+        provider
+            .chat_with_extras(&chat_test_messages())
+            .await
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(!String::from_utf8_lossy(&requests[2].body).contains("logprobs"));
+    }
+
     #[tokio::test]
     async fn chat_exhausts_retries_on_persistent_503() {
         use crate::testing::ollama_unavailable_response;
@@ -1709,6 +1856,29 @@ mod tests {
 
         assert!(chat_response.contains('4'));
         assert!(stream_response.contains('4'));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires running Ollama instance"]
+    async fn integration_ollama_chat_with_extras_reports_entropy() {
+        // LLM serialization gate for #7052: a real `/api/chat` round-trip with `logprobs: true`.
+        let provider = OllamaProvider::new(
+            "http://localhost:11434",
+            ollama_chat_model(),
+            ollama_embed_model(),
+        );
+        let messages = vec![Message::from_legacy(
+            Role::User,
+            "Name three primary colors, briefly.",
+        )];
+
+        let (text, extras) = provider.chat_with_extras(&messages).await.unwrap();
+        assert!(!text.is_empty());
+        let entropy = extras.entropy.expect("server returned logprobs");
+        assert!(entropy.is_finite() && entropy >= 0.0, "{entropy}");
+
+        let plain = provider.chat(&messages).await.unwrap();
+        assert!(!plain.is_empty());
     }
 
     #[tokio::test]

@@ -2823,3 +2823,53 @@ async fn router_last_response_usage_after_chat_stream() {
     collect_stream(stream).await.unwrap();
     assert_eq!(r.last_response_usage(), Some(usage_of(5, 6)));
 }
+
+#[tokio::test]
+async fn router_coe_shadow_usage_lands_in_auxiliary_not_primary_counters() {
+    use crate::router::coe::CoeConfig;
+
+    let primary = AnyProvider::Mock(
+        crate::mock::MockProvider::with_responses(vec!["primary answer".into()])
+            .with_entropy(1.0)
+            .with_published_usage(usage_of(10, 5)),
+    );
+    let secondary = AnyProvider::Mock(
+        crate::mock::MockProvider::with_responses(vec!["secondary answer".into()])
+            .with_published_usage(usage_of(3, 2)),
+    );
+    let mut embed = crate::mock::MockProvider::default();
+    embed.supports_embeddings = true;
+    let r = RouterProvider::new(vec![primary]).with_coe(
+        CoeConfig {
+            intra_threshold: 0.8,
+            inter_threshold: 0.2,
+            shadow_sample_rate: 0.0,
+        },
+        secondary,
+        AnyProvider::Mock(embed),
+    );
+    let msgs = vec![Message::from_legacy(Role::User, "q")];
+    assert_eq!(r.chat(&msgs).await.unwrap(), "secondary answer");
+
+    let usage = r.last_response_usage().expect("served usage");
+    assert_eq!((usage.input, usage.output), (10, 5));
+    assert_eq!(
+        usage.auxiliary,
+        Some(crate::provider::AuxiliaryUsage {
+            input: 3,
+            output: 2,
+            ..Default::default()
+        })
+    );
+}
+
+#[tokio::test]
+async fn router_without_coe_reports_no_auxiliary() {
+    let r = RouterProvider::new(vec![AnyProvider::Mock(
+        crate::mock::MockProvider::with_responses(vec!["ok".into()])
+            .with_published_usage(usage_of(4, 4)),
+    )]);
+    let msgs = vec![Message::from_legacy(Role::User, "q")];
+    r.chat(&msgs).await.unwrap();
+    assert_eq!(r.last_response_usage().and_then(|u| u.auxiliary), None);
+}

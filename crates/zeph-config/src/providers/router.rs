@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use zeph_common::ProviderName;
 
 use crate::fraction::{UnitClosed64, UnitUpperClosed};
+use crate::non_negative::NonNegativeF64;
 
 use super::default_true;
 
@@ -525,7 +526,7 @@ pub struct CoeConfig {
     /// Enable `CoE`. When `false`, the struct is ignored.
     pub enabled: bool,
     /// Mean negative log-prob threshold; responses above this trigger intra escalation.
-    pub intra_threshold: UnitClosed64,
+    pub intra_threshold: NonNegativeF64,
     /// Divergence threshold in `[0.0, 1.0]`.
     pub inter_threshold: UnitClosed64,
     /// Baseline rate at which secondary is called even when intra is low.
@@ -540,7 +541,7 @@ impl Default for CoeConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            intra_threshold: UnitClosed64::literal(0.8),
+            intra_threshold: NonNegativeF64::literal(0.8),
             inter_threshold: UnitClosed64::literal(0.20),
             shadow_sample_rate: UnitClosed64::literal(0.1),
             secondary_provider: ProviderName::default(),
@@ -555,7 +556,7 @@ mod fraction_field_tests {
 
     #[test]
     fn coe_thresholds_reject_out_of_range_and_nan() {
-        for field in ["intra_threshold", "inter_threshold", "shadow_sample_rate"] {
+        for field in ["inter_threshold", "shadow_sample_rate"] {
             for bad in ["nan", "1.5", "-0.1"] {
                 let toml = format!("{field} = {bad}");
                 assert!(
@@ -563,6 +564,19 @@ mod fraction_field_tests {
                     "{field} = {bad} must be rejected"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn coe_intra_threshold_accepts_values_above_one_and_rejects_negative_and_nan() {
+        let cfg: CoeConfig = toml::from_str("intra_threshold = 2.5").unwrap();
+        assert!((cfg.intra_threshold.get() - 2.5).abs() < f64::EPSILON);
+        for bad in ["nan", "inf", "-0.1"] {
+            let toml = format!("intra_threshold = {bad}");
+            assert!(
+                toml::from_str::<CoeConfig>(&toml).is_err(),
+                "intra_threshold = {bad} must be rejected"
+            );
         }
     }
 

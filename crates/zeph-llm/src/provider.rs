@@ -106,6 +106,29 @@ impl ChatExtras {
     }
 }
 
+/// Mean negative log-probability of the given token logprobs.
+///
+/// Non-finite values are skipped; returns `None` when no finite logprob remains, so a
+/// missing or degenerate `logprobs` payload never yields a fake confidence signal.
+pub(crate) fn mean_negative_logprob(logprobs: impl IntoIterator<Item = f64>) -> Option<f64> {
+    let (sum, count) = logprobs
+        .into_iter()
+        .filter(|lp| lp.is_finite())
+        .fold((0.0_f64, 0_u32), |(sum, n), lp| (sum - lp, n + 1));
+    (count > 0).then(|| sum / f64::from(count))
+}
+
+/// Whether `err` is how a backend rejects the `logprobs` request parameter.
+///
+/// A 400 or a capability mismatch to a request that asked for logprobs is retried once
+/// without them by the providers that populate [`ChatExtras::entropy`].
+pub(crate) fn is_logprobs_rejection(err: &LlmError) -> bool {
+    matches!(
+        err,
+        LlmError::ApiError { status: 400, .. } | LlmError::ModelCapabilityMismatch { .. }
+    )
+}
+
 /// A chunk from an LLM streaming response.
 ///
 /// Consumers should match all variants: future providers may emit non-`Content` chunks
@@ -176,6 +199,24 @@ impl AuxiliaryUsage {
         self.output = self.output.saturating_add(other.output);
         self.cache_creation = self.cache_creation.saturating_add(other.cache_creation);
         self.cache_read = self.cache_read.saturating_add(other.cache_read);
+    }
+}
+
+impl From<ResponseUsage> for AuxiliaryUsage {
+    /// Fold a whole response into auxiliary usage: its own counters plus any auxiliary it carried.
+    ///
+    /// Reasoning tokens are a subset of `output` and are not added again.
+    fn from(usage: ResponseUsage) -> Self {
+        let mut aux = Self {
+            input: usage.input,
+            output: usage.output,
+            cache_creation: usage.cache.map_or(0, |c| c.creation),
+            cache_read: usage.cache.map_or(0, |c| c.read),
+        };
+        if let Some(inner) = usage.auxiliary {
+            aux.add(inner);
+        }
+        aux
     }
 }
 
@@ -2236,8 +2277,8 @@ pub trait LlmProvider: Send + Sync {
     /// Providers that support logprobs (`OpenAI`, `Compatible`, `Ollama`) override this to
     /// populate [`ChatExtras::entropy`] with the mean negative log-probability.
     ///
-    /// `CoE` is the only caller of this method; the canonical entry point for the agent
-    /// loop remains [`chat`][Self::chat].
+    /// The router calls this method only when `CoE` is enabled (it needs the entropy
+    /// signal); every other path uses [`chat`][Self::chat], which never requests logprobs.
     ///
     /// # Errors
     ///
@@ -2354,6 +2395,59 @@ mod tests {
     use tokio_stream::StreamExt;
 
     use super::*;
+
+    #[test]
+    fn mean_negative_logprob_averages_and_skips_non_finite() {
+        let mean = mean_negative_logprob([-0.5, -1.5, f64::NEG_INFINITY, f64::NAN]).unwrap();
+        assert!((mean - 1.0).abs() < 1e-12);
+        assert_eq!(mean_negative_logprob([]), None);
+        assert_eq!(mean_negative_logprob([f64::NEG_INFINITY]), None);
+    }
+
+    #[test]
+    fn logprobs_rejection_matches_400_and_capability_mismatch_only() {
+        assert!(is_logprobs_rejection(&LlmError::ApiError {
+            provider: "p".into(),
+            status: 400,
+        }));
+        assert!(is_logprobs_rejection(&LlmError::ModelCapabilityMismatch {
+            provider: "p".into(),
+            message: "m".into(),
+        }));
+        assert!(!is_logprobs_rejection(&LlmError::ApiError {
+            provider: "p".into(),
+            status: 500,
+        }));
+    }
+
+    #[test]
+    fn auxiliary_usage_from_response_includes_cache_and_nested_auxiliary() {
+        let usage = ResponseUsage {
+            input: 10,
+            output: 5,
+            cache: Some(CacheUsage {
+                creation: 2,
+                read: 3,
+            }),
+            reasoning: Some(4),
+            auxiliary: Some(AuxiliaryUsage {
+                input: 1,
+                output: 1,
+                cache_creation: 0,
+                cache_read: 0,
+            }),
+            ..ResponseUsage::default()
+        };
+        assert_eq!(
+            AuxiliaryUsage::from(usage),
+            AuxiliaryUsage {
+                input: 11,
+                output: 6,
+                cache_creation: 2,
+                cache_read: 3,
+            }
+        );
+    }
 
     struct StubProvider {
         response: String,
