@@ -219,7 +219,7 @@ AND memory content exceeding the token budget is truncated, not omitted entirely
 | `SubAgentManager` | Lifecycle manager | Concurrency limit, active handles map, cancellation registry |
 | `SubAgentHandle` | Reference to a running task | Task ID (UUID), status channel, cancellation token |
 | `SubAgentStatus` | Current state of a task | Variants: `Running`, `Completed`, `Failed`, `Cancelled` |
-| `SpawnContext` | Parent-derived spawn state | `parent_messages`, `parent_cancel`, `parent_provider_name`, `spawn_depth`, `mcp_tool_names`, `max_trust_level`, `inherited_tool_allowlist`, `credential_scrub` |
+| `SpawnContext` | Parent-derived spawn state | `parent_messages`, `parent_cancel`, `parent_provider_name`, `spawn_depth`, `mcp_tool_ids`, `inherited_trust`, `block_sink`, `max_trust_level`, `inherited_tool_allowlist`, `credential_scrub` |
 | `PermissionGrants` | TTL-bounded permission registry | Map of `GrantKind` → expiry timestamp |
 | `Grant` | Single permission grant | `kind: GrantKind`, `ttl_secs`, expiry instant |
 | `GrantKind` | Type of permission | Variants: `Secret(String)` (vault key), `Tool(String)` (tool name, #6625) |
@@ -314,13 +314,19 @@ initial spawn time and lost on respawn.
 
 ### Mechanism
 
-`SpawnContext::mcp_tool_names` is updated from the live parent `McpManager` reference
-at respawn time, not from a stale snapshot.
+`SpawnContext::mcp_tool_ids: Option<McpToolIdsHandle>` is a read-only handle onto the parent's
+single `McpToolList` writer, so spawn, respawn and resume all read the live registry (`snapshot()`
+per batch), never a copy taken at spawn time. `None` (for example `SpawnContext::default()` in an
+embedder) falls back to `McpToolIds::from_definitions` over the executor's live definitions per
+batch, so an empty default can never classify an MCP result as native. `McpToolIdsHandle` has no
+`Default` and is built only by `McpToolIdsHandle::with_writer`, so `Some(handle)` always has a live
+writer behind it. `SpawnContext.session_mcp_servers` and `TranscriptMeta.mcp_tool_names` are removed
+(old sidecars still load: `TranscriptMeta` has no `deny_unknown_fields`).
 
 ### Key Invariants
 
 - Respawned subagents MUST inherit the parent's current MCP config, not the config at initial spawn
-- MCP tool names list is never cached in `SubAgentDef` — always fetched live from parent manager (known gap: resume currently reads `mcp_tool_names` from the transcript meta; trust classification tolerates this because live executor definitions are joined in per batch)
+- The MCP tool id registry is never cached in `SubAgentDef` or the transcript — spawn and resume read the live parent handle (`SpawnContext.mcp_tool_ids`); the transcript stores no MCP tool list
 
 ---
 
@@ -792,10 +798,15 @@ Every sub-agent tool result (the `Ok(Some)` summary and the `Err` text) is prote
 2. `strip_control_chars_preserve_whitespace` (control and zero-width characters are removed first so they cannot split a secret past the matchers)
 3. `SecretMaskRegistry::mask` (`would_mask` pre-check; section 16)
 4. `zeph_common::secret_redact::scrub_secrets`, only when `CredentialScrub::Enabled`
-5. `ContentSanitizer::sanitize(raw, resolved.content_source(tool_name))` (`ResolvedToolSource::resolve`) (injection flags logged at `warn`); provenance is resolved per batch from the live executor's MCP definitions joined with `mcp_tool_names`, then joined with the result's `ClaimSource` and, for a replayed `read_overflow` body, its stored source (`ToolOutput.replayed_from`)
+5. `ContentSanitizer::sanitize(raw, resolved.content_source(tool_name))` (`ResolvedToolSource::resolve`) (injection flags logged at `warn`); provenance is resolved per batch from `SpawnContext.mcp_tool_ids` (`Some`: `snapshot()` of the parent's live registry; `None`: the live executor's MCP definitions), then joined with the result's `ClaimSource` and, for a replayed `read_overflow` body, its stored source (`ToolOutput.replayed_from`)
 6. `[tool output: name]` fence for results, `[tool error]:` prefix for errors
 
 `SpawnContext.credential_scrub: CredentialScrub { Enabled, Disabled }` (`Default = Enabled`, `From<bool>`) is set from `runtime.config.redact_credentials` when the context is built in `subagent_commands.rs` and threaded into `AgentLoopArgs`. The sub-agent wire `is_error` stays `Err`-only: a non-zero exit is not a sub-agent tool error (`[[006-tools/spec]]`).
+
+### Block recording and inherited trust (#7055, #7027)
+
+- A pre-dispatch verifier block in a sub-agent is recorded exactly like the parent's: `SpawnContext.block_sink: Option<Arc<dyn PreDispatchBlockSink>>` receives a `PreDispatchBlock` (metric, `PreExecutionBlock` security event, audit row) on spawn and on resume.
+- `SpawnContext.inherited_trust: Option<TurnContextTrust>` is the trust floor of the parent's full (unwindowed) context, computed once in `build_spawn_context`, persisted as `TranscriptMeta.inherited_trust` and folded with the current floor (max) on resume; untagged messages are ignored, same rule as `context_max_trust_level`.
 
 ### Hook dispatch (#6987)
 

@@ -561,7 +561,7 @@ character, a literal escape `\[nrtbf0v]`, `\xXX`, `\uXXXX`, a percent escape `%X
 sequence `ESC[..m` or a quoted-printable `=3D`) followed by the prefix alternation and the token
 body (which stops at ESC), replaced with `${1}[REDACTED]`. `AWS_STS_ACCESS_KEY_ID_PATTERN` accepts
 the same ANSI and `=3D` left boundaries, and `AWS_SECRET_KEY_PATTERN` tolerates an ANSI SGR
-sequence between the separator and the value (#7028). The boundary keeps
+sequence between the separator and the value (#7028). The boundary group and the `AWS_*` patterns accept a general ANSI CSI sequence `\x1b\[[0-9;:?]*[@-~]` and a quoted-printable `=[0-9A-Fa-f]{2}`, and the token body tolerates CSI sequences inside the token while a trailing reset survives (#7065). The boundary keeps
 escaped forms found in JSON and `repr` output redactable while a prefix glued inside a word
 (`disk-usage`, `abcsk-x`) is not a secret; a unit test pins the literal to the escaped
 `SECRET_PREFIXES` join. A second tier catches a prefix that directly follows an alphanumeric
