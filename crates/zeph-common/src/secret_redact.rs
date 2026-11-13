@@ -437,6 +437,69 @@ mod tests {
     }
 
     #[test]
+    fn csi_colon_sgr_and_lowercase_qp_boundaries_are_redacted() {
+        let sts = "ASIAIOSFODNN7EXAMPLE";
+        let ghp = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
+        let secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        assert_eq!(
+            scrub_secret_shapes(&format!("\x1b[01;31m\x1b[K{ghp}\x1b[m")),
+            "\x1b[01;31m\x1b[K[REDACTED]\x1b[m"
+        );
+        assert_eq!(
+            scrub_secret_shapes(&format!("\x1b[38:5:1m{ghp}")),
+            "\x1b[38:5:1m[REDACTED]"
+        );
+        assert_eq!(
+            scrub_secret_shapes(&format!("\x1b[?25l{ghp}")),
+            "\x1b[?25l[REDACTED]"
+        );
+        assert_eq!(
+            scrub_secret_shapes(&format!("key=3d{ghp}")),
+            "key=3d[REDACTED]"
+        );
+        assert_eq!(
+            scrub_secret_shapes(&format!("\x1b[K{sts}")),
+            "\x1b[K[REDACTED]"
+        );
+        assert_eq!(
+            scrub_secret_shapes(&format!("x=3d{sts} end")),
+            "x=3d[REDACTED] end"
+        );
+        assert_eq!(
+            scrub_secret_shapes(&format!("secret_access_key=\x1b[K{secret}")),
+            "secret_access_key=\x1b[K[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn token_split_by_csi_runs_is_redacted_whole() {
+        assert_eq!(
+            scrub_secret_shapes("sk-\x1b[m\x1b[Kproj0123456789abcdef"),
+            "[REDACTED]"
+        );
+        assert_eq!(
+            scrub_secret_shapes("a sk-abc\x1b[1mdef\x1b[0m done"),
+            "a [REDACTED]\x1b[0m done"
+        );
+        assert_eq!(
+            scrub_secret_shapes("sk-abc\x1b[0m tail"),
+            "[REDACTED]\x1b[0m tail"
+        );
+    }
+
+    #[test]
+    fn non_sgr_csi_does_not_trigger_on_plain_words() {
+        for text in [
+            "\x1b[Kdisk-usage ok",
+            "\x1b[38:5:1mtask-list",
+            "x=3dtask-list",
+        ] {
+            let result = scrub_secret_shapes(text);
+            assert!(matches!(result, Cow::Borrowed(_)), "{text} -> {result}");
+        }
+    }
+
+    #[test]
     fn ansi_boundary_leaves_plain_text_intact() {
         let result = scrub_secret_shapes("\x1b[32mdisk-usage ok\x1b[0m");
         assert!(matches!(result, Cow::Borrowed(_)), "{result}");
