@@ -149,6 +149,9 @@ pub struct McpServerStatus {
     pub input_schemas_dropped: usize,
     /// Number of `output_schema`s dropped for injection or exceeding the depth cap.
     pub output_schemas_dropped: usize,
+    /// Number of this server's tools shadowed by an earlier tool with the same `sanitized_id`
+    /// (unreachable until the operator disambiguates the ids).
+    pub shadowed_tools: usize,
 }
 
 /// Read-only, secret-free summary of a single `[[llm.providers]]` entry for the TUI

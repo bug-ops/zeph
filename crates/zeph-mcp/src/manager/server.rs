@@ -141,7 +141,7 @@ impl McpManager {
             .flatten()
             .cloned()
             .collect();
-        self.log_tool_collisions(&all_tools).await;
+        self.record_tool_diagnostics(&all_tools).await;
 
         tracing::info!(
             server_id = entry.id,
@@ -325,6 +325,15 @@ impl McpManager {
         self.server_fingerprints.write().await.remove(server_id);
         self.last_refresh.remove(server_id);
         self.tool_list_locked.remove(server_id);
+        let remaining: Vec<McpTool> = self
+            .server_tools
+            .read()
+            .await
+            .values()
+            .flatten()
+            .cloned()
+            .collect();
+        self.record_tool_diagnostics(&remaining).await;
         // Release the serialization lock before the potentially slow shutdown call.
         drop(add_remove_guard);
         client.shutdown().await;

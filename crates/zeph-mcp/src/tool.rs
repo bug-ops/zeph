@@ -145,7 +145,7 @@ pub fn infer_security_meta(tool_name: &str) -> ToolSecurityMeta {
 ///
 /// Even when trust levels differ, the executor dispatches on `sanitized_id`, so a collision
 /// means one tool silently shadows the other regardless of trust.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCollision {
     pub sanitized_id: String,
     pub server_a: McpServerId,
@@ -201,6 +201,9 @@ pub fn detect_collisions<S: std::hash::BuildHasher>(
     collisions
 }
 
+/// Maximum length of [`McpTool::sanitized_id`] accepted by LLM APIs.
+const MAX_SANITIZED_ID_LEN: usize = 128;
+
 impl McpTool {
     /// Return the fully-qualified tool name in `"server_id:name"` format.
     ///
@@ -231,17 +234,18 @@ impl McpTool {
     /// Returns a name safe for LLM APIs that restrict tool names to `[a-zA-Z0-9_-]{1,128}`.
     ///
     /// Replaces the colon separator and any other disallowed characters with `_`.
-    /// Truncates to 128 characters if the result would exceed the API limit.
+    /// Truncates to 128 characters if the result would exceed the API limit. Pure: it never
+    /// logs; use [`is_sanitized_id_truncated`](McpTool::is_sanitized_id_truncated) from a
+    /// diagnostic pass to report truncation once.
     ///
     /// **Collision note**: different `(server_id, name)` pairs can produce the same sanitized id
     /// (e.g. `"a.b:c"` and `"a:b_c"` both yield `"a_b_c"`). Callers that register multiple MCP
     /// servers should detect and warn on such collisions before dispatching.
     #[must_use]
     pub fn sanitized_id(&self) -> String {
-        const MAX_LEN: usize = 128;
-        let raw: String = self
-            .qualified_name()
+        self.qualified_name()
             .chars()
+            .take(MAX_SANITIZED_ID_LEN)
             .map(|c| {
                 if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
                     c
@@ -249,18 +253,14 @@ impl McpTool {
                     '_'
                 }
             })
-            .collect();
-        if raw.len() > MAX_LEN {
-            tracing::warn!(
-                server_id = %self.server_id,
-                name = %self.name,
-                len = raw.len(),
-                "MCP tool sanitized_id exceeds 128 chars and will be truncated"
-            );
-            raw.chars().take(MAX_LEN).collect()
-        } else {
-            raw
-        }
+            .collect()
+    }
+
+    /// Returns `true` when [`sanitized_id`](McpTool::sanitized_id) had to cut the id to 128
+    /// characters.
+    #[must_use]
+    pub fn is_sanitized_id_truncated(&self) -> bool {
+        self.qualified_name().chars().count() > MAX_SANITIZED_ID_LEN
     }
 }
 
@@ -359,6 +359,14 @@ mod tests {
         let id = tool.sanitized_id();
         assert_eq!(id.len(), 128);
         assert!(id.chars().all(|c| c == 'a' || c == '_' || c == 'b'));
+    }
+
+    #[test]
+    fn is_sanitized_id_truncated_flags_only_overlong_ids() {
+        let exact = make_tool(&"a".repeat(63), &"b".repeat(64));
+        assert!(!exact.is_sanitized_id_truncated());
+        let long = make_tool(&"a".repeat(100), &"b".repeat(100));
+        assert!(long.is_sanitized_id_truncated());
     }
 
     #[test]

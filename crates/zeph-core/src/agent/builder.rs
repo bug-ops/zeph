@@ -2442,24 +2442,7 @@ impl<C: Channel> Agent<C> {
                 .filter(|o| o.connected)
                 .count()
         };
-        let mcp_servers: Vec<crate::metrics::McpServerStatus> = self
-            .services
-            .mcp
-            .server_outcomes
-            .iter()
-            .map(|o| crate::metrics::McpServerStatus {
-                id: o.id.clone(),
-                status: if o.connected {
-                    crate::metrics::McpServerConnectionStatus::Connected
-                } else {
-                    crate::metrics::McpServerConnectionStatus::Failed
-                },
-                tool_count: o.tool_count,
-                error: o.error.clone(),
-                input_schemas_dropped: o.input_schemas_dropped,
-                output_schemas_dropped: o.output_schemas_dropped,
-            })
-            .collect();
+        let mcp_servers = self.services.mcp.server_statuses();
         let extended_context = self.runtime.metrics.extended_context;
         tx.send_modify(|m| {
             m.provider_name = provider_name;

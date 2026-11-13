@@ -26,7 +26,7 @@ use crate::elicitation::ElicitationEvent;
 use crate::embedding_guard::EmbeddingAnomalyGuard;
 use crate::policy::PolicyEnforcer;
 use crate::prober::DefaultMcpProber;
-use crate::tool::{McpTool, ToolSecurityMeta};
+use crate::tool::{McpTool, ToolCollision, ToolSecurityMeta};
 use crate::trust_score::TrustScoreStore;
 
 fn default_elicitation_timeout() -> u64 {
@@ -400,6 +400,8 @@ pub struct McpManager {
     /// before `connect_entry` is called so the lock is in place before the server can
     /// send a `tools/list_changed` notification (MF-2: no TOCTOU window).
     tool_list_locked: Arc<DashMap<String, ()>>,
+    /// Shadowed-tool report from the latest diagnostic pass; replaced on every tool-list change.
+    tool_collisions: Arc<SyncRwLock<Vec<ToolCollision>>>,
 }
 
 impl std::fmt::Debug for McpManager {

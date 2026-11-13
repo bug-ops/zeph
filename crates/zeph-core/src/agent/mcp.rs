@@ -5,6 +5,25 @@ use rmcp::model::{ElicitResult, ElicitationAction};
 
 use super::{Agent, Channel, LlmProvider};
 
+/// Render the `/mcp list` "Shadowed tools" section; empty when nothing is shadowed.
+fn format_shadowed_tools(collisions: &[zeph_mcp::tool::ToolCollision]) -> String {
+    use std::fmt::Write;
+
+    if collisions.is_empty() {
+        return String::new();
+    }
+    let mut out =
+        String::from("\n\nShadowed tools (same sanitized id, first server wins dispatch):");
+    for c in collisions {
+        let _ = write!(
+            out,
+            "\n- {} is shadowed by {} (id: {})",
+            c.qualified_b, c.qualified_a, c.sanitized_id
+        );
+    }
+    out
+}
+
 impl<C: Channel> Agent<C> {
     /// Dispatch a `/mcp` subcommand, returning the output as a `String`.
     ///
@@ -114,6 +133,8 @@ impl<C: Channel> Agent<C> {
             let _ = writeln!(output, "- {id} ({count} tools)");
         }
         let _ = write!(output, "Total: {total} tool(s)");
+
+        output.push_str(&format_shadowed_tools(&manager.tool_collisions()));
 
         Ok(output)
     }
@@ -556,24 +577,7 @@ impl<C: Channel> Agent<C> {
             .iter()
             .filter(|o| o.connected)
             .count();
-        let mcp_servers: Vec<crate::metrics::McpServerStatus> = self
-            .services
-            .mcp
-            .server_outcomes
-            .iter()
-            .map(|o| crate::metrics::McpServerStatus {
-                id: o.id.clone(),
-                status: if o.connected {
-                    crate::metrics::McpServerConnectionStatus::Connected
-                } else {
-                    crate::metrics::McpServerConnectionStatus::Failed
-                },
-                tool_count: o.tool_count,
-                error: o.error.clone(),
-                input_schemas_dropped: o.input_schemas_dropped,
-                output_schemas_dropped: o.output_schemas_dropped,
-            })
-            .collect();
+        let mcp_servers = self.services.mcp.server_statuses();
         self.update_metrics(|m| {
             m.mcp_tool_count = mcp_total;
             m.mcp_server_count = mcp_server_count;
@@ -900,6 +904,26 @@ mod tests {
     };
     use super::*;
     use std::assert_matches;
+
+    #[test]
+    fn shadowed_tools_section_names_both_tools_and_the_id() {
+        use zeph_mcp::McpTrustLevel;
+        use zeph_mcp::tool::ToolCollision;
+
+        assert_eq!(format_shadowed_tools(&[]), "");
+        let col = ToolCollision {
+            sanitized_id: "a_b_c".into(),
+            server_a: "a.b".into(),
+            qualified_a: "a.b:c".into(),
+            trust_a: McpTrustLevel::Trusted,
+            server_b: "a".into(),
+            qualified_b: "a:b_c".into(),
+            trust_b: McpTrustLevel::Untrusted,
+        };
+        let out = format_shadowed_tools(&[col]);
+        assert!(out.contains("Shadowed tools"));
+        assert!(out.contains("a:b_c is shadowed by a.b:c (id: a_b_c)"));
+    }
 
     #[tokio::test]
     async fn handle_mcp_command_unknown_subcommand_shows_usage() {

@@ -2346,3 +2346,71 @@ async fn spawn_refresh_task_with_supervisor_registers_task() {
 
     cancel.cancel();
 }
+
+#[tokio::test]
+async fn diagnostic_pass_publishes_and_replaces_collision_report() {
+    let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
+    assert_eq!(mgr.tool_collisions(), []);
+
+    let tools = [make_tool("a.b", "c"), make_tool("a", "b_c")];
+    mgr.record_tool_diagnostics(&tools).await;
+    let cols = mgr.tool_collisions();
+    assert_eq!(cols.len(), 1);
+    assert_eq!(cols[0].sanitized_id, "a_b_c");
+
+    mgr.record_tool_diagnostics(&tools[..1]).await;
+    assert_eq!(mgr.tool_collisions(), []);
+}
+
+#[tokio::test]
+async fn refresh_task_publishes_collision_report() {
+    let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
+    let mut rx = mgr.subscribe_tool_changes();
+    mgr.spawn_refresh_task(None);
+    mgr.inject_server_trust_for_test("a.b", McpTrustLevel::Trusted)
+        .await;
+    mgr.inject_server_trust_for_test("a", McpTrustLevel::Trusted)
+        .await;
+
+    let tx = mgr.clone_refresh_tx().unwrap();
+    tx.try_send(crate::client::ToolRefreshEvent {
+        server_id: "a.b".into(),
+        tools: vec![make_tool("a.b", "c")],
+    })
+    .unwrap();
+    rx.changed().await.unwrap();
+    assert_eq!(mgr.tool_collisions(), []);
+
+    tx.try_send(crate::client::ToolRefreshEvent {
+        server_id: "a".into(),
+        tools: vec![make_tool("a", "b_c")],
+    })
+    .unwrap();
+    rx.changed().await.unwrap();
+    assert_eq!(mgr.tool_collisions().len(), 1);
+}
+
+#[tokio::test]
+#[tracing_test::traced_test]
+async fn truncation_warns_once_per_diagnostic_pass_not_per_id_call() {
+    let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
+    let long = make_tool(&"a".repeat(100), &"b".repeat(100));
+    for _ in 0..5 {
+        let _ = long.sanitized_id();
+    }
+    assert!(!logs_contain("exceeds 128 chars"));
+
+    mgr.record_tool_diagnostics(std::slice::from_ref(&long))
+        .await;
+    logs_assert(|lines: &[&str]| {
+        let n = lines
+            .iter()
+            .filter(|l| l.contains("exceeds 128 chars"))
+            .count();
+        if n == 1 {
+            Ok(())
+        } else {
+            Err(format!("expected one truncation warning, got {n}"))
+        }
+    });
+}

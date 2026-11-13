@@ -1302,6 +1302,35 @@ impl MessageState {
 }
 
 impl McpState {
+    /// Per-server status snapshot for metrics, including how many of each server's tools are
+    /// shadowed by an earlier server's tool with the same `sanitized_id`.
+    pub(crate) fn server_statuses(&self) -> Vec<crate::metrics::McpServerStatus> {
+        let collisions = self
+            .manager
+            .as_ref()
+            .map(|m| m.tool_collisions())
+            .unwrap_or_default();
+        self.server_outcomes
+            .iter()
+            .map(|o| crate::metrics::McpServerStatus {
+                id: o.id.clone(),
+                status: if o.connected {
+                    crate::metrics::McpServerConnectionStatus::Connected
+                } else {
+                    crate::metrics::McpServerConnectionStatus::Failed
+                },
+                tool_count: o.tool_count,
+                error: o.error.clone(),
+                input_schemas_dropped: o.input_schemas_dropped,
+                output_schemas_dropped: o.output_schemas_dropped,
+                shadowed_tools: collisions
+                    .iter()
+                    .filter(|c| c.server_b.as_str() == o.id)
+                    .count(),
+            })
+            .collect()
+    }
+
     /// The full connected MCP tool list.
     pub(crate) fn tools(&self) -> &[zeph_mcp::McpTool] {
         &self.tools
