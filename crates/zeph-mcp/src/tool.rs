@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use serde::{Deserialize, Serialize};
+use zeph_common::types::McpServerId;
 
 pub use zeph_config::mcp_security::{
     CapabilityClass, DataSensitivity, FlaggedParameter, ToolSecurityMeta,
@@ -27,7 +28,7 @@ pub use zeph_config::mcp_security::{
 /// use zeph_mcp::tool::{McpTool, ToolSecurityMeta};
 ///
 /// let tool = McpTool {
-///     server_id: "github".to_owned(),
+///     server_id: "github".into(),
 ///     name: "create_issue".to_owned(),
 ///     description: "Create a new GitHub issue".to_owned(),
 ///     input_schema: serde_json::json!({"type": "object"}),
@@ -40,7 +41,7 @@ pub use zeph_config::mcp_security::{
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpTool {
-    pub server_id: String,
+    pub server_id: McpServerId,
     pub name: String,
     pub description: String,
     pub input_schema: serde_json::Value,
@@ -147,10 +148,10 @@ pub fn infer_security_meta(tool_name: &str) -> ToolSecurityMeta {
 #[derive(Debug, Clone)]
 pub struct ToolCollision {
     pub sanitized_id: String,
-    pub server_a: String,
+    pub server_a: McpServerId,
     pub qualified_a: String,
     pub trust_a: crate::manager::McpTrustLevel,
-    pub server_b: String,
+    pub server_b: McpServerId,
     pub qualified_b: String,
     pub trust_b: crate::manager::McpTrustLevel,
 }
@@ -176,11 +177,11 @@ pub fn detect_collisions<S: std::hash::BuildHasher>(
         let sid = tool.sanitized_id();
         if let Some(first) = seen.get(&sid) {
             let trust_a = trust_map
-                .get(&first.server_id)
+                .get(first.server_id.as_str())
                 .copied()
                 .unwrap_or(crate::manager::McpTrustLevel::Untrusted);
             let trust_b = trust_map
-                .get(&tool.server_id)
+                .get(tool.server_id.as_str())
                 .copied()
                 .unwrap_or(crate::manager::McpTrustLevel::Untrusted);
             collisions.push(ToolCollision {

@@ -147,7 +147,7 @@ pub fn tool_list_hash(tools: &[McpTool]) -> u64 {
     let mut sorted: Vec<&McpTool> = tools.iter().collect();
     sorted.sort_by(|a, b| a.server_id.cmp(&b.server_id).then(a.name.cmp(&b.name)));
     for tool in sorted {
-        hasher.update(tool.server_id.as_bytes());
+        hasher.update(tool.server_id.as_str().as_bytes());
         hasher.update(b"\0");
         hasher.update(tool.name.as_bytes());
         hasher.update(b"\0");

@@ -4352,7 +4352,7 @@ mod tests {
 
     fn make_test_mcp_tool(server_id: &str, name: &str) -> zeph_mcp::McpTool {
         zeph_mcp::McpTool {
-            server_id: server_id.to_owned(),
+            server_id: server_id.into(),
             name: name.to_owned(),
             description: String::new(),
             input_schema: serde_json::Value::Null,

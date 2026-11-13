@@ -580,13 +580,13 @@ impl<C: Channel> Agent<C> {
         &mut self,
         sanitized: &zeph_sanitizer::SanitizedContent,
         tool_name: &str,
-        mcp_server_id: Option<&str>,
+        mcp_server_id: Option<&zeph_common::types::McpServerId>,
         has_injection_flags: bool,
     ) -> Option<(String, bool)> {
-        let mcp_server_id = mcp_server_id.map(str::to_owned);
+        let mcp_server_id = mcp_server_id.cloned();
         tracing::warn!(
             tool = %tool_name,
-            mcp_server_id = mcp_server_id.as_deref().unwrap_or("unknown"),
+            mcp_server_id = mcp_server_id.as_ref().map_or("unknown", zeph_common::types::McpServerId::as_str),
             "MCP tool result crossing ACP trust boundary"
         );
         self.push_security_event(

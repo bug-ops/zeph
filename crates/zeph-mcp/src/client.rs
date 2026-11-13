@@ -35,6 +35,7 @@ use crate::McpTrustLevel;
 use crate::elicitation::ElicitationEvent;
 use crate::error::McpError;
 use crate::tool::McpTool;
+use zeph_common::types::McpServerId;
 
 /// Whether a spawned stdio MCP server process inherits the parent environment.
 ///
@@ -123,7 +124,7 @@ fn rmcp_tool_to_mcp_tool(server_id: &str, tool: rmcp::model::Tool) -> McpTool {
         val
     });
     McpTool {
-        server_id: server_id.to_owned(),
+        server_id: McpServerId::from(server_id),
         name: tool.name.to_string(),
         description: tool.description.map_or_else(String::new, |d| d.to_string()),
         input_schema: serde_json::to_value(&*tool.input_schema).unwrap_or_default(),

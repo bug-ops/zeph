@@ -13,6 +13,7 @@ use zeph_tools::registry::{InvocationHint, ToolDef};
 
 use crate::manager::McpManager;
 use crate::tool::McpTool;
+use zeph_common::types::McpServerId;
 
 /// [`ToolExecutor`] implementation that dispatches tool calls to MCP servers.
 ///
@@ -228,7 +229,7 @@ impl McpToolExecutor {
                 error_domain: None,
                 error_phase: None,
                 claim_source: Some(zeph_tools::ClaimSource::Mcp),
-                mcp_server_id: Some(server_id.to_owned()),
+                mcp_server_id: Some(McpServerId::from(server_id)),
                 injection_flagged: false,
                 embedding_anomalous: false,
                 cross_boundary_mcp_to_acp: false,
@@ -283,7 +284,7 @@ impl McpToolExecutor {
                 error_domain: Some("security".to_owned()),
                 error_phase: None,
                 claim_source: Some(zeph_tools::ClaimSource::Mcp),
-                mcp_server_id: Some(server_id.to_owned()),
+                mcp_server_id: Some(McpServerId::from(server_id)),
                 injection_flagged: false,
                 embedding_anomalous: false,
                 cross_boundary_mcp_to_acp: false,
@@ -344,16 +345,17 @@ impl ToolExecutor for McpToolExecutor {
         let args = serde_json::Value::Object(call.params.clone());
         let result = self
             .manager
-            .call_tool(&tool.server_id, &tool.name, args)
+            .call_tool(tool.server_id.as_str(), &tool.name, args)
             .await
             .map_err(|e| ToolError::Execution(std::io::Error::other(e.to_string())))?;
 
         let raw_text = crate::content::render_content_blocks(&result.content);
 
-        let text = crate::sanitize::intent_anchor_wrap(&tool.server_id, &tool.name, &raw_text);
+        let text =
+            crate::sanitize::intent_anchor_wrap(tool.server_id.as_str(), &tool.name, &raw_text);
 
         let media = self
-            .collect_media(&tool.server_id, &tool.name, &result.content)
+            .collect_media(tool.server_id.as_str(), &tool.name, &result.content)
             .await;
 
         Ok(Some(tool_output(&tool, text, media, &result)))
@@ -385,7 +387,9 @@ impl ToolExecutor for McpToolExecutor {
                 let tools = self.tools.read();
                 tools
                     .iter()
-                    .find(|t| t.server_id == instruction.server && t.name == instruction.tool)
+                    .find(|t| {
+                        t.server_id == instruction.server.as_str() && t.name == instruction.tool
+                    })
                     .cloned()
             };
             let Some(tool) = found else {

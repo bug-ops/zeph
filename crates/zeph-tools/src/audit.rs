@@ -156,7 +156,7 @@ pub struct AuditEntry {
     pub claim_source: Option<crate::executor::ClaimSource>,
     /// MCP server ID for tool calls routed through `McpToolExecutor`. `None` for native tools.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mcp_server_id: Option<String>,
+    pub mcp_server_id: Option<zeph_common::types::McpServerId>,
     /// Tool output was flagged by regex injection detection.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub injection_flagged: bool,

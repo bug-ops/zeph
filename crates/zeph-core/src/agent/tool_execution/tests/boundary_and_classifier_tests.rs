@@ -617,7 +617,7 @@ async fn sanitize_tool_output_cross_boundary_resolves_real_mcp_server_id() {
         schema: schemars::Schema::default(),
         invocation: InvocationHint::ToolCall,
         output_schema: None,
-        server_id: Some("github".to_owned()),
+        server_id: Some("github".into()),
     };
     let executor = MockToolExecutor::no_tools().with_definitions(vec![tool_def]);
     let (tx, _rx) = watch::channel(crate::metrics::MetricsSnapshot::default());

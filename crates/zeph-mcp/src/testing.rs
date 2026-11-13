@@ -18,6 +18,7 @@ use zeph_tools::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 use zeph_tools::registry::{InvocationHint, ToolDef};
 
 use crate::tool::McpTool;
+use zeph_common::types::McpServerId;
 
 use zeph_tools::ToolName;
 
@@ -57,7 +58,7 @@ impl MockMcpServer {
         description: impl Into<String>,
     ) -> Self {
         self.tools.push(McpTool {
-            server_id: server_id.into(),
+            server_id: McpServerId::from(server_id.into()),
             name: name.into(),
             description: description.into(),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),

@@ -108,7 +108,7 @@ impl<C: Channel> Agent<C> {
                 .mcp
                 .tools()
                 .iter()
-                .filter(|t| t.server_id == *id)
+                .filter(|t| t.server_id == id.as_str())
                 .count();
             total += count;
             let _ = writeln!(output, "- {id} ({count} tools)");
@@ -294,7 +294,7 @@ impl<C: Channel> Agent<C> {
                     .cloned();
                 if live.is_none() {
                     tracing::warn!(
-                        server_id = hit.server_id,
+                        server_id = %hit.server_id,
                         tool = hit.name,
                         "MCP tool from semantic search has no live match; dropping stale Qdrant hit"
                     );
@@ -869,7 +869,7 @@ impl<C: Channel + Send + 'static> zeph_commands::McpAccess for Agent<C> {
                     .mcp
                     .tools()
                     .iter()
-                    .map(|t| (t.server_id.clone(), t.name.clone()))
+                    .map(|t| (t.server_id.to_string(), t.name.clone()))
                     .collect();
                 Box::pin(async move {
                     use std::fmt::Write;
@@ -899,7 +899,7 @@ impl<C: Channel + Send + 'static> zeph_commands::McpAccess for Agent<C> {
                         .mcp
                         .tools()
                         .iter()
-                        .filter(|t| &t.server_id == sid)
+                        .filter(|t| t.server_id == sid.as_str())
                         .map(|t| (t.name.clone(), t.description.clone()))
                         .collect()
                 } else {
@@ -1075,7 +1075,7 @@ mod tests {
         input_schema: serde_json::Value,
     ) -> zeph_mcp::McpTool {
         zeph_mcp::McpTool {
-            server_id: server_id.to_owned(),
+            server_id: server_id.into(),
             name: name.to_owned(),
             description: format!("{name} description"),
             input_schema,

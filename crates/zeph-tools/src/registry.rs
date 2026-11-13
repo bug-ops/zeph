@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use std::fmt::Write;
 
 use zeph_common::trust_level::ToolProvenance;
+use zeph_common::types::McpServerId;
 
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,7 +31,7 @@ pub struct ToolDef {
     /// This is the authoritative way to determine whether a tool originates from an MCP
     /// server — `id` is a sanitized, server-namespaced string with no reliable prefix to
     /// pattern-match on (see #5712).
-    pub server_id: Option<String>,
+    pub server_id: Option<McpServerId>,
 }
 
 impl ToolDef {
@@ -52,16 +53,17 @@ impl ToolDef {
 ///
 /// ```
 /// use zeph_common::trust_level::ToolProvenance;
+/// use zeph_common::types::McpServerId;
 /// use zeph_tools::McpToolIds;
 ///
 /// let mut ids = McpToolIds::default();
 /// ids.insert("github_create_issue".into(), Some("github".into()));
 /// assert_eq!(ids.provenance("github_create_issue"), ToolProvenance::Mcp);
 /// assert_eq!(ids.provenance("bash"), ToolProvenance::Native);
-/// assert_eq!(ids.server_id("github_create_issue"), Some("github"));
+/// assert_eq!(ids.server_id("github_create_issue").map(McpServerId::as_str), Some("github"));
 /// ```
 #[derive(Debug, Clone, Default)]
-pub struct McpToolIds(std::collections::HashMap<String, Option<String>>);
+pub struct McpToolIds(std::collections::HashMap<String, Option<McpServerId>>);
 
 impl McpToolIds {
     /// Build the registry from tool definitions, keeping only MCP-served tools.
@@ -80,7 +82,7 @@ impl McpToolIds {
     ///
     /// The first known server id wins, matching dispatch (the first registered tool serves the
     /// id); a later `None` or a different server never replaces it.
-    pub fn insert(&mut self, id: String, server_id: Option<String>) {
+    pub fn insert(&mut self, id: String, server_id: Option<McpServerId>) {
         let slot = self.0.entry(id).or_insert(None);
         if slot.is_none() {
             *slot = server_id;
@@ -117,8 +119,8 @@ impl McpToolIds {
 
     /// Serving MCP server id for `id`, when registered and known.
     #[must_use]
-    pub fn server_id(&self, id: &str) -> Option<&str> {
-        self.0.get(id)?.as_deref()
+    pub fn server_id(&self, id: &str) -> Option<&McpServerId> {
+        self.0.get(id)?.as_ref()
     }
 }
 
@@ -244,7 +246,11 @@ mod tests {
         let mut ids = McpToolIds::default();
         ids.insert("github_create_issue".into(), Some("github".into()));
         ids.insert_id("github_create_issue".into());
-        assert_eq!(ids.server_id("github_create_issue"), Some("github"));
+        assert_eq!(
+            ids.server_id("github_create_issue")
+                .map(McpServerId::as_str),
+            Some("github")
+        );
         ids.insert_id("other_tool".into());
         assert_eq!(ids.provenance("other_tool"), ToolProvenance::Mcp);
         assert_eq!(ids.server_id("other_tool"), None);
@@ -258,14 +264,18 @@ mod tests {
             schema: schemars::schema_for!(String),
             invocation: InvocationHint::ToolCall,
             output_schema: None,
-            server_id: server.map(str::to_owned),
+            server_id: server.map(McpServerId::from),
         };
         let ids = McpToolIds::from_definitions(&[
             def("bash", None),
             def("github_create_issue", Some("github")),
         ]);
         assert_eq!(ids.provenance("bash"), ToolProvenance::Native);
-        assert_eq!(ids.server_id("github_create_issue"), Some("github"));
+        assert_eq!(
+            ids.server_id("github_create_issue")
+                .map(McpServerId::as_str),
+            Some("github")
+        );
     }
 
     #[test]
@@ -273,7 +283,10 @@ mod tests {
         let mut ids = McpToolIds::default();
         ids.insert("shared_tool".into(), Some("first".into()));
         ids.insert("shared_tool".into(), Some("second".into()));
-        assert_eq!(ids.server_id("shared_tool"), Some("first"));
+        assert_eq!(
+            ids.server_id("shared_tool").map(McpServerId::as_str),
+            Some("first")
+        );
     }
 
     #[test]
@@ -281,7 +294,10 @@ mod tests {
         let mut ids = McpToolIds::default();
         ids.insert_id("shared_tool".into());
         ids.insert("shared_tool".into(), Some("github".into()));
-        assert_eq!(ids.server_id("shared_tool"), Some("github"));
+        assert_eq!(
+            ids.server_id("shared_tool").map(McpServerId::as_str),
+            Some("github")
+        );
     }
 
     use crate::file::ReadParams;

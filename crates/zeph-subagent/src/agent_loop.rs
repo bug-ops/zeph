@@ -2529,7 +2529,7 @@ mod handle_tool_step_granted_secrets_tests {
             schema: schemars::Schema::default(),
             invocation: zeph_tools::registry::InvocationHint::ToolCall,
             output_schema: None,
-            server_id: Some("github".to_owned()),
+            server_id: Some("github".into()),
         }
     }
 
@@ -2680,7 +2680,7 @@ mod handle_tool_step_granted_secrets_tests {
             "read_overflow",
             BatchScenario {
                 replayed_from: Some(zeph_common::trust_level::ToolResultSource::Mcp {
-                    server_id: Some("github".to_owned()),
+                    server_id: Some("github".into()),
                 }),
                 ..Default::default()
             },

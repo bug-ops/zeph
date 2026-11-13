@@ -65,7 +65,7 @@ pub struct ServerTrustBoundary {
 #[must_use]
 pub fn fingerprint_tool(tool: &McpTool) -> ToolFingerprint {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(tool.server_id.as_bytes());
+    hasher.update(tool.server_id.as_str().as_bytes());
     hasher.update(tool.name.as_bytes());
     hasher.update(tool.description.as_bytes());
     hasher.update(tool.input_schema.to_string().as_bytes());

@@ -3564,7 +3564,7 @@ mod tests {
     #[tokio::test]
     async fn quarantine_blocks_memory_and_mcp_in_acp_composite_chain() {
         let mcp_tool = zeph_mcp::McpTool {
-            server_id: "mcp".to_owned(),
+            server_id: "mcp".into(),
             name: "write_file".to_owned(),
             description: String::new(),
             input_schema: serde_json::Value::Null,
@@ -3769,7 +3769,7 @@ mod tests {
         use zeph_tools::executor::ToolExecutor;
 
         let mcp_tool = zeph_mcp::McpTool {
-            server_id: "mcp".to_owned(),
+            server_id: "mcp".into(),
             name: "write_file".to_owned(),
             description: String::new(),
             input_schema: serde_json::Value::Null,

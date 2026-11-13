@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 use tracing::debug;
+use zeph_common::types::McpServerId;
 
 use crate::audit::{AuditEntry, AuditLogger, AuditResult, chrono_now};
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
@@ -329,7 +330,7 @@ impl<T: ToolExecutor> ToolExecutor for PolicyGateExecutor<T> {
                 clippy::string_slice,
                 reason = "colon comes from find on the same string"
             )]
-            let server_id = output.tool_name.as_str()[..colon].to_owned();
+            let server_id = McpServerId::from(&output.tool_name.as_str()[..colon]);
             if let Some(audit) = &self.audit {
                 let entry = AuditEntry {
                     source_kind: None,

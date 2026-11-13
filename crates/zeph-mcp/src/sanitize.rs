@@ -31,6 +31,7 @@ use zeph_common::text::truncate_to_bytes;
 
 use crate::tool::{FlaggedParameter, McpTool};
 use zeph_common::patterns::{RAW_INJECTION_PATTERNS, strip_format_chars};
+use zeph_common::types::McpServerId;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -400,7 +401,7 @@ pub fn sanitize_tools(
         std::collections::HashMap::new();
 
     for tool in tools.iter_mut() {
-        tool.server_id.clone_from(&clean_server_id);
+        tool.server_id = McpServerId::from(clean_server_id.as_str());
         tool.name = sanitize_tool_name(&tool.name);
 
         let mut tool_injected = false;
@@ -1246,6 +1247,7 @@ mod tests {
         assert!(
             tools[0]
                 .server_id
+                .as_str()
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'),
             "server_id must only contain safe chars, got: {}",

@@ -35,7 +35,7 @@ fn replayed(stored: ToolResultSource) -> ToolOutputOrigin {
 
 fn mcp(server: &str) -> ToolResultSource {
     ToolResultSource::Mcp {
-        server_id: Some(server.to_owned()),
+        server_id: Some(server.into()),
     }
 }
 

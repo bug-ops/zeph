@@ -151,7 +151,13 @@ fn mcp_state_mutators_keep_the_id_registry_in_sync() {
 
     state.set_tools(vec![github_mcp_tool()]);
     assert!(state.tool_ids().contains(&id));
-    assert_eq!(state.tool_ids().server_id(&id), Some("github"));
+    assert_eq!(
+        state
+            .tool_ids()
+            .server_id(&id)
+            .map(zeph_common::types::McpServerId::as_str),
+        Some("github")
+    );
 
     state.retain_tools(|t| t.server_id != "github");
     assert!(!state.tool_ids().contains(&id));
@@ -174,7 +180,15 @@ fn long_ids_are_registered_in_their_truncated_dispatch_form() {
     let mut agent = agent_with(MockToolExecutor::no_tools());
     agent.services.mcp.set_tools(vec![tool]);
     assert!(agent.services.mcp.tool_ids().contains(&id));
-    assert_eq!(agent.services.mcp.tool_ids().server_id(&id), Some("github"));
+    assert_eq!(
+        agent
+            .services
+            .mcp
+            .tool_ids()
+            .server_id(&id)
+            .map(zeph_common::types::McpServerId::as_str),
+        Some("github")
+    );
 }
 
 #[tokio::test]

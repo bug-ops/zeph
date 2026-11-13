@@ -19,6 +19,7 @@ use zeph_common::ToolName;
 
 use crate::manager::McpTrustLevel;
 use crate::tool::{DataSensitivity, McpTool};
+use zeph_common::types::McpServerId;
 
 // ── Data-flow policy ─────────────────────────────────────────────────────────
 
@@ -32,7 +33,7 @@ pub enum DataFlowViolation {
          high-sensitivity tools require trusted servers"
     )]
     SensitivityTrustMismatch {
-        server_id: String,
+        server_id: McpServerId,
         tool_name: ToolName,
         sensitivity: DataSensitivity,
         trust: McpTrustLevel,
@@ -87,19 +88,19 @@ pub(crate) use zeph_config::McpPolicy;
 pub enum PolicyViolation {
     #[error("tool '{tool_name}' is denied on server '{server_id}'")]
     ToolDenied {
-        server_id: String,
+        server_id: McpServerId,
         tool_name: ToolName,
     },
 
     #[error("tool '{tool_name}' is not in the allowlist for server '{server_id}'")]
     ToolNotAllowed {
-        server_id: String,
+        server_id: McpServerId,
         tool_name: ToolName,
     },
 
     #[error("rate limit exceeded for server '{server_id}' (max {max_calls_per_minute}/min)")]
     RateLimitExceeded {
-        server_id: String,
+        server_id: McpServerId,
         max_calls_per_minute: u32,
     },
 }

@@ -3,6 +3,7 @@
 
 use uuid::Uuid;
 use zeph_common::trust_level::{NativeToolKind, ToolResultSource, UntrustedTier};
+use zeph_common::types::McpServerId;
 #[allow(unused_imports)]
 use zeph_db::sql;
 
@@ -38,7 +39,7 @@ fn encode_source(source: &ToolResultSource) -> (i16, Option<&str>) {
         ToolResultSource::Native(NativeToolKind::Local) => (1, None),
         ToolResultSource::Native(NativeToolKind::Web) => (2, None),
         ToolResultSource::Native(NativeToolKind::Memory) => (3, None),
-        ToolResultSource::Mcp { server_id } => (4, server_id.as_deref()),
+        ToolResultSource::Mcp { server_id } => (4, server_id.as_ref().map(McpServerId::as_str)),
         ToolResultSource::Archived(UntrustedTier::Local) => (5, None),
         ToolResultSource::Archived(UntrustedTier::External) => (6, None),
     }
@@ -51,7 +52,9 @@ fn decode_source(
     server_id: Option<String>,
 ) -> Result<ToolResultSource, MemoryError> {
     Ok(match code {
-        None | Some(4) => ToolResultSource::Mcp { server_id },
+        None | Some(4) => ToolResultSource::Mcp {
+            server_id: server_id.map(McpServerId::from),
+        },
         Some(1) => ToolResultSource::Native(NativeToolKind::Local),
         Some(2) => ToolResultSource::Native(NativeToolKind::Web),
         Some(3) => ToolResultSource::Native(NativeToolKind::Memory),
