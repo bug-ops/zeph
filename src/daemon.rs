@@ -358,7 +358,7 @@ impl zeph_a2a::TaskProcessor for AgentTaskProcessor {
 /// daemon bootstrap.
 ///
 /// Deliberately its own struct, not merged with `crate::runner::BuildAgentDeps`: the daemon
-/// path wires `with_mcp`/`with_mcp_shared_tools`/`with_provider_pool` inline (the CLI path
+/// path wires `with_mcp`/`with_provider_pool` inline (the CLI path
 /// defers those to feature-gated chaining after `build_agent` returns, inside `run()`), and
 /// never wires session-sink, compression, autosave, shutdown-summary, compaction-provider,
 /// tiered-retrieval, or bare-mode config at all. Typed-pages state, the risk-chain accumulator,
@@ -390,7 +390,6 @@ where
     mcp_tools: Vec<zeph_mcp::McpTool>,
     mcp_registry: Option<zeph_mcp::McpToolRegistry>,
     mcp_manager: std::sync::Arc<zeph_mcp::McpManager>,
-    mcp_shared_tools: std::sync::Arc<RwLock<Vec<zeph_mcp::McpTool>>>,
     provider_config_snapshot: zeph_core::ProviderConfigSnapshot,
     /// #5975: shared with `SkillInvokeExecutor` — see `run_daemon`'s construction site.
     trust_snapshot: std::sync::Arc<
@@ -461,7 +460,6 @@ where
         Some(deps.mcp_manager),
         &config.mcp,
     )
-    .with_mcp_shared_tools(deps.mcp_shared_tools)
     .with_hybrid_search(config.skills.hybrid_search)
     .with_rl_routing(
         config.skills.rl_routing_enabled,
@@ -789,9 +787,9 @@ pub(crate) async fn run_daemon(
     // Retain a reference for explicit pre-shutdown so child processes are killed while the
     // tokio runtime is still live (fixes #2693: ChildWithCleanup::drop races with shutdown).
     let shutdown_mcp_manager = std::sync::Arc::clone(&mcp_manager);
-    let mcp_shared_tools = std::sync::Arc::new(RwLock::new(mcp_tools.clone()));
-    let mut mcp_executor =
-        zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
+    let (mcp_tool_list, mcp_tool_reader) = zeph_mcp::McpToolList::new(mcp_tools.clone());
+    let mcp_ids_handle = mcp_tool_list.ids_handle();
+    let mut mcp_executor = zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_tool_reader);
     if config.cli.no_mcp_media {
         tracing::info!("--no-mcp-media: MCP image passthrough disabled for this session");
     } else {
@@ -902,12 +900,12 @@ pub(crate) async fn run_daemon(
     // memory + overflow) behind one outermost TrustGateExecutor, matching runner.rs and ACP
     // (`src/acp.rs`). Previously only the base chain was gated here, so a Quarantined skill
     // could still reach `memory_save` and any MCP-sourced tool.
-    let (trust_gated, mcp_ids_handle) = agent_setup::apply_common_tool_gating(
+    let trust_gated = agent_setup::apply_common_tool_gating(
         inner_executor,
         &permission_policy,
         turn_trust_floor.clone(),
+        mcp_ids_handle.clone(),
     );
-    agent_setup::register_mcp_tool_ids(&mcp_ids_handle, &mcp_tools);
     // #5958: shared trajectory risk slot — written by begin_turn(), read by PolicyGateExecutor.
     // Mirrors src/runner.rs; previously the daemon never created this, so TrajectorySentinel
     // was never wired into the daemon's tool-gate chain or the Agent itself (see below).
@@ -928,6 +926,7 @@ pub(crate) async fn run_daemon(
         &policy_gate_pieces,
         daemon_audit_logger.as_ref(),
         Some((&trajectory_risk_slot, &trajectory_signal_queue)),
+        &mcp_ids_handle,
     );
 
     // Spec 050 F2 (#5913): wrap with ScopedToolExecutor when capability_scopes are configured —
@@ -1013,13 +1012,15 @@ pub(crate) async fn run_daemon(
                 sentinel_cfg.deny_on_timeout,
             );
             let store = zeph_core::agent::shadow_sentinel::ShadowEventStore::new(pool);
-            let sentinel =
-                std::sync::Arc::new(zeph_core::agent::shadow_sentinel::ShadowSentinel::new(
+            let sentinel = std::sync::Arc::new(
+                zeph_core::agent::shadow_sentinel::ShadowSentinel::new(
                     store,
                     Box::new(llm_probe),
                     sentinel_cfg.clone(),
                     conversation_id.0.to_string(),
-                ));
+                )
+                .with_mcp_tool_ids(mcp_ids_handle.clone()),
+            );
             let turn_number = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             let risk_level = std::sync::Arc::new(parking_lot::RwLock::new("calm".to_owned()));
             let probe_gate: std::sync::Arc<dyn zeph_tools::ProbeGate> =
@@ -1041,13 +1042,6 @@ pub(crate) async fn run_daemon(
             (tool_executor, None)
         }
     };
-    // #5736: ShadowSentinel keeps its own MCP tool-id set (mirroring TrustGateExecutor's) so
-    // classify_tool can escalate MCP write/edit tools to ExfilCapable without a cross-crate
-    // ToolDef dependency at its call site, matching src/runner.rs.
-    if let Some(ref sentinel) = shadow_sentinel_arc {
-        agent_setup::register_mcp_tool_ids(&sentinel.mcp_tool_ids_handle(), &mcp_tools);
-    }
-
     let mcp_embed_provider = {
         let discovery = &config.mcp.tool_discovery;
         if discovery.embedding_provider.is_empty() {
@@ -1139,7 +1133,6 @@ pub(crate) async fn run_daemon(
         mcp_tools,
         mcp_registry,
         mcp_manager,
-        mcp_shared_tools,
         provider_config_snapshot,
         trust_snapshot,
         turn_trust_floor,
@@ -1150,8 +1143,8 @@ pub(crate) async fn run_daemon(
     // Security-relevant AgentBuilder setters — risk-chain accumulator (#6578), MAGE
     // trajectory-risk gate (#6579), typed-page CAM fidelity (#6574), trajectory risk
     // slot/signal queue/config (spec 050 Invariant 2), write-time memory-consent trust slot
-    // (#6490), ShadowSentinel (spec 050 Phase 2), VIGIL, hooks, the MCP tool-id registry
-    // handle (#5747), and (when `classifiers` is enabled) the ML injection classifier +
+    // (#6490), ShadowSentinel (spec 050 Phase 2), VIGIL, hooks, the MCP tool-list writer
+    // (#7075), and (when `classifiers` is enabled) the ML injection classifier +
     // enforcement mode — shared with src/runner.rs/src/acp.rs/src/serve/agent_factory.rs via
     // one call site so these controls cannot silently drop out of sync across entry points
     // again (#6581).
@@ -1168,7 +1161,7 @@ pub(crate) async fn run_daemon(
             shadow_sentinel: shadow_sentinel_arc,
             vigil_config: config.security.vigil.clone(),
             hooks_config: (!config.cli.safe_mode).then(|| config.hooks.clone()),
-            mcp_tool_ids_handle: mcp_ids_handle,
+            mcp_tool_list,
             #[cfg(feature = "classifiers")]
             classifiers_config: config.classifiers.clone(),
             llm_classifier: app.build_feedback_classifier(&provider),
@@ -1555,7 +1548,6 @@ mod tests {
             mcp_tools: Vec::new(),
             mcp_registry: None,
             mcp_manager,
-            mcp_shared_tools: std::sync::Arc::new(RwLock::new(Vec::new())),
             provider_config_snapshot,
             trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
@@ -1647,7 +1639,6 @@ mod tests {
             mcp_tools: Vec::new(),
             mcp_registry: None,
             mcp_manager,
-            mcp_shared_tools: std::sync::Arc::new(RwLock::new(Vec::new())),
             provider_config_snapshot,
             trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
@@ -1729,7 +1720,6 @@ mod tests {
             mcp_tools: Vec::new(),
             mcp_registry: None,
             mcp_manager,
-            mcp_shared_tools: std::sync::Arc::new(RwLock::new(Vec::new())),
             provider_config_snapshot,
             trust_snapshot: std::sync::Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
@@ -2098,12 +2088,12 @@ mod tests {
                     ),
                 ),
             )));
-        let (gated, mcp_ids_handle) = agent_setup::apply_common_tool_gating(
+        let gated = agent_setup::apply_common_tool_gating(
             inner_executor,
             &zeph_tools::PermissionPolicy::default(),
             zeph_common::TurnTrustFloor::default(),
+            agent_setup::mcp_ids_handle_for(std::slice::from_ref(&mcp_tool)),
         );
-        agent_setup::register_mcp_tool_ids(&mcp_ids_handle, std::slice::from_ref(&mcp_tool));
         gated.set_effective_trust(zeph_common::SkillTrustLevel::Quarantined);
 
         let memory_result = gated
@@ -2246,12 +2236,12 @@ mod tests {
             )));
 
         // TrustGateExecutor (innermost gate), Quarantined trust.
-        let (trust_gated, mcp_ids_handle) = agent_setup::apply_common_tool_gating(
+        let trust_gated = agent_setup::apply_common_tool_gating(
             inner_executor,
             &zeph_tools::PermissionPolicy::default(),
             zeph_common::TurnTrustFloor::default(),
+            agent_setup::mcp_ids_handle_for(std::slice::from_ref(&mcp_tool)),
         );
-        agent_setup::register_mcp_tool_ids(&mcp_ids_handle, std::slice::from_ref(&mcp_tool));
         zeph_tools::ToolExecutor::set_effective_trust(
             &trust_gated,
             zeph_common::SkillTrustLevel::Quarantined,
@@ -2490,10 +2480,11 @@ mod tests {
             zeph_tools::GetCurrentTimeExecutor::default(),
             vec![],
         );
-        let (trust_gated, _mcp_ids_handle) = agent_setup::apply_common_tool_gating(
+        let trust_gated = agent_setup::apply_common_tool_gating(
             zeph_tools::DynExecutor(std::sync::Arc::new(base_executor)),
             &zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full),
             zeph_common::TurnTrustFloor::default(),
+            agent_setup::mcp_ids_handle_for(&[]),
         );
 
         let policy_config = zeph_tools::PolicyConfig {
@@ -2529,6 +2520,7 @@ mod tests {
             &pieces,
             None,
             Some((&trajectory_risk_slot, &trajectory_signal_queue)),
+            &agent_setup::mcp_ids_handle_for(&[]),
         );
 
         let denied = gated

@@ -456,7 +456,6 @@ fn insert_handle_with_pending_secret_channel(
             secret_tx,
             started_at_str: String::new(),
             transcript_dir: None,
-            mcp_tool_names: Vec::new(),
             peer: None,
             trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
             resumed_from: None,
@@ -1593,15 +1592,6 @@ async fn spawn_bypass_permissions_with_config_gate_succeeds() {
 
 /// Write a minimal completed meta file and empty JSONL so `resume()` has something to load.
 fn write_completed_meta(dir: &std::path::Path, agent_id: &str, def_name: &str) {
-    write_completed_meta_with_tool_names(dir, agent_id, def_name, Vec::new());
-}
-
-fn write_completed_meta_with_tool_names(
-    dir: &std::path::Path,
-    agent_id: &str,
-    def_name: &str,
-    mcp_tool_names: Vec<String>,
-) {
     use crate::transcript::{TranscriptMeta, TranscriptWriter};
     let meta = TranscriptMeta {
         agent_id: agent_id.to_owned(),
@@ -1612,7 +1602,6 @@ fn write_completed_meta_with_tool_names(
         finished_at: Some("2026-01-01T00:01:00Z".to_owned()),
         resumed_from: None,
         turns_used: 1,
-        mcp_tool_names,
         trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
     };
     TranscriptWriter::write_meta(dir, agent_id, &meta).unwrap();
@@ -1713,7 +1702,6 @@ fn resume_still_running_via_active_agents_returns_error() {
             secret_tx,
             started_at_str: "2026-01-01T00:00:00Z".to_owned(),
             transcript_dir: None,
-            mcp_tool_names: Vec::new(),
             peer: None,
             trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
             resumed_from: None,
@@ -2873,7 +2861,7 @@ fn make_agent_loop_args(
         initial_messages: vec![],
         transcript_writer: None,
         spawn_depth: 0,
-        mcp_tool_names: Vec::new(),
+        mcp_tool_ids: None,
         content_isolation: ContentIsolationConfig::default(),
         credential_scrub: CredentialScrub::default(),
         max_history_messages: 200,
@@ -3035,7 +3023,7 @@ async fn run_agent_loop_publishes_failed_status_on_llm_call_timeout() {
         initial_messages: vec![],
         transcript_writer: None,
         spawn_depth: 0,
-        mcp_tool_names: Vec::new(),
+        mcp_tool_ids: None,
         content_isolation: ContentIsolationConfig::default(),
         credential_scrub: CredentialScrub::default(),
         max_history_messages: 200,
@@ -3201,7 +3189,7 @@ async fn run_agent_loop_finalizes_transcript_anchor_on_llm_error_exit_path() {
         initial_messages: vec![],
         transcript_writer: Some(writer),
         spawn_depth: 0,
-        mcp_tool_names: Vec::new(),
+        mcp_tool_ids: None,
         content_isolation: ContentIsolationConfig::default(),
         credential_scrub: CredentialScrub::default(),
         max_history_messages: 200,
@@ -3612,7 +3600,7 @@ fn spawn_context_default_is_empty() {
     assert!(ctx.parent_cancel.is_none());
     assert!(ctx.parent_provider_name.is_none());
     assert_eq!(ctx.spawn_depth, 0);
-    assert_eq!(ctx.mcp_tool_names, [] as [String; 0]);
+    assert!(ctx.mcp_tool_ids.is_none());
 }
 
 #[test]
@@ -4267,36 +4255,6 @@ fn build_context_summary_limits_count_chars_not_bytes() {
 
 // ── Phase 2: MCP tool annotation tests (#2581) ────────────────────────────
 
-#[tokio::test]
-async fn mcp_tool_names_appended_to_system_prompt() {
-    use zeph_llm::mock::MockProvider;
-
-    let (mock, _) = MockProvider::default().with_tool_use(vec![ChatResponse::text("done")]);
-
-    let executor = FilteredToolExecutor::new(noop_executor(), ToolPolicy::InheritAll);
-    let mut args = make_agent_loop_args(AnyProvider::Mock(mock), executor, 5);
-    args.mcp_tool_names = vec!["search".into(), "write_file".into()];
-    // The system_prompt is inspected indirectly — if the loop completes the annotation was built.
-    let result = run_agent_loop(args).await;
-    assert!(result.is_ok(), "loop should succeed: {result:?}");
-}
-
-#[tokio::test]
-async fn empty_mcp_tool_names_no_annotation() {
-    use zeph_llm::mock::MockProvider;
-
-    let (mock, _) = MockProvider::default().with_tool_use(vec![ChatResponse::text("done")]);
-
-    let executor = FilteredToolExecutor::new(noop_executor(), ToolPolicy::InheritAll);
-    let mut args = make_agent_loop_args(AnyProvider::Mock(mock), executor, 5);
-    args.mcp_tool_names = vec![];
-    let result = run_agent_loop(args).await;
-    assert!(
-        result.is_ok(),
-        "loop should succeed with no MCP tools: {result:?}"
-    );
-}
-
 // ── MemoryAwareExecutor tests (#3771) ─────────────────────────────────────
 
 /// A stub executor that always returns `SandboxViolation` for any tool call.
@@ -4627,164 +4585,6 @@ fn sanitize_identity_field_unicode_char_safe_truncation() {
         result.is_char_boundary(result.len()),
         "result must be valid UTF-8"
     );
-}
-
-fn mcp_server_config(id: &str) -> zeph_config::McpServerConfig {
-    serde_json::from_str(&format!(r#"{{"id":"{id}"}}"#)).unwrap()
-}
-
-#[tokio::test]
-async fn spawn_context_session_mcp_servers_merged() {
-    let mut mgr = make_manager();
-    mgr.definitions.push(sample_def());
-
-    let ctx = SpawnContext {
-        mcp_tool_names: vec!["existing-server".into()],
-        session_mcp_servers: vec![mcp_server_config("new-server")],
-        ..SpawnContext::default()
-    };
-    let task_id = mgr
-        .spawn(
-            "bot",
-            "go",
-            mock_provider(vec!["done"]),
-            noop_executor(),
-            None,
-            &SubAgentConfig::default(),
-            ctx,
-        )
-        .await
-        .unwrap();
-    let names = &mgr.agents[&task_id].mcp_tool_names;
-    assert!(names.contains(&"existing-server".to_owned()));
-    assert!(names.contains(&"new-server".to_owned()));
-}
-
-#[tokio::test]
-async fn spawn_context_session_mcp_servers_dedup() {
-    let mut mgr = make_manager();
-    mgr.definitions.push(sample_def());
-
-    let ctx = SpawnContext {
-        mcp_tool_names: vec!["shared-server".into()],
-        session_mcp_servers: vec![mcp_server_config("shared-server")],
-        ..SpawnContext::default()
-    };
-    let task_id = mgr
-        .spawn(
-            "bot",
-            "go",
-            mock_provider(vec!["done"]),
-            noop_executor(),
-            None,
-            &SubAgentConfig::default(),
-            ctx,
-        )
-        .await
-        .unwrap();
-    let names = &mgr.agents[&task_id].mcp_tool_names;
-    assert_eq!(
-        names
-            .iter()
-            .filter(|n| n.as_str() == "shared-server")
-            .count(),
-        1
-    );
-}
-
-// ── resume sanitization tests ─────────────────────────────────────────────
-
-#[test]
-fn resume_sanitization_drops_invalid_mcp_tool_names() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-
-    let tmp = tempfile::tempdir().unwrap();
-    let agent_id = "11110000-0000-0000-0000-000000000001";
-    let tool_names = vec![
-        "valid-tool".to_owned(),
-        "a".repeat(257),          // too long
-        "bad\x01tool".to_owned(), // control character
-        "another-valid".to_owned(),
-    ];
-    write_completed_meta_with_tool_names(tmp.path(), agent_id, "bot", tool_names);
-
-    let mut mgr = make_manager();
-    mgr.definitions.push(sample_def());
-    let cfg = make_cfg_with_dir(tmp.path());
-
-    let (new_id, _) = rt
-        .block_on(mgr.resume(
-            "11110000",
-            "continue",
-            mock_provider(vec!["done"]),
-            noop_executor(),
-            None,
-            &cfg,
-            None,
-        ))
-        .unwrap();
-
-    let names = &mgr.agents[&new_id].mcp_tool_names;
-    assert!(
-        !names.iter().any(|n| n.len() > 256),
-        "oversized entry must be dropped"
-    );
-    assert!(
-        !names
-            .iter()
-            .any(|n| n.chars().any(|c| c.is_ascii_control())),
-        "control-char entry must be dropped"
-    );
-    assert_eq!(names.len(), 2, "only two valid entries must survive");
-
-    let _guard = rt.enter();
-    mgr.cancel(&new_id).unwrap();
-}
-
-#[test]
-fn resume_sanitization_preserves_valid_mcp_tool_names() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-
-    let tmp = tempfile::tempdir().unwrap();
-    let agent_id = "22220000-0000-0000-0000-000000000002";
-    let tool_names = vec![
-        "tool-alpha".to_owned(),
-        "tool-beta".to_owned(),
-        "a".repeat(256), // exactly at limit — valid
-    ];
-    write_completed_meta_with_tool_names(tmp.path(), agent_id, "bot", tool_names.clone());
-
-    let mut mgr = make_manager();
-    mgr.definitions.push(sample_def());
-    let cfg = make_cfg_with_dir(tmp.path());
-
-    let (new_id, _) = rt
-        .block_on(mgr.resume(
-            "22220000",
-            "continue",
-            mock_provider(vec!["done"]),
-            noop_executor(),
-            None,
-            &cfg,
-            None,
-        ))
-        .unwrap();
-
-    let names = &mgr.agents[&new_id].mcp_tool_names;
-    assert_eq!(
-        names.len(),
-        tool_names.len(),
-        "all valid entries must survive the filter"
-    );
-    for expected in &tool_names {
-        assert!(
-            names.contains(expected),
-            "entry {expected:?} must be present"
-        );
-    }
-
-    let _guard = rt.enter();
-    mgr.cancel(&new_id).unwrap();
 }
 
 // ---- Fleet registry tests (#4370) ----

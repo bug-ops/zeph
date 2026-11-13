@@ -22,9 +22,8 @@
 //! `runner.rs`/`acp.rs`/`daemon.rs` — see [`build_tool_executor`]'s and
 //! `agent_factory::build_agent_factory`'s doc comments for the split between eager pieces here
 //! and the per-session gate wrap there (required to avoid a cross-session trust-state race,
-//! SEC-H1). MCP is still absent from the gated tree (the gap above), so
-//! `agent_setup::register_mcp_tool_ids` is called with an empty slice for now — the seam a
-//! future MCP-wiring PR must populate.
+//! SEC-H1). MCP is still absent from the gated tree (the gap above), so each session gets an
+//! empty `McpToolList` for now — the seam a future MCP-wiring PR must populate.
 //!
 //! **`[tools.policy]` compile failure (#6008)**: unlike CLI/TUI/ACP/daemon, which stay
 //! fail-open (see `agent_setup::build_policy_gate_pieces`'s doc comment) since an operator

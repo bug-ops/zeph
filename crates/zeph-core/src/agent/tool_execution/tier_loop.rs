@@ -444,7 +444,7 @@ impl<C: Channel> Agent<C> {
     fn prepare_tool_dispatch(
         &mut self,
         tool_calls: &[zeph_llm::provider::ToolUseRequest],
-        mcp_tool_ids: zeph_tools::McpToolIds,
+        mcp_tool_ids: std::sync::Arc<zeph_tools::McpToolIds>,
     ) -> ToolDispatchContext {
         let tafc_enabled = self.tool_orchestrator.tafc.enabled;
         // PAAC secret unmasking (#5437): resolved once per dispatch batch (Arc clone, cheap)

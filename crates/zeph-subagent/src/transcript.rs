@@ -197,12 +197,6 @@ pub struct TranscriptMeta {
     pub resumed_from: Option<String>,
     /// Number of LLM turns consumed by the session.
     pub turns_used: u32,
-    /// MCP tool names available when this session was spawned.
-    ///
-    /// Persisted so that a resumed session can restore the same tool name annotations
-    /// in its system prompt without re-connecting MCP servers.
-    #[serde(default)]
-    pub mcp_tool_names: Vec<String>,
     /// Trust-marker format of the sibling JSONL transcript.
     ///
     /// Sidecars written before per-result trust tagging lack this key and deserialize to
@@ -1026,7 +1020,6 @@ mod tests {
             finished_at: Some("2026-01-01T00:01:00Z".to_owned()),
             resumed_from: None,
             turns_used: 2,
-            mcp_tool_names: Vec::new(),
             trust_schema: TranscriptTrustSchema::PerResult,
         }
     }
@@ -1415,15 +1408,10 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(subagent_transcript_integrity)]
-    fn meta_roundtrip_preserves_mcp_tool_names() {
-        let dir = tempfile::tempdir().unwrap();
-        let agent_id = "abc-123";
-        let mut meta = test_meta(agent_id);
-        meta.mcp_tool_names = vec!["search".into(), "write_file".into()];
-        TranscriptWriter::write_meta(dir.path(), agent_id, &meta).unwrap();
-        let loaded = TranscriptReader::load_meta(dir.path(), agent_id).unwrap();
-        assert_eq!(loaded.mcp_tool_names, vec!["search", "write_file"]);
+    fn meta_with_legacy_mcp_tool_names_key_still_loads() {
+        let json = r#"{"agent_id":"a","agent_name":"bot","def_name":"bot","status":"Completed","started_at":"2026-01-01T00:00:00Z","turns_used":1,"mcp_tool_names":["search"]}"#;
+        let meta: TranscriptMeta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.agent_id, "a");
     }
 
     #[test]

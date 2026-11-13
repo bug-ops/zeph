@@ -566,6 +566,7 @@ impl<C: Channel> Agent<C> {
         if !is_error && !vigil_blocked && !media.is_empty() {
             self.emit_media_parts(
                 tc.name.as_str(),
+                resolved.mcp_server_id(),
                 media,
                 result_parts,
                 images_attached_this_turn,
@@ -592,6 +593,7 @@ impl<C: Channel> Agent<C> {
     async fn emit_media_parts(
         &mut self,
         tool_name: &str,
+        server: Option<&zeph_common::types::McpServerId>,
         media: Vec<zeph_llm::ImageData>,
         result_parts: &mut Vec<MessagePart>,
         images_attached_this_turn: &mut usize,
@@ -604,9 +606,7 @@ impl<C: Channel> Agent<C> {
             );
             return;
         }
-        let server_id = tool_name
-            .split_once(':')
-            .map_or(tool_name, |(server, _)| server);
+        let server_id = server.map_or("unknown", zeph_common::types::McpServerId::as_str);
         let max_images_per_turn = self.runtime.config.mcp_media.max_images_per_turn;
         let mut attached = 0usize;
         for img in media {

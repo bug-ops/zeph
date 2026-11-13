@@ -149,8 +149,8 @@ pub struct SpawnContext {
     /// Current spawn depth (0 = top-level agent).
     pub spawn_depth: u32,
     
-    /// MCP tool names available in the parent's tool executor (for diagnostics).
-    pub mcp_tool_names: Vec<String>,
+    /// Live MCP tool-id registry of the parent (#7075); `None` falls back to executor definitions.
+    pub mcp_tool_ids: Option<McpToolIdsHandle>,
 }
 ```
 
@@ -317,7 +317,7 @@ AgentCommand::Spawn { name, prompt } => {
         parent_cancel: Some(self.cancel.clone()),
         parent_provider_name: Some(self.provider.name().to_owned()),
         spawn_depth: self.spawn_depth + 1,
-        mcp_tool_names: self.tool_executor.mcp_tools(),  // if available
+        mcp_tool_ids: self.mcp_tool_list_handle(),
     };
     
     let task_id = mgr.spawn(&name, &prompt, provider, executor, skills, config, ctx)?;

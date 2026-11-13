@@ -4227,6 +4227,8 @@ mod tests {
             name: "other_tool".into(),
             ..embed_dedup_mcp_tool()
         };
+        let (writer, reader) = zeph_mcp::McpToolList::new(Vec::new());
+        agent.services.mcp.tool_list = Some(writer);
         agent
             .services
             .mcp
@@ -4239,18 +4241,15 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let shared = Arc::new(parking_lot::RwLock::new(Vec::new()));
-        agent.services.mcp.shared_tools = Some(Arc::clone(&shared));
-
         let mut cache = QueryEmbedCache::default();
         agent.discover_mcp_tools_for_turn("query", &mut cache).await;
-        assert_eq!(shared.read().len(), 1);
+        assert_eq!(reader.read().len(), 1);
 
         let mut failed = QueryEmbedCache::Failed;
         agent
             .discover_mcp_tools_for_turn("query", &mut failed)
             .await;
-        let names: Vec<String> = shared.read().iter().map(|t| t.name.clone()).collect();
+        let names: Vec<String> = reader.read().iter().map(|t| t.name.clone()).collect();
         assert_eq!(
             names,
             ["mcp_tool"],

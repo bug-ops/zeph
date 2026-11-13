@@ -62,7 +62,9 @@ pub(crate) struct ToolSetup {
     pub(crate) mcp_tools: Vec<zeph_mcp::McpTool>,
     pub(crate) mcp_outcomes: Vec<zeph_mcp::ServerConnectOutcome>,
     pub(crate) mcp_manager: Arc<zeph_mcp::McpManager>,
-    pub(crate) mcp_shared_tools: Arc<RwLock<Vec<zeph_mcp::McpTool>>>,
+    /// Single writer of the session's MCP tool list; its reader sits in the MCP executor and its
+    /// `ids_handle()` feeds the gates and the sentinel.
+    pub(crate) mcp_tool_list: zeph_mcp::McpToolListWriter,
     pub(crate) tool_event_rx: Option<tokio::sync::mpsc::Receiver<zeph_tools::ToolEvent>>,
     /// Watch receiver for MCP tool list updates from `tools/list_changed` notifications.
     pub(crate) mcp_tool_rx: tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>,
@@ -632,9 +634,8 @@ pub(crate) async fn build_tool_setup(
         mcp_manager.spawn_refresh_task(supervisor);
     }
 
-    let mcp_shared_tools = Arc::new(RwLock::new(mcp_tools.clone()));
-    let mut mcp_executor =
-        zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_shared_tools.clone());
+    let (mcp_tool_list, mcp_tool_reader) = zeph_mcp::McpToolList::new(mcp_tools.clone());
+    let mut mcp_executor = zeph_mcp::McpToolExecutor::new(mcp_manager.clone(), mcp_tool_reader);
     let mcp_media_enabled = !no_mcp_media;
     if no_mcp_media {
         tracing::info!("--no-mcp-media: MCP image passthrough disabled for this session");
@@ -684,7 +685,7 @@ pub(crate) async fn build_tool_setup(
         mcp_tools,
         mcp_outcomes,
         mcp_manager,
-        mcp_shared_tools,
+        mcp_tool_list,
         tool_event_rx,
         mcp_tool_rx,
         mcp_elicitation_rx,
@@ -1090,8 +1091,9 @@ pub(crate) struct SecurityWiringInputs {
     /// `Some(config.hooks.clone())` to wire hooks; `None` to skip (bare/safe-mode gate) —
     /// mirrors the existing `if !bare/safe_mode { with_hooks_config }` pattern.
     pub(crate) hooks_config: Option<zeph_config::HooksConfig>,
-    /// Handle into `TrustGateExecutor`'s MCP tool-id registry (#5747).
-    pub(crate) mcp_tool_ids_handle: McpToolIdsHandle,
+    /// Single writer of the agent's MCP tool list (#7075); also publishes the registry handle the
+    /// gates and the sentinel read.
+    pub(crate) mcp_tool_list: zeph_mcp::McpToolListWriter,
     /// `config.classifiers.clone()` — drives both the injection classifier (#6580) and the
     /// enforcement mode (D3, #6581); the pipeline applies enforcement mode AFTER the injection
     /// classifier (verified ordering constraint).
@@ -1105,7 +1107,7 @@ pub(crate) struct SecurityWiringInputs {
 /// risk-chain accumulator (#6578), the MAGE trajectory-risk gate (#6579), typed-page CAM
 /// fidelity enforcement (#6574), the trajectory sentinel risk slot/signal queue/config, the
 /// write-time memory-consent trust slot (#6490), `ShadowSentinel` (spec 050 Phase 2), VIGIL
-/// (#6581), hooks (D1), the MCP tool-id registry handle (D2), and — when the `classifiers`
+/// (#6581), hooks (D1), the MCP tool list writer (D2), and — when the `classifiers`
 /// feature is enabled — the ML injection classifier followed by its enforcement mode (D3).
 ///
 /// Supersedes the narrower `apply_entrypoint_security_controls` (#6574/#6578/#6579): that helper
@@ -1151,7 +1153,7 @@ pub(crate) fn apply_security_pipeline<C: Channel>(
         agent
     };
 
-    let agent = agent.with_mcp_tool_ids_handle(inputs.mcp_tool_ids_handle);
+    let agent = agent.with_mcp_tool_list(inputs.mcp_tool_list);
 
     #[cfg(feature = "classifiers")]
     let agent = {
@@ -2176,10 +2178,6 @@ pub(crate) fn with_search_executor<B: zeph_tools::ToolExecutor>(
     zeph_tools::CompositeExecutor::new(zeph_tools::OptionalExecutor(search_executor), base)
 }
 
-/// MCP tool-id set consumed by [`zeph_tools::TrustGateExecutor`] to recognize genuinely
-/// MCP-sourced tools. Populated after MCP servers connect via [`register_mcp_tool_ids`].
-pub(crate) type McpToolIdsHandle = Arc<RwLock<std::collections::HashSet<String>>>;
-
 /// Wraps a fully-composed tool-executor tree in the single outermost `TrustGateExecutor`
 /// gate shared by every agent entry point (CLI, ACP, daemon).
 ///
@@ -2189,8 +2187,9 @@ pub(crate) type McpToolIdsHandle = Arc<RwLock<std::collections::HashSet<String>>
 /// Quarantine/Blocked enforcement entirely, since `TrustGateExecutor::check_trust` only runs
 /// for calls that dispatch through the gate itself.
 ///
-/// Returns the gated executor plus the MCP tool-id handle the caller must populate (via
-/// [`register_mcp_tool_ids`]) once the MCP tool list is known.
+/// `mcp_tool_ids` is the registry handle published by the session's single MCP tool-list writer
+/// (`McpToolListWriter::ids_handle`): the gate denies every MCP-sourced tool under Quarantine
+/// by reading it live, so servers connected after startup are covered.
 ///
 /// `turn_trust_floor` seeds the gate's per-turn trust floor (#6701). Pass the same handle
 /// returned by [`build_skill_executors`] so `TrustGateExecutor` and `SkillTrustGate` (via
@@ -2201,22 +2200,18 @@ pub(crate) fn apply_common_tool_gating(
     inner: zeph_tools::DynExecutor,
     permission_policy: &zeph_tools::PermissionPolicy,
     turn_trust_floor: zeph_common::TurnTrustFloor,
-) -> (zeph_tools::DynExecutor, McpToolIdsHandle) {
+    mcp_tool_ids: zeph_tools::McpToolIdsHandle,
+) -> zeph_tools::DynExecutor {
     let gated = zeph_tools::TrustGateExecutor::new(inner, permission_policy.clone())
-        .with_trust_floor(turn_trust_floor);
-    let handle = gated.mcp_tool_ids_handle();
-    (zeph_tools::DynExecutor(Arc::new(gated)), handle)
+        .with_trust_floor(turn_trust_floor)
+        .with_mcp_tool_ids(mcp_tool_ids);
+    zeph_tools::DynExecutor(Arc::new(gated))
 }
 
-/// Populates a `TrustGateExecutor` MCP tool-id handle from the connected MCP tool list, so
-/// Quarantine denies ALL MCP-sourced tools — not just those matching `QUARANTINE_DENIED` by
-/// name.
-pub(crate) fn register_mcp_tool_ids(handle: &McpToolIdsHandle, mcp_tools: &[zeph_mcp::McpTool]) {
-    let ids: std::collections::HashSet<String> = mcp_tools
-        .iter()
-        .map(zeph_mcp::McpTool::sanitized_id)
-        .collect();
-    *handle.write() = ids;
+/// Test helper: the registry handle of a fresh single-writer tool list seeded with `tools`.
+#[cfg(test)]
+pub(crate) fn mcp_ids_handle_for(tools: &[zeph_mcp::McpTool]) -> zeph_tools::McpToolIdsHandle {
+    zeph_mcp::McpToolList::new(tools.to_vec()).0.ids_handle()
 }
 
 /// Immutable, cheaply-`Clone`able pieces needed to build the declarative-policy and
@@ -2435,6 +2430,7 @@ pub(crate) fn apply_policy_gate_chain(
         &zeph_tools::TrajectoryRiskSlot,
         &zeph_tools::RiskSignalQueue,
     )>,
+    mcp_tool_ids: &zeph_tools::McpToolIdsHandle,
 ) -> zeph_tools::DynExecutor {
     let adversarial_gated: zeph_tools::DynExecutor = if let (Some(validator), Some(llm_client)) = (
         pieces.adversarial_validator.as_ref(),
@@ -2462,7 +2458,8 @@ pub(crate) fn apply_policy_gate_chain(
             adversarial_gated,
             Arc::clone(enforcer),
             policy_context,
-        );
+        )
+        .with_mcp_tool_ids(mcp_tool_ids.clone());
         if let Some(audit) = audit_logger {
             gate = gate.with_audit(Arc::clone(audit));
         }
@@ -4379,12 +4376,12 @@ mod tests {
                     TaggedMock("read".to_owned()),
                 ),
             ));
-        let (gated, mcp_handle) = apply_common_tool_gating(
+        let gated = apply_common_tool_gating(
             zeph_tools::DynExecutor(inner),
             &zeph_tools::PermissionPolicy::default(),
             zeph_common::TurnTrustFloor::default(),
+            mcp_ids_handle_for(std::slice::from_ref(&mcp_tool)),
         );
-        register_mcp_tool_ids(&mcp_handle, std::slice::from_ref(&mcp_tool));
         gated.set_effective_trust(zeph_common::SkillTrustLevel::Quarantined);
 
         let memory_result = gated
@@ -4427,12 +4424,12 @@ mod tests {
             ));
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
-        let (gated, mcp_handle) = apply_common_tool_gating(
+        let gated = apply_common_tool_gating(
             zeph_tools::DynExecutor(inner),
             &policy,
             zeph_common::TurnTrustFloor::default(),
+            mcp_ids_handle_for(std::slice::from_ref(&mcp_tool)),
         );
-        register_mcp_tool_ids(&mcp_handle, std::slice::from_ref(&mcp_tool));
         gated.set_effective_trust(zeph_common::SkillTrustLevel::Trusted);
 
         for tool_id in ["memory_save", mcp_tool_id.as_str(), "read"] {
@@ -4494,13 +4491,19 @@ mod tests {
         let inner: Arc<dyn zeph_tools::ErasedToolExecutor> = Arc::new(NoopExec);
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
-        let (trust_gated, _handle) = apply_common_tool_gating(
+        let trust_gated = apply_common_tool_gating(
             zeph_tools::DynExecutor(inner),
             &policy,
             zeph_common::TurnTrustFloor::default(),
+            mcp_ids_handle_for(&[]),
         );
-        let executor =
-            apply_policy_gate_chain(trust_gated, &PolicyGatePieces::default(), None, None);
+        let executor = apply_policy_gate_chain(
+            trust_gated,
+            &PolicyGatePieces::default(),
+            None,
+            None,
+            &mcp_ids_handle_for(&[]),
+        );
         let result = executor.execute_tool_call(&make_tool_call("read")).await;
         assert!(
             result.is_ok(),
@@ -4558,12 +4561,19 @@ mod tests {
         let inner: Arc<dyn zeph_tools::ErasedToolExecutor> = Arc::new(NoopExec);
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
-        let (trust_gated, _handle) = apply_common_tool_gating(
+        let trust_gated = apply_common_tool_gating(
             zeph_tools::DynExecutor(inner),
             &policy,
             zeph_common::TurnTrustFloor::default(),
+            mcp_ids_handle_for(&[]),
         );
-        let executor = apply_policy_gate_chain(trust_gated, &pieces, Some(&audit_logger), None);
+        let executor = apply_policy_gate_chain(
+            trust_gated,
+            &pieces,
+            Some(&audit_logger),
+            None,
+            &mcp_ids_handle_for(&[]),
+        );
 
         let result = executor.execute_tool_call(&make_tool_call("shell")).await;
         assert!(
@@ -4768,7 +4778,7 @@ mod tests {
             "with_shadow_sentinel",
             "with_vigil_config",
             "with_hooks_config",
-            "with_mcp_tool_ids_handle",
+            "with_mcp_tool_list",
             "with_trajectory_risk_slot",
             "with_trajectory_config",
             "with_memory_consent_trust_slot",
@@ -4836,8 +4846,7 @@ mod tests {
             Arc::new(parking_lot::Mutex::new(Vec::new()));
         let memory_consent_trust_slot: zeph_core::memory_tools::MemoryConsentTrustSlot =
             Arc::new(parking_lot::RwLock::new(0u8));
-        let mcp_tool_ids_handle: McpToolIdsHandle =
-            Arc::new(parking_lot::RwLock::new(std::collections::HashSet::new()));
+        let (mcp_tool_list, _mcp_tool_reader) = zeph_mcp::McpToolList::new(Vec::new());
 
         let store = zeph_core::agent::shadow_sentinel::ShadowEventStore::new(memory_pool().await);
         let probe = zeph_core::agent::shadow_sentinel::LlmSafetyProbe::new(
@@ -4884,7 +4893,7 @@ mod tests {
                 }],
                 ..Default::default()
             }),
-            mcp_tool_ids_handle: Arc::clone(&mcp_tool_ids_handle),
+            mcp_tool_list,
             #[cfg(feature = "classifiers")]
             classifiers_config,
             llm_classifier: Some(zeph_llm::classifier::llm::LlmClassifier::new(Arc::new(
@@ -4920,11 +4929,6 @@ mod tests {
             "apply_security_pipeline must store the slot via with_memory_consent_trust_slot"
         );
         assert_eq!(
-            Arc::strong_count(&mcp_tool_ids_handle),
-            2,
-            "apply_security_pipeline must store the handle via with_mcp_tool_ids_handle"
-        );
-        assert_eq!(
             Arc::strong_count(&shadow_sentinel),
             2,
             "apply_security_pipeline must store the sentinel via with_shadow_sentinel"
@@ -4937,7 +4941,7 @@ mod tests {
         assert!(snapshot.shadow_sentinel);
         assert!(snapshot.vigil_config);
         assert!(snapshot.hooks_config);
-        assert!(snapshot.mcp_tool_ids_handle);
+        assert!(snapshot.mcp_tool_list);
         assert!(snapshot.llm_classifier);
         #[cfg(feature = "classifiers")]
         {
@@ -4971,11 +4975,6 @@ mod tests {
             Arc::strong_count(&memory_consent_trust_slot),
             1,
             "dropping the Agent must release its clone of the memory-consent trust slot"
-        );
-        assert_eq!(
-            Arc::strong_count(&mcp_tool_ids_handle),
-            1,
-            "dropping the Agent must release its clone of the MCP tool-id handle"
         );
         assert_eq!(
             Arc::strong_count(&shadow_sentinel),

@@ -141,7 +141,7 @@ pub use net::is_private_ip;
 pub use permissions::PermissionPolicy;
 pub use policy::{PolicyCompileError, PolicyContext, PolicyDecision, PolicyEnforcer};
 pub use policy_gate::{PolicyGateExecutor, RiskSignalQueue, TrajectoryRiskSlot};
-pub use registry::{McpToolIds, ToolRegistry};
+pub use registry::{McpToolIds, McpToolIdsHandle, McpToolIdsWriter, ToolRegistry};
 pub use risk_chain::{RiskChainAccumulator, RiskChainVerdict, RiskTag};
 #[cfg(target_os = "macos")]
 pub use sandbox::MacosSandbox;

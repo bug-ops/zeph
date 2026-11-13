@@ -21,8 +21,8 @@ use zeph_llm::thinking_replay::ThinkingReplay;
 use zeph_sanitizer::exfiltration::{ExfiltrationGuard, normalize_url_for_matching};
 use zeph_sanitizer::secret_shape::scrub_secret_shapes;
 use zeph_sanitizer::{ContentSanitizer, ContentSource};
-use zeph_tools::McpToolIds;
 use zeph_tools::executor::{ErasedToolExecutor, ToolCall};
+use zeph_tools::{McpToolIds, McpToolIdsHandle};
 
 use super::filter::FilteredToolExecutor;
 use super::forward::ForwardSender;
@@ -200,7 +200,7 @@ pub(super) struct AgentLoopArgs {
     pub(super) initial_messages: Vec<Message>,
     pub(super) transcript_writer: Option<TranscriptWriter>,
     pub(super) spawn_depth: u32,
-    pub(super) mcp_tool_names: Vec<String>,
+    pub(super) mcp_tool_ids: Option<McpToolIdsHandle>,
     pub(super) content_isolation: zeph_config::ContentIsolationConfig,
     pub(super) credential_scrub: CredentialScrub,
     /// Maximum wall time for a single LLM call inside an agent turn.
@@ -826,7 +826,7 @@ async fn run_turn(
     tool_grants: &Arc<Mutex<PermissionGrants>>,
     active_tool_grants_seen: &mut std::collections::HashSet<String>,
     gates: &mut ToolGates,
-    mcp_tool_names: &[String],
+    mcp_tool_ids: Option<&McpToolIdsHandle>,
 ) -> Result<TurnOutcome, super::error::SubAgentError> {
     let (response, streamed) = call_provider_with_status(
         provider,
@@ -907,7 +907,7 @@ async fn run_turn(
         tool_grants,
         active_tool_grants_seen,
         gates,
-        mcp_tool_names,
+        mcp_tool_ids,
     )
     .await;
 
@@ -938,15 +938,33 @@ async fn run_turn(
     Ok(TurnOutcome::ToolCalled)
 }
 
-/// MCP dispatch ids for one tool-call batch: the live executor definitions that carry a server
-/// id joined with the spawn-time `mcp_tool_names` snapshot, which covers ids the live view no
-/// longer exposes.
-fn batch_mcp_tool_ids(executor: &FilteredToolExecutor, mcp_tool_names: &[String]) -> McpToolIds {
-    let mut ids = McpToolIds::from_definitions(&executor.tool_definitions_erased());
-    for name in mcp_tool_names {
-        ids.insert_id(name.clone());
-    }
-    ids
+/// MCP dispatch ids for one tool-call batch.
+///
+/// With a parent handle, the live registry the parent's single tool-list writer publishes; without
+/// one (an embedder that built a default `SpawnContext`), the live executor definitions that carry
+/// a server id, so a missing handle can never classify an MCP result as native.
+fn batch_mcp_tool_ids(
+    executor: &FilteredToolExecutor,
+    mcp_tool_ids: Option<&McpToolIdsHandle>,
+) -> Arc<McpToolIds> {
+    mcp_tool_ids.map_or_else(
+        || {
+            Arc::new(McpToolIds::from_definitions(
+                &executor.tool_definitions_erased(),
+            ))
+        },
+        McpToolIdsHandle::snapshot,
+    )
+}
+
+/// Names of the MCP tools in the executor's view, listed in the system prompt annotation.
+fn mcp_annotation_names(executor: &FilteredToolExecutor) -> Vec<String> {
+    executor
+        .tool_definitions_erased()
+        .into_iter()
+        .filter(zeph_tools::registry::ToolDef::is_mcp_tool)
+        .map(|def| def.id.to_string())
+        .collect()
 }
 
 /// Trust tier of the placeholder for a call the harness refused before it ran: the registry
@@ -979,7 +997,7 @@ async fn handle_tool_step(
     tool_grants: &Arc<Mutex<PermissionGrants>>,
     active_tool_grants_seen: &mut std::collections::HashSet<String>,
     gates: &mut ToolGates,
-    mcp_tool_names: &[String],
+    mcp_tool_ids: Option<&McpToolIdsHandle>,
 ) -> bool {
     match response {
         ChatResponse::Text { text, .. } => {
@@ -995,7 +1013,7 @@ async fn handle_tool_step(
 
             let mut result_parts: Vec<MessagePart> = Vec::new();
             let mut batch_trust = TurnContextTrust::LocalUntrusted;
-            let mcp_ids = batch_mcp_tool_ids(executor, mcp_tool_names);
+            let mcp_ids = batch_mcp_tool_ids(executor, mcp_tool_ids);
             for tc in &tool_calls {
                 // #6567 (FR-001/FR-002/FR-003/NFR-001): a `GrantKind::Tool` grant for this tool
                 // name, if one exists, must still be active or the call is rejected outright —
@@ -1329,7 +1347,7 @@ pub(super) async fn run_agent_loop(
         initial_messages,
         transcript_writer,
         spawn_depth: _spawn_depth,
-        mcp_tool_names,
+        mcp_tool_ids,
         content_isolation,
         credential_scrub,
         llm_timeout,
@@ -1345,6 +1363,7 @@ pub(super) async fn run_agent_loop(
 
     let sanitizer = ContentSanitizer::new(&content_isolation);
 
+    let mcp_tool_names = mcp_annotation_names(&executor);
     let effective_system_prompt =
         build_effective_system_prompt(system_prompt, skills, &mcp_tool_names);
 
@@ -1421,7 +1440,7 @@ pub(super) async fn run_agent_loop(
             &tool_grants,
             &mut active_tool_grants_seen,
             &mut gates,
-            &mcp_tool_names,
+            mcp_tool_ids.as_ref(),
         )
         .await;
 
@@ -2514,12 +2533,22 @@ mod handle_tool_step_granted_secrets_tests {
     }
 
     #[derive(Default)]
-    struct BatchScenario<'a> {
+    struct BatchScenario {
         claim_source: Option<zeph_tools::ClaimSource>,
-        mcp_tool_names: &'a [String],
+        mcp_tool_ids: Option<McpToolIdsHandle>,
         definitions: Vec<ToolDef>,
         fail: bool,
         replayed_from: Option<zeph_common::trust_level::ToolResultSource>,
+    }
+
+    fn mcp_handle(ids: &[&str]) -> McpToolIdsHandle {
+        let (writer, handle) = McpToolIdsHandle::with_writer();
+        let mut registry = McpToolIds::default();
+        for id in ids {
+            registry.insert((*id).into(), "github".into());
+        }
+        writer.publish(registry);
+        handle
     }
 
     fn mcp_def(id: &str) -> ToolDef {
@@ -2533,7 +2562,7 @@ mod handle_tool_step_granted_secrets_tests {
         }
     }
 
-    async fn recorded_batch(tool: &str, scenario: BatchScenario<'_>) -> (Option<u8>, String) {
+    async fn recorded_batch(tool: &str, scenario: BatchScenario) -> (Option<u8>, String) {
         let executor = FilteredToolExecutor::new(
             Arc::new(RecordingExecutor {
                 claim_source: scenario.claim_source,
@@ -2568,7 +2597,7 @@ mod handle_tool_step_granted_secrets_tests {
             &Arc::new(Mutex::new(PermissionGrants::default())),
             &mut std::collections::HashSet::new(),
             &mut ToolGates::default(),
-            scenario.mcp_tool_names,
+            scenario.mcp_tool_ids.as_ref(),
         )
         .await;
         let result_msg = messages.last().unwrap();
@@ -2587,13 +2616,13 @@ mod handle_tool_step_granted_secrets_tests {
     async fn recorded_batch_trust(
         tool: &str,
         claim_source: Option<zeph_tools::ClaimSource>,
-        mcp_tool_names: &[String],
+        mcp_tool_ids: Option<McpToolIdsHandle>,
     ) -> Option<u8> {
         recorded_batch(
             tool,
             BatchScenario {
                 claim_source,
-                mcp_tool_names,
+                mcp_tool_ids,
                 ..Default::default()
             },
         )
@@ -2613,11 +2642,11 @@ mod handle_tool_step_granted_secrets_tests {
     #[tokio::test]
     async fn registered_mcp_tool_without_claim_is_wrapped_as_external() {
         let id = github_create_issue_id();
-        let names = [id.clone()];
+        let ids = Some(mcp_handle(&[&id]));
         let (trust, content) = recorded_batch(
             &id,
             BatchScenario {
-                mcp_tool_names: &names,
+                mcp_tool_ids: ids,
                 ..Default::default()
             },
         )
@@ -2643,11 +2672,11 @@ mod handle_tool_step_granted_secrets_tests {
     #[tokio::test]
     async fn registered_mcp_tool_error_text_is_wrapped_as_external() {
         let id = github_create_issue_id();
-        let names = [id.clone()];
+        let ids = Some(mcp_handle(&[&id]));
         let (trust, content) = recorded_batch(
             &id,
             BatchScenario {
-                mcp_tool_names: &names,
+                mcp_tool_ids: ids,
                 fail: true,
                 ..Default::default()
             },
@@ -2672,6 +2701,32 @@ mod handle_tool_step_granted_secrets_tests {
         .await;
         assert_eq!(trust, Some(external()));
         assert!(content.contains("<external-data"), "{content}");
+    }
+
+    #[test]
+    fn batch_ids_follow_a_later_publish_of_the_parent_handle() {
+        let executor = FilteredToolExecutor::new(
+            Arc::new(RecordingExecutor::default()) as Arc<dyn ErasedToolExecutor>,
+            ToolPolicy::InheritAll,
+        );
+        let (writer, handle) = McpToolIdsHandle::with_writer();
+        assert!(!batch_mcp_tool_ids(&executor, Some(&handle)).contains("late_tool"));
+        let mut registry = McpToolIds::default();
+        registry.insert("late_tool".into(), "late".into());
+        writer.publish(registry);
+        assert!(batch_mcp_tool_ids(&executor, Some(&handle)).contains("late_tool"));
+    }
+
+    #[test]
+    fn batch_ids_without_a_handle_fall_back_to_executor_definitions() {
+        let executor = FilteredToolExecutor::new(
+            Arc::new(RecordingExecutor {
+                definitions: vec![mcp_def("srv_tool")],
+                ..Default::default()
+            }) as Arc<dyn ErasedToolExecutor>,
+            ToolPolicy::InheritAll,
+        );
+        assert!(batch_mcp_tool_ids(&executor, None).contains("srv_tool"));
     }
 
     #[tokio::test]
@@ -2725,7 +2780,7 @@ mod handle_tool_step_granted_secrets_tests {
         let trust = recorded_batch_trust(
             "github_create_issue",
             Some(zeph_tools::ClaimSource::Mcp),
-            &[],
+            None,
         )
         .await;
         assert_eq!(trust, Some(TurnContextTrust::ExternalUntrusted.as_u8()));
@@ -2736,7 +2791,7 @@ mod handle_tool_step_granted_secrets_tests {
         let trust = recorded_batch_trust(
             "check_messages",
             Some(zeph_tools::ClaimSource::PeerMessage),
-            &[],
+            None,
         )
         .await;
         assert_eq!(trust, Some(TurnContextTrust::ExternalUntrusted.as_u8()));
@@ -2744,14 +2799,15 @@ mod handle_tool_step_granted_secrets_tests {
 
     #[tokio::test]
     async fn shell_tool_result_batch_is_tagged_local_untrusted() {
-        let trust = recorded_batch_trust("shell", Some(zeph_tools::ClaimSource::Shell), &[]).await;
+        let trust = recorded_batch_trust("shell", Some(zeph_tools::ClaimSource::Shell), None).await;
         assert_eq!(trust, Some(TurnContextTrust::LocalUntrusted.as_u8()));
     }
 
     #[tokio::test]
     async fn web_scrape_result_batch_is_tagged_external_untrusted() {
         let trust =
-            recorded_batch_trust("web_scrape", Some(zeph_tools::ClaimSource::WebScrape), &[]).await;
+            recorded_batch_trust("web_scrape", Some(zeph_tools::ClaimSource::WebScrape), None)
+                .await;
         assert_eq!(trust, Some(TurnContextTrust::ExternalUntrusted.as_u8()));
     }
 
@@ -2794,7 +2850,7 @@ mod handle_tool_step_granted_secrets_tests {
             &Arc::new(Mutex::new(PermissionGrants::default())),
             &mut std::collections::HashSet::new(),
             &mut ToolGates::default(),
-            &[],
+            None,
         )
         .await;
 
@@ -2839,7 +2895,7 @@ mod handle_tool_step_granted_secrets_tests {
             &tool_grants,
             &mut active_tool_grants_seen,
             &mut ToolGates::default(),
-            &[],
+            None,
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -2905,7 +2961,7 @@ mod handle_tool_step_granted_secrets_tests {
             &Arc::new(Mutex::new(PermissionGrants::default())),
             &mut std::collections::HashSet::new(),
             &mut ToolGates::default(),
-            &[],
+            None,
         )
         .await;
         (recorder, messages)
@@ -3035,7 +3091,7 @@ mod handle_tool_step_granted_secrets_tests {
             &tool_grants,
             &mut active_tool_grants_seen,
             &mut ToolGates::default(),
-            &[],
+            None,
         )
         .await;
         assert!(!no_tool);
@@ -3087,7 +3143,7 @@ mod handle_tool_step_granted_secrets_tests {
             &tool_grants,
             &mut active_tool_grants_seen,
             &mut ToolGates::default(),
-            &[],
+            None,
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -3150,7 +3206,7 @@ mod handle_tool_step_granted_secrets_tests {
             &tool_grants,
             &mut active_tool_grants_seen,
             &mut ToolGates::default(),
-            &[],
+            None,
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -3223,7 +3279,7 @@ mod handle_tool_step_granted_secrets_tests {
             &tool_grants,
             &mut active_tool_grants_seen,
             &mut ToolGates::default(),
-            &[],
+            None,
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -3281,7 +3337,7 @@ mod handle_tool_step_granted_secrets_tests {
             &tool_grants,
             &mut active_tool_grants_seen,
             &mut ToolGates::default(),
-            &[],
+            None,
         )
         .await;
         assert!(!no_tool);
@@ -3339,7 +3395,7 @@ mod handle_tool_step_granted_secrets_tests {
             &Arc::new(Mutex::new(PermissionGrants::default())),
             &mut std::collections::HashSet::new(),
             &mut ToolGates::default(),
-            &[],
+            None,
         )
         .await;
         messages
@@ -3437,7 +3493,7 @@ mod handle_tool_step_granted_secrets_tests {
             &tool_grants,
             &mut active_tool_grants_seen,
             &mut ToolGates::default(),
-            &[],
+            None,
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -3483,7 +3539,7 @@ mod handle_tool_step_granted_secrets_tests {
             &tool_grants,
             &mut active_tool_grants_seen,
             &mut ToolGates::default(),
-            &[],
+            None,
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -3530,7 +3586,7 @@ mod handle_tool_step_granted_secrets_tests {
             &tool_grants,
             &mut active_tool_grants_seen,
             &mut ToolGates::default(),
-            &[],
+            None,
         )
         .await;
         assert!(
@@ -3582,7 +3638,7 @@ mod handle_tool_step_granted_secrets_tests {
             &tool_grants,
             &mut active_tool_grants_seen,
             &mut ToolGates::default(),
-            &[],
+            None,
         )
         .await;
         assert!(
@@ -3636,7 +3692,7 @@ mod handle_tool_step_granted_secrets_tests {
             &tool_grants,
             &mut active_tool_grants_seen,
             &mut ToolGates::default(),
-            &[],
+            None,
         )
         .await;
         assert!(!no_tool, "a tool call was made");
@@ -3663,7 +3719,7 @@ mod handle_tool_step_granted_secrets_tests {
             &tool_grants,
             &mut active_tool_grants_seen,
             &mut ToolGates::default(),
-            &[],
+            None,
         )
         .await;
         assert!(
@@ -3695,7 +3751,7 @@ mod handle_tool_step_granted_secrets_tests {
             &tool_grants,
             &mut active_tool_grants_seen,
             &mut ToolGates::default(),
-            &[],
+            None,
         )
         .await;
         assert!(
@@ -3787,7 +3843,7 @@ mod tool_gates_tests {
             &Arc::new(Mutex::new(PermissionGrants::default())),
             &mut std::collections::HashSet::new(),
             gates,
-            &[],
+            None,
         )
         .await;
         let parts = &messages.last().unwrap().parts;

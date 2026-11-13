@@ -230,7 +230,7 @@ pub(crate) async fn build_agent_factory(
     // (base + skill_loader + skill_invoke + memory + overflow, #6046) — see
     // `gate_serve_session_executor`'s doc comment for the full rationale and the INVARIANT that
     // binds future serve tool-executor changes.
-    let (gated_executor, mcp_ids_handle) = gate_serve_session_executor(
+    let (gated_executor, mcp_tool_list) = gate_serve_session_executor(
         composed_base,
         &deps.permission_policy,
         &deps.policy_gate_pieces,
@@ -431,7 +431,7 @@ pub(crate) async fn build_agent_factory(
                 shadow_sentinel: shadow_sentinel_arc,
                 vigil_config: deps.vigil_config,
                 hooks_config: (!deps.safe_mode).then_some(deps.hooks_config),
-                mcp_tool_ids_handle: mcp_ids_handle,
+                mcp_tool_list,
                 #[cfg(feature = "classifiers")]
                 classifiers_config: deps.classifiers_config,
                 llm_classifier: deps.feedback_classifier,
@@ -483,12 +483,11 @@ pub(crate) async fn build_agent_factory(
 /// `wrap_capability_scope` (called by `build_agent_factory` after this function returns) — see
 /// its doc comment for why.
 ///
-/// Also returns the `TrustGateExecutor` MCP tool-id handle built internally (D2, #6581): before
-/// this fix the handle was constructed here, fed once to `register_mcp_tool_ids`, and then
-/// dropped — never attached to the `Agent` via `with_mcp_tool_ids_handle`, so MCP servers
-/// connected after startup could never refresh it (#5747, though moot until serve actually
-/// connects MCP tools — see the "Known gap" in `serve::deps`'s module docs). The caller now
-/// threads this handle into [`crate::agent_setup::apply_security_pipeline`].
+/// Also returns the session's MCP tool-list writer built internally (D2, #6581, #7075): its
+/// registry handle feeds the trust and policy gates, and the caller threads the writer into
+/// [`crate::agent_setup::apply_security_pipeline`] so the agent owns the single write path.
+/// Serve connects no MCP tools yet (see the "Known gap" in `serve::deps`'s module docs), so the
+/// list starts empty.
 fn gate_serve_session_executor(
     tool_executor: Arc<dyn zeph_tools::ErasedToolExecutor>,
     permission_policy: &zeph_tools::PermissionPolicy,
@@ -499,25 +498,25 @@ fn gate_serve_session_executor(
         &zeph_tools::RiskSignalQueue,
     )>,
     turn_trust_floor: zeph_common::TurnTrustFloor,
-) -> (
-    zeph_tools::DynExecutor,
-    crate::agent_setup::McpToolIdsHandle,
-) {
-    let (trust_gated, mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
+) -> (zeph_tools::DynExecutor, zeph_mcp::McpToolListWriter) {
+    // R7: serve has no MCP-provided tools yet (deps.rs's "Known gap"); a future MCP-wiring PR
+    // seeds this list and hands the reader to its `McpToolExecutor`.
+    let (mcp_tool_list, _reader) = zeph_mcp::McpToolList::new(Vec::new());
+    let mcp_ids = mcp_tool_list.ids_handle();
+    let trust_gated = crate::agent_setup::apply_common_tool_gating(
         zeph_tools::DynExecutor(tool_executor),
         permission_policy,
         turn_trust_floor,
+        mcp_ids.clone(),
     );
-    // R7: serve has no MCP-provided tools yet (deps.rs's "Known gap") — this empty-slice call
-    // is the exact seam a future MCP-wiring PR must populate with the connected tool list.
-    crate::agent_setup::register_mcp_tool_ids(&mcp_ids_handle, &[]);
     let gated = crate::agent_setup::apply_policy_gate_chain(
         trust_gated,
         policy_gate_pieces,
         audit_logger,
         trajectory,
+        &mcp_ids,
     );
-    (gated, mcp_ids_handle)
+    (gated, mcp_tool_list)
 }
 
 /// Wraps `tool_executor` (the already trust/policy/adversarial-gated tree from
@@ -2104,7 +2103,7 @@ mod tests {
         let trajectory_signal_queue: zeph_tools::RiskSignalQueue =
             Arc::new(parking_lot::Mutex::new(Vec::new()));
 
-        let (gated, _mcp_ids_handle) = gate_serve_session_executor(
+        let (gated, _mcp_tool_list) = gate_serve_session_executor(
             Arc::new(zeph_tools::SetCwdExecutor::new(vec![])),
             &zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full),
             &policy_gate_pieces,
@@ -2197,7 +2196,7 @@ mod tests {
         ));
         let policy =
             zeph_tools::PermissionPolicy::default().with_autonomy(zeph_tools::AutonomyLevel::Full);
-        let (gated, _mcp_ids_handle) = gate_serve_session_executor(
+        let (gated, _mcp_tool_list) = gate_serve_session_executor(
             composite,
             &policy,
             &crate::agent_setup::PolicyGatePieces::default(),

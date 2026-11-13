@@ -179,11 +179,9 @@ pub(crate) struct SkillState {
 }
 
 pub(crate) struct McpState {
-    /// Full connected tool list. Private so `tool_ids` cannot drift: change it only through
-    /// [`McpState::set_tools`], [`McpState::extend_tools`] and [`McpState::retain_tools`].
+    /// Full connected tool list. Private so the published registry cannot drift: change it only
+    /// through [`McpState::set_tools`], [`McpState::extend_tools`] and [`McpState::retain_tools`].
     tools: Vec<zeph_mcp::McpTool>,
-    /// MCP dispatch ids derived from `tools`, rebuilt by every mutator.
-    tool_ids: zeph_tools::McpToolIds,
     pub(crate) registry: Option<zeph_mcp::McpToolRegistry>,
     pub(crate) manager: Option<std::sync::Arc<zeph_mcp::McpManager>>,
     pub(crate) allowed_commands: Vec<String>,
@@ -192,18 +190,13 @@ pub(crate) struct McpState {
     /// When `Some`, the agent loop must process these concurrently with tool result awaiting
     /// to avoid deadlock (tool result waits for elicitation, elicitation waits for agent loop).
     pub(crate) elicitation_rx: Option<tokio::sync::mpsc::Receiver<zeph_mcp::ElicitationEvent>>,
-    /// Shared with `McpToolExecutor` so native `tool_use` sees the current tool list.
+    /// The single writer of this agent's MCP tool list, shared with `McpToolExecutor` (exposed
+    /// list) and the gates, sentinel and loops (id registry). `None` for embedders and tests that
+    /// attach none; classification then falls back to the executor's live definitions.
     ///
-    /// Two methods write to this `RwLock` — ordering matters:
-    /// - `sync_executor_tools()`: writes the **full** `self.tools` set.
-    /// - `apply_pruned_tools()`: writes the **pruned** subset (used after pruning).
-    ///
-    /// Within a turn, `sync_executor_tools` must always run **before**
-    /// `apply_pruned_tools`.  The normal call order guarantees this: tool-list
-    /// change events call `sync_executor_tools` (inside `check_tool_refresh`,
-    /// `handle_mcp_add`, `handle_mcp_remove`), and pruning runs later inside
-    /// `rebuild_system_prompt`.  See also: `apply_pruned_tools`.
-    pub(crate) shared_tools: Option<Arc<RwLock<Vec<zeph_mcp::McpTool>>>>,
+    /// Every mutator publishes the full list; `sync_executor_tools` re-exposes the full list after
+    /// a turn pruned it, and `apply_pruned_tools` exposes a pruned subset for the turn.
+    pub(crate) tool_list: Option<zeph_mcp::McpToolListWriter>,
     /// Receives full flattened tool list after any `tools/list_changed` notification.
     pub(crate) tool_rx: Option<tokio::sync::watch::Receiver<Vec<zeph_mcp::McpTool>>>,
     /// Per-server connection outcomes from the initial `connect_all()` call.
@@ -501,16 +494,6 @@ pub(crate) struct SecurityState {
     /// When `Some`, `process_tool_result_batch` records a `ShadowEvent` after each tool batch,
     /// then calls `goal_drift_score()` and emits a `GoalDrift` security event when alerted.
     pub(crate) shadow_memory: Option<zeph_sanitizer::ShadowMemory>,
-    /// Handle into `TrustGateExecutor`'s MCP tool-id registry
-    /// (`crates/zeph-tools/src/trust_gate.rs`), used to force-deny all MCP-sourced tools when
-    /// the active skill trust is Quarantined.
-    ///
-    /// `None` when the caller didn't attach a handle (e.g. tests, or an executor tree built
-    /// without `apply_common_tool_gating`). When `Some`, `check_tool_refresh` keeps it in sync
-    /// with `self.services.mcp.tools` so MCP servers connected after startup (`/mcp add`,
-    /// `tools/list_changed`) are folded into the Quarantine-deny set — the handle is otherwise
-    /// only ever populated once, at startup, and goes stale (#5747).
-    pub(crate) mcp_tool_ids: Option<Arc<RwLock<HashSet<String>>>>,
 }
 
 /// Groups debug/diagnostics subsystems (dumper, trace collector, anomaly detector, logging config).
@@ -1324,66 +1307,49 @@ impl McpState {
         &self.tools
     }
 
-    /// MCP dispatch ids (with serving server) of the stored tool list.
-    pub(crate) fn tool_ids(&self) -> &zeph_tools::McpToolIds {
-        &self.tool_ids
-    }
-
-    /// Replace the stored tool list and rebuild the id registry.
+    /// Replace the stored tool list and publish it.
     pub(crate) fn set_tools(&mut self, tools: Vec<zeph_mcp::McpTool>) {
         self.tools = tools;
-        self.rebuild_tool_ids();
+        self.publish_full();
     }
 
-    /// Append tools and rebuild the id registry.
+    /// Append tools and publish the list.
     pub(crate) fn extend_tools(&mut self, tools: Vec<zeph_mcp::McpTool>) {
         self.tools.extend(tools);
-        self.rebuild_tool_ids();
+        self.publish_full();
     }
 
-    /// Keep only tools matching `keep` and rebuild the id registry.
+    /// Keep only tools matching `keep` and publish the list.
     pub(crate) fn retain_tools(&mut self, keep: impl FnMut(&zeph_mcp::McpTool) -> bool) {
         self.tools.retain(keep);
-        self.rebuild_tool_ids();
+        self.publish_full();
     }
 
-    fn rebuild_tool_ids(&mut self) {
-        let mut ids = zeph_tools::McpToolIds::default();
-        for tool in &self.tools {
-            ids.insert(tool.sanitized_id(), Some(tool.server_id.clone()));
+    /// Publish `self.tools` as the exposed list and rebuild the id registry from it.
+    fn publish_full(&self) {
+        if let Some(ref list) = self.tool_list {
+            list.publish_full(&self.tools);
         }
-        self.tool_ids = ids;
     }
 
-    /// Write the **full** `self.tools` set to the shared executor `RwLock`.
+    /// Expose the **full** `self.tools` set to the executor again, after a turn pruned it.
     ///
-    /// This is the first of two writers to `shared_tools`. Within a turn this method must run
-    /// **before** `apply_pruned_tools`, which writes the pruned subset. The normal call order
-    /// guarantees this: tool-list change events call this method, and pruning runs later inside
-    /// `rebuild_system_prompt`. See also: `apply_pruned_tools`.
+    /// Within a turn this must run **before** `apply_pruned_tools`. The id registry is untouched:
+    /// it already covers the full list.
     pub(crate) fn sync_executor_tools(&self) {
-        if let Some(ref shared) = self.shared_tools {
-            shared.write().clone_from(&self.tools);
+        if let Some(ref list) = self.tool_list {
+            list.publish_pruned(self.tools.clone());
         }
     }
 
-    /// Write the **pruned** tool subset to the shared executor `RwLock`.
+    /// Expose the **pruned** tool subset to the executor.
     ///
     /// Must only be called **after** `sync_executor_tools` has established the full tool set for
-    /// the current turn. `self.tools` (the full set) is intentionally **not** modified.
-    ///
-    /// This method must **NOT** call `sync_executor_tools` internally — doing so would overwrite
-    /// the pruned subset with the full set. See also: `sync_executor_tools`.
+    /// the current turn. `self.tools` (the full set) is intentionally **not** modified, and the
+    /// id registry keeps classifying every tool of the full list as MCP.
     pub(crate) fn apply_pruned_tools(&self, pruned: Vec<zeph_mcp::McpTool>) {
-        debug_assert!(
-            pruned.iter().all(|p| self
-                .tools
-                .iter()
-                .any(|t| t.server_id == p.server_id && t.name == p.name)),
-            "pruned set must be a subset of self.tools"
-        );
-        if let Some(ref shared) = self.shared_tools {
-            *shared.write() = pruned;
+        if let Some(ref list) = self.tool_list {
+            list.publish_pruned(pruned);
         }
     }
 
@@ -1508,13 +1474,12 @@ impl Default for McpState {
     fn default() -> Self {
         Self {
             tools: Vec::new(),
-            tool_ids: zeph_tools::McpToolIds::default(),
             registry: None,
             manager: None,
             allowed_commands: Vec::new(),
             max_dynamic: 10,
             elicitation_rx: None,
-            shared_tools: None,
+            tool_list: None,
             tool_rx: None,
             server_outcomes: Vec::new(),
             pruning_cache: zeph_mcp::PruningCache::new(),

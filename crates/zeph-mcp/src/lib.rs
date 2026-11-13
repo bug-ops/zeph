@@ -131,6 +131,7 @@ pub mod sanitize;
 pub mod security;
 pub mod semantic_index;
 pub mod tool;
+pub mod tool_list;
 pub mod trust_score;
 
 #[cfg(test)]
@@ -163,6 +164,7 @@ pub use semantic_index::{
     DiscoveryParams, SemanticIndexError, SemanticToolIndex, ToolDiscoveryStrategy,
 };
 pub use tool::{McpTool, infer_security_meta};
+pub use tool_list::{McpToolList, McpToolListReader, McpToolListWriter};
 pub use trust_score::{ServerTrustScore, TrustScoreStore};
 pub use zeph_config::mcp_security::{
     CapabilityClass, DataSensitivity, FlaggedParameter, ToolSecurityMeta,

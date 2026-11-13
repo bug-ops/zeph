@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::sync::Arc;
+
 use zeph_common::trust_level::{NativeToolKind, ToolProvenance, ToolResultSource};
 use zeph_sanitizer::{ContentSourceKind, tool_output_source};
 use zeph_tools::{McpToolIds, ResolvedToolSource};
@@ -225,13 +227,21 @@ fn batch_dispatch_trust_level(
 }
 
 impl<C: Channel> Agent<C> {
-    /// MCP dispatch ids for one tool-call batch: the live executor definitions that carry a
-    /// server id (the dispatch authority, shared across ACP sessions) joined with the stored
-    /// tool list (fail-safe coverage when the executor view was pruned or refreshed).
-    pub(in crate::agent) fn batch_mcp_tool_ids(&self) -> McpToolIds {
-        let mut ids = McpToolIds::from_definitions(&self.tool_executor.tool_definitions_erased());
-        ids.extend_from(self.services.mcp.tool_ids());
-        ids
+    /// MCP dispatch ids for one tool-call batch.
+    ///
+    /// With a tool-list writer attached, the registry it publishes (it covers every tool the
+    /// agent's own executor can dispatch, including tools pruned from the turn's exposed view).
+    /// Without one (embedders, tests), the live executor definitions that carry a server id, so a
+    /// missing writer never classifies an MCP result as native.
+    pub(in crate::agent) fn batch_mcp_tool_ids(&self) -> Arc<McpToolIds> {
+        self.services.mcp.tool_list.as_ref().map_or_else(
+            || {
+                Arc::new(McpToolIds::from_definitions(
+                    &self.tool_executor.tool_definitions_erased(),
+                ))
+            },
+            |list| list.ids_handle().snapshot(),
+        )
     }
 
     /// Sanitize tool output body before inserting it into the LLM message history.

@@ -1687,7 +1687,7 @@ mod skip_ml_internal_tools {
         let mut agent = blocking_agent();
         let mut ids = zeph_tools::McpToolIds::default();
         for name in ["memory_search", "bash", "invoke_skill"] {
-            ids.insert_id(name.to_owned());
+            ids.insert(name.into(), "srv".into());
             let (body, ..) = agent
                 .sanitize_tool_output("some text", name, ToolOutputOrigin::Executed(None), &ids)
                 .await;
@@ -2320,8 +2320,10 @@ mod reasoning_amplification_call_site {
             5,
             MockToolExecutor::no_tools(),
         );
-        // A qualified `server:tool` display name; classification does not depend on its shape.
-        let tc = make_tool_use_request("id-media-status", "srv:tool");
+        // The server label comes from the registry, never from splitting the tool name.
+        let tc = make_tool_use_request("id-media-status", "srv_tool");
+        let mut mcp_ids = zeph_tools::McpToolIds::default();
+        mcp_ids.insert("srv_tool".into(), "srv".into());
         let mut result_parts = Vec::new();
         let mut images_attached = 0usize;
 
@@ -2339,7 +2341,7 @@ mod reasoning_amplification_call_site {
                 &mut images_attached,
                 &mut zeph_sanitizer::ContentTrustLevel::Trusted,
                 &mut zeph_sanitizer::ContentSourceKind::ToolResult,
-                &zeph_tools::McpToolIds::default(),
+                &mcp_ids,
             )
             .await
             .unwrap();

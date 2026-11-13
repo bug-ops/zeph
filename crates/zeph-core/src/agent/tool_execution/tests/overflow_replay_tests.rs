@@ -335,7 +335,7 @@ fn vigil_keeps_live_native_exemption_and_never_exempts_mcp() {
         &none
     ));
     let mut ids = McpToolIds::default();
-    ids.insert("memory_search".into(), Some("notes".into()));
+    ids.insert("memory_search".into(), "notes".into());
     assert!(vigil_flags(
         "memory_search",
         &ToolOutputOrigin::Executed(None),
@@ -506,6 +506,8 @@ async fn main_loop_overflow_save_records_the_resolved_mcp_source() {
         retention_days: 7,
         ..Default::default()
     };
+    let (writer, _reader) = zeph_mcp::McpToolList::new(Vec::new());
+    agent.services.mcp.tool_list = Some(writer);
     agent
         .services
         .mcp

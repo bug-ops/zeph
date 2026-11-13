@@ -2457,10 +2457,12 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     // #5610/#5886: shared TrustGateExecutor wrap, also used by ACP (`src/acp.rs`) and the
     // daemon (`src/daemon.rs`) so all three entry points gate the full executor tree through
     // one code path.
-    let (trust_gated, mcp_ids_handle) = crate::agent_setup::apply_common_tool_gating(
+    let mcp_ids_handle = tool_setup.mcp_tool_list.ids_handle();
+    let trust_gated = crate::agent_setup::apply_common_tool_gating(
         inner_executor,
         &permission_policy,
         turn_trust_floor.clone(),
+        mcp_ids_handle.clone(),
     );
     let policy_gate_pieces = crate::agent_setup::build_policy_gate_pieces(config, &provider).await;
     let tool_executor = crate::agent_setup::apply_policy_gate_chain(
@@ -2468,6 +2470,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
         &policy_gate_pieces,
         tool_setup.audit_logger.as_ref(),
         Some((&trajectory_risk_slot, &trajectory_signal_queue)),
+        &mcp_ids_handle,
     );
     let adv_policy_info = policy_gate_pieces.adv_policy_info;
     // Spec 050 F2: wrap with ScopedToolExecutor when capability_scopes are configured.
@@ -2560,13 +2563,15 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
                 sentinel_cfg.deny_on_timeout,
             );
             let store = zeph_core::agent::shadow_sentinel::ShadowEventStore::new(pool);
-            let sentinel =
-                std::sync::Arc::new(zeph_core::agent::shadow_sentinel::ShadowSentinel::new(
+            let sentinel = std::sync::Arc::new(
+                zeph_core::agent::shadow_sentinel::ShadowSentinel::new(
                     store,
                     Box::new(llm_probe),
                     sentinel_cfg.clone(),
                     conversation_id.0.to_string(),
-                ));
+                )
+                .with_mcp_tool_ids(mcp_ids_handle.clone()),
+            );
             let turn_number = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             let risk_level = std::sync::Arc::new(parking_lot::RwLock::new("calm".to_owned()));
             let probe_gate: std::sync::Arc<dyn zeph_tools::ProbeGate> =
@@ -2590,18 +2595,9 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
     };
     let mcp_tools = tool_setup.mcp_tools;
     let mcp_outcomes = tool_setup.mcp_outcomes;
-    // Register MCP tool IDs so TrustGateExecutor can block ALL MCP tools for
-    // Quarantined skills — not just those matching QUARANTINE_DENIED suffixes.
-    crate::agent_setup::register_mcp_tool_ids(&mcp_ids_handle, &mcp_tools);
-    // #5736: ShadowSentinel keeps its own MCP tool-id set (mirroring TrustGateExecutor's)
-    // so `classify_tool` can escalate MCP write/edit tools to `ExfilCapable` without a
-    // cross-crate `ToolDef` dependency at its call site.
-    if let Some(ref sentinel) = shadow_sentinel_arc {
-        crate::agent_setup::register_mcp_tool_ids(&sentinel.mcp_tool_ids_handle(), &mcp_tools);
-    }
     let mcp_manager = tool_setup.mcp_manager;
     let clock = tool_setup.clock;
-    let mcp_shared_tools = tool_setup.mcp_shared_tools;
+    let mcp_tool_list = tool_setup.mcp_tool_list;
     let mcp_tool_rx = tool_setup.mcp_tool_rx;
     let mcp_elicitation_rx = tool_setup.mcp_elicitation_rx;
     // Clone the Arc before it is consumed by with_mcp so LSP hooks can share it.
@@ -2856,7 +2852,7 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
             shadow_sentinel: shadow_sentinel_arc,
             vigil_config: config.security.vigil.clone(),
             hooks_config: (!(exec_mode.bare || exec_mode.safe_mode)).then(|| config.hooks.clone()),
-            mcp_tool_ids_handle: mcp_ids_handle,
+            mcp_tool_list,
             #[cfg(feature = "classifiers")]
             classifiers_config: config.classifiers.clone(),
             llm_classifier: app.build_feedback_classifier(&provider),
@@ -3114,7 +3110,6 @@ pub(crate) async fn run(mut cli: Cli) -> anyhow::Result<()> {
 
     let agent = agent.with_mcp(mcp_tools, mcp_registry, Some(mcp_manager), &config.mcp);
     let agent = agent.with_mcp_server_outcomes(mcp_outcomes);
-    let agent = agent.with_mcp_shared_tools(mcp_shared_tools);
     let agent = agent.with_mcp_tool_rx(mcp_tool_rx);
     let agent = if let Some(rx) = mcp_elicitation_rx {
         agent.with_mcp_elicitation_rx(rx)

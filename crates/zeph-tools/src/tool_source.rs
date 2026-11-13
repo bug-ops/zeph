@@ -40,7 +40,7 @@ pub enum BodyAuthor {
 /// use zeph_tools::{BodyAuthor, McpToolIds, ResolvedToolSource};
 ///
 /// let mut ids = McpToolIds::default();
-/// ids.insert("github_create_issue".into(), Some("github".into()));
+/// ids.insert("github_create_issue".into(), "github".into());
 /// let resolved = ResolvedToolSource::resolve("github_create_issue", None, None, &ids, BodyAuthor::Tool);
 /// assert_eq!(resolved.provenance(), ToolProvenance::Mcp);
 /// assert_eq!(resolved.trust(), TurnContextTrust::ExternalUntrusted);
@@ -126,7 +126,7 @@ mod tests {
 
     fn github_ids() -> McpToolIds {
         let mut ids = McpToolIds::default();
-        ids.insert("github_create_issue".into(), Some("github".into()));
+        ids.insert("github_create_issue".into(), "github".into());
         ids
     }
 

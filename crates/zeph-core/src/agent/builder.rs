@@ -170,8 +170,8 @@ pub struct SecurityWiringSnapshot {
     pub vigil_config: bool,
     /// `true` when [`Agent::with_hooks_config`] was called with a non-empty `HooksConfig`.
     pub hooks_config: bool,
-    /// `true` when [`Agent::with_mcp_tool_ids_handle`] has been called.
-    pub mcp_tool_ids_handle: bool,
+    /// `true` when [`Agent::with_mcp_tool_list`] has been called.
+    pub mcp_tool_list: bool,
     /// `true` when [`Agent::with_llm_classifier`] has been called.
     pub llm_classifier: bool,
     /// `true` when [`Agent::with_injection_classifier`] attached a classifier backend.
@@ -1111,10 +1111,15 @@ impl<C: Channel> Agent<C> {
         self
     }
 
-    /// Attach the shared MCP tool list (updated dynamically when servers reconnect).
+    /// Attach the single writer of this agent's MCP tool list.
+    ///
+    /// The writer's reader half is held by the agent's `McpToolExecutor`, and its
+    /// [`ids_handle`](zeph_mcp::McpToolListWriter::ids_handle) by the gates and the sentinel, so
+    /// every tool-list change the agent applies (`/mcp add`, `/mcp remove`, `tools/list_changed`,
+    /// pruning) reaches the executor and the MCP provenance registry together.
     #[must_use]
-    pub fn with_mcp_shared_tools(mut self, shared: Arc<RwLock<Vec<zeph_mcp::McpTool>>>) -> Self {
-        self.services.mcp.shared_tools = Some(shared);
+    pub fn with_mcp_tool_list(mut self, writer: zeph_mcp::McpToolListWriter) -> Self {
+        self.services.mcp.tool_list = Some(writer);
         self
     }
 
@@ -1310,22 +1315,6 @@ impl<C: Channel> Agent<C> {
         sentinel: std::sync::Arc<crate::agent::shadow_sentinel::ShadowSentinel>,
     ) -> Self {
         self.services.security.shadow_sentinel = Some(sentinel);
-        self
-    }
-
-    /// Attach the shared handle into `TrustGateExecutor`'s MCP tool-id registry
-    /// (`zeph_tools::TrustGateExecutor::mcp_tool_ids_handle`).
-    ///
-    /// Without this, the registry is populated once at startup and never updated, so MCP
-    /// servers connected later (`/mcp add`, `tools/list_changed`) are invisible to the
-    /// Quarantine-deny check (#5747). When attached, `check_tool_refresh` keeps the set in
-    /// sync with the live MCP tool list every turn.
-    #[must_use]
-    pub fn with_mcp_tool_ids_handle(
-        mut self,
-        handle: Arc<RwLock<std::collections::HashSet<String>>>,
-    ) -> Self {
-        self.services.security.mcp_tool_ids = Some(handle);
         self
     }
 
@@ -1951,7 +1940,7 @@ impl<C: Channel> Agent<C> {
             shadow_sentinel: self.services.security.shadow_sentinel.is_some(),
             vigil_config: self.services.security.vigil.is_some(),
             hooks_config: !self.services.session.hooks_config.is_empty(),
-            mcp_tool_ids_handle: self.services.security.mcp_tool_ids.is_some(),
+            mcp_tool_list: self.services.mcp.tool_list.is_some(),
             llm_classifier: self.services.feedback.llm_classifier.is_some(),
             #[cfg(feature = "classifiers")]
             injection_classifier: self.services.security.sanitizer.has_classifier_backend(),

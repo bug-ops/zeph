@@ -14,7 +14,6 @@ use std::sync::Arc;
 use zeph_sanitizer::pii::PiiFilter;
 use zeph_sanitizer::secret_mask::SecretMaskRegistry;
 use zeph_sanitizer::secret_shape::scrub_secret_shapes;
-use zeph_tools::registry::ToolDef;
 
 use super::builder::build_pre_execution_verifiers;
 use super::{Agent, error};
@@ -1075,7 +1074,12 @@ impl<C: Channel> Agent<C> {
                 }
             },
             spawn_depth: self.runtime.config.spawn_depth,
-            mcp_tool_names: self.extract_mcp_tool_names(),
+            mcp_tool_ids: self
+                .services
+                .mcp
+                .tool_list
+                .as_ref()
+                .map(zeph_mcp::McpToolListWriter::ids_handle),
             // F3 spec 050 §4: propagate seeded score when parent is >= Elevated.
             seed_trajectory_score: {
                 let child = self.services.security.trajectory.spawn_child();
@@ -1090,7 +1094,6 @@ impl<C: Channel> Agent<C> {
             exfiltration_guard: self.runtime.config.security.exfiltration_guard.clone(),
             orchestrator_name: Some("zeph".to_owned()),
             orchestrator_role: Some("orchestrator".to_owned()),
-            session_mcp_servers: Vec::new(),
             // Threaded down so sub-agent LLM calls are captured through the same
             // `--debug-dump` pipeline as the top-level agent loop (#6391). `None` when
             // debug dumps are disabled, mirroring the top-level `debug_dumper: None` case.
@@ -1244,15 +1247,6 @@ impl<C: Channel> Agent<C> {
         }
 
         msgs
-    }
-    /// Extract MCP tool names from the tool executor for diagnostic annotation.
-    fn extract_mcp_tool_names(&self) -> Vec<String> {
-        self.tool_executor
-            .tool_definitions_erased()
-            .into_iter()
-            .filter(ToolDef::is_mcp_tool)
-            .map(|t| t.id.to_string())
-            .collect()
     }
     /// Classify a skill directory's source kind using on-disk markers and the bundled allowlist.
     ///
@@ -1639,6 +1633,7 @@ impl<C: Channel + Send + 'static> zeph_commands::SubagentAccess for Agent<C> {
 
 #[cfg(test)]
 mod tests {
+    use zeph_tools::registry::ToolDef;
     use zeph_tools::{ErasedToolExecutor, ToolCall};
 
     use super::*;
@@ -1707,36 +1702,43 @@ mod tests {
         assert!(agent.resolve_subagent_secret("anything").is_none());
     }
 
-    /// #5712 regression: MCP tool identification must key off `ToolDef::server_id`, not a
-    /// `"mcp_"` name prefix that real `McpTool::sanitized_id()` output never produces.
-    #[tokio::test]
-    async fn extract_mcp_tool_names_uses_server_id_not_name_prefix() {
-        use zeph_tools::registry::InvocationHint;
-
+    /// The spawn context carries the parent's live MCP registry handle, so a sub-agent classifies
+    /// MCP results against the same registry as the parent (#7075).
+    #[test]
+    fn build_spawn_context_shares_the_parent_mcp_registry_handle() {
         let provider = mock_provider(vec![]);
         let channel = MockChannel::new(vec![]);
         let registry = create_test_registry();
-        let executor = MockToolExecutor::no_tools().with_definitions(vec![
-            ToolDef {
-                id: "read".into(),
-                description: "built-in tool".into(),
-                schema: schemars::Schema::default(),
-                invocation: InvocationHint::ToolCall,
-                output_schema: None,
-                server_id: None,
-            },
-            ToolDef {
-                id: "github_create_issue".into(),
-                description: "MCP tool".into(),
-                schema: schemars::Schema::default(),
-                invocation: InvocationHint::ToolCall,
-                output_schema: None,
-                server_id: Some("github".into()),
-            },
-        ]);
-        let agent = Agent::new(provider, channel, registry, None, 5, executor);
+        let mut agent = Agent::new(
+            provider,
+            channel,
+            registry,
+            None,
+            5,
+            MockToolExecutor::no_tools(),
+        );
+        let cfg = zeph_config::SubAgentConfig::default();
+        assert!(agent.build_spawn_context(&cfg).mcp_tool_ids.is_none());
 
-        assert_eq!(agent.extract_mcp_tool_names(), vec!["github_create_issue"]);
+        let (writer, _reader) = zeph_mcp::McpToolList::new(Vec::new());
+        agent.services.mcp.tool_list = Some(writer);
+        let handle = agent
+            .build_spawn_context(&cfg)
+            .mcp_tool_ids
+            .expect("handle must be present once a tool list is attached");
+
+        agent.services.mcp.set_tools(vec![zeph_mcp::McpTool {
+            server_id: "srv".into(),
+            name: "late".to_owned(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+            output_schema: None,
+            security_meta: zeph_config::mcp_security::ToolSecurityMeta::default(),
+        }]);
+        assert!(
+            handle.contains("srv_late"),
+            "a handle taken before a tool list change must see it"
+        );
     }
 
     /// Agent with `durable_ctx` populated via the real `ensure_session_durable_ctx` bootstrap

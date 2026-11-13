@@ -3,17 +3,13 @@
 
 //! Trust-level enforcement layer for tool execution.
 
-use std::collections::HashSet;
-use std::sync::Arc;
-
-use parking_lot::RwLock;
 use zeph_common::TurnTrustFloor;
 
 use crate::SkillTrustLevel;
 
 use crate::executor::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 use crate::permissions::{AutonomyLevel, PermissionAction, PermissionPolicy};
-use crate::registry::ToolDef;
+use crate::registry::{McpToolIdsHandle, ToolDef};
 
 /// Tools denied when a Quarantined skill is active, and the matching predicate.
 ///
@@ -52,11 +48,11 @@ pub struct TrustGateExecutor<T: ToolExecutor> {
     inner: T,
     policy: PermissionPolicy,
     effective_trust: TurnTrustFloor,
-    /// Sanitized IDs of all registered MCP tools. When a Quarantined skill is
-    /// active, any tool whose ID appears in this set is denied — regardless of
-    /// whether its name matches `QUARANTINE_DENIED`. Populated at startup by
-    /// calling `set_mcp_tool_ids` after MCP servers connect.
-    mcp_tool_ids: Arc<RwLock<HashSet<String>>>,
+    /// Live registry of sanitized MCP tool ids. When a Quarantined skill is active, any tool
+    /// whose id appears in it is denied — regardless of whether its name matches
+    /// `QUARANTINE_DENIED`. `None` until [`with_mcp_tool_ids`](Self::with_mcp_tool_ids) attaches
+    /// the handle published by the agent's single MCP tool-list writer.
+    mcp_tool_ids: Option<McpToolIdsHandle>,
 }
 
 impl<T: ToolExecutor + std::fmt::Debug> std::fmt::Debug for TrustGateExecutor<T> {
@@ -77,16 +73,15 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
             inner,
             policy,
             effective_trust: TurnTrustFloor::new(SkillTrustLevel::Trusted),
-            mcp_tool_ids: Arc::new(RwLock::new(HashSet::new())),
+            mcp_tool_ids: None,
         }
     }
 
-    /// Returns the shared MCP tool ID set so the caller can populate it after
-    /// MCP servers have connected (and after `TrustGateExecutor` has been wrapped
-    /// in a `DynExecutor`).
+    /// Attaches the live MCP tool-id registry consulted by the Quarantine deny rule.
     #[must_use]
-    pub fn mcp_tool_ids_handle(&self) -> Arc<RwLock<HashSet<String>>> {
-        Arc::clone(&self.mcp_tool_ids)
+    pub fn with_mcp_tool_ids(mut self, handle: McpToolIdsHandle) -> Self {
+        self.mcp_tool_ids = Some(handle);
+        self
     }
 
     /// Replaces this gate's trust floor with an externally-owned, shared one (#6701).
@@ -124,7 +119,9 @@ impl<T: ToolExecutor> TrustGateExecutor<T> {
     }
 
     fn is_mcp_tool(&self, tool_id: &str) -> bool {
-        self.mcp_tool_ids.read().contains(tool_id)
+        self.mcp_tool_ids
+            .as_ref()
+            .is_some_and(|ids| ids.contains(tool_id))
     }
 
     /// Enforces per-call trust policy.
@@ -864,9 +861,7 @@ mod tests {
         let policy = crate::permissions::PermissionPolicy::from_legacy(&[], &[]);
         let gate = TrustGateExecutor::new(MockExecutor, policy);
         gate.set_effective_trust(SkillTrustLevel::Trusted);
-        gate.mcp_tool_ids_handle()
-            .write()
-            .insert("mcp_filesystem__read_file".to_owned());
+        let gate = gate.with_mcp_tool_ids(mcp_handle(&["mcp_filesystem__read_file"]));
 
         let mut params = serde_json::Map::new();
         params.insert(
@@ -1101,12 +1096,19 @@ mod tests {
 
     // mcp_tool_ids registry tests
 
+    fn mcp_handle(ids: &[&str]) -> McpToolIdsHandle {
+        let (writer, handle) = McpToolIdsHandle::with_writer();
+        let mut registry = crate::registry::McpToolIds::default();
+        for id in ids {
+            registry.insert((*id).into(), "srv".into());
+        }
+        writer.publish(registry);
+        handle
+    }
+
     fn gate_with_mcp_ids(ids: &[&str]) -> TrustGateExecutor<MockExecutor> {
-        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        let handle = gate.mcp_tool_ids_handle();
-        let set: std::collections::HashSet<String> = ids.iter().map(ToString::to_string).collect();
-        *handle.write() = set;
-        gate
+        TrustGateExecutor::new(MockExecutor, PermissionPolicy::default())
+            .with_mcp_tool_ids(mcp_handle(ids))
     }
 
     #[tokio::test]
@@ -1166,10 +1168,14 @@ mod tests {
     }
 
     #[test]
-    fn mcp_tool_ids_handle_shared_arc() {
-        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default());
-        let handle = gate.mcp_tool_ids_handle();
-        handle.write().insert("test_tool".to_owned());
+    fn mcp_tool_ids_handle_is_live() {
+        let (writer, handle) = McpToolIdsHandle::with_writer();
+        let gate = TrustGateExecutor::new(MockExecutor, PermissionPolicy::default())
+            .with_mcp_tool_ids(handle);
+        assert!(!gate.is_mcp_tool("test_tool"));
+        let mut registry = crate::registry::McpToolIds::default();
+        registry.insert("test_tool".into(), "srv".into());
+        writer.publish(registry);
         assert!(gate.is_mcp_tool("test_tool"));
         assert!(!gate.is_mcp_tool("other_tool"));
     }

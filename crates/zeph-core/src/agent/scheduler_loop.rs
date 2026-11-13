@@ -3768,7 +3768,6 @@ mod tests {
             secret_tx,
             started_at_str: String::new(),
             transcript_dir: None,
-            mcp_tool_names: Vec::new(),
             peer: None,
             trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
             resumed_from: None,

@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use zeph_common::task_supervisor::BlockingHandle;
 use zeph_common::trust_level::TranscriptTrustSchema;
 use zeph_common::{SkillTrustLevel, TaskSupervisor};
-use zeph_config::{ContentIsolationConfig, McpServerConfig};
+use zeph_config::ContentIsolationConfig;
 use zeph_llm::provider::Message;
 
 use crate::def::{PermissionMode, SubAgentDef};
@@ -139,8 +139,12 @@ pub struct SpawnContext {
     pub parent_provider_name: Option<String>,
     /// Current spawn depth (0 = top-level agent).
     pub spawn_depth: u32,
-    /// MCP tool names available in the parent's tool executor (for diagnostics).
-    pub mcp_tool_names: Vec<String>,
+    /// Live MCP tool-id registry of the parent agent, the authority for classifying MCP results.
+    ///
+    /// `Some` is read per batch (`snapshot()`), so spawn and resume always see the parent's
+    /// current tool list. `None` (for example `SpawnContext::default()`) falls back to the live
+    /// executor definitions per batch, so a missing handle never classifies MCP output as native.
+    pub mcp_tool_ids: Option<zeph_tools::McpToolIdsHandle>,
     /// Seeded trajectory risk score from the parent sentinel (spec 050 §4).
     ///
     /// When `Some`, the subagent's `TrajectorySentinel` starts with this pre-seeded score
@@ -163,12 +167,6 @@ pub struct SpawnContext {
     /// Injected alongside [`orchestrator_name`][Self::orchestrator_name] when both are set.
     /// Omitted from the identity header when only `orchestrator_name` is provided.
     pub orchestrator_role: Option<String>,
-    /// Per-session MCP servers to inject into this subagent's tool name annotations.
-    ///
-    /// The parent is responsible for connecting these servers and including them in the
-    /// `tool_executor` passed to [`SubAgentManager::spawn`]. This field only carries the
-    /// server metadata so the subagent's system prompt lists the additional tool names.
-    pub session_mcp_servers: Vec<McpServerConfig>,
     /// Maximum trust level cap inherited from the parent agent or orchestration policy.
     ///
     /// When `Some(cap)`, the spawned sub-agent's effective trust level is clamped to
@@ -433,8 +431,6 @@ pub struct SubAgentHandle {
     pub started_at_str: String,
     /// Resolved transcript directory at spawn time; `None` if transcripts were disabled.
     pub transcript_dir: Option<PathBuf>,
-    /// MCP tool names available at spawn time, persisted for transcript meta on collect.
-    pub mcp_tool_names: Vec<String>,
     /// Peer-messaging route registration for this sub-agent (spec
     /// `087-subagent-peer-messaging`).
     ///
@@ -485,7 +481,6 @@ impl SubAgentHandle {
             secret_tx,
             started_at_str: String::new(),
             transcript_dir: None,
-            mcp_tool_names: Vec::new(),
             peer: None,
             trust_schema: TranscriptTrustSchema::PerResult,
             resumed_from: None,

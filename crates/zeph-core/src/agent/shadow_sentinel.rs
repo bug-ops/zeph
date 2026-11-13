@@ -29,8 +29,6 @@
 //! Exposing internal risk scores to the LLM would allow prompt injection attacks that
 //! manipulate probe verdicts by crafting tool outputs to lower the perceived risk level.
 
-use parking_lot::RwLock;
-use std::collections::HashSet;
 use std::sync::{
     Arc,
     atomic::{AtomicU32, Ordering},
@@ -44,6 +42,7 @@ use zeph_db::{DbPool, sql};
 use zeph_llm::LlmProvider;
 use zeph_llm::any::AnyProvider;
 use zeph_llm::provider::{Message, Role};
+use zeph_tools::McpToolIdsHandle;
 
 use zeph_common::SessionId;
 
@@ -528,27 +527,12 @@ pub struct ShadowSentinel {
     /// Bounded set of fire-and-forget DB persist tasks. Prevents unbounded task accumulation
     /// and ensures panics surface at `drain_pending()` instead of being silently swallowed.
     pending_writes: Mutex<JoinSet<()>>,
-    /// Sanitized ids (`ToolDef::server_id`-backed) of tools registered by MCP servers.
-    ///
-    /// Mirrors `TrustGateExecutor::mcp_tool_ids` (`zeph_tools::TrustGateExecutor`): empty until
-    /// populated post-construction via [`mcp_tool_ids_handle`](Self::mcp_tool_ids_handle). This
-    /// is the authoritative way to know a `qualified_tool_id` originates from an MCP server —
-    /// real ids are `{server_id}_{name}` (`McpTool::sanitized_id`) and carry no reliable string
-    /// prefix to pattern-match on (#5736).
-    ///
-    /// # Refresh
-    ///
-    /// Populated at startup from the initial `mcp_tools` list (`src/runner.rs`) and refreshed
-    /// on every subsequent tool-list change — `/mcp add`/`/mcp remove` and a live
-    /// `tools/list_changed` notification both route through
-    /// `Agent::refresh_shadow_sentinel_mcp_tool_ids` (`crates/zeph-core/src/agent/mcp.rs`,
-    /// called from `check_tool_refresh` once per turn) — so a server connected mid-session is
-    /// reflected without a process restart.
-    ///
-    /// **Known gap**: `TrustGateExecutor`'s own equivalent set has no such refresh path (it
-    /// lives entirely in the binary crate's tool-executor chain, unreachable from `Agent`) —
-    /// tracked separately (#5747), not fixed by this refresh.
-    mcp_tool_ids: Arc<RwLock<HashSet<String>>>,
+    /// Live registry of tools registered by MCP servers, shared with the agent's single MCP
+    /// tool-list writer. This is the authoritative way to know a `qualified_tool_id` originates
+    /// from an MCP server: real ids are `{server_id}_{name}` (`McpTool::sanitized_id`) and carry
+    /// no reliable string prefix to pattern-match on (#5736). `None` until
+    /// [`with_mcp_tool_ids`](Self::with_mcp_tool_ids) attaches the handle.
+    mcp_tool_ids: Option<McpToolIdsHandle>,
 }
 
 impl ShadowSentinel {
@@ -575,20 +559,22 @@ impl ShadowSentinel {
             exfil_probes_this_turn: AtomicU32::new(0),
             session_id: session_id.into(),
             pending_writes: Mutex::new(JoinSet::new()),
-            mcp_tool_ids: Arc::new(RwLock::new(HashSet::new())),
+            mcp_tool_ids: None,
         }
     }
 
-    /// Returns the shared MCP tool-id set so the caller can populate it once MCP servers have
-    /// connected (mirrors `TrustGateExecutor::mcp_tool_ids_handle`).
+    /// Attach the live MCP tool-id registry used to escalate MCP-origin tools.
     #[must_use]
-    pub fn mcp_tool_ids_handle(&self) -> Arc<RwLock<HashSet<String>>> {
-        Arc::clone(&self.mcp_tool_ids)
+    pub fn with_mcp_tool_ids(mut self, handle: McpToolIdsHandle) -> Self {
+        self.mcp_tool_ids = Some(handle);
+        self
     }
 
     /// Returns `true` when `tool_id` was registered by an MCP server.
     fn is_mcp_tool(&self, tool_id: &str) -> bool {
-        self.mcp_tool_ids.read().contains(tool_id)
+        self.mcp_tool_ids
+            .as_ref()
+            .is_some_and(|ids| ids.contains(tool_id))
     }
 
     /// Classify a fully-qualified tool id into a risk tier.
@@ -1070,10 +1056,7 @@ mod tests {
     async fn classify_mcp_tool_with_no_keyword_match_is_mcp_unclassified() {
         let config = zeph_config::ShadowSentinelConfig::default();
         let sentinel = make_test_sentinel(config).await;
-        sentinel
-            .mcp_tool_ids_handle()
-            .write()
-            .insert("some-server_frobnicate".to_owned());
+        let sentinel = sentinel.with_mcp_tool_ids(mcp_handle(&["some-server_frobnicate"]));
         assert_eq!(
             sentinel.classify_tool("some-server_frobnicate"),
             ToolRiskCategory::McpUnclassified
@@ -1123,7 +1106,8 @@ mod tests {
             probe_patterns: vec!["*edit*".to_owned()],
             ..zeph_config::ShadowSentinelConfig::default()
         };
-        let sentinel = make_test_sentinel(config).await;
+        let (writer, handle) = McpToolIdsHandle::with_writer();
+        let sentinel = make_test_sentinel(config).await.with_mcp_tool_ids(handle);
         // Unregistered: a same-shaped id falls to the ordinary FileWrite tier, not ExfilCapable.
         assert_eq!(
             sentinel.classify_tool("github_edit_file"),
@@ -1131,10 +1115,7 @@ mod tests {
         );
         // Register it the same way the real MCP wiring does (via the shared handle) and the
         // identical id must now escalate.
-        sentinel
-            .mcp_tool_ids_handle()
-            .write()
-            .insert("github_edit_file".to_owned());
+        writer.publish(mcp_registry(&["github_edit_file"]));
         assert_eq!(
             sentinel.classify_tool("github_edit_file"),
             ToolRiskCategory::ExfilCapable
@@ -1153,10 +1134,7 @@ mod tests {
     async fn classify_mcp_tool_write_under_default_config_escalates_to_exfil_capable() {
         let config = zeph_config::ShadowSentinelConfig::default();
         let sentinel = make_test_sentinel(config).await;
-        sentinel
-            .mcp_tool_ids_handle()
-            .write()
-            .insert("fs-test_write_file".to_owned());
+        let sentinel = sentinel.with_mcp_tool_ids(mcp_handle(&["fs-test_write_file"]));
         assert_eq!(
             sentinel.classify_tool("fs-test_write_file"),
             ToolRiskCategory::ExfilCapable
@@ -1274,10 +1252,7 @@ mod tests {
             ..zeph_config::ShadowSentinelConfig::default()
         };
         let sentinel = make_test_sentinel(config).await;
-        sentinel
-            .mcp_tool_ids_handle()
-            .write()
-            .insert("server_edit_file".to_owned());
+        let sentinel = sentinel.with_mcp_tool_ids(mcp_handle(&["server_edit_file"]));
         assert_eq!(
             sentinel.classify_tool("server_edit_file"),
             ToolRiskCategory::ExfilCapable
@@ -1322,10 +1297,7 @@ mod tests {
             ..zeph_config::ShadowSentinelConfig::default()
         };
         let sentinel = make_test_sentinel(config).await;
-        sentinel
-            .mcp_tool_ids_handle()
-            .write()
-            .insert("server_edit_file".to_owned());
+        let sentinel = sentinel.with_mcp_tool_ids(mcp_handle(&["server_edit_file"]));
 
         let args = serde_json::Value::Object(serde_json::Map::new());
 
@@ -1369,10 +1341,7 @@ mod tests {
             ..zeph_config::ShadowSentinelConfig::default()
         };
         let sentinel = make_test_sentinel(config).await;
-        sentinel
-            .mcp_tool_ids_handle()
-            .write()
-            .insert("some-server_frobnicate".to_owned());
+        let sentinel = sentinel.with_mcp_tool_ids(mcp_handle(&["some-server_frobnicate"]));
         assert_eq!(
             sentinel.classify_tool("some-server_frobnicate"),
             ToolRiskCategory::McpUnclassified
@@ -1425,10 +1394,7 @@ mod tests {
             ..zeph_config::ShadowSentinelConfig::default()
         };
         let sentinel = make_test_sentinel(config).await;
-        sentinel
-            .mcp_tool_ids_handle()
-            .write()
-            .insert("some-server_frobnicate".to_owned());
+        let sentinel = sentinel.with_mcp_tool_ids(mcp_handle(&["some-server_frobnicate"]));
 
         let args = serde_json::Value::Object(serde_json::Map::new());
 
@@ -1468,14 +1434,8 @@ mod tests {
             ..zeph_config::ShadowSentinelConfig::default()
         };
         let sentinel = make_test_sentinel(config).await;
-        sentinel
-            .mcp_tool_ids_handle()
-            .write()
-            .insert("server_edit_file".to_owned());
-        sentinel
-            .mcp_tool_ids_handle()
-            .write()
-            .insert("some-server_frobnicate".to_owned());
+        let sentinel =
+            sentinel.with_mcp_tool_ids(mcp_handle(&["server_edit_file", "some-server_frobnicate"]));
         assert_eq!(
             sentinel.classify_tool("server_edit_file"),
             ToolRiskCategory::ExfilCapable
@@ -1593,6 +1553,20 @@ mod tests {
 
     // Build a minimal ShadowSentinel with a no-op probe for unit tests.
     //
+    fn mcp_registry(ids: &[&str]) -> zeph_tools::McpToolIds {
+        let mut registry = zeph_tools::McpToolIds::default();
+        for id in ids {
+            registry.insert((*id).into(), "srv".into());
+        }
+        registry
+    }
+
+    fn mcp_handle(ids: &[&str]) -> McpToolIdsHandle {
+        let (writer, handle) = McpToolIdsHandle::with_writer();
+        writer.publish(mcp_registry(ids));
+        handle
+    }
+
     // Opens an in-memory SQLite pool. Store methods are never called in these unit
     // tests — they test only classification and counter logic.
     async fn make_test_sentinel(config: zeph_config::ShadowSentinelConfig) -> ShadowSentinel {

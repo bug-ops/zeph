@@ -51,6 +51,14 @@ fn agent_with(executor: MockToolExecutor) -> Agent<MockChannel> {
     agent
 }
 
+/// Attach a single-writer tool list and return the registry handle consumers read.
+fn attach_mcp_tool_list(agent: &mut Agent<MockChannel>) -> zeph_tools::McpToolIdsHandle {
+    let (writer, _reader) = zeph_mcp::McpToolList::new(Vec::new());
+    let handle = writer.ids_handle();
+    agent.services.mcp.tool_list = Some(writer);
+    handle
+}
+
 fn call(name: &str) -> Vec<ToolUseRequest> {
     vec![ToolUseRequest {
         id: "call-1".into(),
@@ -99,6 +107,7 @@ async fn stored_registry_entry_result_and_error_text_are_external() {
     let (id, _) = github_mcp_tool_ids();
     for outcome in [Ok(Some(output(None))), failure()] {
         let mut agent = agent_with(MockToolExecutor::new(vec![outcome]));
+        attach_mcp_tool_list(&mut agent);
         agent.services.mcp.set_tools(vec![github_mcp_tool()]);
         let result = run_turn(&mut agent, &id).await;
         assert_external(&agent, &result);
@@ -147,26 +156,27 @@ async fn mcp_tool_sharing_an_internal_name_is_external() {
 fn mcp_state_mutators_keep_the_id_registry_in_sync() {
     let (id, _) = github_mcp_tool_ids();
     let mut agent = agent_with(MockToolExecutor::no_tools());
+    let handle = attach_mcp_tool_list(&mut agent);
     let state = &mut agent.services.mcp;
 
     state.set_tools(vec![github_mcp_tool()]);
-    assert!(state.tool_ids().contains(&id));
+    assert!(handle.contains(&id));
     assert_eq!(
-        state
-            .tool_ids()
+        handle
+            .snapshot()
             .server_id(&id)
             .map(zeph_common::types::McpServerId::as_str),
         Some("github")
     );
 
     state.retain_tools(|t| t.server_id != "github");
-    assert!(!state.tool_ids().contains(&id));
+    assert!(!handle.contains(&id));
 
     state.extend_tools(vec![github_mcp_tool()]);
-    assert!(state.tool_ids().contains(&id));
+    assert!(handle.contains(&id));
 
     state.set_tools(Vec::new());
-    assert!(!state.tool_ids().contains(&id));
+    assert!(!handle.contains(&id));
 }
 
 #[test]
@@ -178,17 +188,38 @@ fn long_ids_are_registered_in_their_truncated_dispatch_form() {
     let id = tool.sanitized_id();
     assert!(id.len() <= 128, "dispatch ids are capped at 128 chars");
     let mut agent = agent_with(MockToolExecutor::no_tools());
+    let handle = attach_mcp_tool_list(&mut agent);
     agent.services.mcp.set_tools(vec![tool]);
-    assert!(agent.services.mcp.tool_ids().contains(&id));
+    assert!(handle.contains(&id));
     assert_eq!(
-        agent
-            .services
-            .mcp
-            .tool_ids()
+        handle
+            .snapshot()
             .server_id(&id)
             .map(zeph_common::types::McpServerId::as_str),
         Some("github")
     );
+}
+
+#[tokio::test]
+async fn pruned_mcp_tool_is_still_classified_as_external() {
+    let (id, _) = github_mcp_tool_ids();
+    let mut agent = agent_with(MockToolExecutor::new(vec![Ok(Some(output(None)))]));
+    attach_mcp_tool_list(&mut agent);
+    agent.services.mcp.set_tools(vec![github_mcp_tool()]);
+    agent.services.mcp.apply_pruned_tools(Vec::new());
+    let result = run_turn(&mut agent, &id).await;
+    assert_external(&agent, &result);
+}
+
+#[tokio::test]
+async fn without_a_tool_list_the_live_definitions_are_the_fallback() {
+    let (id, _) = github_mcp_tool_ids();
+    let executor = MockToolExecutor::new(vec![Ok(Some(output(None)))])
+        .with_definitions(vec![mcp_tool_def(&id, "github")]);
+    let mut agent = agent_with(executor);
+    assert!(agent.services.mcp.tool_list.is_none());
+    let result = run_turn(&mut agent, &id).await;
+    assert_external(&agent, &result);
 }
 
 #[tokio::test]
@@ -248,6 +279,7 @@ async fn consent_slot_is_external_before_a_registered_mcp_call_executes() {
         executor,
     )
     .with_memory_consent_trust_slot(slot);
+    attach_mcp_tool_list(&mut agent);
     agent.services.mcp.set_tools(vec![github_mcp_tool()]);
     agent
         .handle_native_tool_calls(None, &call(&id))
@@ -296,6 +328,7 @@ async fn reflection_text_of_a_failing_mcp_call_is_sanitized_as_mcp() {
         .skill
         .active_skill_names
         .push("test-skill".into());
+    attach_mcp_tool_list(&mut agent);
     agent.services.mcp.set_tools(vec![github_mcp_tool()]);
     agent
         .handle_native_tool_calls(None, &call(&id))

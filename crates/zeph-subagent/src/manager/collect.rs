@@ -96,7 +96,6 @@ impl SubAgentManager {
                 finished_at: Some(crate::transcript::utc_now()),
                 resumed_from: handle.resumed_from.clone(),
                 turns_used,
-                mcp_tool_names: handle.mcp_tool_names.clone(),
                 trust_schema: handle.trust_schema,
             };
             if let Err(e) = TranscriptWriter::write_meta_async(dir, task_id, &meta).await {
@@ -247,7 +246,6 @@ impl SubAgentManager {
             finished_at: None,
             resumed_from: resumed_from.map(str::to_owned),
             turns_used: 0,
-            mcp_tool_names: Vec::new(),
             trust_schema,
         };
         let task_id = task_id.to_owned();

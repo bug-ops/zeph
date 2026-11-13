@@ -214,7 +214,7 @@ impl McpTool {
     /// use zeph_mcp::tool::{McpTool, ToolSecurityMeta};
     ///
     /// let tool = McpTool {
-    ///     server_id: "fs".to_owned(),
+    ///     server_id: "fs".into(),
     ///     name: "read_file".to_owned(),
     ///     description: "Read a file".to_owned(),
     ///     input_schema: serde_json::json!({}),

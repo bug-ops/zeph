@@ -1286,7 +1286,7 @@ async fn stamp_and_send_tier_start_sets_is_mcp_from_mcp_tool_ids() {
     ];
     let mut tool_started_ats = [Instant::now(), Instant::now()];
     let mut mcp_tool_ids = zeph_tools::McpToolIds::default();
-    mcp_tool_ids.insert_id("github_search_issues".to_string());
+    mcp_tool_ids.insert("github_search_issues".into(), "github".into());
 
     agent
         .stamp_and_send_tier_start(
