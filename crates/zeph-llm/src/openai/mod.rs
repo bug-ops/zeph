@@ -1197,7 +1197,7 @@ impl LlmProvider for OpenAiProvider {
         let (status, text) = crate::http::read_response_body(response).await?;
 
         if status == reqwest::StatusCode::BAD_REQUEST {
-            tracing::warn!("OpenAI tool chat 400 bad request: {text}");
+            crate::http::log_api_error_body("openai", status, &text);
             if crate::error::body_is_context_length_error(&text) {
                 return Err(LlmError::ContextLengthExceeded);
             }

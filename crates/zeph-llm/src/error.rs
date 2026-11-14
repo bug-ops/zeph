@@ -67,10 +67,20 @@ pub(crate) fn check_refusal(
     })
 }
 
-/// Drop control characters and cap `text` at `max_chars` characters.
+/// Scrub secret shapes, drop control characters and cap `text` at `max_chars` characters.
+///
+/// Scrubs both before and after the control-character strip: the first pass sees terminal escape
+/// sequences as boundaries, the second catches a token that the strip reassembles
+/// (`s\x1bk-...`). The cap runs last so a secret is never cut before it is scrubbed.
 fn sanitize_provider_text(text: &str, max_chars: usize) -> String {
-    text.chars()
+    use zeph_common::secret_redact::scrub_secret_shapes;
+
+    let stripped: String = scrub_secret_shapes(text)
+        .chars()
         .filter(|c| !c.is_control())
+        .collect();
+    scrub_secret_shapes(&stripped)
+        .chars()
         .take(max_chars)
         .collect()
 }
@@ -131,8 +141,7 @@ impl ApiErrorDetail {
             ErrorBody::Nested { error } => (error.kind.or(error.status), error.message),
             ErrorBody::Flat { error } => (None, error),
         };
-        let scrubbed = zeph_common::secret_redact::scrub_secret_shapes(&message);
-        let message = sanitize_provider_text(&scrubbed, Self::MAX_MESSAGE_CHARS);
+        let message = sanitize_provider_text(&message, Self::MAX_MESSAGE_CHARS);
         if message.is_empty() {
             return None;
         }
@@ -472,6 +481,26 @@ mod tests {
         let d = ApiErrorDetail::from_body(&body).unwrap();
         assert!(!d.message().contains("abcdefghijklmnop1234"));
         assert!(d.message().chars().count() <= ApiErrorDetail::MAX_MESSAGE_CHARS);
+    }
+
+    #[test]
+    fn detail_scrubs_token_reassembled_by_control_strip_and_kind() {
+        let body = serde_json::json!({"error": {
+            "type": "bad sk-test-abcdefghijklmnop1234",
+            "message": "key s\u{1b}k-test-abcdefghijklmnop1234 and \u{1b}[Ksk-test-abcdefghijklmnop5678"}})
+        .to_string();
+        let d = ApiErrorDetail::from_body(&body).unwrap();
+        assert!(
+            !d.message().contains("abcdefghijklmnop1234"),
+            "{}",
+            d.message()
+        );
+        assert!(
+            !d.message().contains("abcdefghijklmnop5678"),
+            "{}",
+            d.message()
+        );
+        assert!(!d.kind().unwrap().contains("abcdefghijklmnop1234"));
     }
 
     #[test]

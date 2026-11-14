@@ -43,8 +43,9 @@ pub const SECRET_PREFIXES: &[&str] = &[
 ///
 /// Capture group 1 is the boundary: start of text, any non-alphanumeric character, or an
 /// escape sequence whose final character is alphanumeric (`\n`, `\x0a`, `\u000a`, `%3D`), an
-/// ANSI CSI sequence of any final byte (`ESC[32m`, `ESC[K`, colon SGR `ESC[38:5:1m`) or a
-/// quoted-printable `=XX` in either hex case (`=3D`, `=3d`).
+/// ANSI CSI sequence with any parameter, intermediate and final byte (`ESC[32m`, `ESC[K`,
+/// `ESC[38:5:1m`, `ESC[2 q`) or a
+/// quoted-printable `=3D` in either case. Other `=XX` pairs are not boundaries: `PKG=dask-ml` stays intact.
 /// The escape forms are required because JSON-serialized, URL-encoded, colored or MIME text
 /// puts a letter or digit directly in front of a secret (`"a\nsk-proj-1"`, `key%3Dsk-proj-1`). Replacing
 /// with `"${1}[REDACTED]"` keeps the boundary and redacts the token, so ordinary words that
@@ -55,7 +56,7 @@ pub const SECRET_PREFIXES: &[&str] = &[
 /// semicolons, braces, brackets and ESC (so a trailing ANSI reset survives), but it continues
 /// across a run of CSI sequences that is followed by more body characters, so highlighting that
 /// splits a token (`sk-ESC[mESC[Kproj...`) does not leave the tail unredacted.
-pub const SECRET_TOKEN_PATTERN: &str = r#"(^|[^A-Za-z0-9]|\\[nrtbf0v]|\\x[0-9A-Fa-f]{2}|\\u[0-9A-Fa-f]{4}|%[0-9A-Fa-f]{2}|\x1b\[[0-9;:?]*[@-~]|=[0-9A-Fa-f]{2})(?:sk\-|sk_live_|sk_test_|AKIA|ghp_|gho_|\-\-\-\-\-BEGIN|xoxb\-|xoxp\-|AIza|ya29\.|glpat\-|hf_|npm_|dckr_pat_|xapp\-|rk_live_|rk_test_)[^\s"'`,;{}\[\]\x1b]*(?:(?:\x1b\[[0-9;:?]*[@-~])+[^\s"'`,;{}\[\]\x1b]+)*"#;
+pub const SECRET_TOKEN_PATTERN: &str = r#"(^|[^A-Za-z0-9]|\\[nrtbf0v]|\\x[0-9A-Fa-f]{2}|\\u[0-9A-Fa-f]{4}|%[0-9A-Fa-f]{2}|\x1b\[[0-?]*[ -/]*[@-~]|=3[Dd])(?:sk\-|sk_live_|sk_test_|AKIA|ghp_|gho_|\-\-\-\-\-BEGIN|xoxb\-|xoxp\-|AIza|ya29\.|glpat\-|hf_|npm_|dckr_pat_|xapp\-|rk_live_|rk_test_)[^\s"'`,;{}\[\]\x1b]*(?:(?:\x1b\[[0-?]*[ -/]*[@-~])+[^\s"'`,;{}\[\]\x1b]+)*"#;
 
 /// Prefixes distinctive enough that a glued match is a key once its body run looks random
 /// (`glpat-`, `AKIA`, ...).
@@ -126,7 +127,7 @@ pub const GITHUB_APP_TOKEN_PATTERN: &str = r"gh[sur]_[A-Za-z0-9]{36,}";
 /// consumed by a match, so a replacement pass skips a key that shares its delimiter with the
 /// previous one; callers apply the replacement twice to cover keys joined by one delimiter.
 pub const AWS_STS_ACCESS_KEY_ID_PATTERN: &str =
-    r"(^|[^A-Za-z0-9]|\x1b\[[0-9;:?]*[@-~]|=[0-9A-Fa-f]{2})ASIA[A-Z0-9]{16}([^A-Za-z0-9]|$)";
+    r"(^|[^A-Za-z0-9]|\x1b\[[0-?]*[ -/]*[@-~]|=3[Dd])ASIA[A-Z0-9]{16}([^A-Za-z0-9]|$)";
 
 /// Regex matching a Telegram bot token: 8-10 digit bot id, `:`, then `AA` and at least 33 URL-safe
 /// base64 characters. It has no fixed prefix, so it cannot live in [`SECRET_PREFIXES`].
@@ -450,7 +451,7 @@ pub const PEM_PRIVATE_KEY_UNTERMINATED_PATTERN: &str = r"(?:-----BEGIN (?:[A-Z]+
 /// Capture group 1 covers the marker, separator, and optional opening quote; capture group 2
 /// covers an optional closing quote. Replacing with `"${1}[REDACTED]${2}"` preserves the
 /// marker and quoting while redacting only the secret value.
-pub const AWS_SECRET_KEY_PATTERN: &str = r#"(?i)((?:aws[_\-. ]?secret[_\-. ]?access[_\-. ]?key|aws[_\-. ]?secret[_\-. ]?key|secret[_\-. ]?access[_\-. ]?key|aws[_\-. ]?session[_\-. ]?token|session[_\-. ]?token)['"]?\s*[:=]\s*['"]?(?:\x1b\[[0-9;:?]*[@-~])?)[A-Za-z0-9+/]{40,}={0,2}(['"]?)"#;
+pub const AWS_SECRET_KEY_PATTERN: &str = r#"(?i)((?:aws[_\-. ]?secret[_\-. ]?access[_\-. ]?key|aws[_\-. ]?secret[_\-. ]?key|secret[_\-. ]?access[_\-. ]?key|aws[_\-. ]?session[_\-. ]?token|session[_\-. ]?token)['"]?(?:\x1b\[[0-?]*[ -/]*[@-~])*\s*[:=]\s*['"]?(?:\x1b\[[0-?]*[ -/]*[@-~])*)[A-Za-z0-9+/]{40,}={0,2}(['"]?)"#;
 
 #[cfg(test)]
 mod tests {
@@ -498,7 +499,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("|");
         let expected = format!(
-            r#"(^|[^A-Za-z0-9]|\\[nrtbf0v]|\\x[0-9A-Fa-f]{{2}}|\\u[0-9A-Fa-f]{{4}}|%[0-9A-Fa-f]{{2}}|\x1b\[[0-9;:?]*[@-~]|=[0-9A-Fa-f]{{2}})(?:{alt})[^\s"'`,;{{}}\[\]\x1b]*(?:(?:\x1b\[[0-9;:?]*[@-~])+[^\s"'`,;{{}}\[\]\x1b]+)*"#
+            r#"(^|[^A-Za-z0-9]|\\[nrtbf0v]|\\x[0-9A-Fa-f]{{2}}|\\u[0-9A-Fa-f]{{4}}|%[0-9A-Fa-f]{{2}}|\x1b\[[0-?]*[ -/]*[@-~]|=3[Dd])(?:{alt})[^\s"'`,;{{}}\[\]\x1b]*(?:(?:\x1b\[[0-?]*[ -/]*[@-~])+[^\s"'`,;{{}}\[\]\x1b]+)*"#
         );
         assert_eq!(SECRET_TOKEN_PATTERN, expected);
         Regex::new(SECRET_TOKEN_PATTERN).expect("secret token pattern must compile");

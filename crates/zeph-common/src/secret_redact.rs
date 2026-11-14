@@ -486,6 +486,44 @@ mod tests {
     }
 
     #[test]
+    fn only_qp_equals_three_d_is_a_boundary() {
+        for text in [
+            "PKG=dask-ml",
+            "--type=cask-fonts",
+            "x=3Fdisk-usage",
+            "a=ABtask-list",
+        ] {
+            let result = scrub_secret_shapes(text);
+            assert!(matches!(result, Cow::Borrowed(_)), "{text} -> {result}");
+        }
+        assert_eq!(scrub_secret_shapes("k=3Dsk-short"), "k=3D[REDACTED]");
+    }
+
+    #[test]
+    fn csi_with_intermediate_and_private_bytes_is_a_boundary() {
+        let ghp = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
+        for csi in ["\x1b[2 q", "\x1b[>4;1m", "\x1b[<u", "\x1b[?1;2$p"] {
+            assert_eq!(
+                scrub_secret_shapes(&format!("{csi}{ghp}")),
+                format!("{csi}[REDACTED]"),
+                "{csi:?}"
+            );
+        }
+        assert_eq!(scrub_secret_shapes("\x1b[2 qsk-abc"), "\x1b[2 q[REDACTED]");
+    }
+
+    #[test]
+    fn aws_secret_key_tolerates_csi_around_the_separator() {
+        let secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        assert_eq!(
+            scrub_secret_shapes(&format!(
+                "aws_secret_access_key\x1b[01;31m\x1b[K=\x1b[0m\x1b[33m{secret}\x1b[m"
+            )),
+            "aws_secret_access_key\x1b[01;31m\x1b[K=\x1b[0m\x1b[33m[REDACTED]\x1b[m"
+        );
+    }
+
+    #[test]
     fn non_sgr_csi_does_not_trigger_on_plain_words() {
         for text in [
             "\x1b[Kdisk-usage ok",
