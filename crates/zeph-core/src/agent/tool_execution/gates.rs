@@ -126,10 +126,7 @@ impl PreDispatchBlockRecorder {
         tx.send_modify(|m| {
             m.uptime_seconds = elapsed;
             m.pre_execution_blocks += 1;
-            if m.security_events.len() >= crate::metrics::SECURITY_EVENT_CAP {
-                m.security_events.pop_front();
-            }
-            m.security_events.push_back(event);
+            m.push_security_event(event);
         });
     }
 

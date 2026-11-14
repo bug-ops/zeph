@@ -316,9 +316,10 @@ initial spawn time and lost on respawn.
 
 `SpawnContext::mcp_tool_ids: Option<McpToolIdsHandle>` is a read-only handle onto the parent's
 single `McpToolList` writer, so spawn, respawn and resume all read the live registry (`snapshot()`
-per batch), never a copy taken at spawn time. `None` (for example `SpawnContext::default()` in an
-embedder) falls back to `McpToolIds::from_definitions` over the executor's live definitions per
-batch, so an empty default can never classify an MCP result as native. `McpToolIdsHandle` has no
+per batch), never a copy taken at spawn time. The snapshot is always joined with
+`McpToolIds::from_definitions` over the executor's live definitions, and `None` (for example
+`SpawnContext::default()` in an embedder) uses the definitions alone, so an empty or unpaired
+registry can never classify an MCP result as native. `McpToolIdsHandle` has no
 `Default` and is built only by `McpToolIdsHandle::with_writer`, so `Some(handle)` always has a live
 writer behind it. `SpawnContext.session_mcp_servers` and `TranscriptMeta.mcp_tool_names` are removed
 (old sidecars still load: `TranscriptMeta` has no `deny_unknown_fields`).
@@ -798,7 +799,7 @@ Every sub-agent tool result (the `Ok(Some)` summary and the `Err` text) is prote
 2. `strip_control_chars_preserve_whitespace` (control and zero-width characters are removed first so they cannot split a secret past the matchers)
 3. `SecretMaskRegistry::mask` (`would_mask` pre-check; section 16)
 4. `zeph_common::secret_redact::scrub_secrets`, only when `CredentialScrub::Enabled`
-5. `ContentSanitizer::sanitize(raw, resolved.content_source(tool_name))` (`ResolvedToolSource::resolve`) (injection flags logged at `warn`); provenance is resolved per batch from `SpawnContext.mcp_tool_ids` (`Some`: `snapshot()` of the parent's live registry; `None`: the live executor's MCP definitions), then joined with the result's `ClaimSource` and, for a replayed `read_overflow` body, its stored source (`ToolOutput.replayed_from`)
+5. `ContentSanitizer::sanitize(raw, resolved.content_source(tool_name))` (`ResolvedToolSource::resolve`) (injection flags logged at `warn`); provenance is resolved per batch from `SpawnContext.mcp_tool_ids` (`snapshot()` of the parent's live registry when `Some`) joined with the live executor's MCP definitions, then joined with the result's `ClaimSource` and, for a replayed `read_overflow` body, its stored source (`ToolOutput.replayed_from`)
 6. `[tool output: name]` fence for results, `[tool error]:` prefix for errors
 
 `SpawnContext.credential_scrub: CredentialScrub { Enabled, Disabled }` (`Default = Enabled`, `From<bool>`) is set from `runtime.config.redact_credentials` when the context is built in `subagent_commands.rs` and threaded into `AgentLoopArgs`. The sub-agent wire `is_error` stays `Err`-only: a non-zero exit is not a sub-agent tool error (`[[006-tools/spec]]`).

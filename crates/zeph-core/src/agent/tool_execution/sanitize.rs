@@ -229,19 +229,18 @@ fn batch_dispatch_trust_level(
 impl<C: Channel> Agent<C> {
     /// MCP dispatch ids for one tool-call batch.
     ///
-    /// With a tool-list writer attached, the registry it publishes (it covers every tool the
-    /// agent's own executor can dispatch, including tools pruned from the turn's exposed view).
-    /// Without one (embedders, tests), the live executor definitions that carry a server id, so a
-    /// missing writer never classifies an MCP result as native.
+    /// The registry published by the tool-list writer (it covers every tool the agent's own
+    /// executor can dispatch, including tools pruned from the turn's exposed view) joined with the
+    /// live executor definitions that carry a server id. The join is the fail-safe for an MCP
+    /// executor that is not paired with the writer (an empty writer, an embedder, a test): such a
+    /// tool is still classified as MCP instead of silently falling back to native.
     pub(in crate::agent) fn batch_mcp_tool_ids(&self) -> Arc<McpToolIds> {
-        self.services.mcp.tool_list.as_ref().map_or_else(
-            || {
-                Arc::new(McpToolIds::from_definitions(
-                    &self.tool_executor.tool_definitions_erased(),
-                ))
-            },
-            |list| list.ids_handle().snapshot(),
-        )
+        let from_executor =
+            McpToolIds::from_definitions(&self.tool_executor.tool_definitions_erased());
+        match self.services.mcp.tool_list.as_ref() {
+            Some(list) => Arc::new(list.ids_handle().snapshot().join(&from_executor)),
+            None => Arc::new(from_executor),
+        }
     }
 
     /// Sanitize tool output body before inserting it into the LLM message history.

@@ -471,6 +471,11 @@ pub struct SubAgentHandle {
     /// on collect. A session resumed from a legacy transcript stays
     /// [`TranscriptTrustSchema::Legacy`]: its LLM context carries untagged tool output.
     pub trust_schema: TranscriptTrustSchema,
+    /// Trust floor this session inherited, copied into the final meta sidecar on collect.
+    ///
+    /// Carried here, not re-read from the spawn-time sidecar, so a failed sidecar write or read
+    /// can never drop the floor (a missing floor would import the transcript below it).
+    pub inherited_trust: Option<TurnContextTrust>,
     /// Full ID of the session this one was resumed from, persisted on collect.
     pub resumed_from: Option<String>,
 }
@@ -510,6 +515,7 @@ impl SubAgentHandle {
             transcript_dir: None,
             peer: None,
             trust_schema: TranscriptTrustSchema::PerResult,
+            inherited_trust: None,
             resumed_from: None,
         }
     }

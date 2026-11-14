@@ -737,6 +737,7 @@ async fn test_secret_drain_after_instant_completion() {
             transcript_dir: None,
             peer: None,
             trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
+            inherited_trust: None,
             resumed_from: None,
         },
     );

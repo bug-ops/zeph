@@ -223,6 +223,21 @@ async fn without_a_tool_list_the_live_definitions_are_the_fallback() {
 }
 
 #[tokio::test]
+async fn unpaired_empty_writer_still_classifies_live_definitions_as_external() {
+    let (id, _) = github_mcp_tool_ids();
+    let executor =
+        MockToolExecutor::new(vec![failure()]).with_definitions(vec![mcp_tool_def(&id, "github")]);
+    let mut agent = agent_with(executor);
+    let handle = attach_mcp_tool_list(&mut agent);
+    assert!(
+        !handle.contains(&id),
+        "the writer knows nothing of this executor"
+    );
+    let result = run_turn(&mut agent, &id).await;
+    assert_external(&agent, &result);
+}
+
+#[tokio::test]
 async fn long_id_from_a_live_executor_definition_classifies_as_external() {
     let tool = zeph_mcp::McpTool {
         name: "n".repeat(200),

@@ -15,9 +15,7 @@ use crate::hooks::fire_hooks;
 use crate::state::SubAgentState;
 use zeph_common::trust_level::{TranscriptTrustSchema, TurnContextTrust};
 
-use crate::transcript::{
-    TranscriptMeta, TranscriptReader, TranscriptWriter, sweep_old_transcripts,
-};
+use crate::transcript::{TranscriptMeta, TranscriptWriter, sweep_old_transcripts};
 
 impl SubAgentManager {
     /// Collect the result from a completed sub-agent, removing it from the active set.
@@ -89,11 +87,6 @@ impl SubAgentManager {
 
         if let Some(ref dir) = handle.transcript_dir.clone() {
             let turns_used = handle.status_rx.borrow().turns_used;
-            // The floor lives only in the sidecar written at spawn; carry it into the final one.
-            let inherited_trust = TranscriptReader::load_meta_async(dir, task_id)
-                .await
-                .ok()
-                .and_then(|prior| prior.inherited_trust);
             let meta = TranscriptMeta {
                 agent_id: task_id.to_owned(),
                 agent_name: handle.def.name.clone(),
@@ -104,7 +97,7 @@ impl SubAgentManager {
                 resumed_from: handle.resumed_from.clone(),
                 turns_used,
                 trust_schema: handle.trust_schema,
-                inherited_trust,
+                inherited_trust: handle.inherited_trust,
             };
             if let Err(e) = TranscriptWriter::write_meta_async(dir, task_id, &meta).await {
                 tracing::warn!(error = %e, task_id, "failed to write final transcript meta");

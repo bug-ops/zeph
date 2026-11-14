@@ -459,6 +459,7 @@ fn insert_handle_with_pending_secret_channel(
             transcript_dir: None,
             peer: None,
             trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
+            inherited_trust: None,
             resumed_from: None,
         },
     );
@@ -1710,6 +1711,7 @@ fn resume_still_running_via_active_agents_returns_error() {
             transcript_dir: None,
             peer: None,
             trust_schema: zeph_common::trust_level::TranscriptTrustSchema::PerResult,
+            inherited_trust: None,
             resumed_from: None,
         },
     );
@@ -1950,6 +1952,172 @@ async fn spawn_records_inherited_floor_and_collect_keeps_it() {
     assert_eq!(
         finalized.inherited_trust,
         Some(TurnContextTrust::ExternalUntrusted)
+    );
+}
+
+/// Answers every tool call with a fixed output and exposes no definitions, so MCP provenance can
+/// only come from the parent registry handle.
+struct FixedOutputExecutor;
+
+impl ErasedToolExecutor for FixedOutputExecutor {
+    fn execute_erased<'a>(
+        &'a self,
+        _response: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        Box::pin(std::future::ready(Ok(None)))
+    }
+
+    fn execute_confirmed_erased<'a>(
+        &'a self,
+        _response: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        Box::pin(std::future::ready(Ok(None)))
+    }
+
+    fn tool_definitions_erased(&self) -> Vec<ToolDef> {
+        vec![]
+    }
+
+    fn execute_tool_call_erased<'a>(
+        &'a self,
+        call: &'a ToolCall,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        Box::pin(std::future::ready(Ok(Some(ToolOutput {
+            tool_name: call.tool_id.clone(),
+            summary: "remote result".into(),
+            blocks_executed: 1,
+            ..Default::default()
+        }))))
+    }
+
+    fn is_tool_retryable_erased(&self, _tool_id: &str) -> bool {
+        false
+    }
+
+    fn requires_confirmation_erased(&self, _call: &ToolCall) -> bool {
+        false
+    }
+
+    fn execute_tool_call_confirmed_erased<'a>(
+        &'a self,
+        call: &'a ToolCall,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<Option<ToolOutput>, ToolError>> + Send + 'a>>
+    {
+        self.execute_tool_call_erased(call)
+    }
+
+    fn checkpoint_undo_erased(&self, _n: usize) -> zeph_tools::CheckpointActionResult {
+        zeph_tools::CheckpointActionResult::unsupported()
+    }
+
+    fn checkpoint_redo_erased(&self) -> zeph_tools::CheckpointActionResult {
+        zeph_tools::CheckpointActionResult::unsupported()
+    }
+
+    fn checkpoint_list_erased(&self) -> zeph_tools::CheckpointListResult {
+        zeph_tools::CheckpointListResult::default()
+    }
+
+    fn is_tool_speculatable_erased(&self, _tool_id: &str) -> bool {
+        false
+    }
+}
+
+/// #7074: a resumed session classifies MCP results from the live parent registry carried by the
+/// spawn context, including a server added after the original session was spawned.
+#[tokio::test]
+#[serial_test::serial(subagent_transcript_integrity)]
+async fn resume_reads_the_live_parent_registry() {
+    use zeph_llm::mock::MockProvider;
+    use zeph_llm::provider::ToolUseRequest;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let original_id = "0000beef-0000-0000-0000-000000000000";
+    write_completed_meta(tmp.path(), original_id, "bot");
+
+    let (writer, handle) = zeph_tools::McpToolIdsHandle::with_writer();
+    let mut registry = zeph_tools::McpToolIds::default();
+    registry.insert("late_srv_tool".into(), "late_srv".into());
+    writer.publish(registry);
+    let ctx = SpawnContext {
+        mcp_tool_ids: Some(handle),
+        ..SpawnContext::default()
+    };
+
+    let tool_response = ChatResponse::tool_use(
+        None,
+        vec![ToolUseRequest {
+            id: "call-1".into(),
+            name: "late_srv_tool".into(),
+            input: serde_json::json!({}),
+        }],
+    );
+    let (mock, _) = MockProvider::default()
+        .with_tool_use(vec![tool_response, ChatResponse::text("final answer")]);
+
+    let mut mgr = make_manager();
+    mgr.definitions.push(sample_def());
+    let cfg = make_cfg_with_dir(tmp.path());
+    let (new_id, _) = mgr
+        .resume(
+            "0000beef",
+            "continue",
+            AnyProvider::Mock(mock),
+            Arc::new(FixedOutputExecutor),
+            None,
+            &cfg,
+            Some(&ctx),
+        )
+        .await
+        .unwrap();
+    wait_completed(&mgr, &new_id).await;
+    mgr.collect(&new_id).await.unwrap();
+
+    let messages =
+        crate::transcript::TranscriptReader::load(&tmp.path().join(format!("{new_id}.jsonl")))
+            .unwrap();
+    assert!(
+        format!("{messages:?}").contains("<external-data"),
+        "an MCP result of the resumed session must be fenced as external data: {messages:?}"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(subagent_transcript_integrity)]
+async fn collect_keeps_the_floor_when_the_spawn_sidecar_is_unreadable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = make_cfg_with_dir(tmp.path());
+    let mut mgr = make_manager();
+    mgr.definitions.push(sample_def());
+    let ctx = SpawnContext {
+        inherited_trust: Some(TurnContextTrust::ExternalUntrusted),
+        ..SpawnContext::default()
+    };
+    let id = mgr
+        .spawn(
+            "bot",
+            "do stuff",
+            mock_provider(vec!["done"]),
+            noop_executor(),
+            None,
+            &cfg,
+            ctx,
+        )
+        .await
+        .unwrap();
+    wait_completed(&mgr, &id).await;
+    let sidecar = tmp.path().join(format!("{id}.meta.json"));
+    std::fs::write(&sidecar, b"not json").unwrap();
+
+    mgr.collect(&id).await.unwrap();
+    let finalized = crate::transcript::TranscriptReader::load_meta(tmp.path(), &id).unwrap();
+    assert_eq!(
+        finalized.inherited_trust,
+        Some(TurnContextTrust::ExternalUntrusted),
+        "an unreadable sidecar must not drop the inherited floor"
     );
 }
 

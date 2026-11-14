@@ -92,10 +92,7 @@ impl zeph_agent_context::state::SecurityEventSink for SecuritySink<'_> {
         if let Some(tx) = &self.0 {
             let event = crate::metrics::SecurityEvent::new(category, source, detail);
             tx.send_modify(|m| {
-                if m.security_events.len() >= crate::metrics::SECURITY_EVENT_CAP {
-                    m.security_events.pop_front();
-                }
-                m.security_events.push_back(event);
+                m.push_security_event(event);
             });
         }
     }

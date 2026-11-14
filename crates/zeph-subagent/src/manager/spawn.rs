@@ -1024,6 +1024,7 @@ impl SubAgentManager {
             transcript_dir: handle_transcript_dir,
             peer: peer_registration,
             trust_schema: TranscriptTrustSchema::PerResult,
+            inherited_trust,
             resumed_from: None,
         };
 
@@ -1513,6 +1514,7 @@ impl SubAgentManager {
             transcript_dir: resume_handle_transcript_dir,
             peer: peer_registration,
             trust_schema,
+            inherited_trust,
             resumed_from: Some(original_id.clone()),
         };
 

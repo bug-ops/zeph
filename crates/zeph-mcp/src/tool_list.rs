@@ -84,8 +84,9 @@ impl McpToolListWriter {
     /// The registry is published while the exposed list is write-locked, so a reader that sees a
     /// new tool in the exposed list is guaranteed to find its id in the registry.
     pub fn publish_full(&self, tools: &[McpTool]) {
+        let ids = ids_of(tools);
         let mut exposed = self.exposed.write();
-        self.ids_writer.publish(ids_of(tools));
+        self.ids_writer.publish(ids);
         exposed.clear();
         exposed.extend_from_slice(tools);
     }

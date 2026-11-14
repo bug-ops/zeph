@@ -964,21 +964,19 @@ async fn run_turn(
 
 /// MCP dispatch ids for one tool-call batch.
 ///
-/// With a parent handle, the live registry the parent's single tool-list writer publishes; without
-/// one (an embedder that built a default `SpawnContext`), the live executor definitions that carry
-/// a server id, so a missing handle can never classify an MCP result as native.
+/// The parent's live registry (when a handle is present) joined with the live executor
+/// definitions that carry a server id. The join is the fail-safe for an executor that is not
+/// paired with the parent's writer or for a default `SpawnContext` without a handle: such an MCP
+/// tool is still classified as MCP, never native.
 fn batch_mcp_tool_ids(
     executor: &FilteredToolExecutor,
     mcp_tool_ids: Option<&McpToolIdsHandle>,
 ) -> Arc<McpToolIds> {
-    mcp_tool_ids.map_or_else(
-        || {
-            Arc::new(McpToolIds::from_definitions(
-                &executor.tool_definitions_erased(),
-            ))
-        },
-        McpToolIdsHandle::snapshot,
-    )
+    let from_executor = McpToolIds::from_definitions(&executor.tool_definitions_erased());
+    match mcp_tool_ids {
+        Some(handle) => Arc::new(handle.snapshot().join(&from_executor)),
+        None => Arc::new(from_executor),
+    }
 }
 
 /// Names of the MCP tools in the executor's view, listed in the system prompt annotation.
@@ -2741,6 +2739,41 @@ mod handle_tool_step_granted_secrets_tests {
         registry.insert("late_tool".into(), "late".into());
         writer.publish(registry);
         assert!(batch_mcp_tool_ids(&executor, Some(&handle)).contains("late_tool"));
+    }
+
+    /// #5712 regression: MCP tools are identified by `ToolDef::server_id`, not by a name prefix
+    /// that real `McpTool::sanitized_id()` output never carries.
+    #[test]
+    fn annotation_names_come_from_server_id_not_name_prefix() {
+        let builtin = ToolDef {
+            server_id: None,
+            ..mcp_def("mcp_looks_like_one")
+        };
+        let executor = FilteredToolExecutor::new(
+            Arc::new(RecordingExecutor {
+                definitions: vec![builtin, mcp_def("github_create_issue")],
+                ..Default::default()
+            }) as Arc<dyn ErasedToolExecutor>,
+            ToolPolicy::InheritAll,
+        );
+        assert_eq!(mcp_annotation_names(&executor), vec!["github_create_issue"]);
+    }
+
+    #[test]
+    fn batch_ids_join_the_handle_with_executor_definitions() {
+        let executor = FilteredToolExecutor::new(
+            Arc::new(RecordingExecutor {
+                definitions: vec![mcp_def("srv_tool")],
+                ..Default::default()
+            }) as Arc<dyn ErasedToolExecutor>,
+            ToolPolicy::InheritAll,
+        );
+        let (_writer, handle) = McpToolIdsHandle::with_writer();
+        let ids = batch_mcp_tool_ids(&executor, Some(&handle));
+        assert!(
+            ids.contains("srv_tool"),
+            "an empty parent registry must not hide the executor's MCP tools"
+        );
     }
 
     #[test]
