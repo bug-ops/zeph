@@ -6,8 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `zeph-common`: `BodyLimit::from_const` and `McpServerId` newtype (breaking: `ToolResultSource::Mcp`, `DataFlowViolation.server_id` and MCP registries take `McpServerId`) (#PR)
+- `zeph-mcp`, `zeph-tools`, `zeph-core`, `zeph-subagent`: single-writer `McpToolList` and shared `McpToolIdsHandle` replace four separate MCP tool id registries and colon-split server id derivation (breaking: `SpawnContext.session_mcp_servers` and `TranscriptMeta.mcp_tool_names` removed) (#PR)
+- `zeph-mcp`, `zeph-tui`: `/mcp list` and the TUI show MCP tools shadowed by an id collision; long tool id warning is logged once (#PR)
+- `zeph-acp`: IDE `mcpServers` are registered per session on new, load, fork and resume with session-suffixed ids and released on session or connection close; tools stay hidden without an allowlist (#PR)
+- `zeph-llm`, `zeph-config`, `zeph-core`: chain-of-entropy intra escalation fed by logprobs for OpenAI, compatible and Ollama; `llm.coe.intra_threshold` accepts any finite value >= 0 (`NonNegativeF64`, breaking range change); shadow-call usage is reported as auxiliary (#PR)
+- `zeph-llm`: Claude `usage.speed` parsing, one-shot latch after a 400 rejecting `speed`, speed line in `/provider status` (#PR)
+- `zeph-subagent`, `zeph-tools`, `zeph-core`, `zeph`: sub-agent pre-dispatch blocks record the metric, security event and audit row; inherited trust floor is stored in the transcript sidecar and honored by `zeph knowledge import --source subagents` (#PR)
+- `ci`: clippy matrix entries for `zeph-skills/miner` and `test-utils` of zeph-db, zeph-memory, zeph-index and zeph-orchestration, plus a weekly stable-toolchain clippy workflow (#PR)
+
+### Changed
+
+- `zeph-llm`, `zeph-core`: Claude API error detail reaches the user and is logged once (breaking: `LlmError::ApiError` carries `detail`); raw API bodies are logged at debug after scrubbing (#PR)
+- `zeph-core`: background and ensemble usage is billed at the serving provider's speed, cache counters and model price (#PR)
+- `zeph-core`, `zeph-plugins`, `zeph`, `zeph-channels`: goal list surfaces store errors, one shared plugin overlay renderer, serve factory applies `[memory.store_routing]`, Telegram guest proxy body capped at 20 MiB (#PR)
+- workspace: `map_or_default` and `assert_matches!` replace remaining multi-line `map(..).unwrap_or_default()` and `assert!(matches!(..))` sites (#PR)
+
 ### Fixed
 
+- `zeph-common`: secret scrubber recognizes non-SGR CSI, colon SGR, quoted-printable `=3D` and tokens split by escape runs (#PR)
 - `ci`: release builds allow `build.warnings` (and pass it through to `cross`) so the `proc-macro-error2` future-incompat note no longer fails every target (#7077)
 
 ## [0.23.0] - 2026-11-13
