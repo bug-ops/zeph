@@ -4,6 +4,7 @@
 // Raised from 128: #[instrument] chain on the agent call stack deepens async state machines.
 #![recursion_limit = "256"]
 
+use std::assert_matches;
 mod common;
 
 use std::collections::VecDeque;
@@ -328,11 +329,9 @@ async fn shell_executor_default_blocked_patterns() {
 
     for (cmd, pattern) in dangerous_commands {
         let result = executor.execute(cmd).await;
-        assert!(
-            matches!(
-                result,
-                Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
-            ),
+        assert_matches!(
+            result,
+            Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. }),
             "Command with pattern '{pattern}' should be blocked. Result: {result:?}",
         );
     }
@@ -381,11 +380,9 @@ async fn shell_executor_case_insensitive_blocking() {
 
     for cmd in variations {
         let result = executor.execute(&format!("```bash\n{cmd}\n```")).await;
-        assert!(
-            matches!(
-                result,
-                Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. })
-            ),
+        assert_matches!(
+            result,
+            Err(ToolError::Blocked { .. } | ToolError::BlockedWithFix { .. }),
             "Should block case-insensitive: {cmd}",
         );
     }
