@@ -1,8 +1,9 @@
 name: Stable Clippy
 
-# Non-blocking early warning for lint breakage introduced by a new stable
-# toolchain release (#6925). The blocking clippy gate in ci.yml stays pinned to
-# the MSRV toolchain; this workflow only reports.
+# Early warning for lint breakage introduced by a new stable toolchain release
+# (#6925). Non-gating because it only runs on schedule or manual dispatch, never
+# on push or pull_request; a failing run shows red. The gating clippy job in
+# ci.yml stays pinned to the MSRV toolchain.
 
 on:
   schedule:
@@ -23,10 +24,9 @@ concurrency:
 
 jobs:
   clippy-stable:
-    name: Clippy (current stable, non-blocking)
+    name: Clippy (current stable)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
