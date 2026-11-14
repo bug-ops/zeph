@@ -3443,6 +3443,14 @@ async fn logprobs_rejection_retries_once_and_latches() {
     assert!(!String::from_utf8_lossy(&requests[2].body).contains("logprobs"));
 }
 
+#[test]
+fn logprobs_latch_is_shared_by_clones() {
+    let p = logprobs_test_provider("http://localhost".into());
+    let clone = p.clone();
+    p.logprobs_rejected.store(true, Ordering::Relaxed);
+    assert!(clone.logprobs_rejected.load(Ordering::Relaxed));
+}
+
 #[tokio::test]
 async fn unrelated_bad_request_is_not_latched() {
     use wiremock::matchers::{method, path};

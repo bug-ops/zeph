@@ -581,24 +581,6 @@ impl TranscriptReader {
         })
     }
 
-    /// Async variant of [`load_meta`][Self::load_meta] that reads the sidecar on a
-    /// `spawn_blocking` thread so the Tokio executor is not stalled.
-    ///
-    /// # Errors
-    ///
-    /// Same as [`load_meta`][Self::load_meta], plus [`SubAgentError::Transcript`] if the
-    /// blocking task panics.
-    pub async fn load_meta_async(
-        dir: &Path,
-        agent_id: &str,
-    ) -> Result<TranscriptMeta, SubAgentError> {
-        let dir = dir.to_owned();
-        let agent_id = agent_id.to_owned();
-        tokio::task::spawn_blocking(move || Self::load_meta(&dir, &agent_id))
-            .await
-            .map_err(|e| SubAgentError::Transcript(format!("spawn_blocking panicked: {e}")))?
-    }
-
     /// Find the full agent ID by scanning `dir` for `.meta.json` files whose names
     /// start with `prefix`.
     ///

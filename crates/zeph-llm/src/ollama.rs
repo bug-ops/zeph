@@ -1875,12 +1875,12 @@ mod tests {
         )];
 
         let (text, extras) = provider.chat_with_extras(&messages).await.unwrap();
-        assert!(!text.is_empty());
+        assert_ne!(text, "");
         let entropy = extras.entropy.expect("server returned logprobs");
         assert!(entropy.is_finite() && entropy >= 0.0, "{entropy}");
 
         let plain = provider.chat(&messages).await.unwrap();
-        assert!(!plain.is_empty());
+        assert_ne!(plain, "");
     }
 
     #[tokio::test]

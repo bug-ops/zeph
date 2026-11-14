@@ -916,7 +916,7 @@ fn build_shared_validator(
 /// Upper bound on a transcript meta sidecar; a real one is a few hundred bytes.
 const MAX_SIDECAR_BYTES: u64 = 64 * 1024;
 
-/// Trust data of a transcript, read from its meta sidecar next to the JSONL file.
+/// Trust-relevant fields of a transcript meta sidecar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SidecarTrust {
     /// Trust-marker format of the JSONL transcript.

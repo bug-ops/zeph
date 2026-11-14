@@ -30,6 +30,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::LlmError;
@@ -207,8 +208,8 @@ pub struct OpenAiProvider {
     /// tracking and provider selection can distinguish between multiple configured `OpenAI`
     /// instances (#5892).
     provider_name: String,
-    /// Set once the endpoint rejected a logprobs request; later calls omit the parameter.
-    logprobs_rejected: AtomicBool,
+    /// Set once the endpoint rejected a logprobs request; shared by clones, later calls omit it.
+    logprobs_rejected: Arc<AtomicBool>,
 }
 
 impl fmt::Debug for OpenAiProvider {
@@ -262,7 +263,7 @@ impl Clone for OpenAiProvider {
             completion_tokens_override: self.completion_tokens_override,
             vision_override: self.vision_override,
             provider_name: self.provider_name.clone(),
-            logprobs_rejected: AtomicBool::new(self.logprobs_rejected.load(Ordering::Relaxed)),
+            logprobs_rejected: Arc::clone(&self.logprobs_rejected),
         }
     }
 }
@@ -293,7 +294,7 @@ impl OpenAiProvider {
             completion_tokens_override: cfg.completion_tokens_param,
             vision_override: cfg.vision,
             provider_name: "openai".to_owned(),
-            logprobs_rejected: AtomicBool::new(false),
+            logprobs_rejected: Arc::new(AtomicBool::new(false)),
         }
     }
 
