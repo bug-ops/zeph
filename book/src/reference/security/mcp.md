@@ -113,7 +113,7 @@ This prevents accidental secret leakage to untrusted MCP servers.
 
 When two connected MCP servers expose tools whose `sanitized_id` (server-prefix + normalized name) collide, Zeph logs a warning and the first-registered server's tool wins dispatch. This prevents a later server from silently shadowing an established tool.
 
-Collision warnings appear at connection time and when a dynamic server is added via `/mcp add`. Check the log for `[WARN] mcp: tool id collision` lines if you suspect shadowing. Each colliding tool id or sanitized id is warned about once.
+Collision warnings appear at connection time and when a dynamic server is added via `/mcp add`. Check the log for `[WARN] mcp: tool id collision` lines if you suspect shadowing. Each colliding tool id or sanitized id is warned about once per tool-list change.
 
 `/mcp list` shows a "Shadowed tools" section listing every tool hidden by an MCP-vs-MCP id collision (the first server wins dispatch), and the TUI skills panel shows a `shadowed:N` badge next to the affected server.
 

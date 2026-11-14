@@ -8,9 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `zeph-common`: `BodyLimit::from_const` and `McpServerId` newtype (breaking: `ToolResultSource::Mcp`, `DataFlowViolation.server_id` and MCP registries take `McpServerId`) (#PR)
-- `zeph-mcp`, `zeph-tools`, `zeph-core`, `zeph-subagent`: single-writer `McpToolList` and shared `McpToolIdsHandle` replace four separate MCP tool id registries and colon-split server id derivation (breaking: `SpawnContext.session_mcp_servers` and `TranscriptMeta.mcp_tool_names` removed) (#PR)
-- `zeph-mcp`, `zeph-tui`: `/mcp list` and the TUI show MCP tools shadowed by an id collision; long tool id warning is logged once (#PR)
+- `zeph-common`: `BodyLimit::from_const` and `McpServerId` newtype (breaking: `ToolResultSource::Mcp`, `DataFlowViolation::SensitivityTrustMismatch` and MCP registries take `McpServerId`) (#PR)
+- `zeph-mcp`, `zeph-tools`, `zeph-core`, `zeph-subagent`: single-writer `McpToolList` and shared `McpToolIdsHandle` replace four separate MCP tool id registries and colon-split server id derivation (breaking: `SpawnContext.session_mcp_servers`, `SpawnContext.mcp_tool_names`, `TranscriptMeta.mcp_tool_names`, `McpToolExecutor::set_tools`, `Agent::with_mcp_shared_tools` and `with_mcp_tool_ids_handle` removed in favor of `with_mcp_tool_list`, `SpawnContext.mcp_tool_ids` and `TrustGateExecutor`/`ShadowSentinel::with_mcp_tool_ids`) (#PR)
+- `zeph-mcp`, `zeph-tui`: `/mcp list` and the TUI show MCP tools shadowed by an id collision; long tool id warning is logged once per tool-list change; new pub `McpServerStatus.shadowed_tools` and `AcpContext.ide_mcp_tools` (#PR)
 - `zeph-acp`: IDE `mcpServers` are registered per session on new, load, fork and resume with session-suffixed ids and released on session or connection close; tools stay hidden without an allowlist (#PR)
 - `zeph-llm`, `zeph-config`, `zeph-core`: chain-of-entropy intra escalation fed by logprobs for OpenAI, compatible and Ollama; `llm.coe.intra_threshold` accepts any finite value >= 0 (`NonNegativeF64`, breaking range change); shadow-call usage is reported as auxiliary (#PR)
 - `zeph-llm`: Claude `usage.speed` parsing, one-shot latch after a 400 rejecting `speed`, speed line in `/provider status` (#PR)
