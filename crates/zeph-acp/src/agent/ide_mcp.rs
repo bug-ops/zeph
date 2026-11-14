@@ -17,6 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use agent_client_protocol as acp;
+use futures::FutureExt as _;
 use tokio::sync::{Mutex, mpsc};
 use tracing::Instrument as _;
 use zeph_common::task_supervisor::{RestartPolicy, TaskDescriptor};
@@ -80,6 +81,9 @@ pub(crate) struct IdeMcpLease {
 
 impl Drop for IdeMcpLease {
     fn drop(&mut self) {
+        if self.servers.is_empty() {
+            return;
+        }
         let request = ReleaseRequest {
             lease: self.id,
             servers: std::mem::take(&mut self.servers),
@@ -147,8 +151,8 @@ impl IdeMcpRegistry {
         let mut attached = Vec::new();
         for entry in entries {
             let server_id = McpServerId::from(entry.id.as_str());
-            owners.insert(server_id.clone(), lease);
-            match add_with_recovery(manager, &entry).await {
+            let may_recover = owners.insert(server_id.clone(), lease).is_some();
+            match add_with_recovery(manager, &entry, may_recover).await {
                 Ok(server_tools) => {
                     tools.extend(server_tools);
                     attached.push(server_id);
@@ -166,6 +170,17 @@ impl IdeMcpRegistry {
             release_tx: self.release_tx.clone(),
         });
         IdeMcpAttachment { tools, lease }
+    }
+
+    /// Release `leases` now instead of through the drain queue, used when the connection closes.
+    async fn release_leases(&self, manager: &impl IdeMcpHost, leases: Vec<IdeMcpLease>) {
+        for mut lease in leases {
+            let request = ReleaseRequest {
+                lease: lease.id,
+                servers: std::mem::take(&mut lease.servers),
+            };
+            self.release(manager, request).await;
+        }
     }
 
     /// Execute a queued release, removing only the servers `request.lease` still owns.
@@ -199,20 +214,33 @@ impl IdeMcpRegistry {
                 () = cancel.cancelled() => break,
                 request = rx.recv() => {
                     let Some(request) = request else { break };
-                    self.release(manager, request)
-                        .instrument(tracing::info_span!("acp.session.ide_mcp_release"))
-                        .await;
+                    // A panic in one release must not end the loop and lose later releases.
+                    let outcome = std::panic::AssertUnwindSafe(
+                        self.release(manager, request)
+                            .instrument(tracing::info_span!("acp.session.ide_mcp_release")),
+                    )
+                    .catch_unwind()
+                    .await;
+                    if outcome.is_err() {
+                        tracing::error!("IDE MCP release panicked; continuing with the next one");
+                    }
                 }
             }
         }
     }
 }
 
+/// Register `entry`; when the id is already connected, replace it only if `may_recover`.
+///
+/// `may_recover` is true only when this connection's owner map already held the id, so a server
+/// owned by another connection or configured by the operator is never removed.
 async fn add_with_recovery(
     manager: &impl IdeMcpHost,
     entry: &ServerEntry,
+    may_recover: bool,
 ) -> Result<Vec<McpTool>, McpError> {
     match manager.add_server(entry).await {
+        Err(e @ McpError::ServerAlreadyConnected { .. }) if !may_recover => Err(e),
         Err(McpError::ServerAlreadyConnected { .. }) => {
             match manager.remove_server(&entry.id).await {
                 Ok(()) | Err(McpError::ServerNotFound { .. }) => {}
@@ -256,6 +284,7 @@ impl ZephAcpAgentState {
     /// Shared by `session/new`, `session/load`, `session/fork` and `session/resume`. Ids are
     /// scoped to `session_id`; the returned lease releases them when the session entry is
     /// dropped. Returns an empty attachment when no MCP manager is configured.
+    #[tracing::instrument(skip_all, name = "acp.session.ide_mcp_attach")]
     pub(crate) async fn attach_ide_mcp_servers(
         &self,
         session_id: &acp::schema::v1::SessionId,
@@ -274,6 +303,22 @@ impl ZephAcpAgentState {
         }
         self.ensure_ide_mcp_release_task(manager);
         self.ide_mcp.attach(&**manager, entries).await
+    }
+
+    /// Release every session's IDE servers and stop this connection's background tasks.
+    ///
+    /// Called when the connection closes: the per-connection runtime drops right after, so the
+    /// queued drain would never run. Releases are executed here, before the tasks are cancelled.
+    pub async fn release_ide_mcp_on_close(&self) {
+        let entries: Vec<_> = self.sessions.lock().drain().map(|(_, e)| e).collect();
+        let leases: Vec<IdeMcpLease> = entries
+            .into_iter()
+            .filter_map(|mut e| e.ide_mcp_lease.take())
+            .collect();
+        if let Some(ref manager) = self.mcp_manager {
+            self.ide_mcp.release_leases(&**manager, leases).await;
+        }
+        self.shutdown();
     }
 
     /// Start the supervised release drain on first use.
@@ -316,6 +361,7 @@ mod tests {
         connected: SyncMutex<HashSet<String>>,
         failing: SyncMutex<HashSet<String>>,
         removed: SyncMutex<Vec<String>>,
+        panic_on_remove: SyncMutex<HashSet<String>>,
     }
 
     impl FakeHost {
@@ -346,6 +392,10 @@ mod tests {
         }
 
         fn remove(&self, server_id: &str) -> Result<(), McpError> {
+            assert!(
+                !self.panic_on_remove.lock().contains(server_id),
+                "scripted panic"
+            );
             self.removed.lock().push(server_id.to_owned());
             if self.connected.lock().remove(server_id) {
                 Ok(())
@@ -485,9 +535,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn already_connected_server_is_removed_and_registered_again() {
+    async fn already_connected_server_this_connection_owned_is_replaced() {
         let registry = IdeMcpRegistry::new();
-        let host = FakeHost::with_connected(&["ide-1"]);
+        let host = FakeHost::default();
+        // The previous owner never released: its map entry is still present.
+        let first = registry.attach(&host, vec![entry("ide-1")]).await;
+        std::mem::forget(first.lease);
 
         let attachment = registry.attach(&host, vec![entry("ide-1")]).await;
 
@@ -496,6 +549,71 @@ mod tests {
         assert!(host.is_connected("ide-1"));
         let lease = attachment.lease.expect("the new lease owns the id");
         assert_eq!(owner_of(&registry, "ide-1").await, Some(lease.id));
+    }
+
+    #[tokio::test]
+    async fn already_connected_server_not_owned_is_left_alone() {
+        let registry = IdeMcpRegistry::new();
+        // Registered by another connection or by the operator.
+        let host = FakeHost::with_connected(&["ide-1"]);
+
+        let attachment = registry.attach(&host, vec![entry("ide-1")]).await;
+
+        assert!(attachment.lease.is_none());
+        assert!(
+            host.removed.lock().is_empty(),
+            "foreign server must not be removed"
+        );
+        assert!(host.is_connected("ide-1"));
+        assert_eq!(owner_of(&registry, "ide-1").await, None);
+    }
+
+    #[tokio::test]
+    async fn release_leases_removes_servers_without_queueing() {
+        let registry = IdeMcpRegistry::new();
+        let host = FakeHost::default();
+        let attachment = registry
+            .attach(&host, vec![entry("a-1"), entry("b-1")])
+            .await;
+        let leases = attachment.lease.into_iter().collect();
+
+        registry.release_leases(&host, leases).await;
+
+        assert!(!host.is_connected("a-1") && !host.is_connected("b-1"));
+        assert!(registry.owners.lock().await.is_empty());
+        assert!(
+            registry.release_rx.lock().await.try_recv().is_err(),
+            "closing must not leave a queued release behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn release_loop_survives_a_panicking_release() {
+        let registry = Arc::new(IdeMcpRegistry::new());
+        let host = Arc::new(FakeHost::default());
+        let first = registry.attach(&*host, vec![entry("boom-1")]).await;
+        let second = registry.attach(&*host, vec![entry("a-1")]).await;
+        host.panic_on_remove.lock().insert("boom-1".to_owned());
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let task = {
+            let registry = Arc::clone(&registry);
+            let host = Arc::clone(&host);
+            let cancel = cancel.clone();
+            tokio::spawn(async move { registry.run_release_loop(&*host, cancel).await })
+        };
+
+        drop(first.lease);
+        drop(second.lease);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while host.is_connected("a-1") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the release after the panic must still run");
+
+        cancel.cancel();
+        task.await.unwrap();
     }
 
     #[tokio::test]
