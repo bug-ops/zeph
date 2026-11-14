@@ -787,6 +787,7 @@ mod prompt_injection_detection_tests {
 /// enclosing task being aborted mid-turn) may permanently wedge a session's `output_rx`.
 #[cfg(test)]
 mod output_rx_leak_regression_tests {
+    use std::assert_matches;
     use std::sync::Arc;
 
     use parking_lot::RwLock;
@@ -1014,8 +1015,7 @@ mod output_rx_leak_regression_tests {
             .await
             .expect("reloaded session's output_rx must not have been clobbered by the stale guard")
             .expect("reloaded session's channel must not be closed");
-        assert!(
-            matches!(event, LoopbackEvent::Status(zeph_core::channel::StatusUpdate::Set(ref s)) if s.as_str() == "fresh marker"),
+        assert_matches!(event, LoopbackEvent::Status(zeph_core::channel::StatusUpdate::Set(ref s)) if s.as_str() == "fresh marker",
             "expected the reloaded session's own event, got: {event:?}"
         );
     }
@@ -1130,8 +1130,7 @@ mod output_rx_leak_regression_tests {
             .await
             .expect("restored receiver must still be connected to the live channel")
             .expect("restored receiver's channel must not be closed");
-        assert!(
-            matches!(event, LoopbackEvent::Status(zeph_core::channel::StatusUpdate::Set(ref s)) if s.as_str() == "fresh after restore"),
+        assert_matches!(event, LoopbackEvent::Status(zeph_core::channel::StatusUpdate::Set(ref s)) if s.as_str() == "fresh after restore",
             "expected the post-restore event, got: {event:?}"
         );
     }

@@ -504,17 +504,14 @@ impl OpenAiProvider {
     /// Returns `(temperature, top_p, frequency_penalty, presence_penalty)`.
     /// All values are `None` when no override is set.
     fn generation_params(&self) -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>) {
-        self.generation_overrides
-            .as_ref()
-            .map(|ov| {
-                (
-                    ov.temperature,
-                    ov.top_p,
-                    ov.frequency_penalty,
-                    ov.presence_penalty,
-                )
-            })
-            .unwrap_or_default()
+        self.generation_overrides.as_ref().map_or_default(|ov| {
+            (
+                ov.temperature,
+                ov.top_p,
+                ov.frequency_penalty,
+                ov.presence_penalty,
+            )
+        })
     }
 
     /// Derive a filesystem-safe cache slug from the provider's base URL hostname.
@@ -573,7 +570,7 @@ impl OpenAiProvider {
         let models: Vec<crate::model_cache::RemoteModelInfo> = page
             .get("data")
             .and_then(|v| v.as_array())
-            .map(|arr| {
+            .map_or_default(|arr| {
                 arr.iter()
                     .filter_map(|item| {
                         let id = item.get("id")?.as_str()?.to_string();
@@ -586,8 +583,7 @@ impl OpenAiProvider {
                         })
                     })
                     .collect()
-            })
-            .unwrap_or_default();
+            });
 
         let slug = self.cache_slug();
         let cache = crate::model_cache::ModelCache::for_slug(&slug);
@@ -2058,8 +2054,7 @@ impl crate::schema::SchemaVisitor for OpenAiStrictVisitor {
             let prop_keys: Vec<String> = obj
                 .get("properties")
                 .and_then(|p| p.as_object())
-                .map(|p| p.keys().cloned().collect())
-                .unwrap_or_default();
+                .map_or_default(|p| p.keys().cloned().collect());
             if !prop_keys.is_empty() {
                 obj.insert(
                     "required".to_owned(),

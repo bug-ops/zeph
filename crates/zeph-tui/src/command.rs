@@ -1139,6 +1139,7 @@ pub fn filter_commands(query: &str) -> Vec<&'static CommandEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn registry_has_correct_count() {
@@ -1485,8 +1486,9 @@ mod tests {
                 .iter()
                 .find(|e| e.id == name)
                 .unwrap_or_else(|| panic!("{name} must appear in zeph_commands_entries()"));
-            assert!(
-                matches!(entry.command, TuiCommand::PrefillVerbatim(_)),
+            assert_matches!(
+                entry.command,
+                TuiCommand::PrefillVerbatim(_),
                 "{name} requires an argument and must prefill rather than submit bare"
             );
         }
@@ -1504,8 +1506,9 @@ mod tests {
                 .iter()
                 .find(|e| e.id == name)
                 .unwrap_or_else(|| panic!("{name} must appear in zeph_commands_entries()"));
-            assert!(
-                matches!(entry.command, TuiCommand::SendVerbatim(_)),
+            assert_matches!(
+                entry.command,
+                TuiCommand::SendVerbatim(_),
                 "{name} has a safe bare default and should submit immediately"
             );
         }

@@ -309,6 +309,7 @@ pub(crate) async fn create_channel(config: &Config) -> anyhow::Result<AnyChannel
 #[cfg(all(test, feature = "tui"))]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use zeph_channels::AnyChannel;
     use zeph_channels::CliChannel;
     use zeph_common::ToolName;
@@ -455,10 +456,7 @@ mod tests {
         ch.clear_status_best_effort().await;
 
         for _ in 0..2 {
-            assert!(matches!(
-                agent_rx.recv().await,
-                Some(AgentEvent::ClearStatus)
-            ));
+            assert_matches!(agent_rx.recv().await, Some(AgentEvent::ClearStatus));
         }
     }
 
@@ -499,8 +497,9 @@ mod tests {
             .unwrap();
 
         let result = elicit_task.await.unwrap().unwrap();
-        assert!(
-            matches!(result, ElicitationResponse::Accepted(_)),
+        assert_matches!(
+            result,
+            ElicitationResponse::Accepted(_),
             "expected Accepted, got {result:?}"
         );
     }

@@ -274,8 +274,7 @@ fn format_schema_params(out: &mut String, schema: &schemars::Schema) {
     let required: Vec<&str> = obj
         .get("required")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
-        .unwrap_or_default();
+        .map_or_default(|arr| arr.iter().filter_map(|v| v.as_str()).collect());
 
     let _ = writeln!(out, "Parameters:");
     for (name, prop) in props {

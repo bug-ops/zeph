@@ -936,8 +936,7 @@ impl<C: Channel> Agent<C> {
             .orchestration
             .subagent_manager
             .as_ref()
-            .map(|mgr| crate::metrics::AgentDefSummary::build_all(mgr.definitions()))
-            .unwrap_or_default();
+            .map_or_default(|mgr| crate::metrics::AgentDefSummary::build_all(mgr.definitions()));
         let tx = self
             .runtime
             .metrics
@@ -2807,8 +2806,7 @@ impl<C: Channel> Agent<C> {
             .iter()
             .rev()
             .find(|m| m.role == zeph_llm::provider::Role::Assistant)
-            .map(|m| super::context::truncate_chars(&m.content, 500))
-            .unwrap_or_default()
+            .map_or_default(|m| super::context::truncate_chars(&m.content, 500))
     }
 
     /// Apply all config-derived settings from [`AgentSessionConfig`] in a single call.
@@ -3244,6 +3242,7 @@ mod tests {
     };
     use super::*;
     use crate::config::{CompressionStrategy, StoreRoutingConfig, StoreRoutingStrategy};
+    use std::assert_matches;
 
     fn make_agent() -> Agent<MockChannel> {
         Agent::new(
@@ -3277,14 +3276,12 @@ mod tests {
             arc: zeph_config::ArcCompactionConfig::default(),
         };
         let agent = make_agent().with_compression(compression);
-        assert!(
-            matches!(
-                agent.context_manager.compression.strategy,
-                CompressionStrategy::Proactive {
-                    threshold_tokens: 50_000,
-                    max_summary_tokens: 2_000,
-                }
-            ),
+        assert_matches!(
+            agent.context_manager.compression.strategy,
+            CompressionStrategy::Proactive {
+                threshold_tokens: 50_000,
+                max_summary_tokens: 2_000,
+            },
             "expected Proactive strategy after with_compression"
         );
     }

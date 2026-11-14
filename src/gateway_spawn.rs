@@ -395,6 +395,7 @@ pub(crate) fn spawn_gateway_server(
 #[cfg(all(test, feature = "gateway"))]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use zeph_core::channel::Channel as _;
     use zeph_core::{ChannelMessage, LoopbackChannel};
 
@@ -499,11 +500,9 @@ mod tests {
 
         let snaps = sup.snapshot();
         let snap = snaps.iter().find(|s| s.name.as_ref() == "gateway_server");
-        assert!(
-            matches!(
-                snap.map(|s| &s.status),
-                Some(zeph_common::TaskStatus::Failed { .. })
-            ),
+        assert_matches!(
+            snap.map(|s| &s.status),
+            Some(zeph_common::TaskStatus::Failed { .. }),
             "a bind failure driven through the real spawn_classified call site must surface \
              as a durably-retained TaskStatus::Failed entry in snapshot()/TUI, not vanish or \
              settle as Completed — got {snap:?}"

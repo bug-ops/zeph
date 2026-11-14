@@ -284,8 +284,9 @@ mod tests {
         let exec = OverflowToolExecutor::new(Arc::clone(&store)).with_conversation(cid2);
         let call = make_call(&uuid);
         let err = exec.execute_tool_call(&call).await.unwrap_err();
-        assert!(
-            matches!(err, ToolError::Execution(_)),
+        assert_matches!(
+            err,
+            ToolError::Execution(_),
             "must not access overflow from a different conversation"
         );
     }

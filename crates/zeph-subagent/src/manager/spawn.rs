@@ -348,9 +348,7 @@ pub(crate) async fn build_system_prompt_with_memory(
 ) -> String {
     let orchestrator_header = build_orchestrator_header(ctx);
 
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
+    let cwd = std::env::current_dir().map_or_default(|p| p.display().to_string());
     let cwd_line = if cwd.is_empty() {
         String::new()
     } else {
@@ -484,9 +482,7 @@ pub(crate) fn sanitize_identity_field(s: &str) -> String {
 pub(crate) fn resolve_resume_exfiltration_guard_config(
     spawn_context: Option<&SpawnContext>,
 ) -> zeph_config::ExfiltrationGuardConfig {
-    spawn_context
-        .map(|ctx| ctx.exfiltration_guard.clone())
-        .unwrap_or_default()
+    spawn_context.map_or_default(|ctx| ctx.exfiltration_guard.clone())
 }
 
 pub(crate) fn apply_context_injection(

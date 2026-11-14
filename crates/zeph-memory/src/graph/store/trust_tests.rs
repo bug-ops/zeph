@@ -7,6 +7,7 @@ use super::*;
 use crate::graph::types::{EdgeType, GraphOrigin, GraphProvenance};
 use crate::store::SqliteStore;
 use crate::types::{EdgeId, EntityId};
+use std::assert_matches;
 use zeph_llm::provider::TurnContextTrust as T;
 
 async fn setup() -> GraphStore {
@@ -204,10 +205,7 @@ async fn out_of_range_trust_level_is_a_decode_error() {
         .execute(&gs.pool)
         .await
         .unwrap();
-    assert!(matches!(
-        edge_trust(&gs, id).await,
-        Err(MemoryError::GraphStore(_))
-    ));
+    assert_matches!(edge_trust(&gs, id).await, Err(MemoryError::GraphStore(_)));
     sqlx::query("UPDATE graph_entities SET trust_level = -1 WHERE canonical_name = 'ta'")
         .execute(&gs.pool)
         .await

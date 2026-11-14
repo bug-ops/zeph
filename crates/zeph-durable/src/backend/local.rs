@@ -3157,8 +3157,7 @@ mod tests {
             .open_execution_exclusive(exec, ExecutionKind::AgentTurn)
             .await
             .expect_err("a second concurrent holder must be rejected");
-        assert!(
-            matches!(err, DurableError::ExecutionLocked { execution_id, .. } if execution_id == exec),
+        assert_matches!(err, DurableError::ExecutionLocked { execution_id, .. } if execution_id == exec,
             "expected ExecutionLocked, got {err:?}"
         );
     }
@@ -3894,8 +3893,7 @@ mod tests {
             .unwrap();
 
         let outcome = canceler.cancel_execution(exec).await.unwrap();
-        assert!(
-            matches!(outcome, CancelOutcome::LiveOwner { pid } if pid == std::process::id()),
+        assert_matches!(outcome, CancelOutcome::LiveOwner { pid } if pid == std::process::id(),
             "expected LiveOwner{{pid: {}}}, got {outcome:?}",
             std::process::id()
         );
@@ -4121,8 +4119,7 @@ mod tests {
             .open_execution(exec, ExecutionKind::AgentTurn)
             .await
             .expect_err("reopening a canceled execution must fail closed");
-        assert!(
-            matches!(err, DurableError::ExecutionCanceled { execution_id } if execution_id == exec),
+        assert_matches!(err, DurableError::ExecutionCanceled { execution_id } if execution_id == exec,
             "expected ExecutionCanceled, got {err:?}"
         );
 
@@ -4164,7 +4161,7 @@ mod tests {
             .open_execution_exclusive(exec, ExecutionKind::AgentTurn)
             .await
             .expect_err("reopening a canceled execution exclusively must fail closed");
-        assert!(matches!(err, DurableError::ExecutionCanceled { .. }));
+        assert_matches!(err, DurableError::ExecutionCanceled { .. });
 
         // The lock must have been released (no leak): a fresh acquire on the same id succeeds.
         let dir2 = backend.lock_dir.clone().unwrap();

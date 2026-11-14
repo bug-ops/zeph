@@ -144,6 +144,7 @@ impl Condenser for LlmCondenser {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::time::Duration;
 
     use zeph_llm::any::AnyProvider;
@@ -233,7 +234,7 @@ mod tests {
         let condenser = LlmCondenser::new(deps(), 0.8, 4);
         let events = vec![user_msg(0, "a"), assistant_msg(1, "b")];
         let err = condenser.condense(&events, 0).await.unwrap_err();
-        assert!(matches!(err, SessionError::CondensationOverlap(_)));
+        assert_matches!(err, SessionError::CondensationOverlap(_));
     }
 
     #[tokio::test]

@@ -164,8 +164,7 @@ impl<C: Channel> Agent<C> {
             let error_message = tool_results[idx]
                 .as_ref()
                 .err()
-                .map(std::string::ToString::to_string)
-                .unwrap_or_default();
+                .map_or_default(std::string::ToString::to_string);
 
             self.channel
                 .send_status_best_effort(&format!("Reformatting parameters for {}...", tc.name))
@@ -317,6 +316,7 @@ mod tests {
     use super::*;
 
     mod reformat_phase_tests {
+        use std::assert_matches;
         use zeph_tools::registry::{InvocationHint, ToolDef};
 
         use super::*;
@@ -420,11 +420,9 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert!(
-                matches!(
-                    tool_results[0],
-                    Err(zeph_tools::ToolError::InvalidParams { .. })
-                ),
+            assert_matches!(
+                tool_results[0],
+                Err(zeph_tools::ToolError::InvalidParams { .. }),
                 "original error must be preserved on parse failure"
             );
         }
@@ -451,11 +449,9 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert!(
-                matches!(
-                    tool_results[0],
-                    Err(zeph_tools::ToolError::InvalidParams { .. })
-                ),
+            assert_matches!(
+                tool_results[0],
+                Err(zeph_tools::ToolError::InvalidParams { .. }),
                 "original error must be preserved when schema is unknown"
             );
         }
@@ -482,11 +478,9 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert!(
-                matches!(
-                    tool_results[0],
-                    Err(zeph_tools::ToolError::InvalidParams { .. })
-                ),
+            assert_matches!(
+                tool_results[0],
+                Err(zeph_tools::ToolError::InvalidParams { .. }),
                 "reformat must not run when parameter_reformat_provider is empty"
             );
         }
@@ -593,11 +587,9 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert!(
-                matches!(
-                    tool_results[0],
-                    Err(zeph_tools::ToolError::InvalidParams { .. })
-                ),
+            assert_matches!(
+                tool_results[0],
+                Err(zeph_tools::ToolError::InvalidParams { .. }),
                 "reformat must no-op when the registry is wired but the configured name is \
                  absent from the pool, not silently fall back to the primary provider"
             );
@@ -638,11 +630,9 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert!(
-                matches!(
-                    tool_results[0],
-                    Err(zeph_tools::ToolError::InvalidParams { .. })
-                ),
+            assert_matches!(
+                tool_results[0],
+                Err(zeph_tools::ToolError::InvalidParams { .. }),
                 "reformat must no-op when the in-pool provider fails to build, not silently \
                  fall back to the primary provider"
             );
@@ -739,11 +729,9 @@ mod tests {
                 tool_results[0].is_ok(),
                 "first call is within budget and should be reformatted successfully"
             );
-            assert!(
-                matches!(
-                    tool_results[1],
-                    Err(zeph_tools::ToolError::InvalidParams { .. })
-                ),
+            assert_matches!(
+                tool_results[1],
+                Err(zeph_tools::ToolError::InvalidParams { .. }),
                 "second call must be skipped once the whole-phase budget is exhausted by the \
                  first call's real elapsed time"
             );

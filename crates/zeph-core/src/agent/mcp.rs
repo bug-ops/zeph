@@ -730,13 +730,12 @@ fn build_elicitation_fields(
                     let vals = json
                         .get("enum")
                         .and_then(|v| v.as_array())
-                        .map(|arr| {
+                        .map_or_default(|arr| {
                             arr.iter()
                                 .filter_map(|v| v.as_str())
                                 .map(sanitize_elicitation_message)
                                 .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
+                        });
                     ElicitationFieldType::Enum(vals)
                 }
                 PrimitiveSchemaDefinition::String(_) => ElicitationFieldType::String,

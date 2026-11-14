@@ -399,6 +399,7 @@ impl<C: Channel> Agent<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     type Work = Result<Option<EntityId>, zeph_memory::MemoryError>;
 
@@ -444,7 +445,7 @@ mod tests {
     fn idle_poll_starts_one_resolution_and_marks_pending() {
         let slot = GoalAnchor::default();
         let ticket = start(&slot, g(1));
-        assert!(matches!(state(&slot), GoalAnchorState::Pending { .. }));
+        assert_matches!(state(&slot), GoalAnchorState::Pending { .. });
         assert!(slot.poll(Some((g(1), "text"))).ticket.is_none());
         drop(ticket);
     }
@@ -482,7 +483,7 @@ mod tests {
                 .expect("retry after backoff");
         }
         settle(&slot, &ticket, Outcome::NotFound);
-        assert!(matches!(state(&slot), GoalAnchorState::Exhausted { .. }));
+        assert_matches!(state(&slot), GoalAnchorState::Exhausted { .. });
         for _ in 0..20 {
             assert!(slot.poll(Some((g(1), "t"))).ticket.is_none());
         }
@@ -499,7 +500,7 @@ mod tests {
         slot.cancel(first.clone());
         let second = start(&slot, g(1));
         settle(&slot, &first, Outcome::Found(entity(1)));
-        assert!(matches!(state(&slot), GoalAnchorState::Pending { .. }));
+        assert_matches!(state(&slot), GoalAnchorState::Pending { .. });
         drop(second);
     }
 
@@ -509,10 +510,10 @@ mod tests {
         let a = start(&slot, g(10));
         let b = start(&slot, g(11));
         settle(&slot, &a, Outcome::Found(entity(1)));
-        assert!(matches!(
+        assert_matches!(
             state(&slot),
             GoalAnchorState::Pending { ref goal_id, .. } if *goal_id == g(11)
-        ));
+        );
         settle(&slot, &b, Outcome::Found(entity(2)));
         assert_eq!(slot.poll(Some((g(11), "t"))).anchor, Some(entity(2)));
     }
@@ -548,10 +549,10 @@ mod tests {
         started_rx.await.unwrap();
         handle.abort();
         let _ = handle.await;
-        assert!(matches!(
+        assert_matches!(
             state(&slot),
             GoalAnchorState::Unresolved { failures, .. } if failures.get() == 1
-        ));
+        );
     }
 
     #[tokio::test]
@@ -564,10 +565,10 @@ mod tests {
             std::future::pending::<Work>(),
         )
         .await;
-        assert!(matches!(
+        assert_matches!(
             state(&slot),
             GoalAnchorState::Unresolved { failures, .. } if failures.get() == 1
-        ));
+        );
     }
 
     #[tokio::test]
@@ -594,7 +595,7 @@ mod tests {
     fn resolved_anchor_is_revalidated_while_still_served() {
         let slot = resolved_slot(g(1), 7);
         let _ticket = age_until_revalidation(&slot, g(1));
-        assert!(matches!(state(&slot), GoalAnchorState::Refreshing { .. }));
+        assert_matches!(state(&slot), GoalAnchorState::Refreshing { .. });
         let poll = slot.poll(Some((g(1), "t")));
         assert_eq!(poll.anchor, Some(entity(7)), "cached anchor keeps serving");
         assert!(poll.ticket.is_none(), "one revalidation at a time");
@@ -613,10 +614,10 @@ mod tests {
         let slot = resolved_slot(g(1), 7);
         let t = age_until_revalidation(&slot, g(1));
         settle(&slot, &t, Outcome::NotFound);
-        assert!(matches!(
+        assert_matches!(
             state(&slot),
             GoalAnchorState::Unresolved { failures, .. } if failures.get() == 1
-        ));
+        );
         assert!(slot.poll(Some((g(1), "t"))).anchor.is_none());
     }
 
@@ -625,7 +626,7 @@ mod tests {
         let slot = resolved_slot(g(1), 7);
         let t = age_until_revalidation(&slot, g(1));
         settle(&slot, &t, Outcome::Transient);
-        assert!(matches!(state(&slot), GoalAnchorState::Resolved { .. }));
+        assert_matches!(state(&slot), GoalAnchorState::Resolved { .. });
         assert_eq!(slot.poll(Some((g(1), "t"))).anchor, Some(entity(7)));
     }
 
@@ -641,7 +642,7 @@ mod tests {
         started_rx.await.unwrap();
         handle.abort();
         let _ = handle.await;
-        assert!(matches!(state(&slot), GoalAnchorState::Resolved { .. }));
+        assert_matches!(state(&slot), GoalAnchorState::Resolved { .. });
     }
 
     #[test]
@@ -651,11 +652,12 @@ mod tests {
         for _ in 0..=STALE_IN_FLIGHT {
             slot.poll(Some((g(1), "t")));
         }
-        assert!(matches!(state(&slot), GoalAnchorState::Resolved { .. }));
+        assert_matches!(state(&slot), GoalAnchorState::Resolved { .. });
     }
 
     #[cfg(feature = "sqlite")]
     mod agent {
+        use std::assert_matches;
         use std::sync::Arc;
 
         use zeph_llm::any::AnyProvider;
@@ -728,10 +730,7 @@ mod tests {
             let mut agent = agent_with_goal(true, true).await;
             assert_eq!(agent.goal_anchor_for_turn(), None);
             assert_eq!(enrichment_spawned(&agent), 1);
-            assert!(matches!(
-                slot_state(&agent),
-                GoalAnchorState::Pending { .. }
-            ));
+            assert_matches!(slot_state(&agent), GoalAnchorState::Pending { .. });
             assert_eq!(agent.goal_anchor_for_turn(), None);
             assert_eq!(enrichment_spawned(&agent), 1, "no duplicate resolution");
         }

@@ -422,8 +422,7 @@ fn build_compatible_provider(
             .secrets
             .compatible_api_keys
             .get(name)
-            .map(|s| s.expose().to_owned())
-            .unwrap_or_default()
+            .map_or_default(|s| s.expose().to_owned())
     });
     let max_tokens = entry.max_tokens.unwrap_or(4096);
     let provider = CompatibleProvider::new(zeph_llm::CompatibleConfig {

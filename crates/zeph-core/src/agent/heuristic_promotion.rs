@@ -651,6 +651,7 @@ fn patch_version(skill_md: &str, new_version: u32) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use zeph_llm::any::AnyProvider;
     use zeph_llm::mock::MockProvider;
     use zeph_skills::generator::GeneratedSkill;
@@ -705,8 +706,9 @@ mod tests {
         )
         .await;
 
-        assert!(
-            matches!(decision, MergeDecision::Add),
+        assert_matches!(
+            decision,
+            MergeDecision::Add,
             "expected MergeDecision::Add for empty directory, got {decision:?}"
         );
     }

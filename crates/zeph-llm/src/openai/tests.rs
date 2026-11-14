@@ -2046,7 +2046,7 @@ fn list_models_response_parses_data_array() {
     let models: Vec<crate::model_cache::RemoteModelInfo> = page
         .get("data")
         .and_then(|v| v.as_array())
-        .map(|arr| {
+        .map_or_default(|arr| {
             arr.iter()
                 .filter_map(|item| {
                     let id = item.get("id")?.as_str()?.to_string();
@@ -2059,8 +2059,7 @@ fn list_models_response_parses_data_array() {
                     })
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     assert_eq!(models.len(), 2);
     assert_eq!(models[0].id, "gpt-4o");
     assert_eq!(models[0].created_at, Some(1_700_000_000));
@@ -2073,7 +2072,7 @@ fn list_models_response_empty_data_array() {
     let models: Vec<crate::model_cache::RemoteModelInfo> = page
         .get("data")
         .and_then(|v| v.as_array())
-        .map(|arr| {
+        .map_or_default(|arr| {
             arr.iter()
                 .filter_map(|item| {
                     let id = item.get("id")?.as_str()?.to_string();
@@ -2085,8 +2084,7 @@ fn list_models_response_empty_data_array() {
                     })
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     assert_eq!(models.len(), 0);
 }
 
@@ -2096,7 +2094,7 @@ fn list_models_response_missing_data_key_returns_empty() {
     let models: Vec<crate::model_cache::RemoteModelInfo> = page
         .get("data")
         .and_then(|v| v.as_array())
-        .map(|arr| {
+        .map_or_default(|arr| {
             arr.iter()
                 .filter_map(|item| {
                     let id = item.get("id")?.as_str()?.to_string();
@@ -2108,8 +2106,7 @@ fn list_models_response_missing_data_key_returns_empty() {
                     })
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     assert_eq!(models.len(), 0);
 }
 
@@ -2418,8 +2415,9 @@ async fn chat_429_rate_limit_propagates() {
         metadata: MessageMetadata::default(),
     }];
     let result = p.chat(&messages).await;
-    assert!(
-        matches!(result, Err(LlmError::RateLimited)),
+    assert_matches!(
+        result,
+        Err(LlmError::RateLimited),
         "expected RateLimited (429 propagated through retry exhaustion), got: {result:?}"
     );
 }

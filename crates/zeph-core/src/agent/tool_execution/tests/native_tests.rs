@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Andrei G <bug-ops>
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use std::assert_matches;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -1254,7 +1255,7 @@ async fn failed_stream_cancels_speculation_and_retries_once_without_streaming() 
         .await
         .unwrap();
 
-    assert!(matches!(response, Some(ChatResponse::Text { .. })));
+    assert_matches!(response, Some(ChatResponse::Text { .. }));
     assert_eq!(*calls.lock().unwrap(), 1, "exactly one non-stream call");
     assert!(!engine.has_match(&test_tool_call("echo")));
     assert_eq!(engine.metrics_snapshot().cancelled, 1);

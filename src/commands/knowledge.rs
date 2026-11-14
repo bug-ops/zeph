@@ -2630,9 +2630,8 @@ mod tests {
         embed_provider_name: Option<&str>,
     ) -> PathBuf {
         let sqlite_path = dir.join("zeph-test.db");
-        let embedding_provider_line = embed_provider_name
-            .map(|name| format!("embedding_provider = \"{name}\"\n"))
-            .unwrap_or_default();
+        let embedding_provider_line =
+            embed_provider_name.map_or_default(|name| format!("embedding_provider = \"{name}\"\n"));
         let config_toml = format!(
             r#"
 [agent]
@@ -2931,9 +2930,8 @@ collection = "{collection}"
         embed_provider_name: Option<&str>,
     ) -> PathBuf {
         let sqlite_path = dir.join("zeph-test.db");
-        let embedding_provider_line = embed_provider_name
-            .map(|name| format!("embedding_provider = \"{name}\"\n"))
-            .unwrap_or_default();
+        let embedding_provider_line =
+            embed_provider_name.map_or_default(|name| format!("embedding_provider = \"{name}\"\n"));
         let config_toml = format!(
             r#"
 [agent]

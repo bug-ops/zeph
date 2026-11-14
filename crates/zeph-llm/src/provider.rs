@@ -3308,8 +3308,7 @@ mod tests {
         };
         let json = serde_json::to_string(&part).unwrap();
         let decoded: MessagePart = serde_json::from_str(&json).unwrap();
-        assert!(
-            matches!(decoded, MessagePart::Compaction { summary } if summary == "Context was summarized.")
+        assert_matches!(decoded, MessagePart::Compaction { summary } if summary == "Context was summarized."
         );
     }
 
@@ -3609,10 +3608,10 @@ mod tests {
             Some("NOTE")
         );
         assert!(msg.to_request_text().ends_with("\nNOTE"));
-        assert!(matches!(
+        assert_matches!(
             Message::from_legacy(Role::User, "x").to_request_text(),
             std::borrow::Cow::Borrowed("x")
-        ));
+        );
     }
 
     fn thinking_part() -> MessagePart {
@@ -3667,7 +3666,7 @@ mod tests {
             input: serde_json::json!({}),
         });
         let content = b.build();
-        assert!(matches!(
+        assert_matches!(
             content.blocks(),
             [
                 AssistantBlock::Text(a),
@@ -3675,7 +3674,7 @@ mod tests {
                 AssistantBlock::Text(c),
                 AssistantBlock::ToolUse(_),
             ] if a == "ab" && c == "c"
-        ));
+        );
         assert_eq!(content.text().as_deref(), Some("abc"));
         assert_eq!(content.tool_calls().count(), 1);
     }
@@ -3710,10 +3709,10 @@ mod tests {
         let ChatResponse::ToolUse { content, .. } = resp else {
             panic!("expected ToolUse");
         };
-        assert!(matches!(
+        assert_matches!(
             content.blocks(),
             [AssistantBlock::Text(_), AssistantBlock::ToolUse(_)]
-        ));
+        );
     }
 
     #[test]
@@ -3733,7 +3732,7 @@ mod tests {
         ];
         let stripped = MessagePart::strip_for_persistence(&parts);
         assert_eq!(stripped.len(), 1);
-        assert!(matches!(stripped[0], MessagePart::Text { .. }));
+        assert_matches!(stripped[0], MessagePart::Text { .. });
     }
 
     #[test]
@@ -3748,7 +3747,7 @@ mod tests {
         );
         let persisted = MessagePart::strip_for_persistence(&msg.parts);
         assert_eq!(persisted.len(), 1);
-        assert!(matches!(persisted[0], MessagePart::Text { .. }));
+        assert_matches!(persisted[0], MessagePart::Text { .. });
     }
 
     #[test]

@@ -191,6 +191,7 @@ impl SearchBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn from_config_unknown_backend_errors() {
@@ -199,17 +200,14 @@ mod tests {
             ..SearchConfig::default()
         };
         let err = SearchBackend::from_config(&cfg, 1_048_576, None).unwrap_err();
-        assert!(matches!(err, SearchError::Provider(_)));
+        assert_matches!(err, SearchError::Provider(_));
     }
 
     #[test]
     fn from_config_brave_without_key_errors() {
         let cfg = SearchConfig::default();
         let err = SearchBackend::from_config(&cfg, 1_048_576, None).unwrap_err();
-        assert!(matches!(
-            err,
-            SearchError::MissingApiKey { backend: "brave" }
-        ));
+        assert_matches!(err, SearchError::MissingApiKey { backend: "brave" });
     }
 
     #[test]

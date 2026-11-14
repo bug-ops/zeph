@@ -388,6 +388,7 @@ impl Channel for DiscordChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::time::Duration;
 
     fn make_channel() -> DiscordChannel {
@@ -687,7 +688,7 @@ mod tests {
     #[test]
     fn new_rejects_empty_allowlists() {
         let result = DiscordChannel::new("test-token".into(), vec![], vec![], vec![], None);
-        assert!(matches!(result, Err(ChannelError::Other(_))));
+        assert_matches!(result, Err(ChannelError::Other(_)));
     }
 
     /// A non-empty role allowlist alone is sufficient to pass the startup gate,

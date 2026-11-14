@@ -576,8 +576,7 @@ impl WebScrapeExecutor {
         let parsed = validate_url(&params.url);
         let host_str = parsed
             .as_ref()
-            .map(|u| u.host_str().unwrap_or("").to_owned())
-            .unwrap_or_default();
+            .map_or_default(|u| u.host_str().unwrap_or("").to_owned());
 
         if let Err(ref _e) = parsed {
             if self.egress_config.enabled && self.egress_config.log_blocked {
@@ -659,8 +658,7 @@ impl WebScrapeExecutor {
         let parsed = validate_url(&instruction.url);
         let host_str = parsed
             .as_ref()
-            .map(|u| u.host_str().unwrap_or("").to_owned())
-            .unwrap_or_default();
+            .map_or_default(|u| u.host_str().unwrap_or("").to_owned());
 
         if let Err(ref _e) = parsed {
             if self.egress_config.enabled && self.egress_config.log_blocked {
@@ -2007,8 +2005,9 @@ mod tests {
         for target in private_targets {
             let result = validate_url(target);
             assert!(result.is_err(), "expected error for {target}");
-            assert!(
-                matches!(result.unwrap_err(), ToolError::Blocked { .. }),
+            assert_matches!(
+                result.unwrap_err(),
+                ToolError::Blocked { .. },
                 "expected Blocked for {target}"
             );
         }
@@ -2315,8 +2314,7 @@ mod tests {
             command: "scheme not allowed: http".into(),
         };
         let result = tool_error_to_audit_result(&err);
-        assert!(
-            matches!(result, AuditResult::Blocked { reason } if reason == "scheme not allowed: http")
+        assert_matches!(result, AuditResult::Blocked { reason } if reason == "scheme not allowed: http"
         );
     }
 
@@ -2331,8 +2329,7 @@ mod tests {
     fn tool_error_to_audit_result_execution_error_maps_correctly() {
         let err = ToolError::Execution(std::io::Error::other("connection refused"));
         let result = tool_error_to_audit_result(&err);
-        assert!(
-            matches!(result, AuditResult::Error { message } if message.contains("connection refused"))
+        assert_matches!(result, AuditResult::Error { message } if message.contains("connection refused")
         );
     }
 

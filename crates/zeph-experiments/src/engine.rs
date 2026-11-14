@@ -432,6 +432,7 @@ mod tests {
     use crate::snapshot::ConfigSnapshot;
     use crate::types::{ParameterKind, Variation, VariationValue};
     use ordered_float::OrderedFloat;
+    use std::assert_matches;
     use std::sync::Arc;
     use zeph_config::ExperimentConfig;
 
@@ -797,8 +798,9 @@ mod tests {
         let result = engine.run().await;
         assert!(result.is_err(), "NaN baseline should return an error");
         let err = result.unwrap_err();
-        assert!(
-            matches!(err, EvalError::Storage(_)),
+        assert_matches!(
+            err,
+            EvalError::Storage(_),
             "expected EvalError::Storage, got: {err:?}"
         );
     }

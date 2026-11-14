@@ -847,8 +847,9 @@ mod tests {
         let f = filter_all();
         let text = "Привет мир, no PII here — €100";
         let result = f.scrub(text);
-        assert!(
-            matches!(result, Cow::Borrowed(_)),
+        assert_matches!(
+            result,
+            Cow::Borrowed(_),
             "unicode text without PII must be Borrowed"
         );
     }

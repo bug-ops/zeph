@@ -1333,6 +1333,7 @@ impl BlockingSpawner for TaskSupervisor {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
@@ -1466,8 +1467,9 @@ mod tests {
             .snapshot()
             .into_iter()
             .find(|s| s.name.as_ref() == "panic-exit");
-        assert!(
-            matches!(snap.unwrap().status, TaskStatus::Failed { .. }),
+        assert_matches!(
+            snap.unwrap().status,
+            TaskStatus::Failed { .. },
             "task must be Failed after exhausting restarts"
         );
     }
@@ -1505,8 +1507,9 @@ mod tests {
         let snaps = sup.snapshot();
         let snap = snaps.iter().find(|s| s.name.as_ref() == "restartable");
         assert!(snap.is_some(), "failed task should remain in registry");
-        assert!(
-            matches!(snap.unwrap().status, TaskStatus::Failed { .. }),
+        assert_matches!(
+            snap.unwrap().status,
+            TaskStatus::Failed { .. },
             "task should be Failed after exhausting retries"
         );
     }
@@ -1857,8 +1860,9 @@ mod tests {
         let snap = snaps
             .iter()
             .find(|s| s.name.as_ref() == "classified-restart-fail");
-        assert!(
-            matches!(snap.map(|s| &s.status), Some(TaskStatus::Failed { .. })),
+        assert_matches!(
+            snap.map(|s| &s.status),
+            Some(TaskStatus::Failed { .. }),
             "an Err value from a Restart-policy spawn_classified task must surface as a \
              durably-retained TaskStatus::Failed entry in snapshot()/TUI, not vanish or \
              settle as Completed — got {snap:?}"
@@ -1946,8 +1950,9 @@ mod tests {
         let snap = snaps
             .iter()
             .find(|s| s.name.as_ref() == "classified-restart-after-panic");
-        assert!(
-            matches!(snap.map(|s| &s.status), Some(TaskStatus::Failed { .. })),
+        assert_matches!(
+            snap.map(|s| &s.status),
+            Some(TaskStatus::Failed { .. }),
             "the post-restart Err attempt must classify and retain as Failed — got {snap:?}"
         );
     }
@@ -1985,8 +1990,9 @@ mod tests {
         let snaps = sup.snapshot();
         let snap = snaps.iter().find(|s| s.name.as_ref() == "zero-max");
         assert!(snap.is_some(), "entry should remain as Failed");
-        assert!(
-            matches!(snap.unwrap().status, TaskStatus::Failed { .. }),
+        assert_matches!(
+            snap.unwrap().status,
+            TaskStatus::Failed { .. },
             "status should be Failed"
         );
     }

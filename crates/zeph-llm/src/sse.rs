@@ -974,8 +974,7 @@ mod tests {
         );
         assert_eq!(results.len(), 1);
         let chunk = results.remove(0).unwrap();
-        assert!(
-            matches!(chunk, StreamChunk::Compaction(s) if s == "Final summary"),
+        assert_matches!(chunk, StreamChunk::Compaction(s) if s == "Final summary",
             "expected Compaction chunk with full summary"
         );
         assert!(state.compaction_buf.is_none());
@@ -1063,8 +1062,7 @@ mod tests {
             &StreamLimits::default(),
         );
         assert_eq!(events.len(), 1);
-        assert!(
-            matches!(&events[0], ToolSseEvent::InputJsonDelta { index: 0, delta } if delta == r#"{"cmd":"ls"#)
+        assert_matches!(&events[0], ToolSseEvent::InputJsonDelta { index: 0, delta } if delta == r#"{"cmd":"ls"#
         );
     }
 

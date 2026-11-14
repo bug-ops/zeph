@@ -237,10 +237,7 @@ impl QualityGate {
     /// Return cumulative rejection counts per reason.
     #[must_use]
     pub fn rejection_counts(&self) -> std::collections::HashMap<QualityRejectionReason, u64> {
-        self.rejection_counts
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_default()
+        self.rejection_counts.lock().map_or_default(|g| g.clone())
     }
 
     /// Evaluate the quality gate for a candidate write.

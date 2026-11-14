@@ -236,6 +236,7 @@ fn format_short_name(format: image::ImageFormat) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use zeph_config::McpMediaConfig;
 
     // 1x1 valid PNG fixture (magic bytes + minimal IHDR/IDAT/IEND chunks).
@@ -269,7 +270,7 @@ mod tests {
             .sanitize_image(PNG_1X1, "image/png", "test-server")
             .await
             .unwrap_err();
-        assert!(matches!(err, MediaRejected::SizeExceeded { .. }));
+        assert_matches!(err, MediaRejected::SizeExceeded { .. });
     }
 
     #[tokio::test]
@@ -283,7 +284,7 @@ mod tests {
             .sanitize_image(PNG_1X1, "image/png", "test-server")
             .await
             .unwrap_err();
-        assert!(matches!(err, MediaRejected::DimensionExceeded { .. }));
+        assert_matches!(err, MediaRejected::DimensionExceeded { .. });
     }
 
     #[tokio::test]
@@ -297,7 +298,7 @@ mod tests {
             .sanitize_image(PNG_1X1, "image/png", "test-server")
             .await
             .unwrap_err();
-        assert!(matches!(err, MediaRejected::DimensionExceeded { .. }));
+        assert_matches!(err, MediaRejected::DimensionExceeded { .. });
     }
 
     #[tokio::test]
@@ -307,7 +308,7 @@ mod tests {
             .sanitize_image(PNG_1X1, "image/jpeg", "test-server")
             .await
             .unwrap_err();
-        assert!(matches!(err, MediaRejected::MimeMismatch { .. }));
+        assert_matches!(err, MediaRejected::MimeMismatch { .. });
     }
 
     #[tokio::test]
@@ -321,7 +322,7 @@ mod tests {
             .sanitize_image(PNG_1X1, "image/png", "test-server")
             .await
             .unwrap_err();
-        assert!(matches!(err, MediaRejected::FormatNotAllowed { .. }));
+        assert_matches!(err, MediaRejected::FormatNotAllowed { .. });
     }
 
     #[tokio::test]
@@ -331,6 +332,6 @@ mod tests {
             .sanitize_image(b"not an image", "image/png", "test-server")
             .await
             .unwrap_err();
-        assert!(matches!(err, MediaRejected::DecodeFailed(_)));
+        assert_matches!(err, MediaRejected::DecodeFailed(_));
     }
 }

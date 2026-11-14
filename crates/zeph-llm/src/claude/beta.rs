@@ -161,6 +161,7 @@ pub(super) fn claude_error(status: StatusCode, body: &str) -> LlmError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     const MISMATCH_BODY: &str = r#"{"type":"error","error":{"type":"invalid_request_error","message":"messages.1.content.0: Invalid `signature` in `thinking` block. The block is bound to a different conversation. Remove the block, or set `thinking.block_binding.prefix_mismatch_behavior` to \"drop_block\". That setting requires the `thinking-binding-controls-2026-08-01` value in the `anthropic-beta` header."}}"#;
 
@@ -183,10 +184,10 @@ mod tests {
             MISMATCH_BODY,
             BetaFeature::ThinkingBinding
         ));
-        assert!(matches!(
+        assert_matches!(
             claude_error(status, MISMATCH_BODY),
             LlmError::ThinkingBindingMismatch
-        ));
+        );
     }
 
     #[test]

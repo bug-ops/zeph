@@ -399,11 +399,9 @@ mod tests {
         let (backend, exec) = backend_with(&steps).await;
         let cursor = ReplayCursor::new(backend, exec, 2);
         for step in 0..25 {
-            assert!(
-                matches!(
-                    cursor.lookup(StepId::new(step)).await.unwrap(),
-                    StepReplay::Result(_)
-                ),
+            assert_matches!(
+                cursor.lookup(StepId::new(step)).await.unwrap(),
+                StepReplay::Result(_),
                 "step {step} should replay from the journal"
             );
         }

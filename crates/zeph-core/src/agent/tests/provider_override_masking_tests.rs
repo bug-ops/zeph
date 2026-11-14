@@ -8,6 +8,7 @@
 //! provider override). `set_provider` is the single guarded path every reassignment must go
 //! through now — these tests exercise it directly and via `apply_provider_override`.
 
+use std::assert_matches;
 use std::sync::Arc;
 
 use zeph_llm::any::AnyProvider;
@@ -29,7 +30,7 @@ fn base_agent() -> crate::agent::Agent<MockChannel> {
 fn set_provider_wraps_unmasked_provider_when_masking_enabled() {
     let mut agent = base_agent().with_secret_registry(Arc::new(SecretMaskRegistry::new()));
     // Confirm the initial construction wrap already applied (belt-and-braces on the fixture).
-    assert!(matches!(agent.provider, AnyProvider::Masked(_)));
+    assert_matches!(agent.provider, AnyProvider::Masked(_));
 
     // A raw, unwrapped provider arriving via any future reassignment path.
     let fresh_unmasked = mock_provider(vec!["hi".into()]);
@@ -37,8 +38,9 @@ fn set_provider_wraps_unmasked_provider_when_masking_enabled() {
 
     agent.set_provider(fresh_unmasked);
 
-    assert!(
-        matches!(agent.provider, AnyProvider::Masked(_)),
+    assert_matches!(
+        agent.provider,
+        AnyProvider::Masked(_),
         "set_provider must wrap an unmasked provider when secret masking is enabled"
     );
 }
@@ -52,7 +54,7 @@ fn set_provider_does_not_double_wrap_already_masked_provider() {
 
     agent.set_provider(already_masked);
 
-    assert!(matches!(agent.provider, AnyProvider::Masked(_)));
+    assert_matches!(agent.provider, AnyProvider::Masked(_));
     // Exactly one layer: unwrap once and confirm the inner provider is the raw mock, not
     // another `Masked` wrapper.
     if let AnyProvider::Masked(p) = &agent.provider {
@@ -92,8 +94,9 @@ fn apply_provider_override_masks_new_provider() {
 
     agent.apply_provider_override();
 
-    assert!(
-        matches!(agent.provider, AnyProvider::Masked(_)),
+    assert_matches!(
+        agent.provider,
+        AnyProvider::Masked(_),
         "ACP provider override must be masked by apply_provider_override, not assigned raw"
     );
 }

@@ -894,8 +894,9 @@ mod tests {
         let result = gate
             .execute_tool_call(&make_call_with_cmd("bash", "sudo apt install vim"))
             .await;
-        assert!(
-            matches!(result, Err(ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(ToolError::Blocked { .. }),
             "bash with explicit deny rule should be blocked"
         );
     }
@@ -927,8 +928,9 @@ mod tests {
         let result = gate
             .execute_tool_call(&make_call("mcpls_get_diagnostics"))
             .await;
-        assert!(
-            matches!(result, Err(ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(ToolError::Blocked { .. }),
             "ReadOnly mode must deny non-allowlisted tools"
         );
     }

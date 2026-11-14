@@ -197,8 +197,9 @@ async fn resolve_short_name_below_min_returns_error() {
     // "go" and "cd" are 2-byte tokens that represent common noise from tool output.
     let err_go = resolver.resolve("go", "technology", None, None).await;
     assert!(err_go.is_err(), "\"go\" (2 bytes) must be rejected");
-    assert!(
-        matches!(err_go.unwrap_err(), MemoryError::GraphStore(_)),
+    assert_matches!(
+        err_go.unwrap_err(),
+        MemoryError::GraphStore(_),
         "expected GraphStore error for short name"
     );
 
@@ -599,8 +600,7 @@ async fn resolve_with_embedding_store_score_above_threshold_merges() {
         .unwrap();
 
     assert_eq!(id, existing_id, "should return existing entity ID on merge");
-    assert!(
-        matches!(outcome, ResolutionOutcome::EmbeddingMatch { score } if score > 0.85),
+    assert_matches!(outcome, ResolutionOutcome::EmbeddingMatch { score } if score > 0.85,
         "outcome should be EmbeddingMatch with score > 0.85, got {outcome:?}"
     );
 }

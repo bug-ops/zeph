@@ -383,6 +383,7 @@ impl Drop for SpeculationEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use zeph_tools::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 
     pub(super) struct AlwaysOkExecutor;
@@ -675,7 +676,7 @@ mod tests {
 
         let outcome = engine.commit_within(&call, Duration::from_millis(50)).await;
 
-        assert!(matches!(outcome, CommitOutcome::TimedOut));
+        assert_matches!(outcome, CommitOutcome::TimedOut);
         let m = engine.metrics_snapshot();
         assert_eq!((m.committed, m.cancelled), (0, 1));
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -684,10 +685,10 @@ mod tests {
             0,
             "the aborted speculative task must never complete"
         );
-        assert!(matches!(
+        assert_matches!(
             engine.commit_within(&call, Duration::from_millis(50)).await,
             CommitOutcome::Miss
-        ));
+        );
     }
 
     #[tokio::test]
@@ -707,7 +708,7 @@ mod tests {
 
         let outcome = engine.commit_within(&call, Duration::from_secs(2)).await;
 
-        assert!(matches!(outcome, CommitOutcome::Committed(r) if r.is_ok()));
+        assert_matches!(outcome, CommitOutcome::Committed(r) if r.is_ok());
         assert_eq!(engine.metrics_snapshot().committed, 1);
         assert!(!engine.has_match(&call));
     }

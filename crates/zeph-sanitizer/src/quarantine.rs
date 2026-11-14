@@ -598,8 +598,9 @@ spotlight_untrusted = true
             .extract_facts(&sanitized, &content_sanitizer)
             .await
             .unwrap_err();
-        assert!(
-            matches!(err, QuarantineError::Timeout),
+        assert_matches!(
+            err,
+            QuarantineError::Timeout,
             "expected Timeout, got {err:?}"
         );
     }

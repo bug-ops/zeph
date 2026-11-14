@@ -1586,8 +1586,9 @@ mod tests {
             "fetch",
             &json!({"url": "https://api.anthropic.ai/v1/models"}),
         );
-        assert!(
-            matches!(result, VerificationResult::Block { .. }),
+        assert_matches!(
+            result,
+            VerificationResult::Block { .. },
             "fetch must be blocked when no user URL was provided — this is the #2191 regression"
         );
     }
@@ -1614,8 +1615,9 @@ mod tests {
             "web_scrape",
             &json!({"url": "https://api.anthropic.ai/v1/models", "select": "body"}),
         );
-        assert!(
-            matches!(result, VerificationResult::Block { .. }),
+        assert_matches!(
+            result,
+            VerificationResult::Block { .. },
             "web_scrape must be blocked for hallucinated URL with empty user_provided_urls"
         );
     }
@@ -1661,8 +1663,9 @@ mod tests {
             "anthropic_fetch",
             &json!({"url": "https://api.anthropic.ai/v1/models"}),
         );
-        assert!(
-            matches!(result, VerificationResult::Block { .. }),
+        assert_matches!(
+            result,
+            VerificationResult::Block { .. },
             "MCP tools ending in _fetch must be guarded even if not in guarded_tools list"
         );
     }
@@ -1687,8 +1690,9 @@ mod tests {
         // User provided docs.rs, agent wants to fetch evil.com/docs.rs path — must block.
         let v = ugv(&["https://docs.rs/"]);
         let result = v.verify("fetch", &json!({"url": "https://evil.com/docs.rs/exfil"}));
-        assert!(
-            matches!(result, VerificationResult::Block { .. }),
+        assert_matches!(
+            result,
+            VerificationResult::Block { .. },
             "different domain must not be allowed even if path looks similar"
         );
     }
@@ -1747,8 +1751,9 @@ mod tests {
     fn firewall_blocks_path_traversal() {
         let v = fwv();
         let result = v.verify("read", &json!({"file_path": "../../etc/passwd"}));
-        assert!(
-            matches!(result, VerificationResult::Block { .. }),
+        assert_matches!(
+            result,
+            VerificationResult::Block { .. },
             "path traversal must be blocked"
         );
     }
@@ -1757,8 +1762,9 @@ mod tests {
     fn firewall_blocks_etc_passwd() {
         let v = fwv();
         let result = v.verify("read", &json!({"file_path": "/etc/passwd"}));
-        assert!(
-            matches!(result, VerificationResult::Block { .. }),
+        assert_matches!(
+            result,
+            VerificationResult::Block { .. },
             "/etc/passwd must be blocked"
         );
     }
@@ -1767,8 +1773,9 @@ mod tests {
     fn firewall_blocks_ssh_key() {
         let v = fwv();
         let result = v.verify("read", &json!({"file_path": "~/.ssh/id_rsa"}));
-        assert!(
-            matches!(result, VerificationResult::Block { .. }),
+        assert_matches!(
+            result,
+            VerificationResult::Block { .. },
             "SSH key path must be blocked"
         );
     }
@@ -1777,8 +1784,9 @@ mod tests {
     fn firewall_blocks_aws_env_var() {
         let v = fwv();
         let result = v.verify("shell", &json!({"command": "echo $AWS_SECRET_ACCESS_KEY"}));
-        assert!(
-            matches!(result, VerificationResult::Block { .. }),
+        assert_matches!(
+            result,
+            VerificationResult::Block { .. },
             "AWS env var exfiltration must be blocked"
         );
     }
@@ -1787,8 +1795,9 @@ mod tests {
     fn firewall_blocks_zeph_env_var() {
         let v = fwv();
         let result = v.verify("shell", &json!({"command": "cat ${ZEPH_CLAUDE_API_KEY}"}));
-        assert!(
-            matches!(result, VerificationResult::Block { .. }),
+        assert_matches!(
+            result,
+            VerificationResult::Block { .. },
             "ZEPH env var exfiltration must be blocked"
         );
     }
@@ -1819,8 +1828,9 @@ mod tests {
         };
         let v = FirewallVerifier::new(&cfg);
         let result = v.verify("read", &json!({"file_path": "/data/secrets/master.key"}));
-        assert!(
-            matches!(result, VerificationResult::Block { .. }),
+        assert_matches!(
+            result,
+            VerificationResult::Block { .. },
             "custom blocked path must be blocked"
         );
     }
@@ -1835,8 +1845,9 @@ mod tests {
         };
         let v = FirewallVerifier::new(&cfg);
         let result = v.verify("shell", &json!({"command": "echo $MY_SECRET"}));
-        assert!(
-            matches!(result, VerificationResult::Block { .. }),
+        assert_matches!(
+            result,
+            VerificationResult::Block { .. },
             "custom blocked env var must be blocked"
         );
     }

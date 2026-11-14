@@ -122,6 +122,7 @@ pub(crate) async fn llm_call_with_timeout(
 mod tests {
     use super::*;
     use crate::types::MessageId;
+    use std::assert_matches;
 
     #[test]
     fn cluster_by_cosine_similarity_groups_similar() {
@@ -209,8 +210,9 @@ mod tests {
         }];
 
         let result = llm_call_with_timeout(&provider, &messages, "test call").await;
-        assert!(
-            matches!(result, Err(MemoryError::Timeout(_))),
+        assert_matches!(
+            result,
+            Err(MemoryError::Timeout(_)),
             "expected Timeout error, got {result:?}"
         );
     }

@@ -901,6 +901,7 @@ fn parse_placeholder_importance(content: &str) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use zeph_common::{ProviderName, ToolCallId};
     use zeph_llm::provider::{ChatStream, Message, MessageMetadata, MessagePart, Role};
 
@@ -1052,10 +1053,10 @@ mod tests {
             .await;
 
         assert!(messages[1].metadata.fidelity_tag.is_none());
-        assert!(matches!(
+        assert_matches!(
             messages[1].parts.first(),
             Some(MessagePart::Compaction { .. })
-        ));
+        );
         let last = messages.last().unwrap();
         assert_eq!(last.content, "the current request");
         assert!(last.metadata.fidelity_tag.is_none());

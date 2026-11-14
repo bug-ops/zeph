@@ -6,6 +6,7 @@
 
 #![allow(clippy::large_futures)]
 
+use std::assert_matches;
 use std::sync::Arc;
 
 use tokio::sync::watch;
@@ -384,10 +385,10 @@ fn replayed_output_keeps_its_tool_output_shape() {
         replayed_from: Some(mcp("github")),
         ..Default::default()
     };
-    assert!(matches!(
+    assert_matches!(
         ToolOutputOrigin::from_output(&output),
         ToolOutputOrigin::Replayed { .. }
-    ));
+    );
     let synthetic = ToolOutput::synthetic(
         REPLAY.into(),
         "[skipped]",

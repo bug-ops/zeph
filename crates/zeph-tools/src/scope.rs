@@ -888,8 +888,9 @@ mod tests {
             PatternStrictness::Strict,
             false,
         );
-        assert!(
-            matches!(result, Err(ScopeError::DeadPattern { .. })),
+        assert_matches!(
+            result,
+            Err(ScopeError::DeadPattern { .. }),
             "expected DeadPattern, got {result:?}"
         );
     }
@@ -921,8 +922,9 @@ mod tests {
             PatternStrictness::Strict,
             false, // not general scope
         );
-        assert!(
-            matches!(result, Err(ScopeError::AccidentallyFull { .. })),
+        assert_matches!(
+            result,
+            Err(ScopeError::AccidentallyFull { .. }),
             "expected AccidentallyFull for non-general scope with '*'"
         );
     }
@@ -1028,8 +1030,9 @@ mod tests {
         // "read" is not in the narrow scope, so it must be rejected.
         let call_read = make_call("read");
         let result_read = executor.execute_tool_call(&call_read).await;
-        assert!(
-            matches!(result_read, Err(ToolError::OutOfScope { .. })),
+        assert_matches!(
+            result_read,
+            Err(ToolError::OutOfScope { .. }),
             "out-of-scope built-in tool must be rejected"
         );
     }
@@ -1084,8 +1087,9 @@ mod tests {
         let executor = ScopedToolExecutor::new(inner, scope);
         let call = make_call("bash"); // unqualified; not in narrow scope
         let result = executor.execute_tool_call(&call).await;
-        assert!(
-            matches!(result, Err(ToolError::OutOfScope { .. })),
+        assert_matches!(
+            result,
+            Err(ToolError::OutOfScope { .. }),
             "unqualified id not in scope must be rejected after normalization"
         );
     }

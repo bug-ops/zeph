@@ -524,6 +524,7 @@ impl<C: Channel> Agent<C> {
 mod tests {
     use super::*;
     use crate::testing::{MockChannel, MockToolExecutor, mock_provider};
+    use std::assert_matches;
     use zeph_llm::provider::{Role, ToolUseRequest};
     use zeph_skills::registry::SkillRegistry;
 
@@ -1240,10 +1241,7 @@ mod tests {
         assert_eq!(section_count(&a), 1);
 
         turn(&mut a, &[skill("plain", None)]);
-        assert!(matches!(
-            a.services.skill.execution,
-            SkillExecution::Dormant(_)
-        ));
+        assert_matches!(a.services.skill.execution, SkillExecution::Dormant(_));
         assert!(a.skill_state_tool_definition().is_none());
         let out = a
             .handle_skill_state_patch(&serde_json::json!({"note": "B"}))
@@ -1291,24 +1289,15 @@ mod tests {
         turn(&mut a, &s1);
         turn(&mut a, &[skill("plain", None)]);
         a.reset_skill_state();
-        assert!(matches!(
-            a.services.skill.execution,
-            SkillExecution::Inactive
-        ));
+        assert_matches!(a.services.skill.execution, SkillExecution::Inactive);
         turn(&mut a, &[skill("plain", None)]);
-        assert!(matches!(
-            a.services.skill.execution,
-            SkillExecution::Inactive
-        ));
+        assert_matches!(a.services.skill.execution, SkillExecution::Inactive);
 
         let mut a = agent();
         turn(&mut a, &s1);
         a.services.skill.state_enabled = false;
         turn(&mut a, &s1);
-        assert!(matches!(
-            a.services.skill.execution,
-            SkillExecution::Inactive
-        ));
+        assert_matches!(a.services.skill.execution, SkillExecution::Inactive);
     }
 
     #[test]

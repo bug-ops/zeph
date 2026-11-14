@@ -10,6 +10,8 @@
 //! request handlers, driven by a real `acp::Client` over a `tokio::io::duplex` byte stream.
 //! Each test runs inside a `tokio::task::LocalSet` because the agent session futures are `!Send`.
 
+#[cfg(any(feature = "unstable-session-fork", feature = "unstable-cancel-request"))]
+use std::assert_matches;
 use std::sync::Arc;
 
 use agent_client_protocol as acp;
@@ -1352,23 +1354,21 @@ async fn fork_session_copies_event_log_when_persistence_enabled() {
                 let events = child_log.read_all().await.expect("read child event log");
                 // 1 synthesized SessionStarted header (forked_from) + the 2 seeded events.
                 assert_eq!(events.len(), 3, "child log must contain the copied events");
-                assert!(matches!(
+                assert_matches!(
                     events[0].kind,
                     zeph_session::SessionEvent::SessionStarted {
                         forked_from: Some(_),
                         ..
                     }
-                ));
+                );
 
                 let parent_log = zeph_session::SessionEventLog::open(&source_dir)
                     .await
                     .expect("reopen source event log");
                 let parent_events = parent_log.read_all().await.expect("read source event log");
-                assert!(
-                    matches!(
-                        parent_events.last().expect("parent has events").kind,
-                        zeph_session::SessionEvent::ForkPoint { .. }
-                    ),
+                assert_matches!(
+                    parent_events.last().expect("parent has events").kind,
+                    zeph_session::SessionEvent::ForkPoint { .. },
                     "parent log must record a ForkPoint provenance event"
                 );
 
@@ -2176,11 +2176,11 @@ async fn cancel_request_during_prompt_cancels() {
                 // assertion only rules out a hang or panic.
                 match resp {
                     Ok(r) => {
-                        assert!(matches!(
+                        assert_matches!(
                             r.stop_reason,
                             acp::schema::v1::StopReason::EndTurn
                                 | acp::schema::v1::StopReason::Cancelled
-                        ));
+                        );
                     }
                     Err(e) => {
                         assert_eq!(

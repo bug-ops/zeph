@@ -1006,6 +1006,7 @@ fn glob_matches(pattern: &str, value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[tokio::test]
     async fn classify_builtin_shell_is_shell_risk() {
@@ -1194,13 +1195,13 @@ mod tests {
         let probe = LlmSafetyProbe::new(provider, 1_000, false);
         let args = serde_json::json!({});
         let verdict = probe.evaluate("shell", &args, &[]).await;
-        assert!(matches!(verdict, ProbeVerdict::Deny { .. }), "{verdict:?}");
+        assert_matches!(verdict, ProbeVerdict::Deny { .. }, "{verdict:?}");
     }
 
     #[test]
     fn parse_verdict_closing_brace_before_opening_brace_allows() {
         let v = LlmSafetyProbe::parse_verdict("no} verdict {");
-        assert!(matches!(v, ProbeVerdict::Allow));
+        assert_matches!(v, ProbeVerdict::Allow);
     }
 
     #[test]
@@ -1778,7 +1779,7 @@ mod tests {
         let verdict = sentinel
             .check_tool_call("builtin:shell", &args, 1, "calm")
             .await;
-        assert!(matches!(verdict, ProbeVerdict::Deny { .. }));
+        assert_matches!(verdict, ProbeVerdict::Deny { .. });
     }
 
     /// Drives `check_tool_call` for `tool_id` under `session_id` and returns the exact

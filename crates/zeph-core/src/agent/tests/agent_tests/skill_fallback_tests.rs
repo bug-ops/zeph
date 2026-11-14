@@ -47,8 +47,7 @@ fn extract_system_prompt(recorded: &Arc<Mutex<Vec<Vec<Message>>>>) -> String {
         .iter()
         .flatten()
         .find(|m| m.role == Role::System)
-        .map(|m| m.content.clone())
-        .unwrap_or_default()
+        .map_or_default(|m| m.content.clone())
 }
 
 // ---------- Test 1: no matcher → compact fallback ----------

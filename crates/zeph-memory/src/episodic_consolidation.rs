@@ -526,8 +526,7 @@ async fn extract_facts_via_llm(
         let source_ids: Vec<i64> = item
             .get("source_event_ids")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(serde_json::Value::as_i64).collect())
-            .unwrap_or_default();
+            .map_or_default(|arr| arr.iter().filter_map(serde_json::Value::as_i64).collect());
         facts.push(ExtractedFact {
             fact,
             source_event_ids: source_ids,

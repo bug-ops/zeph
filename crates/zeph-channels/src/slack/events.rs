@@ -189,7 +189,7 @@ fn parse_audio_files(event: &Value) -> Vec<SlackFile> {
     event
         .get("files")
         .and_then(|v| v.as_array())
-        .map(|arr| {
+        .map_or_default(|arr| {
             arr.iter()
                 .filter_map(|f| {
                     let mime = f.get("mimetype")?.as_str()?;
@@ -204,7 +204,6 @@ fn parse_audio_files(event: &Value) -> Vec<SlackFile> {
                 })
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 pub(crate) fn verify_signature(

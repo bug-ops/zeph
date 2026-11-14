@@ -8,6 +8,7 @@
 //! the real construction call sites in `src/commands/worktree.rs` and
 //! `src/runner.rs`.
 
+use std::assert_matches;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -252,8 +253,7 @@ async fn remove_refuses_locked_worktree_with_single_force() {
     );
 
     let err = mgr.remove(&handle, false).await.unwrap_err();
-    assert!(
-        matches!(err, WorktreeError::GitCommand { ref op, .. } if op == "worktree remove"),
+    assert_matches!(err, WorktreeError::GitCommand { ref op, .. } if op == "worktree remove",
         "expected a `worktree remove` GitCommand failure, got: {err:?}"
     );
     assert!(

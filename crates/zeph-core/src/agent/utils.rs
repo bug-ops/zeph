@@ -656,6 +656,7 @@ mod tests {
         MockChannel, MockToolExecutor, create_test_registry, mock_provider,
     };
     use super::*;
+    use std::assert_matches;
     use zeph_llm::provider::{MessageMetadata, MessagePart};
     use zeph_memory::graph::GraphStore;
     use zeph_memory::graph::types::EntityType;
@@ -899,10 +900,10 @@ mod tests {
             .iter()
             .position(|m| matches!(m.parts.first(), Some(MessagePart::Compaction { .. })))
             .unwrap();
-        assert!(matches!(
+        assert_matches!(
             agent.msg.messages[compaction_pos + 1].parts.first(),
             Some(MessagePart::CodeContext { .. })
-        ));
+        );
     }
 
     #[test]

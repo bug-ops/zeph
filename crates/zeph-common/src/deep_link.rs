@@ -433,8 +433,9 @@ mod tests {
     fn nul_byte_in_prompt_returns_control_chars_error() {
         let uri = "zeph://new-session?prompt=hello%00world";
         let err = parse_deep_link(uri).unwrap_err();
-        assert!(
-            matches!(err, DeepLinkError::PromptContainsControlChars),
+        assert_matches!(
+            err,
+            DeepLinkError::PromptContainsControlChars,
             "expected PromptContainsControlChars, got {err:?}"
         );
     }
@@ -453,8 +454,9 @@ mod tests {
         let uri = "zeph://new-session?prompt=hello%1bworld";
         // 0x1b falls in 0x0e..=0x1f range: rejected
         let err = parse_deep_link(uri).unwrap_err();
-        assert!(
-            matches!(err, DeepLinkError::PromptContainsControlChars),
+        assert_matches!(
+            err,
+            DeepLinkError::PromptContainsControlChars,
             "expected PromptContainsControlChars for ESC, got {err:?}"
         );
     }

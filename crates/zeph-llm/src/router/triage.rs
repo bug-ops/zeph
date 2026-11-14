@@ -895,6 +895,7 @@ impl LlmProvider for TriageRouter {
 mod tests {
     use super::*;
     use crate::mock::MockProvider;
+    use std::assert_matches;
 
     fn mock_provider(name: &str) -> AnyProvider {
         let mut p = MockProvider::default();
@@ -1776,7 +1777,7 @@ mod tests {
         );
         let messages = vec![make_user_msg("hi")];
         let result = router.chat_with_tools(&messages, &[]).await;
-        assert!(matches!(result, Err(LlmError::NoProviders)));
+        assert_matches!(result, Err(LlmError::NoProviders));
     }
 
     #[tokio::test]
@@ -1797,7 +1798,7 @@ mod tests {
         );
         let messages = vec![make_user_msg("hi")];
         let result = router.chat_with_tools(&messages, &[]).await.unwrap();
-        assert!(matches!(result, ChatResponse::Text { text: t, .. } if t == "expert answer"));
+        assert_matches!(result, ChatResponse::Text { text: t, .. } if t == "expert answer");
     }
 
     #[tokio::test]
@@ -1831,7 +1832,7 @@ mod tests {
         // ~100 estimated tokens (400 chars / 4): exceeds Simple's 80-token (80% of 100) threshold.
         let messages = vec![make_user_msg(&"a".repeat(400))];
         let result = router.chat_with_tools(&messages, &[]).await.unwrap();
-        assert!(matches!(result, ChatResponse::Text { text: t, .. } if t == "complex answer"));
+        assert_matches!(result, ChatResponse::Text { text: t, .. } if t == "complex answer");
     }
 
     #[tokio::test]
@@ -1863,7 +1864,7 @@ mod tests {
         // maybe_escalate_for_context moves off Simple in the first place.
         let messages = vec![make_user_msg(&"a".repeat(400))];
         let result = router.chat_with_tools(&messages, &[]).await;
-        assert!(matches!(result, Err(LlmError::NoProviders)));
+        assert_matches!(result, Err(LlmError::NoProviders));
     }
 
     #[tokio::test]
@@ -1885,7 +1886,7 @@ mod tests {
         // ~100 estimated tokens: exceeds Simple's 80-token (80% of 100) threshold.
         let messages = vec![make_user_msg(&"a".repeat(400))];
         let result = router.chat_with_tools(&messages, &[]).await;
-        assert!(matches!(result, Err(LlmError::NoProviders)));
+        assert_matches!(result, Err(LlmError::NoProviders));
     }
 
     #[tokio::test]
@@ -1910,7 +1911,7 @@ mod tests {
         );
         let messages = vec![make_user_msg("hi")];
         let result = router.chat_with_tools(&messages, &[]).await.unwrap();
-        assert!(matches!(result, ChatResponse::Text { text: t, .. } if t == "simple answer"));
+        assert_matches!(result, ChatResponse::Text { text: t, .. } if t == "simple answer");
     }
 
     // ── build_triage_prompt has no context size metadata (#2228) ─────────────
@@ -2035,7 +2036,7 @@ mod tests {
         );
         let messages = vec![make_user_msg("describe this screenshot"), image_msg()];
         let result = router.chat_with_tools(&messages, &[]).await.unwrap();
-        assert!(matches!(result, ChatResponse::Text { text: t, .. } if t == "vision answer"));
+        assert_matches!(result, ChatResponse::Text { text: t, .. } if t == "vision answer");
     }
 
     #[tokio::test]
@@ -2056,7 +2057,7 @@ mod tests {
         );
         let messages = vec![make_user_msg("describe this screenshot"), image_msg()];
         let result = router.chat_with_tools(&messages, &[]).await.unwrap();
-        assert!(matches!(result, ChatResponse::Text { text: t, .. } if t == "text-only answer"));
+        assert_matches!(result, ChatResponse::Text { text: t, .. } if t == "text-only answer");
     }
 
     #[test]

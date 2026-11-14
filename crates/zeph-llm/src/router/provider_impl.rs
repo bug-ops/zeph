@@ -116,10 +116,7 @@ impl LlmProvider for RouterProvider {
             let turn_cache = Mutex::new(TurnEmbedCache::default());
 
             // Pre-compute query embedding once for quality gate (fail-open on error).
-            let query_text = messages
-                .last()
-                .map(Message::to_llm_content)
-                .unwrap_or_default();
+            let query_text = messages.last().map_or_default(Message::to_llm_content);
             let query_embedding = if router.quality_gate.is_some() && !query_text.is_empty() {
                 router.embed_cached(query_text, &turn_cache).await.ok()
             } else {
@@ -277,8 +274,7 @@ impl LlmProvider for RouterProvider {
                 // this is a known pre-1.0 limitation — same as Thompson stream mode.
                 let query = messages
                     .last()
-                    .map(crate::provider::Message::to_llm_content)
-                    .unwrap_or_default();
+                    .map_or_default(crate::provider::Message::to_llm_content);
                 let p = router
                     .bandit_select_provider(query)
                     .await
@@ -682,8 +678,7 @@ impl LlmProvider for RouterProvider {
             if router.strategy == RouterStrategy::Bandit {
                 let query = messages
                     .last()
-                    .map(crate::provider::Message::to_llm_content)
-                    .unwrap_or_default();
+                    .map_or_default(crate::provider::Message::to_llm_content);
                 let p = router
                     .bandit_select_provider(query)
                     .await

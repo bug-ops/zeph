@@ -6,9 +6,7 @@ fn build_prompt(secret_key: &str, reason: Option<&str>) -> String {
     format!(
         "Sub-agent requests secret '{}'. Allow?{}",
         crate::text::truncate_to_chars(secret_key, 100),
-        reason
-            .map(|r| format!(" Reason: {}", crate::text::truncate_to_chars(r, 200)))
-            .unwrap_or_default()
+        reason.map_or_default(|r| format!(" Reason: {}", crate::text::truncate_to_chars(r, 200)))
     )
 }
 

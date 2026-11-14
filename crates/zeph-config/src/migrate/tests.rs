@@ -4,6 +4,7 @@
 //! Unit tests for config migration steps and the [`ConfigMigrator`](super::ConfigMigrator).
 
 use super::*;
+use std::assert_matches;
 
 #[test]
 fn migrations_registry_has_all_steps() {
@@ -124,10 +125,7 @@ fn malformed_input_returns_error() {
     let err = migrator
         .migrate("[[invalid toml [[[")
         .expect_err("should error");
-    assert!(
-        matches!(err, MigrateError::Parse(_)),
-        "expected Parse error"
-    );
+    assert_matches!(err, MigrateError::Parse(_), "expected Parse error");
 }
 
 #[test]
@@ -767,10 +765,7 @@ fn migrate_error_invalid_structure_formats_correctly() {
     // is present but cannot be obtained as a mutable table (defensive guard replacing the
     // previous .expect() calls that would have panicked).
     let err = MigrateError::InvalidStructure("test sentinel");
-    assert!(
-        matches!(err, MigrateError::InvalidStructure(_)),
-        "variant must match"
-    );
+    assert_matches!(err, MigrateError::InvalidStructure(_), "variant must match");
     let msg = err.to_string();
     assert!(
         msg.contains("invalid TOML structure"),

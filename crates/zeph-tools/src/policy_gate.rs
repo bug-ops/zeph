@@ -841,8 +841,9 @@ mod tests {
         let gate = make_gate(&config);
         gate.set_effective_trust(SkillTrustLevel::Quarantined);
         let result = gate.execute_tool_call(&make_call("shell")).await;
-        assert!(
-            matches!(result, Err(ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(ToolError::Blocked { .. }),
             "Quarantined context must not satisfy a Verified trust threshold allow rule"
         );
     }
@@ -889,8 +890,9 @@ mod tests {
         let slot: TrajectoryRiskSlot = Arc::new(RwLock::new(3u8)); // Critical
         let gate = make_gate(&config).with_trajectory_risk(slot);
         let result = gate.execute_tool_call(&make_call("builtin:shell")).await;
-        assert!(
-            matches!(result, Err(ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(ToolError::Blocked { .. }),
             "Critical trajectory must block even policy-allowed tool calls"
         );
         // LLM isolation: error message must not reveal risk level.

@@ -456,6 +456,7 @@ use imp::verify_one;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn sig_alg_from_jws_alg() {
@@ -468,10 +469,10 @@ mod tests {
     fn verify_empty_signatures_is_unverifiable_or_disabled() {
         let raw = serde_json::json!({"name": "peer"});
         let result = verify_card_signatures(&raw, &[], &[]);
-        assert!(matches!(
+        assert_matches!(
             result,
             SignatureVerification::Unverifiable { .. } | SignatureVerification::FeatureDisabled
-        ));
+        );
     }
 
     #[cfg(feature = "card-signing")]

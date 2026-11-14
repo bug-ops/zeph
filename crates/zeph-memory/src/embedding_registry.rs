@@ -668,6 +668,7 @@ async fn embed_and_collect_points(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn normalize_no_suffix() {
@@ -799,8 +800,9 @@ mod tests {
         // Query with a 2-dim vector (different model / dimension).
         let embed_fn = |_: &str| -> EmbedFuture { Box::pin(async { Ok(vec![1.0_f32, 0.0]) }) };
         let result = reg.search_raw("query", 5, embed_fn).await;
-        assert!(
-            matches!(result, Err(EmbeddingRegistryError::DimensionProbe(_))),
+        assert_matches!(
+            result,
+            Err(EmbeddingRegistryError::DimensionProbe(_)),
             "expected DimensionProbe error on dimension mismatch, got: {result:?}"
         );
     }
@@ -873,8 +875,9 @@ mod tests {
         let reg = EmbeddingRegistry::new(ops, "test_vec_fetch", ns);
         let keys = vec!["skill-a".to_string(), "skill-b".to_string()];
         let result = reg.get_vectors_by_keys(&keys).await;
-        assert!(
-            matches!(result, Err(EmbeddingRegistryError::VectorStore(_))),
+        assert_matches!(
+            result,
+            Err(EmbeddingRegistryError::VectorStore(_)),
             "expected VectorStore error, got: {result:?}"
         );
     }
@@ -1102,8 +1105,9 @@ mod tests {
         // Search with a 2-dim query (simulates a model switch without re-sync).
         let embed_fn_2d = |_: &str| -> EmbedFuture { Box::pin(async { Ok(vec![1.0_f32, 0.0]) }) };
         let result = reg.search_raw("query", 5, embed_fn_2d).await;
-        assert!(
-            matches!(result, Err(EmbeddingRegistryError::DimensionProbe(_))),
+        assert_matches!(
+            result,
+            Err(EmbeddingRegistryError::DimensionProbe(_)),
             "dimension mismatch must return DimensionProbe error, not silent near-zero scores; got: {result:?}"
         );
     }

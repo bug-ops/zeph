@@ -202,6 +202,7 @@ pub async fn hydrate_and_condense<C: Condenser>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::time::Duration;
     use zeph_context::summarization::{MessageTokenCounter, SummarizationDeps};
     use zeph_llm::any::AnyProvider;
@@ -346,10 +347,10 @@ mod tests {
             4,
             "3 original events + 1 Condensation event"
         );
-        assert!(matches!(
+        assert_matches!(
             all_events.last().unwrap().kind,
             SessionEvent::Condensation { .. }
-        ));
+        );
     }
 
     /// D-13 regression (spec-068 §8.1, N3): `hydrate_and_condense` must actually condense, not
@@ -432,10 +433,10 @@ mod tests {
             4,
             "3 original message events + 1 Condensation event appended by hydrate_and_condense"
         );
-        assert!(matches!(
+        assert_matches!(
             all_events.last().unwrap().kind,
             SessionEvent::Condensation { .. }
-        ));
+        );
     }
 
     /// #5646 regression, D-6 path: `hydrate_and_condense` — the function `context/assembly.rs`'s

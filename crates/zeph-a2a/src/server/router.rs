@@ -187,15 +187,13 @@ fn extract_task_id(bytes: &[u8]) -> String {
         return params
             .get("id")
             .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-            .unwrap_or_default();
+            .map_or_default(str::to_owned);
     }
     params
         .get("message")
         .and_then(|m| m.get("taskId"))
         .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-        .unwrap_or_default()
+        .map_or_default(str::to_owned)
 }
 
 #[cfg(test)]

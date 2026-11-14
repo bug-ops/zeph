@@ -5,6 +5,7 @@
 #![allow(unsafe_code)]
 #![allow(clippy::default_trait_access)]
 
+use std::assert_matches;
 use std::path::{Path, PathBuf};
 
 use super::*;
@@ -226,7 +227,7 @@ fn vault_args_struct_env_backend() {
 fn create_provider_ollama() {
     let config = Config::load(Path::new("/nonexistent")).unwrap();
     let provider = create_provider(&config).unwrap();
-    assert!(matches!(provider, AnyProvider::Ollama(_)));
+    assert_matches!(provider, AnyProvider::Ollama(_));
     assert_eq!(provider.name(), "ollama");
 }
 
@@ -414,7 +415,7 @@ use zeph_core::provider_factory::select_device;
 #[test]
 fn select_device_cpu_default() {
     let device = select_device(CandleDevice::Cpu).unwrap();
-    assert!(matches!(device, zeph_llm::candle_provider::Device::Cpu));
+    assert_matches!(device, zeph_llm::candle_provider::Device::Cpu);
 }
 
 #[cfg(all(feature = "candle", not(feature = "metal")))]
@@ -437,12 +438,12 @@ fn select_device_cuda_without_feature_errors() {
 #[test]
 fn select_device_auto_fallback() {
     let device = select_device(CandleDevice::Auto).unwrap();
-    assert!(matches!(
+    assert_matches!(
         device,
         zeph_llm::candle_provider::Device::Cpu
             | zeph_llm::candle_provider::Device::Cuda(_)
             | zeph_llm::candle_provider::Device::Metal(_)
-    ));
+    );
 }
 
 #[cfg(feature = "candle")]
@@ -948,7 +949,7 @@ fn create_embedding_provider_prefers_embed_flag() {
     ));
     let embed_provider = create_embedding_provider(&config, &primary);
     // Should resolve to an Ollama provider (the embed=true entry).
-    assert!(matches!(embed_provider, AnyProvider::Ollama(_)));
+    assert_matches!(embed_provider, AnyProvider::Ollama(_));
 }
 
 #[test]
@@ -969,7 +970,7 @@ fn create_embedding_provider_falls_back_to_embedding_model_entry() {
         "nomic-embed-text".into(),
     ));
     let embed_provider = create_embedding_provider(&config, &primary);
-    assert!(matches!(embed_provider, AnyProvider::Ollama(_)));
+    assert_matches!(embed_provider, AnyProvider::Ollama(_));
 }
 
 #[test]
@@ -990,7 +991,7 @@ fn create_embedding_provider_falls_back_to_primary_when_no_embedding_entry() {
     ));
     let embed_provider = create_embedding_provider(&config, &primary);
     // Falls back to primary clone — must still be Ollama.
-    assert!(matches!(embed_provider, AnyProvider::Ollama(_)));
+    assert_matches!(embed_provider, AnyProvider::Ollama(_));
     assert_eq!(embed_provider.name(), primary.name());
 }
 

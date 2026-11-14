@@ -671,8 +671,7 @@ mod tests {
     fn parse_resume_id_too_short_returns_error() {
         // id "abc" has only 3 chars — below the 4-char minimum.
         let err = AgentCommand::parse("/agent resume abc continue", &[]).unwrap_err();
-        assert!(
-            matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("4 characters")),
+        assert_matches!(err, SubAgentError::InvalidCommand(ref m) if m.contains("4 characters"),
             "expected min-length error, got: {err:?}"
         );
     }

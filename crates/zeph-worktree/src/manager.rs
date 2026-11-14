@@ -1992,8 +1992,9 @@ mod tests {
         let result = mgr.create("dirty-agent").await;
         // Result is an error because the fake runner returns an error for `worktree add`,
         // but we reached that point — meaning check_dirty_tree did NOT abort.
-        assert!(
-            matches!(result, Err(WorktreeError::GitCommand { .. })),
+        assert_matches!(
+            result,
+            Err(WorktreeError::GitCommand { .. }),
             "expected GitCommand error from fake runner, not an early abort: {result:?}"
         );
     }

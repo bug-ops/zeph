@@ -455,6 +455,7 @@ pub const AWS_SECRET_KEY_PATTERN: &str = r#"(?i)((?:aws[_\-. ]?secret[_\-. ]?acc
 #[cfg(test)]
 mod tests {
     use regex::Regex;
+    use std::assert_matches;
 
     use super::*;
 
@@ -632,24 +633,24 @@ mod tests {
         );
 
         let lower = "x9glpat-ab_cd-efghijklmnopqr";
-        assert!(matches!(
+        assert_matches!(
             redact_glued_matches(
                 lower,
                 GluedTier::Distinctive,
                 [(1..lower.len(), 1..2, 8..lower.len())]
             ),
             std::borrow::Cow::Borrowed(_)
-        ));
+        );
 
         let ambiguous = "x9sk-aB3_cd-efghijklmnopqr";
-        assert!(matches!(
+        assert_matches!(
             redact_glued_matches(
                 ambiguous,
                 GluedTier::Ambiguous,
                 [(1..ambiguous.len(), 1..2, 5..ambiguous.len())]
             ),
             std::borrow::Cow::Borrowed(_)
-        ));
+        );
     }
 
     #[test]

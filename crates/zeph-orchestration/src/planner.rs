@@ -639,8 +639,9 @@ mod tests {
                 }],
             };
             let err = convert_response(response, "goal", &agents(), 20, true).unwrap_err();
-            assert!(
-                matches!(err, OrchestrationError::PlanningFailed(_)),
+            assert_matches!(
+                err,
+                OrchestrationError::PlanningFailed(_),
                 "expected PlanningFailed for task_id '{bad_id}'"
             );
         }
@@ -965,6 +966,7 @@ mod tests {
 
     mod integration {
         use super::*;
+        use std::assert_matches;
         use zeph_llm::mock::MockProvider;
 
         fn valid_json_response() -> String {
@@ -1129,8 +1131,9 @@ mod tests {
                 verify_predicate_enabled: false,
             };
             let err = planner.plan("some goal", &agents()).await.unwrap_err();
-            assert!(
-                matches!(err, OrchestrationError::PlanningFailed(_)),
+            assert_matches!(
+                err,
+                OrchestrationError::PlanningFailed(_),
                 "timeout must return PlanningFailed; got: {err:?}"
             );
         }

@@ -587,7 +587,7 @@ mod tests {
                 first_message_index: 3
             }
         );
-        assert!(matches!(
+        assert_matches!(
             content.blocks(),
             [
                 zeph_llm::provider::AssistantBlock::Thinking(
@@ -600,7 +600,7 @@ mod tests {
                 zeph_llm::provider::AssistantBlock::ToolUse(call),
             ] if a == "first" && t == "plan" && b == "second"
                 && call.id == "toolu_01" && call.name == "bash"
-        ));
+        );
     }
 
     fn streamed_call_events() -> Vec<ToolSseEvent> {

@@ -166,6 +166,7 @@ fn message_index_from_path(path: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn parse(json: &str) -> Vec<InputTransformation> {
         serde_json::from_str(json).unwrap()
@@ -232,10 +233,10 @@ mod tests {
     #[test]
     fn missing_reason_counts_as_history_invalidating() {
         let t = parse(r#"[{"type":"thinking_dropped","path":"messages.1.content.0"}]"#);
-        assert!(matches!(
+        assert_matches!(
             ThinkingReplay::from_transformations(&t),
             ThinkingReplay::Dropped { .. }
-        ));
+        );
     }
 
     #[test]

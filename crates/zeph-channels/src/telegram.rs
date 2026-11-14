@@ -907,11 +907,7 @@ async fn proxy_handler(State(state): State<GuestProxyState>, req: Request<Body>)
     // proxy_url passed to Bot::set_api_url is http://127.0.0.1:<port>/bot<TOKEN>
     // teloxide appends /<method> to base_url, so path is /bot<TOKEN>/<method>
     let path = req.uri().path();
-    let query = req
-        .uri()
-        .query()
-        .map(|q| format!("?{q}"))
-        .unwrap_or_default();
+    let query = req.uri().query().map_or_default(|q| format!("?{q}"));
     let method_part = path.splitn(4, '/').nth(3).unwrap_or("");
     let upstream_url = format!("{}/{method_part}{query}", state.upstream);
 
@@ -2542,8 +2538,9 @@ mod tests {
         tx.send(plain_message("/cancel")).await.unwrap();
 
         let response = channel.elicit(request).await.unwrap();
-        assert!(
-            matches!(response, ElicitationResponse::Cancelled),
+        assert_matches!(
+            response,
+            ElicitationResponse::Cancelled,
             "expected Cancelled, got {response:?}"
         );
     }

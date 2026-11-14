@@ -2597,7 +2597,7 @@ mod pg {
             ToolResultSource::Native(NativeToolKind::Web),
             ToolResultSource::Native(NativeToolKind::Memory),
             ToolResultSource::Mcp {
-                server_id: Some("github".to_owned()),
+                server_id: Some("github".into()),
             },
             ToolResultSource::Mcp { server_id: None },
             ToolResultSource::Archived(UntrustedTier::Local),

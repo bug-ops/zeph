@@ -301,8 +301,9 @@ path = "../outside-skill"
     let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
 
     let err = mgr.add(source.to_str().unwrap()).unwrap_err();
-    assert!(
-        matches!(err, PluginError::InvalidSource { .. }),
+    assert_matches!(
+        err,
+        PluginError::InvalidSource { .. },
         "expected InvalidSource for path traversal, got {err:?}"
     );
 }
@@ -338,8 +339,9 @@ path = "../outside-skill"
     );
 
     let err = mgr.scan_targets(source.to_str().unwrap()).unwrap_err();
-    assert!(
-        matches!(err, PluginError::InvalidSource { .. }),
+    assert_matches!(
+        err,
+        PluginError::InvalidSource { .. },
         "expected InvalidSource for path traversal in scan_targets, got {err:?}"
     );
 }
@@ -371,8 +373,9 @@ path = "skills/broken-skill"
     let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
 
     let err = mgr.add(source.to_str().unwrap()).unwrap_err();
-    assert!(
-        matches!(err, PluginError::Io { .. }),
+    assert_matches!(
+        err,
+        PluginError::Io { .. },
         "expected Io error when canonicalize fails on broken symlink, got {err:?}"
     );
 }
@@ -399,8 +402,9 @@ command = "/tmp/evil/npx"
     let mgr = PluginManager::new(plugins_dir, managed_dir, vec!["npx".to_owned()], vec![]);
 
     let err = mgr.add(source.to_str().unwrap()).unwrap_err();
-    assert!(
-        matches!(err, PluginError::DisallowedMcpCommand { .. }),
+    assert_matches!(
+        err,
+        PluginError::DisallowedMcpCommand { .. },
         "expected DisallowedMcpCommand for basename bypass, got {err:?}"
     );
 }
@@ -432,8 +436,9 @@ fn managed_skill_conflict_detected() {
     let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
 
     let err = mgr.add(source.to_str().unwrap()).unwrap_err();
-    assert!(
-        matches!(err, PluginError::SkillNameConflictWithManaged { .. }),
+    assert_matches!(
+        err,
+        PluginError::SkillNameConflictWithManaged { .. },
         "expected SkillNameConflictWithManaged, got {err:?}"
     );
 }
@@ -464,8 +469,9 @@ fn cross_plugin_skill_conflict_detected() {
         &[("shared-skill", "body")],
     );
     let err = mgr.add(source_b.to_str().unwrap()).unwrap_err();
-    assert!(
-        matches!(err, PluginError::SkillNameConflictWithPlugin { .. }),
+    assert_matches!(
+        err,
+        PluginError::SkillNameConflictWithPlugin { .. },
         "expected SkillNameConflictWithPlugin, got {err:?}"
     );
 }
@@ -575,8 +581,9 @@ fn list_installed_ignores_non_directory_entries() {
 #[test]
 fn validate_plugin_name_empty_string_rejected() {
     let err = validate_plugin_name("").unwrap_err();
-    assert!(
-        matches!(err, PluginError::InvalidName { .. }),
+    assert_matches!(
+        err,
+        PluginError::InvalidName { .. },
         "expected InvalidName for empty string, got {err:?}"
     );
 }
@@ -584,8 +591,9 @@ fn validate_plugin_name_empty_string_rejected() {
 #[test]
 fn validate_plugin_name_with_dot_rejected() {
     let err = validate_plugin_name("foo.bar").unwrap_err();
-    assert!(
-        matches!(err, PluginError::InvalidName { .. }),
+    assert_matches!(
+        err,
+        PluginError::InvalidName { .. },
         "expected InvalidName for name with dot, got {err:?}"
     );
 }
@@ -593,8 +601,9 @@ fn validate_plugin_name_with_dot_rejected() {
 #[test]
 fn validate_plugin_name_with_backslash_rejected() {
     let err = validate_plugin_name("foo\\bar").unwrap_err();
-    assert!(
-        matches!(err, PluginError::InvalidName { .. }),
+    assert_matches!(
+        err,
+        PluginError::InvalidName { .. },
         "expected InvalidName for name with backslash, got {err:?}"
     );
 }
@@ -602,8 +611,9 @@ fn validate_plugin_name_with_backslash_rejected() {
 #[test]
 fn validate_plugin_name_with_space_rejected() {
     let err = validate_plugin_name("foo bar").unwrap_err();
-    assert!(
-        matches!(err, PluginError::InvalidName { .. }),
+    assert_matches!(
+        err,
+        PluginError::InvalidName { .. },
         "expected InvalidName for name with space, got {err:?}"
     );
 }
@@ -612,8 +622,9 @@ fn validate_plugin_name_with_space_rejected() {
 fn validate_plugin_name_max_length_boundary() {
     assert!(validate_plugin_name(&"a".repeat(64)).is_ok());
     let err = validate_plugin_name(&"a".repeat(65)).unwrap_err();
-    assert!(
-        matches!(err, PluginError::InvalidName { .. }),
+    assert_matches!(
+        err,
+        PluginError::InvalidName { .. },
         "expected InvalidName for 65-char name, got {err:?}"
     );
 }
@@ -621,8 +632,9 @@ fn validate_plugin_name_max_length_boundary() {
 #[test]
 fn validate_plugin_name_leading_dash_rejected() {
     let err = validate_plugin_name("-foo").unwrap_err();
-    assert!(
-        matches!(err, PluginError::InvalidName { .. }),
+    assert_matches!(
+        err,
+        PluginError::InvalidName { .. },
         "expected InvalidName for leading dash, got {err:?}"
     );
 }
@@ -630,13 +642,15 @@ fn validate_plugin_name_leading_dash_rejected() {
 #[test]
 fn validate_plugin_name_leading_digit_rejected() {
     let err = validate_plugin_name("123").unwrap_err();
-    assert!(
-        matches!(err, PluginError::InvalidName { .. }),
+    assert_matches!(
+        err,
+        PluginError::InvalidName { .. },
         "expected InvalidName for digit-only name, got {err:?}"
     );
     let err = validate_plugin_name("1abc").unwrap_err();
-    assert!(
-        matches!(err, PluginError::InvalidName { .. }),
+    assert_matches!(
+        err,
+        PluginError::InvalidName { .. },
         "expected InvalidName for digit-prefixed name, got {err:?}"
     );
 }
@@ -678,8 +692,7 @@ model = "evil-model"
 "#;
     let config: toml::Value = toml::from_str(toml_str).unwrap();
     let err = validate_overlay_keys(&config).unwrap_err();
-    assert!(
-        matches!(err, PluginError::UnsafeOverlay { ref key } if key == "llm.model"),
+    assert_matches!(err, PluginError::UnsafeOverlay { ref key } if key == "llm.model",
         "expected UnsafeOverlay with key=\"llm.model\", got {err:?}"
     );
 }
@@ -692,8 +705,9 @@ tools = "not-a-table"
 "#;
     let config: toml::Value = toml::from_str(toml_str).unwrap();
     let err = validate_overlay_keys(&config).unwrap_err();
-    assert!(
-        matches!(err, PluginError::UnsafeOverlay { .. }),
+    assert_matches!(
+        err,
+        PluginError::UnsafeOverlay { .. },
         "expected UnsafeOverlay for non-table section, got {err:?}"
     );
 }
@@ -758,8 +772,9 @@ path = "skills/no-skill-md"
     let mgr = PluginManager::new(plugins_dir, managed_dir, vec![], vec![]);
 
     let err = mgr.add(source.to_str().unwrap()).unwrap_err();
-    assert!(
-        matches!(err, PluginError::SkillEntryMissing { .. }),
+    assert_matches!(
+        err,
+        PluginError::SkillEntryMissing { .. },
         "expected SkillEntryMissing when SKILL.md is absent, got {err:?}"
     );
 }
@@ -812,8 +827,9 @@ fn extract_archive_safe_rejects_non_gz_bytes() {
     let tmp = tempfile::tempdir().unwrap();
     let err =
         extract_archive_safe(fake_bytes, tmp.path(), "http://example.com/plugin.zip").unwrap_err();
-    assert!(
-        matches!(err, PluginError::InvalidSource { .. }),
+    assert_matches!(
+        err,
+        PluginError::InvalidSource { .. },
         "non-gz archive must return InvalidSource, got {err:?}"
     );
 }
@@ -955,8 +971,7 @@ async fn add_remote_connect_timeout_returns_download_failed() {
 
     let url = format!("{}/timeout-plugin.tar.gz", mock_server.uri());
     let err = mgr.add_remote(&url, None).await.unwrap_err();
-    assert!(
-        matches!(err, PluginError::DownloadFailed { ref reason, .. } if reason.contains("timed out")),
+    assert_matches!(err, PluginError::DownloadFailed { ref reason, .. } if reason.contains("timed out"),
         "slow response must produce DownloadFailed with timeout message, got {err:?}"
     );
 }
@@ -994,8 +1009,9 @@ async fn add_remote_wrong_hash_returns_integrity_error() {
 
     let url = format!("{}/bad-plugin.tar.gz", mock_server.uri());
     let err = mgr.add_remote(&url, Some(&wrong_hash)).await.unwrap_err();
-    assert!(
-        matches!(err, PluginError::IntegrityCheckFailed { .. }),
+    assert_matches!(
+        err,
+        PluginError::IntegrityCheckFailed { .. },
         "wrong hash must produce IntegrityCheckFailed, got {err:?}"
     );
 }
@@ -1023,8 +1039,7 @@ async fn add_remote_rejects_oversized_content_length() {
 
     let url = format!("{}/huge-plugin.tar.gz", mock_server.uri());
     let err = mgr.add_remote(&url, None).await.unwrap_err();
-    assert!(
-        matches!(err, PluginError::DownloadFailed { ref reason, .. } if reason.contains("archive too large")),
+    assert_matches!(err, PluginError::DownloadFailed { ref reason, .. } if reason.contains("archive too large"),
         "oversized Content-Length must be rejected with DownloadFailed, got {err:?}"
     );
 }
@@ -1158,8 +1173,9 @@ path = "skills/my-skill"
     // No .plugin-source.toml is written by `add()` — only by `add_remote()`.
     let results = mgr.check_auto_updates().await;
     assert_eq!(results.len(), 1);
-    assert!(
-        matches!(results[0].status, AutoUpdateStatus::NoSource),
+    assert_matches!(
+        results[0].status,
+        AutoUpdateStatus::NoSource,
         "local-installed plugin must return NoSource, got {:?}",
         results[0].status
     );
@@ -1209,8 +1225,9 @@ path = "skills/my-skill"
 
     let results = mgr.check_auto_updates().await;
     assert_eq!(results.len(), 1);
-    assert!(
-        matches!(results[0].status, AutoUpdateStatus::UpToDate),
+    assert_matches!(
+        results[0].status,
+        AutoUpdateStatus::UpToDate,
         "identical archive must yield UpToDate, got {:?}",
         results[0].status
     );
@@ -1291,12 +1308,11 @@ path = "skills/my-skill"
 
     let results = mgr.check_auto_updates().await;
     assert_eq!(results.len(), 1);
-    assert!(
-        matches!(
+    assert_matches!(
             &results[0].status,
             AutoUpdateStatus::Updated { old_version, new_version }
             if old_version == "0.1.0" && new_version == "0.2.0"
-        ),
+        ,
         "changed archive must yield Updated(0.1.0 → 0.2.0), got {:?}",
         results[0].status
     );
@@ -1351,8 +1367,9 @@ path = "skills/my-skill"
 
     let results = mgr.check_auto_updates().await;
     assert_eq!(results.len(), 1);
-    assert!(
-        matches!(results[0].status, AutoUpdateStatus::Failed(_)),
+    assert_matches!(
+        results[0].status,
+        AutoUpdateStatus::Failed(_),
         "HTTP 404 must yield Failed, got {:?}",
         results[0].status
     );
@@ -1409,8 +1426,7 @@ path = "skills/my-skill"
 
     let results = mgr.check_auto_updates().await;
     assert_eq!(results.len(), 1);
-    assert!(
-        matches!(&results[0].status, AutoUpdateStatus::Failed(reason) if reason.contains("archive too large")),
+    assert_matches!(&results[0].status, AutoUpdateStatus::Failed(reason) if reason.contains("archive too large"),
         "oversized Content-Length must yield Failed, got {:?}",
         results[0].status
     );
@@ -1449,8 +1465,7 @@ async fn check_auto_updates_skips_plugins_with_auto_update_false() {
 #[test]
 fn validate_url_scheme_rejects_file_url() {
     let err = validate_url_scheme("file:///etc/passwd").unwrap_err();
-    assert!(
-        matches!(err, PluginError::InvalidSource { ref reason, .. } if reason.contains("file")),
+    assert_matches!(err, PluginError::InvalidSource { ref reason, .. } if reason.contains("file"),
         "file:// URL must be rejected, got {err:?}"
     );
 }
@@ -1458,8 +1473,9 @@ fn validate_url_scheme_rejects_file_url() {
 #[test]
 fn validate_url_scheme_rejects_data_url() {
     let err = validate_url_scheme("data:text/plain,hello").unwrap_err();
-    assert!(
-        matches!(err, PluginError::InvalidSource { .. }),
+    assert_matches!(
+        err,
+        PluginError::InvalidSource { .. },
         "data: URL must be rejected, got {err:?}"
     );
 }
@@ -1477,8 +1493,9 @@ fn validate_url_scheme_accepts_http() {
 #[test]
 fn validate_url_scheme_rejects_invalid_url() {
     let err = validate_url_scheme("not a url at all").unwrap_err();
-    assert!(
-        matches!(err, PluginError::InvalidSource { .. }),
+    assert_matches!(
+        err,
+        PluginError::InvalidSource { .. },
         "invalid URL must return InvalidSource, got {err:?}"
     );
 }
@@ -1493,8 +1510,9 @@ async fn add_remote_rejects_file_scheme_url() {
         .add_remote("file:///etc/passwd", None)
         .await
         .unwrap_err();
-    assert!(
-        matches!(err, PluginError::InvalidSource { .. }),
+    assert_matches!(
+        err,
+        PluginError::InvalidSource { .. },
         "add_remote must reject file:// URL, got {err:?}"
     );
 }
@@ -1530,8 +1548,9 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
     let results = mgr.check_auto_updates().await;
     assert_eq!(results.len(), 1);
-    assert!(
-        matches!(results[0].status, AutoUpdateStatus::Failed(_)),
+    assert_matches!(
+        results[0].status,
+        AutoUpdateStatus::Failed(_),
         "file:// URL in source sidecar must yield Failed, got {:?}",
         results[0].status
     );
@@ -1610,8 +1629,9 @@ path = "skills/my-skill"
 
     let results = mgr.check_auto_updates().await;
     assert_eq!(results.len(), 1);
-    assert!(
-        matches!(results[0].status, AutoUpdateStatus::Failed(_)),
+    assert_matches!(
+        results[0].status,
+        AutoUpdateStatus::Failed(_),
         "name change in update archive must yield Failed, got {:?}",
         results[0].status
     );
@@ -1701,8 +1721,7 @@ fn remove_refused_when_dependent_enabled() {
         vec![],
     );
     let err = mgr.remove("base").unwrap_err();
-    assert!(
-        matches!(err, PluginError::DependencyRequired { ref name, .. } if name == "base"),
+    assert_matches!(err, PluginError::DependencyRequired { ref name, .. } if name == "base",
         "expected DependencyRequired, got {err:?}"
     );
 }
@@ -1737,8 +1756,7 @@ fn disable_refused_when_dependent_enabled() {
         vec![],
     );
     let err = mgr.disable("base", false).unwrap_err();
-    assert!(
-        matches!(err, PluginError::DependencyRequired { ref name, .. } if name == "base"),
+    assert_matches!(err, PluginError::DependencyRequired { ref name, .. } if name == "base",
         "expected DependencyRequired, got {err:?}"
     );
 }
@@ -1836,8 +1854,9 @@ fn enable_detects_dependency_cycle() {
         vec![],
     );
     let err = mgr.enable("alpha").unwrap_err();
-    assert!(
-        matches!(err, PluginError::DependencyCycle { .. }),
+    assert_matches!(
+        err,
+        PluginError::DependencyCycle { .. },
         "expected DependencyCycle, got {err:?}"
     );
 }
@@ -1883,14 +1902,13 @@ fn enable_returns_missing_dependency_when_dep_not_installed() {
         vec![],
     );
     let err = mgr.enable("needs-ghost").unwrap_err();
-    assert!(
-        matches!(
+    assert_matches!(
             err,
             PluginError::MissingDependency {
                 ref dependency,
                 ..
             } if dependency == "nonexistent"
-        ),
+        ,
         "expected MissingDependency, got {err:?}"
     );
 }
@@ -1922,8 +1940,9 @@ fn add_rejects_too_many_dependencies() {
         vec![],
     );
     let err = mgr.add(plugin_src.path().to_str().unwrap()).unwrap_err();
-    assert!(
-        matches!(err, PluginError::InvalidManifest(_)),
+    assert_matches!(
+        err,
+        PluginError::InvalidManifest(_),
         "expected InvalidManifest for too many dependencies, got {err:?}"
     );
 }
@@ -1948,8 +1967,9 @@ fn add_rejects_invalid_dependency_name() {
         vec![],
     );
     let err = mgr.add(plugin_src.path().to_str().unwrap()).unwrap_err();
-    assert!(
-        matches!(err, PluginError::InvalidName { .. }),
+    assert_matches!(
+        err,
+        PluginError::InvalidName { .. },
         "expected InvalidName for malformed dep name, got {err:?}"
     );
 }
@@ -2011,8 +2031,9 @@ fn disable_force_false_same_as_no_force() {
     );
     // force=false with dependents must still refuse.
     let err = mgr.disable("base", false).unwrap_err();
-    assert!(
-        matches!(err, PluginError::DependencyRequired { .. }),
+    assert_matches!(
+        err,
+        PluginError::DependencyRequired { .. },
         "expected DependencyRequired with force=false, got {err:?}"
     );
 }
@@ -2047,8 +2068,9 @@ fn collect_skill_dirs_excludes_disabled_plugin() {
 #[test]
 fn http_url_rejected() {
     let err = validate_url_scheme_ephemeral("http://example.com/plugin.tar.gz").unwrap_err();
-    assert!(
-        matches!(err, PluginError::InsecureUrl(_)),
+    assert_matches!(
+        err,
+        PluginError::InsecureUrl(_),
         "http:// URL must return InsecureUrl, got {err:?}"
     );
 }
@@ -2162,8 +2184,9 @@ async fn sha256_mismatch_rejects() {
     .await
     .unwrap_err();
 
-    assert!(
-        matches!(err, PluginError::IntegrityCheckFailed { .. }),
+    assert_matches!(
+        err,
+        PluginError::IntegrityCheckFailed { .. },
         "SHA-256 mismatch must return IntegrityCheckFailed, got {err:?}"
     );
 }
@@ -2210,8 +2233,7 @@ async fn add_remote_rejects_archive_with_symlink_entry() {
     );
     let url = format!("{}/evil.tar.gz", mock_server.uri());
     let err = mgr.add_remote(&url, None).await.unwrap_err();
-    assert!(
-        matches!(err, PluginError::InvalidSource { ref reason, .. } if reason.contains("symlink")),
+    assert_matches!(err, PluginError::InvalidSource { ref reason, .. } if reason.contains("symlink"),
         "add_remote must reject symlink entries via extract_archive_safe, got {err:?}"
     );
 }
@@ -2400,8 +2422,7 @@ async fn add_remote_rejects_https_downgrade_redirect() {
     );
     let url = format!("{}/redirect.tar.gz", mock_server.uri());
     let err = mgr.add_remote(&url, None).await.unwrap_err();
-    assert!(
-        matches!(err, PluginError::InsecureUrl(ref reason) if reason.contains("non-HTTPS")),
+    assert_matches!(err, PluginError::InsecureUrl(ref reason) if reason.contains("non-HTTPS"),
         "add_remote must reject a redirect leaving https, got {err:?}"
     );
 }
@@ -2459,11 +2480,10 @@ path = "skills/my-skill"
 
     let results = mgr.check_auto_updates().await;
     assert_eq!(results.len(), 1);
-    assert!(
-        matches!(
+    assert_matches!(
             &results[0].status,
             AutoUpdateStatus::Failed(reason) if reason.contains("non-HTTPS")
-        ),
+        ,
         "auto-update must reject a redirect leaving https, got {:?}",
         results[0].status
     );

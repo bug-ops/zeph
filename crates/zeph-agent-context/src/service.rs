@@ -2140,6 +2140,7 @@ pub(crate) fn remove_by_part_or_prefix(
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::collections::HashSet;
     use std::sync::Arc;
 
@@ -2554,10 +2555,10 @@ mod tests {
 
         ContextService::new().trim_messages_to_budget(&mut window, 1);
 
-        assert!(matches!(
+        assert_matches!(
             window.messages[1].parts.first(),
             Some(MessagePart::Compaction { .. })
-        ));
+        );
         assert!(window.messages.len() < 5);
     }
 
@@ -2566,10 +2567,7 @@ mod tests {
         let mut msgs = vec![sys("system"), compaction_block(), user("turn input")];
         insert_at_context_floor(&mut msgs, sys("recall"));
         assert_eq!(msgs[2].content, "recall");
-        assert!(matches!(
-            msgs[1].parts.first(),
-            Some(MessagePart::Compaction { .. })
-        ));
+        assert_matches!(msgs[1].parts.first(), Some(MessagePart::Compaction { .. }));
     }
 
     #[test]
@@ -2628,6 +2626,7 @@ mod tests {
     // Tests that every Some(msg) field in PreparedContext increments inserted_count by 1.
     mod inserted_count_tests {
         use parking_lot::RwLock;
+        use std::assert_matches;
         use std::borrow::Cow;
         use std::collections::HashSet;
         use std::sync::Arc;
@@ -3010,10 +3009,10 @@ mod tests {
             let inserted = apply(&mut msgs, prepared).await;
 
             assert_eq!(inserted, 1);
-            assert!(matches!(
+            assert_matches!(
                 msgs[1].parts.first(),
                 Some(zeph_llm::provider::MessagePart::Compaction { .. })
-            ));
+            );
             assert!(msgs[2].content.contains("recall"));
             assert_eq!(msgs.last().unwrap().content, "turn input");
         }
@@ -3024,6 +3023,7 @@ mod tests {
     // must carry the fixed blocked placeholder rather than the pre-quarantine sanitized body.
     mod quarantine_fail_strategy_tests {
         use parking_lot::RwLock;
+        use std::assert_matches;
         use std::borrow::Cow;
         use std::sync::Arc;
 
@@ -3376,9 +3376,9 @@ mod tests {
                 P::Text { text: "c".into() },
             ];
             let part = crate::service::collapsed_part(&parts, "body".into());
-            assert!(matches!(part, P::Summary { ref text } if text == "body"));
+            assert_matches!(part, P::Summary { ref text } if text == "body");
             let no_memory = crate::service::collapsed_part(&parts[2..], "body".into());
-            assert!(matches!(no_memory, P::Text { ref text } if text == "body"));
+            assert_matches!(no_memory, P::Text { ref text } if text == "body");
         }
 
         #[test]

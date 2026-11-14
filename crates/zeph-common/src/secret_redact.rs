@@ -315,6 +315,7 @@ pub fn scrub_content(text: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     const GITHUB_TAIL: &str = "mNoPqRsTuVwXyZ0123456789aBcDeFgHiJkLmNoPqRsTuVwXyZ01234567";
 
@@ -345,19 +346,16 @@ mod tests {
             "mygithub_pat_rotation_schedule_doc",
             "github_pat_short_token",
         ] {
-            assert!(
-                matches!(redact_prefixed_secrets(text), Cow::Borrowed(_)),
-                "{text}"
-            );
+            assert_matches!(redact_prefixed_secrets(text), Cow::Borrowed(_), "{text}");
         }
     }
 
     #[test]
     fn clean_text_is_not_allocated() {
-        assert!(matches!(
+        assert_matches!(
             redact_prefixed_secrets("task-runner-for-k8s-clusters"),
             Cow::Borrowed(_)
-        ));
+        );
     }
 
     const AWS_SECRET: &str = "aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
@@ -495,14 +493,14 @@ mod tests {
             "x=3dtask-list",
         ] {
             let result = scrub_secret_shapes(text);
-            assert!(matches!(result, Cow::Borrowed(_)), "{text} -> {result}");
+            assert_matches!(result, Cow::Borrowed(_), "{text} -> {result}");
         }
     }
 
     #[test]
     fn ansi_boundary_leaves_plain_text_intact() {
         let result = scrub_secret_shapes("\x1b[32mdisk-usage ok\x1b[0m");
-        assert!(matches!(result, Cow::Borrowed(_)), "{result}");
+        assert_matches!(result, Cow::Borrowed(_), "{result}");
     }
 
     #[test]
@@ -514,7 +512,7 @@ mod tests {
             "pid 12345:AA is not a token",
         ] {
             let result = scrub_secret_shapes(text);
-            assert!(matches!(result, Cow::Borrowed(_)), "{text} -> {result}");
+            assert_matches!(result, Cow::Borrowed(_), "{text} -> {result}");
         }
     }
 
@@ -591,8 +589,9 @@ mod tests {
             "https://host:443?email=a@b.com",
             "http://localhost:3000?email=me@x.com",
         ] {
-            assert!(
-                matches!(scrub_secrets(text), Cow::Borrowed(_)),
+            assert_matches!(
+                scrub_secrets(text),
+                Cow::Borrowed(_),
                 "{text} -> {}",
                 scrub_secrets(text)
             );
@@ -602,15 +601,15 @@ mod tests {
     #[test]
     fn compact_json_with_url_and_email_is_not_mangled() {
         let text = r#"{"u":"https://example.com","e":"alice@x.com"}"#;
-        assert!(matches!(scrub_secrets(text), Cow::Borrowed(_)));
+        assert_matches!(scrub_secrets(text), Cow::Borrowed(_));
         let authors = r#"{"homepage":"https://example.com","authors":["a@x.org","b@y.org"]}"#;
-        assert!(matches!(scrub_secrets(authors), Cow::Borrowed(_)));
+        assert_matches!(scrub_secrets(authors), Cow::Borrowed(_));
         assert_eq!(
             scrub_secrets("redis://:hunter2@host"),
             "redis://[REDACTED]@host"
         );
         let long = r#"{"u":"https://example.com","e":"alice.longname.abcdefgh@x.com"}"#;
-        assert!(matches!(scrub_secrets(long), Cow::Borrowed(_)));
+        assert_matches!(scrub_secrets(long), Cow::Borrowed(_));
     }
 
     #[test]
@@ -636,8 +635,9 @@ mod tests {
             "https://host/a:b@c",
             "https://example.com?email=someone.with.a.long.name@example.com",
         ] {
-            assert!(
-                matches!(scrub_secrets(text), Cow::Borrowed(_)),
+            assert_matches!(
+                scrub_secrets(text),
+                Cow::Borrowed(_),
                 "{text} -> {}",
                 scrub_secrets(text)
             );
@@ -656,10 +656,10 @@ mod tests {
     #[test]
     fn clean_text_is_borrowed_by_every_layer() {
         let text = "nothing sensitive here";
-        assert!(matches!(scrub_secret_shapes(text), Cow::Borrowed(_)));
-        assert!(matches!(scrub_secrets(text), Cow::Borrowed(_)));
-        assert!(matches!(sanitize_paths(text), Cow::Borrowed(_)));
-        assert!(matches!(scrub_content(text), Cow::Borrowed(_)));
+        assert_matches!(scrub_secret_shapes(text), Cow::Borrowed(_));
+        assert_matches!(scrub_secrets(text), Cow::Borrowed(_));
+        assert_matches!(sanitize_paths(text), Cow::Borrowed(_));
+        assert_matches!(scrub_content(text), Cow::Borrowed(_));
     }
 
     #[test]

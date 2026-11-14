@@ -462,6 +462,7 @@ fn parse_files(files: &serde_json::Value) -> Result<Vec<(String, String)>, Regis
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -541,7 +542,7 @@ mod tests {
 
         let client = client_for(&server, None);
         let err = client.search("x").await.unwrap_err();
-        assert!(matches!(err, RegistryError::AuthRequired));
+        assert_matches!(err, RegistryError::AuthRequired);
     }
 
     #[tokio::test]
@@ -561,7 +562,7 @@ mod tests {
 
         let client = client_for(&server, None);
         let err = client.search("x").await.unwrap_err();
-        assert!(matches!(err, RegistryError::TooLarge(_)));
+        assert_matches!(err, RegistryError::TooLarge(_));
     }
 
     #[tokio::test]
@@ -569,7 +570,7 @@ mod tests {
         // Port 0 never accepts connections — deterministic connect failure, no live network.
         let client = SkillsShClient::new("http://127.0.0.1:0", None, 1);
         let err = client.search("x").await.unwrap_err();
-        assert!(matches!(err, RegistryError::Request(_)));
+        assert_matches!(err, RegistryError::Request(_));
     }
 
     #[tokio::test]
@@ -594,7 +595,7 @@ mod tests {
     async fn search_rejects_non_http_backend_url() {
         let client = SkillsShClient::new("file:///etc/passwd", None, 1);
         let err = client.search("x").await.unwrap_err();
-        assert!(matches!(err, RegistryError::UnsafeBackendUrl(_)));
+        assert_matches!(err, RegistryError::UnsafeBackendUrl(_));
     }
 
     #[tokio::test]
@@ -602,7 +603,7 @@ mod tests {
         let server = MockServer::start().await;
         let client = client_for(&server, None);
         let err = client.fetch("acme/x?evil=1").await.unwrap_err();
-        assert!(matches!(err, RegistryError::InvalidRegistryId(_)));
+        assert_matches!(err, RegistryError::InvalidRegistryId(_));
     }
 
     #[tokio::test]
@@ -610,7 +611,7 @@ mod tests {
         let server = MockServer::start().await;
         let client = client_for(&server, None);
         let err = client.fetch("acme/x#frag").await.unwrap_err();
-        assert!(matches!(err, RegistryError::InvalidRegistryId(_)));
+        assert_matches!(err, RegistryError::InvalidRegistryId(_));
     }
 
     #[tokio::test]
@@ -678,7 +679,7 @@ mod tests {
 
         let client = client_for(&server, None);
         let err = client.fetch("nope/nope").await.unwrap_err();
-        assert!(matches!(err, RegistryError::NotFound(id) if id == "nope/nope"));
+        assert_matches!(err, RegistryError::NotFound(id) if id == "nope/nope");
     }
 
     #[tokio::test]
@@ -693,7 +694,7 @@ mod tests {
 
         let client = client_for(&server, None);
         let err = client.fetch("acme/huge").await.unwrap_err();
-        assert!(matches!(err, RegistryError::TooLarge(_)));
+        assert_matches!(err, RegistryError::TooLarge(_));
     }
 
     #[tokio::test]
@@ -721,13 +722,13 @@ mod tests {
         let result = client.fetch("acme/x").await;
 
         let err = result.unwrap_err();
-        assert!(matches!(err, RegistryError::Io(_)));
+        assert_matches!(err, RegistryError::Io(_));
     }
 
     #[test]
     fn parse_files_rejects_unexpected_shape() {
         let value = serde_json::json!("not files");
         let err = parse_files(&value).unwrap_err();
-        assert!(matches!(err, RegistryError::InvalidResponse(_)));
+        assert_matches!(err, RegistryError::InvalidResponse(_));
     }
 }

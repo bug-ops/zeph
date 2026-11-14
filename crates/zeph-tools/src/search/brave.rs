@@ -110,8 +110,7 @@ impl SearchProvider for BraveSearchProvider {
 
         Ok(body
             .web
-            .map(|w| w.results)
-            .unwrap_or_default()
+            .map_or_default(|w| w.results)
             .into_iter()
             .take(limit)
             .map(|r| SearchResult {
@@ -154,15 +153,13 @@ struct BraveResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn new_without_key_errors() {
         let cfg = SearchConfig::default();
         let err = BraveSearchProvider::new(&cfg, 1_048_576, None).unwrap_err();
-        assert!(matches!(
-            err,
-            SearchError::MissingApiKey { backend: "brave" }
-        ));
+        assert_matches!(err, SearchError::MissingApiKey { backend: "brave" });
     }
 
     #[test]
@@ -180,7 +177,7 @@ mod tests {
             ..SearchConfig::default()
         };
         let err = BraveSearchProvider::new(&cfg, 1_048_576, Some(Secret::new("k"))).unwrap_err();
-        assert!(matches!(err, SearchError::Provider(_)));
+        assert_matches!(err, SearchError::Provider(_));
     }
 
     #[test]
@@ -261,13 +258,13 @@ mod tests {
         let provider = provider_for(&server, 1_048_576);
         let client = reqwest::Client::new();
         let err = provider.search(&client, "quota test", 5).await.unwrap_err();
-        assert!(matches!(
+        assert_matches!(
             err,
             SearchError::Blocked {
                 status: Some(429),
                 ..
             }
-        ));
+        );
     }
 
     #[tokio::test]
@@ -285,7 +282,7 @@ mod tests {
         let provider = provider_for(&server, 1_048_576);
         let client = reqwest::Client::new();
         let err = provider.search(&client, "test", 5).await.unwrap_err();
-        assert!(matches!(err, SearchError::Http { status: 503, .. }));
+        assert_matches!(err, SearchError::Http { status: 503, .. });
     }
 
     #[tokio::test]
@@ -308,7 +305,7 @@ mod tests {
         let provider = provider_for(&server, 32); // cap well below the actual body size
         let client = reqwest::Client::new();
         let err = provider.search(&client, "test", 5).await.unwrap_err();
-        assert!(matches!(err, SearchError::Provider(msg) if msg.contains("too large")));
+        assert_matches!(err, SearchError::Provider(msg) if msg.contains("too large"));
     }
 
     #[tokio::test]
@@ -326,6 +323,6 @@ mod tests {
         let provider = provider_for(&server, 1_048_576);
         let client = reqwest::Client::new();
         let err = provider.search(&client, "test", 5).await.unwrap_err();
-        assert!(matches!(err, SearchError::Parse(_)));
+        assert_matches!(err, SearchError::Parse(_));
     }
 }

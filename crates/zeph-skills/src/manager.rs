@@ -696,11 +696,9 @@ mod tests {
         // "../something" should either be NotFound or PathTraversal
         let err = mgr.remove("../evil").unwrap_err();
         // The dir won't exist so we expect NotFound or PathTraversal
-        assert!(
-            matches!(
-                err,
-                SkillError::NotFound(_) | SkillError::Invalid(_) | SkillError::Other(_)
-            ),
+        assert_matches!(
+            err,
+            SkillError::NotFound(_) | SkillError::Invalid(_) | SkillError::Other(_),
             "unexpected error: {err}"
         );
     }
@@ -831,8 +829,9 @@ mod tests {
         let mgr = SkillManager::new(managed.path().to_path_buf());
         let result = mgr.install_from_path(&skill_src).unwrap();
 
-        assert!(
-            matches!(result.source, SkillSource::File { .. }),
+        assert_matches!(
+            result.source,
+            SkillSource::File { .. },
             "source must be File for path install"
         );
         assert!(

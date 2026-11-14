@@ -1319,6 +1319,7 @@ mod session_status_notifier_tests {
 #[cfg(test)]
 mod session_event_replay_tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn user_message_becomes_user_message_chunk() {
@@ -1327,10 +1328,10 @@ mod session_event_replay_tests {
             image_refs: Vec::new(),
         });
         assert_eq!(updates.len(), 1);
-        assert!(matches!(
+        assert_matches!(
             updates[0],
             acp::schema::v1::SessionUpdate::UserMessageChunk(_)
-        ));
+        );
     }
 
     #[test]
@@ -1341,10 +1342,10 @@ mod session_event_replay_tests {
             }],
         });
         assert_eq!(updates.len(), 1);
-        assert!(matches!(
+        assert_matches!(
             updates[0],
             acp::schema::v1::SessionUpdate::AgentMessageChunk(_)
-        ));
+        );
     }
 
     #[test]
@@ -1357,10 +1358,7 @@ mod session_event_replay_tests {
             }],
         });
         assert_eq!(updates.len(), 1);
-        assert!(matches!(
-            updates[0],
-            acp::schema::v1::SessionUpdate::ToolCall(_)
-        ));
+        assert_matches!(updates[0], acp::schema::v1::SessionUpdate::ToolCall(_));
     }
 
     #[test]
@@ -1378,14 +1376,11 @@ mod session_event_replay_tests {
             ],
         });
         assert_eq!(updates.len(), 2);
-        assert!(matches!(
-            updates[0],
-            acp::schema::v1::SessionUpdate::ToolCall(_)
-        ));
-        assert!(matches!(
+        assert_matches!(updates[0], acp::schema::v1::SessionUpdate::ToolCall(_));
+        assert_matches!(
             updates[1],
             acp::schema::v1::SessionUpdate::AgentMessageChunk(_)
-        ));
+        );
     }
 
     #[test]
@@ -1467,9 +1462,9 @@ mod session_event_replay_tests {
             ],
         });
         assert_eq!(updates.len(), 1);
-        assert!(matches!(
+        assert_matches!(
             updates[0],
             acp::schema::v1::SessionUpdate::AgentMessageChunk(_)
-        ));
+        );
     }
 }

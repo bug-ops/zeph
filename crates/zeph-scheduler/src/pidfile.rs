@@ -84,6 +84,7 @@ impl PidFile {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -121,8 +122,9 @@ mod tests {
 
         let _guard = PidFile::acquire(&path).expect("first acquire must succeed");
         let err = PidFile::acquire(&path).expect_err("second acquire must fail");
-        assert!(
-            matches!(err, SchedulerError::AlreadyRunning { .. }),
+        assert_matches!(
+            err,
+            SchedulerError::AlreadyRunning { .. },
             "expected AlreadyRunning, got {err:?}"
         );
     }

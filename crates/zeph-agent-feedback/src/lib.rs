@@ -774,6 +774,7 @@ fn token_overlap(a: &str, b: &str) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn detector() -> FeedbackDetector {
         FeedbackDetector::new(ConfidenceThreshold::literal(0.6))
@@ -1974,8 +1975,9 @@ mod tests {
         let handle = tokio::spawn(evaluate_fut); // EXEMPT: test-only mock time
         tokio::time::advance(Duration::from_secs(31)).await;
         let result = handle.await.expect("task panicked");
-        assert!(
-            matches!(result, Err(JudgeError::Timeout)),
+        assert_matches!(
+            result,
+            Err(JudgeError::Timeout),
             "expected JudgeError::Timeout, got {result:?}"
         );
     }

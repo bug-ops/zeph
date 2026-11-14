@@ -388,8 +388,9 @@ mod tests {
         b.top_k = 50.0;
         let variation = a.diff(&b).expect("should have one diff");
         assert_eq!(variation.parameter, ParameterKind::TopK);
-        assert!(
-            matches!(variation.value, VariationValue::Int(50)),
+        assert_matches!(
+            variation.value,
+            VariationValue::Int(50),
             "expected Int(50), got {:?}",
             variation.value
         );

@@ -448,6 +448,7 @@ mod over_the_wire {
     use crate::ThinkingReplay;
     use crate::provider::ChatResponse;
     use crate::testing::{claude_tool_use_response, claude_tool_use_sse_response};
+    use std::assert_matches;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -728,7 +729,7 @@ mod over_the_wire {
             .chat_with_tools(&stamp(changed, 1), &tools())
             .await
             .unwrap();
-        assert!(matches!(response, ChatResponse::Text { .. }));
+        assert_matches!(response, ChatResponse::Text { .. });
         assert_eq!(
             response.replay(),
             ThinkingReplay::Dropped {
@@ -750,7 +751,7 @@ mod over_the_wire {
             .chat_with_tools(&stamp(changed, 1), &tools())
             .await
             .unwrap();
-        assert!(matches!(response, ChatResponse::Text { .. }));
+        assert_matches!(response, ChatResponse::Text { .. });
         assert_eq!(
             response.replay(),
             ThinkingReplay::Dropped {
@@ -930,11 +931,11 @@ mod over_the_wire {
             .await
             .unwrap();
         let first = stream.next().await.unwrap();
-        assert!(matches!(
+        assert_matches!(
             first,
             ToolSseEvent::ThinkingReplay(ThinkingReplay::Dropped {
                 first_message_index: 3
             })
-        ));
+        );
     }
 }

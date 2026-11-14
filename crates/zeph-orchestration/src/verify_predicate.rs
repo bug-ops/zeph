@@ -103,15 +103,13 @@ impl<P: LlmProvider> PredicateEvaluator<P> {
             }
         };
 
-        let prior_note = prior_failure_reason
-            .map(|r| {
-                let truncated: String = r.chars().take(256).collect();
-                format!(
-                    "\n\n<prior_failure_reason>{truncated}</prior_failure_reason>\n\
+        let prior_note = prior_failure_reason.map_or_default(|r| {
+            let truncated: String = r.chars().take(256).collect();
+            format!(
+                "\n\n<prior_failure_reason>{truncated}</prior_failure_reason>\n\
                      Note: a previous evaluation failed with this reason. Take it into account."
-                )
-            })
-            .unwrap_or_default();
+            )
+        });
 
         let system = format!(
             "You are a strict output verifier. Evaluate whether the task output satisfies \

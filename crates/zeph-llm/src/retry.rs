@@ -106,6 +106,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn retry_delay_exponential_backoff() {
@@ -189,8 +190,9 @@ mod tests {
         })
         .await;
 
-        assert!(
-            matches!(result, Err(LlmError::RateLimited)),
+        assert_matches!(
+            result,
+            Err(LlmError::RateLimited),
             "expected RateLimited, got: {result:?}"
         );
     }
@@ -214,8 +216,9 @@ mod tests {
         })
         .await;
 
-        assert!(
-            matches!(result, Err(LlmError::Unavailable)),
+        assert_matches!(
+            result,
+            Err(LlmError::Unavailable),
             "expected Unavailable, got: {result:?}"
         );
     }
@@ -245,8 +248,9 @@ mod tests {
         })
         .await;
 
-        assert!(
-            matches!(result, Err(LlmError::Unavailable)),
+        assert_matches!(
+            result,
+            Err(LlmError::Unavailable),
             "last status (503) must win over the earlier 429, got: {result:?}"
         );
     }
@@ -276,8 +280,9 @@ mod tests {
         })
         .await;
 
-        assert!(
-            matches!(result, Err(LlmError::RateLimited)),
+        assert_matches!(
+            result,
+            Err(LlmError::RateLimited),
             "last status (429) must win over the earlier 503, got: {result:?}"
         );
     }

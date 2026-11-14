@@ -729,6 +729,7 @@ mod tests {
         #![allow(unsafe_code)]
 
         use serial_test::serial;
+        use std::assert_matches;
 
         fn with_temp_home<F: FnOnce(&std::path::Path)>(f: F) {
             let tmp = tempfile::tempdir().expect("tempdir");
@@ -843,8 +844,9 @@ mod tests {
                 let current = std::env::current_exe().expect("current_exe");
                 super::super::register_linux("/nonexistent/other-binary").expect("register_linux");
                 let status = super::super::scheme_status_linux(Some(&current));
-                assert!(
-                    matches!(status, super::super::SchemeStatus::Stale(_)),
+                assert_matches!(
+                    status,
+                    super::super::SchemeStatus::Stale(_),
                     "expected Stale, got {status:?}"
                 );
             });
@@ -864,8 +866,9 @@ mod tests {
                 super::super::register_linux(&file_a.to_string_lossy()).expect("register_linux");
                 // Both paths exist — reaches the path-comparison branch (line 313).
                 let status = super::super::scheme_status_linux(Some(&file_b));
-                assert!(
-                    matches!(status, super::super::SchemeStatus::Stale(_)),
+                assert_matches!(
+                    status,
+                    super::super::SchemeStatus::Stale(_),
                     "expected Stale when registered path != current_exe, got {status:?}"
                 );
             });
@@ -877,6 +880,7 @@ mod tests {
         #![allow(unsafe_code)]
 
         use serial_test::serial;
+        use std::assert_matches;
 
         fn with_temp_home<F: FnOnce(&std::path::Path)>(f: F) {
             let tmp = tempfile::tempdir().expect("tempdir");
@@ -999,8 +1003,9 @@ mod tests {
                 super::super::register_macos("/nonexistent/missing-binary")
                     .expect("register_macos");
                 let status = super::super::scheme_status_macos(None);
-                assert!(
-                    matches!(status, super::super::SchemeStatus::Stale(_)),
+                assert_matches!(
+                    status,
+                    super::super::SchemeStatus::Stale(_),
                     "expected Stale for missing binary, got {status:?}"
                 );
             });
@@ -1021,8 +1026,9 @@ mod tests {
                 super::super::register_macos(&file_a.to_string_lossy()).expect("register_macos");
                 // Both paths exist — execution reaches the path-comparison branch.
                 let status = super::super::scheme_status_macos(Some(&file_b));
-                assert!(
-                    matches!(status, super::super::SchemeStatus::Stale(_)),
+                assert_matches!(
+                    status,
+                    super::super::SchemeStatus::Stale(_),
                     "expected Stale when registered path != current_exe, got {status:?}"
                 );
             });

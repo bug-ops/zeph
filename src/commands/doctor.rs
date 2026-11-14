@@ -1216,8 +1216,7 @@ async fn build_doctor_report(
         let default_dir = zeph_core::vault::default_vault_dir();
         let (resolved_key, resolved_vault) = vault_args_result
             .as_ref()
-            .map(|va| (va.key_path.clone(), va.vault_path.clone()))
-            .unwrap_or_default();
+            .map_or_default(|va| (va.key_path.clone(), va.vault_path.clone()));
         (
             resolved_key.map_or_else(|| default_dir.join("vault-key.txt"), PathBuf::from),
             resolved_vault.map_or_else(|| default_dir.join("secrets.age"), PathBuf::from),

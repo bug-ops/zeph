@@ -3,6 +3,7 @@
 
 //! Frozen turn tool set, dispatch gates, and ordered thinking blocks in the native tool loop.
 
+use std::assert_matches;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -230,7 +231,7 @@ async fn ordered_blocks_are_stored_in_response_order_and_not_persisted() {
         .iter()
         .find(|m| m.role == Role::Assistant)
         .expect("assistant message");
-    assert!(matches!(
+    assert_matches!(
         asst.parts.as_slice(),
         [
             MessagePart::ThinkingBlock { thinking: a, .. },
@@ -238,12 +239,12 @@ async fn ordered_blocks_are_stored_in_response_order_and_not_persisted() {
             MessagePart::ThinkingBlock { thinking: b, .. },
             MessagePart::ToolUse { .. },
         ] if a == "first" && b == "second"
-    ));
+    );
     let persisted = MessagePart::strip_for_persistence(&asst.parts);
-    assert!(matches!(
+    assert_matches!(
         persisted.as_slice(),
         [MessagePart::Text { .. }, MessagePart::ToolUse { .. }]
-    ));
+    );
 }
 
 #[tokio::test]
@@ -632,14 +633,12 @@ async fn soft_compaction_prune_strips_thinking_after_the_pruned_message_only() {
 
     agent.maybe_soft_compact_mid_iteration();
 
-    assert!(
-        matches!(
-            &agent.msg.messages[3].parts[0],
-            MessagePart::ToolOutput {
-                compacted_at: Some(_),
-                ..
-            }
-        ),
+    assert_matches!(
+        &agent.msg.messages[3].parts[0],
+        MessagePart::ToolOutput {
+            compacted_at: Some(_),
+            ..
+        },
         "the soft pass must have pruned the output"
     );
 
@@ -872,14 +871,12 @@ async fn unbound_provider_keeps_thinking_through_the_soft_prune() {
 
     agent.maybe_soft_compact_mid_iteration();
 
-    assert!(
-        matches!(
-            &agent.msg.messages[3].parts[0],
-            MessagePart::ToolOutput {
-                compacted_at: Some(_),
-                ..
-            }
-        ),
+    assert_matches!(
+        &agent.msg.messages[3].parts[0],
+        MessagePart::ToolOutput {
+            compacted_at: Some(_),
+            ..
+        },
         "the soft pass must have pruned the output"
     );
     assert_eq!(thinking_count(&agent.msg.messages), before);
@@ -1295,8 +1292,9 @@ async fn server_compaction_mirror_fires_through_the_masked_provider() {
     let mut agent = agent_with(mock, executor).with_secret_registry(Arc::new(
         zeph_sanitizer::secret_mask::SecretMaskRegistry::new(),
     ));
-    assert!(
-        matches!(agent.provider, AnyProvider::Masked(_)),
+    assert_matches!(
+        agent.provider,
+        AnyProvider::Masked(_),
         "the default production chain wraps the provider"
     );
     agent.msg.messages = history_with_thinking();
@@ -1421,13 +1419,13 @@ async fn another_caller_compacting_on_the_same_provider_does_not_touch_main_hist
     let sub = zeph_llm::LlmProvider::chat_with_tools(&subagent_provider, &[], &[])
         .await
         .unwrap();
-    assert!(matches!(
+    assert_matches!(
         sub,
         ChatResponse::ToolUse {
             compaction: Some(_),
             ..
         }
-    ));
+    );
 
     agent.process_response().await.unwrap();
 

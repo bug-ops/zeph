@@ -436,11 +436,9 @@ mod tests {
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/tmp/../etc/passwd");
         let ctx = make_context(SkillTrustLevel::Trusted);
-        assert!(
-            matches!(
-                enforcer.evaluate("shell", &params, &ctx),
-                PolicyDecision::Deny { .. }
-            ),
+        assert_matches!(
+            enforcer.evaluate("shell", &params, &ctx),
+            PolicyDecision::Deny { .. },
             "path traversal must be caught after normalization"
         );
     }
@@ -538,11 +536,9 @@ mod tests {
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/tmp/secret.sh");
         let ctx = make_context(SkillTrustLevel::Trusted);
-        assert!(
-            matches!(
-                enforcer.evaluate("shell", &params, &ctx),
-                PolicyDecision::Deny { .. }
-            ),
+        assert_matches!(
+            enforcer.evaluate("shell", &params, &ctx),
+            PolicyDecision::Deny { .. },
             "deny must win over allow for the same path"
         );
     }
@@ -580,11 +576,9 @@ mod tests {
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/etc/passwd");
         let ctx = make_context(SkillTrustLevel::Trusted);
-        assert!(
-            matches!(
-                enforcer.evaluate("shell", &params, &ctx),
-                PolicyDecision::Deny { .. }
-            ),
+        assert_matches!(
+            enforcer.evaluate("shell", &params, &ctx),
+            PolicyDecision::Deny { .. },
             "deny must win when deny rule is first"
         );
     }
@@ -621,11 +615,9 @@ mod tests {
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/etc/passwd");
         let ctx = make_context(SkillTrustLevel::Trusted);
-        assert!(
-            matches!(
-                enforcer.evaluate("shell", &params, &ctx),
-                PolicyDecision::Deny { .. }
-            ),
+        assert_matches!(
+            enforcer.evaluate("shell", &params, &ctx),
+            PolicyDecision::Deny { .. },
             "deny must win even when deny rule is last"
         );
     }
@@ -690,20 +682,16 @@ mod tests {
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
 
         let trusted_ctx = make_context(SkillTrustLevel::Trusted);
-        assert!(
-            matches!(
-                enforcer.evaluate("shell", &empty_params(), &trusted_ctx),
-                PolicyDecision::Allow { .. }
-            ),
+        assert_matches!(
+            enforcer.evaluate("shell", &empty_params(), &trusted_ctx),
+            PolicyDecision::Allow { .. },
             "Trusted (severity 0) <= Verified threshold (severity 1) -> Allow"
         );
 
         let quarantined_ctx = make_context(SkillTrustLevel::Quarantined);
-        assert!(
-            matches!(
-                enforcer.evaluate("shell", &empty_params(), &quarantined_ctx),
-                PolicyDecision::Deny { .. }
-            ),
+        assert_matches!(
+            enforcer.evaluate("shell", &empty_params(), &quarantined_ctx),
+            PolicyDecision::Deny { .. },
             "Quarantined (severity 2) > Verified threshold (severity 1) -> falls through to default deny"
         );
     }
@@ -757,11 +745,9 @@ mod tests {
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/a/b/c/d/../../../../../../etc/passwd");
         let ctx = make_context(SkillTrustLevel::Trusted);
-        assert!(
-            matches!(
-                enforcer.evaluate("shell", &params, &ctx),
-                PolicyDecision::Deny { .. }
-            ),
+        assert_matches!(
+            enforcer.evaluate("shell", &params, &ctx),
+            PolicyDecision::Deny { .. },
             "deep .. chain traversal to /etc/passwd must be caught"
         );
     }
@@ -899,8 +885,9 @@ tool = "shell"
         let result = PolicyEnforcer::compile(&config);
         std::env::set_current_dir(&original_cwd).unwrap();
 
-        assert!(
-            matches!(result, Err(PolicyCompileError::FileEscapesRoot { .. })),
+        assert_matches!(
+            result,
+            Err(PolicyCompileError::FileEscapesRoot { .. }),
             "symlink escaping project root must be rejected"
         );
     }
@@ -927,11 +914,9 @@ tool = "shell"
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let ctx = make_context(SkillTrustLevel::Trusted);
-        assert!(
-            matches!(
-                enforcer.evaluate("bash", &empty_params(), &ctx),
-                PolicyDecision::Deny { .. }
-            ),
+        assert_matches!(
+            enforcer.evaluate("bash", &empty_params(), &ctx),
+            PolicyDecision::Deny { .. },
             "rule tool='shell' must match runtime tool_id='bash' via alias"
         );
     }
@@ -956,11 +941,9 @@ tool = "shell"
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let ctx = make_context(SkillTrustLevel::Trusted);
-        assert!(
-            matches!(
-                enforcer.evaluate("bash", &empty_params(), &ctx),
-                PolicyDecision::Deny { .. }
-            ),
+        assert_matches!(
+            enforcer.evaluate("bash", &empty_params(), &ctx),
+            PolicyDecision::Deny { .. },
             "rule tool='bash' must still match runtime tool_id='bash'"
         );
     }
@@ -985,11 +968,9 @@ tool = "shell"
         };
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let ctx = make_context(SkillTrustLevel::Trusted);
-        assert!(
-            matches!(
-                enforcer.evaluate("bash", &empty_params(), &ctx),
-                PolicyDecision::Deny { .. }
-            ),
+        assert_matches!(
+            enforcer.evaluate("bash", &empty_params(), &ctx),
+            PolicyDecision::Deny { .. },
             "rule tool='sh' must match runtime tool_id='bash' via alias"
         );
     }
@@ -1050,11 +1031,9 @@ tool = "shell"
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let params = make_params("file_path", "/etc/passwd");
         let ctx = make_context(SkillTrustLevel::Trusted);
-        assert!(
-            matches!(
-                enforcer.evaluate("shell", &params, &ctx),
-                PolicyDecision::Deny { .. }
-            ),
+        assert_matches!(
+            enforcer.evaluate("shell", &params, &ctx),
+            PolicyDecision::Deny { .. },
             "deny rule loaded from file must block the matching call"
         );
     }
@@ -1073,11 +1052,9 @@ tool = "shell"
             policy_file: Some(policy_path.to_string_lossy().into_owned()),
             policy_provider: ProviderName::default(),
         };
-        assert!(
-            matches!(
-                PolicyEnforcer::compile(&config),
-                Err(PolicyCompileError::FileTooLarge { .. })
-            ),
+        assert_matches!(
+            PolicyEnforcer::compile(&config),
+            Err(PolicyCompileError::FileTooLarge { .. }),
             "file exceeding 256 KiB must return FileTooLarge"
         );
     }
@@ -1093,11 +1070,9 @@ tool = "shell"
             policy_file: Some("/tmp/__zeph_no_such_policy_file__.toml".to_owned()),
             policy_provider: ProviderName::default(),
         };
-        assert!(
-            matches!(
-                PolicyEnforcer::compile(&config),
-                Err(PolicyCompileError::FileLoad { .. })
-            ),
+        assert_matches!(
+            PolicyEnforcer::compile(&config),
+            Err(PolicyCompileError::FileLoad { .. }),
             "nonexistent policy file must return FileLoad"
         );
     }
@@ -1116,11 +1091,9 @@ tool = "shell"
             policy_file: Some(policy_path.to_string_lossy().into_owned()),
             policy_provider: ProviderName::default(),
         };
-        assert!(
-            matches!(
-                PolicyEnforcer::compile(&config),
-                Err(PolicyCompileError::FileParse { .. })
-            ),
+        assert_matches!(
+            PolicyEnforcer::compile(&config),
+            Err(PolicyCompileError::FileParse { .. }),
             "malformed TOML must return FileParse"
         );
     }
@@ -1146,11 +1119,9 @@ tool = "shell"
         let enforcer = PolicyEnforcer::compile(&config).unwrap();
         let ctx = make_context(SkillTrustLevel::Trusted);
         // "web_scrape" is not an alias for anything — must not be denied by shell rule.
-        assert!(
-            matches!(
-                enforcer.evaluate("web_scrape", &empty_params(), &ctx),
-                PolicyDecision::Allow { .. }
-            ),
+        assert_matches!(
+            enforcer.evaluate("web_scrape", &empty_params(), &ctx),
+            PolicyDecision::Allow { .. },
             "unknown tool names must not be affected by alias resolution"
         );
     }

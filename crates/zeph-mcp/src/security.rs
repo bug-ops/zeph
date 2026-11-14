@@ -264,8 +264,7 @@ mod tests {
     fn blocks_ld_preload() {
         let env = HashMap::from([("LD_PRELOAD".into(), "/evil.so".into())]);
         let err = validate_env(&env).unwrap_err();
-        assert!(
-            matches!(err, McpError::EnvVarBlocked { ref var_name } if var_name == "LD_PRELOAD")
+        assert_matches!(err, McpError::EnvVarBlocked { ref var_name } if var_name == "LD_PRELOAD"
         );
     }
 
@@ -301,8 +300,7 @@ mod tests {
     fn blocks_bash_func_prefix() {
         let env = HashMap::from([("BASH_FUNC_evil%%".into(), "() { /bin/sh; }".into())]);
         let err = validate_env(&env).unwrap_err();
-        assert!(
-            matches!(err, McpError::EnvVarBlocked { ref var_name } if var_name == "BASH_FUNC_evil%%")
+        assert_matches!(err, McpError::EnvVarBlocked { ref var_name } if var_name == "BASH_FUNC_evil%%"
         );
     }
 

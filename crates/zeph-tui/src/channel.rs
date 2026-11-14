@@ -705,9 +705,8 @@ mod tests {
         .await
         .unwrap();
         let evt = agent_rx.recv().await.unwrap();
-        assert!(
-            matches!(evt, AgentEvent::ToolStart { ref tool_name, ref command, .. }
-                if tool_name == "bash" && command == "ls -la"),
+        assert_matches!(evt, AgentEvent::ToolStart { ref tool_name, ref command, .. }
+                if tool_name == "bash" && command == "ls -la",
             "expected ToolStart with command from params"
         );
     }
@@ -729,9 +728,8 @@ mod tests {
         .await
         .unwrap();
         let evt = agent_rx.recv().await.unwrap();
-        assert!(
-            matches!(evt, AgentEvent::ToolStart { ref tool_name, ref command, .. }
-                if tool_name == "memory_search" && command == "memory_search"),
+        assert_matches!(evt, AgentEvent::ToolStart { ref tool_name, ref command, .. }
+                if tool_name == "memory_search" && command == "memory_search",
             "expected ToolStart with tool_name as fallback command"
         );
     }
@@ -792,8 +790,7 @@ mod tests {
         .unwrap();
 
         let evt = agent_rx.recv().await.unwrap();
-        assert!(
-            matches!(evt, AgentEvent::ToolOutput { ref tool_name, ref diff, .. } if tool_name == "bash" && diff.is_some()),
+        assert_matches!(evt, AgentEvent::ToolOutput { ref tool_name, ref diff, .. } if tool_name == "bash" && diff.is_some(),
             "expected ToolOutput with diff"
         );
     }
@@ -821,8 +818,7 @@ mod tests {
         .unwrap();
 
         let evt = agent_rx.recv().await.unwrap();
-        assert!(
-            matches!(evt, AgentEvent::ToolOutput { ref tool_name, .. } if tool_name == "read"),
+        assert_matches!(evt, AgentEvent::ToolOutput { ref tool_name, .. } if tool_name == "read",
             "expected ToolOutput"
         );
     }
@@ -856,8 +852,7 @@ mod tests {
             .await
             .unwrap();
             let evt = agent_rx.recv().await.unwrap();
-            assert!(
-                matches!(evt, AgentEvent::ToolOutput { success, .. } if success == expect_success),
+            assert_matches!(evt, AgentEvent::ToolOutput { success, .. } if success == expect_success,
                 "{status:?} must render success={expect_success}"
             );
         }
@@ -872,9 +867,8 @@ mod tests {
             .await
             .unwrap();
         let evt = agent_rx.recv().await.unwrap();
-        assert!(
-            matches!(evt, AgentEvent::ForegroundSubagentStarted { ref id, ref name }
-                if id == "sa-1" && name == "planner"),
+        assert_matches!(evt, AgentEvent::ForegroundSubagentStarted { ref id, ref name }
+                if id == "sa-1" && name == "planner",
             "expected ForegroundSubagentStarted"
         );
     }
@@ -886,9 +880,8 @@ mod tests {
             .await
             .unwrap();
         let evt = agent_rx.recv().await.unwrap();
-        assert!(
-            matches!(evt, AgentEvent::ForegroundSubagentCompleted { ref id, ref name, success }
-                if id == "sa-2" && name == "coder" && success),
+        assert_matches!(evt, AgentEvent::ForegroundSubagentCompleted { ref id, ref name, success }
+                if id == "sa-2" && name == "coder" && success,
             "expected ForegroundSubagentCompleted with success=true"
         );
     }
@@ -900,8 +893,7 @@ mod tests {
             .await
             .unwrap();
         let evt = agent_rx.recv().await.unwrap();
-        assert!(
-            matches!(evt, AgentEvent::ForegroundSubagentCompleted { success, .. } if !success),
+        assert_matches!(evt, AgentEvent::ForegroundSubagentCompleted { success, .. } if !success,
             "expected ForegroundSubagentCompleted with success=false"
         );
     }

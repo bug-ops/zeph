@@ -217,8 +217,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             .orchestration
             .subagent_manager
             .as_ref()
-            .map(|m| m.definitions().to_vec())
-            .unwrap_or_default();
+            .map_or_default(|m| m.definitions().to_vec());
 
         let max_concurrent = self.services.orchestration.subagent_config.max_concurrent;
         let max_parallel = self
@@ -820,8 +819,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             .orchestration
             .subagent_manager
             .as_ref()
-            .map(|m| m.definitions().to_vec())
-            .unwrap_or_default();
+            .map_or_default(|m| m.definitions().to_vec());
 
         // A1 fix: replan DAG also needs admission control, same as the primary DAG.
         let partial_admission_gate = {
@@ -1225,8 +1223,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             .orchestration
             .subagent_manager
             .as_ref()
-            .map(|m| m.definitions().to_vec())
-            .unwrap_or_default();
+            .map_or_default(|m| m.definitions().to_vec());
         let confirm_before_execute = self
             .services
             .orchestration
@@ -2105,8 +2102,7 @@ mod tests {
             .orchestration
             .subagent_manager
             .as_ref()
-            .map(|m| m.definitions().to_vec())
-            .unwrap_or_default();
+            .map_or_default(|m| m.definitions().to_vec());
         let mut scheduler = DagScheduler::resume_from(
             graph,
             &agent.services.orchestration.orchestration_config,
@@ -2164,8 +2160,7 @@ mod tests {
             .orchestration
             .subagent_manager
             .as_ref()
-            .map(|m| m.definitions().to_vec())
-            .unwrap_or_default();
+            .map_or_default(|m| m.definitions().to_vec());
         let mut scheduler = DagScheduler::resume_from(
             graph,
             &agent.services.orchestration.orchestration_config,

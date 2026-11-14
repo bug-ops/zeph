@@ -66,8 +66,7 @@ async fn shutdown_all_shared_clears_connected_server_ids() {
 async fn remove_server_not_found_returns_error() {
     let mgr = McpManager::new(vec![], vec![], PolicyEnforcer::new(vec![]));
     let err = mgr.remove_server("nonexistent").await.unwrap_err();
-    assert!(
-        matches!(err, McpError::ServerNotFound { ref server_id } if server_id == "nonexistent")
+    assert_matches!(err, McpError::ServerNotFound { ref server_id } if server_id == "nonexistent"
     );
     assert!(err.to_string().contains("nonexistent"));
 }
@@ -462,8 +461,9 @@ async fn call_tool_uses_tool_timeout_branch_when_configured() {
         .call_tool("missing", "tool", serde_json::json!({}))
         .await
         .unwrap_err();
-    assert!(
-        matches!(err, McpError::ServerNotFound { .. }),
+    assert_matches!(
+        err,
+        McpError::ServerNotFound { .. },
         "expected ServerNotFound, got: {err}"
     );
 
@@ -568,8 +568,7 @@ async fn commit_added_server_rejects_duplicate() {
         .commit_added_server(&entry, second, vec![make_tool("srv1", "t2")], None)
         .await
         .expect_err("duplicate commit must fail");
-    assert!(
-        matches!(err, McpError::ServerAlreadyConnected { ref server_id } if server_id == "srv1"),
+    assert_matches!(err, McpError::ServerAlreadyConnected { ref server_id } if server_id == "srv1",
         "unexpected error: {err:?}"
     );
 
@@ -1850,8 +1849,7 @@ async fn remove_server_cleans_up_trust_and_tools_when_client_present() {
     // but the trust/tools cleanup added by the fix happens AFTER the client removal.
     // This test confirms that injected state does not prevent graceful error return.
     let err = mgr.remove_server("real-srv").await.unwrap_err();
-    assert!(
-        matches!(err, McpError::ServerNotFound { ref server_id } if server_id == "real-srv"),
+    assert_matches!(err, McpError::ServerNotFound { ref server_id } if server_id == "real-srv",
         "expected ServerNotFound, got: {err:?}"
     );
 
@@ -2180,8 +2178,9 @@ async fn retry_loop_cancels_before_first_attempt() {
         !called,
         "attempt_fn must not be called when shutdown is pre-cancelled"
     );
-    assert!(
-        matches!(result, Err(McpError::ManagerShuttingDown { .. })),
+    assert_matches!(
+        result,
+        Err(McpError::ManagerShuttingDown { .. }),
         "expected ManagerShuttingDown, got {result:?}"
     );
 }
@@ -2218,8 +2217,9 @@ async fn retry_loop_cancels_during_backoff_sleep() {
         1,
         "only the first attempt should run before cancellation"
     );
-    assert!(
-        matches!(result, Err(McpError::ManagerShuttingDown { .. })),
+    assert_matches!(
+        result,
+        Err(McpError::ManagerShuttingDown { .. }),
         "expected ManagerShuttingDown, got {result:?}"
     );
 }
@@ -2246,8 +2246,9 @@ async fn retry_loop_stops_on_non_retryable_error() {
         1,
         "non-retryable error must stop after first attempt"
     );
-    assert!(
-        matches!(result, Err(McpError::CommandNotAllowed { .. })),
+    assert_matches!(
+        result,
+        Err(McpError::CommandNotAllowed { .. }),
         "last error should be propagated"
     );
 }
@@ -2275,8 +2276,9 @@ async fn retry_loop_exhausts_all_attempts_for_retryable_error() {
         3,
         "should exhaust all 3 attempts for retryable errors"
     );
-    assert!(
-        matches!(result, Err(McpError::Connection { .. })),
+    assert_matches!(
+        result,
+        Err(McpError::Connection { .. }),
         "last error should be propagated"
     );
 }

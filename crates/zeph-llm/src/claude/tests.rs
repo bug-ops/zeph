@@ -1118,7 +1118,7 @@ fn model_item_filters_non_model_type() {
     let models: Vec<crate::model_cache::RemoteModelInfo> = page
         .get("data")
         .and_then(|v| v.as_array())
-        .map(|arr| {
+        .map_or_default(|arr| {
             arr.iter()
                 .filter_map(|item| {
                     let type_field = item
@@ -1146,8 +1146,7 @@ fn model_item_filters_non_model_type() {
                     })
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     assert_eq!(models.len(), 1);
     assert_eq!(models[0].id, "model-ok");
 }
@@ -2880,10 +2879,10 @@ fn beta_header_excludes_compact_when_disabled() {
 fn compaction_content_block_deserialized() {
     let json = r#"{"type":"compaction","content":"Context summary here"}"#;
     let block: AnthropicContentBlock = serde_json::from_str(json).unwrap();
-    assert!(matches!(
+    assert_matches!(
         block,
         AnthropicContentBlock::Compaction { content: Some(c) } if c == "Context summary here"
-    ));
+    );
 }
 
 #[test]
@@ -4032,7 +4031,7 @@ fn tool_response_keeps_blocks_in_response_order() {
     else {
         panic!("expected ToolUse");
     };
-    assert!(matches!(
+    assert_matches!(
         content.blocks(),
         [
             crate::provider::AssistantBlock::Thinking(ThinkingBlock::Thinking { thinking: a, .. }),
@@ -4040,7 +4039,7 @@ fn tool_response_keeps_blocks_in_response_order() {
             crate::provider::AssistantBlock::Thinking(ThinkingBlock::Thinking { thinking: b, .. }),
             crate::provider::AssistantBlock::ToolUse(_),
         ] if a == "a" && t == "plan" && b == "b"
-    ));
+    );
     assert_eq!(
         replay,
         crate::ThinkingReplay::Dropped {

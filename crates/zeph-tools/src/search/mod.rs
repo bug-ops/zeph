@@ -383,8 +383,7 @@ impl WebSearchExecutor {
         let parsed = validate_url(endpoint.as_str());
         let host_str = parsed
             .as_ref()
-            .map(|u| u.host_str().unwrap_or("").to_owned())
-            .unwrap_or_default();
+            .map_or_default(|u| u.host_str().unwrap_or("").to_owned());
 
         if let Err(e) = parsed {
             if self.egress_config.enabled && self.egress_config.log_blocked {
@@ -748,6 +747,7 @@ impl ToolExecutor for WebSearchExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn enabled_config() -> SearchConfig {
         SearchConfig {
@@ -902,7 +902,7 @@ mod tests {
             skill_name: None,
         };
         let err = executor.execute_tool_call(&call).await.unwrap_err();
-        assert!(matches!(err, ToolError::InvalidParams { .. }));
+        assert_matches!(err, ToolError::InvalidParams { .. });
     }
 
     #[tokio::test]
@@ -974,7 +974,7 @@ mod tests {
             status: 429,
             message: "quota".to_owned(),
         });
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
     }
 
     #[test]
@@ -983,7 +983,7 @@ mod tests {
             status: 503,
             message: "unavailable".to_owned(),
         });
-        assert!(matches!(err, ToolError::Http { status: 503, .. }));
+        assert_matches!(err, ToolError::Http { status: 503, .. });
     }
 
     // --- handle_search: pre-flight blocks (no network needed) ---
@@ -1027,7 +1027,7 @@ mod tests {
             .handle_search(&search_params("test"), "cid-1", None, None)
             .await
             .unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
         let event = rx.try_recv().expect("egress event should be emitted");
         assert!(event.blocked);
         assert_eq!(event.block_reason, Some("blocklist"));
@@ -1045,7 +1045,7 @@ mod tests {
             .handle_search(&search_params("test"), "cid-2", None, None)
             .await
             .unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
         let event = rx.try_recv().expect("egress event should be emitted");
         assert!(event.blocked);
         assert_eq!(event.block_reason, Some("scheme"));
@@ -1163,7 +1163,7 @@ mod tests {
             .issue_search(host, &addrs, &search_params("test"), "cid-429", None, None)
             .await
             .unwrap_err();
-        assert!(matches!(err, ToolError::Blocked { .. }));
+        assert_matches!(err, ToolError::Blocked { .. });
 
         let event = rx.try_recv().expect("egress event should be emitted");
         assert!(event.blocked);

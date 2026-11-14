@@ -466,6 +466,7 @@ impl AgentRegistry {
 mod tests {
     use super::*;
     use crate::card::AgentCardBuilder;
+    use std::assert_matches;
 
     fn test_card(name: &str) -> AgentCard {
         AgentCardBuilder::new(name, "http://localhost", "0.1.0")
@@ -761,7 +762,7 @@ mod tests {
         let err = registry
             .check_trust("http://localhost", &card, &raw)
             .unwrap_err();
-        assert!(matches!(err, A2aError::UrlMismatch { .. }));
+        assert_matches!(err, A2aError::UrlMismatch { .. });
     }
 
     #[test]
@@ -786,7 +787,7 @@ mod tests {
         let err = registry
             .check_trust("http://localhost", &card, &raw)
             .unwrap_err();
-        assert!(matches!(err, A2aError::UntrustedCard { .. }));
+        assert_matches!(err, A2aError::UntrustedCard { .. });
     }
 }
 
@@ -895,8 +896,9 @@ mod wiremock_tests {
             .with_request_timeout(Duration::from_millis(100));
         let result = registry.discover(&server.uri()).await;
         assert!(result.is_err());
-        assert!(
-            matches!(result.unwrap_err(), A2aError::Timeout(_)),
+        assert_matches!(
+            result.unwrap_err(),
+            A2aError::Timeout(_),
             "expected Timeout error from slow discovery"
         );
     }

@@ -427,6 +427,7 @@ impl<Ctx: ?Sized> Default for CommandRegistry<Ctx> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use std::future::Future;
     use std::pin::Pin;
 
@@ -579,10 +580,10 @@ mod tests {
 
     #[test]
     fn message_or_silent_empty_is_silent() {
-        assert!(matches!(
+        assert_matches!(
             CommandOutput::message_or_silent(String::new()),
             CommandOutput::Silent
-        ));
+        );
     }
 
     #[test]

@@ -2454,9 +2454,7 @@ mod tests {
     async fn make_semantic_memory(mock_response: Option<&str>) -> super::SemanticMemory {
         use zeph_llm::any::AnyProvider;
         use zeph_llm::mock::MockProvider;
-        let responses = mock_response
-            .map(|r| vec![r.to_owned()])
-            .unwrap_or_default();
+        let responses = mock_response.map_or_default(|r| vec![r.to_owned()]);
         let provider = if responses.is_empty() {
             AnyProvider::Mock(MockProvider::default())
         } else {

@@ -1829,14 +1829,13 @@ mod tests {
                 });
 
         let err = result.unwrap_err();
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 McpError::Timeout {
                     tool_name,
                     ..
                 } if tool_name == "initialize"
-            ),
+            ,
             "expected McpError::Timeout with tool_name=initialize, got: {err}"
         );
         assert_eq!(err.code(), Some(crate::McpErrorCode::Transient));
@@ -1859,14 +1858,13 @@ mod tests {
                 });
 
         let err = result.unwrap_err();
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 McpError::Timeout {
                     tool_name,
                     ..
                 } if tool_name == "tools/list"
-            ),
+            ,
             "expected McpError::Timeout with tool_name=tools/list, got: {err}"
         );
         assert_eq!(err.code(), Some(crate::McpErrorCode::Transient));
@@ -1894,11 +1892,10 @@ mod tests {
                 });
 
         let err = result.unwrap_err();
-        assert!(
-            matches!(
+        assert_matches!(
                 &err,
                 McpError::Timeout { timeout_secs, .. } if *timeout_secs == caller_timeout.as_secs()
-            ),
+            ,
             "timeout_secs must reflect caller-supplied duration, got: {err}"
         );
     }
@@ -1976,8 +1973,7 @@ mod tests {
             StreamableHttpError::AuthRequired(AuthRequiredError::new("Bearer".into()));
         let cie = make_transport_error(http_err);
         let result = classify_connect_error("myserver", &cie);
-        assert!(
-            matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 401),
+        assert_matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 401,
             "expected HttpAuth(401), got: {result:?}"
         );
     }
@@ -1990,8 +1986,7 @@ mod tests {
         );
         let cie = make_transport_error(http_err);
         let result = classify_connect_error("myserver", &cie);
-        assert!(
-            matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 403),
+        assert_matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 403,
             "expected HttpAuth(403), got: {result:?}"
         );
     }
@@ -2001,8 +1996,7 @@ mod tests {
         let http_err: StreamableHttpError<reqwest::Error> = StreamableHttpError::SessionExpired;
         let cie = make_transport_error(http_err);
         let result = classify_connect_error("myserver", &cie);
-        assert!(
-            matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 404),
+        assert_matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 404,
             "expected HttpAuth(404), got: {result:?}"
         );
     }
@@ -2013,8 +2007,7 @@ mod tests {
             StreamableHttpError::UnexpectedServerResponse("HTTP 401: Unauthorized".into());
         let cie = make_transport_error(http_err);
         let result = classify_connect_error("myserver", &cie);
-        assert!(
-            matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 401),
+        assert_matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 401,
             "expected HttpAuth(401), got: {result:?}"
         );
     }
@@ -2025,8 +2018,7 @@ mod tests {
             StreamableHttpError::UnexpectedServerResponse("HTTP 403: Forbidden".into());
         let cie = make_transport_error(http_err);
         let result = classify_connect_error("myserver", &cie);
-        assert!(
-            matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 403),
+        assert_matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 403,
             "expected HttpAuth(403), got: {result:?}"
         );
     }
@@ -2037,8 +2029,7 @@ mod tests {
             StreamableHttpError::UnexpectedServerResponse("HTTP 404: Not Found".into());
         let cie = make_transport_error(http_err);
         let result = classify_connect_error("myserver", &cie);
-        assert!(
-            matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 404),
+        assert_matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 404,
             "expected HttpAuth(404), got: {result:?}"
         );
     }
@@ -2049,8 +2040,7 @@ mod tests {
             StreamableHttpError::UnexpectedServerResponse("HTTP 410: Gone".into());
         let cie = make_transport_error(http_err);
         let result = classify_connect_error("myserver", &cie);
-        assert!(
-            matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 410),
+        assert_matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "myserver" && *status == 410,
             "expected HttpAuth(410), got: {result:?}"
         );
     }
@@ -2061,8 +2051,9 @@ mod tests {
             StreamableHttpError::UnexpectedServerResponse("HTTP 408: Request Timeout".into());
         let cie = make_transport_error(http_err);
         let result = classify_connect_error("myserver", &cie);
-        assert!(
-            matches!(&result, McpError::Connection { .. }),
+        assert_matches!(
+            &result,
+            McpError::Connection { .. },
             "expected Connection (retryable), got: {result:?}"
         );
     }
@@ -2073,8 +2064,9 @@ mod tests {
             StreamableHttpError::UnexpectedServerResponse("HTTP 429: Too Many Requests".into());
         let cie = make_transport_error(http_err);
         let result = classify_connect_error("myserver", &cie);
-        assert!(
-            matches!(&result, McpError::Connection { .. }),
+        assert_matches!(
+            &result,
+            McpError::Connection { .. },
             "expected Connection (retryable), got: {result:?}"
         );
     }
@@ -2083,8 +2075,9 @@ mod tests {
     fn classify_connect_error_non_transport_error_yields_connection() {
         let cie = ClientInitializeError::ConnectionClosed("test".into());
         let result = classify_connect_error("myserver", &cie);
-        assert!(
-            matches!(&result, McpError::Connection { .. }),
+        assert_matches!(
+            &result,
+            McpError::Connection { .. },
             "expected Connection for non-transport error, got: {result:?}"
         );
     }
@@ -2095,8 +2088,7 @@ mod tests {
             StreamableHttpError::UnexpectedServerResponse("HTTP 401: Unauthorized".into());
         let cie = make_transport_error(http_err);
         let result = classify_connect_error("oauth-server", &cie);
-        assert!(
-            matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "oauth-server" && *status == 401),
+        assert_matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "oauth-server" && *status == 401,
             "expected HttpAuth(401) from connect_url_oauth cached-token path, got: {result:?}"
         );
     }
@@ -2107,8 +2099,7 @@ mod tests {
             StreamableHttpError::UnexpectedServerResponse("HTTP 403: Forbidden".into());
         let cie = make_transport_error(http_err);
         let result = classify_connect_error("oauth-server", &cie);
-        assert!(
-            matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "oauth-server" && *status == 403),
+        assert_matches!(&result, McpError::HttpAuth { server_id, status } if server_id == "oauth-server" && *status == 403,
             "expected HttpAuth(403) from complete_oauth path, got: {result:?}"
         );
     }
@@ -2154,11 +2145,9 @@ mod tests {
             server_id: "srv-overflow".into(),
             tools: vec![],
         });
-        assert!(
-            matches!(
-                overflow_result,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_))
-            ),
+        assert_matches!(
+            overflow_result,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)),
             "17th send must return TrySendError::Full"
         );
 

@@ -387,8 +387,9 @@ mod tests {
         // Secret found but no path → function returns Cow::Owned (modified string)
         let text = "use sk-abc123 for auth";
         let result = scrub_content(text);
-        assert!(
-            matches!(result, Cow::Owned(_)),
+        assert_matches!(
+            result,
+            Cow::Owned(_),
             "must return Cow::Owned when secret was found"
         );
         assert!(result.contains("[REDACTED]"));

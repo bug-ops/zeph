@@ -1193,8 +1193,9 @@ async fn gap2_resource_exhausted_maps_to_rate_limited() {
     let p2 = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024)
         .with_base_url(format!("http://127.0.0.1:{port2}"));
     let result2 = p2.chat(&messages).await;
-    assert!(
-        matches!(result2, Err(LlmError::RateLimited)),
+    assert_matches!(
+        result2,
+        Err(LlmError::RateLimited),
         "429 exhausted must return RateLimited, got: {result2:?}"
     );
 }
@@ -1469,8 +1470,9 @@ fn embed_content_response_empty_values() {
 async fn gemini_embed_no_model_returns_unsupported() {
     let p = GeminiProvider::new("key".into(), "gemini-2.0-flash".into(), 1024);
     let result = p.embed("test text").await;
-    assert!(
-        matches!(result, Err(LlmError::EmbedUnsupported { .. })),
+    assert_matches!(
+        result,
+        Err(LlmError::EmbedUnsupported { .. }),
         "embed without embedding_model must return EmbedUnsupported"
     );
 }
@@ -1530,8 +1532,9 @@ async fn gemini_embed_api_error_429() {
         .with_base_url(format!("http://127.0.0.1:{port}"));
 
     let result = p.embed("test").await;
-    assert!(
-        matches!(result, Err(LlmError::RateLimited)),
+    assert_matches!(
+        result,
+        Err(LlmError::RateLimited),
         "429 RESOURCE_EXHAUSTED must return RateLimited, got: {result:?}"
     );
 }

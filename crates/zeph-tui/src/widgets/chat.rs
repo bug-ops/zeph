@@ -68,8 +68,7 @@ pub fn render(app: &mut App, frame: &mut Frame, area: Rect, cache: &mut RenderCa
     let search_matches = app
         .transcript_search
         .as_ref()
-        .map(|s| s.matches.clone())
-        .unwrap_or_default();
+        .map_or_default(|s| s.matches.clone());
     let highlight = search_query_lower.as_deref().and_then(|q| {
         (!q.is_empty()).then_some(TranscriptHighlight {
             query_lower: q,
@@ -1366,8 +1365,7 @@ impl<'t> MdRenderer<'t> {
                 .theme
                 .code_block
                 .bg
-                .map(|bg| Style::default().bg(bg))
-                .unwrap_or_default();
+                .map_or_default(|bg| Style::default().bg(bg));
             self.current.push(prefix.clone());
             for span in spans {
                 let parts: Vec<&str> = span.content.split('\n').collect();

@@ -319,8 +319,7 @@ async fn run_tty_reader(
 
         let entries: Vec<String> = history
             .as_ref()
-            .map(|h| h.entries().iter().cloned().collect())
-            .unwrap_or_default();
+            .map_or_default(|h| h.entries().iter().cloned().collect());
 
         crate::terminal_title::set_action_required("zeph");
         // NOTE: raw spawn_blocking is correct here — this is interactive terminal I/O (crossterm
@@ -773,8 +772,7 @@ fn build_field_prompt(field: &ElicitationField) -> String {
                 field
                     .description
                     .as_deref()
-                    .map(|d| format!(" ({d})"))
-                    .unwrap_or_default()
+                    .map_or_default(|d| format!(" ({d})"))
             ) + &format!("[{}]: ", opts.join("/"));
         }
         _ => "",
@@ -785,8 +783,7 @@ fn build_field_prompt(field: &ElicitationField) -> String {
         field
             .description
             .as_deref()
-            .map(|d| format!(" ({d})"))
-            .unwrap_or_default(),
+            .map_or_default(|d| format!(" ({d})")),
         if type_hint.is_empty() {
             ": ".to_owned()
         } else {

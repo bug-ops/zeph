@@ -843,8 +843,7 @@ fn extract_snippet(source: &str, line_number: usize) -> String {
     source
         .lines()
         .nth(line_number.saturating_sub(1))
-        .map(str::trim)
-        .unwrap_or_default()
+        .map_or_default(str::trim)
         .to_string()
 }
 

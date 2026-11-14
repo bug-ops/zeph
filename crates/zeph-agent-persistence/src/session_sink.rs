@@ -246,6 +246,7 @@ impl SessionSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     async fn make_sink(session_id: &str) -> (SessionSink, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -275,7 +276,7 @@ mod tests {
 
         let events = sink.log.read_all().await.unwrap();
         assert_eq!(events.len(), 1);
-        assert!(matches!(events[0].kind, SessionEvent::UserMessage { .. }));
+        assert_matches!(events[0].kind, SessionEvent::UserMessage { .. });
     }
 
     #[tokio::test]
@@ -302,7 +303,7 @@ mod tests {
         let events = sink.log.read_all().await.unwrap();
         assert_eq!(events.len(), 2);
         for event in &events {
-            assert!(matches!(event.kind, SessionEvent::ToolResult { .. }));
+            assert_matches!(event.kind, SessionEvent::ToolResult { .. });
         }
         let SessionEvent::ToolResult {
             id,

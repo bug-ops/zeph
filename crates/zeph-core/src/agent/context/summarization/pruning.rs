@@ -42,11 +42,9 @@ impl<C: Channel> Agent<C> {
                         body, compacted_at, ..
                     } if compacted_at.is_none() && !body.is_empty() => {
                         freed += self.runtime.metrics.token_counter.count_tokens(body);
-                        let ref_notice = extract_overflow_ref(body)
-                            .map(|p| {
-                                format!("[tool output pruned; use read_overflow {p} to retrieve]")
-                            })
-                            .unwrap_or_default();
+                        let ref_notice = extract_overflow_ref(body).map_or_default(|p| {
+                            format!("[tool output pruned; use read_overflow {p} to retrieve]")
+                        });
                         freed -= self.runtime.metrics.token_counter.count_tokens(&ref_notice);
                         *compacted_at = Some(now);
                         *body = ref_notice;
@@ -180,9 +178,9 @@ impl<C: Channel> Agent<C> {
                     && !body.starts_with("[archived:")
                 {
                     freed += self.runtime.metrics.token_counter.count_tokens(body);
-                    let ref_notice = extract_overflow_ref(body)
-                        .map(|p| format!("[tool output pruned; use read_overflow {p} to retrieve]"))
-                        .unwrap_or_default();
+                    let ref_notice = extract_overflow_ref(body).map_or_default(|p| {
+                        format!("[tool output pruned; use read_overflow {p} to retrieve]")
+                    });
                     freed -= self.runtime.metrics.token_counter.count_tokens(&ref_notice);
                     *compacted_at = Some(now);
                     *body = ref_notice;
@@ -301,9 +299,9 @@ impl<C: Channel> Agent<C> {
                     && !body.is_empty()
                 {
                     freed += self.runtime.metrics.token_counter.count_tokens(body);
-                    let ref_notice = extract_overflow_ref(body)
-                        .map(|p| format!("[tool output pruned; use read_overflow {p} to retrieve]"))
-                        .unwrap_or_default();
+                    let ref_notice = extract_overflow_ref(body).map_or_default(|p| {
+                        format!("[tool output pruned; use read_overflow {p} to retrieve]")
+                    });
                     freed -= self.runtime.metrics.token_counter.count_tokens(&ref_notice);
                     *compacted_at = Some(now);
                     *body = ref_notice;
@@ -385,9 +383,9 @@ impl<C: Channel> Agent<C> {
                     && !body.is_empty()
                 {
                     freed += self.runtime.metrics.token_counter.count_tokens(body);
-                    let ref_notice = extract_overflow_ref(body)
-                        .map(|p| format!("[tool output pruned; use read_overflow {p} to retrieve]"))
-                        .unwrap_or_default();
+                    let ref_notice = extract_overflow_ref(body).map_or_default(|p| {
+                        format!("[tool output pruned; use read_overflow {p} to retrieve]")
+                    });
                     freed -= self.runtime.metrics.token_counter.count_tokens(&ref_notice);
                     *compacted_at = Some(now);
                     *body = ref_notice;
@@ -525,9 +523,9 @@ impl<C: Channel> Agent<C> {
                     && !body.is_empty()
                 {
                     freed += self.runtime.metrics.token_counter.count_tokens(body);
-                    let ref_notice = extract_overflow_ref(body)
-                        .map(|p| format!("[tool output pruned; use read_overflow {p} to retrieve]"))
-                        .unwrap_or_default();
+                    let ref_notice = extract_overflow_ref(body).map_or_default(|p| {
+                        format!("[tool output pruned; use read_overflow {p} to retrieve]")
+                    });
                     freed -= self.runtime.metrics.token_counter.count_tokens(&ref_notice);
                     *compacted_at = Some(now);
                     *body = ref_notice;

@@ -1570,8 +1570,9 @@ mod tests {
         let provider = OllamaProvider::new(&server.uri(), "test-model".into(), "embed".into());
 
         let result = provider.chat(&chat_test_messages()).await;
-        assert!(
-            matches!(result, Err(LlmError::Unavailable)),
+        assert_matches!(
+            result,
+            Err(LlmError::Unavailable),
             "expected Unavailable after exhausting retries, got: {result:?}"
         );
     }
@@ -1596,8 +1597,9 @@ mod tests {
         let provider = OllamaProvider::new(&server.uri(), "test-model".into(), "embed".into());
 
         let result = provider.chat(&chat_test_messages()).await;
-        assert!(
-            matches!(result, Err(LlmError::ContextLengthExceeded)),
+        assert_matches!(
+            result,
+            Err(LlmError::ContextLengthExceeded),
             "expected ContextLengthExceeded without retry, got: {result:?}"
         );
     }

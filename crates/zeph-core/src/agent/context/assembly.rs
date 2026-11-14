@@ -2632,6 +2632,7 @@ impl<C: Channel> Agent<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use zeph_context::assembler::memory_first_keep_tail;
     use zeph_llm::provider::{Message, MessagePart, Role};
 
@@ -3231,8 +3232,9 @@ mod tests {
         );
 
         // The branch should produce Grouped (similarity ≈ 0.994 > 0.50)
-        assert!(
-            matches!(group_result, GroupResult::Grouped(_)),
+        assert_matches!(
+            group_result,
+            GroupResult::Grouped(_),
             "expected Grouped when pair exceeds threshold"
         );
 
@@ -3294,8 +3296,9 @@ mod tests {
             threshold,
         );
 
-        assert!(
-            matches!(result, GroupResult::Flat(_)),
+        assert_matches!(
+            result,
+            GroupResult::Flat(_),
             "below-threshold pair must produce flat fallback"
         );
     }
@@ -3400,8 +3403,9 @@ mod tests {
             },
             0.50_f32,
         );
-        assert!(
-            matches!(result, GroupResult::Grouped(_)),
+        assert_matches!(
+            result,
+            GroupResult::Grouped(_),
             "correctly rebuilt indices must produce Grouped"
         );
 
@@ -3423,8 +3427,9 @@ mod tests {
         // The stale path looks up embedding for active_skills[0]="entry" at store-idx 0 —
         // which returns EMBED_FILTERED (orthogonal to EMBED_SUPPORT), so cosine=0 → Flat.
         // This documents the incorrect behaviour that the fix prevents.
-        assert!(
-            matches!(stale_result, GroupResult::Flat(_)),
+        assert_matches!(
+            stale_result,
+            GroupResult::Flat(_),
             "stale indices cause wrong (flat) grouping when entry/support would be grouped"
         );
     }

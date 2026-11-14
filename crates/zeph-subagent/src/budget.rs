@@ -110,6 +110,7 @@ impl std::fmt::Debug for SessionSpawnBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn default_mints_independent_counters() {
@@ -146,10 +147,7 @@ mod tests {
         let budget = SessionSpawnBudget::default();
         budget.record_spawn();
         let err = budget.check(1).unwrap_err();
-        assert!(matches!(
-            err,
-            SubAgentError::SessionSpawnLimit { spawned: 1, max: 1 }
-        ));
+        assert_matches!(err, SubAgentError::SessionSpawnLimit { spawned: 1, max: 1 });
     }
 
     #[test]

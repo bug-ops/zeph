@@ -410,6 +410,7 @@ mod tests {
     // fails to parse it as a Postgres URL. See #5608.
     #[cfg(feature = "sqlite")]
     mod with_backend {
+        use std::assert_matches;
         use zeph_durable::{DurableBackendEnum, DurableConfig, JournalWriter, LocalBackend};
 
         use super::*;
@@ -598,8 +599,9 @@ mod tests {
             )
             .await
             .expect_err("a 1-byte payload cap must reject the encoded snapshot");
-            assert!(
-                matches!(err, DurableError::PayloadTooLarge { .. }),
+            assert_matches!(
+                err,
+                DurableError::PayloadTooLarge { .. },
                 "unexpected error: {err:?}"
             );
 

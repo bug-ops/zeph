@@ -310,6 +310,7 @@ pub fn resolve_require_check(force_on: bool, force_off: bool, config_default: bo
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::path::Path;
 
     use zeph_skills::trust::compute_skill_hash;
@@ -641,8 +642,9 @@ mod tests {
         }
 
         let result = trust_gate.execute_tool_call(&call).await;
-        assert!(
-            matches!(result, Err(ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(ToolError::Blocked { .. }),
             "a bash call in the same turn, after resolve_body returned a Quarantined body, \
              must be denied — got {result:?}"
         );

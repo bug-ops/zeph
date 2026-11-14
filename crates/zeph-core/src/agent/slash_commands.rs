@@ -176,8 +176,7 @@ impl<C: crate::channel::Channel> Agent<C> {
             .orchestration
             .subagent_manager
             .as_ref()
-            .map(|m| m.definitions().iter().map(|d| d.name.clone()).collect())
-            .unwrap_or_default();
+            .map_or_default(|m| m.definitions().iter().map(|d| d.name.clone()).collect());
         match zeph_subagent::AgentCommand::parse(trimmed, &known) {
             Ok(cmd) => {
                 if let Some(msg) = self.handle_agent_command(cmd).await

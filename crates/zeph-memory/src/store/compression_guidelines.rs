@@ -433,6 +433,7 @@ impl SqliteStore {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::borrow::Cow;
 
     use super::*;
@@ -722,10 +723,10 @@ mod tests {
     fn scrub_content_glued_rejection_neither_swallows_a_key_nor_allocates() {
         let result = scrub_content("run-task-id=3Dsk-abc123def456ghij");
         assert!(!result.contains("abc123def456"), "{result}");
-        assert!(matches!(
+        assert_matches!(
             scrub_content("see disk-usage and risk-2024-report"),
             Cow::Borrowed(_)
-        ));
+        );
     }
 
     #[test]
@@ -735,7 +736,7 @@ mod tests {
             "disk-cleanup-utility-v2",
             "risk-assessment-2024-q3",
         ] {
-            assert!(matches!(scrub_content(text), Cow::Borrowed(_)), "{text}");
+            assert_matches!(scrub_content(text), Cow::Borrowed(_), "{text}");
         }
     }
 
@@ -768,8 +769,9 @@ mod tests {
     fn scrub_content_plain_text_borrows() {
         let text = "safe text, no secrets here";
         let result = scrub_content(text);
-        assert!(
-            matches!(result, Cow::Borrowed(_)),
+        assert_matches!(
+            result,
+            Cow::Borrowed(_),
             "plain text must return Cow::Borrowed (zero-alloc)"
         );
     }
@@ -961,8 +963,9 @@ mod tests {
             "two-part eyJ string must not be treated as JWT: {result}"
         );
         // No substitution occurred — must be zero-alloc Cow::Borrowed.
-        assert!(
-            matches!(result, Cow::Borrowed(_)),
+        assert_matches!(
+            result,
+            Cow::Borrowed(_),
             "no-match input must return Cow::Borrowed: {result}"
         );
     }

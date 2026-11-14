@@ -202,23 +202,24 @@ fn build_key_ring(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn derive_history_chain_key_rejects_malformed_base64() {
-        assert!(matches!(
+        assert_matches!(
             derive_history_chain_key_b64("not base64!", "d"),
             Err(HistoryKeyError::MalformedEncoding)
-        ));
+        );
     }
 
     #[test]
     fn derive_history_chain_key_rejects_wrong_length() {
         use base64::Engine as _;
         let short = base64::engine::general_purpose::STANDARD.encode(b"short");
-        assert!(matches!(
+        assert_matches!(
             derive_history_chain_key_b64(&short, "d"),
             Err(HistoryKeyError::InvalidKeyLength { .. })
-        ));
+        );
     }
 
     #[test]
@@ -324,6 +325,6 @@ mod tests {
             .with_secret(HISTORY_KEY_SECRET, &key)
             .with_secret(HISTORY_KEY_EPOCH_SECRET, "not-a-number");
         let err = resolve_key_ring(&vault, "d").await.unwrap_err();
-        assert!(matches!(err, HistoryKeyError::MalformedEpoch));
+        assert_matches!(err, HistoryKeyError::MalformedEpoch);
     }
 }

@@ -4603,6 +4603,7 @@ fn handle_url_open(
 
 #[cfg(test)]
 mod deep_link_tests {
+    use std::assert_matches;
     #[test]
     fn loop_detection_env_var_name() {
         // Verify the loop detection env var name matches the spec (INV-LOOP).
@@ -4707,8 +4708,9 @@ mod deep_link_tests {
     fn handle_url_open_returns_exit_code_for_invalid_uri() {
         let mut cli = crate::cli::Cli::default();
         let result = super::handle_url_open("not-a-zeph-uri".to_owned(), None, &mut cli);
-        assert!(
-            matches!(result, Some(1)),
+        assert_matches!(
+            result,
+            Some(1),
             "expected Some(1) for an invalid URI, got {result:?}"
         );
     }
@@ -4728,8 +4730,9 @@ mod deep_link_tests {
             Some(&config_path),
             &mut cli,
         );
-        assert!(
-            matches!(result, Some(1)),
+        assert_matches!(
+            result,
+            Some(1),
             "expected Some(1) for an unparseable config file, got {result:?}"
         );
     }
@@ -4745,8 +4748,9 @@ mod deep_link_tests {
         let mut cli = crate::cli::Cli::default();
         let config_path = missing_config_path(tmp.path());
         let result = super::handle_url_open(uri.to_string(), Some(&config_path), &mut cli);
-        assert!(
-            matches!(result, Some(1)),
+        assert_matches!(
+            result,
+            Some(1),
             "expected Some(1) when cwd canonicalization fails, got {result:?}"
         );
     }
@@ -4794,8 +4798,9 @@ mod deep_link_tests {
         let mut cli = crate::cli::Cli::default();
         let config_path = missing_config_path(tmp.path());
         let result = super::handle_url_open(uri.to_string(), Some(&config_path), &mut cli);
-        assert!(
-            matches!(result, Some(1)),
+        assert_matches!(
+            result,
+            Some(1),
             "expected Some(1) for an unknown model name, got {result:?}"
         );
     }
@@ -4850,6 +4855,8 @@ impl Drop for HistoryIntegrityTestGuard {
 mod tests {
     use super::*;
     use clap::Parser;
+    #[cfg(feature = "acp")]
+    use std::assert_matches;
 
     // --- configure_history_integrity (#6547) ---
     //
@@ -5391,10 +5398,10 @@ mod tests {
         let cli = Cli::parse_from(["zeph"]);
         let mut config = Config::default();
         config.acp.enabled = true;
-        assert!(matches!(
+        assert_matches!(
             configured_acp_autostart_transport(&config, &cli),
             Some(AcpTransport::Stdio)
-        ));
+        );
     }
 
     #[cfg(feature = "acp")]
@@ -5421,10 +5428,10 @@ mod tests {
         let mut config = Config::default();
         config.acp.enabled = true;
         config.acp.transport = AcpTransport::Http;
-        assert!(matches!(
+        assert_matches!(
             configured_acp_autostart_transport(&config, &cli),
             Some(AcpTransport::Http)
-        ));
+        );
     }
 
     #[cfg(feature = "acp")]
@@ -5434,10 +5441,10 @@ mod tests {
         let mut config = Config::default();
         config.acp.enabled = true;
         config.acp.transport = AcpTransport::Both;
-        assert!(matches!(
+        assert_matches!(
             configured_acp_autostart_transport(&config, &cli),
             Some(AcpTransport::Both)
-        ));
+        );
     }
 
     #[cfg(all(feature = "acp", feature = "acp-http"))]
@@ -5476,10 +5483,10 @@ mod tests {
         let mut config = Config::default();
         config.acp.enabled = true;
         config.acp.transport = AcpTransport::Http;
-        assert!(matches!(
+        assert_matches!(
             configured_acp_autostart_transport(&config, &cli),
             Some(AcpTransport::Http)
-        ));
+        );
     }
 
     #[cfg(all(feature = "acp", feature = "tui", not(feature = "acp-http")))]

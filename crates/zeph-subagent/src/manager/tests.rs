@@ -522,6 +522,7 @@ mod session_spawn_budget_gate {
     //! Session-wide cumulative subagent spawn cap (issue #6545).
 
     use super::*;
+    use std::assert_matches;
 
     fn cfg_with_max_spawns(max: usize) -> SubAgentConfig {
         SubAgentConfig {
@@ -816,8 +817,9 @@ async fn test_reserve_slots_blocks_spawn() {
     mgr.reserve_slots(1);
     // Now active(1) + reserved(1) >= max_concurrent(2) → should reject.
     let err = do_spawn(&mut mgr, "bot", "second").await.unwrap_err();
-    assert!(
-        matches!(err, SubAgentError::ConcurrencyLimit { .. }),
+    assert_matches!(
+        err,
+        SubAgentError::ConcurrencyLimit { .. },
         "expected ConcurrencyLimit, got: {err}"
     );
 }
@@ -855,8 +857,9 @@ async fn test_reservation_with_zero_active_blocks_spawn() {
     mgr.reserve_slots(2);
     // active(0) + reserved(2) >= max_concurrent(2) → blocked.
     let err = do_spawn(&mut mgr, "bot", "first").await.unwrap_err();
-    assert!(
-        matches!(err, SubAgentError::ConcurrencyLimit { .. }),
+    assert_matches!(
+        err,
+        SubAgentError::ConcurrencyLimit { .. },
         "reservation alone must block spawn when reserved >= max_concurrent"
     );
 }
@@ -1178,8 +1181,9 @@ async fn concurrency_slot_freed_after_cancel() {
 
     // Concurrency limit reached — second spawn should fail.
     let err = do_spawn(&mut mgr, "bot", "task 2").await.unwrap_err();
-    assert!(
-        matches!(err, SubAgentError::ConcurrencyLimit { .. }),
+    assert_matches!(
+        err,
+        SubAgentError::ConcurrencyLimit { .. },
         "expected concurrency limit error, got: {err}"
     );
 
@@ -1778,8 +1782,9 @@ async fn resume_concurrency_limit_reached_returns_error() {
         )
         .await
         .unwrap_err();
-    assert!(
-        matches!(err, SubAgentError::ConcurrencyLimit { .. }),
+    assert_matches!(
+        err,
+        SubAgentError::ConcurrencyLimit { .. },
         "expected concurrency limit error, got: {err}"
     );
 }
@@ -2781,8 +2786,7 @@ async fn build_prompt_auto_enables_read_write_edit_for_allowlist() {
     "})
     .unwrap();
 
-    assert!(
-        matches!(&def.tools, ToolPolicy::AllowList(list) if list == &["shell"]),
+    assert_matches!(&def.tools, ToolPolicy::AllowList(list) if list == &["shell"],
         "should start with only shell"
     );
 
@@ -2794,11 +2798,10 @@ async fn build_prompt_auto_enables_read_write_edit_for_allowlist() {
     .await;
 
     // read/write/edit must be auto-added to the AllowList.
-    assert!(
-        matches!(&def.tools, ToolPolicy::AllowList(list)
+    assert_matches!(&def.tools, ToolPolicy::AllowList(list)
             if list.contains(&"read".to_owned())
                 && list.contains(&"write".to_owned())
-                && list.contains(&"edit".to_owned())),
+                && list.contains(&"edit".to_owned()),
         "read/write/edit must be auto-enabled in AllowList when memory is set"
     );
 }
@@ -3707,6 +3710,7 @@ fn spawn_context_default_origin_is_autonomous() {
 /// both `spawn` and `spawn_for_task` share.
 mod delegation_mode_gate {
     use super::*;
+    use std::assert_matches;
 
     async fn try_spawn(
         mgr: &mut SubAgentManager,
@@ -3741,7 +3745,7 @@ mod delegation_mode_gate {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, SubAgentError::DelegationDenied { .. }));
+        assert_matches!(err, SubAgentError::DelegationDenied { .. });
     }
 
     #[tokio::test]
@@ -3755,7 +3759,7 @@ mod delegation_mode_gate {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, SubAgentError::DelegationDenied { .. }));
+        assert_matches!(err, SubAgentError::DelegationDenied { .. });
     }
 
     #[tokio::test]
@@ -3782,7 +3786,7 @@ mod delegation_mode_gate {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, SubAgentError::DelegationDenied { .. }));
+        assert_matches!(err, SubAgentError::DelegationDenied { .. });
     }
 
     #[tokio::test]
@@ -3838,7 +3842,7 @@ mod delegation_mode_gate {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, SubAgentError::DelegationDenied { .. }));
+        assert_matches!(err, SubAgentError::DelegationDenied { .. });
         assert!(
             rx.try_recv().is_err(),
             "on_done must never fire for a rejected spawn"
@@ -3865,7 +3869,7 @@ mod delegation_mode_gate {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, SubAgentError::DelegationDenied { .. }));
+        assert_matches!(err, SubAgentError::DelegationDenied { .. });
     }
 
     /// Regression test for the review finding that `resume()` had no delegation gate at all
@@ -3896,8 +3900,9 @@ mod delegation_mode_gate {
             )
             .await
             .unwrap_err();
-        assert!(
-            matches!(err, SubAgentError::DelegationDenied { .. }),
+        assert_matches!(
+            err,
+            SubAgentError::DelegationDenied { .. },
             "expected DelegationDenied, got {err:?}"
         );
         assert!(
@@ -3935,7 +3940,7 @@ mod delegation_mode_gate {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, SubAgentError::DelegationDenied { .. }));
+        assert_matches!(err, SubAgentError::DelegationDenied { .. });
     }
 
     /// `explicit_request_only` must still permit `resume` — it is inherently an explicit
@@ -4132,8 +4137,9 @@ async fn spawn_exceeds_max_depth_returns_error() {
         )
         .await
         .unwrap_err();
-    assert!(
-        matches!(err, SubAgentError::MaxDepthExceeded { depth: 2, max: 2 }),
+    assert_matches!(
+        err,
+        SubAgentError::MaxDepthExceeded { depth: 2, max: 2 },
         "expected MaxDepthExceeded, got {err:?}"
     );
 }
@@ -4441,8 +4447,9 @@ async fn memory_aware_executor_blocks_write_outside_memory_dir() {
 
     let call = make_write_call(outside_file.to_str().unwrap(), "should be blocked");
     let result = executor.execute_tool_call_erased(&call).await;
-    assert!(
-        matches!(result, Err(ToolError::SandboxViolation { .. })),
+    assert_matches!(
+        result,
+        Err(ToolError::SandboxViolation { .. }),
         "write outside memory dir should be blocked, got: {result:?}"
     );
 }
@@ -4460,8 +4467,9 @@ async fn memory_aware_executor_blocks_path_traversal() {
 
     let call = make_write_call(traversal_path.to_str().unwrap(), "should never be written");
     let result = executor.execute_tool_call_erased(&call).await;
-    assert!(
-        matches!(result, Err(ToolError::SandboxViolation { .. })),
+    assert_matches!(
+        result,
+        Err(ToolError::SandboxViolation { .. }),
         "path traversal should be blocked, got: {result:?}"
     );
 }
@@ -4504,8 +4512,9 @@ async fn memory_aware_executor_confirmed_path_blocks_outside_memory_dir() {
 
     let call = make_write_call(outside_file.to_str().unwrap(), "should be blocked");
     let result = executor.execute_tool_call_confirmed_erased(&call).await;
-    assert!(
-        matches!(result, Err(ToolError::SandboxViolation { .. })),
+    assert_matches!(
+        result,
+        Err(ToolError::SandboxViolation { .. }),
         "confirmed write outside memory dir should be blocked, got: {result:?}"
     );
 }
@@ -5147,8 +5156,7 @@ fn constraint_propagation_deny_list_no_parent_allowlist_is_noop() {
     let mut def = def_with_deny_list(&["dangerous"]);
     let ctx = SpawnContext::default();
     apply_constraint_propagation(&mut def, &ctx);
-    assert!(
-        matches!(&def.tools, ToolPolicy::DenyList(v) if v == &["dangerous"]),
+    assert_matches!(&def.tools, ToolPolicy::DenyList(v) if v == &["dangerous"],
         "DenyList must be unchanged when no parent allowlist is set"
     );
 }
@@ -5842,6 +5850,7 @@ fn intersect_allowlists_disjoint_sets_returns_empty_not_none() {
 /// task is even launched, so these assertions need no timing coordination with that task.
 mod peer_messaging_integration_tests {
     use crate::peer::{AgentId, DeliveryError, PeerGroupId};
+    use std::assert_matches;
 
     use super::*;
 
@@ -5930,8 +5939,9 @@ mod peer_messaging_integration_tests {
             .unwrap_err();
         // Critic round-4 S3: a cross-group target must be indistinguishable from a
         // nonexistent one (NFR-003) — `TargetNotFound`, not `Unauthorized`.
-        assert!(
-            matches!(err, DeliveryError::TargetNotFound(_)),
+        assert_matches!(
+            err,
+            DeliveryError::TargetNotFound(_),
             "expected TargetNotFound (no existence oracle across groups), got: {err:?}"
         );
         assert_eq!(
@@ -6029,6 +6039,6 @@ mod peer_messaging_integration_tests {
         })
         .await
         .expect("send must return well within the timeout, not hang");
-        assert!(matches!(result, Err(DeliveryError::MailboxFull(_))));
+        assert_matches!(result, Err(DeliveryError::MailboxFull(_)));
     }
 }

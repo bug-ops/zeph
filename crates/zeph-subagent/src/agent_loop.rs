@@ -2332,6 +2332,7 @@ mod status_snippet_tests {
 
 #[cfg(test)]
 mod handle_tool_step_granted_secrets_tests {
+    use std::assert_matches;
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -2880,9 +2881,9 @@ mod handle_tool_step_granted_secrets_tests {
         .await;
 
         let parts = &messages[0].parts;
-        assert!(matches!(parts[0], MessagePart::ThinkingBlock { .. }));
-        assert!(matches!(parts[1], MessagePart::Text { .. }));
-        assert!(matches!(parts[2], MessagePart::ToolUse { .. }));
+        assert_matches!(parts[0], MessagePart::ThinkingBlock { .. });
+        assert_matches!(parts[1], MessagePart::Text { .. });
+        assert_matches!(parts[2], MessagePart::ToolUse { .. });
     }
 
     #[tokio::test]

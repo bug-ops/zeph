@@ -134,21 +134,17 @@ impl FilterStats {
     /// ```
     #[must_use]
     pub fn format_inline(&self, tool_name: &str) -> String {
-        let cmd_label = self
-            .command
-            .as_deref()
-            .map(|c| {
-                let trimmed = c.trim();
-                if trimmed.len() > 60 {
-                    format!(
-                        " `{}…`",
-                        zeph_common::text::truncate_to_bytes_ref(trimmed, 57)
-                    )
-                } else {
-                    format!(" `{trimmed}`")
-                }
-            })
-            .unwrap_or_default();
+        let cmd_label = self.command.as_deref().map_or_default(|c| {
+            let trimmed = c.trim();
+            if trimmed.len() > 60 {
+                format!(
+                    " `{}…`",
+                    zeph_common::text::truncate_to_bytes_ref(trimmed, 57)
+                )
+            } else {
+                format!(" `{trimmed}`")
+            }
+        });
         format!(
             "[{tool_name}]{cmd_label} {} lines \u{2192} {} lines, {:.1}% filtered",
             self.raw_lines,

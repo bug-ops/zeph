@@ -571,6 +571,7 @@ mod tests {
 
 #[cfg(test)]
 mod agent_tests {
+    use std::assert_matches;
     use zeph_llm::any::AnyProvider;
     use zeph_llm::mock::MockProvider;
     use zeph_llm::provider::{Message, MessagePart, Role, TurnContextKind};
@@ -677,10 +678,7 @@ mod agent_tests {
             retrieved: None,
         };
         let turn = agent.build_user_message("first query", vec![], preamble);
-        assert!(matches!(
-            turn.parts.last(),
-            Some(MessagePart::TurnContext(_))
-        ));
+        assert_matches!(turn.parts.last(), Some(MessagePart::TurnContext(_)));
         assert_eq!(
             turn.content, "first query",
             "TurnContext stays out of content"
@@ -1391,8 +1389,7 @@ mod agent_tests {
                     .pending_preamble
                     .retrieved
                     .take()
-                    .map(|b| b.text)
-                    .unwrap_or_default(),
+                    .map_or_default(|b| b.text),
                 _ => agent
                     .msg
                     .messages

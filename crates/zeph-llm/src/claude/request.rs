@@ -770,6 +770,7 @@ pub(super) fn convert_parts_to_blocks(
 mod tests {
     use super::*;
     use crate::provider::{ImageData, MessageMetadata};
+    use std::assert_matches;
 
     #[test]
     fn split_messages_extracts_system() {
@@ -1403,13 +1404,13 @@ mod tests {
         let StructuredContent::Blocks(blocks) = &chat[1].content else {
             panic!("expected blocks");
         };
-        assert!(matches!(
+        assert_matches!(
             &blocks[0],
             AnthropicContentBlock::Text {
                 cache_control: Some(_),
                 ..
             }
-        ));
+        );
     }
 
     #[test]
@@ -1453,8 +1454,9 @@ mod tests {
         let (_, chat) = split_messages_structured(&messages, false, None);
         assert_eq!(chat.len(), 3);
         // With cache disabled, last user message stays as plain Text.
-        assert!(
-            matches!(&chat[2].content, StructuredContent::Text(_)),
+        assert_matches!(
+            &chat[2].content,
+            StructuredContent::Text(_),
             "last user message must remain Text when cache disabled"
         );
     }
@@ -1592,7 +1594,7 @@ mod tests {
         ];
         let (_, chat) = split_messages_structured(&messages, false, None);
         assert_eq!(chat[0].role, "user");
-        assert!(matches!(&chat[0].content, StructuredContent::Text(t) if t == "real question"));
+        assert_matches!(&chat[0].content, StructuredContent::Text(t) if t == "real question");
     }
 
     /// New (v2 test strategy item 7): adjacency is stricter than the old threaded
@@ -1656,11 +1658,8 @@ mod tests {
         let StructuredContent::Blocks(blocks) = &chat[0].content else {
             panic!("expected Blocks for coalesced assistant turn");
         };
-        assert!(matches!(
-            blocks[0],
-            AnthropicContentBlock::Compaction { .. }
-        ));
-        assert!(matches!(blocks[1], AnthropicContentBlock::Text { .. }));
+        assert_matches!(blocks[0], AnthropicContentBlock::Compaction { .. });
+        assert_matches!(blocks[1], AnthropicContentBlock::Text { .. });
         assert_eq!(chat[1].role, "user");
     }
 
@@ -1714,12 +1713,8 @@ mod tests {
         let StructuredContent::Blocks(blocks) = &chat[2].content else {
             panic!("tail must be structured");
         };
-        assert!(matches!(
-            blocks[0],
-            AnthropicContentBlock::ToolResult { .. }
-        ));
-        assert!(
-            matches!(&blocks[1], AnthropicContentBlock::Text { text, .. } if text.contains("NOTE"))
+        assert_matches!(blocks[0], AnthropicContentBlock::ToolResult { .. });
+        assert_matches!(&blocks[1], AnthropicContentBlock::Text { text, .. } if text.contains("NOTE")
         );
         assert_eq!(blocks.len(), 2);
     }

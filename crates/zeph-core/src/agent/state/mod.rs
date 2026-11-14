@@ -1308,8 +1308,7 @@ impl McpState {
         let collisions = self
             .manager
             .as_ref()
-            .map(|m| m.tool_collisions())
-            .unwrap_or_default();
+            .map_or_default(|m| m.tool_collisions());
         self.server_outcomes
             .iter()
             .map(|o| crate::metrics::McpServerStatus {

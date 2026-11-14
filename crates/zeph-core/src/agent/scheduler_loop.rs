@@ -2049,10 +2049,10 @@ impl<C: crate::channel::Channel> Agent<C> {
             let prompt = format!(
                 "Sub-agent requests secret '{}'. Allow?{}",
                 crate::text::truncate_to_chars(&req.secret_key, 100),
-                req.reason
-                    .as_deref()
-                    .map(|r| format!(" Reason: {}", crate::text::truncate_to_chars(r, 200)))
-                    .unwrap_or_default()
+                req.reason.as_deref().map_or_default(|r| format!(
+                    " Reason: {}",
+                    crate::text::truncate_to_chars(r, 200)
+                ))
             );
             let approved = tokio::select! {
                 result = self.channel.confirm(&prompt) => result.unwrap_or(false),
@@ -2106,6 +2106,7 @@ mod tests {
         determine_task_outcome, lookahead_effective_depth, network_denied_for_task,
         task_tool_allowlist_for_task, tool_trace_from_messages,
     };
+    use std::assert_matches;
 
     #[test]
     fn fidelity_none_returns_zero() {
@@ -2346,10 +2347,7 @@ mod tests {
             Some(vec![]),
         )
         .await;
-        assert!(matches!(
-            outcome,
-            zeph_orchestration::TaskOutcome::Completed { .. }
-        ));
+        assert_matches!(outcome, zeph_orchestration::TaskOutcome::Completed { .. });
     }
 
     #[tokio::test]
@@ -2366,10 +2364,7 @@ mod tests {
             None,
         )
         .await;
-        assert!(matches!(
-            outcome,
-            zeph_orchestration::TaskOutcome::Failed { .. }
-        ));
+        assert_matches!(outcome, zeph_orchestration::TaskOutcome::Failed { .. });
     }
 
     #[tokio::test]
@@ -2388,8 +2383,9 @@ mod tests {
             None,
         )
         .await;
-        assert!(
-            matches!(outcome, zeph_orchestration::TaskOutcome::Failed { .. }),
+        assert_matches!(
+            outcome,
+            zeph_orchestration::TaskOutcome::Failed { .. },
             "expected Failed, got {outcome:?}"
         );
 
@@ -2422,10 +2418,7 @@ mod tests {
             None,
         )
         .await;
-        assert!(matches!(
-            outcome,
-            zeph_orchestration::TaskOutcome::Failed { .. }
-        ));
+        assert_matches!(outcome, zeph_orchestration::TaskOutcome::Failed { .. });
     }
 
     #[tokio::test]
@@ -2442,10 +2435,7 @@ mod tests {
             None,
         )
         .await;
-        assert!(matches!(
-            outcome,
-            zeph_orchestration::TaskOutcome::Failed { .. }
-        ));
+        assert_matches!(outcome, zeph_orchestration::TaskOutcome::Failed { .. });
     }
 
     #[tokio::test]
@@ -2514,8 +2504,9 @@ mod tests {
             None,
         )
         .await;
-        assert!(
-            matches!(outcome, zeph_orchestration::TaskOutcome::Failed { .. }),
+        assert_matches!(
+            outcome,
+            zeph_orchestration::TaskOutcome::Failed { .. },
             "expected Failed, got {outcome:?}"
         );
 
@@ -2555,10 +2546,7 @@ mod tests {
             None,
         )
         .await;
-        assert!(matches!(
-            outcome,
-            zeph_orchestration::TaskOutcome::Failed { .. }
-        ));
+        assert_matches!(outcome, zeph_orchestration::TaskOutcome::Failed { .. });
 
         let namespace = format!("orch/{graph_id}");
         let items = ctx
@@ -2590,10 +2578,7 @@ mod tests {
             None,
         )
         .await;
-        assert!(matches!(
-            outcome,
-            zeph_orchestration::TaskOutcome::Failed { .. }
-        ));
+        assert_matches!(outcome, zeph_orchestration::TaskOutcome::Failed { .. });
     }
 
     #[tokio::test]

@@ -620,8 +620,7 @@ fn extract_stt_fields(doc: &toml_edit::DocumentMut) -> SttFields {
     let provider_hint = stt_table
         .and_then(|stt| stt.get("provider"))
         .and_then(toml_edit::Item::as_str)
-        .map(ToOwned::to_owned)
-        .unwrap_or_default();
+        .map_or_default(ToOwned::to_owned);
 
     SttFields {
         model,

@@ -1138,6 +1138,7 @@ impl Default for LspConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn acp_auth_method_unknown_variant_fails() {
@@ -1350,8 +1351,9 @@ mod tests {
     #[test]
     fn additional_dir_rejects_dotdot_traversal() {
         let result = AdditionalDir::parse(std::path::PathBuf::from("/tmp/../etc"));
-        assert!(
-            matches!(result, Err(AdditionalDirError::Traversal(_))),
+        assert_matches!(
+            result,
+            Err(AdditionalDirError::Traversal(_)),
             "expected Traversal, got {result:?}"
         );
     }
@@ -1363,8 +1365,9 @@ mod tests {
             return;
         }
         let result = AdditionalDir::parse(std::path::PathBuf::from("/proc/self"));
-        assert!(
-            matches!(result, Err(AdditionalDirError::Reserved(_))),
+        assert_matches!(
+            result,
+            Err(AdditionalDirError::Reserved(_)),
             "expected Reserved, got {result:?}"
         );
     }
@@ -1377,8 +1380,9 @@ mod tests {
             return;
         }
         let result = AdditionalDir::parse(ssh.clone());
-        assert!(
-            matches!(result, Err(AdditionalDirError::Reserved(_))),
+        assert_matches!(
+            result,
+            Err(AdditionalDirError::Reserved(_)),
             "expected Reserved for {ssh:?}, got {result:?}"
         );
     }

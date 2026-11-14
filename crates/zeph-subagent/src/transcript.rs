@@ -108,8 +108,7 @@ fn anchor_store() -> Option<Arc<dyn AnchorStore>> {
 /// in another task's transcript) breaks at the genesis hash.
 fn file_identity(path: &Path) -> Vec<u8> {
     path.file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default()
+        .map_or_default(|s| s.to_string_lossy().into_owned())
         .into_bytes()
 }
 
@@ -1132,7 +1131,7 @@ mod tests {
         let messages = TranscriptReader::load(&path).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].parts.len(), 1);
-        assert!(matches!(messages[0].parts[0], MessagePart::Text { .. }));
+        assert_matches!(messages[0].parts[0], MessagePart::Text { .. });
         assert!(
             !messages[0]
                 .parts
@@ -1173,8 +1172,8 @@ mod tests {
         let messages = TranscriptReader::load(&path).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].parts.len(), 2);
-        assert!(matches!(messages[0].parts[0], MessagePart::Text { .. }));
-        assert!(matches!(messages[0].parts[1], MessagePart::ToolUse { .. }));
+        assert_matches!(messages[0].parts[0], MessagePart::Text { .. });
+        assert_matches!(messages[0].parts[1], MessagePart::ToolUse { .. });
     }
 
     #[tokio::test]

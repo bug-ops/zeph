@@ -131,6 +131,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn tracker(limit: usize) -> EventSizeTracker {
         EventSizeTracker::new(BodyLimit::new(limit).unwrap())
@@ -175,7 +176,7 @@ mod tests {
                 break;
             }
         }
-        assert!(matches!(result, Err(A2aError::BodyTooLarge { limit: 16 })));
+        assert_matches!(result, Err(A2aError::BodyTooLarge { limit: 16 }));
     }
 
     #[test]
@@ -199,10 +200,10 @@ mod tests {
         ));
         assert!(capped.next().await.unwrap().is_ok());
         assert!(capped.next().await.unwrap().is_ok());
-        assert!(matches!(
+        assert_matches!(
             capped.next().await.unwrap(),
             Err(A2aError::BodyTooLarge { .. })
-        ));
+        );
         assert!(capped.next().await.is_none());
     }
 }

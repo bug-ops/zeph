@@ -116,9 +116,9 @@ pub(crate) fn prune_tool_outputs_oldest_first(
                 && !body.starts_with("[archived:")
             {
                 freed += summ.token_counter.count_tokens(body);
-                let ref_notice = extract_overflow_ref(body)
-                    .map(|p| format!("[tool output pruned; use read_overflow {p} to retrieve]"))
-                    .unwrap_or_default();
+                let ref_notice = extract_overflow_ref(body).map_or_default(|p| {
+                    format!("[tool output pruned; use read_overflow {p} to retrieve]")
+                });
                 freed -= summ.token_counter.count_tokens(&ref_notice);
                 *compacted_at = Some(now);
                 *body = ref_notice;
@@ -260,9 +260,9 @@ fn evict_sorted_blocks(
                 && !body.is_empty()
             {
                 freed += summ.token_counter.count_tokens(body);
-                let ref_notice = extract_overflow_ref(body)
-                    .map(|p| format!("[tool output pruned; use read_overflow {p} to retrieve]"))
-                    .unwrap_or_default();
+                let ref_notice = extract_overflow_ref(body).map_or_default(|p| {
+                    format!("[tool output pruned; use read_overflow {p} to retrieve]")
+                });
                 freed -= summ.token_counter.count_tokens(&ref_notice);
                 *compacted_at = Some(now);
                 *body = ref_notice;

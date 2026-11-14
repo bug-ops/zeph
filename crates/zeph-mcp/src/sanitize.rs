@@ -593,9 +593,7 @@ fn detect_cross_tool_references(
                 .output_schema
                 .as_ref()
                 .or_else(|| dropped_output_schema_snapshots.get(&source.name));
-            let output_schema_text = output_schema_ref
-                .map(collect_json_strings)
-                .unwrap_or_default();
+            let output_schema_text = output_schema_ref.map_or_default(collect_json_strings);
             if name_referenced_in(desc, target_name)
                 || output_schema_text
                     .iter()

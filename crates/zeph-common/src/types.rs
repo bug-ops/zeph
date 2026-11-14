@@ -1229,6 +1229,7 @@ impl PartialEq<&str> for McpServerId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn mcp_server_id_roundtrips_as_plain_string() {
@@ -1495,29 +1496,24 @@ mod tests {
     #[test]
     fn skill_name_rejects_invalid() {
         assert_eq!(SkillName::parse(""), Err(SkillNameError::Length(0)));
-        assert!(matches!(
+        assert_matches!(
             SkillName::parse(&"a".repeat(65)),
             Err(SkillNameError::Length(65))
-        ));
+        );
         assert!(SkillName::parse(&"a".repeat(64)).is_ok());
         for bad in ["Alpha", "a_b", "a b", "é", "a/b", "../x"] {
-            assert!(
-                matches!(SkillName::parse(bad), Err(SkillNameError::Charset(_))),
+            assert_matches!(
+                SkillName::parse(bad),
+                Err(SkillNameError::Charset(_)),
                 "{bad}"
             );
         }
-        assert!(matches!(
-            SkillName::parse("-a"),
-            Err(SkillNameError::EdgeHyphen(_))
-        ));
-        assert!(matches!(
-            SkillName::parse("a-"),
-            Err(SkillNameError::EdgeHyphen(_))
-        ));
-        assert!(matches!(
+        assert_matches!(SkillName::parse("-a"), Err(SkillNameError::EdgeHyphen(_)));
+        assert_matches!(SkillName::parse("a-"), Err(SkillNameError::EdgeHyphen(_)));
+        assert_matches!(
             SkillName::parse("a--b"),
             Err(SkillNameError::DoubleHyphen(_))
-        ));
+        );
     }
 
     #[test]

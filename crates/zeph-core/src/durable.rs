@@ -584,17 +584,17 @@ mod tests {
     fn control_hmac_key_rejects_malformed_or_mislength_input() {
         use base64::Engine as _;
 
-        assert!(matches!(
+        assert_matches!(
             derive_control_hmac_key_b64("not base64!"),
             Err(CipherKeyError::MalformedEncoding)
-        ));
+        );
         let short = base64::engine::general_purpose::STANDARD.encode(b"too short");
-        assert!(matches!(
+        assert_matches!(
             derive_control_hmac_key_b64(&short),
             Err(CipherKeyError::InvalidKeyLength {
                 expected: 32,
                 actual: 9
             })
-        ));
+        );
     }
 }

@@ -829,8 +829,7 @@ async fn load_history_non_empty_parts_json_parsed() {
     let history = store.load_history(cid, 10).await.unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].parts.len(), 1);
-    assert!(
-        matches!(&history[0].parts[0], MessagePart::ToolResult { content, .. } if content == "result")
+    assert_matches!(&history[0].parts[0], MessagePart::ToolResult { content, .. } if content == "result"
     );
 }
 
